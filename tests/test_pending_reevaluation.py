@@ -187,6 +187,7 @@ async def test_daily_loop_resolves_on_real_verdict(engine: None) -> None:
     summary = await loop.tick()
     assert summary == {
         "swept": 1, "resolved": 1, "still_pending": 0, "abandoned": 0,
+        "proposals_expired": 0,
     }
     async with db_mod.get_session() as session:
         row = await session.get(PendingReevaluation, row_id)
@@ -269,6 +270,7 @@ async def test_daily_loop_no_rows_returns_zero_summary(engine: None) -> None:
     summary = await loop.tick()
     assert summary == {
         "swept": 0, "resolved": 0, "still_pending": 0, "abandoned": 0,
+        "proposals_expired": 0,
     }
 
 
