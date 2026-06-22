@@ -210,6 +210,19 @@ export default function InboxPage() {
   );
 
   const items = useMemo(() => feed?.items ?? [], [feed]);
+  // Keep the queue focused: actionable buckets (overdue → opportunity, 1–5) are
+  // "Needs you now"; low-risk observations (bucket 6) collapse below so a long
+  // tail of notes never drowns the decisions. The OBSERVATION bucket ordinal is
+  // 6 (see argosy/services/inbox/types.py PriorityBucket).
+  const OBSERVATION_BUCKET = 6;
+  const actionable = useMemo(
+    () => items.filter((i) => (i.bucket ?? 99) < OBSERVATION_BUCKET),
+    [items],
+  );
+  const observations = useMemo(
+    () => items.filter((i) => i.bucket === OBSERVATION_BUCKET),
+    [items],
+  );
 
   return (
     <main className="max-w-4xl mx-auto p-6 flex flex-col gap-6">
@@ -225,7 +238,7 @@ export default function InboxPage() {
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
 
-      {/* Needs you now — the one prioritized queue. */}
+      {/* Needs you now — the one prioritized queue (actionable buckets only). */}
       {feed && (
         <section className="flex flex-col gap-3">
           {feed.quiet ? (
@@ -237,23 +250,49 @@ export default function InboxPage() {
                   Needs you now
                 </h2>
                 <span className="text-sm text-muted-foreground">
-                  {feed.needs_you_count} pending
+                  {actionable.length} pending
                 </span>
               </div>
-              <ul className="flex flex-col gap-3">
-                {items.map((it) => (
-                  <li key={it.id}>
-                    <InboxItemCard
-                      item={it}
-                      busy={busyId === it.id}
-                      onAction={runAction}
-                    />
-                  </li>
-                ))}
-              </ul>
+              {actionable.length > 0 ? (
+                <ul className="flex flex-col gap-3">
+                  {actionable.map((it) => (
+                    <li key={it.id}>
+                      <InboxItemCard
+                        item={it}
+                        busy={busyId === it.id}
+                        onAction={runAction}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Nothing needs a decision right now.
+                </p>
+              )}
             </>
           )}
         </section>
+      )}
+
+      {/* Low-risk observations — collapsed so they never drown the decisions. */}
+      {observations.length > 0 && (
+        <CollapsibleSection
+          title="Things Argosy noticed"
+          summary={`${observations.length} low-risk note${observations.length === 1 ? "" : "s"} — no action needed`}
+        >
+          <ul className="flex flex-col gap-3">
+            {observations.map((it) => (
+              <li key={it.id}>
+                <InboxItemCard
+                  item={it}
+                  busy={busyId === it.id}
+                  onAction={runAction}
+                />
+              </li>
+            ))}
+          </ul>
+        </CollapsibleSection>
       )}
 
       {/* Reasoning trail (opened from a trade's "See the reasoning"). */}
