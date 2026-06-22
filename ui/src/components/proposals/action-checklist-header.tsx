@@ -218,7 +218,7 @@ function ChecklistRow({
           {sub ? (
             <p
               className={cn(
-                "text-xs text-muted-foreground truncate",
+                "text-xs text-muted-foreground line-clamp-2",
                 acknowledged && "line-through",
               )}
             >

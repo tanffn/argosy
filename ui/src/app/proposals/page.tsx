@@ -823,7 +823,7 @@ export default function ProposalsPage() {
                             {p.conviction ?? "?"} conviction
                           </Badge>
                           <Badge variant={statusVariant(p.status)}>
-                            {p.status}
+                            {friendlyStatus(p.status)}
                           </Badge>
                           {topCitation && (
                             <span className="text-xs font-mono text-muted-foreground">
