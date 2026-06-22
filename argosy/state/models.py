@@ -794,6 +794,21 @@ class Proposal(Base):
     # keep the SQLite ADD COLUMN migration simple); stamped best-effort at
     # persist time, NULL when no current plan exists.
     plan_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Decision-funnel (P0) lifecycle columns (migration 0075):
+    # who produced this proposal, whether it is a shadow-mode (recorded but
+    # never surfaced) proposal, when the recommendation goes stale, and a plain
+    # audit ref to the funnel run that emitted it (mirrors plan_version_id —
+    # not a DB-enforced FK to keep the SQLite ADD COLUMN migration simple).
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="manual", server_default="manual"
+    )
+    shadow: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    funnel_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -4057,4 +4072,190 @@ class PropagationEvent(Base):
 
     __table_args__ = (
         Index("ix_propagation_events_plan_cycle", "plan_id", "cycle_id"),
+    )
+
+
+# ----------------------------------------------------------------------
+# Decision funnel observability (P0 — migration 0075)
+# ----------------------------------------------------------------------
+
+
+class FunnelRun(Base):
+    """One daily decision-funnel execution.
+
+    The autonomous funnel cannot be a black box: every run records its
+    per-stage totals, the Stage-0 macro read (with source refs), the
+    decision-policy + IPS versions it reasoned against, whether it ran in
+    shadow mode, and an idempotency key (one run per user per calendar
+    day per trigger kind). Child rows: ``funnel_stage_rows`` (per-name
+    audit) and ``decision_snapshots`` (immutable per-decision state).
+    """
+
+    __tablename__ = "funnel_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # "scheduler" | "manual" | "backtest"
+    trigger: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="scheduler", server_default="scheduler"
+    )
+    # 1 = shadow mode (record proposals, surface nothing). Default ON.
+    shadow: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    # "running" | "ok" | "error" | "killed"
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="running", server_default="running"
+    )
+    policy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ips_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    plan_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    macro_read_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totals_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_funnel_runs_idempotency_key"),
+        Index("ix_funnel_runs_user_started", "user_id", "started_at"),
+    )
+
+
+class DecisionSnapshot(Base):
+    """IMMUTABLE per-decision frozen state.
+
+    Captures everything needed to answer "why did it (not) act on X today?"
+    without re-running: the model identity (name/version/prompt-template
+    hash/temp/seed), the EXACT portfolio + market snapshot the decision saw,
+    the decision-policy version, the dedup key + an "unchanged" explanation,
+    why-not-act for drops, post-decision execution drift, and the human
+    action state (proposed/accepted/rejected/expired/superseded).
+
+    Rows are never mutated except for the two lifecycle columns
+    (``execution_drift_json`` and ``human_action_state``), which the
+    proposal-lifecycle + recheck loops update after the fact.
+    """
+
+    __tablename__ = "decision_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Replay-critical state is NOT NULL: a snapshot only exists for an actual
+    # Stage-3 decision (incl. a deliberate Hold), so the run, the frozen
+    # decision payload, the exact portfolio + market state, the policy, and the
+    # model/prompt identity are always present (codex BLOCKERs 1 & 2).
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("funnel_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Full decision-input fingerprint (see migration 0075 for composition) so a
+    # legitimate same-day re-decision after any input change does not collide.
+    dedup_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # Frozen decision payload — answers "what did it decide & why?" independent
+    # of the mutable proposals row.
+    decision_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_template_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model_inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_refs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    portfolio_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    market_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_json: Mapped[str] = mapped_column(Text, nullable=False)
+    unchanged_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    why_not_act: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_drift_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # proposed | accepted | rejected | expired | superseded
+    human_action_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="proposed", server_default="proposed"
+    )
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    proposal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("dedup_key", name="uq_decision_snapshots_dedup_key"),
+        Index("ix_decision_snapshots_run", "run_id"),
+        Index("ix_decision_snapshots_user_ticker", "user_id", "ticker"),
+    )
+
+
+class FunnelStageRow(Base):
+    """Append-only per-stage, per-name audit row.
+
+    Every name the funnel considered on a given day gets a row: routed /
+    dropped / no-op / proposed / surfaced / hidden, with the signal or rule
+    that fired (or "no_match"), the source-cited inputs, the model + tokens,
+    and references to the immutable snapshot + the emitted proposal. Nothing
+    drops silently — a human can trace each name from "considered" to "acted
+    / dropped" with the reason and the model that decided it.
+    """
+
+    __tablename__ = "funnel_stage_rows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("funnel_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    # "stage0" | "stage1" | "stage2" | "stage3" | "surface"
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    # ticker, "MARKET", or "sleeve:<name>"
+    subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    # "market" | "sleeve" | "holding" | "watch"
+    subject_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # routed | dropped | no_op | triage_go | triage_stop | proposed |
+    # blocked | surfaced | hidden
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    signal_or_rule: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_snapshots.id", ondelete="SET NULL"), nullable=True
+    )
+    proposal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_funnel_stage_rows_run_stage", "run_id", "stage"),
     )
