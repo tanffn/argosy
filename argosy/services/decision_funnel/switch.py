@@ -200,7 +200,7 @@ def simulate_switch(
         )
 
     # HIFO: highest cost-per-share first → smallest realised gain.
-    ordered = sorted(lots, key=lambda l: l.cost_per_share, reverse=True)
+    ordered = sorted(lots, key=lambda lot: lot.cost_per_share, reverse=True)
 
     # Select lots until GROSS proceeds cover the shortfall. We size on gross
     # (the minimum to raise the cash); the after-tax/friction drag is reported

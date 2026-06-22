@@ -9,9 +9,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from argosy.state import db as db_module
-from argosy.state.models import Base
-
 # ---------------------------------------------------------------------------
 # Logging / structlog isolation
 #
@@ -42,6 +39,9 @@ from argosy.state.models import Base
 #      records to be silently discarded).
 # ---------------------------------------------------------------------------
 from argosy.logging import configure_logging as _argosy_configure_logging
+from argosy.state import db as db_module
+from argosy.state.models import Base
+
 _argosy_configure_logging()
 
 
@@ -210,6 +210,7 @@ def argosy_home_db(tmp_path, monkeypatch):
     inserts (which FK-CASCADE on users.id) don't fail.
     """
     import asyncio
+
     import sqlalchemy as sa
     from sqlalchemy.orm import sessionmaker
 
@@ -323,12 +324,18 @@ def db_session_with_seeded_user(tmp_path):
     import sqlalchemy as sa
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.state.models import (
-        Base, User, UserFile, ExpenseSource, ExpenseStatement,
-        ExpenseTransaction, ExpenseCategory,
-    )
     from argosy.services.expense_ingest.taxonomy_seed import (
-        seed_system_defaults, seed_user_categories,
+        seed_system_defaults,
+        seed_user_categories,
+    )
+    from argosy.state.models import (
+        Base,
+        ExpenseCategory,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+        UserFile,
     )
 
     db_path = tmp_path / "savings_rate_trend.db"
@@ -442,12 +449,18 @@ def db_session_short_history(tmp_path):
     import sqlalchemy as sa
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.state.models import (
-        Base, User, UserFile, ExpenseSource, ExpenseStatement,
-        ExpenseTransaction, ExpenseCategory,
-    )
     from argosy.services.expense_ingest.taxonomy_seed import (
-        seed_system_defaults, seed_user_categories,
+        seed_system_defaults,
+        seed_user_categories,
+    )
+    from argosy.state.models import (
+        Base,
+        ExpenseCategory,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+        UserFile,
     )
 
     db_path = tmp_path / "short_history.db"
@@ -558,12 +571,18 @@ def db_session_long_history(tmp_path):
     import sqlalchemy as sa
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.state.models import (
-        Base, User, UserFile, ExpenseSource, ExpenseStatement,
-        ExpenseTransaction, ExpenseCategory,
-    )
     from argosy.services.expense_ingest.taxonomy_seed import (
-        seed_system_defaults, seed_user_categories,
+        seed_system_defaults,
+        seed_user_categories,
+    )
+    from argosy.state.models import (
+        Base,
+        ExpenseCategory,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+        UserFile,
     )
 
     db_path = tmp_path / "long_history.db"
@@ -662,12 +681,18 @@ def db_session_with_zero_prior(tmp_path):
     import sqlalchemy as sa
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.state.models import (
-        Base, User, UserFile, ExpenseSource, ExpenseStatement,
-        ExpenseTransaction, ExpenseCategory,
-    )
     from argosy.services.expense_ingest.taxonomy_seed import (
-        seed_system_defaults, seed_user_categories,
+        seed_system_defaults,
+        seed_user_categories,
+    )
+    from argosy.state.models import (
+        Base,
+        ExpenseCategory,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+        UserFile,
     )
 
     db_path = tmp_path / "zero_prior.db"
@@ -787,12 +812,17 @@ def client_with_seeded_data(client_with_db):
     from datetime import date
     from decimal import Decimal
 
-    from argosy.state.models import (
-        User, UserFile, ExpenseSource, ExpenseStatement,
-        ExpenseTransaction, ExpenseCategory,
-    )
     from argosy.services.expense_ingest.taxonomy_seed import (
-        seed_system_defaults, seed_user_categories,
+        seed_system_defaults,
+        seed_user_categories,
+    )
+    from argosy.state.models import (
+        ExpenseCategory,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+        UserFile,
     )
 
     SF = client_with_db.app.state.session_factory
@@ -895,12 +925,17 @@ def client_with_short_history(client_with_db):
     from datetime import date
     from decimal import Decimal
 
-    from argosy.state.models import (
-        User, UserFile, ExpenseSource, ExpenseStatement,
-        ExpenseTransaction, ExpenseCategory,
-    )
     from argosy.services.expense_ingest.taxonomy_seed import (
-        seed_system_defaults, seed_user_categories,
+        seed_system_defaults,
+        seed_user_categories,
+    )
+    from argosy.state.models import (
+        ExpenseCategory,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+        UserFile,
     )
 
     SF = client_with_db.app.state.session_factory
@@ -980,16 +1015,17 @@ def client_with_short_history(client_with_db):
 # ---------------------------------------------------------------------------
 
 import sqlalchemy as sa
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine
+
+from alembic import command
 
 
 @pytest.fixture
 def alembic_engine_at_head(tmp_path, monkeypatch):
     """A fresh SQLite DB at alembic head, isolated via ARGOSY_HOME."""
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
-    from argosy.config import reload_settings, get_settings
+    from argosy.config import get_settings, reload_settings
     reload_settings()
     # Settings derives db_file as <ARGOSY_HOME>/db/argosy.db; ensure the dir exists.
     db_url = get_settings().database_url
@@ -1011,7 +1047,7 @@ def alembic_engine_with_existing_plan_row(tmp_path, monkeypatch):
     Verifies backfill of new columns on existing data.
     """
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
-    from argosy.config import reload_settings, get_settings
+    from argosy.config import get_settings, reload_settings
     reload_settings()
     # Settings derives db_file as <ARGOSY_HOME>/db/argosy.db; ensure the dir exists.
     db_url = get_settings().database_url

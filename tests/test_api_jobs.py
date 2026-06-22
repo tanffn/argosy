@@ -26,15 +26,13 @@ Test command::
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy import select
 from starlette.testclient import TestClient
-
-from argosy.state.models import Base
 
 from argosy.orchestrator.loops.base import (
     CadenceLoop,
@@ -43,8 +41,7 @@ from argosy.orchestrator.loops.base import (
 )
 from argosy.services.jobs import JobMetadata, JobRegistry
 from argosy.state import db as db_mod
-from argosy.state.models import JobRun
-
+from argosy.state.models import Base, JobRun
 
 # ---------------------------------------------------------------------------
 # Test jobs
@@ -523,8 +520,8 @@ def test_reconnect_never_returns_stale_run_id(
                 session.add(
                     JobRun(
                         job_name="stale_check_lr",
-                        started_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
-                        finished_at=datetime(2026, 5, 1, 0, 1, tzinfo=timezone.utc),
+                        started_at=datetime(2026, 5, 1, tzinfo=UTC),
+                        finished_at=datetime(2026, 5, 1, 0, 1, tzinfo=UTC),
                         status="cancelled",
                         skip_reason=None,
                         error_message=None,
@@ -641,9 +638,9 @@ def test_reconnect_ignores_non_supervisor_post_watermark_row(
                 s.add(
                     JobRun(
                         job_name="race_lr",
-                        started_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                        started_at=datetime(2026, 5, 1, tzinfo=UTC),
                         finished_at=datetime(
-                            2026, 5, 1, 0, 1, tzinfo=timezone.utc
+                            2026, 5, 1, 0, 1, tzinfo=UTC
                         ),
                         status="cancelled",
                         skip_reason=None,
@@ -674,7 +671,7 @@ def test_reconnect_ignores_non_supervisor_post_watermark_row(
                 s.add(
                     JobRun(
                         job_name="race_lr",
-                        started_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+                        started_at=datetime(2026, 5, 2, tzinfo=UTC),
                         finished_at=None,
                         status="running",
                         skip_reason=None,
@@ -867,9 +864,9 @@ def _seed_run_rows(job_name: str, *, n_ok: int = 5, n_skipped: int = 2) -> None:
                 session.add(
                     JobRun(
                         job_name=job_name,
-                        started_at=datetime(2026, 5, 1, 12, i, 0, tzinfo=timezone.utc),
+                        started_at=datetime(2026, 5, 1, 12, i, 0, tzinfo=UTC),
                         finished_at=datetime(
-                            2026, 5, 1, 12, i, 1, tzinfo=timezone.utc
+                            2026, 5, 1, 12, i, 1, tzinfo=UTC
                         ),
                         status="ok",
                         skip_reason=None,
@@ -885,9 +882,9 @@ def _seed_run_rows(job_name: str, *, n_ok: int = 5, n_skipped: int = 2) -> None:
                 session.add(
                     JobRun(
                         job_name=job_name,
-                        started_at=datetime(2026, 5, 2, 12, i, 0, tzinfo=timezone.utc),
+                        started_at=datetime(2026, 5, 2, 12, i, 0, tzinfo=UTC),
                         finished_at=datetime(
-                            2026, 5, 2, 12, i, 1, tzinfo=timezone.utc
+                            2026, 5, 2, 12, i, 1, tzinfo=UTC
                         ),
                         status="skipped",
                         skip_reason="market_closed",

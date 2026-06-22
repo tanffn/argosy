@@ -45,7 +45,6 @@ from argosy.services.decision_funnel.funding import (
 from argosy.services.decision_funnel.funding import (
     buy_amount_usd as funding_buy_amount,
 )
-from argosy.services.decision_funnel.switch import should_switch, simulate_switch
 from argosy.services.decision_funnel.policy import DEFAULT_POLICY, RoutingPolicy
 from argosy.services.decision_funnel.stage0_market import build_market_read
 from argosy.services.decision_funnel.stage1_routing import (
@@ -54,6 +53,7 @@ from argosy.services.decision_funnel.stage1_routing import (
     _cap_for,
     route,
 )
+from argosy.services.decision_funnel.switch import should_switch, simulate_switch
 from argosy.services.decision_funnel.triage import triage_candidate
 from argosy.services.funnel_trace import (
     close_run,
