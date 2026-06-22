@@ -37,6 +37,7 @@ from argosy.services.decision_funnel.discovery_candidates import (
     load_discovery_candidates,
 )
 from argosy.services.decision_funnel.funding import (
+    FundingOutcome,
     build_availability,
     classify_funding,
     rank_funding_sources,
@@ -44,6 +45,7 @@ from argosy.services.decision_funnel.funding import (
 from argosy.services.decision_funnel.funding import (
     buy_amount_usd as funding_buy_amount,
 )
+from argosy.services.decision_funnel.switch import should_switch, simulate_switch
 from argosy.services.decision_funnel.policy import DEFAULT_POLICY, RoutingPolicy
 from argosy.services.decision_funnel.stage0_market import build_market_read
 from argosy.services.decision_funnel.stage1_routing import (
@@ -130,6 +132,68 @@ def _snapshot_cash_usd(session: Session, user_id: str) -> float | None:
             except (TypeError, ValueError):
                 continue
     return cash_k * 1000.0
+
+
+def _snapshot_prices(session: Session, user_id: str) -> dict[str, float]:
+    """Per-ticker current price (USD) from the latest snapshot — used to size a
+    sell-to-fund switch's source leg. Prefers an explicit ``current_price``;
+    else derives value/shares. Empty when no snapshot."""
+    import json as _json
+
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    snap = get_latest_snapshot_row(session, user_id)
+    if snap is None:
+        return {}
+    try:
+        positions = _json.loads(snap.positions_json or "[]")
+    except (ValueError, TypeError):
+        return {}
+    out: dict[str, float] = {}
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        sym = (p.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        price = p.get("current_price")
+        try:
+            if price is not None and float(price) > 0:
+                out[sym] = float(price)
+                continue
+            shares = float(p.get("shares") or 0.0)
+            val_k = float(p.get("usd_value_k") or 0.0)
+            if shares > 0 and val_k > 0:
+                out[sym] = val_k * 1000.0 / shares
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _load_source_lots(session: Session, user_id: str, ticker: str):
+    """Tax lots for a funding-source ticker, as switch ``LotInput``s. Empty when
+    no lots are recorded (the switch sim then degrades — no fabricated basis)."""
+    from argosy.services.decision_funnel.switch import LotInput
+    from argosy.state.models import Lot
+
+    rows = session.execute(
+        select(Lot).where(Lot.user_id == user_id, Lot.ticker == ticker)
+    ).scalars().all()
+    out = []
+    for r in rows:
+        try:
+            qty = float(r.quantity or 0.0)
+            if qty <= 0:
+                continue
+            out.append(LotInput(
+                lot_id=str(r.lot_id_external or r.id),
+                quantity=qty,
+                cost_basis_usd=float(r.cost_basis_usd or 0.0),
+                acquired_at=r.acquired_at.date() if r.acquired_at else None,
+            ))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _build_signals(
@@ -285,6 +349,7 @@ async def run_funnel(
         }
         market_dict = market.to_dict()
         snapshot_cash_usd = _snapshot_cash_usd(s, user_id)
+        price_by = _snapshot_prices(s, user_id)
     finally:
         s.close()
 
@@ -434,6 +499,7 @@ async def run_funnel(
                 # OBSERVATIONAL (shadow calibration) and does not change surfacing
                 # (settlement timing + precise switch math are not modelled yet).
                 funding = None
+                switch_sim = None
                 if proposed and (dd.action or "").lower() == "buy":
                     p_buy = s3.get(Proposal, dd.proposal_id)
                     amt = funding_buy_amount(
@@ -447,6 +513,35 @@ async def run_funnel(
                         sources=sources,
                     )
                     decision_payload["funding"] = funding.to_dict()
+                    # Cash short but an eligible source exists → simulate the
+                    # sell-to-fund SWITCH (one paired decision). Strict conviction
+                    # gate first (routine rebalancing must not become a switch);
+                    # the sim is honest about degradation (friction/FX unmodelled)
+                    # and stays shadow-only.
+                    if (
+                        funding.outcome == FundingOutcome.SWITCH_CANDIDATE
+                        and funding.selected_source
+                    ):
+                        src = funding.selected_source
+                        buy_conv = cand.extra.get("conviction") or (
+                            p_buy.confidence if p_buy else None
+                        )
+                        allowed, gate_reason = should_switch(
+                            buy_conviction=buy_conv, source_conviction=None
+                        )
+                        decision_payload["switch_gate"] = {
+                            "allowed": allowed, "reason": gate_reason,
+                        }
+                        if allowed:
+                            switch_sim = simulate_switch(
+                                buy_ticker=cand.subject,
+                                shortfall_usd=funding.shortfall_usd or 0.0,
+                                source_ticker=src,
+                                lots=_load_source_lots(s3, user_id, src),
+                                current_price_usd=price_by.get(src.upper()),
+                                as_of=now.date(),
+                            )
+                            decision_payload["switch"] = switch_sim.to_dict()
                 snap = record_snapshot(
                     s3, run_id=run_id, user_id=user_id, ticker=cand.subject, day=day,
                     decision=decision_payload,
@@ -484,6 +579,16 @@ async def run_funnel(
                         subject_type=cand.subject_type, decision=funding.outcome.value,
                         reason=funding.reason, signal_or_rule="funding_gate",
                         inputs=funding.to_dict(), snapshot_id=snap.id,
+                        proposal_id=dd.proposal_id, commit=False,
+                    )
+                if switch_sim is not None:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="switch", subject=cand.subject,
+                        subject_type=cand.subject_type,
+                        decision=("switch_fundable" if switch_sim.covers_shortfall else "switch_degraded"),
+                        reason=switch_sim.lot_selection_summary,
+                        signal_or_rule="sell_to_fund_switch",
+                        inputs=switch_sim.to_dict(), snapshot_id=snap.id,
                         proposal_id=dd.proposal_id, commit=False,
                     )
                 if not proposed:
