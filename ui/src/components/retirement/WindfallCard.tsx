@@ -41,8 +41,17 @@ const USER_ID = "ariel";
  * docs/superpowers/plans/2026-05-28-windfall-flow-resume.md.
  *
  * Suppresses entirely when no event is detected, mirroring the banner.
+ *
+ * `showProposals` (default true) controls whether the long/medium/short buy
+ * columns render. /retirement keeps the full card; /proposals passes false so
+ * this card contributes only the reconciled §102 source breakdown + allocation
+ * delta CONTEXT, leaving the single actionable buy list to the DeployCashCard.
  */
-export function WindfallCard() {
+export function WindfallCard({
+  showProposals = true,
+}: {
+  showProposals?: boolean;
+} = {}) {
   const [data, setData] = useState<WindfallDetectResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -98,7 +107,7 @@ export function WindfallCard() {
         <CashSourceBreakdown event={event} />
       )}
       <AllocationDeltaTable />
-      <ProposalsGrid plan={plan} event={event} />
+      {showProposals ? <ProposalsGrid plan={plan} event={event} /> : null}
 
       {!reconciled ? (
         <DrilldownSection title="Matching equity sales (same month)">

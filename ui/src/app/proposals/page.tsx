@@ -647,11 +647,12 @@ export default function ProposalsPage() {
         onConfirm={onActionCustomizeSubmit}
       />
 
-      {/* Deploy your cash — ONE unified flow. The three cards below all act
-          on the SAME idle cash through different engines; wrapping them under
-          a single header (with a shared intro) makes that explicit so the user
-          reads them as one flow, not three unrelated surfaces. Internals of
-          the three cards are unchanged; this is a presentational wrapper.
+      {/* Deploy your cash — ONE actionable buy list with supporting context.
+          The section reads top-to-bottom: detection banner (how much is
+          deployable) → THE buy list (where it goes, with Accept/Defer) →
+          context (the reconciled source breakdown + allocation delta). Only
+          the buy list is actionable; the banner sizes the cash and the
+          reconciliation card explains where it came from and where it's short.
 
           Anchors #allocation and #deploy-cash are preserved as scroll targets
           inside the section (Home banner + intra-page links deep-link here). */}
@@ -661,27 +662,30 @@ export default function ProposalsPage() {
             Deploy your cash
           </h2>
           <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-            One pool of idle cash, seen three ways:{" "}
+            One pool of idle cash:{" "}
             <span className="text-foreground">how much is deployable</span>{" "}
-            (what&apos;s above your plan target),{" "}
-            <span className="text-foreground">where it goes</span> (the buy
-            list by risk tier), and{" "}
-            <span className="text-foreground">the horizon split</span>{" "}
-            (long/medium/short reconciliation, shown only when a cash-position
-            change is detected). These are the same money — not three separate
-            piles to allocate.
+            (what&apos;s above your plan target) feeds{" "}
+            <span className="text-foreground">the buy list</span> (the single
+            actionable place to deploy it, by risk tier — accept or defer each
+            line). Below that,{" "}
+            <span className="text-foreground">context</span>: where the cash
+            came from (reconciled to RSU sales) and where the portfolio is short
+            of plan. It&apos;s all the same money — one list to act on, not
+            three.
           </p>
         </div>
 
-        {/* (a) How much is deployable — the continuous "free cash above plan
-            target → here's where it could go" detector. Renders nothing when
-            no overage. See argosy/services/unallocated_cash_detector.py. */}
+        {/* (a) Detection banner — the continuous "free cash above plan target"
+            detector. Sizes the deployable amount; renders nothing when no
+            overage. See argosy/services/unallocated_cash_detector.py. */}
         <UnallocatedCashCard userId={USER_ID} />
 
-        {/* (b) Where it goes — the primary plan-bound, estate-annotated BUY
-            list by risk tier for a net-of-tax cash amount. Prefilled from
-            detected idle cash; user can adjust the amount and regenerate. The
-            #deploy-cash anchor stays here so existing deep-links resolve. */}
+        {/* (b) THE buy list — the single actionable, plan-bound,
+            estate-annotated BUY list by risk tier for a net-of-tax cash
+            amount, with per-line Accept/Defer persisted through
+            allocation_actions. Prefilled from detected idle cash; user can
+            adjust the amount and regenerate. The #deploy-cash anchor stays
+            here so existing deep-links resolve. */}
         <div id="deploy-cash" className="scroll-mt-6">
           <DeployCashCard
             plan={deployPlan}
@@ -689,18 +693,21 @@ export default function ProposalsPage() {
             amount={deployAmount}
             onAmountChange={setDeployAmount}
             unallocatedUsd={unallocatedUsd}
+            userId={USER_ID}
             live={deployLive}
             onLiveChange={setDeployLive}
           />
         </div>
 
-        {/* (c) The horizon split / event-driven reconciliation. WindfallCard
-            self-suppresses (renders null) when no cash-position change is
-            detected, so this is an empty scroll target most of the time.
-            Banner on Home + the unallocated-cash tile deep-link here via
-            /proposals#allocation, so the anchor is kept. */}
+        {/* (c) Context — the reconciled §102 source breakdown + allocation
+            delta. showProposals={false} suppresses WindfallCard's own buy
+            columns so it contributes CONTEXT only, not a competing buy list;
+            the actionable list is (b) above. Self-suppresses (renders null)
+            when no cash-position change is detected, so this is an empty scroll
+            target most of the time. Home banner + the unallocated-cash banner
+            deep-link here via /proposals#allocation, so the anchor is kept. */}
         <div id="allocation" className="scroll-mt-6">
-          <WindfallCard />
+          <WindfallCard showProposals={false} />
         </div>
       </section>
 

@@ -1,8 +1,17 @@
 "use client";
-import type {
-  DeploymentMarketContextDTO,
-  DeploymentPlanDTO,
-  DeploymentTierDTO,
+import { useEffect, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  api,
+  type AllocationActionListItem,
+  type AllocationActionRequest,
+  type DeploymentLineDTO,
+  type DeploymentMarketContextDTO,
+  type DeploymentPlanDTO,
+  type DeploymentTierDTO,
+  type WindfallHorizon,
 } from "@/lib/api";
 
 const TIER_LABEL: Record<string, string> = {
@@ -11,6 +20,44 @@ const TIER_LABEL: Record<string, string> = {
   medium: "Medium",
   high: "High",
 };
+
+// The deploy plan carries a free-form per-line horizon string plus a risk
+// tier; the allocation_actions store only accepts the windfall horizon enum
+// (long/medium/short). Map the line to one of those: prefer an explicit
+// long/medium/short signal in line.horizon, else derive from the risk tier
+// (reserve/core → long-term holds; medium → medium; high → short, the most
+// tactical sleeve). Falls back to "long" so a line is never unmappable.
+function lineHorizon(line: DeploymentLineDTO): WindfallHorizon {
+  const h = (line.horizon ?? "").toLowerCase();
+  if (h.includes("short")) return "short";
+  if (h.includes("medium") || h.includes("mid")) return "medium";
+  if (h.includes("long")) return "long";
+  switch (line.tier) {
+    case "high":
+      return "short";
+    case "medium":
+      return "medium";
+    default:
+      return "long";
+  }
+}
+
+/** Same (snapshot, horizon, asset_class, instrument) source_ref identity the
+ *  UnallocatedCashCard uses, so a buy accepted from either surface dedups at
+ *  the DB layer. snapshot_date here is the deploy plan's as_of. */
+function buildSourceRef(args: {
+  snapshotDate: string | null;
+  horizon: string;
+  assetClass: string;
+  instrument: string;
+}): string {
+  return JSON.stringify({
+    snapshot_date: args.snapshotDate,
+    horizon: args.horizon,
+    asset_class: args.assetClass,
+    instrument: args.instrument,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // P2: MarketContextStrip — surfaces live macro snapshot + freshness + NVDA
@@ -122,7 +169,21 @@ function TierHeading({ tier }: { tier: DeploymentTierDTO }) {
   );
 }
 
-function TierBlock({ tier }: { tier: DeploymentTierDTO }) {
+interface TierBlockProps {
+  tier: DeploymentTierDTO;
+  userId: string;
+  planAsOf: string;
+  decisions: Map<string, AllocationActionListItem>;
+  onDecided: (sourceRef: string, action: AllocationActionListItem) => void;
+}
+
+function TierBlock({
+  tier,
+  userId,
+  planAsOf,
+  decisions,
+  onDecided,
+}: TierBlockProps) {
   if (tier.lines.length === 0) {
     return (
       <div className="mt-3">
@@ -146,45 +207,179 @@ function TierBlock({ tier }: { tier: DeploymentTierDTO }) {
             <th>NEW?</th>
             <th>ESTATE</th>
             <th>REASON</th>
+            <th>DECISION</th>
           </tr>
         </thead>
         <tbody>
-          {tier.lines.map((l) => (
-            <tr key={`${tier.name}-${l.symbol}`}>
-              <td>{l.symbol}</td>
-              <td>{l.type}</td>
-              <td>{`$${l.amount_usd.toLocaleString()}`}</td>
-              <td>
-                <div>{l.timing}</div>
-                {l.pace_rationale && (
-                  <div
-                    className="text-xs text-muted-foreground"
-                    data-testid={`pace-rationale-${l.symbol}`}
+          {tier.lines.map((l) => {
+            const sourceRef = buildSourceRef({
+              snapshotDate: planAsOf,
+              horizon: lineHorizon(l),
+              assetClass: l.tier,
+              instrument: l.symbol,
+            });
+            return (
+              <tr key={`${tier.name}-${l.symbol}`}>
+                <td>{l.symbol}</td>
+                <td>{l.type}</td>
+                <td>{`$${l.amount_usd.toLocaleString()}`}</td>
+                <td>
+                  <div>{l.timing}</div>
+                  {l.pace_rationale && (
+                    <div
+                      className="text-xs text-muted-foreground"
+                      data-testid={`pace-rationale-${l.symbol}`}
+                    >
+                      {l.pace_rationale}
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <span
+                    className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${
+                      l.is_new
+                        ? "bg-emerald-500/15 text-emerald-600"
+                        : "bg-muted text-muted-foreground"
+                    }`}
                   >
-                    {l.pace_rationale}
-                  </div>
-                )}
-              </td>
-              <td>
-                <span
-                  className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${
-                    l.is_new
-                      ? "bg-emerald-500/15 text-emerald-600"
-                      : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {l.is_new ? "NEW" : "ADD"}
-                </span>
-              </td>
-              <td>{l.estate.status.replace(/_/g, " ")}</td>
-              <td>
-                {l.cap_note}
-                {l.rationale ? ` — ${l.rationale}` : ""}
-              </td>
-            </tr>
-          ))}
+                    {l.is_new ? "NEW" : "ADD"}
+                  </span>
+                </td>
+                <td>{l.estate.status.replace(/_/g, " ")}</td>
+                <td>
+                  {l.cap_note}
+                  {l.rationale ? ` — ${l.rationale}` : ""}
+                </td>
+                <td>
+                  <DeployLineActions
+                    line={l}
+                    userId={userId}
+                    planAsOf={planAsOf}
+                    sourceRef={sourceRef}
+                    prior={decisions.get(sourceRef) ?? null}
+                    onDecided={(action) => onDecided(sourceRef, action)}
+                  />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+interface DeployLineActionsProps {
+  line: DeploymentLineDTO;
+  userId: string;
+  planAsOf: string;
+  sourceRef: string;
+  prior: AllocationActionListItem | null;
+  onDecided: (action: AllocationActionListItem) => void;
+}
+
+/**
+ * Per-line Accept/Defer for the deploy buy list. Persists through the SAME
+ * allocation_actions flow the UnallocatedCashCard uses (action_source
+ * "unallocated_cash", identical AllocationActionRequest shape + source_ref
+ * convention) so the two surfaces share one decision ledger and a buy
+ * accepted on either shows its pill on both.
+ */
+function DeployLineActions({
+  line,
+  userId,
+  planAsOf,
+  sourceRef,
+  prior,
+  onDecided,
+}: DeployLineActionsProps) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const horizon = lineHorizon(line);
+
+  const submit = async (status: "accepted" | "deferred") => {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    const payload: AllocationActionRequest = {
+      user_id: userId,
+      action_source: "unallocated_cash",
+      // The deploy plan is computed from the latest snapshot; approximate the
+      // detection time with the plan's as_of date, falling back to now.
+      source_detected_at: planAsOf
+        ? `${planAsOf}T00:00:00Z`
+        : new Date().toISOString(),
+      source_ref: sourceRef,
+      horizon,
+      asset_class: line.tier,
+      instrument: line.symbol,
+      amount_usd: line.amount_usd,
+      rationale: line.rationale,
+      closes_delta_usd: line.amount_usd,
+      confidence: "medium",
+    };
+    try {
+      const fn =
+        status === "accepted"
+          ? api.proposalAllocationAccept
+          : api.proposalAllocationDefer;
+      const resp = await fn(payload);
+      onDecided({
+        id: resp.id,
+        action_source: "unallocated_cash",
+        source_detected_at: payload.source_detected_at,
+        source_ref: sourceRef,
+        horizon,
+        asset_class: line.tier,
+        instrument: line.symbol,
+        amount_usd: line.amount_usd,
+        decided_status: resp.decided_status,
+        decided_at: resp.decided_at,
+        due_date: resp.due_date,
+        user_note: null,
+        proposal_id: null,
+      });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (prior) {
+    return (
+      <Badge
+        variant={prior.decided_status === "accepted" ? "success" : "secondary"}
+        className="text-[11px] whitespace-nowrap"
+      >
+        {prior.decided_status === "accepted"
+          ? `✓ Accepted at ${new Date(prior.decided_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+          : `↻ Deferred${prior.due_date ? ` · due ${prior.due_date}` : ""}`}
+      </Badge>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={busy}
+        onClick={() => submit("accepted")}
+        className="h-7 text-[11px]"
+      >
+        Accept
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        onClick={() => submit("deferred")}
+        className="h-7 text-[11px]"
+      >
+        Defer
+      </Button>
+      {err && <span className="text-rose-400 text-[11px]">{err}</span>}
     </div>
   );
 }
@@ -195,6 +390,7 @@ export function DeployCashCard({
   amount,
   onAmountChange,
   unallocatedUsd,
+  userId,
   live = false,
   onLiveChange,
 }: {
@@ -203,11 +399,50 @@ export function DeployCashCard({
   amount: number;
   onAmountChange: (v: number) => void;
   unallocatedUsd: number;
+  /** User whose allocation_actions back the per-line Accept/Defer. */
+  userId: string;
   /** P2: whether to request live market context. Default false (P1 behavior). */
   live?: boolean;
   /** P2: called when the user toggles the live-market-context checkbox. */
   onLiveChange?: (v: boolean) => void;
 }) {
+  // Prior allocation decisions, keyed by source_ref, so each buy line can
+  // render its Accepted/Deferred pill inline. Shares the "unallocated_cash"
+  // action_source with the UnallocatedCashCard — one ledger, two surfaces.
+  const [decisions, setDecisions] = useState<
+    Map<string, AllocationActionListItem>
+  >(new Map());
+
+  const planAsOf = plan?.as_of ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .proposalAllocationActionsList(userId, { actionSource: "unallocated_cash" })
+      .then((resp) => {
+        if (cancelled) return;
+        const next = new Map<string, AllocationActionListItem>();
+        for (const a of resp.actions) {
+          if (a.source_ref) next.set(a.source_ref, a);
+        }
+        setDecisions(next);
+      })
+      .catch(() => {
+        /* swallow — pills just don't render */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, planAsOf]);
+
+  const onDecided = (sourceRef: string, action: AllocationActionListItem) => {
+    setDecisions((prev) => {
+      const next = new Map(prev);
+      next.set(sourceRef, action);
+      return next;
+    });
+  };
+
   return (
     <section className="rounded-lg border p-4">
       <h2 className="text-lg font-semibold">Deploy Cash</h2>
@@ -259,7 +494,14 @@ export function DeployCashCard({
             <MarketContextStrip ctx={plan.market_context} />
           )}
           {plan.tiers.map((t) => (
-            <TierBlock key={t.name} tier={t} />
+            <TierBlock
+              key={t.name}
+              tier={t}
+              userId={userId}
+              planAsOf={planAsOf}
+              decisions={decisions}
+              onDecided={onDecided}
+            />
           ))}
           <ul className="mt-3 list-disc pl-5 text-xs text-muted-foreground">
             {plan.caveats.map((c, i) => (

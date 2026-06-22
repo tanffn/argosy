@@ -4,6 +4,20 @@ import { describe, expect, it, vi } from "vitest";
 import { DeployCashCard } from "../DeployCashCard";
 import type { DeploymentMarketContextDTO, DeploymentPlanDTO } from "@/lib/api";
 
+// The card prefetches prior allocation decisions on mount to render the
+// inline Accepted/Deferred pills. Stub the list endpoint so these unit tests
+// stay offline; an empty action list means every line shows Accept/Defer.
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      proposalAllocationActionsList: vi.fn().mockResolvedValue({ actions: [] }),
+    },
+  };
+});
+
 const PLAN: DeploymentPlanDTO = {
   deploy_amount_usd: 10000, as_of: "2026-06-12", deployed_total_usd: 10000,
   us_situs_exposed_usd: 0, us_situs_sanctioned_usd: 0, undeployed_remainder_usd: 0,
@@ -71,7 +85,7 @@ const PLAN_WITH_DCA: DeploymentPlanDTO = {
 describe("DeployCashCard", () => {
   it("renders the core tier line with symbol, amount, estate and NEW flag", () => {
     render(<DeployCashCard plan={PLAN} loading={false} amount={10000}
-                           onAmountChange={vi.fn()} unallocatedUsd={50000} />);
+                           onAmountChange={vi.fn()} unallocatedUsd={50000} userId="ariel" />);
     expect(screen.getByText("CSPX")).toBeInTheDocument();
     expect(screen.getByText(/estate.safe/i)).toBeInTheDocument();
     expect(screen.getByText("Core")).toBeInTheDocument();
@@ -79,7 +93,7 @@ describe("DeployCashCard", () => {
 
   it("shows the deploy-amount input prefilled and the caveats", () => {
     render(<DeployCashCard plan={PLAN} loading={false} amount={10000}
-                           onAmountChange={vi.fn()} unallocatedUsd={50000} />);
+                           onAmountChange={vi.fn()} unallocatedUsd={50000} userId="ariel" />);
     expect(screen.getByDisplayValue("10000")).toBeInTheDocument();
     expect(screen.getByText(/net of Israeli CGT/i)).toBeInTheDocument();
   });
@@ -92,6 +106,7 @@ describe("DeployCashCard", () => {
         amount={10000}
         onAmountChange={vi.fn()}
         unallocatedUsd={50000}
+        userId="ariel"
       />
     );
     // Strip is rendered
@@ -115,6 +130,7 @@ describe("DeployCashCard", () => {
         amount={10000}
         onAmountChange={vi.fn()}
         unallocatedUsd={50000}
+        userId="ariel"
       />
     );
     expect(screen.getByTestId("stale-badge")).toBeInTheDocument();
@@ -129,6 +145,7 @@ describe("DeployCashCard", () => {
         amount={20000}
         onAmountChange={vi.fn()}
         unallocatedUsd={50000}
+        userId="ariel"
       />
     );
     expect(screen.getByText("DCA 6wk")).toBeInTheDocument();
@@ -145,6 +162,7 @@ describe("DeployCashCard", () => {
         amount={10000}
         onAmountChange={vi.fn()}
         unallocatedUsd={50000}
+        userId="ariel"
         live={false}
         onLiveChange={onLiveChange}
       />
@@ -160,6 +178,7 @@ describe("DeployCashCard", () => {
         amount={10000}
         onAmountChange={vi.fn()}
         unallocatedUsd={50000}
+        userId="ariel"
       />
     );
     expect(screen.queryByTestId("market-context-strip")).not.toBeInTheDocument();
