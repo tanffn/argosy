@@ -215,3 +215,67 @@ funding decision, and the immutable inputs — no re-run needed.
 
 - Rename `/proposals` → `/actions` (or `/inbox`)? The IA is an inbox now; the
   name still says "proposals". Low effort, but it's a naming/identity call.
+  RESOLVED below.
+
+## Build decision (codex-reviewed, 2026-06-22) — backend-first, route = /inbox
+
+Owner asked to "think with codex what's the best way; if you rewrite, do it
+right." Codex design review (full verdict archived in the session). Decisions:
+
+- **Route name: `/inbox`.** `/proposals` is too narrow, `/actions` too generic;
+  `/inbox` matches the contract ("what needs me now?"). Keep `/proposals` as a
+  client-side legacy shim that replaces to `/inbox` preserving
+  `window.location.search + hash` (fragments never reach the server, so no
+  hash-specific server redirect). Anchors `#deploy-cash` / `#allocation` move to
+  the new page unchanged.
+
+- **The queue lives in the BACKEND. New `GET /api/inbox`.** This is the crux and
+  the one place we DIVERGE from this spec's "clear wins = client reorg first"
+  ordering. Reordering the 1023-line client page first just makes a prettier
+  version of the same problem: the browser deciding what matters. Ranking,
+  dedupe, materiality, shadow suppression, funding eligibility, and "needs user
+  now" are DOMAIN decisions, not presentation. An `InboxService` adapts the
+  canonical sources (trades, action-notes, plan tasks, cash-deploy prompt; later
+  discovery-buys + switches) into ONE typed, server-ranked feed. The UI receives
+  an ordered list and renders it; it may branch on `item.kind` to pick a body
+  component but computes NO membership/rank/materiality/reason.
+
+- **Priority policy = new `argosy/services/inbox/policy.py`** (NOT
+  `decision_funnel/policy.py` — the funnel decides investment action; the inbox
+  decides human attention order across investments/tasks/cash/notes/blockers).
+  Versioned + content-hashed like the funnel policy. Emits per item: bucket,
+  stable sort key, server-computed plain-English `rank_reason`, policy version,
+  source/trace refs.
+
+- **Typed envelope = discriminated union** `InboxItem` with kinds
+  `trade | cash_deploy | plan_task | note | discovery_buy | switch`; shared
+  envelope (title · why_now · rank_reason · primary/secondary semantic actions ·
+  trace refs · source refs · typed body). `InboxAction` is semantic
+  (`intent`/`label`/`style`), never a raw API path. No `T2`/`account_class`/
+  proposal-ids/raw-statuses/"escalate tier" in visible copy.
+
+- **Lowest-regret build order** (codex):
+  1. Types + rank-reason contract + policy tests.
+  2. `InboxService` + `GET /api/inbox` over TODAY's sources (trades, notes, plan
+     tasks, cash detector/deploy).
+  3. Server ranking + dedupe + materiality gating + quiet-state metadata + debug
+     output (dropped/suppressed visible in a debug view).
+  4. `/inbox` UI as a pure projection; demote Audit/Tools/Explore below.
+  5. Preserve existing flows via semantic handlers (approve/reject/defer/dismiss/
+     execute/mark-done/review-cash); current affordances (fills, reasoning trail,
+     consult, rebalance, windfall/allocation context, discovery browse) demote
+     into item expanders / Audit / Tools / Explore — none lost.
+  6. Rename route + legacy `/proposals` shim.
+  7. THEN wire discovery → decision funnel (shadow).
+  8. THEN funding-aware buys + sell-to-fund switch (shadow + trace-first;
+     settlement-date cash, tax lots, friction, NVDA excluded). Money math goes
+     through codex-tandem.
+
+  Steps 1–6 = the shippable "inbox shell" over real sources. Steps 7–8 add new
+  `kind`s into the already-built union; do NOT block the shell on them.
+
+- **Top risks** (codex): funding/switch correctness (settlement+tax-lot+friction
+  — shadow it); duplicate/competing items across sources (need stable source
+  refs + dedupe); shadow-mode leakage (north-star surfacing gate stays
+  server-side); lost current affordances (demote, don't delete); route/hash
+  migration (preserve anchors + client-side hash-safe shim).
