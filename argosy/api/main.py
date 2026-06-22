@@ -553,6 +553,31 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # DecisionFunnelLoop — daily tiered decision funnel. 18:30 IDT, after the
+        # 17:00/18:00 monitors. source_kind='monitor'. Gated by the master kill
+        # switch ARGOSY_DECISION_FUNNEL_ENABLED (default OFF) — the loop is
+        # always REGISTERED (so it's visible/manually-triggerable in /api/jobs)
+        # but no-ops cleanly when disabled; shadow mode + Stage-3 gating are
+        # internal flags. Every run is fully traced (/api/decisions/funnel/runs).
+        try:
+            from argosy.orchestrator.loops.decision_funnel_loop import (  # noqa: PLC0415
+                DecisionFunnelLoop,
+                decision_funnel_metadata,
+            )
+
+            decision_funnel_loop = DecisionFunnelLoop(enabled=True, user_id="ariel")
+            scheduler.register_loop(decision_funnel_loop)
+            registry.register(
+                job=decision_funnel_loop,
+                metadata=decision_funnel_metadata(),
+            )
+            log.info("scheduler.decision_funnel_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.decision_funnel_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # HolisticRebalanceReviewLoop — quarterly whole-portfolio rebalance
         # review. 10:00 IDT on the 1st of Jan/Apr/Jul/Oct, source_kind='monitor'.
         # Deterministic composer; writes a proposed-only 'rebalance' proposal
