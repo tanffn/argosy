@@ -23,7 +23,8 @@ Each position row has 13 cells:
   3. avg_buy_price        decimal
   4. quantity             decimal
   5. last_price           decimal
-  6. holding_value_usd    decimal (the canonical position value)
+  6. holding_value        decimal (the position value; USD until mid-2026,
+                          NIS thereafter — see `holding_value_currency`)
   7. daily_change_pct     decimal (0.0075 = 0.75%)
   8. gain_pct             decimal
   9. gain_usd             decimal
@@ -71,9 +72,24 @@ class LeumiPortfolioPosition:
     avg_buy_price: float | None
     quantity: float
     last_price: float
-    holding_value_usd: float
+    holding_value: float
+    """Holding value as exported, denominated in ``holding_value_currency``.
+    Leumi switched this column from USD ($) to NIS (₪) in mid-2026; the
+    parser records the native value + its currency and leaves the USD
+    conversion to the FX-aware caller (a pure parser has no exchange rate).
+    ``quantity`` is the authoritative input — value is derivable from it."""
+    holding_value_currency: str
+    """'USD' or 'NIS' — which currency ``holding_value`` is in, detected from
+    the column header ('שווי אחזקה ב $' vs 'שווי אחזקה ב ₪')."""
     gain_pct: float | None
     pct_of_portfolio: float | None
+
+    def usd_value(self, fx_usd_nis: float) -> float:
+        """Holding value in USD. Divides by ``fx_usd_nis`` when the export is
+        NIS-denominated; returns the value unchanged when already USD."""
+        if (self.holding_value_currency or "USD").upper() == "NIS":
+            return self.holding_value / max(fx_usd_nis, 0.01)
+        return self.holding_value
 
 
 @dataclass
@@ -85,10 +101,13 @@ class LeumiPortfolioSnapshot:
     securities_count: int
     """Declared count from the meta row. Compare against
     `len(positions)` to spot parse losses."""
-    total_value_usd: float | None
-    """Declared total from the meta row. Compare against
-    `sum(p.holding_value_usd for p in positions)` for the reconciliation
-    check (the two should agree within rounding)."""
+    total_value: float | None
+    """Declared portfolio total from the meta row, in ``total_value_currency``.
+    Compare against `sum(p.holding_value for p in positions)` (same currency)
+    for the reconciliation check (the two should agree within rounding)."""
+    total_value_currency: str
+    """'USD' or 'NIS' — currency of ``total_value`` + every position's
+    ``holding_value`` (Leumi denominates the whole export in one currency)."""
     positions: list[LeumiPortfolioPosition]
     parse_warnings: list[str] = field(default_factory=list)
 
@@ -175,13 +194,26 @@ _HEADER_FIELD_MAP: dict[str, str] = {
     "שער קניה ממוצע":      "avg_buy_price",
     "כמות אחזקה":          "quantity",
     "שער אחרון":           "last_price",
-    "שווי אחזקה ב $":      "holding_value_usd",
-    # Variants observed across exports -- normalize on parse:
-    "שווי אחזקה ב$":       "holding_value_usd",
+    # Holding-value column. Leumi switched this from USD ($) to NIS (₪) in
+    # mid-2026; both header forms (with/without the space before the symbol)
+    # map to the same field. The CURRENCY is detected separately from the
+    # matched header text ($ vs ₪) — see `_detect_value_currency`.
+    "שווי אחזקה ב $":      "holding_value",
+    "שווי אחזקה ב$":       "holding_value",
+    "שווי אחזקה ב ₪":      "holding_value",
+    "שווי אחזקה ב₪":       "holding_value",
     "רווח ב-%":            "gain_pct",
     "%  מהתיק":            "pct_of_portfolio",
     "% מהתיק":             "pct_of_portfolio",
 }
+
+
+def _detect_currency_from_label(label: str) -> str:
+    """Return 'NIS' if a money-column header/label carries the ₪ sign, else
+    'USD' (the historical default). Leumi flipped the portfolio export's
+    denomination from $ to ₪ in mid-2026; the sign in the header is the
+    authoritative signal."""
+    return "NIS" if "₪" in (label or "") else "USD"
 
 # Meta-row labels we extract values from.
 _META_DATE = "תאריך:"          # date row label
@@ -240,29 +272,36 @@ def _extract_ticker(name_he: str) -> str | None:
 
 def _build_column_map(
     header_cells: list[str], warnings: list[str],
-) -> dict[str, int]:
-    """Map field-name -> column index, by matching Hebrew header text.
+) -> tuple[dict[str, int], str]:
+    """Map field-name -> column index, by matching Hebrew header text, and
+    detect the holding-value currency from its header ($ vs ₪).
 
     Codex zigzag finding #2 (2026-05-29). Unknown headers are
     skipped silently (they may be new Leumi columns we don't care
     about); REQUIRED fields missing from the export produce a
     warning + the parser returns partial positions.
+
+    Returns ``(field_to_idx, value_currency)`` where ``value_currency`` is
+    'USD' or 'NIS' (defaults to 'USD' when the holding-value column is absent).
     """
     field_to_idx: dict[str, int] = {}
+    value_currency = "USD"
     for i, header in enumerate(header_cells):
         normalized = header.strip()
         field = _HEADER_FIELD_MAP.get(normalized)
         if field is not None and field not in field_to_idx:
             field_to_idx[field] = i
+            if field == "holding_value":
+                value_currency = _detect_currency_from_label(normalized)
     required = ("security_id", "name_he", "quantity", "last_price",
-                "holding_value_usd")
+                "holding_value")
     for r in required:
         if r not in field_to_idx:
             warnings.append(
                 f"required column {r!r} not found in header row; "
                 "Leumi may have renamed it -- check _HEADER_FIELD_MAP"
             )
-    return field_to_idx
+    return field_to_idx, value_currency
 
 
 def _maybe_normalize_pct(
@@ -295,7 +334,8 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
     snapshot_date: date | None = None
     portfolio_number: str | None = None
     securities_count = 0
-    total_value_usd: float | None = None
+    total_value: float | None = None
+    total_value_currency = "USD"
 
     if len(rows) > 1 and len(rows[1]) >= 2 and rows[1][0] == _META_DATE:
         try:
@@ -315,7 +355,11 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
                 f"meta-row 2: non-integer securities count {rows[2][1]!r}"
             )
         if len(rows[2]) >= 4:
-            total_value_usd = _safe_float(rows[2][3])
+            total_value = _safe_float(rows[2][3])
+            # The total's currency is carried in its own label cell
+            # ("שווי תיק עדכני ב$" vs "…ב₪"); detect it the same way as the
+            # per-position column so meta + positions stay on one basis.
+            total_value_currency = _detect_currency_from_label(rows[2][2])
 
     # ---- Find the position-table header row + build column map ----------
     header_idx: int | None = None
@@ -333,12 +377,17 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
             snapshot_date=snapshot_date,
             portfolio_number=portfolio_number,
             securities_count=securities_count,
-            total_value_usd=total_value_usd,
+            total_value=total_value,
+            total_value_currency=total_value_currency,
             positions=[],
             parse_warnings=warnings,
         )
 
-    col_idx = _build_column_map(rows[header_idx], warnings)
+    col_idx, value_currency = _build_column_map(rows[header_idx], warnings)
+    # The per-position holding-value column header is the authoritative
+    # currency signal; the meta-total label should agree, but if Leumi ever
+    # disagrees the position column wins (it's what every row carries).
+    total_value_currency = value_currency
 
     def cell(row: list[str], field: str) -> str | None:
         """Look up a row's cell by field-name (via the header map).
@@ -372,19 +421,19 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
         avg_buy_price = _safe_float(cell(row, "avg_buy_price"))
         quantity = _safe_float(cell(row, "quantity"))
         last_price = _safe_float(cell(row, "last_price"))
-        holding_value_usd = _safe_float(cell(row, "holding_value_usd"))
+        holding_value = _safe_float(cell(row, "holding_value"))
         gain_pct = _safe_float(cell(row, "gain_pct"))
         pct_of_portfolio = _maybe_normalize_pct(
             _safe_float(cell(row, "pct_of_portfolio")),
             warnings, context=f"row {i} (security_id={sec})",
         )
 
-        # Required fields: quantity, last_price, holding_value_usd.
-        if quantity is None or last_price is None or holding_value_usd is None:
+        # Required fields: quantity, last_price, holding_value.
+        if quantity is None or last_price is None or holding_value is None:
             warnings.append(
                 f"row {i} (security_id={sec}): missing required numeric field "
                 f"(quantity={quantity!r}, last_price={last_price!r}, "
-                f"holding_value_usd={holding_value_usd!r}); row skipped"
+                f"holding_value={holding_value!r}); row skipped"
             )
             continue
 
@@ -395,7 +444,8 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
             avg_buy_price=avg_buy_price,
             quantity=quantity,
             last_price=last_price,
-            holding_value_usd=holding_value_usd,
+            holding_value=holding_value,
+            holding_value_currency=value_currency,
             gain_pct=gain_pct,
             pct_of_portfolio=pct_of_portfolio,
         ))
@@ -404,7 +454,8 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
         snapshot_date=snapshot_date,
         portfolio_number=portfolio_number,
         securities_count=securities_count,
-        total_value_usd=total_value_usd,
+        total_value=total_value,
+        total_value_currency=total_value_currency,
         positions=positions,
         parse_warnings=warnings,
     )

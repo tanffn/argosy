@@ -32,6 +32,9 @@ from argosy.services.contracts import (
     deployment_plan_to_dto,
     task_to_dto,
 )
+from argosy.services.portfolio_ingest.snapshot_change import (
+    run_windfall_detection_on_snapshot,
+)
 from argosy.services.portfolio_snapshot_store import (
     get_latest_snapshot_row,
     row_to_snapshot,
@@ -557,90 +560,17 @@ def upload_snapshot(
                 user_id=user_id, error=str(exc),
             )
 
-        # Synchronous windfall detection. Codex zigzag flagged the
-        # failure contract: TSV persist succeeds even when the
-        # detector fails; we report the outcome independently.
-        event_payload: dict | None = None
-        plan_payload: dict | None = None
-        detect_status = "skipped"
-        if fire_detector:
-            try:
-                from argosy.services.retirement.windfall_allocator import (
-                    propose_allocations,
-                )
-                from argosy.services.retirement.windfall_detector import (
-                    DEFAULT_THRESHOLD_NIS, DEFAULT_THRESHOLD_USD, detect_windfall,
-                )
-
-                # Find a previous TSV to diff against -- the most-recent
-                # other TSV under the scan root that isn't this one.
-                prev_candidates = sorted(
-                    (p for p in target_root.glob("Family Finances Status*.tsv")
-                     if p.resolve() != target_path.resolve()),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                prev = prev_candidates[0] if prev_candidates else None
-                if prev is None:
-                    detect_status = "skipped"
-                else:
-                    event = detect_windfall(
-                        target_path, prev,
-                        threshold_usd=DEFAULT_THRESHOLD_USD,
-                        threshold_nis=DEFAULT_THRESHOLD_NIS,
-                    )
-                    detect_status = "ok"
-                    if event is not None:
-                        doc, holdings = _windfall_doc_and_holdings(db, user_id)
-                        event_payload = {
-                            "detected_at": event.detected_at.isoformat(),
-                            "cash_delta_usd": event.cash_delta_usd,
-                            "cash_delta_nis": event.cash_delta_nis,
-                            "cash_delta_total_usd_equiv": event.cash_delta_total_usd_equiv,
-                            "fx_usd_nis": event.fx_usd_nis,
-                            "classified_source": event.classified_source,
-                            "requires_user_classification": event.requires_user_classification,
-                            "matching_sales": [
-                                {
-                                    "symbol": s.symbol,
-                                    "shares_sold": s.shares_sold,
-                                    "current_price": s.current_price,
-                                    "value_usd": round(s.value_usd, 2),
-                                }
-                                for s in event.matching_sales
-                            ],
-                            "allocation_delta_table": [
-                                {
-                                    "asset_class": l.asset_class,
-                                    "current_pct": l.current_pct,
-                                    "current_k_usd": l.current_k_usd,
-                                    "target_pct": l.target_pct,
-                                    "target_k_usd": l.target_k_usd,
-                                    "delta_k_usd": l.delta_k_usd,
-                                }
-                                for l in event.allocation_delta_table
-                            ],
-                            "source_tsv": Path(event.source_tsv).name,
-                            "previous_tsv": (
-                                Path(event.previous_tsv).name
-                                if event.previous_tsv else None
-                            ),
-                        }
-                        # Plan-bound buy list from the canonical doc (same engine
-                        # /deploy-cash uses). With no accepted plan, surface the
-                        # event but no buy list — never a hardcoded fallback.
-                        if doc is not None:
-                            from datetime import date as _date
-                            plan = propose_allocations(
-                                event, doc=doc, holdings=holdings,
-                                as_of=_date.today())
-                            plan_payload = plan.to_dict()
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "portfolio_snapshot.detector_failed",
-                    user_id=user_id, error=str(exc),
-                )
-                detect_status = "failed"
+        # Synchronous windfall detection via the shared snapshot-change detector
+        # (identical routine the Leumi Osh-arrival resolution path uses, so a
+        # snapshot triggers detection no matter which path produced it). Codex
+        # zigzag failure contract: TSV persist succeeds even when the detector
+        # fails; the detector reports 'failed' independently and never raises.
+        _det = run_windfall_detection_on_snapshot(
+            db, user_id=user_id, target_path=target_path, fire=fire_detector,
+        )
+        event_payload, plan_payload, detect_status = (
+            _det.event, _det.plan, _det.detect_status,
+        )
 
         return UploadSnapshotResponse(
             tsv_persisted=True,
@@ -736,50 +666,14 @@ def _handle_xls_branch(
             pending_pair_id=resolution.pending_pair_id,
         )
 
-    # Resolved -- fire the detector against the freshly synthesized TSV.
-    event_payload: dict | None = None
-    plan_payload: dict | None = None
-    detect_status = "skipped"
+    # Resolved -- fire the shared snapshot-change detector against the freshly
+    # synthesized TSV (the SAME routine the Osh-arrival path uses, so detection
+    # is identical regardless of which path produced the snapshot).
     target_path = resolution.resolved_tsv_path
-
-    if fire_detector and target_path is not None:
-        try:
-            from argosy.services.retirement.windfall_allocator import (
-                propose_allocations,
-            )
-            from argosy.services.retirement.windfall_detector import (
-                DEFAULT_THRESHOLD_NIS, DEFAULT_THRESHOLD_USD, detect_windfall,
-            )
-            prev_candidates = sorted(
-                (p for p in target_path.parent.glob("Family Finances Status*.tsv")
-                 if p.resolve() != target_path.resolve()),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            prev = prev_candidates[0] if prev_candidates else None
-            if prev is None:
-                detect_status = "skipped"
-            else:
-                event = detect_windfall(
-                    target_path, prev,
-                    threshold_usd=DEFAULT_THRESHOLD_USD,
-                    threshold_nis=DEFAULT_THRESHOLD_NIS,
-                )
-                detect_status = "ok"
-                if event is not None:
-                    event_payload = _event_to_dict(event)
-                    doc, holdings = _windfall_doc_and_holdings(db, user_id)
-                    if doc is not None:
-                        from datetime import date as _date
-                        plan = propose_allocations(
-                            event, doc=doc, holdings=holdings, as_of=_date.today())
-                        plan_payload = plan.to_dict()
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "portfolio_snapshot.xls_detector_failed",
-                user_id=user_id, error=str(exc),
-            )
-            detect_status = "failed"
+    _det = run_windfall_detection_on_snapshot(
+        db, user_id=user_id, target_path=target_path, fire=fire_detector,
+    )
+    event_payload, plan_payload, detect_status = _det.event, _det.plan, _det.detect_status
 
     return UploadSnapshotResponse(
         tsv_persisted=True,
@@ -795,61 +689,6 @@ def _handle_xls_branch(
         sha256=sha,
         pending_pair_id=resolution.pending_pair_id,
     )
-
-
-def _windfall_doc_and_holdings(db: Session, user_id: str):
-    """(canonical TargetAllocationDoc | None, holdings_by_symbol) for the windfall
-    long-term buy list, via the SAME accessors /deploy-cash uses. ``doc is None``
-    means no plan is accepted — the caller must skip the buy list (no hardcoded
-    fallback) rather than invent instruments."""
-    from argosy.services.allocation_engine import tradeable_holdings
-    from argosy.services.target_allocation_doc import load_plan_target_allocation
-    from argosy.state.queries import get_current_plan
-
-    pv = get_current_plan(db, user_id)
-    doc = load_plan_target_allocation(pv) if pv is not None else None
-    row = get_latest_snapshot_row(db, user_id=user_id)
-    holdings, _cash = tradeable_holdings(row_to_snapshot(row)) if row else ({}, 0.0)
-    return doc, holdings
-
-
-def _event_to_dict(event) -> dict:
-    """Project a WindfallEvent into the JSON payload shape used by the
-    response model + the existing /retirement/windfall/detect route."""
-    return {
-        "detected_at": event.detected_at.isoformat(),
-        "cash_delta_usd": event.cash_delta_usd,
-        "cash_delta_nis": event.cash_delta_nis,
-        "cash_delta_total_usd_equiv": event.cash_delta_total_usd_equiv,
-        "fx_usd_nis": event.fx_usd_nis,
-        "classified_source": event.classified_source,
-        "requires_user_classification": event.requires_user_classification,
-        "matching_sales": [
-            {
-                "symbol": s.symbol,
-                "shares_sold": s.shares_sold,
-                "current_price": s.current_price,
-                "value_usd": round(s.value_usd, 2),
-            }
-            for s in event.matching_sales
-        ],
-        "allocation_delta_table": [
-            {
-                "asset_class": l.asset_class,
-                "current_pct": l.current_pct,
-                "current_k_usd": l.current_k_usd,
-                "target_pct": l.target_pct,
-                "target_k_usd": l.target_k_usd,
-                "delta_k_usd": l.delta_k_usd,
-            }
-            for l in event.allocation_delta_table
-        ],
-        "source_tsv": Path(event.source_tsv).name,
-        "previous_tsv": (
-            Path(event.previous_tsv).name
-            if event.previous_tsv else None
-        ),
-    }
 
 
 class GenerateTsvResponse(BaseModel):

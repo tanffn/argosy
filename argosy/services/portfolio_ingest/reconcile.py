@@ -28,6 +28,7 @@ def reconcile_leumi_against_xls(
     xls_positions: list,
     osh_closing_nis: float | None,
     usd_closing: float | None,
+    fx_usd_nis: float,
 ) -> list[str]:
     """Return a list of discrepancy strings (empty == clean) between the
     ingested snapshot's Leumi section and the raw Leumi sources.
@@ -35,7 +36,10 @@ def reconcile_leumi_against_xls(
     ``snapshot_positions`` are the parsed snapshot positions (objects with
     .location/.currency/.asset_type/.symbol/.shares/.usd_value_k). ``xls_positions``
     are LeumiPortfolioPosition objects (.security_id/.ticker/.name_he/.quantity/
-    .holding_value_usd). Cash balances are the authoritative closing balances.
+    .holding_value/.holding_value_currency). The XLS holding value is converted
+    to USD at ``fx_usd_nis`` (Leumi exports NIS-denominated values since
+    mid-2026) before comparison. Cash balances are the authoritative closing
+    balances.
     """
     issues: list[str] = []
 
@@ -62,7 +66,14 @@ def reconcile_leumi_against_xls(
         snap_by_qty.setdefault(float(getattr(p, "shares", 0) or 0), []).append(p)
     for xp in xls_positions:
         qty = float(getattr(xp, "quantity", 0) or 0)
-        want_k = float(getattr(xp, "holding_value_usd", 0) or 0) / 1000.0
+        # Convert the XLS holding value to USD (NIS-denominated since mid-2026).
+        if hasattr(xp, "usd_value"):
+            want_usd = float(xp.usd_value(fx_usd_nis) or 0)
+        else:  # pragma: no cover - defensive for legacy/plain objects
+            raw = float(getattr(xp, "holding_value", 0) or 0)
+            ccy = (getattr(xp, "holding_value_currency", "USD") or "USD").upper()
+            want_usd = raw / max(fx_usd_nis, 0.01) if ccy == "NIS" else raw
+        want_k = want_usd / 1000.0
         cands = snap_by_qty.get(qty, [])
         match = next(
             (p for p in cands

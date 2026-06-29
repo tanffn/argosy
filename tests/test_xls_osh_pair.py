@@ -178,9 +178,45 @@ def _seed_leumi_osh(
 class TestPendingPair:
     """XLS uploads without a matching Osh statement -> pending_pair."""
 
-    def test_xls_only_upload_queues_as_pending(
+    def test_xls_only_upload_carries_forward_nis_cash(
         self, client_with_db, snapshot_root,
     ):
+        """With a prior snapshot present, an XLS-only upload (no Osh in window)
+        RESOLVES by carrying the prior NIS cash forward — a positions update
+        is not blocked on the user also exporting a current-account statement.
+        The carry-forward is labelled and leaves paired_osh_statement_id NULL
+        so a later Osh can still refresh it."""
+        _seed_user(client_with_db.app.state.session_factory)
+        xls_bytes = FIXTURE_XLS.read_bytes()
+        resp = client_with_db.post(
+            "/api/portfolio/upload-snapshot",
+            data={"user_id": "ariel", "fire_detector": "false"},
+            files={"file": ("Leumi_26_May.xls", xls_bytes, "application/vnd.ms-excel")},
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["detect_status"] in ("ok", "skipped")
+        assert payload["tsv_persisted"] is True
+        # The DB row is resolved-via-carry-forward (no Osh paired).
+        sess = client_with_db.app.state.session_factory()
+        try:
+            row = sess.get(PortfolioSnapshotPart, payload["pending_pair_id"])
+            assert row is not None
+            assert row.status == "resolved"
+            assert row.kind == "xls_positions"
+            assert row.snapshot_date == date(2026, 5, 1)
+            assert row.paired_osh_statement_id is None
+        finally:
+            sess.close()
+
+    def test_xls_only_no_prior_tsv_queues_as_pending(
+        self, client_with_db, snapshot_root,
+    ):
+        """Brand-new user with no prior snapshot to carry NIS cash from: the
+        upload still queues as pending (nothing to carry forward)."""
+        # Remove the seeded prior TSV so there is nothing to carry forward.
+        for tsv in snapshot_root.glob("Family Finances Status*.tsv"):
+            tsv.unlink()
         _seed_user(client_with_db.app.state.session_factory)
         xls_bytes = FIXTURE_XLS.read_bytes()
         resp = client_with_db.post(
@@ -193,14 +229,11 @@ class TestPendingPair:
         assert payload["detect_status"] == "pending_pair"
         assert payload["tsv_persisted"] is False
         assert payload["pending_pair_id"] is not None
-        # The DB row reflects the queue state.
         sess = client_with_db.app.state.session_factory()
         try:
             row = sess.get(PortfolioSnapshotPart, payload["pending_pair_id"])
             assert row is not None
             assert row.status == "pending"
-            assert row.kind == "xls_positions"
-            assert row.snapshot_date == date(2026, 5, 1)
             assert row.paired_osh_statement_id is None
         finally:
             sess.close()
@@ -292,7 +325,10 @@ class TestOshHookResolvesPending:
             data={"user_id": "ariel"},
             files={"file": ("a.xls", xls_bytes, "application/vnd.ms-excel")},
         )
-        assert r1.json()["detect_status"] == "pending_pair"
+        # XLS-only with a prior snapshot present → resolves via carry-forward
+        # (no Osh yet, so paired_osh_statement_id is NULL). The Osh arriving
+        # below must then REFRESH that carry-forward part.
+        assert r1.json()["detect_status"] in ("ok", "skipped")
         pending_id = r1.json()["pending_pair_id"]
 
         # Now seed an Osh statement and fire the hook explicitly.
@@ -348,7 +384,9 @@ class TestOshHookResolvesPending:
             data={"user_id": "ariel"},
             files={"file": ("a.xls", xls_bytes, "application/vnd.ms-excel")},
         )
-        assert r1.json()["detect_status"] == "pending_pair"
+        # Carry-forward resolves immediately; the Osh-arrival hook then
+        # refreshes it and re-writes the snapshot through to the store.
+        assert r1.json()["detect_status"] in ("ok", "skipped")
         xls_date = r1.json()["snapshot_date"]  # the parsed XLS snapshot_date
 
         stmt_id = _seed_leumi_osh(
@@ -382,6 +420,46 @@ class TestOshHookResolvesPending:
             "/api/portfolio/snapshot?user_id=ariel"
         ).json()
         assert snap["snapshot_date"] == xls_date
+
+
+class TestSnapshotChangeDetector:
+    """Windfall detection is a property of a snapshot UPDATE, not of the upload
+    HTTP route — so the shared detector must run from any path. These lock the
+    skip-paths + the no-raise contract; the route + Osh-arrival paths exercise
+    the detect-and-propose path end to end."""
+
+    def test_skips_when_no_prior_tsv(self, client_with_db, tmp_path):
+        from argosy.services.portfolio_ingest.snapshot_change import (
+            run_windfall_detection_on_snapshot,
+        )
+        target = tmp_path / "Family Finances Status - 26 Jun.tsv"
+        target.write_text(_minimal_prior_tsv(snapshot_date="29-Jun-26"),
+                          encoding="utf-8")
+        sess = client_with_db.app.state.session_factory()
+        try:
+            res = run_windfall_detection_on_snapshot(
+                sess, user_id="ariel", target_path=target,
+            )
+        finally:
+            sess.close()
+        # Only one TSV at the root → nothing to diff against → skipped, no raise.
+        assert res.detect_status == "skipped"
+        assert res.event is None
+
+    def test_fire_false_short_circuits(self, client_with_db, tmp_path):
+        from argosy.services.portfolio_ingest.snapshot_change import (
+            run_windfall_detection_on_snapshot,
+        )
+        target = tmp_path / "Family Finances Status - 26 Jun.tsv"
+        target.write_text(_minimal_prior_tsv(), encoding="utf-8")
+        sess = client_with_db.app.state.session_factory()
+        try:
+            res = run_windfall_detection_on_snapshot(
+                sess, user_id="ariel", target_path=target, fire=False,
+            )
+        finally:
+            sess.close()
+        assert res.detect_status == "skipped"
 
 
 class TestSplice:
@@ -586,13 +664,22 @@ class TestOshUsdDisambiguation:
             data={"user_id": "ariel"},
             files={"file": ("a.xls", FIXTURE_XLS.read_bytes(), "application/vnd.ms-excel")},
         )
-        # Because the matcher requires parser_name="leumi_osh", a Leumi
-        # USD statement in window does NOT trigger immediate resolution.
-        assert resp.json()["detect_status"] == "pending_pair", (
-            "Leumi USD statement was incorrectly treated as Osh; this "
-            "would feed a USD-denominated balance through the NIS-divide "
-            "and produce cash off by ~3.7x."
-        )
+        # Because the matcher requires parser_name="leumi_osh", the Leumi USD
+        # statement is NOT treated as an Osh: no Osh is paired. The upload
+        # still resolves (carrying prior NIS cash forward), but crucially
+        # paired_osh_statement_id stays NULL — the USD balance was never fed
+        # through the NIS-divide (which would be off by ~3.7x).
+        payload = resp.json()
+        assert payload["detect_status"] in ("ok", "skipped")
+        sess = client_with_db.app.state.session_factory()
+        try:
+            row = sess.get(PortfolioSnapshotPart, payload["pending_pair_id"])
+            assert row is not None
+            assert row.paired_osh_statement_id is None, (
+                "Leumi USD statement was incorrectly treated as Osh"
+            )
+        finally:
+            sess.close()
 
 
 class TestAssetTypeCarryForward:
