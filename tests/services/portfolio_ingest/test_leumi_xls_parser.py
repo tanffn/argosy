@@ -71,8 +71,8 @@ class TestMetaRows:
 
     def test_total_value_extracted(self):
         # Meta row carries "שווי תיק עדכני ב$ : 1,196,253.40"
-        assert self.snap.total_value_usd is not None
-        assert 1_196_000 < self.snap.total_value_usd < 1_197_000
+        assert self.snap.total_value is not None
+        assert 1_196_000 < self.snap.total_value < 1_197_000
 
 
 class TestPositions:
@@ -82,8 +82,8 @@ class TestPositions:
     def test_total_value_reconciles_within_rounding(self):
         # Sum of holding_value_usd across all positions should match the
         # declared total within a few dollars (rounding on the per-row).
-        parsed_total = sum(p.holding_value_usd for p in self.snap.positions)
-        declared = self.snap.total_value_usd or 0
+        parsed_total = sum(p.holding_value for p in self.snap.positions)
+        declared = self.snap.total_value or 0
         # The declared total in the meta INCLUDES the event row's $60.86; the
         # position rows don't carry that, so we expect a small positive gap.
         gap = declared - parsed_total
@@ -114,7 +114,7 @@ class TestPositions:
         for p in israeli:
             # All Israeli positions still have a security_id + name + value.
             assert p.security_id
-            assert p.holding_value_usd > 0
+            assert p.holding_value > 0
 
     def test_pct_of_portfolio_sums_to_about_100(self):
         total_pct = sum(
@@ -151,11 +151,16 @@ class TestParseWarnings:
         assert any("header row not found" in w for w in snap.parse_warnings)
 
 
-def _minimal_xls(*, headers: list[str], data_rows: list[list[str]]) -> str:
+def _minimal_xls(
+    *, headers: list[str], data_rows: list[list[str]],
+    total_currency: str = "USD",
+) -> str:
     """Build a minimal Leumi-shaped SpreadsheetML for tests.
 
     Includes the required preamble + Hebrew title + meta rows so the
-    sniffer + header-row finder land on the right rows.
+    sniffer + header-row finder land on the right rows. ``total_currency``
+    selects the meta-total label ($ vs ₪) so NIS-format exports can be
+    exercised.
     """
     def row(cells: list[str]) -> str:
         return "<Row>" + "".join(
@@ -165,7 +170,10 @@ def _minimal_xls(*, headers: list[str], data_rows: list[list[str]]) -> str:
     title = "מבט אישי - האחזקות שלי"  # מבט אישי - האחזקות שלי
     date_label = "תאריך:"  # תאריך:
     portfolio_label = "תיק:"  # תיק:
-    total_value_label = "שווי תיק עדכני ב$"  # שווי תיק עדכני ב$
+    total_value_label = (
+        "שווי תיק עדכני ב₪" if total_currency == "NIS"
+        else "שווי תיק עדכני ב$"
+    )
     return (
         "<?xml version='1.0'?>"
         "<Workbook xmlns:ss='urn:schemas-microsoft-com:office:spreadsheet'>"
@@ -234,7 +242,7 @@ class TestColumnOrderTolerance:
         assert p.quantity == 50.0
         assert p.avg_buy_price == 100.0
         assert p.last_price == 200.0
-        assert p.holding_value_usd == 10000.0
+        assert p.holding_value == 10000.0
 
     def test_extra_column_inserted_does_not_misassign(self):
         # Insert a fake column between 'name' and 'avg_buy_price'
@@ -249,7 +257,7 @@ class TestColumnOrderTolerance:
         p = snap.positions[0]
         assert p.quantity == 10.0
         assert p.avg_buy_price == 100.0
-        assert p.holding_value_usd == 2000.0
+        assert p.holding_value == 2000.0
 
 
 # ─── Codex zigzag finding #3: ss:Index sparse-cell handling ─────────────
@@ -325,3 +333,88 @@ class TestPctScaleNormalization:
         p = snap.positions[0]
         assert p.pct_of_portfolio == 0.255
         assert not any("scaled 0..100" in w for w in snap.parse_warnings)
+
+
+# ─── Mid-2026 format change: holding value flipped from USD ($) to NIS (₪) ──
+
+FIXTURE_JUN_2026_NIS = FIXTURE_DIR / "Leumi_26_Jun_29_NIS.xls"
+
+
+class TestNisFormatRealFixture:
+    """Leumi flipped the portfolio export from USD-denominated to NIS-
+    denominated values in mid-2026 (column header 'שווי אחזקה ב ₪', meta
+    'שווי תיק עדכני ב₪'). The parser must recognise the new currency,
+    parse every position (NOT skip them as 'missing required field'), and
+    flag the value currency so the FX-aware caller can convert to USD."""
+
+    def setup_method(self):
+        self.snap = parse_leumi_portfolio_xls_path(FIXTURE_JUN_2026_NIS)
+
+    def test_snapshot_date(self):
+        assert self.snap.snapshot_date == date(2026, 6, 29)
+
+    def test_value_currency_detected_as_nis(self):
+        assert self.snap.total_value_currency == "NIS"
+        assert all(p.holding_value_currency == "NIS" for p in self.snap.positions)
+
+    def test_all_positions_parsed_not_skipped(self):
+        # The bug this guards: the old parser skipped EVERY row because the
+        # USD column header no longer matched, leaving an empty snapshot that
+        # would have looked like the whole Leumi book was liquidated.
+        assert self.snap.securities_count == 31
+        assert len(self.snap.positions) == 31
+        assert not any(
+            "missing required numeric field" in w for w in self.snap.parse_warnings
+        )
+        assert not any(
+            "not found in header row" in w for w in self.snap.parse_warnings
+        )
+
+    def test_total_value_is_nis_magnitude(self):
+        # ₪4.34M (≈ $1.27M), NOT a phantom $4.34M.
+        assert self.snap.total_value is not None
+        assert 4_300_000 < self.snap.total_value < 4_400_000
+
+    def test_usd_value_converts_at_fx(self):
+        # ATF ת"א-200: 80,000 units, holding_value ₪118,024. At FX 2.944 the
+        # USD value is ₪118,024 / 2.944 ≈ $40,089.
+        atf = next(p for p in self.snap.positions if p.security_id == "5139951")
+        assert atf.holding_value == pytest.approx(118024.0, abs=1.0)
+        assert atf.holding_value_currency == "NIS"
+        assert atf.usd_value(2.944) == pytest.approx(118024.0 / 2.944, rel=1e-6)
+
+    def test_quantity_is_authoritative_and_exact(self):
+        # Quantity is the canonical input; it must round-trip exactly.
+        atf = next(p for p in self.snap.positions if p.security_id == "5139951")
+        assert atf.quantity == 80000.0
+
+
+class TestNisFormatMinimal:
+    """Deterministic unit coverage of the $ vs ₪ branch + the conversion."""
+
+    _HEADERS_NIS = ["מספר נייר", "שם הנייר", "אירועים", "שער קניה ממוצע",
+                    "כמות אחזקה", "שער אחרון", "שווי אחזקה ב ₪"]
+    _HEADERS_USD = ["מספר נייר", "שם הנייר", "אירועים", "שער קניה ממוצע",
+                    "כמות אחזקה", "שער אחרון", "שווי אחזקה ב $"]
+
+    def test_nis_header_parses_and_flags_currency(self):
+        row = ["60001234", "(test) X", "", "100", "10", "200", "3700"]
+        xls = _minimal_xls(headers=self._HEADERS_NIS, data_rows=[row],
+                           total_currency="NIS")
+        snap = parse_leumi_portfolio_xls(xls)
+        assert snap.parse_warnings == []
+        p = snap.positions[0]
+        assert p.holding_value == 3700.0
+        assert p.holding_value_currency == "NIS"
+        # ₪3700 at FX 3.7 == $1000.
+        assert p.usd_value(3.7) == pytest.approx(1000.0)
+
+    def test_usd_header_stays_usd_and_unconverted(self):
+        row = ["60001234", "(test) X", "", "100", "10", "200", "2000"]
+        xls = _minimal_xls(headers=self._HEADERS_USD, data_rows=[row])
+        snap = parse_leumi_portfolio_xls(xls)
+        p = snap.positions[0]
+        assert p.holding_value == 2000.0
+        assert p.holding_value_currency == "USD"
+        # Already USD: FX must NOT be applied.
+        assert p.usd_value(3.7) == 2000.0

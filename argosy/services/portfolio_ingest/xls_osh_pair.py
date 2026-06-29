@@ -52,7 +52,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -177,29 +177,46 @@ def handle_xls_upload(
 
     payload_json = json.dumps(_serialize_xls(xls))
 
-    if osh is None:
-        # Queue as pending. The Osh-side hook will pick it up later.
-        part = _add_part_with_race_recovery(
-            db, user_id=user_id, snapshot_date=xls.snapshot_date,
-            portfolio_number=xls.portfolio_number, payload_json=payload_json,
-            sha=sha, status="pending",
-        )
-        return PairResolution(
-            status="pending_pair",
-            pending_pair_id=part.id,
-            resolved_tsv_path=None,
-            snapshot_date=xls.snapshot_date,
-            sha256=sha,
-            detail=(
-                "XLS parsed and queued. Upload a matching Leumi Osh "
-                "statement via /expenses to complete this month's snapshot."
-            ),
-            parse_warnings=xls.parse_warnings,
-        )
+    # Carry-forward warnings appended to the resolution when the NIS cash
+    # comes from a prior snapshot rather than a fresh Osh in window.
+    carry_forward_warnings: list[str] = []
 
-    # Pair found -- assemble immediately.
-    osh_closing_nis = _get_osh_closing_balance_nis(db, statement_id=osh.id)
-    if osh_closing_nis is None:
+    if osh is None:
+        # No NIS Osh in window. Rather than block a positions update on a cash
+        # statement the user may not have, carry the prior snapshot's NIS cash
+        # forward (clearly labelled). A later Osh upload re-resolves the pair
+        # via the Osh-arrival hook. Brand-new users (no prior TSV) still queue.
+        carried_nis, carried_from = _prior_leumi_nis_cash(snapshot_root)
+        if carried_nis is None:
+            part = _add_part_with_race_recovery(
+                db, user_id=user_id, snapshot_date=xls.snapshot_date,
+                portfolio_number=xls.portfolio_number, payload_json=payload_json,
+                sha=sha, status="pending",
+            )
+            return PairResolution(
+                status="pending_pair",
+                pending_pair_id=part.id,
+                resolved_tsv_path=None,
+                snapshot_date=xls.snapshot_date,
+                sha256=sha,
+                detail=(
+                    "XLS parsed and queued. No prior snapshot to carry NIS cash "
+                    "from; upload a matching Leumi Osh statement via /expenses "
+                    "to complete this month's snapshot."
+                ),
+                parse_warnings=xls.parse_warnings,
+            )
+        osh_closing_nis = carried_nis
+        carry_forward_warnings.append(
+            f"Leumi NIS cash carried forward (₪{carried_nis:,.0f}) from the "
+            f"{carried_from.isoformat() if carried_from else 'prior'} snapshot — "
+            f"no Leumi Osh (עו\"ש) statement within {MATCH_WINDOW_DAYS}d of "
+            f"{xls.snapshot_date}. Upload a current Osh to refresh the NIS cash."
+        )
+    else:
+        # Pair found -- assemble immediately.
+        osh_closing_nis = _get_osh_closing_balance_nis(db, statement_id=osh.id)
+    if osh is not None and osh_closing_nis is None:
         # Osh statement has no parsed transactions -> can't extract balance.
         # Treat as pending so the user can re-ingest the Osh.
         part = _add_part_with_race_recovery(
@@ -253,7 +270,7 @@ def handle_xls_upload(
         snapshot_root=snapshot_root,
         usd_closing=usd_closing,
     )
-    synth_warnings = synth_warnings + usd_warnings
+    synth_warnings = synth_warnings + usd_warnings + carry_forward_warnings
     target_name = _canonical_tsv_filename(
         xls.snapshot_date,
     )
@@ -263,7 +280,8 @@ def handle_xls_upload(
         db, user_id=user_id, snapshot_date=xls.snapshot_date,
         portfolio_number=xls.portfolio_number, payload_json=payload_json,
         sha=sha, status="resolved",
-        paired_osh_statement_id=osh.id, paired_at=_utcnow(),
+        paired_osh_statement_id=(osh.id if osh is not None else None),
+        paired_at=_utcnow(),
         resolved_tsv_path=str(target_path),
     )
 
@@ -291,11 +309,13 @@ def handle_xls_upload(
     # currency or a symbol collision before it reaches the surfaces.
     from argosy.services.portfolio_ingest.reconcile import reconcile_leumi_against_xls
     try:
+        persisted = parse_portfolio_tsv(target_path)
         discrepancies = reconcile_leumi_against_xls(
-            snapshot_positions=parse_portfolio_tsv(target_path).positions,
+            snapshot_positions=persisted.positions,
             xls_positions=xls.positions,
             osh_closing_nis=osh_closing_nis,
             usd_closing=usd_closing,
+            fx_usd_nis=persisted.fx_usd_nis or 3.7,
         )
         if discrepancies:
             _log.warning(
@@ -372,7 +392,11 @@ def try_resolve_pending_on_osh_arrival(
     ).lower():
         return None
 
-    # Find pending parts within the match window.
+    # Find resolvable parts within the match window: either still pending, OR
+    # already resolved via NIS-cash carry-forward (status='resolved' with a NULL
+    # paired_osh_statement_id) — the latter so a real Osh arriving after a
+    # portfolio-only upload REFRESHES the carried-forward NIS cash instead of
+    # being ignored (which would leave stale cash live indefinitely).
     lo = osh.period_end - timedelta(days=MATCH_WINDOW_DAYS)
     hi = osh.period_end + timedelta(days=MATCH_WINDOW_DAYS)
     pending = (
@@ -380,7 +404,13 @@ def try_resolve_pending_on_osh_arrival(
             select(PortfolioSnapshotPart)
             .where(
                 PortfolioSnapshotPart.user_id == osh.user_id,
-                PortfolioSnapshotPart.status == "pending",
+                or_(
+                    PortfolioSnapshotPart.status == "pending",
+                    and_(
+                        PortfolioSnapshotPart.status == "resolved",
+                        PortfolioSnapshotPart.paired_osh_statement_id.is_(None),
+                    ),
+                ),
                 PortfolioSnapshotPart.snapshot_date >= lo,
                 PortfolioSnapshotPart.snapshot_date <= hi,
             )
@@ -1095,11 +1125,16 @@ def _xls_to_tsv_rows(
         symbol = symbol_map.get(p.security_id, p.ticker or p.security_id)
         currency = currency_map.get(p.security_id, "USD")
         asset_type = type_map.get(p.security_id, "Equity")
-        usd_k = p.holding_value_usd / 1000.0
+        # The XLS holding value is USD until mid-2026, NIS thereafter; convert
+        # to USD at the snapshot FX so the TSV's (K) USD column is always USD
+        # regardless of which currency Leumi exported. `quantity` is the
+        # authoritative input — value is derived from the broker's own number.
+        usd_value = p.usd_value(fx_usd_nis)
+        usd_k = usd_value / 1000.0
         if currency == "NIS":
-            value_local = p.holding_value_usd * fx_usd_nis
+            value_local = usd_value * fx_usd_nis
         else:
-            value_local = p.holding_value_usd
+            value_local = usd_value
         cells = [
             "",                                              # 0 Review
             "Leumi",                                         # 1 Location
@@ -1364,13 +1399,16 @@ def _full_rewrite_from_snapshot(
         symbol = symbol_map.get(p.security_id, p.ticker or p.security_id)
         currency = currency_map.get(p.security_id, "USD")
         asset_type = type_map.get(p.security_id, "Equity")
-        usd_k = p.holding_value_usd / 1000.0
+        # Convert the XLS holding value (USD pre-2026 / NIS after) to USD at
+        # the snapshot FX — mirror of the main splice path.
+        usd_value = p.usd_value(fx_usd_nis)
+        usd_k = usd_value / 1000.0
         # Mirror main splice path's currency-aware local-value (codex
         # zigzag (a) impl review #I8: previously hard-coded USD).
         if currency == "NIS":
-            value_local = p.holding_value_usd * fx_usd_nis
+            value_local = usd_value * fx_usd_nis
         else:
-            value_local = p.holding_value_usd
+            value_local = usd_value
         rows.append([
             "", "Leumi", currency, asset_type, p.name_he or "", symbol,
             f"{p.quantity:g}", f"{p.last_price:g}",
@@ -1399,7 +1437,7 @@ def _full_rewrite_from_snapshot(
             "Category", "Current %", "Current K USD", "Target %", "Target K USD", "Delta K",
         ])
         new_total = sum(
-            (p.holding_value_usd / 1000.0) for p in xls.positions
+            (p.usd_value(fx_usd_nis) / 1000.0) for p in xls.positions
         ) + cash_usd_k + usd_cash_k + sum(
             (p.usd_value_k or 0.0) for p in prior_snapshot.positions
             if not (p.location or "").lower().startswith("leumi")
@@ -1450,6 +1488,33 @@ def _find_most_recent_prior_tsv(snapshot_root: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _prior_leumi_nis_cash(snapshot_root: Path) -> tuple[float | None, date | None]:
+    """Return the prior snapshot's Leumi NIS cash balance (local NIS value) and
+    that snapshot's date, for carry-forward when no fresh Osh is in window.
+
+    A portfolio-only upload (the common "I bought a few stocks" case) shouldn't
+    be blocked on the user also exporting a NIS current-account statement: the
+    NIS cash rarely moves between exports, so carrying the prior balance forward
+    (clearly labelled) is more useful than refusing to update the holdings.
+    Returns (None, None) for a brand-new user with no prior TSV — that case
+    still falls through to the pending queue."""
+    prior = _find_most_recent_prior_tsv(snapshot_root)
+    if prior is None:
+        return None, None
+    try:
+        snap = parse_portfolio_tsv(prior)
+    except Exception:  # noqa: BLE001 — carry-forward is best-effort
+        return None, None
+    for p in snap.positions:
+        if (
+            (p.location or "").lower().startswith("leumi")
+            and (p.asset_type or "").lower() == "cash"
+            and (p.currency or "").upper() == "NIS"
+        ):
+            return (p.current_value_local, snap.snapshot_date)
+    return None, snap.snapshot_date
+
+
 _MONTH_NAMES = (
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -1467,7 +1532,8 @@ def _serialize_xls(xls: LeumiPortfolioSnapshot) -> dict[str, Any]:
         "snapshot_date": xls.snapshot_date.isoformat() if xls.snapshot_date else None,
         "portfolio_number": xls.portfolio_number,
         "securities_count": xls.securities_count,
-        "total_value_usd": xls.total_value_usd,
+        "total_value": xls.total_value,
+        "total_value_currency": xls.total_value_currency,
         "positions": [dataclasses.asdict(p) for p in xls.positions],
         "parse_warnings": xls.parse_warnings,
     }
@@ -1475,9 +1541,18 @@ def _serialize_xls(xls: LeumiPortfolioSnapshot) -> dict[str, Any]:
 
 def _deserialize_xls(payload_json: str) -> LeumiPortfolioSnapshot:
     raw = json.loads(payload_json)
-    positions = [
-        LeumiPortfolioPosition(**p) for p in raw.get("positions", [])
-    ]
+
+    def _to_position(p: dict) -> LeumiPortfolioPosition:
+        # Tolerate the pre-2026 payload schema (holding_value_usd, no currency)
+        # so any pending part serialized before the NIS-format change still
+        # deserializes — those were always USD.
+        p = dict(p)
+        if "holding_value" not in p and "holding_value_usd" in p:
+            p["holding_value"] = p.pop("holding_value_usd")
+        p.setdefault("holding_value_currency", "USD")
+        return LeumiPortfolioPosition(**p)
+
+    positions = [_to_position(p) for p in raw.get("positions", [])]
     snap_date_raw = raw.get("snapshot_date")
     snap_date = (
         date.fromisoformat(snap_date_raw) if snap_date_raw else None
@@ -1486,7 +1561,9 @@ def _deserialize_xls(payload_json: str) -> LeumiPortfolioSnapshot:
         snapshot_date=snap_date,
         portfolio_number=raw.get("portfolio_number"),
         securities_count=raw.get("securities_count", 0),
-        total_value_usd=raw.get("total_value_usd"),
+        # Back-compat: pre-2026 payloads used total_value_usd (always USD).
+        total_value=raw.get("total_value", raw.get("total_value_usd")),
+        total_value_currency=raw.get("total_value_currency", "USD"),
         positions=positions,
         parse_warnings=raw.get("parse_warnings", []),
     )

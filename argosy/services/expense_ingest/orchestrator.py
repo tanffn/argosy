@@ -314,11 +314,39 @@ def ingest_user_file(
             else:
                 from argosy.config import get_settings
                 snapshot_root = get_settings().home / "snapshots"
-            try_resolve_pending_on_osh_arrival(
+            resolution = try_resolve_pending_on_osh_arrival(
                 db=session,
                 statement_id=stmt.id,
                 snapshot_root=snapshot_root,
             )
+            # Run windfall detection on the resolved/refreshed snapshot — the
+            # SAME routine the upload route uses — so a snapshot updated via the
+            # Osh-arrival path (or a carry-forward refresh) flags a material cash
+            # movement instead of silently skipping detection. The upload route
+            # returns the event in its HTTP response; here there is no response,
+            # so publish a WS event + log when something is detected.
+            if resolution is not None and resolution.resolved_tsv_path is not None:
+                from argosy.services.portfolio_ingest.snapshot_change import (
+                    run_windfall_detection_on_snapshot,
+                )
+                det = run_windfall_detection_on_snapshot(
+                    session, user_id=user_id,
+                    target_path=resolution.resolved_tsv_path,
+                )
+                if det.event is not None:
+                    logging.getLogger(__name__).info(
+                        "xls_osh_pair.osh_arrival_windfall_detected",
+                        extra={"user_id": user_id, "statement_id": stmt.id},
+                    )
+                    try:
+                        from argosy.api.events import publish_event_threadsafe
+                        publish_event_threadsafe(
+                            "portfolio.windfall.detected",
+                            {"user_id": user_id, "event": det.event,
+                             "plan": det.plan, "source": "osh_arrival"},
+                        )
+                    except Exception:  # noqa: BLE001 -- surfacing is best-effort
+                        pass
         except Exception as exc:  # noqa: BLE001 -- never fail ingest
             # Module-level `logging` (top of file); a LOCAL import here would make
             # `logging` function-local for all of ingest_user_file and

@@ -19,14 +19,16 @@ def _pos(security_id, name_he, ticker, qty, value_usd):
     return LeumiPortfolioPosition(
         security_id=security_id, name_he=name_he, ticker=ticker,
         avg_buy_price=None, quantity=qty, last_price=value_usd / max(qty, 1),
-        holding_value_usd=value_usd, gain_pct=None, pct_of_portfolio=None,
+        holding_value=value_usd, holding_value_currency="USD",
+        gain_pct=None, pct_of_portfolio=None,
     )
 
 
 def _xls(positions):
     return LeumiPortfolioSnapshot(
         snapshot_date=None, portfolio_number="1", securities_count=len(positions),
-        total_value_usd=sum(p.holding_value_usd for p in positions), positions=positions,
+        total_value=sum(p.holding_value for p in positions),
+        total_value_currency="USD", positions=positions,
     )
 
 
