@@ -1599,6 +1599,7 @@ def get_deploy_cash(
             # async. Fail-open: any error leaves those candidates HELD + surfaced,
             # never silently approved. Runs before size/rerank so the corrected
             # plan reflects the fleet's bounded verdict.
+            _disposition = None
             if fleet_review and get_settings().deployment_fleet_review_enabled:
                 try:
                     from dataclasses import replace as _dc_replace
@@ -1606,6 +1607,7 @@ def get_deploy_cash(
                     from argosy.services.deployment_funnel.fleet_review import (
                         DeploymentContext,
                         adjudicate_sync,
+                        recommend_disposition_sync,
                     )
                     from argosy.services.deployment_funnel.from_plan import (
                         build_gate_inputs,
@@ -1627,6 +1629,14 @@ def get_deploy_cash(
                         market_note=(ctx.summary if ctx is not None
                                      and hasattr(ctx, "summary") else ""),
                     )
+                    # HEADLINE: the fleet's affirmative "what to do with the full
+                    # amount" — computed from the phase-1 enriched (clean fills vs
+                    # flagged), so cash is never silent residue. One agent call.
+                    _disposition = recommend_disposition_sync(
+                        result.enriched, context=_dep_ctx,
+                        deployable_usd=amount, user_id=user_id,
+                    )
+                    # Refine the per-line buy list with the bounded verdicts.
                     adjudicated = adjudicate_sync(
                         result.enriched, context=_dep_ctx, user_id=user_id,
                     )
@@ -1649,6 +1659,9 @@ def get_deploy_cash(
                     rerank_plan(plan, sized), market_context=ctx
                 )
             dto.preflight = preflight_result_to_dto(result)
+            if _disposition is not None:
+                from argosy.services.contracts import disposition_to_dto
+                dto.disposition = disposition_to_dto(_disposition)
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(
                 "deploy_cash.preflight_failed", user_id=user_id, error=str(exc),

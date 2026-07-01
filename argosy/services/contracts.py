@@ -391,6 +391,37 @@ class PreflightDTO(BaseModel):
     notes: list[str] = []
 
 
+class DispositionItemDTO(BaseModel):
+    action: str          # deploy | hold_cash | deconcentrate_first | raise_plan_change
+    target: str
+    amount_usd: float
+    reason: str
+
+
+class DeploymentDispositionDTO(BaseModel):
+    """The fleet's affirmative answer to 'what should I DO with this cash?' — a
+    disposition of the FULL amount (deploy / hold-with-reason / deconcentrate /
+    plan-change). Present only after a phase-2 fleet review; null otherwise."""
+
+    summary: str
+    items: list[DispositionItemDTO] = []
+    confidence: str | None = None
+
+
+def disposition_to_dto(d) -> "DeploymentDispositionDTO":
+    return DeploymentDispositionDTO(
+        summary=d.summary,
+        items=[
+            DispositionItemDTO(
+                action=str(i.action), target=i.target,
+                amount_usd=float(i.amount_usd), reason=i.reason,
+            )
+            for i in d.items
+        ],
+        confidence=str(getattr(d, "confidence", "") or "") or None,
+    )
+
+
 class DeploymentPlanDTO(BaseModel):
     deploy_amount_usd: float
     as_of: str
@@ -404,6 +435,9 @@ class DeploymentPlanDTO(BaseModel):
     caveats: list[str]
     note: str = ""
     preflight: PreflightDTO | None = None
+    # The fleet's affirmative "what to do with the full amount" recommendation
+    # (phase-2 fleet review only). null when the fleet didn't run / failed.
+    disposition: DeploymentDispositionDTO | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:

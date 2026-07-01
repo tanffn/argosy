@@ -8,6 +8,7 @@ import {
   type AllocationActionListItem,
   type AllocationActionRequest,
   type DeploymentLineDTO,
+  type DeploymentDispositionDTO,
   type DeploymentMarketContextDTO,
   type DeploymentPlanDTO,
   type DeploymentTierDTO,
@@ -539,6 +540,7 @@ export function DeployCashCard({
           {plan.market_context && (
             <MarketContextStrip ctx={plan.market_context} />
           )}
+          {plan.disposition && <DispositionBlock d={plan.disposition} />}
           {plan.preflight && (
             <PreflightVerdict
               preflight={plan.preflight}
@@ -576,6 +578,55 @@ const PREFLIGHT_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   approve_candidate: { label: "OK", cls: "text-emerald-600" },
   needs_fleet_review: { label: "Needs fleet judgment", cls: "text-sky-600" },
 };
+
+const DISPOSITION_ACTION_STYLE: Record<string, { label: string; cls: string }> = {
+  deploy: { label: "Deploy", cls: "text-emerald-600" },
+  hold_cash: { label: "Hold as cash", cls: "text-muted-foreground" },
+  deconcentrate_first: { label: "Trim NVDA first", cls: "text-amber-600" },
+  raise_plan_change: { label: "Add to plan", cls: "text-sky-600" },
+};
+
+/** The fleet's affirmative answer to "what should I DO with this cash?" — the
+ *  headline recommendation covering the full amount (deploy / hold-with-reason /
+ *  deconcentrate / plan-change). Present only after a phase-2 fleet review. */
+function DispositionBlock({ d }: { d: DeploymentDispositionDTO }) {
+  return (
+    <div className="mt-3 rounded-md border border-sky-300 bg-sky-50/60 p-3 dark:border-sky-900 dark:bg-sky-950/30">
+      <div className="text-xs font-semibold text-sky-800 dark:text-sky-300">
+        Argosy&apos;s recommendation (fleet)
+      </div>
+      <p className="mt-1 text-xs text-foreground/90">{d.summary}</p>
+      <ul className="mt-2 space-y-1 text-xs">
+        {d.items.map((it, i) => {
+          const s = DISPOSITION_ACTION_STYLE[it.action] ?? {
+            label: it.action,
+            cls: "text-muted-foreground",
+          };
+          return (
+            <li key={i} className="flex flex-col gap-0.5">
+              <div className="flex gap-2">
+                <span className={`w-28 shrink-0 font-medium ${s.cls}`}>
+                  {s.label}
+                </span>
+                <span className="font-medium">
+                  {it.target} · {fmtMoney(it.amount_usd)}
+                </span>
+              </div>
+              <span className="ml-28 text-[11px] text-muted-foreground">
+                {it.reason}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {d.confidence && (
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          Fleet confidence: {d.confidence.toLowerCase()}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Research verdict on the deterministic buy list: concentration/reserve checks
  *  per line + any plan questions. Advisory (shadow) — annotates the list above. */

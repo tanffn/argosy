@@ -647,6 +647,19 @@ export interface PreflightDTO {
   notes: string[];
 }
 
+export interface DispositionItemDTO {
+  action: string; // deploy | hold_cash | deconcentrate_first | raise_plan_change
+  target: string;
+  amount_usd: number;
+  reason: string;
+}
+
+export interface DeploymentDispositionDTO {
+  summary: string;
+  items: DispositionItemDTO[];
+  confidence?: string | null;
+}
+
 export interface DeploymentPlanDTO {
   deploy_amount_usd: number;
   as_of: string;
@@ -662,6 +675,8 @@ export interface DeploymentPlanDTO {
   note: string;
   /** Research preflight verdict; null when the engine is disabled. */
   preflight?: PreflightDTO | null;
+  /** The fleet's affirmative "what to do with the full amount"; phase-2 only. */
+  disposition?: DeploymentDispositionDTO | null;
 }
 
 // ----------------------------------------------------------------------
