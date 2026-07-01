@@ -53,7 +53,7 @@ class DeploymentDispositionAgent(BaseAgent[DeploymentDisposition]):
         deployable_usd: float,
         book_nvda_pct: float,
         nvda_cap_pct: float,
-        plan_sleeves: list[str],
+        plan_instruments: list[dict],
         already_deploying: list[dict],
         blocked: list[dict],
         reserve_funded: bool,
@@ -67,38 +67,51 @@ class DeploymentDispositionAgent(BaseAgent[DeploymentDisposition]):
             f"{PRIME_DIRECTIVE}\n\n"
             "HARD RULES:\n"
             "  - Account for the FULL deployable amount. Every dollar is either "
-            "deployed (into a specific plan sleeve/instrument), held as cash, sent "
-            "to deconcentration (trim NVDA), or gated behind a plan change — with a "
-            "reason for each.\n"
-            "  - Holding cash is a VALID recommendation ONLY with an explicit "
-            "reason (e.g. valuations stretched, macro caution, or 'deploy after "
-            "trimming NVDA / after adding the missing sleeve'). NEVER leave cash "
-            "idle as a default or an error.\n"
-            "  - You may recommend a plan change (raise_plan_change) to add a "
-            "genuinely missing diversifier sleeve (e.g. gold / broad commodities) "
-            "when that is the right home for the cash and the plan lacks it.\n"
-            "  - Deconcentration of an over-cap single name happens by SELLING it, "
-            "not by refusing diversified buys. If the real move is to trim NVDA, "
-            "say so (deconcentrate_first) with the amount.\n"
-            "  - Prefer putting money to work over idle cash unless there is a "
-            "concrete, stated reason to wait. Idle cash is an anti-goal.\n\n"
+            "deployed, held as cash, sent to deconcentration (trim NVDA), or gated "
+            "behind a plan change — with a reason for each.\n"
+            "  - A `deploy` item MUST name a real TICKER from the PLAN INSTRUMENTS "
+            "menu below (e.g. deploy into EIMI, not 'emerging markets'). Do NOT "
+            "invent instruments or use bare asset-class labels. Size deploys toward "
+            "the plan's UNDER-TARGET sleeves — redirect the cash from the blocked, "
+            "NVDA-dense buys into the plan's own non-NVDA sleeves (their tickers).\n"
+            "  - Do NOT introduce an asset class that is ABSENT from the plan as a "
+            "`deploy`. The current plan's sleeves are deliberate (it already carries "
+            "a diversifier — Real assets/REIT/TIPS — and its authors chose the "
+            "sleeve set). If you believe a genuinely-missing sleeve (e.g. gold / "
+            "broad commodities) is warranted, emit it as `raise_plan_change` — a "
+            "REQUEST routed to plan synthesis, NOT a buy — and JUSTIFY why it is "
+            "additive versus the plan's EXISTING diversifiers rather than redundant. "
+            "Do not assume it belongs.\n"
+            "  - Holding cash is VALID only with an explicit reason (valuations, "
+            "macro, or 'after trimming NVDA'). NEVER idle cash as a default/error.\n"
+            "  - Deconcentration of an over-cap single name happens by SELLING it. "
+            "If the real move is to trim NVDA, say so (deconcentrate_first) with an "
+            "amount and note it is tax-sensitive (domain/tax agent confirms sizing).\n"
+            "  - Prefer putting money to work over idle cash. Idle cash is an "
+            "anti-goal.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{DeploymentDisposition.model_json_schema()}\n"
+        )
+        menu_lines = "\n".join(
+            f"  - {m.get('sleeve')}: target {m.get('target_pct')}% -> "
+            f"tickers {m.get('tickers')}"
+            for m in plan_instruments
         )
         user = (
             f"DEPLOYABLE CASH: ${deployable_usd:,.0f}\n\n"
             f"CONCENTRATION: the book is {book_nvda_pct:.0f}% NVDA (look-through) "
             f"vs a {nvda_cap_pct:.0f}% single-name cap. Reserve/T-bills: "
             f"{'already funded' if reserve_funded else 'still short of target'}.\n\n"
-            f"PLAN SLEEVES (the only classes you can deploy into without a plan "
-            f"change): {plan_sleeves}\n\n"
+            f"PLAN INSTRUMENTS — the ONLY tickers you may deploy into (sleeve -> "
+            f"target weight -> ticker(s)); size toward under-target sleeves:\n"
+            f"{menu_lines}\n\n"
             f"ALREADY DEPLOYING (clean plan-fills the engine will execute): "
             f"{already_deploying}\n\n"
-            f"BLOCKED / PENDING (buys the concentration or reserve facts flagged — "
-            f"these would worsen NVDA concentration or overfund the reserve): "
+            f"BLOCKED / PENDING (NVDA-dense or reserve-overfill buys the engine "
+            f"flagged — REDIRECT this cash into the plan's non-NVDA sleeves above): "
             f"{blocked}\n\n"
             f"USER CONSTRAINTS: {user_constraints or '(none supplied)'}\n\n"
-            "Produce the DeploymentDisposition JSON now. Make the items sum to the "
-            "full deployable amount."
+            "Produce the DeploymentDisposition JSON now. Every `deploy` target is a "
+            "ticker from the menu; items sum to the full deployable amount."
         )
         return system, user

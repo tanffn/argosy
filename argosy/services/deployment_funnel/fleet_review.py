@@ -53,6 +53,11 @@ class DeploymentContext:
     plan_classes: tuple[str, ...]
     user_constraints: str = ""
     market_note: str = ""
+    # The plan's actual instruments per sleeve + target weight, so a deploy
+    # recommendation names a real TICKER (EM -> EIMI) grounded in the plan's
+    # target gaps — not a class label the LLM invents. Each item:
+    # {"sleeve": str, "target_pct": float, "tickers": [str, ...]}.
+    plan_menu: tuple = ()
 
     @property
     def book_nvda_pct(self) -> float:
@@ -358,7 +363,7 @@ async def recommend_disposition(
             deployable_usd=deployable_usd,
             book_nvda_pct=context.book_nvda_pct,
             nvda_cap_pct=context.nvda_cap_pct,
-            plan_sleeves=list(context.plan_classes),
+            plan_instruments=list(context.plan_menu),
             already_deploying=approved,
             blocked=blocked,
             reserve_funded=True,

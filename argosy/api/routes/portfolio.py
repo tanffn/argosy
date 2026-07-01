@@ -1613,11 +1613,23 @@ def get_deploy_cash(
                     _gi = build_gate_inputs(
                         doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                     )
+                    _plan_menu = tuple(
+                        {
+                            "sleeve": c.label,
+                            "target_pct": float(getattr(c, "target_pct", 0.0) or 0.0),
+                            "tickers": [
+                                getattr(i, "symbol", None)
+                                for i in getattr(c, "instruments", [])
+                            ],
+                        }
+                        for c in doc.classes
+                    )
                     _dep_ctx = DeploymentContext(
                         book_usd=_gi.book_usd,
                         current_effective_nvda_usd=_gi.current_effective_nvda_usd,
                         nvda_cap_pct=_gi.nvda_cap_pct,
                         plan_classes=tuple(sorted(_gi.plan_classes)),
+                        plan_menu=_plan_menu,
                         user_constraints=(
                             "Reduce NVDA concentration toward the plan cap of "
                             f"{_gi.nvda_cap_pct:.0f}%; prime directive is earliest "
