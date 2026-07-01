@@ -106,12 +106,21 @@ def candidate_flags(
         denser = inst_wt > cap_frac + 1e-9
         flags.append(CandidateFlag(
             kind="denser_than_cap" if denser else "nvda_lookthrough",
-            materiality="high" if denser else ("medium" if book_pct >= cap_frac else "low"),
+            # A fund whose OWN NVDA density is at/below the plan's single-name cap
+            # (CSPX 7%, FUSA 6%) is plan-compliant: the plan targets it AND set the
+            # cap knowing its NVDA content, so deploying toward its target EXECUTES
+            # the plan — not a new judgment. Flag it for transparency but keep it
+            # LOW materiality (deploy). Only an instrument DENSER than the cap
+            # (R1GR 14%, direct NVDA) is the genuine judgment call -> high (route
+            # to the fleet). The 57% book concentration is reduced by SELLING NVDA,
+            # never by refusing plan-compliant diversified buys / stranding cash.
+            materiality="high" if denser else "low",
             fact=(
                 f"{symbol} adds {inst_wt * 100:.0f}% NVDA look-through "
                 f"(${add_nvda:,.0f}); book is {book_pct * 100:.0f}% NVDA vs the "
                 f"{gi.nvda_cap_pct:.0f}% single-name cap"
-                + (" — DENSER than the cap" if denser else "")
+                + (" — DENSER than the cap" if denser
+                   else " (within the cap — plan-compliant)")
             ),
             detail={"instrument_nvda_pct": round(inst_wt * 100, 1),
                     "book_nvda_pct": round(book_pct * 100, 1),
