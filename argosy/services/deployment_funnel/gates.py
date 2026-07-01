@@ -34,6 +34,31 @@ class GateInputs:
     class_of: dict[str, str]
 
 
+def flag_based_disposition(
+    flags: tuple[CandidateFlag, ...],
+    fallback_status: CandidateStatus,
+    fallback_reason: str,
+) -> tuple[CandidateStatus, str]:
+    """Phase-1 disposition when the fleet IS available (the two-phase flow):
+    the deterministic layer decides NOTHING about investments — a flagged
+    candidate is PENDING the fleet's judgment; a flagless one is a clean plan-fill
+    that executes; a hard invariant (plan-gap) stays. The fleet then decides the
+    pending ones in phase 2. (When the fleet is unavailable, callers keep the
+    conservative ``fallback_status`` instead.)"""
+    if fallback_status is CandidateStatus.REQUIRES_PLAN_CHANGE:
+        return fallback_status, fallback_reason  # hard invariant, not a judgment
+    # TIERING: only a MEDIUM/HIGH-materiality flag warrants the fleet's judgment.
+    # A low-materiality flag (e.g. a single stock with no look-through entry, whose
+    # NVDA content is really 0) is informational — it's surfaced on the candidate
+    # but does NOT hold the buy. This keeps the fleet from being called on clean
+    # plan-fills that merely carry a low-signal note.
+    warrants = [f for f in flags if f.materiality in ("high", "medium")]
+    if warrants:
+        facts = "; ".join(f.fact for f in warrants)
+        return CandidateStatus.NEEDS_FLEET_REVIEW, f"pending fleet judgment — {facts}"
+    return CandidateStatus.APPROVE, "clean plan-fill (no material judgment flags)"
+
+
 def candidate_flags(
     cand: AllocationCandidate,
     symbol: str,

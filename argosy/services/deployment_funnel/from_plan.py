@@ -136,8 +136,12 @@ def run_preflight_for_plan(
     deployable_usd: float,
     signals_by_symbol: dict[str, str] | None = None,
     snapshot_prices: dict[str, float] | None = None,
+    fleet_available: bool = False,
 ) -> PreflightResult:
-    """End-to-end: plan candidates -> gate inputs -> deterministic preflight."""
+    """End-to-end: plan candidates -> gate inputs -> deterministic preflight.
+
+    ``fleet_available`` selects the phase-1 flag-based disposition (see
+    ``run_preflight``); default False preserves the legacy fallback behavior."""
     gi = build_gate_inputs(doc=doc, holdings_usd=holdings_usd, cash_usd=cash_usd)
     candidates = plan_to_candidates(plan)
     result = run_preflight(
@@ -147,6 +151,7 @@ def run_preflight_for_plan(
         provider=SnapshotOrLiveProvider(snapshot_prices),
         signals_by_symbol=signals_by_symbol or {},
         deployable_usd=deployable_usd,
+        fleet_available=fleet_available,
     )
     # Merge in PLAN-STRUCTURAL gaps (classes the plan is missing entirely, e.g.
     # gold) — these can't come from candidates since the engine never proposes a

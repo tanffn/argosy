@@ -90,6 +90,11 @@ def _proposal_for(cand: EnrichedCandidate, ctx: DeploymentContext) -> dict:
         "book_nvda_lookthrough_pct": round(ctx.book_nvda_pct, 1),
         "nvda_plan_cap_pct": ctx.nvda_cap_pct,
         "why_routed": cand.reason,
+        # The deterministic FACTS the engine surfaced — the fleet judges THESE.
+        "flags": [
+            {"kind": f.kind, "materiality": f.materiality, "fact": f.fact}
+            for f in getattr(cand, "flags", ())
+        ],
         "news_sentiment": cand.news_sentiment or "none",
         "plan_sleeves": list(ctx.plan_classes),
         "market_note": ctx.market_note or "n/a",

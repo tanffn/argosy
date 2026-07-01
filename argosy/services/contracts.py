@@ -350,14 +350,25 @@ def market_context_to_dto(ctx) -> DeploymentMarketContextDTO:
     )
 
 
+class CandidateFlagDTO(BaseModel):
+    kind: str
+    materiality: str                  # "high" | "medium" | "low"
+    fact: str
+    detail: dict = {}
+
+
 class PreflightCandidateDTO(BaseModel):
     symbol: str
-    status: str                       # CandidateStatus value
+    status: str                       # CandidateStatus value (fail-safe fallback)
     reason: str
     effective_nvda_usd: float
     news_sentiment: str | None = None
     cap_pct: float | None = None
     pct_below_ath: float | None = None
+    # Deterministic FACTS that warrant fleet judgment (concentration, reserve
+    # overfund, unverified look-through). Primary signal for the two-phase flow:
+    # phase 1 surfaces these; the fleet decides in phase 2. Empty = clean plan-fill.
+    flags: list[CandidateFlagDTO] = []
 
 
 class PlanGapDTO(BaseModel):
@@ -436,6 +447,13 @@ def preflight_result_to_dto(result) -> "PreflightDTO":
                 news_sentiment=e.news_sentiment,
                 cap_pct=e.cap_pct,
                 pct_below_ath=e.history.pct_below_ath,
+                flags=[
+                    CandidateFlagDTO(
+                        kind=f.kind, materiality=f.materiality,
+                        fact=f.fact, detail=f.detail,
+                    )
+                    for f in getattr(e, "flags", ())
+                ],
             )
             for e in result.enriched
         ],

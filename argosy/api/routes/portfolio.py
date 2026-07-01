@@ -1581,9 +1581,15 @@ def get_deploy_cash(
                     if _sym and _px:
                         snapshot_prices[_sym] = float(_px)
 
+            # Two-phase flow: when the fleet is available, phase-1 marks flagged
+            # candidates as PENDING fleet judgment (deterministic layer decides
+            # nothing about investments — only clean plan-fills auto-approve). The
+            # `fleet_review=true` call is phase 2 (the fleet adjudicates below).
+            _fleet_on = get_settings().deployment_fleet_review_enabled
             result = run_preflight_for_plan(
                 plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                 deployable_usd=amount, snapshot_prices=snapshot_prices,
+                fleet_available=_fleet_on,
             )
 
             # Increment 2: route the genuine judgment calls the deterministic

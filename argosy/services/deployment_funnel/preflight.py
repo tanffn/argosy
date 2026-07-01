@@ -19,6 +19,7 @@ from argosy.services.deployment_funnel.gates import (
     GateInputs,
     candidate_flags,
     classify_candidate,
+    flag_based_disposition,
 )
 from argosy.services.deployment_funnel.look_through import (
     effective_nvda_usd,
@@ -44,10 +45,21 @@ def run_preflight(
     provider: PriceProvider,
     signals_by_symbol: dict[str, str],
     deployable_usd: float,
+    fleet_available: bool = False,
 ) -> PreflightResult:
-    """Deterministic, no-LLM preflight. Enriches + classifies each candidate and
+    """Deterministic, no-LLM preflight. Enriches + flags each candidate and
     collects typed plan gaps. Pure given its inputs. Shadow-only: it computes and
-    returns a result; it never persists or executes."""
+    returns a result; it never persists or executes.
+
+    ``fleet_available`` selects the disposition of the ``status`` field:
+      * False (default) — the conservative FAIL-SAFE fallback from
+        ``classify_candidate`` (used when no fleet will run; preserves the legacy
+        behavior all existing callers/tests rely on).
+      * True — the two-phase PHASE-1 disposition: the deterministic layer decides
+        nothing about investments — a FLAGGED candidate is NEEDS_FLEET_REVIEW
+        (pending the fleet's phase-2 judgment), a flagless one is a clean plan-fill
+        (APPROVE), a plan-gap stays REQUIRES_PLAN_CHANGE (hard invariant).
+    The ``flags`` are computed and attached in BOTH modes."""
     enriched: list[EnrichedCandidate] = []
     plan_gaps: list[PlanGap] = []
     kept_total = 0.0
@@ -72,8 +84,12 @@ def run_preflight(
             cand, symbol, hf, sentiment, gi_iter
         )
         # Deterministic FACTS (no verdict) — the primary signal the fleet
-        # adjudicates. ``status`` above is only the fail-safe fallback disposition.
+        # adjudicates. When the fleet is available, the phase-1 disposition is
+        # driven by these flags (flagged -> pending; flagless -> clean plan-fill);
+        # otherwise ``status`` stays the conservative fail-safe fallback.
         flags = candidate_flags(cand, symbol, gi_iter)
+        if fleet_available:
+            status, reason = flag_based_disposition(flags, status, reason)
         eff_nvda = effective_nvda_usd(symbol, cand.total_notional_usd)
 
         # Surface look-through misses (codex H2): a non-cash-like symbol with no

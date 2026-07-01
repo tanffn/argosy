@@ -222,3 +222,35 @@ def test_unmapped_symbol_flags_unverified_lookthrough():
     )
     flags = candidate_flags(_cand("ZZZ", 5000.0), "ZZZ", gi)
     assert "unverified_lookthrough" in _kinds(flags)
+
+
+# ---------------------------------------------------------------------------
+# flag_based_disposition — phase-1 (fleet available): only MEDIUM/HIGH flags
+# warrant fleet review; low-materiality flags are informational (don't hold).
+# ---------------------------------------------------------------------------
+from argosy.services.deployment_funnel.contracts import CandidateFlag  # noqa: E402
+from argosy.services.deployment_funnel.gates import flag_based_disposition  # noqa: E402
+
+
+def test_disposition_no_flags_is_clean_approve():
+    st, _ = flag_based_disposition((), CandidateStatus.APPROVE, "x")
+    assert st is CandidateStatus.APPROVE
+
+
+def test_disposition_low_flag_only_still_approves():
+    low = (CandidateFlag(kind="unverified_lookthrough", materiality="low", fact="f"),)
+    st, _ = flag_based_disposition(low, CandidateStatus.APPROVE, "x")
+    assert st is CandidateStatus.APPROVE
+
+
+def test_disposition_medium_or_high_flag_pends_to_fleet():
+    med = (CandidateFlag(kind="nvda_lookthrough", materiality="medium", fact="f"),)
+    st, reason = flag_based_disposition(med, CandidateStatus.APPROVE, "x")
+    assert st is CandidateStatus.NEEDS_FLEET_REVIEW
+    assert "pending fleet judgment" in reason
+
+
+def test_disposition_plan_gap_is_a_hard_invariant():
+    # A class not in the plan stays REQUIRES_PLAN_CHANGE regardless of flags.
+    st, _ = flag_based_disposition((), CandidateStatus.REQUIRES_PLAN_CHANGE, "gap")
+    assert st is CandidateStatus.REQUIRES_PLAN_CHANGE
