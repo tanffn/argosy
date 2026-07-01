@@ -44,7 +44,7 @@ def test_cap_compliant_index_buy_is_approved():
         _cand("CSPX", 22000.0), "CSPX", _hf(), "neutral", _GI
     )
     assert st is CandidateStatus.APPROVE
-    assert "cap-compliant" in reason
+    assert "7% NVDA" in reason and "cap" in reason
 
 
 def test_above_cap_instrument_vetoed_when_book_over_cap():

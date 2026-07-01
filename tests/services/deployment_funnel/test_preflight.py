@@ -68,15 +68,14 @@ def test_aggregate_cap_enforced_across_batch():
     res = run_preflight(
         cands, symbol_of=lambda c: c.legs[0].symbol, gate_inputs=gi,
         provider=_Provider(), signals_by_symbol={}, deployable_usd=2600.0)
-    # Compute the final book NVDA% from kept lines; must not exceed the cap.
+    # Fixed-book model (cash reallocated within the book): final book NVDA% is
+    # (starting NVDA + kept NVDA) / FIXED book, and must not exceed the cap.
     kept_nvda = 129_000.0
-    kept_book = 1_000_000.0
     for e in res.enriched:
         if e.status.value in ("approve_candidate", "cap_at_pct"):
             frac = e.cap_pct / 100.0 if e.cap_pct is not None else 1.0
             kept_nvda += e.effective_nvda_usd * frac
-            kept_book += e.candidate.total_notional_usd * frac
-    assert kept_nvda / kept_book <= 0.13 + 1e-6
+    assert kept_nvda / 1_000_000.0 <= 0.13 + 1e-6
 
 
 def test_unmapped_symbol_is_flagged_not_silently_trusted():

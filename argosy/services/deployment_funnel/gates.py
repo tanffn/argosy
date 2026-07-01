@@ -80,15 +80,16 @@ def classify_candidate(
             )
         # Within the shortfall → a legitimate reserve top-up; falls through.
 
-    # 4. Concentration cap via look-through — governed by the INSTRUMENT's own
-    #    NVDA weight vs the cap, NOT a book-delta (codex: the deploy cash is
-    #    already IN the book, so converting cash->fund doesn't grow the
-    #    denominator; a book-delta formula double-counts it). Policy: you may
-    #    ADD any instrument whose NVDA weight is <= the cap ceiling — its
-    #    marginal dollar is cap-compliant and pulls the book toward the target.
-    #    An instrument MORE NVDA-concentrated than the cap is vetoed while the
-    #    book is over the cap (adding above-cap concentration slows the unwind),
-    #    or partially capped while under the cap.
+    # 4. Concentration gate via look-through — a MARGINAL-QUALITY rule on the
+    #    instrument's own NVDA weight vs the cap. IMPORTANT (codex): this does
+    #    NOT reduce an over-cap book. The deploy cash is already IN the book, so
+    #    a cash-funded buy reallocates within a FIXED total; buying a fund with
+    #    ANY NVDA (even 7%) nudges the book NVDA % UP, not down. Only SELLING
+    #    NVDA deconcentrates. So the rule here is: don't ADD anything MORE
+    #    NVDA-concentrated than the cap (that would worsen single-name risk);
+    #    a <=cap instrument is an acceptable place to put idle cash without
+    #    making concentration materially worse. Fixing the 56.6% itself is a
+    #    SELL decision this cash-deploy path deliberately does not make.
     add_nvda = effective_nvda_usd(symbol, notional)
     if add_nvda > 0.0 and notional > 0.0:
         cap_frac = gi.nvda_cap_pct / 100.0
@@ -99,8 +100,9 @@ def classify_candidate(
         if inst_wt <= cap_frac + 1e-9:
             return (
                 CandidateStatus.APPROVE,
-                f"fills a plan sleeve; {symbol} is {inst_wt * 100:.0f}% NVDA "
-                f"(<= the {gi.nvda_cap_pct:.0f}% cap) — a cap-compliant addition",
+                f"{symbol} is {inst_wt * 100:.0f}% NVDA (<= the "
+                f"{gi.nvda_cap_pct:.0f}% cap) — acceptable to add idle cash "
+                f"(doesn't worsen single-name risk; won't reduce the 56.6% either)",
                 None,
             )
         # Instrument is MORE NVDA-concentrated than the cap.
@@ -113,11 +115,12 @@ def classify_candidate(
                 None,
             )
         # Under the cap: the book has headroom. Allow the slice that keeps it
-        # at/under the cap. x = (cap*book - current) / (inst_wt - cap).
+        # at/under the cap. Cash-funded (fixed book B): (C + w*x)/B <= cap
+        # => x <= (cap*B - C) / w  (codex: NOT /(w-cap), which assumed the buy
+        # grew the denominator with new outside money).
         max_notional = (
-            (cap_frac * gi.book_usd - gi.current_effective_nvda_usd)
-            / (inst_wt - cap_frac)
-        )
+            cap_frac * gi.book_usd - gi.current_effective_nvda_usd
+        ) / inst_wt
         if max_notional >= notional:
             return (CandidateStatus.APPROVE,
                     f"{symbol} is {inst_wt * 100:.0f}% NVDA but the book has "
