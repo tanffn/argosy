@@ -37,24 +37,31 @@ _GI = GateInputs(
 )
 
 
-def test_low_nvda_index_buy_DILUTES_and_is_approved():
-    # CSPX is ~7% NVDA vs a 56.6% book — buying it LOWERS the NVDA share, so it
-    # must be APPROVED even though the book is over the cap (the old logic wrongly
-    # vetoed it for adding any absolute NVDA, stranding the cash).
+def test_cap_compliant_index_buy_is_approved():
+    # CSPX is ~7% NVDA — at/below the 13% cap — so it is a cap-compliant
+    # addition (pulls the book toward the target), approved even over-cap.
     st, reason, _ = classify_candidate(
         _cand("CSPX", 22000.0), "CSPX", _hf(), "neutral", _GI
     )
     assert st is CandidateStatus.APPROVE
-    assert "DILUTES" in reason
+    assert "cap-compliant" in reason
 
 
-def test_buy_that_RAISES_nvda_share_is_vetoed():
-    # A direct NVDA buy (100% NVDA >> 56.6% book) raises the share → veto.
+def test_above_cap_instrument_vetoed_when_book_over_cap():
+    # Direct NVDA (100% NVDA >> 13% cap) with the book already over the cap → veto.
     st, reason, _ = classify_candidate(
         _cand("NVDA", 22000.0), "NVDA", _hf(), None, _GI
     )
     assert st is CandidateStatus.VETO
-    assert "RAISES" in reason
+    assert "above the" in reason and "cap" in reason
+
+
+def test_r1gr_just_over_cap_vetoed_when_over():
+    # R1GR ~14% NVDA > 13% cap; book over cap → veto (adds above-cap concentration).
+    st, _, _ = classify_candidate(
+        _cand("R1GR", 13000.0), "R1GR", _hf(), None, _GI
+    )
+    assert st is CandidateStatus.VETO
 
 
 def test_tbill_when_reserve_funded_is_vetoed():

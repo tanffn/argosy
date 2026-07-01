@@ -80,39 +80,58 @@ def classify_candidate(
             )
         # Within the shortfall → a legitimate reserve top-up; falls through.
 
-    # 4. Concentration cap via look-through — measured on the RESULTING NVDA
-    #    PERCENTAGE, not absolute dollars. Key fix: when the book is already
-    #    over the cap (56.6% vs 13%), the way DOWN is to buy assets whose NVDA
-    #    weight is BELOW the current book %, which DILUTES the concentration. A
-    #    buy that lowers (or holds) the NVDA % must be allowed even though it
-    #    adds some absolute NVDA — vetoing it (the old bug) rejected the very
-    #    diversifying buys that reduce concentration and stranded the cash.
+    # 4. Concentration cap via look-through — governed by the INSTRUMENT's own
+    #    NVDA weight vs the cap, NOT a book-delta (codex: the deploy cash is
+    #    already IN the book, so converting cash->fund doesn't grow the
+    #    denominator; a book-delta formula double-counts it). Policy: you may
+    #    ADD any instrument whose NVDA weight is <= the cap ceiling — its
+    #    marginal dollar is cap-compliant and pulls the book toward the target.
+    #    An instrument MORE NVDA-concentrated than the cap is vetoed while the
+    #    book is over the cap (adding above-cap concentration slows the unwind),
+    #    or partially capped while under the cap.
     add_nvda = effective_nvda_usd(symbol, notional)
-    if add_nvda > 0.0 and gi.book_usd > 0.0 and notional > 0.0:
+    if add_nvda > 0.0 and notional > 0.0:
         cap_frac = gi.nvda_cap_pct / 100.0
-        pre_pct = gi.current_effective_nvda_usd / gi.book_usd
-        post_pct = (gi.current_effective_nvda_usd + add_nvda) / (gi.book_usd + notional)
-        # Allowed if the buy leaves NVDA within the cap, OR (while over the cap)
-        # does not RAISE the NVDA share — i.e. it deconcentrates or holds.
-        if post_pct <= cap_frac or post_pct <= pre_pct + 1e-9:
+        inst_wt = add_nvda / notional
+        book_pct = (
+            gi.current_effective_nvda_usd / gi.book_usd if gi.book_usd > 0 else 1.0
+        )
+        if inst_wt <= cap_frac + 1e-9:
             return (
                 CandidateStatus.APPROVE,
-                (
-                    f"fills a plan sleeve; {symbol} is "
-                    f"{add_nvda / notional * 100:.0f}% NVDA (< book {pre_pct * 100:.0f}%) "
-                    f"so it DILUTES concentration ({pre_pct * 100:.1f}%→{post_pct * 100:.1f}%)"
-                    if pre_pct > cap_frac
-                    else "fills a plan sleeve within the NVDA cap"
-                ),
+                f"fills a plan sleeve; {symbol} is {inst_wt * 100:.0f}% NVDA "
+                f"(<= the {gi.nvda_cap_pct:.0f}% cap) — a cap-compliant addition",
                 None,
             )
-        # The buy RAISES the NVDA share while over the cap → concentrating.
+        # Instrument is MORE NVDA-concentrated than the cap.
+        if book_pct >= cap_frac:
+            return (
+                CandidateStatus.VETO,
+                f"{symbol} is {inst_wt * 100:.0f}% NVDA — above the "
+                f"{gi.nvda_cap_pct:.0f}% cap while your book is already over it "
+                f"({book_pct * 100:.0f}%); adding it slows the deconcentration",
+                None,
+            )
+        # Under the cap: the book has headroom. Allow the slice that keeps it
+        # at/under the cap. x = (cap*book - current) / (inst_wt - cap).
+        max_notional = (
+            (cap_frac * gi.book_usd - gi.current_effective_nvda_usd)
+            / (inst_wt - cap_frac)
+        )
+        if max_notional >= notional:
+            return (CandidateStatus.APPROVE,
+                    f"{symbol} is {inst_wt * 100:.0f}% NVDA but the book has "
+                    f"headroom under the {gi.nvda_cap_pct:.0f}% cap", None)
+        if max_notional <= 0.0:
+            return (CandidateStatus.VETO,
+                    f"{symbol} is {inst_wt * 100:.0f}% NVDA — no headroom under "
+                    f"the {gi.nvda_cap_pct:.0f}% cap", None)
+        cap_pct = _floor_pct(max_notional, notional)
         return (
-            CandidateStatus.VETO,
-            f"buying {symbol} RAISES NVDA {pre_pct * 100:.1f}%→{post_pct * 100:.1f}% "
-            f"(its {add_nvda / notional * 100:.0f}% NVDA weight exceeds your book) — "
-            f"deepens the concentration being unwound",
-            None,
+            CandidateStatus.CAP_AT_PCT,
+            f"cap {symbol} at {cap_pct:.1f}% — it is {inst_wt * 100:.0f}% NVDA "
+            f"(> the {gi.nvda_cap_pct:.0f}% cap); larger would push the book over",
+            cap_pct,
         )
 
     return (CandidateStatus.APPROVE, "fills a plan sleeve within caps", None)
