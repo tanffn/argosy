@@ -11,6 +11,7 @@ import {
   type DeploymentMarketContextDTO,
   type DeploymentPlanDTO,
   type DeploymentTierDTO,
+  type PreflightDTO,
   type WindfallHorizon,
 } from "@/lib/api";
 
@@ -532,6 +533,7 @@ export function DeployCashCard({
           {plan.market_context && (
             <MarketContextStrip ctx={plan.market_context} />
           )}
+          {plan.preflight && <PreflightVerdict preflight={plan.preflight} />}
           {plan.tiers.map((t) => (
             <TierBlock
               key={t.name}
@@ -550,5 +552,57 @@ export function DeployCashCard({
         </>
       )}
     </section>
+  );
+}
+
+const PREFLIGHT_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
+  veto: { label: "Vetoed", cls: "text-red-600" },
+  cap_at_pct: { label: "Capped", cls: "text-amber-600" },
+  defer: { label: "Deferred", cls: "text-muted-foreground" },
+  requires_plan_change: { label: "Needs plan change", cls: "text-amber-600" },
+  move_to_reserve: { label: "To reserve", cls: "text-muted-foreground" },
+  approve_candidate: { label: "OK", cls: "text-emerald-600" },
+};
+
+/** Research verdict on the deterministic buy list: concentration/reserve checks
+ *  per line + any plan questions. Advisory (shadow) — annotates the list above. */
+function PreflightVerdict({ preflight }: { preflight: PreflightDTO }) {
+  const flagged = preflight.enriched.filter(
+    (e) => e.status !== "approve_candidate",
+  );
+  if (flagged.length === 0 && preflight.plan_gaps.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
+      <div className="text-xs font-medium">Research check</div>
+      {flagged.length > 0 && (
+        <ul className="mt-1 space-y-1 text-xs">
+          {flagged.map((e) => {
+            const s = PREFLIGHT_STATUS_STYLE[e.status] ?? {
+              label: e.status,
+              cls: "text-muted-foreground",
+            };
+            return (
+              <li key={e.symbol} className="flex gap-2">
+                <span className={`w-28 shrink-0 font-medium ${s.cls}`}>
+                  {e.symbol}: {s.label}
+                </span>
+                <span className="text-muted-foreground">{e.reason}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {preflight.plan_gaps.map((g) => (
+        <div key={g.asset_class} className="mt-2 text-xs text-amber-700">
+          {`Your plan has no "${g.asset_class}" sleeve — intended, or worth adding? `}
+          {g.reason_refs[0] ?? ""}
+        </div>
+      ))}
+      {preflight.notes.map((n, i) => (
+        <div key={i} className="mt-1 text-[11px] text-muted-foreground">
+          {n}
+        </div>
+      ))}
+    </div>
   );
 }

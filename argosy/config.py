@@ -181,8 +181,8 @@ class Settings(BaseSettings):
     #   - deployment_funnel_enabled: master switch. When False, /deploy-cash
     #     behaves exactly as before (no preflight block).
     #   - deployment_funnel_shadow: when True (DEFAULT), the preflight annotates
-    #     the response but does NOT alter the deterministic buy list.
-    deployment_funnel_enabled: bool = Field(default=False)
+    #     the response (shown in the UI) but does NOT re-rank the buy list yet.
+    deployment_funnel_enabled: bool = Field(default=True)
     deployment_funnel_shadow: bool = Field(default=True)
 
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually

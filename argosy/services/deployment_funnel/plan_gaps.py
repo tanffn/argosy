@@ -50,9 +50,11 @@ def detect_missing_classes(doc) -> list[PlanGap]:
                     current_target_pct=0.0,
                     proposed_target_pct=None,
                     reason_refs=(
-                        f"the plan has no '{asset_class}' sleeve (0%); it is a "
-                        "structural diversification gap — raise a plan change to "
-                        "add it (weight engine-derived), then deploy on-plan",
+                        f"the plan has no '{asset_class}' sleeve. This is a "
+                        "QUESTION, not a verified gap: the fleet's plan carries a "
+                        "Real assets (REIT/TIPS) sleeve and chose not to add gold "
+                        "— which may be deliberate (e.g. gold near all-time highs). "
+                        "Surfaced for the owner to decide; not auto-filled.",
                     ),
                     blocked_amount_usd=0.0,
                 )

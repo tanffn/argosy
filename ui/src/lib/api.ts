@@ -610,6 +610,34 @@ export interface DeploymentMarketContextDTO {
   is_any_stale: boolean;
 }
 
+/** Research preflight: per-candidate verdict + plan gaps. Present only when the
+ *  deployment-funnel engine is enabled; null otherwise. */
+export interface PreflightCandidateDTO {
+  symbol: string;
+  status: string;          // approve_candidate | veto | defer | cap_at_pct | requires_plan_change | move_to_reserve
+  reason: string;
+  effective_nvda_usd: number;
+  news_sentiment: string | null;
+  cap_pct: number | null;
+  pct_below_ath: number | null;
+}
+
+export interface PlanGapDTO {
+  asset_class: string;
+  current_target_pct: number;
+  proposed_target_pct: number | null;
+  reason_refs: string[];
+  blocked_amount_usd: number;
+}
+
+export interface PreflightDTO {
+  deployable_usd: number;
+  kept_total_usd: number;
+  enriched: PreflightCandidateDTO[];
+  plan_gaps: PlanGapDTO[];
+  notes: string[];
+}
+
 export interface DeploymentPlanDTO {
   deploy_amount_usd: number;
   as_of: string;
@@ -623,6 +651,8 @@ export interface DeploymentPlanDTO {
   tiers: DeploymentTierDTO[];
   caveats: string[];
   note: string;
+  /** Research preflight verdict; null when the engine is disabled. */
+  preflight?: PreflightDTO | null;
 }
 
 // ----------------------------------------------------------------------
