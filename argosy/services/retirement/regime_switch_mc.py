@@ -197,6 +197,8 @@ def simulate_regime_switch(
             current_age=household.current_age_years,
             months=months,
             has_kids=household_has_kids,
+            kids_birth_years=list(household.kid_birth_years) or None,
+            reference_year=today.year,
         )
     if regime_params is None:
         regime_params = DEFAULT_REGIME_PARAMS

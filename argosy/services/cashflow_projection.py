@@ -87,6 +87,12 @@ class HouseholdState:
     # preserves the no-savings legacy behavior for users without an
     # identity_yaml or with negative discretionary cashflow.
     monthly_savings_nis: float = 0.0
+    # Kids' REAL birth years from identity_yaml, used to place the
+    # life-stage "kids peak / empty nest" expense phases on the parent's
+    # age axis in the solvency MC (phase_expenses) instead of the legacy
+    # 43-55 assumption. Empty tuple = no birth-year data (phase_expenses
+    # falls back to its documented assumption). See extract_household_state.
+    kid_birth_years: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,6 +343,70 @@ def _compute_age_years(date_of_birth_iso: str | None, today: date) -> float:
     return days / 365.25
 
 
+def _derive_kid_birth_years(ctx: object, today: date) -> tuple[int, ...]:
+    """Kids' birth years from identity_yaml, preferring the REAL data.
+
+    Two sources exist in identity_yaml and neither is a dedicated
+    ``kid_birth_years`` field:
+      * ``education_savings_accounts.*.child_dob`` — an explicit ISO DOB for
+        kids with a savings account (the ground truth where present).
+      * ``dependents_ages`` / ``children[].age`` — the count-authoritative
+        roster of current ages (birth_year = today.year - age; the identity
+        keeps these current).
+
+    Strategy: build the full roster from the ages (so every kid is counted),
+    then overwrite the nearest age-derived year with an explicit ``child_dob``
+    year when the two agree within a year (real DOB wins). Returns an empty
+    tuple when no kid data is present — the caller / phase_expenses then falls
+    back to the documented life-stage assumption rather than inventing kids.
+    """
+    if not isinstance(ctx, dict):
+        return ()
+
+    # Explicit real DOBs (year only — the phase model works in integer ages).
+    explicit: list[int] = []
+    esa = ctx.get("education_savings_accounts")
+    if isinstance(esa, dict):
+        for v in esa.values():
+            dob = v.get("child_dob") if isinstance(v, dict) else None
+            if dob:
+                try:
+                    explicit.append(int(str(dob)[:4]))
+                except (ValueError, TypeError):
+                    continue
+
+    # Count-authoritative roster of current ages -> birth years.
+    ages: list[int] = []
+    dep = ctx.get("dependents_ages")
+    if isinstance(dep, list):
+        ages = [int(a) for a in dep if isinstance(a, (int, float))]
+    if not ages:
+        kids = ctx.get("children")
+        if isinstance(kids, list):
+            for k in kids:
+                if isinstance(k, dict) and isinstance(k.get("age"), (int, float)):
+                    ages.append(int(k["age"]))
+
+    result = sorted(today.year - a for a in ages)
+
+    # Prefer an explicit DOB where it lines up (within 1y) with an age-derived
+    # year — the real birth year replaces the age estimate for that kid.
+    for by in sorted(explicit):
+        best_i = None
+        best_d = 2  # only match within +/-1 year
+        for i, d in enumerate(result):
+            gap = abs(d - by)
+            if gap < best_d:
+                best_i, best_d = i, gap
+        if best_i is not None:
+            result[best_i] = by
+
+    if not result:  # no ages roster — fall back to explicit DOBs alone
+        result = sorted(explicit)
+
+    return tuple(sorted(result))
+
+
 def extract_household_state(
     session: Session,
     user_id: str,
@@ -403,12 +473,14 @@ def extract_household_state(
     if isinstance(ctx, dict):
         dob_iso = ctx.get("user_date_of_birth") or ctx.get("date_of_birth")
     age = _compute_age_years(dob_iso, today)
+    kid_birth_years = _derive_kid_birth_years(ctx, today)
     return HouseholdState(
         monthly_expenses_nis=monthly_expenses_nis,
         portfolio_value_nis=portfolio_value_nis,
         fx_usd_nis=fx_usd_nis,
         current_age_years=age,
         monthly_savings_nis=monthly_savings_nis,
+        kid_birth_years=kid_birth_years,
     )
 
 
@@ -816,6 +888,8 @@ def project_monte_carlo(
             current_age=household.current_age_years,
             months=months,
             has_kids=household_has_kids,
+            kids_birth_years=list(household.kid_birth_years) or None,
+            reference_year=today.year,
         )
 
     rng = np.random.default_rng(seed)
