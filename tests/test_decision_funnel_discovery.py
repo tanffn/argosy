@@ -98,6 +98,28 @@ def test_loader_routes_only_high_conviction_buys(sf):
     assert "10-K" in c.extra["grader_cites"]
 
 
+def test_lowering_floor_to_medium_routes_med_and_high(sf):
+    # The conviction floor is a real FLOOR (>=), IPS/policy-owned: lowering it to
+    # MEDIUM routes MEDIUM + HIGH BUYs (the grader's MED picks are no longer
+    # silently vetoed), while LOW and non-BUYs still drop.
+    from dataclasses import replace
+
+    from argosy.services.decision_funnel.policy import DEFAULT_POLICY
+
+    s = sf()
+    _seed_pick(s, "ASML", "HIGH", "BUY")
+    _seed_pick(s, "MELI", "MED", "BUY")
+    _seed_pick(s, "TEVA", "LOW", "BUY")     # below a MEDIUM floor -> drop
+    _seed_pick(s, "SHOP", "HIGH", "WATCH")  # not a BUY -> drop
+    s.commit()
+    policy = replace(DEFAULT_POLICY, discovery_conviction_floor="MEDIUM")
+    cands = load_discovery_candidates(
+        s, user_id="ariel", held_tickers=set(), policy=policy
+    )
+    s.close()
+    assert sorted(c.subject for c in cands) == ["ASML", "MELI"]
+
+
 def test_loader_skips_held_names(sf):
     s = sf()
     _seed_pick(s, "NVDA", "HIGH", "BUY")  # already held

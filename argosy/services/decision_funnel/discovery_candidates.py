@@ -25,6 +25,13 @@ from argosy.services.decision_funnel.stage1_routing import RoutedCandidate
 if TYPE_CHECKING:  # pragma: no cover
     from sqlalchemy.orm import Session
 
+# Conviction ordering, so the policy's ``discovery_conviction_floor`` is a real
+# FLOOR (admit this level AND stronger), not an exact-equality veto. With the
+# default floor HIGH only HIGH routes (unchanged); lowering the floor to MEDIUM
+# routes MEDIUM + HIGH — i.e. the owner/IPS decides how much of the grader's BUY
+# conviction to deep-review, instead of a hardcoded HIGH-only drop of MED/LOW.
+_CONVICTION_RANK: dict[str, int] = {"LOW": 1, "MED": 2, "MEDIUM": 2, "HIGH": 3}
+
 
 def _active_fleet_picks(session: Session, user_id: str):
     """Yield the persisted, still-``active`` FleetPicks for the user. Best-effort:
@@ -68,6 +75,7 @@ def load_discovery_candidates(
     if not policy.route_discovery_picks:
         return []
     floor = (policy.discovery_conviction_floor or "HIGH").upper()
+    floor_rank = _CONVICTION_RANK.get(floor, 3)  # unknown floor -> HIGH (strictest)
     held = {t.upper() for t in held_tickers}
     seen: set[str] = set()
     out: list[RoutedCandidate] = []
@@ -77,8 +85,10 @@ def load_discovery_candidates(
             continue
         conviction = (pick.conviction or "").upper()
         verdict = (pick.verdict or "").upper()
-        # Only a HIGH-conviction BUY earns a new-name deep review.
-        if conviction != floor or verdict != "BUY":
+        # A BUY at or above the policy's conviction FLOOR earns a new-name deep
+        # review. The floor is IPS/policy-owned: HIGH (default) routes only HIGH;
+        # MEDIUM routes MEDIUM+HIGH; the grader's picks are not silently vetoed.
+        if verdict != "BUY" or _CONVICTION_RANK.get(conviction, 0) < floor_rank:
             continue
         seen.add(tk)
         out.append(

@@ -340,6 +340,35 @@ def compute_liquidity_gate(*, user_id: str, session: Session) -> GateVerdict:
     )
 
 
+# Prior in-code boundaries — kept ONLY as the fail-safe fallback when the
+# plan/IPS reference can't be resolved. The authoritative source is the
+# reference YAML key ``risk.conflict_ruin_{fail,warn}_threshold`` (per-user
+# overridable). See _conflict_ruin_thresholds.
+_FALLBACK_CONFLICT_RUIN_FAIL = 0.50
+_FALLBACK_CONFLICT_RUIN_WARN = 0.30
+
+
+def _conflict_ruin_thresholds(user_id: str, session: Session) -> tuple[float, float]:
+    """(fail, warn) P(ruin) boundaries for the conflict gate, IPS-owned via the
+    hybrid resolver (per-user override -> shipped provisional default). Falls back
+    to the prior in-code constants if a key is missing/unresolvable — a fail-safe
+    default, never a HARDER boundary. Warn is clamped below fail so a mis-set pair
+    can't invert the verdict ordering."""
+    from argosy.services.retirement.reference import ResolveError, resolve
+
+    def _get(key: str, fallback: float) -> float:
+        try:
+            v = resolve(key, user_id=user_id, session=session)
+            return float(v.value) if v.value is not None else fallback
+        except (ResolveError, ValueError, TypeError):
+            return fallback
+
+    fail = _get("risk.conflict_ruin_fail_threshold", _FALLBACK_CONFLICT_RUIN_FAIL)
+    warn = _get("risk.conflict_ruin_warn_threshold", _FALLBACK_CONFLICT_RUIN_WARN)
+    warn = min(warn, fail)  # warn can never exceed fail
+    return fail, warn
+
+
 def compute_conflict_scenario_gate(
     *,
     user_id: str,
@@ -381,14 +410,22 @@ def compute_conflict_scenario_gate(
 
     p_ruin_at_85 = 1.0 - float(verdict.p_solvent_at_85.value or 0.0)
 
-    if p_ruin_at_85 > 0.50:
+    # Risk-tolerance BOUNDARIES are IPS-owned, not code constants: the stress
+    # parameters above (sigma/inflation) are the scenario; "how much ruin risk is
+    # acceptable" is a plan judgment. Resolve from the plan/IPS reference (per-user
+    # override -> shipped provisional default), falling back to the prior in-code
+    # values only if the reference is unavailable (fail-safe, never harder).
+    fail_threshold, warn_threshold = _conflict_ruin_thresholds(user_id, session)
+
+    if p_ruin_at_85 > fail_threshold:
         status: GateStatus = "FAIL"
         action = (
-            f"FAIL under conflict scenario — P(ruin at 85) = {p_ruin_at_85:.0%}. "
+            f"FAIL under conflict scenario — P(ruin at 85) = {p_ruin_at_85:.0%} "
+            f"(> the {fail_threshold:.0%} IPS fail boundary). "
             "Build cash reserves + diversify into NIS-denominated assets + "
             "consider sovereign-bond holdings as a hedge."
         )
-    elif p_ruin_at_85 > 0.30:
+    elif p_ruin_at_85 > warn_threshold:
         status = "WARN"
         action = (
             f"WARN under conflict scenario — P(ruin at 85) = {p_ruin_at_85:.0%}. "
@@ -399,7 +436,7 @@ def compute_conflict_scenario_gate(
         status = "PASS"
         action = (
             f"Resilient under conflict scenario — P(ruin at 85) = "
-            f"{p_ruin_at_85:.0%} stays under the 30% threshold."
+            f"{p_ruin_at_85:.0%} stays under the {warn_threshold:.0%} threshold."
         )
 
     return GateVerdict(

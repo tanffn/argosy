@@ -165,3 +165,26 @@ values:
     as_of_date: "2026-01"
     rationale: "S&P 500-like volatility for a diversified equity portfolio. Concentrated portfolios will be auto-calibrated higher in Wave 3."
     confidence: "medium"
+
+  # ─── Conflict-scenario risk-tolerance boundaries (IPS-owned) ─────────
+  # The P(ruin at 85) verdict boundaries for the Israel conflict stress gate
+  # (safety_gates.compute_conflict_scenario_gate). These are RISK-TOLERANCE
+  # judgments, not sourced facts — the stress PARAMETERS (sigma/inflation) are
+  # the scenario; these boundaries are how much ruin risk is acceptable, which
+  # belongs to the plan/IPS, not a hardcoded constant. Provisional defaults
+  # (the prior in-code values) pending an explicit IPS risk-tolerance input;
+  # override per-user via identity_yaml.retirement_reference_overrides.
+  risk.conflict_ruin_fail_threshold:
+    value: 0.50
+    unit: "fraction"
+    source_id: "provisional_ips_default"
+    as_of_date: "2026-07"
+    rationale: "P(ruin at 85) above this under the conflict stress pack fails the gate. Provisional risk-tolerance default; make IPS-owned."
+    confidence: "low"
+  risk.conflict_ruin_warn_threshold:
+    value: 0.30
+    unit: "fraction"
+    source_id: "provisional_ips_default"
+    as_of_date: "2026-07"
+    rationale: "P(ruin at 85) above this (but at/under the fail threshold) warns. Provisional risk-tolerance default; make IPS-owned."
+    confidence: "low"
