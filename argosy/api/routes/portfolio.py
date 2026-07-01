@@ -1545,7 +1545,28 @@ def get_deploy_cash(
         market_context=ctx, sleeve_pct=sleeve_pct,
         use_high_potential=use_high_potential, user_id=user_id,
     )
-    return deployment_plan_to_dto(plan, market_context=ctx)
+    dto = deployment_plan_to_dto(plan, market_context=ctx)
+
+    # Shadow research preflight (deterministic; behind the kill switch). Annotates
+    # the response with per-candidate status/reason (look-through cap, reserve,
+    # plan-gap) WITHOUT altering `tiers`. Never breaks deploy-cash on failure.
+    if doc is not None and get_settings().deployment_funnel_enabled:
+        try:
+            from argosy.services.contracts import preflight_result_to_dto
+            from argosy.services.deployment_funnel.from_plan import (
+                run_preflight_for_plan,
+            )
+
+            result = run_preflight_for_plan(
+                plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
+                deployable_usd=amount,
+            )
+            dto.preflight = preflight_result_to_dto(result)
+        except Exception as exc:  # noqa: BLE001 — additive; never break the route
+            _log.warning(
+                "deploy_cash.preflight_failed", user_id=user_id, error=str(exc),
+            )
+    return dto
 
 
 # --- Combined high-potential discovery surface (Slice 2) -------------------

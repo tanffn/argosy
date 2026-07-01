@@ -350,6 +350,36 @@ def market_context_to_dto(ctx) -> DeploymentMarketContextDTO:
     )
 
 
+class PreflightCandidateDTO(BaseModel):
+    symbol: str
+    status: str                       # CandidateStatus value
+    reason: str
+    effective_nvda_usd: float
+    news_sentiment: str | None = None
+    cap_pct: float | None = None
+    pct_below_ath: float | None = None
+
+
+class PlanGapDTO(BaseModel):
+    asset_class: str
+    current_target_pct: float
+    proposed_target_pct: float | None = None
+    reason_refs: list[str] = []
+    blocked_amount_usd: float
+
+
+class PreflightDTO(BaseModel):
+    """Shadow research overlay on the deterministic buy list: per-candidate
+    status + reason (look-through cap, reserve, plan-gap), typed plan gaps, and
+    any 'concentration unverified' notes. Additive — does not alter `tiers`."""
+
+    deployable_usd: float
+    kept_total_usd: float
+    enriched: list[PreflightCandidateDTO]
+    plan_gaps: list[PlanGapDTO] = []
+    notes: list[str] = []
+
+
 class DeploymentPlanDTO(BaseModel):
     deploy_amount_usd: float
     as_of: str
@@ -362,6 +392,7 @@ class DeploymentPlanDTO(BaseModel):
     tiers: list[DeploymentTierDTO]
     caveats: list[str]
     note: str = ""
+    preflight: PreflightDTO | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
@@ -388,6 +419,37 @@ def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
             ) for l in t.lines],
         ) for t in plan.tiers],
         caveats=list(plan.caveats), note=plan.note,
+    )
+
+
+def preflight_result_to_dto(result) -> "PreflightDTO":
+    """Project a deployment_funnel PreflightResult into the wire DTO."""
+    return PreflightDTO(
+        deployable_usd=result.deployable_usd,
+        kept_total_usd=result.kept_total_usd,
+        enriched=[
+            PreflightCandidateDTO(
+                symbol=e.symbol,
+                status=e.status.value,
+                reason=e.reason,
+                effective_nvda_usd=e.effective_nvda_usd,
+                news_sentiment=e.news_sentiment,
+                cap_pct=e.cap_pct,
+                pct_below_ath=e.history.pct_below_ath,
+            )
+            for e in result.enriched
+        ],
+        plan_gaps=[
+            PlanGapDTO(
+                asset_class=g.asset_class,
+                current_target_pct=g.current_target_pct,
+                proposed_target_pct=g.proposed_target_pct,
+                reason_refs=list(g.reason_refs),
+                blocked_amount_usd=g.blocked_amount_usd,
+            )
+            for g in result.plan_gaps
+        ],
+        notes=list(result.notes),
     )
 
 
