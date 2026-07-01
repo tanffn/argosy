@@ -71,3 +71,13 @@ def test_run_preflight_for_plan_flags_lookthrough_and_reserve(monkeypatch):
     assert by["CSPX"] is CandidateStatus.VETO
     # Reserve funded => IB01 vetoed.
     assert by["IB01"] is CandidateStatus.VETO
+
+
+def test_unmapped_held_fund_surfaces_baseline_undercount_note():
+    # A held symbol with no look-through entry (codex): the current-NVDA
+    # baseline may be under-counted, so the note must flag it.
+    holdings = {"NVDA": 2_296_000.0, "ZZZFUND": 60_000.0}
+    res = run_preflight_for_plan(
+        _plan(), doc=_doc(), holdings_usd=holdings, cash_usd=145_000.0,
+        deployable_usd=95_000.0, snapshot_prices={"CSPX": 100.0, "IB01": 100.0})
+    assert any("UNDER-counted" in n and "ZZZFUND" in n for n in res.notes)

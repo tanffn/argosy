@@ -153,11 +153,33 @@ def run_preflight_for_plan(
     # class the plan lacks. Owner approves adding the sleeve; then deploy on-plan.
     from dataclasses import replace
 
+    from argosy.services.deployment_funnel.look_through import has_lookthrough
     from argosy.services.deployment_funnel.plan_gaps import detect_missing_classes
 
-    structural = detect_missing_classes(doc)
-    if structural:
-        result = replace(result, plan_gaps=result.plan_gaps + tuple(structural))
+    added_gaps = tuple(detect_missing_classes(doc))
+    # Surface HELD symbols with no look-through entry (codex): the current-NVDA
+    # baseline sums look-through over holdings, so an unmapped held fund silently
+    # under-counts NVDA and LOOSENS the cap. Flag it rather than trust the 0.
+    unmapped_held = sorted(
+        {
+            s
+            for s in holdings_usd
+            if not has_lookthrough(s) and s.upper() not in CASH_LIKE_SYMBOLS
+        }
+    )
+    added_notes: tuple[str, ...] = ()
+    if unmapped_held:
+        added_notes = (
+            "current-NVDA baseline may be UNDER-counted (cap too loose): held "
+            + ", ".join(unmapped_held)
+            + " have no look-through entry — extend LOOKTHROUGH_MAP",
+        )
+    if added_gaps or added_notes:
+        result = replace(
+            result,
+            plan_gaps=result.plan_gaps + added_gaps,
+            notes=result.notes + added_notes,
+        )
     return result
 
 

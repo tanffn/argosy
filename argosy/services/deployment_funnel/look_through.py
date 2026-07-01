@@ -17,10 +17,16 @@ LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     "QQQM": {"nvda": 0.08, "us": 1.00},
     "SPMV": {"nvda": 0.01, "us": 1.00},   # min-vol underweights NVDA
     "SPMO": {"nvda": 0.10, "us": 1.00},
+    "CNDX": {"nvda": 0.14, "us": 1.00},   # iShares Nasdaq 100 — HELD, NVDA-heavy
+    "VTV": {"nvda": 0.005, "us": 1.00},   # US value — HELD
+    "SCHD": {"nvda": 0.005, "us": 1.00},  # US dividend — HELD
     # World funds — partial US, small NVDA.
     "FWRA": {"nvda": 0.04, "us": 0.65},
     "ACWD": {"nvda": 0.04, "us": 0.63},
     "IWDA": {"nvda": 0.05, "us": 0.70},
+    "IWDP": {"nvda": 0.00, "us": 0.55},   # developed property — HELD
+    "IUHC": {"nvda": 0.00, "us": 0.70},   # S&P healthcare — HELD
+    "XZEW": {"nvda": 0.02, "us": 0.60},   # S&P500 equal-weight ESG — HELD
     "EXUS": {"nvda": 0.00, "us": 0.00},   # World ex-US
     "EIMI": {"nvda": 0.00, "us": 0.00},   # EM
     # Alternatives / cash-like — zero NVDA, zero US-equity.
