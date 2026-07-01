@@ -84,6 +84,13 @@ def classify_candidate(
     #    reconcile a cash-funded buy against the plan's OWN NVDA cap number. It
     #    does NOT encode an investment judgment about single-name risk quality.
     #
+    #    SCOPE (important): the cap is a SINGLE-NAME DENSITY limit. This gate
+    #    enforces "no NEW buy denser in NVDA than the cap without review" — it does
+    #    NOT try to force post-trade TOTAL book NVDA <= cap when the book already
+    #    starts over the cap (a cash buy can't reduce an existing over-weight; only
+    #    SELLING NVDA does). So a diversified fund at/below cap density APPROVES
+    #    even on an over-cap book; refusing it would just strand cash.
+    #
     #    A cash-funded buy reallocates within a FIXED book (cash -> fund doesn't
     #    change the total), so adding ANY NVDA look-through nudges the book NVDA %
     #    UP. Two regimes:
@@ -105,19 +112,35 @@ def classify_candidate(
         book_pct = (
             gi.current_effective_nvda_usd / gi.book_usd if gi.book_usd > 0 else 1.0
         )
-        if book_pct >= cap_frac:
-            # At/over the plan cap: a genuine judgment call — route to the fleet.
+        if inst_wt <= cap_frac + 1e-9:
+            # The instrument's own NVDA density is AT/BELOW the plan's single-name
+            # cap. Buying a diversified fund with SOME NVDA (e.g. CSPX ~7%, FUSA
+            # ~6%) cannot make single-name density worse than the cap the plan
+            # already accepts, and it is exactly what the plan targets. The book's
+            # over-cap concentration is reduced by SELLING NVDA, not by refusing
+            # diversified equity and stranding cash. Plan-compliant -> APPROVE.
             return (
-                CandidateStatus.NEEDS_FLEET_REVIEW,
-                f"book is {book_pct * 100:.0f}% NVDA (look-through), at/over the "
-                f"{gi.nvda_cap_pct:.0f}% plan cap; {symbol} adds "
-                f"{inst_wt * 100:.0f}% NVDA-correlated exposure — whether to add "
-                f"more now vs deconcentrate/reserve is a risk-officer judgment, "
-                f"routed to the fleet",
+                CandidateStatus.APPROVE,
+                f"{symbol} is {inst_wt * 100:.0f}% NVDA look-through — within the "
+                f"{gi.nvda_cap_pct:.0f}% single-name cap; a plan-compliant "
+                f"diversified buy",
                 None,
             )
-        # Book has headroom under the plan cap: PURE arithmetic reconcile.
-        # Cash-funded (fixed book B): (C + w*x)/B <= cap  =>  x <= (cap*B - C)/w.
+        # Instrument is DENSER in NVDA than the cap (e.g. R1GR ~14%, direct NVDA).
+        if book_pct >= cap_frac:
+            # Book already at/over the cap AND the instrument is more NVDA-dense
+            # than the cap: whether to add it now vs deconcentrate/reserve is a
+            # genuine risk judgment the cap number can't answer -> route to fleet.
+            return (
+                CandidateStatus.NEEDS_FLEET_REVIEW,
+                f"{symbol} is {inst_wt * 100:.0f}% NVDA look-through — DENSER than "
+                f"the {gi.nvda_cap_pct:.0f}% cap, and the book is already "
+                f"{book_pct * 100:.0f}% NVDA (over the cap). Adding a >cap-dense "
+                f"instrument here is a risk-officer judgment, routed to the fleet",
+                None,
+            )
+        # Book has headroom: PURE arithmetic reconcile of a >cap-dense instrument —
+        # cash-funded (fixed book B): (C + w*x)/B <= cap  =>  x <= (cap*B - C)/w.
         max_notional = (
             cap_frac * gi.book_usd - gi.current_effective_nvda_usd
         ) / inst_wt
@@ -128,8 +151,8 @@ def classify_candidate(
         cap_pct = _floor_pct(max_notional, notional)
         return (
             CandidateStatus.CAP_AT_PCT,
-            f"cap {symbol} at {cap_pct:.1f}% — larger would push the book past "
-            f"the {gi.nvda_cap_pct:.0f}% NVDA plan cap",
+            f"cap {symbol} at {cap_pct:.1f}% — it is {inst_wt * 100:.0f}% NVDA "
+            f"(> the {gi.nvda_cap_pct:.0f}% cap); larger would push the book over",
             cap_pct,
         )
 

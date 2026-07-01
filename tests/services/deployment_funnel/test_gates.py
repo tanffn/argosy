@@ -37,35 +37,37 @@ _GI = GateInputs(
 )
 
 
-# _GI's book is 2.296M / 4.06M ≈ 56.6% NVDA — far over the 13% plan cap. So the
-# engine does NOT invent an approve/veto for ANY NVDA-bearing buy while over the
-# cap; it ROUTES the judgment to the fleet (NEEDS_FLEET_REVIEW). Only zero-NVDA
-# diversifiers deploy freely, and the pure-arithmetic reconcile applies only when
-# the book has headroom under the cap (tested separately below).
+# _GI's book is 2.296M / 4.06M ≈ 56.6% NVDA — far over the 13% plan cap. The gate
+# reconciles a buy against the plan's SINGLE-NAME cap density: an instrument no
+# denser than the cap (CSPX ~7%, FUSA ~6%) is a plan-compliant diversified buy and
+# APPROVES even while the book is over the cap (deconcentration is a SELL decision,
+# not a reason to strand cash). Only an instrument DENSER than the cap (R1GR ~14%,
+# direct NVDA 100%), added while the book is over the cap, is a genuine judgment
+# that ROUTES to the fleet.
 
-def test_nvda_bearing_index_over_cap_routes_to_fleet():
-    # CSPX carries ~7% NVDA look-through. With the book already over the plan cap,
-    # whether to add ANY more NVDA-correlated exposure is a risk-officer judgment,
-    # not a hand-coded rule -> route to the fleet.
+def test_below_cap_density_index_approved_even_when_book_over_cap():
+    # CSPX ~7% NVDA <= the 13% cap: buying it can't worsen single-name density past
+    # the cap, and it's what the plan targets -> APPROVE (do NOT strand the cash).
     st, reason, cap = classify_candidate(
         _cand("CSPX", 22000.0), "CSPX", _hf(), "neutral", _GI
     )
-    assert st is CandidateStatus.NEEDS_FLEET_REVIEW
+    assert st is CandidateStatus.APPROVE
     assert cap is None
-    assert "plan cap" in reason and "fleet" in reason
+    assert "within the 13% single-name cap" in reason
 
 
 def test_direct_nvda_over_cap_routes_to_fleet():
-    # Direct NVDA (100% NVDA) while the book is over the cap — the engine no longer
-    # vetoes by hand; the fleet decides (sell to deconcentrate? reserve? add?).
+    # Direct NVDA (100% >> 13% cap) while the book is over the cap — DENSER than the
+    # cap; the engine doesn't veto by hand, the fleet decides (sell? reserve? add?).
     st, _, _ = classify_candidate(
         _cand("NVDA", 22000.0), "NVDA", _hf(), None, _GI
     )
     assert st is CandidateStatus.NEEDS_FLEET_REVIEW
 
 
-def test_r1gr_over_cap_routes_to_fleet():
-    # R1GR ~14% NVDA; book over cap -> routed to the fleet (was a hand-coded veto).
+def test_r1gr_denser_than_cap_over_cap_routes_to_fleet():
+    # R1GR ~14% NVDA > 13% cap, book over cap -> a >cap-dense add is routed to the
+    # fleet (the live fleet run VETO'd it).
     st, _, _ = classify_candidate(
         _cand("R1GR", 13000.0), "R1GR", _hf(), None, _GI
     )
@@ -73,40 +75,40 @@ def test_r1gr_over_cap_routes_to_fleet():
 
 
 # ---------------------------------------------------------------------------
-# Pure-arithmetic reconcile: ONLY when the book has headroom under the plan cap.
-# Derives entirely from the plan's own cap number — no investment judgment.
+# Pure-arithmetic reconcile: a >cap-DENSE instrument while the book still has
+# headroom under the cap. Derives entirely from the plan's own cap number.
 # ---------------------------------------------------------------------------
 
 # Book 200k NVDA / 2.0M = 10% < 13% cap -> headroom exists.
 _GI_HEADROOM = GateInputs(
     current_effective_nvda_usd=200_000.0, book_usd=2_000_000.0,
     nvda_cap_pct=13.0, reserve_shortfall_usd=0.0,
-    plan_classes=frozenset({"US broad-market core"}),
-    class_of={"CSPX": "US broad-market core"},
+    plan_classes=frozenset({"US broad-market core", "US growth tilt (ex-NVDA)"}),
+    class_of={"CSPX": "US broad-market core", "R1GR": "US growth tilt (ex-NVDA)"},
 )
 
 
-def test_under_cap_small_nvda_buy_approved():
-    # A small CSPX buy keeps the resulting book under the 13% cap -> APPROVE.
+def test_below_cap_density_buy_approved_with_headroom():
+    # CSPX ~7% <= 13% cap -> plan-compliant APPROVE regardless of book headroom.
     st, reason, cap = classify_candidate(
         _cand("CSPX", 10_000.0), "CSPX", _hf(), None, _GI_HEADROOM
     )
     assert st is CandidateStatus.APPROVE
     assert cap is None
-    assert "13% NVDA plan cap" in reason
+    assert "single-name cap" in reason
 
 
-def test_under_cap_large_nvda_buy_capped_to_the_plan_cap():
-    # A very large CSPX buy would push the book past 13% -> CAP_AT_PCT to the slice
-    # that lands the resulting book exactly at the plan cap. cap*B - C = 60k of
-    # NVDA headroom; at ~7% instrument weight that's ~857k of CSPX notional, so a
-    # 2M buy is capped to ~43%. Assert it is a partial cap, not a hand-coded veto.
+def test_dense_instrument_capped_to_the_plan_cap_with_headroom():
+    # R1GR ~14% NVDA is DENSER than the 13% cap. With the book under the cap, a
+    # large R1GR buy is CAP_AT_PCT to the slice that lands the resulting book at the
+    # cap: headroom cap*B - C = 0.13*2M - 200k = 60k NVDA; at 14% density that is
+    # ~428.6k of R1GR notional, so a 2M buy caps to ~21%. A partial cap, not a veto.
     st, reason, cap = classify_candidate(
-        _cand("CSPX", 2_000_000.0), "CSPX", _hf(), None, _GI_HEADROOM
+        _cand("R1GR", 2_000_000.0), "R1GR", _hf(), None, _GI_HEADROOM
     )
     assert st is CandidateStatus.CAP_AT_PCT
-    assert cap is not None and 0.0 < cap < 100.0
-    assert "plan cap" in reason
+    assert cap is not None and 20.0 < cap < 22.0
+    assert "cap" in reason
 
 
 def test_tbill_when_reserve_funded_is_vetoed():
