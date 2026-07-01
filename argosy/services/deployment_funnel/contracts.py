@@ -12,6 +12,7 @@ class CandidateStatus(str, Enum):
     DEFER = "defer"
     REQUIRES_PLAN_CHANGE = "requires_plan_change"
     CAP_AT_PCT = "cap_at_pct"
+    MOVE_TO_RESERVE = "move_to_reserve"   # don't buy; park the $ in the reserve
 
 
 CANDIDATE_STATUSES = tuple(s.value for s in CandidateStatus)
