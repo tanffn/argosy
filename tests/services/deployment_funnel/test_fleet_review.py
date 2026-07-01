@@ -173,3 +173,36 @@ class TestSizeParsing:
     ])
     def test_keep_pct(self, conds, expected):
         assert _size_from_conditions(conds) == expected
+
+
+class TestBackendResilience:
+    """One flaky agent must not sink the whole candidate; too few responses hold."""
+
+    def _adj(self, n_failing):
+        e = [_enriched("CSPX", 22000.0, 1540.0)]
+        persp = ("aggressive", "neutral", "conservative")
+
+        def ro_factory(_u, p):
+            i = persp.index(p)
+            if i < n_failing:
+                class _Boom:
+                    async def run(self, **_kw):
+                        raise RuntimeError("transient exit 1")
+                return _Boom()
+            return _FakeRisk("APPROVE", perspective=p)
+
+        def fm_factory(_u):
+            return _FakeFM("green_light")
+
+        return adjudicate_sync(
+            e, context=_CTX, user_id="ariel",
+            risk_officer_factory=ro_factory, fund_manager_factory=fm_factory,
+        )
+
+    def test_one_flaky_officer_still_decides(self):
+        out = self._adj(n_failing=1)  # 2 of 3 respond -> majority holds
+        assert out[0].status is CandidateStatus.APPROVE
+
+    def test_two_flaky_officers_hold_fail_closed(self):
+        out = self._adj(n_failing=2)  # only 1 responds -> insufficient -> held
+        assert out[0].status is CandidateStatus.NEEDS_FLEET_REVIEW

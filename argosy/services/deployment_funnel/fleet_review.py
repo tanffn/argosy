@@ -209,9 +209,20 @@ async def _adjudicate_one(
         )
         return report.output
 
-    risk_verdicts = list(
-        await asyncio.gather(*[_run_risk(p) for p in _PERSPECTIVES])
+    # Tolerate a flaky agent backend: gather with return_exceptions so ONE failing
+    # risk officer (e.g. a transient claude.exe exit-1) doesn't sink the whole
+    # candidate. Require a majority (>=2 of 3) to have responded for a real
+    # consensus; otherwise raise -> _guarded holds it (fail-closed, never a
+    # verdict off a single voice).
+    raw = await asyncio.gather(
+        *[_run_risk(p) for p in _PERSPECTIVES], return_exceptions=True
     )
+    risk_verdicts = [r for r in raw if not isinstance(r, BaseException)]
+    if len(risk_verdicts) < 2:
+        raise RuntimeError(
+            f"insufficient risk-officer responses "
+            f"({len(risk_verdicts)}/{len(_PERSPECTIVES)}) — holding"
+        )
 
     consensus = {
         "verdicts": [
