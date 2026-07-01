@@ -1557,9 +1557,21 @@ def get_deploy_cash(
                 run_preflight_for_plan,
             )
 
+            # Feed the snapshot's stored prices so HELD symbols resolve without a
+            # live fetch (UCITS tickers often need an exchange suffix on yfinance);
+            # only genuinely-new symbols fall through to a live quote.
+            snapshot_prices: dict[str, float] = {}
+            _row = get_latest_snapshot_row(db, user_id)
+            if _row is not None:
+                for _p in getattr(row_to_snapshot(_row), "positions", []) or []:
+                    _sym = (getattr(_p, "symbol", "") or "").strip().upper()
+                    _px = getattr(_p, "current_price", None)
+                    if _sym and _px:
+                        snapshot_prices[_sym] = float(_px)
+
             result = run_preflight_for_plan(
                 plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
-                deployable_usd=amount,
+                deployable_usd=amount, snapshot_prices=snapshot_prices,
             )
             dto.preflight = preflight_result_to_dto(result)
         except Exception as exc:  # noqa: BLE001 — additive; never break the route

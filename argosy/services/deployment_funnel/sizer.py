@@ -14,6 +14,7 @@ Constraints enforced here:
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from argosy.services.deployment_funnel.contracts import (
@@ -73,7 +74,9 @@ def size_deployment(
     scale = 1.0 if total_want <= deployable_usd else deployable_usd / total_want
 
     lines: list[SizedLine] = []
-    remaining = round(deployable_usd, 2)
+    # FLOOR to cents (never round UP) so a sub-cent deployable input can't let
+    # the buys exceed the real cash (codex sizer M1).
+    remaining = math.floor(deployable_usd * 100) / 100.0
     deployed = 0.0
     # Largest first; running budget absorbs rounding so Σ can never exceed cash.
     for e, want in sorted(desired, key=lambda ew: (-ew[1], ew[0].symbol)):
