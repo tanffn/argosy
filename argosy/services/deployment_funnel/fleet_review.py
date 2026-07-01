@@ -209,15 +209,19 @@ async def _adjudicate_one(
         )
         return report.output
 
-    # Tolerate a flaky agent backend: gather with return_exceptions so ONE failing
-    # risk officer (e.g. a transient claude.exe exit-1) doesn't sink the whole
-    # candidate. Require a majority (>=2 of 3) to have responded for a real
-    # consensus; otherwise raise -> _guarded holds it (fail-closed, never a
-    # verdict off a single voice).
-    raw = await asyncio.gather(
-        *[_run_risk(p) for p in _PERSPECTIVES], return_exceptions=True
-    )
-    risk_verdicts = [r for r in raw if not isinstance(r, BaseException)]
+    # Run the 3 perspectives SEQUENTIALLY — one claude.exe subprocess at a time,
+    # matching the canonical risk-officer debate (decisions/flow.py). The bundled
+    # claude.exe / SDK does NOT tolerate many concurrent subprocesses: gathering
+    # the agents produced an exit-code-1 storm (process-state contention), not
+    # random flakiness. Tolerate a single genuinely-failed officer (skip it) but
+    # require a majority (>=2 of 3) for a real consensus; else raise -> _guarded
+    # holds it (fail-closed, never a verdict off a single voice).
+    risk_verdicts = []
+    for p in _PERSPECTIVES:
+        try:
+            risk_verdicts.append(await _run_risk(p))
+        except Exception:  # noqa: BLE001 — tolerate one flaky officer, keep going
+            continue
     if len(risk_verdicts) < 2:
         raise RuntimeError(
             f"insufficient risk-officer responses "
@@ -274,7 +278,11 @@ async def adjudicate_candidates(
         except Exception:  # noqa: BLE001 — fail-open: leave the candidate held
             return None
 
-    results = await asyncio.gather(*[_guarded(e) for e in targets])
+    # SEQUENTIAL across candidates too — one claude.exe at a time (see
+    # _adjudicate_one). Concurrency here is what caused the exit-1 storm.
+    results = []
+    for e in targets:
+        results.append(await _guarded(e))
     return {r.symbol: r for r in results if r is not None}
 
 

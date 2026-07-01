@@ -1602,11 +1602,8 @@ def get_deploy_cash(
             _disposition = None
             if fleet_review and get_settings().deployment_fleet_review_enabled:
                 try:
-                    from dataclasses import replace as _dc_replace
-
                     from argosy.services.deployment_funnel.fleet_review import (
                         DeploymentContext,
-                        adjudicate_sync,
                         recommend_disposition_sync,
                     )
                     from argosy.services.deployment_funnel.from_plan import (
@@ -1629,18 +1626,20 @@ def get_deploy_cash(
                         market_note=(ctx.summary if ctx is not None
                                      and hasattr(ctx, "summary") else ""),
                     )
-                    # HEADLINE: the fleet's affirmative "what to do with the full
-                    # amount" — computed from the phase-1 enriched (clean fills vs
-                    # flagged), so cash is never silent residue. One agent call.
+                    # Phase 2 is a SINGLE fleet call: the affirmative disposition
+                    # ("what to do with the full amount") — computed from the
+                    # phase-1 enriched (clean fills vs flagged facts), so cash is
+                    # never silent residue. We deliberately do NOT run a
+                    # per-candidate adjudication here: that was 6x4 = ~24 agent
+                    # calls whose VOLUME (not concurrency) triggered a claude.exe
+                    # exit-1 storm on the Claude Code session, and it is redundant —
+                    # the disposition already decides the disposition of every
+                    # dollar. The bounded per-line adjudicator (fleet_review
+                    # .adjudicate_*) stays available for a future low-volume use.
                     _disposition = recommend_disposition_sync(
                         result.enriched, context=_dep_ctx,
                         deployable_usd=amount, user_id=user_id,
                     )
-                    # Refine the per-line buy list with the bounded verdicts.
-                    adjudicated = adjudicate_sync(
-                        result.enriched, context=_dep_ctx, user_id=user_id,
-                    )
-                    result = _dc_replace(result, enriched=tuple(adjudicated))
                 except Exception as exc:  # noqa: BLE001 — fail-open; keep held
                     _log.warning(
                         "deploy_cash.fleet_review_failed",
