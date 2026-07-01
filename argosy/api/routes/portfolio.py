@@ -1508,6 +1508,18 @@ def get_deploy_cash(
             "fallback). When false the high tier stays empty (plan-bound only)."
         ),
     ),
+    fleet_review: bool = Query(
+        False,
+        description=(
+            "When true, deployment judgment calls the deterministic layer refuses "
+            "to invent (NEEDS_FLEET_REVIEW — e.g. adding NVDA-correlated exposure "
+            "while the book is over the plan cap) are adjudicated LIVE by the agent "
+            "fleet (RiskOfficer 3-perspective + FundManager). EXPENSIVE + slow "
+            "(several LLM calls per held candidate, minutes); opt-in per call. "
+            "Fail-closed: any error leaves the candidate held, never auto-approved. "
+            "Requires the deployment_fleet_review_enabled master switch."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> DeploymentPlanDTO:
     """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
@@ -1581,7 +1593,7 @@ def get_deploy_cash(
             # async. Fail-open: any error leaves those candidates HELD + surfaced,
             # never silently approved. Runs before size/rerank so the corrected
             # plan reflects the fleet's bounded verdict.
-            if live and get_settings().deployment_fleet_review_enabled:
+            if fleet_review and get_settings().deployment_fleet_review_enabled:
                 try:
                     from dataclasses import replace as _dc_replace
 

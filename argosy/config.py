@@ -186,14 +186,16 @@ class Settings(BaseSettings):
     deployment_funnel_enabled: bool = Field(default=True)
     deployment_funnel_shadow: bool = Field(default=False)
     # Increment 2 — LIVE fleet adjudication of NEEDS_FLEET_REVIEW candidates.
-    # When True AND the route is called with live=True, deployment judgment calls
-    # the deterministic layer refuses to invent (e.g. adding NVDA-correlated
-    # exposure while the book is over the plan cap) are routed to the RiskOfficer
-    # (3-perspective) + FundManager agents, whose bounded verdict replaces the
-    # candidate's status. Default False (fail-open): the hot sync GET stays fast +
-    # deterministic and unreviewed judgment calls stay HELD + surfaced, never
-    # auto-decided by code. Flip on (with live=True) to consult the fleet.
-    deployment_fleet_review_enabled: bool = Field(default=False)
+    # MASTER kill-switch. The actual per-call opt-in is the /deploy-cash
+    # `fleet_review=true` query param (expensive: several agent LLM calls per held
+    # candidate). When both are set, deployment judgment calls the deterministic
+    # layer refuses to invent (e.g. adding NVDA-correlated exposure while the book
+    # is over the plan cap) are adjudicated by the RiskOfficer (3-perspective) +
+    # FundManager agents, whose bounded verdict replaces the candidate's status.
+    # Verified live 2026-07-01 (sound differentiated verdicts; fail-closed on agent
+    # error). Default True = feature AVAILABLE; nothing fires unless a caller
+    # explicitly passes fleet_review=true, so the normal fast GET is unaffected.
+    deployment_fleet_review_enabled: bool = Field(default=True)
 
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
