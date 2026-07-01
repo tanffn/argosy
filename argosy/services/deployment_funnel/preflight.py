@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from argosy.services.contracts import AllocationCandidate
@@ -15,10 +16,20 @@ from argosy.services.deployment_funnel.enrich import (
     news_sentiment_for,
 )
 from argosy.services.deployment_funnel.gates import GateInputs, classify_candidate
-from argosy.services.deployment_funnel.look_through import effective_nvda_usd
+from argosy.services.deployment_funnel.look_through import (
+    effective_nvda_usd,
+    has_lookthrough,
+)
+from argosy.services.deployment_funnel.reserve import CASH_LIKE_SYMBOLS
 
 # Statuses whose dollars count toward the "kept" (deployable) total.
 _KEPT = {CandidateStatus.APPROVE, CandidateStatus.CAP_AT_PCT}
+
+
+def _kept_fraction(status: CandidateStatus, cap_pct: float | None) -> float:
+    if status is CandidateStatus.CAP_AT_PCT and cap_pct is not None:
+        return cap_pct / 100.0
+    return 1.0 if status is CandidateStatus.APPROVE else 0.0
 
 
 def run_preflight(
@@ -36,15 +47,30 @@ def run_preflight(
     enriched: list[EnrichedCandidate] = []
     plan_gaps: list[PlanGap] = []
     kept_total = 0.0
+    unmapped: list[str] = []
+
+    # Running effective-NVDA exposure: starts at the book's current level and
+    # GROWS as candidates are kept, so the concentration cap is enforced across
+    # the whole batch — not each candidate against the same static level
+    # (codex H1: two sub-headroom buys must not both approve past the cap).
+    running_nvda = gate_inputs.current_effective_nvda_usd
 
     for cand in candidates:
         symbol = symbol_of(cand)
         hf = build_history_features(symbol, provider)
         sentiment = news_sentiment_for(symbol, signals_by_symbol)
+
+        gi_iter = replace(gate_inputs, current_effective_nvda_usd=running_nvda)
         status, reason, cap_pct = classify_candidate(
-            cand, symbol, hf, sentiment, gate_inputs
+            cand, symbol, hf, sentiment, gi_iter
         )
         eff_nvda = effective_nvda_usd(symbol, cand.total_notional_usd)
+
+        # Surface look-through misses (codex H2): a non-cash-like symbol with no
+        # look-through entry has UNVERIFIED concentration — its 0 NVDA is an
+        # assumption, not a fact. Flag it rather than trust it silently.
+        if not has_lookthrough(symbol) and symbol.upper() not in CASH_LIKE_SYMBOLS:
+            unmapped.append(symbol)
 
         enriched.append(
             EnrichedCandidate(
@@ -64,13 +90,19 @@ def run_preflight(
                     blocked_amount_usd=cand.total_notional_usd,
                 )
             )
-        elif status in _KEPT:
-            frac = (
-                (cap_pct / 100.0)
-                if (status is CandidateStatus.CAP_AT_PCT and cap_pct is not None)
-                else 1.0
-            )
-            kept_total += cand.total_notional_usd * frac
+        else:
+            frac = _kept_fraction(status, cap_pct)
+            if frac > 0.0:
+                kept_total += cand.total_notional_usd * frac
+                running_nvda += eff_nvda * frac  # consume the cap headroom
+
+    notes: list[str] = []
+    if unmapped:
+        notes.append(
+            "concentration UNVERIFIED for "
+            + ", ".join(sorted(set(unmapped)))
+            + " — no look-through entry; extend LOOKTHROUGH_MAP"
+        )
 
     kept_total = round(min(kept_total, deployable_usd), 2)
     return PreflightResult(
@@ -78,4 +110,5 @@ def run_preflight(
         enriched=tuple(enriched),
         plan_gaps=tuple(plan_gaps),
         kept_total_usd=kept_total,
+        notes=tuple(notes),
     )

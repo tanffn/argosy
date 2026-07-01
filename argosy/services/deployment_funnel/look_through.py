@@ -47,3 +47,12 @@ def effective_nvda_usd(symbol: str, notional_usd: float) -> float:
 
 def effective_us_usd(symbol: str, notional_usd: float) -> float:
     return round(notional_usd * _weight(symbol, "us"), 2)
+
+
+def has_lookthrough(symbol: str) -> bool:
+    """True when we have an explicit look-through entry for the symbol. A miss
+    means ``effective_nvda_usd`` returns 0 — safe for a single non-NVDA stock,
+    but UNSAFE for an unmodeled NVDA-heavy fund (it would under-restrict the
+    cap). The caller must surface misses as 'concentration unverified' rather
+    than silently trusting the 0 (codex H2)."""
+    return symbol.upper() in LOOKTHROUGH_MAP

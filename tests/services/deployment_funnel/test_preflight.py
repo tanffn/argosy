@@ -53,6 +53,61 @@ def test_preflight_catches_the_three_failures():
     assert res.kept_total_usd <= res.deployable_usd
 
 
+def test_aggregate_headroom_is_consumed_across_candidates():
+    # codex H1: two sub-headroom NVDA buys must NOT both approve past the cap.
+    # Cap 13% of $1,000,000 = $130,000; current $129,000 -> $1,000 headroom.
+    # Two NVDA buys of $600 each add $1,200 > headroom; the second must be
+    # capped/vetoed once the first consumes most of the headroom.
+    gi = GateInputs(
+        current_effective_nvda_usd=129_000.0, book_usd=1_000_000.0,
+        nvda_cap_pct=13.0, reserve_shortfall_usd=0.0,
+        plan_classes=frozenset({"Strategic single-stock (NVDA)"}),
+        class_of={"NVDA": "Strategic single-stock (NVDA)"},
+    )
+    cands = [_c("NVDA", 600.0), _c("NVDA", 600.0)]
+    res = run_preflight(
+        cands, symbol_of=lambda c: c.legs[0].symbol, gate_inputs=gi,
+        provider=_Provider(), signals_by_symbol={}, deployable_usd=1200.0)
+    kept_nvda = sum(
+        e.effective_nvda_usd * (e.cap_pct / 100.0 if e.cap_pct is not None else 1.0)
+        for e in res.enriched if e.status.value in ("approve_candidate", "cap_at_pct")
+    )
+    # Total kept NVDA must stay within the $1,000 headroom (floor rounding).
+    assert 129_000.0 + kept_nvda <= 130_000.0 + 0.01
+
+
+def test_unmapped_symbol_is_flagged_not_silently_trusted():
+    # codex H2: a symbol with no look-through entry -> concentration unverified.
+    gi = GateInputs(
+        current_effective_nvda_usd=0.0, book_usd=1_000_000.0, nvda_cap_pct=13.0,
+        reserve_shortfall_usd=0.0, plan_classes=frozenset({"x"}),
+        class_of={},  # no class -> not a plan gap; symbol also not in map
+    )
+    res = run_preflight(
+        [_c("WTAI", 1364.0)], symbol_of=lambda c: c.legs[0].symbol,
+        gate_inputs=gi, provider=_Provider(), signals_by_symbol={},
+        deployable_usd=1364.0)
+    assert any("UNVERIFIED" in n and "WTAI" in n for n in res.notes)
+
+
+def test_oversized_tbill_capped_to_reserve_shortfall():
+    # codex M4: $10k T-bill buy but reserve only needs $1k -> capped ~10%.
+    gi = GateInputs(
+        current_effective_nvda_usd=0.0, book_usd=1_000_000.0, nvda_cap_pct=13.0,
+        reserve_shortfall_usd=1000.0,
+        plan_classes=frozenset({"Cash & T-bills"}),
+        class_of={"IB01": "Cash & T-bills"},
+    )
+    res = run_preflight(
+        [_c("IB01", 10000.0)], symbol_of=lambda c: c.legs[0].symbol,
+        gate_inputs=gi, provider=_Provider(), signals_by_symbol={},
+        deployable_usd=10000.0)
+    e = res.enriched[0]
+    assert e.status is CandidateStatus.CAP_AT_PCT
+    assert e.cap_pct is not None and e.cap_pct <= 10.0  # floored, never over
+    assert res.kept_total_usd <= 1000.0 + 0.01
+
+
 def test_disabled_flag_is_respected(monkeypatch):
     from argosy.config import get_settings
 
