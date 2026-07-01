@@ -31,10 +31,17 @@ All three fixes shipped to `master`. Owner directive during execution: "just wor
   conviction floor fixed from an exact-equality veto to a real ordered `>=` floor so
   the policy-owned floor genuinely routes MED/LOW BUYs when lowered.
 
-**Remaining (not blocking, needs a LIVE session):** verify the fleet adjudicator's
-LLM prompt QUALITY end-to-end and, once satisfied, flip `deployment_fleet_review_enabled`
-on. The mapping/fail-open/bounds are unit-tested with canned agents; the prompt
-quality is the only thing a mocked test can't cover. Tier-2 leftovers deliberately
+**Fleet adjudicator VERIFIED LIVE 2026-07-01** (`b126b6d`) — ran the real
+RiskOfficer×3 + FundManager against the live book (57.5% NVDA vs 13% cap): FUSA →
+VETO (3/3 REJECT), R1GR → VETO (3/3 REJECT, re-buys NVDA via index), SPMV → CAP 1%
+(3/3 approve-with-conditions), CSPX → stayed HELD (one officer's claude.exe
+exhausted transient exit-1 retries → the fail-closed guard held it, never
+auto-approved). Sound, differentiated, owner-rule-aligned. Given that piggybacking
+on `live=true` would fire ~16 Opus calls on every live GET, added a dedicated
+`fleet_review=true` query param as the per-call opt-in and flipped
+`deployment_fleet_review_enabled` to True as the MASTER kill-switch (nothing fires
+unless the param is passed; the fast GET is unchanged). **Nothing remains blocked.**
+Tier-2 leftovers deliberately
 NOT force-parametrized (already named + override-able, low stakes): behavioral
 panic/FOMO nudge thresholds, decision_funnel routing dataclass (content-hashed,
 override via a passed policy), unallocated-cash 1.5× + windfall materiality (named
