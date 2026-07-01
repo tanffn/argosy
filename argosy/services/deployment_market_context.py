@@ -273,6 +273,21 @@ def _freshness_from_cache(
     )
 
 
+def _last_known_usd_nis(session: Any) -> float | None:
+    """The last-known Bank-of-Israel USD/NIS rate from the FX cache, walking back
+    over holidays/gaps. Used as the value fallback when the live fx agent-report
+    feed carries no usable rate — a real (if stale) rate beats a 0 that would zero
+    every USD→NIS conversion. Returns None if the FX cache has nothing to offer."""
+    try:
+        from datetime import date as _date
+
+        from argosy.services.fx.cache import find_walkback
+
+        return float(find_walkback(session, _date.today(), "USD", max_days=30))
+    except Exception:  # noqa: BLE001 — best-effort; 0 fallback handled by caller
+        return None
+
+
 def _build_cached_context(session: Any, user_id: str) -> "DeploymentMarketContext":
     """Build a DeploymentMarketContext from the latest cached AgentReport rows.
 
@@ -357,14 +372,26 @@ def _build_cached_context(session: Any, user_id: str) -> "DeploymentMarketContex
             )
 
         for field in fields:
-            snapshot[field] = parsed.get(field, 0.0)
+            val = parsed.get(field, 0.0)
+            # USD/NIS fallback: when the cached fx agent-report lacks a usable
+            # rate (0/missing), read the LAST-KNOWN Bank-of-Israel rate from the
+            # FX cache rather than surfacing 0 (a 0 rate silently zeroes every
+            # USD→NIS conversion downstream). The freshness still reflects the
+            # stale live feed — the value is real, the staleness is honest.
+            if field == "usd_nis" and (not val or val <= 0.0):
+                boi = _last_known_usd_nis(session)
+                if boi:
+                    val = boi
+            snapshot[field] = val
             freshness_list.append(_freshness_from_cache(field, role, age_seconds))
 
     # Ensure all six canonical keys are present.
     for key in ("sp500", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"):
         if key not in snapshot:
-            snapshot[key] = 0.0
             role = "fx" if key == "usd_nis" else "macro"
+            snapshot[key] = (
+                (_last_known_usd_nis(session) or 0.0) if key == "usd_nis" else 0.0
+            )
             freshness_list.append(
                 DataFreshness(
                     field=key,
