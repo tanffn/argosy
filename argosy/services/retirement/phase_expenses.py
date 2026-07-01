@@ -25,10 +25,52 @@ class ExpensePhase:
     inflation_premium: ValueWithRationale  # extra %/yr above CPI
 
 
+# The life-stage COST-BAND model (kids drive high cost from age ~12 to ~22, an
+# empty-nest dip 22-30). These band ages are the model's documented definition;
+# the parent-age window is DERIVED from the kids' real birth years below. The
+# MULTIPLIERS remain provisional seeds pending fleet/plan authorship (flagged
+# via source_id="provisional_seed"), NOT asserted as a derived source.
+_KID_COST_START_AGE = 12
+_KID_COST_END_AGE = 22
+_EMPTY_NEST_END_AGE = 30
+
+
+def _kids_phase_parent_ages(
+    *,
+    kids_birth_years: list[int],
+    parent_current_age: float,
+    reference_year: int,
+) -> tuple[int, int, int] | None:
+    """Map the model's kid cost-band (ages 12-22, empty-nest to 30) onto the
+    PARENT's age axis using the kids' REAL birth years — instead of assuming the
+    parent is 43-55. Returns (kids_peak_start, kids_peak_end, empty_nest_end) in
+    parent-age years, or None if the data is insufficient (caller falls back)."""
+    windows: list[tuple[float, float, float]] = []
+    for by in kids_birth_years:
+        kid_age_now = reference_year - by
+        # Parent age when THIS kid enters/exits the cost band.
+        peak_start = parent_current_age + (_KID_COST_START_AGE - kid_age_now)
+        peak_end = parent_current_age + (_KID_COST_END_AGE - kid_age_now)
+        nest_end = parent_current_age + (_EMPTY_NEST_END_AGE - kid_age_now)
+        windows.append((peak_start, peak_end, nest_end))
+    if not windows:
+        return None
+    # Household kids_peak spans the earliest kid entering to the latest exiting;
+    # clamp to >= the parent's current age (past sub-phases don't reopen).
+    start = max(parent_current_age, min(w[0] for w in windows))
+    end = max(w[1] for w in windows)
+    nest_end = max(w[2] for w in windows)
+    if end <= start:
+        return None
+    return (int(round(start)), int(round(end)), int(round(nest_end)))
+
+
 def build_phase_expense_curve(
     *,
     has_kids: bool = True,
     kids_birth_years: list[int] | None = None,
+    parent_current_age: float | None = None,
+    reference_year: int | None = None,
     healthcare_ramp_age: int = 65,
 ) -> list[ExpensePhase]:
     """Return the user's projected expense phases by age.
@@ -68,23 +110,38 @@ def build_phase_expense_curve(
             confidence="medium",
         )
 
-    # Kids high-cost phase
+    # Kids high-cost phase — parent-age window DERIVED from the kids' real birth
+    # years (falls back to the legacy 43-55 assumption only when birth years /
+    # parent age / reference year aren't supplied, flagged in the source id).
     if has_kids:
+        derived = None
+        if kids_birth_years and parent_current_age is not None and reference_year:
+            derived = _kids_phase_parent_ages(
+                kids_birth_years=kids_birth_years,
+                parent_current_age=parent_current_age,
+                reference_year=reference_year,
+            )
+        if derived is not None:
+            kp_start, kp_end, en_end = derived
+            age_src = "kids_birth_years"
+        else:
+            kp_start, kp_end, en_end = 43, 55, 64  # legacy assumption fallback
+            age_src = "assumed_no_birth_years"
         phases.append(ExpensePhase(
-            start_age=43,
-            end_age=55,
+            start_age=kp_start,
+            end_age=kp_end,
             label="kids_peak",
             monthly_multiplier=_wrap_mult(
-                1.10, "kids peak (lessons + college prep)", "argosy_derived",
+                1.10, f"kids peak (ages from {age_src})", "provisional_seed",
             ),
             inflation_premium=_wrap_premium(0.005, "kids peak"),
         ))
         phases.append(ExpensePhase(
-            start_age=56,
-            end_age=64,
+            start_age=kp_end + 1,
+            end_age=en_end,
             label="empty_nest",
             monthly_multiplier=_wrap_mult(
-                0.85, "empty nest", "argosy_derived",
+                0.85, f"empty nest (ages from {age_src})", "provisional_seed",
             ),
             inflation_premium=_wrap_premium(0.0, "empty nest"),
         ))
@@ -95,7 +152,7 @@ def build_phase_expense_curve(
         end_age=80,
         label="healthcare_ramp",
         monthly_multiplier=_wrap_mult(
-            1.10, "healthcare ramp", "argosy_derived",
+            1.10, "healthcare ramp", "provisional_seed",
         ),
         inflation_premium=_wrap_premium(0.015, "healthcare ramp (1.5%/yr above CPI)"),
     ))
@@ -104,7 +161,7 @@ def build_phase_expense_curve(
         end_age=95,
         label="late_life_ltc",
         monthly_multiplier=_wrap_mult(
-            1.15, "late life + LTC tail", "argosy_derived",
+            1.15, "late life + LTC tail", "provisional_seed",
         ),
         inflation_premium=_wrap_premium(0.03, "late life (3%/yr above CPI; LTC tail)"),
     ))
@@ -130,6 +187,8 @@ def phase_expense_factor_series(
     current_age: float,
     months: int,
     has_kids: bool = True,
+    kids_birth_years: list[int] | None = None,
+    reference_year: int | None = None,
     healthcare_ramp_age: int = 65,
 ) -> list[float]:
     """Per-tick multiplicative factor applied to the inflated baseline expense in
@@ -155,7 +214,11 @@ def phase_expense_factor_series(
     Composes on top of the engine's existing (1+inflation+lifestyle_drift)^(t/12)
     growth — it does NOT replace it. (codex H3 verdict 2026-06-08.)"""
     curve = build_phase_expense_curve(
-        has_kids=has_kids, healthcare_ramp_age=healthcare_ramp_age
+        has_kids=has_kids,
+        kids_birth_years=kids_birth_years,
+        parent_current_age=current_age,
+        reference_year=reference_year,
+        healthcare_ramp_age=healthcare_ramp_age,
     )
 
     def _mult_at(age: float) -> float:

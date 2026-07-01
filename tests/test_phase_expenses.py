@@ -54,3 +54,33 @@ class TestPhaseExpenseFactorSeries:
     def test_length_matches_months(self) -> None:
         f = phase_expense_factor_series(current_age=44.0, months=240)
         assert len(f) == 240
+
+
+# --- Fix B: kids-phase ages DERIVED from real birth years, not hardcoded 43-55 ---
+
+def test_kids_phase_ages_derived_from_real_birth_years():
+    from argosy.services.retirement.phase_expenses import build_phase_expense_curve
+
+    # Parent age 40 in 2026; kids born 2012 & 2015 (ages 14 & 11 now).
+    # Model band = kid ages 12-22 → union across kids on the parent-age axis is
+    # 38→51, clamped to the parent's current age 40 → kids_peak (40, 51).
+    curve = build_phase_expense_curve(
+        has_kids=True, kids_birth_years=[2012, 2015],
+        parent_current_age=40.0, reference_year=2026,
+    )
+    kp = next(p for p in curve if p.label == "kids_peak")
+    assert kp.start_age == 40 and kp.end_age == 51       # DERIVED, not 43-55
+    en = next(p for p in curve if p.label == "empty_nest")
+    assert en.start_age == 52                             # kp.end + 1
+    # Source id records the ages came from real data, not an assumption.
+    assert kp.monthly_multiplier.source_id == "provisional_seed"
+    assert "kids_birth_years" in kp.monthly_multiplier.rationale
+
+
+def test_kids_phase_falls_back_to_legacy_when_no_birth_years():
+    from argosy.services.retirement.phase_expenses import build_phase_expense_curve
+
+    curve = build_phase_expense_curve(has_kids=True)  # no birth years supplied
+    kp = next(p for p in curve if p.label == "kids_peak")
+    assert kp.start_age == 43 and kp.end_age == 55       # legacy assumption
+    assert "assumed_no_birth_years" in kp.monthly_multiplier.rationale
