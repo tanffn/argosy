@@ -1573,6 +1573,52 @@ def get_deploy_cash(
                 plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                 deployable_usd=amount, snapshot_prices=snapshot_prices,
             )
+
+            # Increment 2: route the genuine judgment calls the deterministic
+            # layer REFUSED to invent (NEEDS_FLEET_REVIEW) to the agent fleet
+            # (RiskOfficer 3-perspective + FundManager). Only when explicitly
+            # asked (live=True) and enabled — the fleet call is expensive and
+            # async. Fail-open: any error leaves those candidates HELD + surfaced,
+            # never silently approved. Runs before size/rerank so the corrected
+            # plan reflects the fleet's bounded verdict.
+            if live and get_settings().deployment_fleet_review_enabled:
+                try:
+                    from dataclasses import replace as _dc_replace
+
+                    from argosy.services.deployment_funnel.fleet_review import (
+                        DeploymentContext,
+                        adjudicate_sync,
+                    )
+                    from argosy.services.deployment_funnel.from_plan import (
+                        build_gate_inputs,
+                    )
+
+                    _gi = build_gate_inputs(
+                        doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
+                    )
+                    _dep_ctx = DeploymentContext(
+                        book_usd=_gi.book_usd,
+                        current_effective_nvda_usd=_gi.current_effective_nvda_usd,
+                        nvda_cap_pct=_gi.nvda_cap_pct,
+                        plan_classes=tuple(sorted(_gi.plan_classes)),
+                        user_constraints=(
+                            "Reduce NVDA concentration toward the plan cap of "
+                            f"{_gi.nvda_cap_pct:.0f}%; prime directive is earliest "
+                            "safe retirement (do not over-hold on caution alone)."
+                        ),
+                        market_note=(ctx.summary if ctx is not None
+                                     and hasattr(ctx, "summary") else ""),
+                    )
+                    adjudicated = adjudicate_sync(
+                        result.enriched, context=_dep_ctx, user_id=user_id,
+                    )
+                    result = _dc_replace(result, enriched=tuple(adjudicated))
+                except Exception as exc:  # noqa: BLE001 — fail-open; keep held
+                    _log.warning(
+                        "deploy_cash.fleet_review_failed",
+                        user_id=user_id, error=str(exc),
+                    )
+
             # Non-shadow: re-rank the actual buy list from the verdict (drop
             # vetoed/deferred, resize capped) so the UI shows the CORRECTED plan,
             # not just annotations. Shadow keeps the original list + annotation.

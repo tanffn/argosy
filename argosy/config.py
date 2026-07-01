@@ -185,6 +185,15 @@ class Settings(BaseSettings):
     #     surfaced plan reflects the verdict. Set True to only annotate.
     deployment_funnel_enabled: bool = Field(default=True)
     deployment_funnel_shadow: bool = Field(default=False)
+    # Increment 2 — LIVE fleet adjudication of NEEDS_FLEET_REVIEW candidates.
+    # When True AND the route is called with live=True, deployment judgment calls
+    # the deterministic layer refuses to invent (e.g. adding NVDA-correlated
+    # exposure while the book is over the plan cap) are routed to the RiskOfficer
+    # (3-perspective) + FundManager agents, whose bounded verdict replaces the
+    # candidate's status. Default False (fail-open): the hot sync GET stays fast +
+    # deterministic and unreviewed judgment calls stay HELD + surfaced, never
+    # auto-decided by code. Flip on (with live=True) to consult the fleet.
+    deployment_fleet_review_enabled: bool = Field(default=False)
 
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
