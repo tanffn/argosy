@@ -612,14 +612,23 @@ export interface DeploymentMarketContextDTO {
 
 /** Research preflight: per-candidate verdict + plan gaps. Present only when the
  *  deployment-funnel engine is enabled; null otherwise. */
+export interface CandidateFlagDTO {
+  kind: string;
+  materiality: "high" | "medium" | "low" | string;
+  fact: string;
+  detail: Record<string, unknown>;
+}
+
 export interface PreflightCandidateDTO {
   symbol: string;
-  status: string;          // approve_candidate | veto | defer | cap_at_pct | requires_plan_change | move_to_reserve
+  status: string;          // approve_candidate | veto | defer | cap_at_pct | requires_plan_change | move_to_reserve | needs_fleet_review
   reason: string;
   effective_nvda_usd: number;
   news_sentiment: string | null;
   cap_pct: number | null;
   pct_below_ath: number | null;
+  /** Deterministic facts warranting fleet judgment (two-phase flow). */
+  flags?: CandidateFlagDTO[];
 }
 
 export interface PlanGapDTO {
@@ -2337,9 +2346,18 @@ export const api = {
   // live market context (P2): assembles macro snapshot + NVDA verification +
   // freshness metadata + per-line DCA pacing. Default live=false preserves P1
   // behavior (no live adapter calls).
-  deployCashPlan: (userId: string, cashUsd: number, live = false): Promise<DeploymentPlanDTO> => {
+  deployCashPlan: (
+    userId: string,
+    cashUsd: number,
+    live = false,
+    fleetReview = false,
+  ): Promise<DeploymentPlanDTO> => {
     const qs = new URLSearchParams({ user_id: userId, cash_usd: String(cashUsd) });
     if (live) qs.set("live", "true");
+    // Phase 2 of the two-phase deploy flow: run the agent fleet on the items the
+    // fast pass surfaced as "pending fleet judgment". Expensive (minutes) — only
+    // sent on an explicit "Run fleet review" action, not the initial load.
+    if (fleetReview) qs.set("fleet_review", "true");
     return getJSON<DeploymentPlanDTO>(`/api/portfolio/deploy-cash?${qs.toString()}`);
   },
   portfolioHighPotentialSleeve: (

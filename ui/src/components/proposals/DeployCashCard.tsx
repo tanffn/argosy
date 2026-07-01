@@ -432,6 +432,8 @@ export function DeployCashCard({
   userId,
   live = false,
   onLiveChange,
+  onRunFleetReview,
+  fleetReviewing = false,
 }: {
   plan: DeploymentPlanDTO | null;
   loading: boolean;
@@ -444,6 +446,10 @@ export function DeployCashCard({
   live?: boolean;
   /** P2: called when the user toggles the live-market-context checkbox. */
   onLiveChange?: (v: boolean) => void;
+  /** Phase 2: run the agent fleet on the "pending fleet judgment" items. */
+  onRunFleetReview?: () => void;
+  /** Phase 2 in flight (the fleet call takes minutes). */
+  fleetReviewing?: boolean;
 }) {
   // Prior allocation decisions, keyed by source_ref, so each buy line can
   // render its Accepted/Deferred pill inline. Shares the "unallocated_cash"
@@ -533,7 +539,13 @@ export function DeployCashCard({
           {plan.market_context && (
             <MarketContextStrip ctx={plan.market_context} />
           )}
-          {plan.preflight && <PreflightVerdict preflight={plan.preflight} />}
+          {plan.preflight && (
+            <PreflightVerdict
+              preflight={plan.preflight}
+              onRunFleetReview={onRunFleetReview}
+              fleetReviewing={fleetReviewing}
+            />
+          )}
           {plan.tiers.map((t) => (
             <TierBlock
               key={t.name}
@@ -562,18 +574,51 @@ const PREFLIGHT_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   requires_plan_change: { label: "Needs plan change", cls: "text-amber-600" },
   move_to_reserve: { label: "To reserve", cls: "text-muted-foreground" },
   approve_candidate: { label: "OK", cls: "text-emerald-600" },
+  needs_fleet_review: { label: "Needs fleet judgment", cls: "text-sky-600" },
 };
 
 /** Research verdict on the deterministic buy list: concentration/reserve checks
  *  per line + any plan questions. Advisory (shadow) — annotates the list above. */
-function PreflightVerdict({ preflight }: { preflight: PreflightDTO }) {
+function PreflightVerdict({
+  preflight,
+  onRunFleetReview,
+  fleetReviewing = false,
+}: {
+  preflight: PreflightDTO;
+  onRunFleetReview?: () => void;
+  fleetReviewing?: boolean;
+}) {
   const flagged = preflight.enriched.filter(
     (e) => e.status !== "approve_candidate",
   );
+  // Items the fast pass surfaced as "pending fleet judgment" — resolved by the
+  // phase-2 "Run fleet review" action.
+  const pending = flagged.filter((e) => e.status === "needs_fleet_review");
   if (flagged.length === 0 && preflight.plan_gaps.length === 0) return null;
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
-      <div className="text-xs font-medium">Research check</div>
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium">Research check</div>
+        {pending.length > 0 && onRunFleetReview && (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={fleetReviewing}
+            onClick={onRunFleetReview}
+          >
+            {fleetReviewing
+              ? "Fleet reviewing… (minutes)"
+              : `Run fleet review (${pending.length}) →`}
+          </Button>
+        )}
+      </div>
+      {pending.length > 0 && (
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          {pending.length} item{pending.length > 1 ? "s" : ""} need the agent
+          fleet&apos;s judgment (RiskOfficer + FundManager) before deploying —
+          the facts are below.
+        </div>
+      )}
       {flagged.length > 0 && (
         <ul className="mt-1 space-y-1 text-xs">
           {flagged.map((e) => {
@@ -582,11 +627,20 @@ function PreflightVerdict({ preflight }: { preflight: PreflightDTO }) {
               cls: "text-muted-foreground",
             };
             return (
-              <li key={e.symbol} className="flex gap-2">
-                <span className={`w-28 shrink-0 font-medium ${s.cls}`}>
-                  {e.symbol}: {s.label}
-                </span>
-                <span className="text-muted-foreground">{e.reason}</span>
+              <li key={e.symbol} className="flex flex-col gap-0.5">
+                <div className="flex gap-2">
+                  <span className={`w-28 shrink-0 font-medium ${s.cls}`}>
+                    {e.symbol}: {s.label}
+                  </span>
+                  <span className="text-muted-foreground">{e.reason}</span>
+                </div>
+                {(e.flags ?? []).length > 0 && (
+                  <ul className="ml-28 list-disc pl-4 text-[11px] text-muted-foreground">
+                    {(e.flags ?? []).map((f, i) => (
+                      <li key={i}>{f.fact}</li>
+                    ))}
+                  </ul>
+                )}
               </li>
             );
           })}

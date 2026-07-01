@@ -66,6 +66,7 @@ export default function InboxPage() {
   const [deployAmount, setDeployAmount] = useState<number>(0);
   const [deployPlan, setDeployPlan] = useState<DeploymentPlanDTO | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
+  const [deployFleetReviewing, setDeployFleetReviewing] = useState(false);
   const [unallocatedUsd, setUnallocatedUsd] = useState<number>(0);
   const [deployLive, setDeployLive] = useState<boolean>(false);
 
@@ -127,6 +128,19 @@ export default function InboxPage() {
     return () => {
       cancelled = true;
     };
+  }, [deployAmount, deployLive]);
+
+  // Phase 2 of the deploy flow: run the agent fleet on the "pending fleet
+  // judgment" items and replace the plan with the adjudicated one. Expensive
+  // (minutes) — only on the explicit "Run fleet review" action.
+  const runFleetReview = useCallback(() => {
+    if (deployAmount <= 0) return;
+    setDeployFleetReviewing(true);
+    api
+      .deployCashPlan(USER_ID, deployAmount, deployLive, true)
+      .then((p) => setDeployPlan(p))
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => setDeployFleetReviewing(false));
   }, [deployAmount, deployLive]);
 
   // --- map a semantic action intent to the matching API call ---
@@ -393,6 +407,8 @@ export default function InboxPage() {
               userId={USER_ID}
               live={deployLive}
               onLiveChange={setDeployLive}
+              onRunFleetReview={runFleetReview}
+              fleetReviewing={deployFleetReviewing}
             />
           </div>
           <div id="allocation" className="scroll-mt-6">
