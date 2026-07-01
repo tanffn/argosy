@@ -45,12 +45,17 @@ def test_preflight_catches_the_three_failures():
         provider=_Provider(), signals_by_symbol={}, deployable_usd=95000.0,
     )
     by = {e.symbol: e.status for e in res.enriched}
-    # CSPX (~7% NVDA) DILUTES the 56.6% book → approved (the corrected logic).
-    assert by["CSPX"] is CandidateStatus.APPROVE
+    # CSPX carries ~7% NVDA look-through; the book is already 56.6% NVDA, far over
+    # the 13% plan cap. The engine no longer invents an approve/veto here — adding
+    # ANY more NVDA-correlated exposure while over the cap is a fleet judgment.
+    assert by["CSPX"] is CandidateStatus.NEEDS_FLEET_REVIEW
     assert by["IB01"] is CandidateStatus.VETO           # reserve funded
     assert by["SGLD"] is CandidateStatus.REQUIRES_PLAN_CHANGE  # gold not in plan
-    # Dollar conservation: kept (approved/capped) never exceeds deployable.
+    # Dollar conservation: kept (approved/capped) never exceeds deployable. The
+    # fleet-routed CSPX dollars are HELD (not counted as deployable) until the
+    # fleet adjudicates.
     assert res.kept_total_usd <= res.deployable_usd
+    assert res.kept_total_usd == 0.0  # nothing auto-deployable this batch
 
 
 def test_aggregate_cap_enforced_across_batch():

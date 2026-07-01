@@ -195,21 +195,8 @@ def _instrument_type(doc, symbol: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# P2 T6: market-aware per-line pacing
+# Per-line pacing (no market-timing policy — see pace_for_line)
 # ---------------------------------------------------------------------------
-
-# Minimum per-installment ticket — an execution floor (not a smoothing rule):
-# a DCA window is capped so each weekly chunk is at least this size.
-DCA_MIN_INSTALLMENT_USD: float = 1_000.0
-
-
-def _snap_value(snapshot, key: str, default: float) -> float:
-    """Read a float from a market-context snapshot, tolerating either a plain
-    float or a ``(value, DataFreshness)`` tuple, with a default when absent."""
-    raw = snapshot.get(key) if snapshot else None
-    if raw is None:
-        return default
-    return float(raw[0]) if isinstance(raw, tuple) else float(raw)
 
 
 def pace_for_line(
@@ -217,51 +204,19 @@ def pace_for_line(
 ) -> tuple[str, str]:
     """Return ``(timing, pace_rationale)`` for one deploy line.
 
-    Codex-reviewed rule (codex_pacing_verdict): **lump-now is the default**;
-    DCA is a bounded regret-control concession used ONLY when the program is
-    material (>=0.5% of the post-deploy book), the market is stretched
-    (S&P > +8% vs trend), AND volatility is elevated (VIX >= 20). High VIX alone
-    never slows buying; a below-trend market never triggers DCA — for a
-    long-hold retirement-maximizing investor that points to FASTER deployment.
-    The materiality boundary is % of book (not a fixed-dollar floor). FX
-    conversion is paced WITH the equity buy (no separate currency bet).
+    The deterministic layer makes NO market-timing bet. ``lump-now`` is the
+    neutral default for a long-hold, retirement-maximizing investor — the engine
+    does not decide lump-vs-DCA from VIX / S&P-vs-trend thresholds, because that
+    is a tactical investment JUDGMENT that belongs to the fleet (risk officer /
+    fund manager) at money-decision time, fed the plan + live data — not to
+    hand-coded index/volatility rules. A fleet pacing recommendation, when one
+    exists, overrides this default upstream; absent that, deploy now (no timing
+    bet). ``market_context`` / ``tranche_usd`` are retained for signature
+    compatibility and staleness surfacing, but no longer drive a pacing decision.
     """
     if amount_usd <= 0:
         return ("now", "no positive buy amount")
-    snap = market_context.snapshot
-    vix = _snap_value(snap, "vix", 20.0)
-    sp_vs_trend_pct = _snap_value(snap, "sp_vs_trend_pct", 0.0)
-    scope_pct = (tranche_usd / book_usd) if book_usd > 0 else 0.0
-
-    if scope_pct < 0.005:
-        return ("now", "immaterial vs book — timing risk not retirement-material")
-    if sp_vs_trend_pct <= 8.0:
-        return ("now", f"market not stretched (S&P {sp_vs_trend_pct:+.1f}% vs trend) — lump-now is the EV default")
-    if vix < 20.0:
-        return ("now", f"extended but VIX={vix:.0f}<20 — not turbulent enough to justify DCA")
-
-    # Stretched AND volatile: DCA concession. N grows with stretch, vol, and size.
-    if sp_vs_trend_pct <= 15.0 and vix < 30.0:
-        n = 2
-    elif sp_vs_trend_pct <= 15.0 or vix < 30.0:
-        n = 4
-    else:
-        n = 6
-    if scope_pct >= 0.05:
-        n += 4
-    elif scope_pct >= 0.02:
-        n += 2
-    n = min(n, 8)
-    # Execution floor: don't slice below the min ticket.
-    n = max(1, min(n, int(amount_usd // DCA_MIN_INSTALLMENT_USD) or 1))
-
-    if n == 1:
-        return ("now", f"stretched (S&P {sp_vs_trend_pct:+.1f}%, VIX {vix:.0f}) but line too small to slice")
-    return (
-        f"DCA {n}wk",
-        f"stretched (S&P {sp_vs_trend_pct:+.1f}% vs trend) + elevated VIX {vix:.0f}; "
-        f"spread over {n} equal weekly buys (FX converted with each)",
-    )
+    return ("now", "")
 
 
 # Conviction labels differ between the discovery funnel (HIGH/MED/LOW on

@@ -410,16 +410,19 @@ class TestP2Pacing:
         assert all(l.pace_rationale == "" for l in lines)
 
     # ------------------------------------------------------------------
-    # (b) Large line + high VIX -> DCA Nwk, non-empty pace_rationale
+    # (b) NO market-timing bet: stretched + volatile still deploys NOW.
+    # The engine no longer decides lump-vs-DCA from VIX / S&P thresholds —
+    # that tactical judgment belongs to the fleet, not hand-coded rules.
     # ------------------------------------------------------------------
-    def test_material_stretched_volatile_gets_dca_timing(self, monkeypatch):
-        """Material tranche + stretched S&P (>+8%) + VIX>=20 -> DCA Nwk (codex rule)."""
+    def test_stretched_volatile_still_deploys_now_no_timing_bet(self, monkeypatch):
+        """Even a material tranche in a stretched, volatile market lumps NOW —
+        the deterministic layer makes no market-timing bet (no DCA policy)."""
         from datetime import date
         import argosy.services.allocation_engine as eng
         monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
             ("BUY", "CSPX", 50_000.0, "cash"),
         )])
-        # holdings={} -> book == tranche -> scope_pct = 1.0 (material).
+        # holdings={} -> book == tranche -> scope_pct = 1.0 (material) + stretched.
         ctx = _stub_market_context(vix=35.0, sp_vs_trend_pct=20.0, is_stale=False)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
@@ -427,31 +430,29 @@ class TestP2Pacing:
         )
         assert plan.market_context_age == "live"
         line = [l for t in plan.tiers for l in t.lines][0]
-        assert line.timing.startswith("DCA"), f"expected DCA, got {line.timing!r}"
-        assert "wk" in line.timing
-        assert "VIX" in line.pace_rationale
+        assert line.timing == "now"
+        assert line.pace_rationale == ""
 
     # ------------------------------------------------------------------
-    # (c) Lump-now is the default unless stretched AND volatile AND material
+    # (c) Same neutral default across regimes — VIX / trend / materiality
+    # never change the timing (all removed with the invented DCA policy).
     # ------------------------------------------------------------------
-    def test_not_stretched_stays_lump_even_at_high_vix(self, monkeypatch):
-        """High VIX alone never slows buying — not-stretched market lumps now."""
+    def test_high_vix_deploys_now(self, monkeypatch):
         from datetime import date
         import argosy.services.allocation_engine as eng
         monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
             ("BUY", "CSPX", 50_000.0, "cash"),
         )])
-        ctx = _stub_market_context(vix=40.0, sp_vs_trend_pct=3.0)  # not stretched
+        ctx = _stub_market_context(vix=40.0, sp_vs_trend_pct=3.0)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
             as_of=date(2026, 6, 12), market_context=ctx, use_high_potential=False,
         )
         line = [l for t in plan.tiers for l in t.lines][0]
         assert line.timing == "now"
-        assert "not stretched" in line.pace_rationale.lower()
+        assert line.pace_rationale == ""
 
-    def test_below_trend_stays_lump(self, monkeypatch):
-        """Below-trend market never triggers DCA (deploy faster, not slower)."""
+    def test_below_trend_deploys_now(self, monkeypatch):
         from datetime import date
         import argosy.services.allocation_engine as eng
         monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
@@ -464,14 +465,12 @@ class TestP2Pacing:
         )
         assert [l for t in plan.tiers for l in t.lines][0].timing == "now"
 
-    def test_immaterial_tranche_stays_lump(self, monkeypatch):
-        """Tranche <0.5% of post-deploy book -> lump (timing risk not material)."""
+    def test_immaterial_tranche_deploys_now(self, monkeypatch):
         from datetime import date
         import argosy.services.allocation_engine as eng
         monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
             ("BUY", "CSPX", 1_000.0, "cash"),
         )])
-        # Big existing book makes a $1k tranche immaterial even if stretched+volatile.
         ctx = _stub_market_context(vix=35.0, sp_vs_trend_pct=20.0)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={"CSPX": 1_000_000.0}, deploy_amount_usd=1_000.0,
@@ -479,7 +478,7 @@ class TestP2Pacing:
         )
         line = [l for t in plan.tiers for l in t.lines][0]
         assert line.timing == "now"
-        assert "immaterial" in line.pace_rationale.lower()
+        assert line.pace_rationale == ""
 
     # ------------------------------------------------------------------
     # (d) Stale context -> staleness caveat in plan.caveats

@@ -67,8 +67,9 @@ def test_run_preflight_for_plan_flags_lookthrough_and_reserve(monkeypatch):
         snapshot_prices={"CSPX": 100.0, "IB01": 100.0},
     )
     by = {e.symbol: e.status for e in res.enriched}
-    # CSPX (~7% NVDA) DILUTES the ~57% book => approved (corrected cap logic).
-    assert by["CSPX"] is CandidateStatus.APPROVE
+    # The book is ~57% NVDA, far over the plan cap; CSPX carries NVDA look-through,
+    # so adding it is a fleet judgment, not a hand-coded approve.
+    assert by["CSPX"] is CandidateStatus.NEEDS_FLEET_REVIEW
     # Reserve funded => IB01 vetoed.
     assert by["IB01"] is CandidateStatus.VETO
 

@@ -37,31 +37,76 @@ _GI = GateInputs(
 )
 
 
-def test_cap_compliant_index_buy_is_approved():
-    # CSPX is ~7% NVDA — at/below the 13% cap — so it is a cap-compliant
-    # addition (pulls the book toward the target), approved even over-cap.
-    st, reason, _ = classify_candidate(
+# _GI's book is 2.296M / 4.06M ≈ 56.6% NVDA — far over the 13% plan cap. So the
+# engine does NOT invent an approve/veto for ANY NVDA-bearing buy while over the
+# cap; it ROUTES the judgment to the fleet (NEEDS_FLEET_REVIEW). Only zero-NVDA
+# diversifiers deploy freely, and the pure-arithmetic reconcile applies only when
+# the book has headroom under the cap (tested separately below).
+
+def test_nvda_bearing_index_over_cap_routes_to_fleet():
+    # CSPX carries ~7% NVDA look-through. With the book already over the plan cap,
+    # whether to add ANY more NVDA-correlated exposure is a risk-officer judgment,
+    # not a hand-coded rule -> route to the fleet.
+    st, reason, cap = classify_candidate(
         _cand("CSPX", 22000.0), "CSPX", _hf(), "neutral", _GI
     )
-    assert st is CandidateStatus.APPROVE
-    assert "7% NVDA" in reason and "cap" in reason
+    assert st is CandidateStatus.NEEDS_FLEET_REVIEW
+    assert cap is None
+    assert "plan cap" in reason and "fleet" in reason
 
 
-def test_above_cap_instrument_vetoed_when_book_over_cap():
-    # Direct NVDA (100% NVDA >> 13% cap) with the book already over the cap → veto.
-    st, reason, _ = classify_candidate(
+def test_direct_nvda_over_cap_routes_to_fleet():
+    # Direct NVDA (100% NVDA) while the book is over the cap — the engine no longer
+    # vetoes by hand; the fleet decides (sell to deconcentrate? reserve? add?).
+    st, _, _ = classify_candidate(
         _cand("NVDA", 22000.0), "NVDA", _hf(), None, _GI
     )
-    assert st is CandidateStatus.VETO
-    assert "above the" in reason and "cap" in reason
+    assert st is CandidateStatus.NEEDS_FLEET_REVIEW
 
 
-def test_r1gr_just_over_cap_vetoed_when_over():
-    # R1GR ~14% NVDA > 13% cap; book over cap → veto (adds above-cap concentration).
+def test_r1gr_over_cap_routes_to_fleet():
+    # R1GR ~14% NVDA; book over cap -> routed to the fleet (was a hand-coded veto).
     st, _, _ = classify_candidate(
         _cand("R1GR", 13000.0), "R1GR", _hf(), None, _GI
     )
-    assert st is CandidateStatus.VETO
+    assert st is CandidateStatus.NEEDS_FLEET_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# Pure-arithmetic reconcile: ONLY when the book has headroom under the plan cap.
+# Derives entirely from the plan's own cap number — no investment judgment.
+# ---------------------------------------------------------------------------
+
+# Book 200k NVDA / 2.0M = 10% < 13% cap -> headroom exists.
+_GI_HEADROOM = GateInputs(
+    current_effective_nvda_usd=200_000.0, book_usd=2_000_000.0,
+    nvda_cap_pct=13.0, reserve_shortfall_usd=0.0,
+    plan_classes=frozenset({"US broad-market core"}),
+    class_of={"CSPX": "US broad-market core"},
+)
+
+
+def test_under_cap_small_nvda_buy_approved():
+    # A small CSPX buy keeps the resulting book under the 13% cap -> APPROVE.
+    st, reason, cap = classify_candidate(
+        _cand("CSPX", 10_000.0), "CSPX", _hf(), None, _GI_HEADROOM
+    )
+    assert st is CandidateStatus.APPROVE
+    assert cap is None
+    assert "13% NVDA plan cap" in reason
+
+
+def test_under_cap_large_nvda_buy_capped_to_the_plan_cap():
+    # A very large CSPX buy would push the book past 13% -> CAP_AT_PCT to the slice
+    # that lands the resulting book exactly at the plan cap. cap*B - C = 60k of
+    # NVDA headroom; at ~7% instrument weight that's ~857k of CSPX notional, so a
+    # 2M buy is capped to ~43%. Assert it is a partial cap, not a hand-coded veto.
+    st, reason, cap = classify_candidate(
+        _cand("CSPX", 2_000_000.0), "CSPX", _hf(), None, _GI_HEADROOM
+    )
+    assert st is CandidateStatus.CAP_AT_PCT
+    assert cap is not None and 0.0 < cap < 100.0
+    assert "plan cap" in reason
 
 
 def test_tbill_when_reserve_funded_is_vetoed():

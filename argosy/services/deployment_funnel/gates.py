@@ -80,16 +80,24 @@ def classify_candidate(
             )
         # Within the shortfall → a legitimate reserve top-up; falls through.
 
-    # 4. Concentration gate via look-through — a MARGINAL-QUALITY rule on the
-    #    instrument's own NVDA weight vs the cap. IMPORTANT (codex): this does
-    #    NOT reduce an over-cap book. The deploy cash is already IN the book, so
-    #    a cash-funded buy reallocates within a FIXED total; buying a fund with
-    #    ANY NVDA (even 7%) nudges the book NVDA % UP, not down. Only SELLING
-    #    NVDA deconcentrates. So the rule here is: don't ADD anything MORE
-    #    NVDA-concentrated than the cap (that would worsen single-name risk);
-    #    a <=cap instrument is an acceptable place to put idle cash without
-    #    making concentration materially worse. Fixing the 56.6% itself is a
-    #    SELL decision this cash-deploy path deliberately does not make.
+    # 4. Concentration via look-through. This gate does ONE deterministic job:
+    #    reconcile a cash-funded buy against the plan's OWN NVDA cap number. It
+    #    does NOT encode an investment judgment about single-name risk quality.
+    #
+    #    A cash-funded buy reallocates within a FIXED book (cash -> fund doesn't
+    #    change the total), so adding ANY NVDA look-through nudges the book NVDA %
+    #    UP. Two regimes:
+    #      * Book UNDER the plan cap  -> pure arithmetic: fill until the RESULTING
+    #        book NVDA % reaches the cap; cap the slice that would overshoot. This
+    #        derives entirely from the plan's cap number — no judgment.
+    #      * Book AT/OVER the plan cap -> whether to add MORE NVDA-correlated
+    #        exposure now (or instead sell to deconcentrate / park in reserve /
+    #        route only to zero-NVDA diversifiers) is an investment JUDGMENT the
+    #        cap number alone can't answer. ROUTE it to the fleet — do NOT invent
+    #        an approve/veto here. (Fixing the concentration itself is a SELL
+    #        decision this cash-deploy path never makes on its own.)
+    #    A zero-NVDA instrument (add_nvda == 0) is a pure diversifier and skips
+    #    this gate entirely (falls through to APPROVE).
     add_nvda = effective_nvda_usd(symbol, notional)
     if add_nvda > 0.0 and notional > 0.0:
         cap_frac = gi.nvda_cap_pct / 100.0
@@ -97,43 +105,31 @@ def classify_candidate(
         book_pct = (
             gi.current_effective_nvda_usd / gi.book_usd if gi.book_usd > 0 else 1.0
         )
-        if inst_wt <= cap_frac + 1e-9:
-            return (
-                CandidateStatus.APPROVE,
-                f"{symbol} is {inst_wt * 100:.0f}% NVDA (<= the "
-                f"{gi.nvda_cap_pct:.0f}% cap) — acceptable to add idle cash "
-                f"(doesn't worsen single-name risk; won't reduce the 56.6% either)",
-                None,
-            )
-        # Instrument is MORE NVDA-concentrated than the cap.
         if book_pct >= cap_frac:
+            # At/over the plan cap: a genuine judgment call — route to the fleet.
             return (
-                CandidateStatus.VETO,
-                f"{symbol} is {inst_wt * 100:.0f}% NVDA — above the "
-                f"{gi.nvda_cap_pct:.0f}% cap while your book is already over it "
-                f"({book_pct * 100:.0f}%); adding it slows the deconcentration",
+                CandidateStatus.NEEDS_FLEET_REVIEW,
+                f"book is {book_pct * 100:.0f}% NVDA (look-through), at/over the "
+                f"{gi.nvda_cap_pct:.0f}% plan cap; {symbol} adds "
+                f"{inst_wt * 100:.0f}% NVDA-correlated exposure — whether to add "
+                f"more now vs deconcentrate/reserve is a risk-officer judgment, "
+                f"routed to the fleet",
                 None,
             )
-        # Under the cap: the book has headroom. Allow the slice that keeps it
-        # at/under the cap. Cash-funded (fixed book B): (C + w*x)/B <= cap
-        # => x <= (cap*B - C) / w  (codex: NOT /(w-cap), which assumed the buy
-        # grew the denominator with new outside money).
+        # Book has headroom under the plan cap: PURE arithmetic reconcile.
+        # Cash-funded (fixed book B): (C + w*x)/B <= cap  =>  x <= (cap*B - C)/w.
         max_notional = (
             cap_frac * gi.book_usd - gi.current_effective_nvda_usd
         ) / inst_wt
         if max_notional >= notional:
             return (CandidateStatus.APPROVE,
-                    f"{symbol} is {inst_wt * 100:.0f}% NVDA but the book has "
-                    f"headroom under the {gi.nvda_cap_pct:.0f}% cap", None)
-        if max_notional <= 0.0:
-            return (CandidateStatus.VETO,
-                    f"{symbol} is {inst_wt * 100:.0f}% NVDA — no headroom under "
-                    f"the {gi.nvda_cap_pct:.0f}% cap", None)
+                    f"{symbol} keeps the book within the {gi.nvda_cap_pct:.0f}% "
+                    f"NVDA plan cap", None)
         cap_pct = _floor_pct(max_notional, notional)
         return (
             CandidateStatus.CAP_AT_PCT,
-            f"cap {symbol} at {cap_pct:.1f}% — it is {inst_wt * 100:.0f}% NVDA "
-            f"(> the {gi.nvda_cap_pct:.0f}% cap); larger would push the book over",
+            f"cap {symbol} at {cap_pct:.1f}% — larger would push the book past "
+            f"the {gi.nvda_cap_pct:.0f}% NVDA plan cap",
             cap_pct,
         )
 

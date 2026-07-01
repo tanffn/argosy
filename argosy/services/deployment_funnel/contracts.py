@@ -13,6 +13,14 @@ class CandidateStatus(str, Enum):
     REQUIRES_PLAN_CHANGE = "requires_plan_change"
     CAP_AT_PCT = "cap_at_pct"
     MOVE_TO_RESERVE = "move_to_reserve"   # don't buy; park the $ in the reserve
+    # The deterministic layer reconciles against the plan's own numbers; it does
+    # NOT invent an investment judgment. When a buy raises a genuine judgment the
+    # plan number alone can't answer (e.g. adding NVDA-correlated exposure while
+    # the book is already at/over the plan's concentration cap), the candidate is
+    # ROUTED to the agent fleet (risk officer / fund manager) rather than
+    # approved/vetoed by hand-coded policy. Its dollars are HELD (not counted as
+    # deployable) until the fleet adjudicates. See deployment_funnel/fleet_review.
+    NEEDS_FLEET_REVIEW = "needs_fleet_review"
 
 
 CANDIDATE_STATUSES = tuple(s.value for s in CandidateStatus)
