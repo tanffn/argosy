@@ -14,13 +14,14 @@ from __future__ import annotations
 
 from argosy.services.deployment_funnel.contracts import PlanGap
 
-# Diversifier classes a resilient long-horizon plan is expected to carry, keyed
-# by a label-substring matcher. Gold/alternatives is the notable structural
-# absence in the current plan (0% vs a real diversification role). We do NOT
-# hardcode a target weight — that is engine-derived when the sleeve is added.
-_EXPECTED_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("gold / alternatives", ("gold", "alternativ", "commodit", "precious")),
-)
+# Diversifier classes the deployment funnel treats as REQUIRED (a missing one is
+# surfaced as a plan question). Deliberately EMPTY: the owner decided gold is
+# intentionally excluded (the fleet's plan carries a Real assets (REIT/TIPS)
+# sleeve and chose not to add gold — a defensible call, gold near ATH). We do
+# NOT assert classes the fleet's own synthesis chose to omit. The mechanism
+# below is retained as an extension point should a genuinely-required class be
+# identified later — but nothing is hardcoded today.
+_EXPECTED_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def _plan_has(doc, keywords: tuple[str, ...]) -> bool:

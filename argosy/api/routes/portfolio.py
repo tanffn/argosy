@@ -1573,6 +1573,17 @@ def get_deploy_cash(
                 plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                 deployable_usd=amount, snapshot_prices=snapshot_prices,
             )
+            # Non-shadow: re-rank the actual buy list from the verdict (drop
+            # vetoed/deferred, resize capped) so the UI shows the CORRECTED plan,
+            # not just annotations. Shadow keeps the original list + annotation.
+            if not get_settings().deployment_funnel_shadow:
+                from argosy.services.deployment_funnel.from_plan import rerank_plan
+                from argosy.services.deployment_funnel.sizer import size_deployment
+
+                sized = size_deployment(list(result.enriched), deployable_usd=amount)
+                dto = deployment_plan_to_dto(
+                    rerank_plan(plan, sized), market_context=ctx
+                )
             dto.preflight = preflight_result_to_dto(result)
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(

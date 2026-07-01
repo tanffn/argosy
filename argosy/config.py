@@ -180,10 +180,11 @@ class Settings(BaseSettings):
     # Research-informed deployment preflight (deterministic; Increment 1).
     #   - deployment_funnel_enabled: master switch. When False, /deploy-cash
     #     behaves exactly as before (no preflight block).
-    #   - deployment_funnel_shadow: when True (DEFAULT), the preflight annotates
-    #     the response (shown in the UI) but does NOT re-rank the buy list yet.
+    #   - deployment_funnel_shadow: when False (DEFAULT now), the preflight
+    #     RE-RANKS the buy list (drops vetoed/deferred, resizes capped) so the
+    #     surfaced plan reflects the verdict. Set True to only annotate.
     deployment_funnel_enabled: bool = Field(default=True)
-    deployment_funnel_shadow: bool = Field(default=True)
+    deployment_funnel_shadow: bool = Field(default=False)
 
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal

@@ -183,9 +183,56 @@ def run_preflight_for_plan(
     return result
 
 
+def rerank_plan(plan, sized):
+    """Non-shadow: rebuild the DeploymentPlan so the buy list REFLECTS the
+    verdict — vetoed/deferred/plan-change lines removed, capped lines resized to
+    their final sized amount, freed cash pushed to the undeployed remainder (NOT
+    force-redeployed). Estate exposure is recomputed from the surviving lines so
+    the header numbers stay honest. Returns a new frozen DeploymentPlan."""
+    from dataclasses import replace
+
+    final_by_symbol = {sl.symbol.upper(): sl.final_usd for sl in sized.lines}
+
+    new_tiers = []
+    us_exposed = 0.0
+    us_sanctioned = 0.0
+    for tier in plan.tiers:
+        kept = []
+        for line in tier.lines:
+            amt = final_by_symbol.get(line.symbol.upper())
+            if amt is None or amt <= 0.0:
+                continue
+            kept.append(replace(line, amount_usd=amt))
+            status = getattr(getattr(line, "estate", None), "status", "")
+            if status == "us_situs_exposed":
+                us_exposed += amt
+            elif status == "us_situs_sanctioned":
+                us_sanctioned += amt
+        if kept:
+            new_tiers.append(replace(tier, lines=tuple(kept)))
+
+    deployed = round(sum(sl.final_usd for sl in sized.lines), 2)
+    remainder = round(max(0.0, plan.deploy_amount_usd - deployed), 2)
+    held_note = (
+        f"Research check re-ranked this list: deploying ${deployed:,.0f} of "
+        f"${plan.deploy_amount_usd:,.0f}; ${remainder:,.0f} held back (lines that "
+        f"re-buy NVDA via look-through, stack the funded reserve, or couldn't be "
+        f"price-verified). See the per-line reasons above."
+    )
+    return replace(
+        plan,
+        tiers=tuple(new_tiers),
+        us_situs_exposed_usd=round(us_exposed, 2),
+        us_situs_sanctioned_usd=round(us_sanctioned, 2),
+        undeployed_remainder_usd=remainder,
+        caveats=plan.caveats + (held_note,),
+    )
+
+
 __all__ = [
     "build_gate_inputs",
     "plan_to_candidates",
     "SnapshotOrLiveProvider",
     "run_preflight_for_plan",
+    "rerank_plan",
 ]
