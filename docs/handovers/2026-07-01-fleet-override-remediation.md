@@ -2,6 +2,46 @@
 
 **Date:** 2026-07-01 · **Branch:** `master` · **HEAD at handover:** `284b71d`
 
+## STATUS UPDATE 2026-07-01 (program COMPLETE) — read this first
+
+All three fixes shipped to `master`. Owner directive during execution: "just work
+— decide, consult codex, review with codex; only ask a real values question."
+
+- **Fix B CORE + CONNECT — DONE** (`37a8155`, `f3ffb6e`). `HouseholdState` now
+  carries `kid_birth_years`, derived in `extract_household_state` from the real
+  identity data (dependents_ages / children[].age → birth years; explicit
+  `education_savings_accounts.child_dob` wins where present → `(2016, 2020)`; Adva's
+  DOB confirms). Both MC call sites pass `kids_birth_years` + `reference_year`. Real
+  data moves the headline: earliest-safe age **46→48**, preservation **54→56** (the
+  legacy 43-55 assumption had put the 0.85× empty-nest dip in the early-retirement
+  sequence-risk window; real younger kids extend the 1.10× peak to age 60). codex
+  CORRECT 5/5.
+- **Fix A — DONE** (`6ea1180` stage 1, `3a52c3d` stage 2). Stage 1 removed the
+  invented judgment: `gates.py` concentration split into pure plan-cap arithmetic
+  (book UNDER cap) vs `NEEDS_FLEET_REVIEW` routing (book AT/OVER cap); `pace_for_line`
+  stripped of the VIX/S&P DCA market-timing policy (now neutral "now"). Stage 2
+  added `deployment_funnel/fleet_review.py` — a bounded RiskOfficer(3-perspective)+
+  FundManager adjudicator wired to the route behind `live=True` +
+  `deployment_fleet_review_enabled` (default OFF), fail-CLOSED (held, never silently
+  approved). codex CORRECT on both stages. `plan_gaps.py` gold assertion was already
+  neutralized (`_EXPECTED_CLASSES=()`).
+- **Fix C — DONE** (`aa0617c`). safety_gates conflict ruin boundaries (0.50/0.30)
+  moved to the IPS-owned `resolve()` reference (provisional-flagged, per-user
+  overridable, fail-safe fallback, warn clamped ≤ fail). `discovery_candidates`
+  conviction floor fixed from an exact-equality veto to a real ordered `>=` floor so
+  the policy-owned floor genuinely routes MED/LOW BUYs when lowered.
+
+**Remaining (not blocking, needs a LIVE session):** verify the fleet adjudicator's
+LLM prompt QUALITY end-to-end and, once satisfied, flip `deployment_fleet_review_enabled`
+on. The mapping/fail-open/bounds are unit-tested with canned agents; the prompt
+quality is the only thing a mocked test can't cover. Tier-2 leftovers deliberately
+NOT force-parametrized (already named + override-able, low stakes): behavioral
+panic/FOMO nudge thresholds, decision_funnel routing dataclass (content-hashed,
+override via a passed policy), unallocated-cash 1.5× + windfall materiality (named
+constants + override params).
+
+Everything below is the ORIGINAL handover (pre-execution context), preserved.
+
 ## Why this exists
 
 The owner (Ariel) identified a **fundamental error class**: *deterministic code that
