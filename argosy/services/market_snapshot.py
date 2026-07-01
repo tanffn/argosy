@@ -190,6 +190,41 @@ def _compute_sp_vs_trend(rows: list[dict[str, Any]], window: int = 200) -> tuple
     return (latest - ma) / ma * 100.0, True
 
 
+def _usd_nis_from_cache(session) -> "tuple[float, DataFreshness] | None":
+    """Last-known USD/NIS from the ingested ``fx_rates`` cache, stamped with the
+    rate's REAL age (so a fresh cache reads fresh, a stale one reads stale — never
+    a fake 0). Returns None when the cache has no USD rate."""
+    try:
+        from datetime import date
+
+        from argosy.state.models import FxRate
+
+        row = (
+            session.query(FxRate)
+            .filter(FxRate.currency == "USD")
+            .order_by(FxRate.date.desc())
+            .first()
+        )
+        if row is None or not row.rate:
+            return None
+        rdate = row.date
+        if isinstance(rdate, str):
+            rdate = date.fromisoformat(rdate)
+        age = max(0.0, float((_utcnow().date() - rdate).days) * 86400.0)
+        return (
+            float(row.rate),
+            DataFreshness(
+                field="usd_nis",
+                fetched_at=_utcnow().isoformat(),
+                age_seconds=age,
+                source=f"fx_cache:boi:{rdate.isoformat()}",
+                is_stale=is_stale(age, _FX_MAX_AGE),
+            ),
+        )
+    except Exception:  # noqa: BLE001 — best-effort; caller keeps the 0/missing path
+        return None
+
+
 def market_snapshot(
     session: Any,
 ) -> dict[str, tuple[float, DataFreshness]]:
@@ -257,14 +292,19 @@ def market_snapshot(
                         _freshness_missing("sp_vs_trend_pct", f"{series_id}:insufficient_history"),
                     )
 
-    # --- USD/NIS via BoI adapter ---
+    # --- USD/NIS via BoI adapter, with a fall back to the ingested fx_rates cache
+    # (the canonical USD/NIS history). The live BoI adapter can fail or return 0;
+    # rather than surface 0 (which zeroes every USD→NIS conversion) we use the
+    # last-known cached rate, stamped with ITS real age so staleness stays honest.
     try:
         fx_data = asyncio.run(boi.get_usd_nis())
         rate = float(fx_data.get("rate", 0.0))
         source = fx_data.get("source", "boi")
         as_of = fx_data.get("as_of", "")
         if rate <= 0:
-            result["usd_nis"] = (0.0, _freshness_missing("usd_nis", "boi:rate_zero"))
+            result["usd_nis"] = _usd_nis_from_cache(session) or (
+                0.0, _freshness_missing("usd_nis", "boi:rate_zero")
+            )
         else:
             result["usd_nis"] = (
                 rate,
@@ -281,7 +321,9 @@ def market_snapshot(
             "market_snapshot.boi_failed",
             error=str(exc)[:200],
         )
-        result["usd_nis"] = (0.0, _freshness_missing("usd_nis", f"boi:{exc!s:.60}"))
+        result["usd_nis"] = _usd_nis_from_cache(session) or (
+            0.0, _freshness_missing("usd_nis", f"boi:{exc!s:.60}")
+        )
 
     # Ensure all six keys always present (defensive).
     for key in ("sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"):
