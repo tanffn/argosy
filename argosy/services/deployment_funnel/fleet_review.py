@@ -318,10 +318,72 @@ def adjudicate_sync(
     return apply_adjudications(enriched, adjudications)
 
 
+async def recommend_disposition(
+    enriched: tuple[EnrichedCandidate, ...] | list[EnrichedCandidate],
+    *,
+    context: DeploymentContext,
+    deployable_usd: float,
+    user_id: str,
+    agent_factory: Callable[[str], object] | None = None,
+):
+    """The fleet answers "what should I DO with this cash?" — an affirmative
+    disposition of the FULL amount (deploy / hold-with-reason / deconcentrate /
+    plan-change), so cash is never silent residue. Returns a DeploymentDisposition
+    or None on agent failure (caller surfaces the deterministic state instead)."""
+    from argosy.agents.deployment_disposition import DeploymentDispositionAgent
+
+    approved = [
+        {"symbol": e.symbol, "usd": round(e.candidate.total_notional_usd, 2)}
+        for e in enriched if e.status is CandidateStatus.APPROVE
+    ]
+    blocked = [
+        {"symbol": e.symbol,
+         "usd": round(e.candidate.total_notional_usd, 2),
+         "facts": [f.fact for f in getattr(e, "flags", ())] or [e.reason]}
+        for e in enriched
+        if e.status in (CandidateStatus.NEEDS_FLEET_REVIEW, CandidateStatus.VETO,
+                        CandidateStatus.CAP_AT_PCT)
+    ]
+    agent = (agent_factory or (lambda u: DeploymentDispositionAgent(user_id=u)))(user_id)
+    try:
+        report = await agent.run(
+            deployable_usd=deployable_usd,
+            book_nvda_pct=context.book_nvda_pct,
+            nvda_cap_pct=context.nvda_cap_pct,
+            plan_sleeves=list(context.plan_classes),
+            already_deploying=approved,
+            blocked=blocked,
+            reserve_funded=True,
+            user_constraints=context.user_constraints,
+        )
+        return report.output
+    except Exception:  # noqa: BLE001 — caller falls back to the deterministic view
+        return None
+
+
+def recommend_disposition_sync(
+    enriched,
+    *,
+    context: DeploymentContext,
+    deployable_usd: float,
+    user_id: str,
+    agent_factory: Callable[[str], object] | None = None,
+):
+    """Sync bridge for the (sync) route."""
+    return asyncio.run(
+        recommend_disposition(
+            enriched, context=context, deployable_usd=deployable_usd,
+            user_id=user_id, agent_factory=agent_factory,
+        )
+    )
+
+
 __all__ = [
     "DeploymentContext",
     "FleetAdjudication",
     "adjudicate_candidates",
     "apply_adjudications",
     "adjudicate_sync",
+    "recommend_disposition",
+    "recommend_disposition_sync",
 ]

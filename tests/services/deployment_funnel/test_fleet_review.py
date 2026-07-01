@@ -206,3 +206,52 @@ class TestBackendResilience:
     def test_two_flaky_officers_hold_fail_closed(self):
         out = self._adj(n_failing=2)  # only 1 responds -> insufficient -> held
         assert out[0].status is CandidateStatus.NEEDS_FLEET_REVIEW
+
+
+class TestDispositionRecommendation:
+    """The fleet must produce an affirmative disposition of the FULL cash — never
+    silent residue. Tested with a canned agent (no claude.exe)."""
+
+    def test_disposition_returned(self):
+        from types import SimpleNamespace
+
+        from argosy.services.deployment_funnel.fleet_review import (
+            recommend_disposition_sync,
+        )
+
+        items = [
+            SimpleNamespace(action="deploy", target="EIMI", amount_usd=60000.0,
+                            reason="diversify"),
+            SimpleNamespace(action="deconcentrate_first", target="NVDA",
+                            amount_usd=40000.0, reason="trim"),
+        ]
+
+        class _FakeDisp:
+            async def run(self, **_kw):
+                return SimpleNamespace(
+                    output=SimpleNamespace(summary="deploy + trim", items=items)
+                )
+
+        e = [_enriched("CSPX", 22000.0, 1540.0)]
+        d = recommend_disposition_sync(
+            e, context=_CTX, deployable_usd=100000.0, user_id="ariel",
+            agent_factory=lambda u: _FakeDisp(),
+        )
+        assert d is not None
+        assert sum(i.amount_usd for i in d.items) == 100000.0
+
+    def test_disposition_none_on_agent_failure(self):
+        from argosy.services.deployment_funnel.fleet_review import (
+            recommend_disposition_sync,
+        )
+
+        class _Boom:
+            async def run(self, **_kw):
+                raise RuntimeError("backend down")
+
+        e = [_enriched("CSPX", 22000.0, 1540.0)]
+        d = recommend_disposition_sync(
+            e, context=_CTX, deployable_usd=100000.0, user_id="ariel",
+            agent_factory=lambda u: _Boom(),
+        )
+        assert d is None  # caller falls back to the deterministic view
