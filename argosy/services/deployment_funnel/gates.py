@@ -42,13 +42,14 @@ def classify_candidate(
     look-through concentration cap. Price HISTORY features never gate here."""
     notional = cand.total_notional_usd
 
-    # 1. Fail-closed on stale market data.
-    if history.stale:
-        return (
-            CandidateStatus.DEFER,
-            "market quote stale — deferring rather than acting blind",
-            None,
-        )
+    # NOTE: a stale/missing price does NOT gate here. The deterministic verdict
+    # (plan-gap / reserve / concentration cap) is computed from SHARE NOTIONAL ×
+    # index look-through — no price needed — so refusing to act on a missing
+    # quote would wrongly hold cash for a price-independent decision. Staleness
+    # is carried on `history.stale` as a FEATURE for the price-dependent
+    # judgment layer (gold-at-ATH etc.), not a gate. (Was a hard DEFER; that
+    # held ~$60k of a $100k deploy purely because bare UCITS tickers don't
+    # resolve on yfinance — an artifact, not a real objection.)
 
     # 2. Plan-gap: a class the plan doesn't contain must go through a plan change.
     cls = gi.class_of.get(symbol.upper())
@@ -79,26 +80,39 @@ def classify_candidate(
             )
         # Within the shortfall → a legitimate reserve top-up; falls through.
 
-    # 4. Concentration cap via look-through (effective NVDA, not nominal).
+    # 4. Concentration cap via look-through — measured on the RESULTING NVDA
+    #    PERCENTAGE, not absolute dollars. Key fix: when the book is already
+    #    over the cap (56.6% vs 13%), the way DOWN is to buy assets whose NVDA
+    #    weight is BELOW the current book %, which DILUTES the concentration. A
+    #    buy that lowers (or holds) the NVDA % must be allowed even though it
+    #    adds some absolute NVDA — vetoing it (the old bug) rejected the very
+    #    diversifying buys that reduce concentration and stranded the cash.
     add_nvda = effective_nvda_usd(symbol, notional)
-    if add_nvda > 0.0:
-        cap_usd = gi.book_usd * gi.nvda_cap_pct / 100.0
-        headroom = cap_usd - gi.current_effective_nvda_usd
-        if headroom <= 0.0:
+    if add_nvda > 0.0 and gi.book_usd > 0.0 and notional > 0.0:
+        cap_frac = gi.nvda_cap_pct / 100.0
+        pre_pct = gi.current_effective_nvda_usd / gi.book_usd
+        post_pct = (gi.current_effective_nvda_usd + add_nvda) / (gi.book_usd + notional)
+        # Allowed if the buy leaves NVDA within the cap, OR (while over the cap)
+        # does not RAISE the NVDA share — i.e. it deconcentrates or holds.
+        if post_pct <= cap_frac or post_pct <= pre_pct + 1e-9:
             return (
-                CandidateStatus.VETO,
-                f"buying {symbol} adds ${add_nvda:,.0f} NVDA via index "
-                f"look-through; effective NVDA already over the "
-                f"{gi.nvda_cap_pct:.0f}% cap",
+                CandidateStatus.APPROVE,
+                (
+                    f"fills a plan sleeve; {symbol} is "
+                    f"{add_nvda / notional * 100:.0f}% NVDA (< book {pre_pct * 100:.0f}%) "
+                    f"so it DILUTES concentration ({pre_pct * 100:.1f}%→{post_pct * 100:.1f}%)"
+                    if pre_pct > cap_frac
+                    else "fills a plan sleeve within the NVDA cap"
+                ),
                 None,
             )
-        if add_nvda > headroom:
-            cap_pct = _floor_pct(headroom, add_nvda)
-            return (
-                CandidateStatus.CAP_AT_PCT,
-                f"cap {symbol} at {cap_pct:.1f}% — full size adds "
-                f"${add_nvda:,.0f} NVDA via look-through, over the cap",
-                cap_pct,
-            )
+        # The buy RAISES the NVDA share while over the cap → concentrating.
+        return (
+            CandidateStatus.VETO,
+            f"buying {symbol} RAISES NVDA {pre_pct * 100:.1f}%→{post_pct * 100:.1f}% "
+            f"(its {add_nvda / notional * 100:.0f}% NVDA weight exceeds your book) — "
+            f"deepens the concentration being unwound",
+            None,
+        )
 
     return (CandidateStatus.APPROVE, "fills a plan sleeve within caps", None)

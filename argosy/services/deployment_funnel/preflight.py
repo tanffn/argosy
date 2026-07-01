@@ -49,18 +49,24 @@ def run_preflight(
     kept_total = 0.0
     unmapped: list[str] = []
 
-    # Running effective-NVDA exposure: starts at the book's current level and
-    # GROWS as candidates are kept, so the concentration cap is enforced across
-    # the whole batch — not each candidate against the same static level
-    # (codex H1: two sub-headroom buys must not both approve past the cap).
+    # Running effective-NVDA exposure AND running book: both GROW as candidates
+    # are kept, so the concentration % is evaluated against the evolving book
+    # across the whole batch — not each candidate against the same static level
+    # (codex H1). The gate now judges on the resulting NVDA %, so the book
+    # denominator must track deployment too.
     running_nvda = gate_inputs.current_effective_nvda_usd
+    running_book = gate_inputs.book_usd
 
     for cand in candidates:
         symbol = symbol_of(cand)
         hf = build_history_features(symbol, provider)
         sentiment = news_sentiment_for(symbol, signals_by_symbol)
 
-        gi_iter = replace(gate_inputs, current_effective_nvda_usd=running_nvda)
+        gi_iter = replace(
+            gate_inputs,
+            current_effective_nvda_usd=running_nvda,
+            book_usd=running_book,
+        )
         status, reason, cap_pct = classify_candidate(
             cand, symbol, hf, sentiment, gi_iter
         )
@@ -94,7 +100,10 @@ def run_preflight(
             frac = _kept_fraction(status, cap_pct)
             if frac > 0.0:
                 kept_total += cand.total_notional_usd * frac
-                running_nvda += eff_nvda * frac  # consume the cap headroom
+                # Grow both the NVDA exposure and the book so the next
+                # candidate's NVDA % is judged against the post-deploy book.
+                running_nvda += eff_nvda * frac
+                running_book += cand.total_notional_usd * frac
 
     notes: list[str] = []
     if unmapped:

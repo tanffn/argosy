@@ -45,35 +45,38 @@ def test_preflight_catches_the_three_failures():
         provider=_Provider(), signals_by_symbol={}, deployable_usd=95000.0,
     )
     by = {e.symbol: e.status for e in res.enriched}
-    assert by["CSPX"] in (CandidateStatus.VETO, CandidateStatus.CAP_AT_PCT)
+    # CSPX (~7% NVDA) DILUTES the 56.6% book → approved (the corrected logic).
+    assert by["CSPX"] is CandidateStatus.APPROVE
     assert by["IB01"] is CandidateStatus.VETO           # reserve funded
-    assert by["SGLD"] is CandidateStatus.REQUIRES_PLAN_CHANGE
-    assert any(g.asset_class == "gold" for g in res.plan_gaps)
+    assert by["SGLD"] is CandidateStatus.REQUIRES_PLAN_CHANGE  # gold not in plan
     # Dollar conservation: kept (approved/capped) never exceeds deployable.
     assert res.kept_total_usd <= res.deployable_usd
 
 
-def test_aggregate_headroom_is_consumed_across_candidates():
-    # codex H1: two sub-headroom NVDA buys must NOT both approve past the cap.
-    # Cap 13% of $1,000,000 = $130,000; current $129,000 -> $1,000 headroom.
-    # Two NVDA buys of $600 each add $1,200 > headroom; the second must be
-    # capped/vetoed once the first consumes most of the headroom.
+def test_aggregate_cap_enforced_across_batch():
+    # codex H1, %-logic: NVDA buys must not push the book NVDA% over the cap
+    # across the batch. Just under the cap (12.9% of $1M, cap 13%); the first
+    # small NVDA buy stays within, the second (evaluated against the grown book
+    # + grown NVDA) crosses the cap and is vetoed.
     gi = GateInputs(
         current_effective_nvda_usd=129_000.0, book_usd=1_000_000.0,
         nvda_cap_pct=13.0, reserve_shortfall_usd=0.0,
         plan_classes=frozenset({"Strategic single-stock (NVDA)"}),
         class_of={"NVDA": "Strategic single-stock (NVDA)"},
     )
-    cands = [_c("NVDA", 600.0), _c("NVDA", 600.0)]
+    cands = [_c("NVDA", 600.0), _c("NVDA", 2000.0)]
     res = run_preflight(
         cands, symbol_of=lambda c: c.legs[0].symbol, gate_inputs=gi,
-        provider=_Provider(), signals_by_symbol={}, deployable_usd=1200.0)
-    kept_nvda = sum(
-        e.effective_nvda_usd * (e.cap_pct / 100.0 if e.cap_pct is not None else 1.0)
-        for e in res.enriched if e.status.value in ("approve_candidate", "cap_at_pct")
-    )
-    # Total kept NVDA must stay within the $1,000 headroom (floor rounding).
-    assert 129_000.0 + kept_nvda <= 130_000.0 + 0.01
+        provider=_Provider(), signals_by_symbol={}, deployable_usd=2600.0)
+    # Compute the final book NVDA% from kept lines; must not exceed the cap.
+    kept_nvda = 129_000.0
+    kept_book = 1_000_000.0
+    for e in res.enriched:
+        if e.status.value in ("approve_candidate", "cap_at_pct"):
+            frac = e.cap_pct / 100.0 if e.cap_pct is not None else 1.0
+            kept_nvda += e.effective_nvda_usd * frac
+            kept_book += e.candidate.total_notional_usd * frac
+    assert kept_nvda / kept_book <= 0.13 + 1e-6
 
 
 def test_unmapped_symbol_is_flagged_not_silently_trusted():
