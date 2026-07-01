@@ -188,6 +188,103 @@ def run_preflight_for_plan(
     return result
 
 
+def redirect_overflow_to_diversifiers(plan, result, doc):
+    """Cash the funnel won't place in its NATURAL sleeve — an over-cap instrument
+    (R1GR at 14% NVDA) or T-bills when the reserve is already funded — is REDIRECTED
+    into the plan's OWN zero-NVDA diversifier ETFs (ex-US / EM / real-assets),
+    split by their plan-target weight, rather than left as idle cash. This deploys
+    the full amount into plan ETFs (no gold, no plan change) and nudges the NVDA
+    concentration DOWN. Returns (new_plan, redirect_note); a no-op returns the plan
+    unchanged. Only redistributes concentration/reserve overflow — a class ABSENT
+    from the plan (plan-gap) still needs a real plan change and is NOT invented here.
+    """
+    from dataclasses import replace
+
+    from argosy.services.deployment_advisor import DeploymentLine, EstateTag
+    from argosy.services.deployment_funnel.look_through import effective_nvda_usd
+    from argosy.services.deployment_funnel.reserve import CASH_LIKE_SYMBOLS
+
+    blocked_kinds = {"denser_than_cap", "reserve_overfund"}
+    redirect = 0.0
+    drop: set[str] = set()
+    for e in result.enriched:
+        kinds = {f.kind for f in getattr(e, "flags", ())}
+        if kinds & blocked_kinds:
+            redirect += float(e.candidate.total_notional_usd)
+            drop.add(e.symbol.upper())
+    redirect = round(redirect, 2)
+    if redirect <= 0.0:
+        return plan, ""
+
+    # Plan diversifier sleeves: zero-NVDA, non-cash, with a ticker.
+    divs: list[tuple[str, float]] = []
+    for c in doc.classes:
+        for instr in getattr(c, "instruments", []):
+            sym = (getattr(instr, "symbol", "") or "").upper()
+            if not sym or sym in CASH_LIKE_SYMBOLS or "NVDA" in sym:
+                continue
+            if effective_nvda_usd(sym, 1_000_000.0) == 0.0:
+                divs.append((sym, float(getattr(c, "target_pct", 0.0) or 0.0)))
+    if not divs:
+        return plan, ""  # nothing plan-compliant to redirect into
+
+    wsum = sum(w for _, w in divs) or float(len(divs))
+    add_by_sym = {sym: round(redirect * (w / wsum), 2) for sym, w in divs}
+
+    # Rebuild tiers: drop the blocked lines; increment an existing diversifier line
+    # or synthesize a new core line for one not already proposed.
+    existing_divs: set[str] = set()
+    new_tiers = []
+    for tier in plan.tiers:
+        kept = []
+        for line in tier.lines:
+            sym = line.symbol.upper()
+            if sym in drop:
+                continue
+            if sym in add_by_sym:
+                kept.append(replace(line, amount_usd=round(line.amount_usd + add_by_sym[sym], 2),
+                                    rationale=line.rationale + " [+redirected overflow from over-cap/funded-reserve lines]"))
+                existing_divs.add(sym)
+            else:
+                kept.append(line)
+        if kept:
+            new_tiers.append(replace(tier, lines=tuple(kept)))
+
+    to_add = [(s, a) for s, a in add_by_sym.items() if s not in existing_divs and a > 0.0]
+    if to_add:
+        synth = [
+            DeploymentLine(
+                symbol=sym, type="ETF", amount_usd=amt, timing="now", is_new=True,
+                tier="core", horizon="10yr+",
+                estate=EstateTag(domicile="IE", status="estate_safe",
+                                 note="Irish UCITS diversifier (redirect target)"),
+                cap_note="redirected overflow (over-cap/funded-reserve cash)",
+                net_of_tax_caveat="",
+                rationale=(f"Redirected overflow into {sym} — a zero-NVDA plan "
+                           "diversifier — instead of buying over-cap NVDA exposure "
+                           "or stacking a funded reserve. Reduces concentration."),
+            )
+            for sym, amt in to_add
+        ]
+        # Fold into a core tier (reuse the first core tier if present).
+        merged = False
+        for i, tier in enumerate(new_tiers):
+            if tier.name == "core":
+                new_tiers[i] = replace(tier, lines=tuple(list(tier.lines) + synth))
+                merged = True
+                break
+        if not merged:
+            from argosy.services.deployment_advisor import DeploymentTier
+            new_tiers.append(DeploymentTier(name="core", cap_pct=0.0, lines=tuple(synth)))
+
+    note = (
+        f"Redirected ${redirect:,.0f} of over-cap / funded-reserve cash into your "
+        f"plan's zero-NVDA diversifier ETFs ({', '.join(s for s, _ in divs)}) so the "
+        f"full amount deploys into plan holdings (no gold / plan change needed)."
+    )
+    return replace(plan, tiers=tuple(new_tiers)), note
+
+
 def rerank_plan(plan, sized):
     """Non-shadow: rebuild the DeploymentPlan so the buy list REFLECTS the
     verdict — vetoed/deferred/plan-change lines removed, capped lines resized to

@@ -123,3 +123,57 @@ def test_rerank_plan_drops_vetoed_resizes_capped():
     assert out.deployed_total_usd == 2846.0
     assert out.undeployed_remainder_usd == round(100000.0 - 2846.0, 2)
     assert any("held back" in c for c in out.caveats)
+
+
+def test_redirect_overflow_into_diversifiers():
+    # T-bills held for reserve-overfund must be REDIRECTED into the plan's zero-NVDA
+    # diversifier ETF (EXUS) — deployed into a plan holding, not left as idle cash,
+    # and no gold / plan change invented.
+    from datetime import date
+
+    from argosy.services.contracts import AllocationCandidate, AllocationLeg
+    from argosy.services.deployment_advisor import (
+        DeploymentLine, DeploymentPlan, DeploymentTier, EstateTag,
+    )
+    from argosy.services.deployment_funnel.contracts import (
+        CandidateFlag, EnrichedCandidate, HistoryFeatures, PreflightResult,
+    )
+    from argosy.services.deployment_funnel.from_plan import (
+        redirect_overflow_to_diversifiers,
+    )
+
+    doc = SimpleNamespace(nvda_cap_pct=13.0, classes=[
+        SimpleNamespace(label="Cash & T-bills", target_pct=6.0,
+                        instruments=[SimpleNamespace(symbol="IB01")]),
+        SimpleNamespace(label="International developed (ex-US)", target_pct=11.0,
+                        instruments=[SimpleNamespace(symbol="EXUS")]),
+    ])
+    est = EstateTag(domicile="IE", status="estate_safe", note="")
+    dl = lambda sym, amt: DeploymentLine(
+        symbol=sym, type="ETF", amount_usd=amt, timing="now", is_new=True,
+        tier="core", horizon="10yr+", estate=est, cap_note="",
+        net_of_tax_caveat="", rationale="x")
+    plan = DeploymentPlan(
+        deploy_amount_usd=30000.0, as_of=date(2026, 7, 1),
+        tiers=(DeploymentTier(name="core", cap_pct=0.0, lines=(dl("IB01", 30000.0),)),),
+        us_situs_exposed_usd=0.0, us_situs_sanctioned_usd=0.0,
+        undeployed_remainder_usd=0.0, market_context_age=None, caveats=())
+    hf = HistoryFeatures(last_price=100.0, ath=100.0, pct_below_ath=0.0,
+                         zscore_vs_window=0.0, drawdown_pct=0.0)
+    cand = AllocationCandidate(kind="BUY", legs=(AllocationLeg(
+        side="BUY", symbol="IB01", account_id="leumi", currency="USD",
+        notional_usd=30000.0, funding_source="cash"),), horizon="now")
+    res = PreflightResult(deployable_usd=30000.0, kept_total_usd=0.0, enriched=(
+        EnrichedCandidate(candidate=cand, symbol="IB01", effective_nvda_usd=0.0,
+            news_sentiment=None, history=hf,
+            status=__import__("argosy.services.deployment_funnel.contracts",
+                              fromlist=["CandidateStatus"]).CandidateStatus.NEEDS_FLEET_REVIEW,
+            reason="reserve overfund", cap_pct=None,
+            flags=(CandidateFlag(kind="reserve_overfund", materiality="medium",
+                                 fact="reserve funded"),)),
+    ), plan_gaps=(), notes=())
+    plan2, note = redirect_overflow_to_diversifiers(plan, res, doc)
+    assert note and "EXUS" in note
+    syms = {l.symbol.upper(): l.amount_usd for t in plan2.tiers for l in t.lines}
+    assert "IB01" not in syms          # the reserve-overfund T-bill line dropped
+    assert syms.get("EXUS", 0) >= 29000.0   # ~$30k redirected into EXUS

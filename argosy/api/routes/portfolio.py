@@ -1592,6 +1592,26 @@ def get_deploy_cash(
                 fleet_available=_fleet_on,
             )
 
+            # Deterministic redirect (no LLM, no gold, no plan change): cash the
+            # funnel won't place in its natural sleeve — an over-cap instrument
+            # (R1GR) or T-bills when the reserve is already funded — flows into the
+            # plan's OWN zero-NVDA diversifier ETFs (ex-US / EM / real-assets) so the
+            # full amount deploys into plan holdings instead of sitting as cash.
+            from argosy.services.deployment_funnel.from_plan import (
+                redirect_overflow_to_diversifiers,
+            )
+            _plan2, _redirect_note = redirect_overflow_to_diversifiers(
+                plan, result, doc
+            )
+            if _redirect_note:
+                from dataclasses import replace as _dcr
+                plan = _dcr(_plan2, caveats=tuple(_plan2.caveats) + (_redirect_note,))
+                result = run_preflight_for_plan(
+                    plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
+                    deployable_usd=amount, snapshot_prices=snapshot_prices,
+                    fleet_available=_fleet_on,
+                )
+
             # Increment 2: route the genuine judgment calls the deterministic
             # layer REFUSED to invent (NEEDS_FLEET_REVIEW) to the agent fleet
             # (RiskOfficer 3-perspective + FundManager). Only when explicitly
