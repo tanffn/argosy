@@ -3,7 +3,11 @@ from argosy.services.deployment_funnel.contracts import (
     CandidateStatus,
     HistoryFeatures,
 )
-from argosy.services.deployment_funnel.gates import GateInputs, classify_candidate
+from argosy.services.deployment_funnel.gates import (
+    GateInputs,
+    candidate_flags,
+    classify_candidate,
+)
 
 
 def _cand(symbol, usd):
@@ -163,3 +167,58 @@ def test_ath_alone_does_not_veto():
     )
     st, _, _ = classify_candidate(_cand("SGLD", 45000.0), "SGLD", at_ath, None, gi)
     assert st is CandidateStatus.APPROVE
+
+
+# ---------------------------------------------------------------------------
+# candidate_flags — deterministic FACTS (no verdict). The fleet decides; these
+# only surface what warrants judgment. A clean plan-fill has NO flags.
+# ---------------------------------------------------------------------------
+
+def _kinds(flags):
+    return {f.kind for f in flags}
+
+
+def test_zero_nvda_diversifier_has_no_flags():
+    # A pure diversifier filling a plan sleeve is a clean plan-fill -> no judgment.
+    gi = GateInputs(
+        current_effective_nvda_usd=2_296_000.0, book_usd=4_060_000.0,
+        nvda_cap_pct=13.0, reserve_shortfall_usd=0.0,
+        plan_classes=frozenset({"International developed (ex-US)"}),
+        class_of={"EXUS": "International developed (ex-US)"},
+    )
+    flags = candidate_flags(_cand("EXUS", 10000.0), "EXUS", gi)
+    assert flags == ()
+
+
+def test_below_cap_nvda_fund_is_flagged_not_decided():
+    # CSPX ~7% NVDA: the engine no longer DECIDES to approve it — it FLAGS the fact
+    # (adds NVDA look-through onto an over-cap book) for the fleet to judge.
+    flags = candidate_flags(_cand("CSPX", 22000.0), "CSPX", _GI)
+    assert "nvda_lookthrough" in _kinds(flags)
+    f = next(f for f in flags if f.kind == "nvda_lookthrough")
+    assert f.detail["instrument_nvda_pct"] == 7.0
+    assert f.detail["cap_pct"] == 13.0
+
+
+def test_denser_than_cap_is_high_materiality():
+    # R1GR ~14% > 13% cap -> a high-materiality "denser_than_cap" fact.
+    flags = candidate_flags(_cand("R1GR", 13000.0), "R1GR", _GI)
+    dense = [f for f in flags if f.kind == "denser_than_cap"]
+    assert dense and dense[0].materiality == "high"
+
+
+def test_reserve_overfund_is_flagged_when_reserve_funded():
+    # IB01 (cash-like) with the reserve already funded (shortfall 0) -> overfund
+    # FACT for the fleet, not a hardcoded veto.
+    flags = candidate_flags(_cand("IB01", 3000.0), "IB01", _GI)
+    assert "reserve_overfund" in _kinds(flags)
+
+
+def test_unmapped_symbol_flags_unverified_lookthrough():
+    gi = GateInputs(
+        current_effective_nvda_usd=0.0, book_usd=1_000_000.0, nvda_cap_pct=13.0,
+        reserve_shortfall_usd=0.0, plan_classes=frozenset({"x"}),
+        class_of={"ZZZ": "x"},
+    )
+    flags = candidate_flags(_cand("ZZZ", 5000.0), "ZZZ", gi)
+    assert "unverified_lookthrough" in _kinds(flags)

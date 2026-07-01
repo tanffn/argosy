@@ -5,10 +5,14 @@ from dataclasses import dataclass
 
 from argosy.services.contracts import AllocationCandidate
 from argosy.services.deployment_funnel.contracts import (
+    CandidateFlag,
     CandidateStatus,
     HistoryFeatures,
 )
-from argosy.services.deployment_funnel.look_through import effective_nvda_usd
+from argosy.services.deployment_funnel.look_through import (
+    effective_nvda_usd,
+    has_lookthrough,
+)
 from argosy.services.deployment_funnel.reserve import CASH_LIKE_SYMBOLS
 
 
@@ -30,6 +34,82 @@ class GateInputs:
     class_of: dict[str, str]
 
 
+def candidate_flags(
+    cand: AllocationCandidate,
+    symbol: str,
+    gi: GateInputs,
+) -> tuple[CandidateFlag, ...]:
+    """Deterministic FACTS about one candidate that warrant fleet judgment — no
+    verdicts. This is the primary signal the fleet adjudicates (approve / trim /
+    veto). A candidate with no flags is a clean plan-fill needing no judgment.
+
+    The engine only reconciles against the plan's own numbers here; whether a
+    flagged fact should stop or shrink the buy is the fleet's call, not a
+    hardcoded threshold's. (Class-not-in-plan is handled as a hard invariant in
+    classify_candidate, not here — it's a routing fact, not a judgment.)"""
+    notional = cand.total_notional_usd
+    sym = symbol.upper()
+    flags: list[CandidateFlag] = []
+
+    # Reserve overfund — a cash-like buy beyond what the plan's reserve target
+    # still needs. Whether extra buffer is wanted (conflict risk etc.) is a
+    # judgment, so surface the fact, don't veto.
+    if sym in CASH_LIKE_SYMBOLS and notional > gi.reserve_shortfall_usd:
+        over = round(notional - max(0.0, gi.reserve_shortfall_usd), 2)
+        flags.append(CandidateFlag(
+            kind="reserve_overfund",
+            materiality="medium" if gi.reserve_shortfall_usd <= 0 else "low",
+            fact=(
+                f"{symbol} is cash-like; the plan's reserve target needs only "
+                f"${max(0.0, gi.reserve_shortfall_usd):,.0f} more, so ${over:,.0f} "
+                f"of this buy adds to an already-funded reserve"
+            ),
+            detail={"notional_usd": notional,
+                    "reserve_shortfall_usd": gi.reserve_shortfall_usd,
+                    "overfund_usd": over},
+        ))
+
+    # Concentration — any NVDA look-through is a fact about single-name risk on a
+    # book already over the cap. Density vs the cap sets materiality.
+    add_nvda = effective_nvda_usd(symbol, notional)
+    if add_nvda > 0.0 and notional > 0.0:
+        inst_wt = add_nvda / notional
+        cap_frac = gi.nvda_cap_pct / 100.0
+        book_pct = (
+            gi.current_effective_nvda_usd / gi.book_usd if gi.book_usd > 0 else 1.0
+        )
+        denser = inst_wt > cap_frac + 1e-9
+        flags.append(CandidateFlag(
+            kind="denser_than_cap" if denser else "nvda_lookthrough",
+            materiality="high" if denser else ("medium" if book_pct >= cap_frac else "low"),
+            fact=(
+                f"{symbol} adds {inst_wt * 100:.0f}% NVDA look-through "
+                f"(${add_nvda:,.0f}); book is {book_pct * 100:.0f}% NVDA vs the "
+                f"{gi.nvda_cap_pct:.0f}% single-name cap"
+                + (" — DENSER than the cap" if denser else "")
+            ),
+            detail={"instrument_nvda_pct": round(inst_wt * 100, 1),
+                    "book_nvda_pct": round(book_pct * 100, 1),
+                    "cap_pct": gi.nvda_cap_pct,
+                    "add_nvda_usd": add_nvda},
+        ))
+
+    # Unverified look-through — a non-cash symbol with no look-through entry: its
+    # 0 NVDA is an assumption, not a fact. Surface it (concentration unverified).
+    if not has_lookthrough(sym) and sym not in CASH_LIKE_SYMBOLS:
+        flags.append(CandidateFlag(
+            kind="unverified_lookthrough",
+            materiality="low",
+            fact=(
+                f"{symbol} has no look-through entry — its NVDA content is "
+                f"unverified (assumed 0); concentration may be under-counted"
+            ),
+            detail={},
+        ))
+
+    return tuple(flags)
+
+
 def classify_candidate(
     cand: AllocationCandidate,
     symbol: str,
@@ -37,9 +117,13 @@ def classify_candidate(
     news_sentiment: str | None,
     gi: GateInputs,
 ) -> tuple[CandidateStatus, str, float | None]:
-    """Deterministic status for one candidate. Order matters: fail-closed on
-    stale data first; then plan-gap; then reserve duplication; then the
-    look-through concentration cap. Price HISTORY features never gate here."""
+    """Conservative FAIL-SAFE fallback disposition for one candidate, used when
+    the agent fleet doesn't run. It is NOT the primary decision path any more —
+    ``candidate_flags`` produces the facts and the fleet decides approve/trim/veto.
+    This function only survives so the system degrades gracefully (a sensible,
+    plan-reconciled default) when the fleet is unavailable; it never OVERRIDES a
+    fleet verdict. Order: plan-gap (hard invariant) first; then reserve; then the
+    look-through concentration read. Price HISTORY features never gate here."""
     notional = cand.total_notional_usd
 
     # NOTE: a stale/missing price does NOT gate here. The deterministic verdict

@@ -15,7 +15,11 @@ from argosy.services.deployment_funnel.enrich import (
     build_history_features,
     news_sentiment_for,
 )
-from argosy.services.deployment_funnel.gates import GateInputs, classify_candidate
+from argosy.services.deployment_funnel.gates import (
+    GateInputs,
+    candidate_flags,
+    classify_candidate,
+)
 from argosy.services.deployment_funnel.look_through import (
     effective_nvda_usd,
     has_lookthrough,
@@ -67,6 +71,9 @@ def run_preflight(
         status, reason, cap_pct = classify_candidate(
             cand, symbol, hf, sentiment, gi_iter
         )
+        # Deterministic FACTS (no verdict) — the primary signal the fleet
+        # adjudicates. ``status`` above is only the fail-safe fallback disposition.
+        flags = candidate_flags(cand, symbol, gi_iter)
         eff_nvda = effective_nvda_usd(symbol, cand.total_notional_usd)
 
         # Surface look-through misses (codex H2): a non-cash-like symbol with no
@@ -79,7 +86,7 @@ def run_preflight(
             EnrichedCandidate(
                 candidate=cand, symbol=symbol, effective_nvda_usd=eff_nvda,
                 news_sentiment=sentiment, history=hf, status=status,
-                reason=reason, cap_pct=cap_pct,
+                reason=reason, cap_pct=cap_pct, flags=flags,
             )
         )
 
