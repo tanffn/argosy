@@ -1545,7 +1545,40 @@ def get_deploy_cash(
         market_context=ctx, sleeve_pct=sleeve_pct,
         use_high_potential=use_high_potential, user_id=user_id,
     )
-    return deployment_plan_to_dto(plan, market_context=ctx)
+    dto = deployment_plan_to_dto(plan, market_context=ctx)
+
+    # Shadow research preflight (deterministic; behind the kill switch). Annotates
+    # the response with per-candidate status/reason (look-through cap, reserve,
+    # plan-gap) WITHOUT altering `tiers`. Never breaks deploy-cash on failure.
+    if doc is not None and get_settings().deployment_funnel_enabled:
+        try:
+            from argosy.services.contracts import preflight_result_to_dto
+            from argosy.services.deployment_funnel.from_plan import (
+                run_preflight_for_plan,
+            )
+
+            # Feed the snapshot's stored prices so HELD symbols resolve without a
+            # live fetch (UCITS tickers often need an exchange suffix on yfinance);
+            # only genuinely-new symbols fall through to a live quote.
+            snapshot_prices: dict[str, float] = {}
+            _row = get_latest_snapshot_row(db, user_id)
+            if _row is not None:
+                for _p in getattr(row_to_snapshot(_row), "positions", []) or []:
+                    _sym = (getattr(_p, "symbol", "") or "").strip().upper()
+                    _px = getattr(_p, "current_price", None)
+                    if _sym and _px:
+                        snapshot_prices[_sym] = float(_px)
+
+            result = run_preflight_for_plan(
+                plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
+                deployable_usd=amount, snapshot_prices=snapshot_prices,
+            )
+            dto.preflight = preflight_result_to_dto(result)
+        except Exception as exc:  # noqa: BLE001 — additive; never break the route
+            _log.warning(
+                "deploy_cash.preflight_failed", user_id=user_id, error=str(exc),
+            )
+    return dto
 
 
 # --- Combined high-potential discovery surface (Slice 2) -------------------

@@ -177,6 +177,13 @@ class Settings(BaseSettings):
     decision_funnel_shadow: bool = Field(default=True)
     decision_funnel_stage3: bool = Field(default=False)
     decision_funnel_autoact: bool = Field(default=False)
+    # Research-informed deployment preflight (deterministic; Increment 1).
+    #   - deployment_funnel_enabled: master switch. When False, /deploy-cash
+    #     behaves exactly as before (no preflight block).
+    #   - deployment_funnel_shadow: when True (DEFAULT), the preflight annotates
+    #     the response but does NOT alter the deterministic buy list.
+    deployment_funnel_enabled: bool = Field(default=False)
+    deployment_funnel_shadow: bool = Field(default=True)
 
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
