@@ -140,7 +140,7 @@ def run_preflight_for_plan(
     """End-to-end: plan candidates -> gate inputs -> deterministic preflight."""
     gi = build_gate_inputs(doc=doc, holdings_usd=holdings_usd, cash_usd=cash_usd)
     candidates = plan_to_candidates(plan)
-    return run_preflight(
+    result = run_preflight(
         candidates,
         symbol_of=lambda c: c.legs[0].symbol,
         gate_inputs=gi,
@@ -148,6 +148,17 @@ def run_preflight_for_plan(
         signals_by_symbol=signals_by_symbol or {},
         deployable_usd=deployable_usd,
     )
+    # Merge in PLAN-STRUCTURAL gaps (classes the plan is missing entirely, e.g.
+    # gold) — these can't come from candidates since the engine never proposes a
+    # class the plan lacks. Owner approves adding the sleeve; then deploy on-plan.
+    from dataclasses import replace
+
+    from argosy.services.deployment_funnel.plan_gaps import detect_missing_classes
+
+    structural = detect_missing_classes(doc)
+    if structural:
+        result = replace(result, plan_gaps=result.plan_gaps + tuple(structural))
+    return result
 
 
 __all__ = [
