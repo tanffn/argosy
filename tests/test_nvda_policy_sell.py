@@ -161,6 +161,32 @@ def test_within_cap_and_no_risk_breach_is_no_action(monkeypatch):
     assert v.status == "no_action"
 
 
+def test_catchup_drives_when_behind_schedule(monkeypatch):
+    """Behind the glide schedule (fewer tranches executed than waypoints due) → the
+    catch-up sale (missed tranches) drives when it exceeds the single policy pace."""
+    monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: _tranche())
+    monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
+    monkeypatch.setattr(nps, "_resolve_risk_budget_inputs", lambda *a, **k: None)
+    # 3 waypoints due, 1 executed => 2 missed * 500k = 1M > 500k policy pace.
+    monkeypatch.setattr(nps, "_resolve_catchup_inputs", lambda *a, **k: (3, 1))
+
+    v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
+    assert v.category == "catch-up"
+    assert v.tranche_nis == 1_000_000.0
+
+
+def test_funnel_concurrence_adds_a_note(monkeypatch):
+    """When the daily decision funnel also flags NVDA to reduce, the unified sell
+    surfaces that concurrence (the bridge) — strengthening the case, not competing."""
+    monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: _tranche())
+    monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
+    monkeypatch.setattr(nps, "_resolve_risk_budget_inputs", lambda *a, **k: None)
+    monkeypatch.setattr(nps, "_funnel_concurs_reduce", lambda *a, **k: True)
+
+    v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
+    assert any("funnel" in n.lower() for n in v.notes)
+
+
 def test_no_risk_budget_inputs_falls_back_to_policy(monkeypatch):
     monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: _tranche())
     monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])

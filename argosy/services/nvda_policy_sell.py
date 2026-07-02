@@ -29,6 +29,7 @@ from datetime import date, datetime, timezone
 
 from argosy.logging import get_logger
 from argosy.services.breach_router import compute_breach_tranche
+from argosy.services.nvda_catchup import catchup_sale_nis
 from argosy.services.nvda_risk_budget import risk_budget_sale_nis
 
 # Approved idiosyncratic NVDA shock for the risk-budget floor test (codex: 40–50%).
@@ -59,6 +60,75 @@ class NvdaPolicySell:
     headline: str
     tax_note: str
     notes: tuple[str, ...] = field(default_factory=tuple)
+
+
+def _funnel_concurs_reduce(session, user_id: str, ticker: str = "NVDA") -> bool:
+    """True when the daily decision funnel currently has an open reduce (sell/trim)
+    proposal for ``ticker`` — the lightweight bridge that lets the unified sell note
+    the funnel's concurrence. Best-effort: False on any error."""
+    try:
+        from sqlalchemy import select
+
+        from argosy.state.models import Proposal
+
+        row = session.execute(
+            select(Proposal.id).where(
+                Proposal.user_id == user_id,
+                Proposal.ticker == ticker,
+                Proposal.source == "decision_funnel",
+                Proposal.action.in_(("sell", "trim")),
+                Proposal.status.in_(("draft", "cooling", "awaiting_human", "approved")),
+            ).limit(1)
+        ).first()
+        return row is not None
+    except Exception:  # noqa: BLE001 — advisory bridge; absence on error
+        return False
+
+
+def _resolve_catchup_inputs(session, user_id: str, today: date, tranche_nis: float) -> tuple[int, int]:
+    """(waypoints_due, tranches_executed) for the catch-up check:
+      * waypoints_due    — glide quarters (>= q1) whose date has passed as of today.
+      * tranches_executed — SCHEDULED deconcentration executed, in tranche-equivalents.
+
+    Only the plan's scheduled deconcentration sells count (filtered by the breach
+    router's ``DECON_TRANCHE_MARKER``) — an ordinary/funnel/risk/thesis NVDA sale is
+    NOT a scheduled tranche and must not suppress catch-up (codex). And it is measured
+    by executed AMOUNT ÷ tranche size, not proposal count, so one sale sized at several
+    tranches credits all of them. Best-effort → (0, 0) → no catch-up on error."""
+    try:
+        from sqlalchemy import func, select
+
+        from argosy.services.breach_router import DECON_TRANCHE_MARKER
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+        from argosy.state.models import Proposal
+        from argosy.state.queries import get_current_plan
+
+        pv = get_current_plan(session, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+        if doc is None or not getattr(doc, "glide", None) or tranche_nis <= 0:
+            return 0, 0
+        waypoints_due = sum(
+            1 for w in doc.glide
+            if getattr(w, "quarter", 0) >= 1 and getattr(w, "date", None) is not None
+            and w.date <= today
+        )
+        executed_nis = session.execute(
+            select(func.coalesce(func.sum(Proposal.size_shares_or_currency), 0.0)).where(
+                Proposal.user_id == user_id,
+                Proposal.ticker == "NVDA",
+                Proposal.action == "sell",
+                Proposal.status.like("executed%"),
+                Proposal.rationale_summary.like(f"%{DECON_TRANCHE_MARKER}%"),
+            )
+        ).scalar_one()
+        # Floor, but with a tiny epsilon so an EXACT multiple executed as one
+        # multi-tranche sale (e.g. 999999.99 / 333333.33) isn't undercounted by
+        # float imprecision — while a genuine partial tranche still floors down.
+        tranches_executed = int(float(executed_nis or 0.0) / float(tranche_nis) + 1e-6)
+        return int(waypoints_due), tranches_executed
+    except Exception:  # noqa: BLE001 — best-effort; no catch-up on error
+        _log.warning("nvda_sell.catchup_inputs_failed", user_id=user_id)
+        return 0, 0
 
 
 def _resolve_risk_budget_inputs(session, user_id: str):
@@ -138,6 +208,13 @@ def assess_nvda_policy_sell(
             shock=_RISK_SHOCK,
         )
 
+    # Bridge: does the daily decision funnel also flag NVDA to reduce? (A note that
+    # strengthens the case in the unified sell, not a competing size.)
+    _funnel_note = (
+        "The daily decision funnel (beta) also flagged NVDA to reduce — the fleet "
+        "concurs with trimming.",
+    ) if _funnel_concurs_reduce(session, user_id) else ()
+
     if tranche is None:
         # Within cap: policy/thesis-break have nothing over-cap to trim. Only a
         # risk-budget breach can require a sell here.
@@ -162,6 +239,7 @@ def assess_nvda_policy_sell(
                 "to bring the portfolio back inside the risk budget."
             ),
             tax_note=_TAX_NOTE_ACCEL,
+            notes=_funnel_note,
         )
 
     now = datetime.now(timezone.utc)
@@ -192,9 +270,16 @@ def assess_nvda_policy_sell(
         candidates.append(("thesis-break", tranche.total_over_cap_nis))
     if risk_sale > 0:
         candidates.append(("risk-budget", risk_sale))
+    wp_due, tr_exec = _resolve_catchup_inputs(session, user_id, today, tranche.tranche_nis)
+    catchup_sale = catchup_sale_nis(
+        waypoints_due=wp_due, tranches_executed=tr_exec,
+        tranche_nis=tranche.tranche_nis, total_over_cap_nis=tranche.total_over_cap_nis,
+    )
+    if catchup_sale > 0:
+        candidates.append(("catch-up", catchup_sale))
     category, recommended = max(candidates, key=lambda c: (c[1], _PRECEDENCE[c[0]]))
 
-    notes_list: list[str] = []
+    notes_list: list[str] = list(_funnel_note)
     if thesis_unverified:
         notes_list.append(
             "NVDA thesis state could not be verified this run — holding the glide "
@@ -219,6 +304,13 @@ def assess_nvda_policy_sell(
             f"NVDA concentration threatens your safe-retirement floor under a "
             f"{_RISK_SHOCK*100:.0f}% NVDA drawdown — sell ~₪{recommended:,.0f} now to "
             f"bring the portfolio back inside the risk budget (ahead of the routine glide)."
+        )
+        tax_note, n_q = _TAX_NOTE_ACCEL, 1
+    elif category == "catch-up":
+        headline = (
+            f"NVDA deconcentration is BEHIND your glide schedule — catch up with a "
+            f"~₪{recommended:,.0f} sell now (missed quarterly tranches), then resume the "
+            "routine pace."
         )
         tax_note, n_q = _TAX_NOTE_ACCEL, 1
     else:  # policy
