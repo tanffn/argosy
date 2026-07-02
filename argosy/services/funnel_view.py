@@ -15,7 +15,73 @@ the frontend never re-derives the funnel's logic.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
+
+
+def calibration_summary_payload(
+    *,
+    decisions: int,
+    runs: int,
+    first_at: str | None,
+    last_at: str | None,
+    surfaced: int,
+    would_surface: int,
+    enabled: bool,
+    shadow: bool,
+    stage3: bool,
+) -> dict[str, Any]:
+    """The BETA exposure of the decision funnel — nothing hidden. Surfaces what the
+    funnel has decided and HOW MUCH data it has collected, flagged beta, whatever
+    its enablement state:
+
+      * ``off``        — built but not yet collecting (shows how to start).
+      * ``collecting`` — enabled in calibration: recording graded decisions, not
+                         yet acting on the client's behalf (shows the data volume).
+      * ``live``       — enabled and surfacing to the client (still beta).
+    """
+    days_span = 0
+    if first_at and last_at:
+        try:
+            days_span = (datetime.fromisoformat(last_at) - datetime.fromisoformat(first_at)).days
+        except ValueError:
+            days_span = 0
+
+    if not enabled:
+        status = "off"
+        headline = (
+            "Decision funnel (beta) — not yet collecting. Enable it to start recording "
+            "the daily per-holding decisions; nothing is surfaced until you review them."
+        )
+    elif shadow or not stage3:
+        status = "collecting"
+        headline = (
+            f"Decision funnel (beta) — calibrating: {decisions} graded decisions recorded "
+            f"over {days_span} days ({would_surface} would surface). Reviewing the calls "
+            "before it acts on your behalf."
+        )
+    else:
+        status = "live"
+        headline = (
+            f"Decision funnel (beta) — live: {decisions} decisions over {days_span} days, "
+            f"{surfaced} surfaced to you."
+        )
+
+    return {
+        "beta": True,
+        "status": status,
+        "enabled": enabled,
+        "shadow": shadow,
+        "stage3": stage3,
+        "decisions_collected": decisions,
+        "runs": runs,
+        "first_at": first_at,
+        "last_at": last_at,
+        "days_span": days_span,
+        "surfaced": surfaced,
+        "would_surface": would_surface,
+        "headline": headline,
+    }
 
 
 def _loads(blob: Any) -> Any:

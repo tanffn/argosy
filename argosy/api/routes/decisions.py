@@ -854,6 +854,51 @@ async def list_funnel_runs(
     return {"runs": [run_summary(r) for r in rows]}
 
 
+@router.get("/funnel/calibration")
+async def get_funnel_calibration(user_id: str = Query("ariel")) -> dict[str, Any]:
+    """BETA exposure of the decision funnel: its enablement state + how much data it
+    has collected (graded decisions, runs, span) + how many would/did surface.
+    Nothing hidden — the capability is shown whether it's off, calibrating, or live."""
+    from argosy.config import get_settings
+    from argosy.services.funnel_view import calibration_summary_payload
+    from argosy.state.models import DecisionSnapshot, FunnelRun, Proposal
+
+    s = get_settings()
+    async with db_mod.get_session(user_id) as session:
+        decisions = (await session.execute(
+            select(func.count(DecisionSnapshot.id)).where(DecisionSnapshot.user_id == user_id)
+        )).scalar_one()
+        runs = (await session.execute(
+            select(func.count(FunnelRun.id)).where(FunnelRun.user_id == user_id)
+        )).scalar_one()
+        first_at, last_at = (await session.execute(
+            select(func.min(FunnelRun.started_at), func.max(FunnelRun.started_at))
+            .where(FunnelRun.user_id == user_id)
+        )).one()
+        surfaced = (await session.execute(
+            select(func.count(Proposal.id)).where(
+                Proposal.user_id == user_id, Proposal.source == "decision_funnel",
+                func.coalesce(Proposal.shadow, 0) == 0,
+            )
+        )).scalar_one()
+        would_surface = (await session.execute(
+            select(func.count(Proposal.id)).where(
+                Proposal.user_id == user_id, Proposal.source == "decision_funnel",
+                func.coalesce(Proposal.shadow, 0) == 1,
+            )
+        )).scalar_one()
+
+    return calibration_summary_payload(
+        decisions=int(decisions or 0), runs=int(runs or 0),
+        first_at=first_at.isoformat() if first_at else None,
+        last_at=last_at.isoformat() if last_at else None,
+        surfaced=int(surfaced or 0), would_surface=int(would_surface or 0),
+        enabled=bool(getattr(s, "decision_funnel_enabled", False)),
+        shadow=bool(getattr(s, "decision_funnel_shadow", True)),
+        stage3=bool(getattr(s, "decision_funnel_stage3", False)),
+    )
+
+
 @router.get("/funnel/runs/{run_id}")
 async def get_funnel_run(
     run_id: int, user_id: str = Query("ariel")
