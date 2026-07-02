@@ -163,6 +163,61 @@ def test_no_internal_enums_in_client_projection(db):
         assert leak not in blob
 
 
+def test_cash_directive_uses_canonical_engine_buy_list(db, monkeypatch):
+    """The proactive cash directive surfaces the CANONICAL engine's buy list
+    (core + discovery sleeve), not the detector's sleeve-less proposals."""
+    import argosy.services.inbox.service as svc
+    import argosy.services.unallocated_cash_detector as det
+
+    class _Ev:
+        excess_usd = 30_000.0
+        headline = "Cash sits above your plan target."
+        snapshot_date = "2026-06-30"
+        proposals = []  # the OLD engine would supply nothing here
+
+    canonical_rows = [
+        {"instrument": "MOON", "asset_class": "High-growth potential",
+         "amount_usd": 1_500.0, "tier": "high", "rationale": "discovery BUY"},
+        {"instrument": "CSPX", "asset_class": "US broad-market core",
+         "amount_usd": 28_500.0, "tier": "core", "rationale": "gap-fill"},
+    ]
+    monkeypatch.setattr(det, "detect_unallocated_cash_overage", lambda *a, **k: _Ev())
+    monkeypatch.setattr(svc, "_cash_buy_list", lambda *a, **k: canonical_rows)
+
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    cash = [i for i in feed.items if i.kind == "cash_deploy"]
+    assert cash, "cash directive should surface when cash is over target"
+    assert cash[0].body["buy_list"] == canonical_rows
+
+
+def test_cash_directive_falls_back_to_detector_when_canonical_unavailable(db, monkeypatch):
+    """If the canonical engine can't build (no plan / error), the item still
+    renders from the detector's proposals — the inbox never blanks."""
+    import argosy.services.inbox.service as svc
+    import argosy.services.unallocated_cash_detector as det
+
+    class _P:
+        instrument = "AAA"
+        asset_class = "equity"
+        amount_usd = 100.0
+        rationale = "gap"
+
+    class _Ev:
+        excess_usd = 5_000.0
+        headline = "h"
+        snapshot_date = None
+        proposals = [_P()]
+
+    monkeypatch.setattr(det, "detect_unallocated_cash_overage", lambda *a, **k: _Ev())
+    monkeypatch.setattr(svc, "_cash_buy_list", lambda *a, **k: None)
+
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    cash = [i for i in feed.items if i.kind == "cash_deploy"][0]
+    assert cash.body["buy_list"] == [
+        {"instrument": "AAA", "asset_class": "equity", "amount_usd": 100.0, "rationale": "gap"}
+    ]
+
+
 def test_debug_dict_exposes_signals_and_dropped(db):
     _note(db, summary="info note", severity="info")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)

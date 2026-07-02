@@ -229,21 +229,79 @@ def _adapt_plan_tasks(db: Session, user_id: str, today: date) -> list[InboxItem]
     return items
 
 
+def _cash_buy_list(db: Session, user_id: str, excess_usd: float, today: date) -> list[dict[str, Any]] | None:
+    """The proactive cash directive's buy list, built from the ONE canonical
+    engine ``/deploy-cash`` uses (core sleeves + the discovery-sourced
+    high-potential sleeve + diversifier redirect) — never a divergent buy list.
+
+    Returns ``None`` on any failure so the caller falls back to the detector's own
+    (plan-bound but sleeve-less) proposals rather than blanking the item.
+
+    NOTE (Step 3): this computes on the inbox hot path; the period-directive loop
+    will precompute + cache it off-path, at which point the live-quote latency in
+    the preflight stops mattering.
+    """
+    try:
+        from argosy.config import get_settings
+        from argosy.services.allocation_engine import tradeable_holdings
+        from argosy.services.deployment_funnel.canonical import (
+            build_canonical_deploy_plan,
+            deploy_plan_to_buy_list,
+        )
+        from argosy.services.portfolio_snapshot_store import (
+            get_latest_snapshot_row,
+            row_to_snapshot,
+        )
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+        from argosy.state.queries import get_current_plan
+
+        pv = get_current_plan(db, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+        if doc is None:
+            return None  # no plan → let the detector explain the empty buy list
+
+        row = get_latest_snapshot_row(db, user_id=user_id)
+        snap = row_to_snapshot(row) if row is not None else None
+        holdings: dict[str, float] = {}
+        snapshot_prices: dict[str, float] = {}
+        if snap is not None:
+            holdings, _cash = tradeable_holdings(snap)
+            for p in getattr(snap, "positions", []) or []:
+                sym = (getattr(p, "symbol", "") or "").strip().upper()
+                px = getattr(p, "current_price", None)
+                if sym and px:
+                    snapshot_prices[sym] = float(px)
+
+        plan, _result = build_canonical_deploy_plan(
+            doc=doc, holdings=holdings, cash_usd=excess_usd,
+            deploy_amount_usd=excess_usd, as_of=today, use_high_potential=True,
+            user_id=user_id, snapshot_prices=snapshot_prices,
+            funnel_enabled=get_settings().deployment_funnel_enabled,
+        )
+        return deploy_plan_to_buy_list(plan, doc)
+    except Exception:  # noqa: BLE001 — never break the inbox on the buy-list build
+        _log.exception("inbox.cash_canonical_failed", extra={"user_id": user_id})
+        return None
+
+
 def _adapt_cash(db: Session, user_id: str, today: date) -> list[InboxItem]:
     from argosy.services.unallocated_cash_detector import detect_unallocated_cash_overage
 
     event = detect_unallocated_cash_overage(db, user_id=user_id, today=today)
     if event is None or event.excess_usd <= 0:
         return []
-    buy_list = [
-        {
-            "instrument": p.instrument,
-            "asset_class": p.asset_class,
-            "amount_usd": round(p.amount_usd, 2),
-            "rationale": p.rationale,
-        }
-        for p in event.proposals
-    ]
+    buy_list = _cash_buy_list(db, user_id, event.excess_usd, today)
+    if buy_list is None:
+        # Fallback: the detector's own plan-bound proposals (no discovery sleeve).
+        buy_list = [
+            {
+                "instrument": p.instrument,
+                "asset_class": p.asset_class,
+                "amount_usd": round(p.amount_usd, 2),
+                "rationale": p.rationale,
+            }
+            for p in event.proposals
+        ]
     return [
         InboxItem(
             id="cash_deploy",
