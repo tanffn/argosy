@@ -144,6 +144,19 @@ class Scheduler:
             )
         )
 
+        # Daily FX refresh — keep USD/NIS fresh for ALL consumers (retirement MC,
+        # dashboards, TSV), not just the on-demand deploy/directive path. Always-on
+        # like the monitors; cheap + failure-isolated.
+        from argosy.orchestrator.loops.fx_refresh_loop import FxRefreshLoop
+
+        self.register_loop(
+            FxRefreshLoop(
+                schedule=LoopSchedule(interval_seconds=86_400),
+                enabled=True,
+                user_id=self.user_id,
+            )
+        )
+
         # Phase 4: ReconcileLoop polls open broker orders during market
         # hours and updates fills + pending_orders. Without this loop,
         # live orders would sit in pending_orders forever.
