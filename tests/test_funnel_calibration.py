@@ -52,4 +52,5 @@ def test_calibration_endpoint_exposes_beta_on_empty_db(client_with_db):
     body = r.json()
     assert body["beta"] is True
     assert body["decisions_collected"] == 0
-    assert body["status"] == "off"
+    # Funnel is enabled by default (nothing-hidden) → calibrating with 0 data yet.
+    assert body["status"] == "collecting"

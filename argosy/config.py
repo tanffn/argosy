@@ -160,22 +160,23 @@ class Settings(BaseSettings):
     # decision funnel. Layered so each capability can be disabled instantly and
     # independently (codex: "build it as a conservative escalation system"):
     #   - decision_funnel_enabled: master switch. When False the loop no-ops.
-    #     Default OFF — the funnel only runs once explicitly enabled.
-    #   - decision_funnel_shadow: when True (DEFAULT), the funnel runs and
-    #     records proposals + full trace but surfaces NOTHING to the client —
-    #     the calibration period against Ariel's real decisions. Flip to False
-    #     only after shadow mode has been validated.
-    #   - decision_funnel_stage3: when True, survivors escalate to the Opus
-    #     deep-decision fleet (Stage 3). Default OFF: Stage 0–2 (cheap scan +
-    #     routing + triage) run and are traced, but no expensive deep decision
-    #     fires until explicitly enabled.
+    #     Default ON — per the "nothing hidden" doctrine (SDD §1.6) the funnel is
+    #     exposed and running in beta, not gated off; disable per-tenant if needed.
+    #   - decision_funnel_shadow: when True (DEFAULT), the funnel is CALIBRATING —
+    #     it records graded decisions + full trace and EXPOSES them beta-labelled
+    #     (view-first via the inbox + /api/decisions/funnel/calibration), but does
+    #     not act on the client's behalf. Not hidden. Flip to False to let its
+    #     proposals become directly actionable once calibration is validated.
+    #   - decision_funnel_stage3: when True (DEFAULT), survivors escalate to the
+    #     Opus deep-decision fleet (Stage 3) so real graded decisions are produced
+    #     to calibrate against. Disable to run only the cheap Stage 0–2 scan.
     #   - decision_funnel_autoact: when True, PRE-AUTHORIZED MECHANICAL rules
     #     may auto-execute (idle-cash sweep, in-band rebalance, TLH). Default
     #     OFF. Discretionary Buy/Sell/Trim is ALWAYS propose-and-ask regardless.
     # Read via ARGOSY_DECISION_FUNNEL_ENABLED / _SHADOW / _STAGE3 / _AUTOACT.
-    decision_funnel_enabled: bool = Field(default=False)
+    decision_funnel_enabled: bool = Field(default=True)
     decision_funnel_shadow: bool = Field(default=True)
-    decision_funnel_stage3: bool = Field(default=False)
+    decision_funnel_stage3: bool = Field(default=True)
     decision_funnel_autoact: bool = Field(default=False)
     # Research-informed deployment preflight (deterministic; Increment 1).
     #   - deployment_funnel_enabled: master switch. When False, /deploy-cash

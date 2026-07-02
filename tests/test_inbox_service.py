@@ -270,6 +270,27 @@ def test_policy_sell_deduped_when_proposal_already_open(db, monkeypatch):
     assert [i for i in feed.items if i.kind == "trade" and "NVDA" in i.title]
 
 
+def test_funnel_shadow_proposal_surfaces_beta_view_first(db):
+    """A calibrating (shadow) funnel proposal is EXPOSED beta (nothing hidden) but
+    view-first — no blind approve/execute until it's promoted out of beta."""
+    _trade(db, ticker="NVDA", action="sell", status="awaiting_human",
+           source="decision_funnel", shadow=1)
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    nvda = [i for i in feed.items if i.kind == "trade" and "NVDA" in i.title]
+    assert nvda, "funnel beta proposal should be exposed, not hidden"
+    it = nvda[0]
+    assert it.signals.get("beta") is True
+    assert it.primary_action.intent == "view_reasoning"
+
+
+def test_non_funnel_shadow_proposal_stays_hidden(db):
+    """Shadow is still a valid hide for non-funnel proposals — the beta exposure is
+    scoped to the decision funnel, not a blanket un-hide."""
+    _trade(db, ticker="ZZZ", action="buy", status="awaiting_human", shadow=1)
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not [i for i in feed.items if "ZZZ" in i.title]
+
+
 def test_debug_dict_exposes_signals_and_dropped(db):
     _note(db, summary="info note", severity="info")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)

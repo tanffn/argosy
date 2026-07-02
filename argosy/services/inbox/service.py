@@ -70,14 +70,17 @@ def _trim(text: str, n: int = 160) -> str:
 def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
     from argosy.state.models import Proposal as ProposalRow
 
-    # Shadow proposals are recorded but never surfaced. Treat NULL (pre-migration
-    # rows) as not-shadow. Same gate the public /api/proposals list applies.
-    shadow_clause = func.coalesce(ProposalRow.shadow, 0) == 0
+    # Shadow proposals are hidden — EXCEPT the decision funnel, which per the
+    # "nothing hidden" doctrine (SDD §1.6) is exposed beta-labelled while it
+    # calibrates. Non-funnel shadow proposals stay hidden (treat NULL as not-shadow).
+    surface_clause = (func.coalesce(ProposalRow.shadow, 0) == 0) | (
+        ProposalRow.source == "decision_funnel"
+    )
     stmt = (
         select(ProposalRow)
         .where(ProposalRow.user_id == user_id)
         .where(ProposalRow.status.in_(_ACTIONABLE_TRADE_STATUSES))
-        .where(shadow_clause)
+        .where(surface_clause)
         .order_by(ProposalRow.created_at.desc())
     )
     rows = db.execute(stmt).scalars().all()
@@ -85,12 +88,18 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
     for r in rows:
         speculative = r.account_class == "limited"
         action = (r.action or "").lower()
+        # A calibrating funnel proposal (shadow) is beta: shown for transparency +
+        # feedback, but view-first — not directly approvable/executable yet.
+        beta = bool(getattr(r, "shadow", 0)) and (getattr(r, "source", None) == "decision_funnel")
         expiring_in_days: int | None = None
         if r.expires_at is not None:
             expiring_in_days = (r.expires_at.date() - today).days
         ready = r.status in _READY_TO_EXECUTE_STATUSES
 
-        if ready:
+        if beta:
+            primary = InboxAction("view_reasoning", "See the reasoning (beta)", "primary")
+            secondary = [InboxAction("dismiss", "Dismiss", "secondary")]
+        elif ready:
             primary = InboxAction("execute", "Execute now", "primary", requires_confirmation=True)
             secondary = [InboxAction("view_reasoning", "See the reasoning", "secondary")]
         else:
@@ -115,11 +124,11 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
             InboxItem(
                 id=f"trade:{r.id}",
                 kind="trade",
-                title=f"{verb} {r.ticker}",
+                title=(f"{verb} {r.ticker} (beta)" if beta else f"{verb} {r.ticker}"),
                 why_now=_trim(r.rationale_summary) or f"A {verb.lower()} decision is waiting on you.",
                 primary_action=primary,
                 secondary_actions=secondary,
-                body=body,
+                body={**body, "beta": beta},
                 expires_at=r.expires_at.isoformat() if r.expires_at else None,
                 source_refs=[SourceRef("trade_proposal", str(r.id))],
                 signals={
@@ -130,6 +139,7 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
                     "status": r.status,
                     "conviction": r.confidence,
                     "ready_to_execute": ready,
+                    "beta": beta,
                 },
             )
         )
