@@ -218,6 +218,58 @@ def test_cash_directive_falls_back_to_detector_when_canonical_unavailable(db, mo
     ]
 
 
+def _policy_sell(status):
+    from argosy.services.nvda_policy_sell import NvdaPolicySell
+
+    if status == "sell_due":
+        return NvdaPolicySell(
+            status="sell_due", category="policy", tranche_nis=500_000.0,
+            nvda_current_pct=57.0, nvda_cap_pct=13.0, n_quarters=8,
+            headline="Trim NVDA ~₪500,000 this quarter — 57% over your 13% cap.",
+            tax_note="Realizes Israeli CGT; paced over the glide.",
+        )
+    return NvdaPolicySell(
+        status="no_action", category="policy", tranche_nis=0.0,
+        nvda_current_pct=0.0, nvda_cap_pct=0.0, n_quarters=0,
+        headline="NVDA within its cap.", tax_note="",
+    )
+
+
+def test_policy_sell_surfaces_when_due(db, monkeypatch):
+    import argosy.services.nvda_policy_sell as nps
+
+    monkeypatch.setattr(nps, "assess_nvda_policy_sell", lambda **k: _policy_sell("sell_due"))
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    sell = [i for i in feed.items if i.id == "nvda_policy_sell"]
+    assert sell, "the glide policy sell should surface proactively"
+    assert "NVDA" in sell[0].why_now
+
+
+def test_policy_sell_quiet_when_no_action(db, monkeypatch):
+    import argosy.services.nvda_policy_sell as nps
+
+    monkeypatch.setattr(nps, "assess_nvda_policy_sell", lambda **k: _policy_sell("no_action"))
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not [i for i in feed.items if i.id == "nvda_policy_sell"]
+
+
+def test_policy_sell_deduped_when_proposal_already_open(db, monkeypatch):
+    """When the monthly cycle already routed an approval-pending decon tranche,
+    _adapt_trades surfaces it — the read-only policy-sell item must not double up."""
+    import argosy.services.nvda_policy_sell as nps
+    from argosy.services.breach_router import DECON_TRANCHE_MARKER
+
+    monkeypatch.setattr(nps, "assess_nvda_policy_sell", lambda **k: _policy_sell("sell_due"))
+    _trade(
+        db, ticker="NVDA", action="sell", status="awaiting_human",
+        rationale_summary=f"[{DECON_TRANCHE_MARKER}] NVDA 57% > 13% cap tranche.",
+    )
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not [i for i in feed.items if i.id == "nvda_policy_sell"]
+    # The trade proposal itself still surfaces (via the trade adapter).
+    assert [i for i in feed.items if i.kind == "trade" and "NVDA" in i.title]
+
+
 def test_debug_dict_exposes_signals_and_dropped(db):
     _note(db, summary="info note", severity="info")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)

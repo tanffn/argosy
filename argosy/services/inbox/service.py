@@ -318,11 +318,65 @@ def _adapt_cash(db: Session, user_id: str, today: date) -> list[InboxItem]:
     ]
 
 
+def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[InboxItem]:
+    """The glide (policy) sell, surfaced PROACTIVELY and read-only.
+
+    Reuses the codex-verified breach-tranche math so the inbox says "trim NVDA
+    ~₪X this quarter" without waiting for the monthly cycle to materialise a
+    proposal. When an approval-pending deconcentration proposal already exists,
+    ``_adapt_trades`` surfaces it — we skip to avoid double-surfacing. Writes
+    nothing; materialising the tranche into an approvable order stays with the
+    monthly cycle / the Step 3 directive loop.
+    """
+    from argosy.services.breach_router import DECON_TRANCHE_MARKER
+    from argosy.services.nvda_policy_sell import assess_nvda_policy_sell
+    from argosy.state.models import Proposal as ProposalRow
+
+    open_decon = db.execute(
+        select(ProposalRow.id).where(
+            ProposalRow.user_id == user_id,
+            ProposalRow.ticker == "NVDA",
+            ProposalRow.action == "sell",
+            ProposalRow.status.in_(("draft", "cooling", "awaiting_human", "approved")),
+            ProposalRow.rationale_summary.like(f"%{DECON_TRANCHE_MARKER}%"),
+        ).limit(1)
+    ).first()
+    if open_decon is not None:
+        return []
+
+    v = assess_nvda_policy_sell(session=db, user_id=user_id, today=today)
+    if v.status != "sell_due":
+        return []  # speak only when needed — the heartbeat covers "nothing due"
+
+    return [
+        InboxItem(
+            id="nvda_policy_sell",
+            kind="note",
+            title="Trim NVDA this quarter (your glide)",
+            why_now=_trim(v.headline),
+            primary_action=InboxAction("view_reasoning", "See the reasoning", "primary"),
+            secondary_actions=[InboxAction("defer", "Not now", "secondary")],
+            body={
+                "headline": v.headline,
+                "tranche_nis": v.tranche_nis,
+                "nvda_current_pct": v.nvda_current_pct,
+                "nvda_cap_pct": v.nvda_cap_pct,
+                "n_quarters": v.n_quarters,
+                "tax_note": v.tax_note,
+                "sell_category": v.category,
+            },
+            source_refs=[SourceRef("nvda_policy_sell", user_id)],
+            signals={"severity": "warning", "note_kind": "rebalance", "risk_kind": True},
+        )
+    ]
+
+
 _ADAPTERS = {
     "trades": _adapt_trades,
     "notes": lambda db, user_id, today: _adapt_notes(db, user_id),
     "plan_tasks": _adapt_plan_tasks,
     "cash": _adapt_cash,
+    "nvda_policy_sell": _adapt_nvda_policy_sell,
 }
 
 
