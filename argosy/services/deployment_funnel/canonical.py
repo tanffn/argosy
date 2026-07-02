@@ -43,6 +43,7 @@ def build_canonical_deploy_plan(
     snapshot_prices: dict[str, float] | None = None,
     fleet_available: bool = False,
     funnel_enabled: bool = True,
+    exposure_aware: bool = True,
 ) -> tuple[DeploymentPlan, Any | None]:
     """Assemble the plan-bound deploy list, then reconcile it against the plan's
     own numbers (preflight) and redirect any over-cap / funded-reserve overflow
@@ -56,6 +57,7 @@ def build_canonical_deploy_plan(
         doc=doc, holdings=holdings, deploy_amount_usd=deploy_amount_usd,
         as_of=as_of, market_context=market_context, sleeve_pct=sleeve_pct,
         use_high_potential=use_high_potential, user_id=user_id,
+        exposure_aware=exposure_aware,
     )
     if doc is None or not funnel_enabled:
         return plan, None
@@ -102,10 +104,19 @@ def deploy_plan_to_buy_list(plan: DeploymentPlan, doc) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for tier in plan.tiers:
         for line in tier.lines:
+            # The sleeve a line fills can differ from its symbol when the engine
+            # tops up a held substitute (FWRA filling the EXUS sleeve): derive the
+            # asset class from the ``plan_target:`` cite first, so the buy-list row
+            # labels the sleeve, not the substitute's own (missing) doc entry.
+            sleeve_sym = line.symbol
+            for cite in getattr(line, "cites", ()) or ():
+                if cite.startswith("plan_target:"):
+                    sleeve_sym = cite.split(":", 1)[1]
+                    break
             rows.append(
                 {
                     "instrument": line.symbol,
-                    "asset_class": _class_label_for_symbol(doc, line.symbol),
+                    "asset_class": _class_label_for_symbol(doc, sleeve_sym),
                     "amount_usd": round(line.amount_usd, 2),
                     "tier": line.tier,
                     "rationale": line.rationale,

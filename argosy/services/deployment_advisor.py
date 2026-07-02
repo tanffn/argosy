@@ -92,6 +92,24 @@ DEPLOY_TIER_CAPS: dict[str, float] = {"core": 70.0, "medium": 25.0, "high": 5.0}
 SANCTIONED_US_SITUS: frozenset[str] = frozenset({"NVDA"})
 
 
+def _substitute_estate_tag(symbol: str) -> EstateTag:
+    """Estate tag for a held substitute the engine tops up (not a plan instrument,
+    so it isn't in the plan's estate map). Classified from the curated instrument
+    reference: an estate-safe substitute is the only kind the topup path emits, but
+    fall back to ``us_situs_exposed`` if the reference marks it unsafe, and
+    ``unstamped`` when the symbol is uncurated."""
+    from argosy.services.instrument_reference import lookup
+
+    ref = lookup(symbol)
+    if ref is None:
+        return EstateTag(domicile=None, status="unstamped", note="not in reference")
+    if ref.estate_safe:
+        return EstateTag(domicile=ref.region, status="estate_safe",
+                         note="held substitute covering a plan sleeve")
+    return EstateTag(domicile=ref.region, status="us_situs_exposed",
+                     note="US-situs held substitute")
+
+
 def build_estate_map(doc) -> dict[str, EstateTag]:
     """Per-symbol :class:`EstateTag` for every instrument in the canonical doc.
 
@@ -354,7 +372,7 @@ def _high_potential_lines(
 def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
     market_context=None, sleeve_pct: float = 5.0, use_high_potential: bool = True,
-    user_id: str = "ariel",
+    user_id: str = "ariel", exposure_aware: bool = False,
 ) -> DeploymentPlan:
     """Build the deploy plan: plan-bound ``cash_only_deploy`` buys, each
     annotated with tier/estate/cap/tax/horizon/pacing, grouped into tiers that
@@ -406,7 +424,8 @@ def assemble_deployment_plan(
         sleeve_budget = 0.0
     core_capital = round(amount - sleeve_budget, 2)
 
-    candidates = cash_only_deploy(doc, holdings, core_capital, as_of=as_of)
+    candidates = cash_only_deploy(
+        doc, holdings, core_capital, as_of=as_of, exposure_aware=exposure_aware)
     # Post-deploy investable book — the materiality denominator for pacing.
     book_usd = round(sum(holdings.values()) + amount, 2)
 
@@ -427,10 +446,21 @@ def assemble_deployment_plan(
                     f"{leg.symbol!r} funded by {leg.funding_source!r} (kind={cand.kind})"
                 )
             sym = leg.symbol
-            is_plan = sym in plan_symbols
-            tier = classify_tier(kind=cand.kind, symbol=sym, is_plan_instrument=is_plan)
-            estate = estate_map.get(
-                sym, EstateTag(domicile=None, status="unstamped", note="not in plan"))
+            # The sleeve this buy FILLS may differ from the emitted symbol when the
+            # engine tops up a held substitute (exposure-aware): a FWRA buy that
+            # fills the EXUS sleeve is plan-bound CORE, not tactical. Read the
+            # sleeve from the ``plan_target:`` cite so tier + cap_note reflect it.
+            sleeve_sym = sym
+            for _cite in cand.cites:
+                if _cite.startswith("plan_target:"):
+                    sleeve_sym = _cite.split(":", 1)[1]
+                    break
+            is_plan = sleeve_sym in plan_symbols
+            tier = classify_tier(kind=cand.kind, symbol=sleeve_sym, is_plan_instrument=is_plan)
+            # Estate tag from the EMITTED symbol: a plan instrument uses the map; a
+            # held substitute (topup) is estate-safe by construction — classify it
+            # from the instrument reference rather than leaving it "unstamped".
+            estate = estate_map.get(sym) or _substitute_estate_tag(sym)
             amt = round(abs(leg.notional_usd), 2)
             if estate.status == "us_situs_exposed":
                 exposed_total += amt
@@ -446,7 +476,7 @@ def assemble_deployment_plan(
                 symbol=sym, type=_instrument_type(doc, sym), amount_usd=amt,
                 timing=timing, is_new=(held_value <= 0.0),
                 tier=tier, horizon=_TIER_HORIZON[tier], estate=estate,
-                cap_note=cap_note_for(doc, symbol=sym),
+                cap_note=cap_note_for(doc, symbol=sleeve_sym),
                 net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=cand.rationale,
                 cites=cand.cites, held_value_usd=held_value,
                 pace_rationale=p_rationale,

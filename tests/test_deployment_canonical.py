@@ -51,6 +51,38 @@ def _doc_with(instruments_by_class):
 _AS_OF = _dt.date(2026, 7, 2)
 
 
+def test_buy_list_labels_substitute_by_the_sleeve_it_fills():
+    """A top-up line whose symbol differs from the plan ticker (exposure-aware
+    substitute) must be labelled by the SLEEVE it fills (via the plan_target cite),
+    not fall through to the high-potential label."""
+    from argosy.services.deployment_advisor import (
+        DeploymentLine,
+        DeploymentPlan,
+        DeploymentTier,
+        EstateTag,
+    )
+
+    doc = _doc_with({"International developed (ex-US)": [("EXUS", "IE")]})
+    line = DeploymentLine(
+        symbol="FWRA", type="ETF", amount_usd=5_000.0, timing="now", is_new=False,
+        tier="core", horizon="10yr+",
+        estate=EstateTag(domicile="Global", status="estate_safe", note=""),
+        cap_note="", net_of_tax_caveat="", rationale="top up FWRA",
+        cites=("plan_target:EXUS", "substitute:FWRA"),
+    )
+    core = DeploymentTier("core", 70.0, (line,))
+    empty = lambda n, c: DeploymentTier(n, c, ())
+    plan = DeploymentPlan(
+        deploy_amount_usd=5_000.0, as_of=_AS_OF,
+        tiers=(empty("reserve", 0.0), core, empty("medium", 25.0), empty("high", 5.0)),
+        us_situs_exposed_usd=0.0, us_situs_sanctioned_usd=0.0,
+        undeployed_remainder_usd=0.0, market_context_age=None, caveats=(), note="",
+    )
+    rows = deploy_plan_to_buy_list(plan, doc)
+    assert rows[0]["instrument"] == "FWRA"
+    assert rows[0]["asset_class"] == "International developed (ex-US)"
+
+
 def test_funnel_disabled_returns_bare_plan_and_no_result():
     """With the funnel off, the builder is a thin pass-through to assemble: it
     returns the plan and a ``None`` result, conservation intact."""

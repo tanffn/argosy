@@ -91,6 +91,17 @@ def test_us_broad_index_not_credited_to_exus_global_sleeve():
     assert not any(s.plan_instrument == "EXUS" for s in subs)
 
 
+def test_held_ticker_credited_to_at_most_one_sleeve():
+    """A held instrument must credit only ONE sleeve — never double-count the same
+    dollars across two sleeves with the same taxonomy."""
+    # Two sleeves that both resolve to a US broad-index profile (CSPX and VOO are
+    # both Equity/Broad Index/US). A single held US broad-index fund (XZEW) must
+    # attribute to exactly one of them.
+    doc = _doc({"US core A": "CSPX", "US core B": "VOO"})
+    subs = classify_plan_substitutes(doc, {"XZEW": 50_000.0})
+    assert len([s for s in subs if s.held_ticker == "XZEW"]) == 1
+
+
 def test_holding_equal_to_plan_ticker_is_not_a_substitute():
     """If you already hold the plan's exact instrument, that's a normal top-up the
     deploy engine handles — not a substitute."""

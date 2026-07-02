@@ -191,7 +191,8 @@ def _redistribute_removed_targets(
 
 def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
                      as_of: date, account_id: str = "ibkr",
-                     currency: str = "USD") -> list[AllocationCandidate]:
+                     currency: str = "USD",
+                     exposure_aware: bool = False) -> list[AllocationCandidate]:
     """Buy-only, cash-constrained deployment toward the glide-aware targets.
 
     Targets are computed on the POST-deploy book (current + cash). Each
@@ -203,6 +204,15 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     holdings) is redistributed onto the named instruments so cash isn't left idle.
     The ``concentrated_equity`` (NVDA) sleeve is excluded from buy targets — see
     :func:`_cash_deploy_no_buy_symbols` — and its target dollars redistributed.
+
+    ``exposure_aware`` (default off preserves the legacy behavior): credit the
+    instruments you ALREADY hold that cover a sleeve's exposure against that
+    sleeve's gap, so the engine stops opening a duplicate plan ticker when the
+    exposure is on the book (:func:`classify_plan_substitutes`). The incremental
+    gap is then bought in the held estate-safe substitute (``topup``), or in the
+    plan's estate-safe instrument when the only substitute is US-situs / a single
+    name (``migrate`` — fresh cash never grows the US-situs holding). A fully
+    substitute-covered sleeve gets no buy at all.
     """
     if cash_usd <= 0:
         return []
@@ -210,7 +220,27 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     targets, _unmapped, _swaps, _legacy = _effective_named_targets(
         doc, holdings, post_book, as_of)
     targets = _redistribute_removed_targets(targets, _cash_deploy_no_buy_symbols(doc))
-    gaps = {sym: max(0.0, tv - holdings.get(sym, 0.0)) for sym, tv in targets.items()}
+
+    # Exposure-aware crediting: how much of each plan sleeve is already covered by
+    # held substitutes, which held ticker to top up, and whether the coverage is a
+    # migration (US-situs / single-name) rather than an equivalent.
+    credited: dict[str, float] = {}
+    topup_symbol: dict[str, float] = {}   # X -> largest held estate-safe substitute
+    _topup_value: dict[str, float] = {}
+    migrate_from: dict[str, str] = {}     # X -> a US-situs / single-name substitute
+    if exposure_aware:
+        from argosy.services.exposure_attribution import classify_plan_substitutes
+        for s in classify_plan_substitutes(doc, holdings):
+            credited[s.plan_instrument] = credited.get(s.plan_instrument, 0.0) + s.held_value_usd
+            if s.disposition == "topup":
+                if s.held_value_usd > _topup_value.get(s.plan_instrument, 0.0):
+                    _topup_value[s.plan_instrument] = s.held_value_usd
+                    topup_symbol[s.plan_instrument] = s.held_ticker
+            else:  # migrate
+                migrate_from.setdefault(s.plan_instrument, s.held_ticker)
+
+    gaps = {sym: max(0.0, tv - holdings.get(sym, 0.0) - credited.get(sym, 0.0))
+            for sym, tv in targets.items()}
     gaps = {s: g for s, g in gaps.items() if g > 0.0}
     total_gap = sum(gaps.values())
     if total_gap <= 0.0:
@@ -226,14 +256,32 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
         if amount <= 0.0:
             continue
         remaining = round(remaining - amount, 2)
+        # Buy-symbol selection: top up the held estate-safe substitute where one
+        # exists; otherwise buy the plan ticker (a migration when the only
+        # substitute is US-situs / a single name — never add cash to that holding).
+        buy_sym = topup_symbol.get(sym, sym)
+        if buy_sym != sym:
+            rationale = (f"Deploy ${amount:,.0f} into {buy_sym} — it already covers "
+                         f"the {sym} sleeve's exposure and is estate-safe (top up "
+                         f"rather than open {sym}).")
+            cites = (f"plan_target:{sym}", f"substitute:{buy_sym}")
+        elif sym in migrate_from:
+            y = migrate_from[sym]
+            rationale = (f"Deploy ${amount:,.0f} into {sym} toward its plan target — "
+                         f"starts the migration off {y} (US-situs / single-name) into "
+                         f"the estate-safe {sym}; wind down {y} via a separate sell.")
+            cites = (f"plan_target:{sym}", f"migration:{y}->{sym}")
+        else:
+            rationale = f"Deploy ${amount:,.0f} cash into {sym} toward its plan target."
+            cites = (f"plan_target:{sym}",)
         out.append(AllocationCandidate(
             kind="BUY",
-            legs=(AllocationLeg(side="BUY", symbol=sym, account_id=account_id,
+            legs=(AllocationLeg(side="BUY", symbol=buy_sym, account_id=account_id,
                                 currency=currency, notional_usd=amount,
                                 funding_source="cash"),),
             horizon="now",
-            rationale=f"Deploy ${amount:,.0f} cash into {sym} toward its plan target.",
-            cites=(f"plan_target:{sym}",),
+            rationale=rationale,
+            cites=cites,
         ))
     out.sort(key=lambda c: -c.total_notional_usd)
     return out

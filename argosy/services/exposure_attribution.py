@@ -57,6 +57,9 @@ def classify_plan_substitutes(doc, holdings: dict[str, float]) -> list[SleeveSub
     estate-safe instrument). Holdings equal to the plan's own instrument are not
     substitutes (the deploy engine tops those up directly)."""
     subs: list[SleeveSubstitute] = []
+    # A held ticker credits AT MOST ONE sleeve (first match in class order) — never
+    # double-count the same dollars across two sleeves of the same taxonomy.
+    claimed: set[str] = set()
     for cls in getattr(doc, "classes", []) or []:
         instruments = getattr(cls, "instruments", []) or []
         if not instruments:
@@ -67,11 +70,12 @@ def classify_plan_substitutes(doc, holdings: dict[str, float]) -> list[SleeveSub
             continue
         for held, value in holdings.items():
             y = (held or "").strip().upper()
-            if not y or y == x or value <= 0:
+            if not y or y == x or value <= 0 or y in claimed:
                 continue
             yref = lookup(y)
             if yref is None or not _attributable(xref, yref):
                 continue
+            claimed.add(y)
             estate_safe_topup = yref.estate_safe and yref.structure == xref.structure
             if estate_safe_topup:
                 disposition = "topup"
