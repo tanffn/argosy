@@ -350,6 +350,35 @@ The overriding criterion is the §1.0 north star: the family's earliest *safe* r
 - **Limited account** — the IBKR Pro account opened in Phase 2 with bounded capital where T0/T1 decisions auto-execute
 - **Plan-critique** — an analyst agent whose role is to challenge the imported plan against current data and flag RED items
 
+### 1.6 The proactivity contract (push, not pull)
+
+Argosy is a team of experts on retainer, not a tool the user operates. A real advisory team does not sit silent until the client phones in — it watches the whole picture continuously and **comes to the client** when something needs doing. Argosy works the same way: the standing job is to observe the user's state and, on the appropriate cadence, surface **one coherent period directive** — what to do now, plan-derived and auditable — without being asked.
+
+**The client-initiated request is a failure fallback, not the primary path.** The `/proposals` "deploy my cash" action exists and works, but the user having to press it means the team already failed to be proactive — idle capital sat unallocated and no one spoke up. That button stays as an "act now" escape hatch; the system's job is to make the user rarely need it.
+
+**The team stays quiet unless there is a decision or an info-need** (§ the client-in-the-loop rule). When nothing needs action, the inbox reads "on track" and shows *what was checked*, not a chore list.
+
+The standing input set the team watches, and what it says:
+
+- **The plan** — target instrument mix, glide, per-holding theses, guardrails — *and whether it is stale* (refresh trigger).
+- **The portfolio** — current holdings and values.
+- **Free cash** — idle capital, including every incoming paycheck/bonus, not just windfalls.
+- **Market news & data** — prices, FX, corporate actions.
+- **Drift** — plan-vs-reality gap, including **single-name look-through** (e.g. NVDA vs its sleeve target and the single-name cap), not just coarse asset-class drift.
+- **The tax & regulatory calendar** — §102 windows, TLH opportunities, filing deadlines — so any sell is *paced* to spread tax rather than dumped.
+- **Incoming cashflow** — RSU vests, paychecks, bonuses.
+- **Life-event phases** — the cashflow phases that change spend (§18).
+- **Time / cadence** — *when* to act: glide waypoints, quarterly rebalance, plan-refresh triggers.
+- **Freshness of its own inputs** — if discovery picks or FX are stale when a decision is due, refresh on-demand *before* deciding; never advise on stale data.
+
+The period directive covers the whole picture at once:
+
+- **Buy** has two sources: fill the **core plan sleeves**, *and* deploy the **~5% high-growth-potential sleeve** whose contents come from the discovery fleet (the plan allocates the sleeve; discovery fills it with live tickers).
+- **Sell** is **time-gated on the glide** — surface "sell ~$X NVDA" only when a glide waypoint is due; between waypoints the team does not nag to sell.
+- Reserve status and the tax note travel with it. Every number plan-derived and auditable.
+
+Surfaced *because the team noticed*, not because the user asked.
+
 ---
 
 ## 2. System Architecture
