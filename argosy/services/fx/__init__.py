@@ -111,3 +111,50 @@ def warm_cache(
     rows = boi_client.fetch_range(start, end, currencies)
     n = cache.put_rates(session, rows)
     return n
+
+
+def refresh_if_stale(
+    session: Session,
+    *,
+    on: date | None = None,
+    currencies: tuple[str, ...] = ("USD",),
+    max_stale_days: int = 1,
+    lookback_days: int = 20,
+) -> bool:
+    """On-demand freshness: if the newest cached rate for ``currencies`` is older
+    than ``max_stale_days``, pull the recent window from BoI so downstream
+    consumers never compute on stale FX. Returns True if a refresh was performed.
+    Best-effort: a BoI failure leaves the cache as-is (caller still has the
+    last-known rate). Called when the user REQUESTS an allocation — Argosy fetches
+    fresh rather than serving a stale rate."""
+    from datetime import timedelta
+
+    from argosy.state.models import FxRate
+
+    today = on or date.today()
+    need = False
+    for ccy in currencies:
+        row = (
+            session.query(FxRate)
+            .filter(FxRate.currency == ccy.strip().upper())
+            .order_by(FxRate.date.desc())
+            .first()
+        )
+        if row is None:
+            need = True
+            break
+        rdate = row.date
+        if isinstance(rdate, str):
+            rdate = date.fromisoformat(rdate)
+        if (today - rdate).days > max_stale_days:
+            need = True
+            break
+    if not need:
+        return False
+    try:
+        warm_cache(session, today - timedelta(days=lookback_days), today, list(currencies))
+        session.commit()
+        return True
+    except Exception:  # noqa: BLE001 — best-effort; last-known rate remains
+        session.rollback()
+        return False

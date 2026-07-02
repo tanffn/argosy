@@ -1547,6 +1547,14 @@ def get_deploy_cash(
 
     ctx = None
     if live:
+        # Never compute an allocation on stale FX: refresh the BoI cache on demand
+        # when the user requests a deploy (a quick fetch; the user waits rather
+        # than getting a stale/zero rate). Best-effort — last-known rate remains.
+        try:
+            from argosy.services.fx import refresh_if_stale
+            refresh_if_stale(db, currencies=("USD",), max_stale_days=1)
+        except Exception as exc:  # noqa: BLE001 — never break deploy on FX refresh
+            _log.warning("deploy_cash.fx_refresh_failed", error=str(exc)[:120])
         from argosy.services.deployment_market_context import (
             assemble_deployment_market_context,
         )
