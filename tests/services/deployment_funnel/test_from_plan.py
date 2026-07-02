@@ -185,6 +185,11 @@ def test_redirect_overflow_into_diversifiers():
     syms3 = {l.symbol.upper(): l.amount_usd for t in plan3.tiers for l in t.lines}
     assert syms3.get("FWRA", 0) >= 29000.0  # redirected into the HELD substitute
     assert "EXUS" not in syms3              # no new ex-US position opened
+    # The synthesized redirect line reflects the ACTUAL held position (not new, held
+    # value populated) — dumping the full engine detail must not mislabel it.
+    fwra_line = next(l for t in plan3.tiers for l in t.lines if l.symbol.upper() == "FWRA")
+    assert fwra_line.is_new is False
+    assert fwra_line.held_value_usd == 200_000.0
 
     # Conservation: the redirected overflow is placed EXACTLY (no cents created or
     # lost) even when the split across sleeves does not divide evenly. The dropped

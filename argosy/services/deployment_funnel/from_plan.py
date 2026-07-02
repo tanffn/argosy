@@ -279,12 +279,16 @@ def redirect_overflow_to_diversifiers(plan, result, doc, holdings=None):
         if kept:
             new_tiers.append(replace(tier, lines=tuple(kept)))
 
+    holdings = holdings or {}
     to_add = [(s, a) for s, a in add_by_sym.items() if s not in existing_divs and a > 0.0]
     if to_add:
         synth = [
             DeploymentLine(
                 symbol=sym, type="ETF", amount_usd=amt, timing="now",
-                is_new=(sym not in substitute_targets),
+                # Reflect the ACTUAL held position: is_new / held_value must match
+                # the book (a redirected top-up of a held fund is not "new").
+                is_new=(round(float(holdings.get(sym, 0.0)), 2) <= 0.0),
+                held_value_usd=round(float(holdings.get(sym, 0.0)), 2),
                 tier="core", horizon="10yr+",
                 estate=EstateTag(domicile="IE", status="estate_safe",
                                  note="Irish UCITS diversifier (redirect target)"),
