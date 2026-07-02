@@ -113,6 +113,37 @@ def warm_cache(
     return n
 
 
+def is_fx_stale(
+    session: Session,
+    *,
+    on: date | None = None,
+    currencies: tuple[str, ...] = ("USD",),
+    max_stale_days: int = 1,
+) -> bool:
+    """True when the newest cached rate for ANY of ``currencies`` is missing or
+    older than ``max_stale_days``. The single source of the freshness check used
+    by both ``refresh_if_stale`` (should-I-fetch) and the period directive
+    (is-the-directive-computed-on-stale-FX)."""
+    from argosy.state.models import FxRate
+
+    today = on or date.today()
+    for ccy in currencies:
+        row = (
+            session.query(FxRate)
+            .filter(FxRate.currency == ccy.strip().upper())
+            .order_by(FxRate.date.desc())
+            .first()
+        )
+        if row is None:
+            return True
+        rdate = row.date
+        if isinstance(rdate, str):
+            rdate = date.fromisoformat(rdate)
+        if (today - rdate).days > max_stale_days:
+            return True
+    return False
+
+
 def refresh_if_stale(
     session: Session,
     *,
@@ -129,27 +160,8 @@ def refresh_if_stale(
     fresh rather than serving a stale rate."""
     from datetime import timedelta
 
-    from argosy.state.models import FxRate
-
     today = on or date.today()
-    need = False
-    for ccy in currencies:
-        row = (
-            session.query(FxRate)
-            .filter(FxRate.currency == ccy.strip().upper())
-            .order_by(FxRate.date.desc())
-            .first()
-        )
-        if row is None:
-            need = True
-            break
-        rdate = row.date
-        if isinstance(rdate, str):
-            rdate = date.fromisoformat(rdate)
-        if (today - rdate).days > max_stale_days:
-            need = True
-            break
-    if not need:
+    if not is_fx_stale(session, on=today, currencies=currencies, max_stale_days=max_stale_days):
         return False
     try:
         warm_cache(session, today - timedelta(days=lookback_days), today, list(currencies))

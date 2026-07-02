@@ -64,6 +64,7 @@ from argosy.api.routes.action_proposals import (
 )
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.inbox import router as inbox_router
+from argosy.api.routes.period_directive import router as period_directive_router
 from argosy.api.routes.security import router as security_router
 from argosy.api.routes.settings import (
     cost_guard_router,
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(proposals_router, prefix=api_prefix)
     # The action inbox — server-owned ranked feed projected by the /inbox page.
     app.include_router(inbox_router, prefix=api_prefix)
+    app.include_router(period_directive_router, prefix=api_prefix)
     # Generic Accept/Defer for allocation-action proposals (sprint commit
     # #6b). Mounts at /api/proposals/allocation/* — sibling to the
     # /api/proposals/* trade-order routes. Generalizes the windfall
