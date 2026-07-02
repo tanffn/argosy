@@ -303,11 +303,14 @@ def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[Inbo
     if v.status != "sell_due":
         return []  # speak only when needed — the heartbeat covers "nothing due"
 
+    is_thesis = v.category == "thesis-break"
+    title = "Reduce NVDA — thesis flagged" if is_thesis else "Trim NVDA this quarter (your glide)"
+    severity = "critical" if is_thesis else "warning"
     return [
         InboxItem(
             id="nvda_policy_sell",
             kind="note",
-            title="Trim NVDA this quarter (your glide)",
+            title=title,
             why_now=_trim(v.headline),
             primary_action=InboxAction("view_reasoning", "See the reasoning", "primary"),
             secondary_actions=[InboxAction("defer", "Not now", "secondary")],
@@ -319,9 +322,10 @@ def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[Inbo
                 "n_quarters": v.n_quarters,
                 "tax_note": v.tax_note,
                 "sell_category": v.category,
+                "notes": list(v.notes),
             },
             source_refs=[SourceRef("nvda_policy_sell", user_id)],
-            signals={"severity": "warning", "note_kind": "rebalance", "risk_kind": True},
+            signals={"severity": severity, "note_kind": "rebalance", "risk_kind": True},
         )
     ]
 

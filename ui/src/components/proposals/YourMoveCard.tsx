@@ -67,6 +67,7 @@ export function YourMoveCard({ userId }: { userId: string }) {
   }, [userId]);
 
   const sellDue = directive?.sell.status === "sell_due";
+  const thesisBreak = directive?.sell.category === "thesis-break";
   const hasActions = directive?.has_actions ?? false;
 
   return (
@@ -145,19 +146,57 @@ export function YourMoveCard({ userId }: { userId: string }) {
               </section>
             )}
 
-            {/* SELL */}
+            {/* SELL — amber for the routine glide, red when a thesis break
+                accelerates it. */}
             {sellDue && (
-              <section className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2.5">
+              <section
+                className={
+                  thesisBreak
+                    ? "rounded-md border border-red-300/70 bg-red-50 px-3 py-2.5"
+                    : "rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2.5"
+                }
+              >
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-amber-900">Trim NVDA (your glide)</h3>
-                  <div className="whitespace-nowrap text-sm font-semibold text-amber-900">
+                  <h3
+                    className={
+                      thesisBreak
+                        ? "text-sm font-semibold text-red-900"
+                        : "text-sm font-semibold text-amber-900"
+                    }
+                  >
+                    {thesisBreak ? "Reduce NVDA — thesis flagged" : "Trim NVDA (your glide)"}
+                  </h3>
+                  <div
+                    className={
+                      thesisBreak
+                        ? "whitespace-nowrap text-sm font-semibold text-red-900"
+                        : "whitespace-nowrap text-sm font-semibold text-amber-900"
+                    }
+                  >
                     {fmtNis(directive.sell.tranche_nis)}
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-amber-900/90">{directive.sell.headline}</p>
+                <p
+                  className={
+                    thesisBreak ? "mt-1 text-xs text-red-900/90" : "mt-1 text-xs text-amber-900/90"
+                  }
+                >
+                  {directive.sell.headline}
+                </p>
                 {directive.sell.tax_note && (
-                  <p className="mt-1 text-xs text-amber-800/80">{directive.sell.tax_note}</p>
+                  <p
+                    className={
+                      thesisBreak ? "mt-1 text-xs text-red-800/80" : "mt-1 text-xs text-amber-800/80"
+                    }
+                  >
+                    {directive.sell.tax_note}
+                  </p>
                 )}
+                {directive.sell.notes.map((n, i) => (
+                  <p key={i} className="mt-1 text-xs text-muted-foreground">
+                    {n}
+                  </p>
+                ))}
               </section>
             )}
 

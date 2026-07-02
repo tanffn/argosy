@@ -712,6 +712,7 @@ export interface PeriodDirectiveDTO {
     nvda_cap_pct: number;
     n_quarters: number;
     tax_note: string;
+    notes: string[];
   };
   freshness: {
     refreshed: boolean;

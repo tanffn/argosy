@@ -68,6 +68,7 @@ class PeriodDirective:
                 "nvda_cap_pct": self.sell.nvda_cap_pct,
                 "n_quarters": self.sell.n_quarters,
                 "tax_note": self.sell.tax_note,
+                "notes": list(self.sell.notes),
             },
             "freshness": self.freshness,
         }
