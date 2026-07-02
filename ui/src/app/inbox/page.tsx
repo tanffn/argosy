@@ -33,6 +33,7 @@ import { InboxDeferDialog } from "@/components/inbox/InboxDeferDialog";
 import { QuietState } from "@/components/inbox/QuietState";
 import { FunnelTransparencyCard } from "@/components/proposals/funnel-transparency-card";
 import { DeployCashCard } from "@/components/proposals/DeployCashCard";
+import { YourMoveCard } from "@/components/proposals/YourMoveCard";
 import { RebalanceReviewCard } from "@/components/proposals/RebalanceReviewCard";
 import { ConsultRunner } from "@/components/consult/consult-runner";
 import { DiscoveryCard } from "@/components/portfolio/discovery-card";
@@ -387,6 +388,12 @@ export default function InboxPage() {
           <ConsultRunner />
         </div>
       </CollapsibleSection>
+
+      {/* Your move this period — the team's assembled directive (buy + glide
+          sell), the proactive lead-in to the deploy tool below. */}
+      <div className="scroll-mt-6">
+        <YourMoveCard userId={USER_ID} />
+      </div>
 
       {/* Deploy your cash — the full tool the cash queue item links to. The
           #deploy-cash and #allocation anchors are preserved so existing

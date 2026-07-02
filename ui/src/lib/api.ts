@@ -680,6 +680,49 @@ export interface DeploymentPlanDTO {
 }
 
 // ----------------------------------------------------------------------
+// Period directive — the team's ONE assembled "here's your move this period"
+// (SDD §1.6). GET /api/period-directive. Buy half (idle cash → canonical engine
+// incl. discovery sleeve) + sell half (NVDA glide policy sell) + freshness.
+// ----------------------------------------------------------------------
+export interface PeriodDirectiveBuyItem {
+  instrument: string;
+  asset_class: string;
+  amount_usd: number;
+  tier?: string;
+  rationale: string;
+}
+
+export interface PeriodDirectiveDTO {
+  generated_at: string;
+  has_actions: boolean;
+  buy: {
+    /** Idle cash over target driving the buy; 0 when nothing is deployable. */
+    excess_usd: number;
+    headline: string;
+    items: PeriodDirectiveBuyItem[];
+  };
+  sell: {
+    /** "sell_due" → a glide tranche is due; "no_action" → within cap. */
+    status: "sell_due" | "no_action";
+    /** "policy" today; risk-budget / thesis-break categories arrive in Step 3. */
+    category: string;
+    headline: string;
+    tranche_nis: number;
+    nvda_current_pct: number;
+    nvda_cap_pct: number;
+    n_quarters: number;
+    tax_note: string;
+  };
+  freshness: {
+    refreshed: boolean;
+    /** True when the directive may be computed on stale FX (fail-closed). */
+    fx_stale: boolean;
+    discovery_stale_days: number | null;
+    discovery_stale: boolean;
+  };
+}
+
+// ----------------------------------------------------------------------
 // Holistic timeline (sprint commit #10, 2026-05-29).
 //
 // Backend: argosy/services/retirement_timeline.py + the /timeline route
@@ -2374,6 +2417,19 @@ export const api = {
     // sent on an explicit "Run fleet review" action, not the initial load.
     if (fleetReview) qs.set("fleet_review", "true");
     return getJSON<DeploymentPlanDTO>(`/api/portfolio/deploy-cash?${qs.toString()}`);
+  },
+  // The team's assembled "here's your move this period" — buy (idle cash → the
+  // canonical engine incl. the discovery sleeve) + sell (NVDA glide policy sell)
+  // + freshness. GET /api/period-directive. refresh=true is the on-demand path:
+  // it refreshes stale FX before advising (the user waits rather than getting a
+  // stale directive).
+  periodDirective: (
+    userId: string,
+    refresh: boolean = false,
+  ): Promise<PeriodDirectiveDTO> => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (refresh) qs.set("refresh", "true");
+    return getJSON<PeriodDirectiveDTO>(`/api/period-directive?${qs.toString()}`);
   },
   portfolioHighPotentialSleeve: (
     cashUsd: number = 250_000,
