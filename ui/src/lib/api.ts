@@ -723,6 +723,24 @@ export interface PeriodDirectiveDTO {
   };
 }
 
+// Decision-funnel beta calibration surface (nothing hidden): its state + how much
+// data it has collected. GET /api/decisions/funnel/calibration.
+export interface FunnelCalibrationDTO {
+  beta: boolean;
+  status: "off" | "collecting" | "live";
+  enabled: boolean;
+  shadow: boolean;
+  stage3: boolean;
+  decisions_collected: number;
+  runs: number;
+  first_at: string | null;
+  last_at: string | null;
+  days_span: number;
+  surfaced: number;
+  would_surface: number;
+  headline: string;
+}
+
 // ----------------------------------------------------------------------
 // Holistic timeline (sprint commit #10, 2026-05-29).
 //
@@ -2432,6 +2450,10 @@ export const api = {
     if (refresh) qs.set("refresh", "true");
     return getJSON<PeriodDirectiveDTO>(`/api/period-directive?${qs.toString()}`);
   },
+  funnelCalibration: (userId: string): Promise<FunnelCalibrationDTO> =>
+    getJSON<FunnelCalibrationDTO>(
+      `/api/decisions/funnel/calibration?user_id=${encodeURIComponent(userId)}`,
+    ),
   portfolioHighPotentialSleeve: (
     cashUsd: number = 250_000,
     sleevePct: number = 5.0,
