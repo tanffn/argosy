@@ -379,6 +379,8 @@ The period directive covers the whole picture at once:
 
 Surfaced *because the team noticed*, not because the user asked.
 
+`GET /api/period-directive` serves the assembled directive — the buy half (idle cash over target, deployed via the one canonical engine incl. the discovery-sourced high-potential sleeve) and the sell half (the NVDA glide *policy* sell, surface-or-stay-quiet) — as one object, stamped with a freshness record. `?refresh=true` is the on-demand path: it refreshes stale FX *before* advising and reads `fx_stale` from the actual cache state (fail-closed: unknown freshness counts as stale). The inbox's cash directive draws its buy list from the same composition point (`argosy/services/period_directive.py`), so the inbox, the directive card, and `/deploy-cash` cannot diverge.
+
 ---
 
 ## 2. System Architecture
