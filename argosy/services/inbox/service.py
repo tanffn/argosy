@@ -303,9 +303,15 @@ def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[Inbo
     if v.status != "sell_due":
         return []  # speak only when needed — the heartbeat covers "nothing due"
 
-    is_thesis = v.category == "thesis-break"
-    title = "Reduce NVDA — thesis flagged" if is_thesis else "Trim NVDA this quarter (your glide)"
-    severity = "critical" if is_thesis else "warning"
+    # Exception-protocol sells (thesis-break / risk-budget) are urgent; the routine
+    # glide policy sell is a warning.
+    _TITLES = {
+        "thesis-break": "Reduce NVDA — thesis flagged",
+        "risk-budget": "Reduce NVDA — protects your retirement floor",
+    }
+    is_exception = v.category != "policy"
+    title = _TITLES.get(v.category, "Trim NVDA this quarter (your glide)")
+    severity = "critical" if is_exception else "warning"
     return [
         InboxItem(
             id="nvda_policy_sell",

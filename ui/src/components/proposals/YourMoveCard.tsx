@@ -67,7 +67,15 @@ export function YourMoveCard({ userId }: { userId: string }) {
   }, [userId]);
 
   const sellDue = directive?.sell.status === "sell_due";
-  const thesisBreak = directive?.sell.category === "thesis-break";
+  // Any exception-protocol sell (thesis-break / risk-budget) is urgent → red;
+  // the routine glide policy sell is amber.
+  const urgentSell = sellDue && directive?.sell.category !== "policy";
+  const sellHeading =
+    directive?.sell.category === "thesis-break"
+      ? "Reduce NVDA — thesis flagged"
+      : directive?.sell.category === "risk-budget"
+        ? "Reduce NVDA — protect your retirement floor"
+        : "Trim NVDA (your glide)";
   const hasActions = directive?.has_actions ?? false;
 
   return (
@@ -151,7 +159,7 @@ export function YourMoveCard({ userId }: { userId: string }) {
             {sellDue && (
               <section
                 className={
-                  thesisBreak
+                  urgentSell
                     ? "rounded-md border border-red-300/70 bg-red-50 px-3 py-2.5"
                     : "rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2.5"
                 }
@@ -159,16 +167,16 @@ export function YourMoveCard({ userId }: { userId: string }) {
                 <div className="flex items-center justify-between">
                   <h3
                     className={
-                      thesisBreak
+                      urgentSell
                         ? "text-sm font-semibold text-red-900"
                         : "text-sm font-semibold text-amber-900"
                     }
                   >
-                    {thesisBreak ? "Reduce NVDA — thesis flagged" : "Trim NVDA (your glide)"}
+                    {sellHeading}
                   </h3>
                   <div
                     className={
-                      thesisBreak
+                      urgentSell
                         ? "whitespace-nowrap text-sm font-semibold text-red-900"
                         : "whitespace-nowrap text-sm font-semibold text-amber-900"
                     }
@@ -178,7 +186,7 @@ export function YourMoveCard({ userId }: { userId: string }) {
                 </div>
                 <p
                   className={
-                    thesisBreak ? "mt-1 text-xs text-red-900/90" : "mt-1 text-xs text-amber-900/90"
+                    urgentSell ? "mt-1 text-xs text-red-900/90" : "mt-1 text-xs text-amber-900/90"
                   }
                 >
                   {directive.sell.headline}
@@ -186,7 +194,7 @@ export function YourMoveCard({ userId }: { userId: string }) {
                 {directive.sell.tax_note && (
                   <p
                     className={
-                      thesisBreak ? "mt-1 text-xs text-red-800/80" : "mt-1 text-xs text-amber-800/80"
+                      urgentSell ? "mt-1 text-xs text-red-800/80" : "mt-1 text-xs text-amber-800/80"
                     }
                   >
                     {directive.sell.tax_note}
