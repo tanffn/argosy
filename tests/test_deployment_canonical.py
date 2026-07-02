@@ -122,7 +122,7 @@ def test_redirect_note_is_appended_and_preflight_reruns(monkeypatch):
         calls["preflight"] += 1
         return object()  # opaque result; the builder only passes it through
 
-    def _fake_redirect(plan, result, doc):
+    def _fake_redirect(plan, result, doc, holdings=None):
         from dataclasses import replace
 
         redirected = replace(plan, note="redirected")

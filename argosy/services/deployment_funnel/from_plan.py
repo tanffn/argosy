@@ -188,16 +188,19 @@ def run_preflight_for_plan(
     return result
 
 
-def redirect_overflow_to_diversifiers(plan, result, doc):
+def redirect_overflow_to_diversifiers(plan, result, doc, holdings=None):
     """Cash the funnel won't place in its NATURAL sleeve — an over-cap instrument
     (R1GR at 14% NVDA) or T-bills when the reserve is already funded — is REDIRECTED
-    into the plan's OWN zero-NVDA diversifier ETFs (ex-US / EM / real-assets),
+    into the plan's OWN zero-NVDA diversifier sleeves (ex-US / EM / real-assets),
     split by their plan-target weight, rather than left as idle cash. This deploys
-    the full amount into plan ETFs (no gold, no plan change) and nudges the NVDA
+    the full amount into plan holdings (no gold, no plan change) and nudges the NVDA
     concentration DOWN. Returns (new_plan, redirect_note); a no-op returns the plan
     unchanged. Only redistributes concentration/reserve overflow — a class ABSENT
     from the plan (plan-gap) still needs a real plan change and is NOT invented here.
-    """
+
+    Exposure-aware: when ``holdings`` is given, overflow bound for a diversifier
+    sleeve that you ALREADY cover with a held estate-safe substitute tops up that
+    held fund instead of opening the plan's ticker (same rule as the core deploy)."""
     from dataclasses import replace
 
     from argosy.services.deployment_advisor import DeploymentLine, EstateTag
@@ -228,8 +231,34 @@ def redirect_overflow_to_diversifiers(plan, result, doc):
     if not divs:
         return plan, ""  # nothing plan-compliant to redirect into
 
+    # Exposure-aware remap: if a diversifier sleeve is already covered by a held
+    # estate-safe substitute, top that up instead of opening the plan's ticker.
+    topup: dict[str, str] = {}
+    if holdings:
+        from argosy.services.exposure_attribution import classify_plan_substitutes
+        best: dict[str, float] = {}
+        for s in classify_plan_substitutes(doc, holdings):
+            if s.disposition == "topup" and s.held_value_usd > best.get(s.plan_instrument, 0.0):
+                best[s.plan_instrument] = s.held_value_usd
+                topup[s.plan_instrument] = s.held_ticker
+
     wsum = sum(w for _, w in divs) or float(len(divs))
-    add_by_sym = {sym: round(redirect * (w / wsum), 2) for sym, w in divs}
+    substitute_targets: set[str] = set()
+    target_plan_sym: dict[str, str] = {}   # emitted target -> the plan sleeve instrument it fills
+    add_by_sym: dict[str, float] = {}
+    # Distribute with a running remainder so the shares sum EXACTLY to ``redirect``
+    # (the last leg absorbs per-leg rounding) — no cents created or lost.
+    divs_sorted = sorted(divs, key=lambda kv: (-kv[1], kv[0]))
+    remaining = round(redirect, 2)
+    for i, (sym, w) in enumerate(divs_sorted):
+        share = remaining if i == len(divs_sorted) - 1 else min(
+            round(redirect * (w / wsum), 2), remaining)
+        remaining = round(remaining - share, 2)
+        target = topup.get(sym, sym)
+        if target != sym:
+            substitute_targets.add(target)
+        target_plan_sym.setdefault(target, sym)
+        add_by_sym[target] = round(add_by_sym.get(target, 0.0) + share, 2)
 
     # Rebuild tiers: drop the blocked lines; increment an existing diversifier line
     # or synthesize a new core line for one not already proposed.
@@ -254,15 +283,26 @@ def redirect_overflow_to_diversifiers(plan, result, doc):
     if to_add:
         synth = [
             DeploymentLine(
-                symbol=sym, type="ETF", amount_usd=amt, timing="now", is_new=True,
+                symbol=sym, type="ETF", amount_usd=amt, timing="now",
+                is_new=(sym not in substitute_targets),
                 tier="core", horizon="10yr+",
                 estate=EstateTag(domicile="IE", status="estate_safe",
                                  note="Irish UCITS diversifier (redirect target)"),
                 cap_note="redirected overflow (over-cap/funded-reserve cash)",
                 net_of_tax_caveat="",
-                rationale=(f"Redirected overflow into {sym} — a zero-NVDA plan "
-                           "diversifier — instead of buying over-cap NVDA exposure "
-                           "or stacking a funded reserve. Reduces concentration."),
+                rationale=(
+                    (f"Redirected overflow into {sym} — a zero-NVDA held diversifier "
+                     "you already own — instead of buying over-cap NVDA exposure or "
+                     "stacking a funded reserve (top up rather than open a new ticker).")
+                    if sym in substitute_targets else
+                    (f"Redirected overflow into {sym} — a zero-NVDA plan diversifier "
+                     "— instead of buying over-cap NVDA exposure or stacking a funded "
+                     "reserve. Reduces concentration.")
+                ),
+                cites=(
+                    (f"plan_target:{target_plan_sym.get(sym, sym)}",)
+                    + ((f"substitute:{sym}",) if sym in substitute_targets else ())
+                ),
             )
             for sym, amt in to_add
         ]

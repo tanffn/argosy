@@ -177,3 +177,29 @@ def test_redirect_overflow_into_diversifiers():
     syms = {l.symbol.upper(): l.amount_usd for t in plan2.tiers for l in t.lines}
     assert "IB01" not in syms          # the reserve-overfund T-bill line dropped
     assert syms.get("EXUS", 0) >= 29000.0   # ~$30k redirected into EXUS
+
+    # Exposure-aware: with a held estate-safe substitute (FWRA) covering the ex-US
+    # sleeve, the overflow tops up FWRA instead of opening a new EXUS position.
+    plan3, note3 = redirect_overflow_to_diversifiers(
+        plan, res, doc, holdings={"FWRA": 200_000.0})
+    syms3 = {l.symbol.upper(): l.amount_usd for t in plan3.tiers for l in t.lines}
+    assert syms3.get("FWRA", 0) >= 29000.0  # redirected into the HELD substitute
+    assert "EXUS" not in syms3              # no new ex-US position opened
+
+    # Conservation: the redirected overflow is placed EXACTLY (no cents created or
+    # lost) even when the split across sleeves does not divide evenly. The dropped
+    # $30k reserve line reappears in full across the diversifier lines.
+    doc3 = SimpleNamespace(nvda_cap_pct=13.0, classes=[
+        SimpleNamespace(label="Cash & T-bills", target_pct=6.0,
+                        instruments=[SimpleNamespace(symbol="IB01")]),
+        SimpleNamespace(label="International developed (ex-US)", target_pct=11.0,
+                        instruments=[SimpleNamespace(symbol="EXUS")]),
+        SimpleNamespace(label="Emerging-markets equity", target_pct=11.0,
+                        instruments=[SimpleNamespace(symbol="EIMI")]),
+        SimpleNamespace(label="Real assets (REIT/TIPS)", target_pct=11.0,
+                        instruments=[SimpleNamespace(symbol="DPYA")]),
+    ])
+    plan4, _ = redirect_overflow_to_diversifiers(plan, res, doc3)
+    added = sum(l.amount_usd for t in plan4.tiers for l in t.lines
+                if l.symbol.upper() in {"EXUS", "EIMI", "DPYA"})
+    assert abs(added - 30000.0) < 0.005   # exact to the cent

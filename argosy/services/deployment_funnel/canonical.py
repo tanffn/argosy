@@ -72,7 +72,8 @@ def build_canonical_deploy_plan(
     # place in its natural sleeve flows into the plan's own diversifier ETFs. When
     # it fires we re-run the preflight against the REDIRECTED plan so the surfaced
     # facts describe the plan the user actually sees.
-    plan2, redirect_note = redirect_overflow_to_diversifiers(plan, result, doc)
+    plan2, redirect_note = redirect_overflow_to_diversifiers(
+        plan, result, doc, holdings=holdings if exposure_aware else None)
     if redirect_note:
         plan = replace(plan2, caveats=tuple(plan2.caveats) + (redirect_note,))
         result = run_preflight_for_plan(
