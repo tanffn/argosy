@@ -225,6 +225,13 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "alt_macro_diversification": "claude-opus-4-8",
     "alt_risk_liquidity_tax": "claude-opus-4-8",
     "alternatives_fund_manager": "claude-opus-4-8",
+    # Deployment author (fleet-authors / determinism-verifies pivot) — the LLM
+    # that AUTHORS the AllocationProposal for a deploy request in ONE holistic
+    # reasoning pass (the deterministic verifier gates it). Opus per binding
+    # preference "accuracy over LLM cost": this is the core money-decision the
+    # whole pivot exists to make smart (a plain LLM prompt beat the old
+    # deterministic water-fill). One call, not a debate fleet.
+    "deployment_author": "claude-opus-4-8",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -295,6 +302,10 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # related_history + plan context before emitting.
     "action_proposer":         "high",
     "thesis_monitor":          "high",
+    # Deployment author (fleet-authors pivot) — high effort: one pass must
+    # weigh concentration look-through, tax reserve, domicile, and plan-fit
+    # holistically (the reasoning that beat the deterministic engine).
+    "deployment_author":       "high",
     # Alpha-report analyst — long-form Discord posts (Meet Kevin
     # Morning Brief style). High thinking lets the LLM weigh tone,
     # per-ticker conviction, structural picks, cautions, and index
@@ -451,6 +462,10 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # own internal budget under this cap.
     "action_proposer": 8000,
     "thesis_monitor": 16000,
+    # Deployment author (fleet-authors pivot) — output is one compact
+    # AllocationProposal (a handful of buys/sells + reserves + rationale).
+    # 16K is generous headroom and keeps adaptive thinking under the cap.
+    "deployment_author": 16000,
     # Alpha-report analyst — output is a structured analysis with up to
     # ~20 ticker_signals + ~10 structural_picks + summary + cautions +
     # index_targets. 12K is a generous ceiling for typical reports
@@ -498,6 +513,12 @@ DEFAULT_SDK_TIMEOUT_BY_ROLE: dict[str, int] = {
     "plan_synthesizer":  900,  # 15 min
     "fund_manager":      900,  # 15 min
     "audit":             900,  # 15 min
+    # Deployment author (fleet-authors pivot) — the money path must be SNAPPY
+    # and never hang. The reliability wrapper enforces the authoritative hard
+    # timeout (~150s) with a process-tree kill; this SDK-internal soft ceiling
+    # sits just above it so the CLI never lingers minutes if the wrapper is
+    # ever bypassed.
+    "deployment_author": 180,  # 3 min
 }
 
 # Per-role Citations API enablement. Source consumers + synthesizers get
@@ -1438,7 +1459,10 @@ class BaseAgent(Generic[T]):
         Tests override this method directly to return a `ModelCall` stub
         without exercising either backend.
         """
-        backend = get_settings().anthropic.backend
+        # Per-instance backend override (money-path reliability wrapper sets this
+        # so the deployment author can run on the direct api_key backend — no
+        # flaky claude.exe subprocess — independently of the global default).
+        backend = getattr(self, "_backend_override", None) or get_settings().anthropic.backend
         if backend == "claude_code":
             return await self._call_via_claude_code(
                 system=system,

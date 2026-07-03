@@ -72,10 +72,39 @@ def verify_allocation_proposal(
         return float(holdings.get(sym, holdings.get(sym.upper(), 0.0)) or 0.0)
 
     # --- BLOCK-level: unsafe / ungrounded ---------------------------------
-    for b in proposal.buys:
-        if known and b.symbol.upper() not in known:
+    # Non-negativity is the load-bearing money guard. The conservation checks below
+    # are pure equalities, so without this a negative reserve (or a negative buy leg)
+    # could balance an over-deploy and still pass. Determinism must make an
+    # over-deploy IMPOSSIBLE — this is that guarantee (belt-and-suspenders with the
+    # schema's ge=0). BLOCK, not revision: it is unsafe, not a judgment tweak.
+    for _label, _val in (
+        ("cash_to_deploy", proposal.cash_to_deploy),
+        ("cash_to_reserve", proposal.cash_to_reserve),
+        ("cash_reserved_for_tax", proposal.cash_reserved_for_tax),
+    ):
+        if _val < -0.01:
             fails.append(GateFailure(
-                "invented_ticker", f"{b.symbol} is not a known instrument.", "block"))
+                "negative_amount", f"{_label} is negative (${_val:,.0f}).", "block"))
+    for b in proposal.buys:
+        if b.amount_usd < -0.01:
+            fails.append(GateFailure(
+                "negative_amount",
+                f"buy {b.symbol} amount is negative (${b.amount_usd:,.0f}).", "block"))
+    for s in proposal.sells:
+        if s.amount_usd < -0.01:
+            fails.append(GateFailure(
+                "negative_amount",
+                f"sell {s.symbol} amount is negative (${s.amount_usd:,.0f}).", "block"))
+
+    for b in proposal.buys:
+        # Fail closed: if we have no known-symbol universe to validate against, no
+        # buy can be trusted (an empty `known` must not silently admit any ticker).
+        if b.symbol.upper() not in known:
+            fails.append(GateFailure(
+                "invented_ticker",
+                f"{b.symbol} is not a known instrument"
+                + ("." if known else " (no known-symbol universe to validate against)."),
+                "block"))
         # Unsanctioned US-situs estate exposure (NVDA is the one sanctioned name).
         try:
             from argosy.services.instrument_reference import lookup as _ref
@@ -101,12 +130,19 @@ def verify_allocation_proposal(
             "conservation",
             f"sum(buys) ${buys_sum:,.0f} != cash_to_deploy ${proposal.cash_to_deploy:,.0f}.",
             "revision"))
+    # Sell proceeds ADD to the funds being allocated (e.g. a deconcentration trim
+    # frees cash to redeploy/reserve). Credit them so proceeds can't silently vanish
+    # from the books: deploy+reserve+tax must equal deployable + total sell proceeds.
+    sells_sum = round(sum(s.amount_usd for s in proposal.sells), 2)
+    available = round(deployable + sells_sum, 2)
     total = round(proposal.cash_to_deploy + proposal.cash_to_reserve
                   + proposal.cash_reserved_for_tax, 2)
-    if deployable > 0 and abs(total - deployable) > _MONEY_EPS:
+    if available > 0 and abs(total - available) > _MONEY_EPS:
+        _proceeds = f" + sells ${sells_sum:,.0f}" if sells_sum else ""
         fails.append(GateFailure(
             "conservation",
-            f"deploy+reserve+tax ${total:,.0f} != deployable ${deployable:,.0f}.",
+            f"deploy+reserve+tax ${total:,.0f} != deployable ${deployable:,.0f}"
+            f"{_proceeds} (available ${available:,.0f}).",
             "revision"))
 
     if cgt > 0 and proposal.cash_reserved_for_tax <= 0:
@@ -117,6 +153,16 @@ def verify_allocation_proposal(
             "revision"))
 
     for b in proposal.buys:
+        # Require an explicit US-weight claim on every buy so the sourced cross-check
+        # below can never be silently skipped (the text heuristic alone is evadable —
+        # an author can buy a US-heavy all-world fund into a "global" sleeve with no
+        # "ex-US" words and dodge it). Forcing the claim makes the check un-skippable.
+        if b.claimed_us_weight is None:
+            fails.append(GateFailure(
+                "missing_us_weight",
+                f"{b.symbol} has no claimed_us_weight — state the instrument's "
+                "US-equity weight (0..1) so it can be checked against sourced facts.",
+                "revision"))
         f = facts_lookup(b.symbol)
         if f is None:
             continue

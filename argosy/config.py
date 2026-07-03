@@ -198,6 +198,24 @@ class Settings(BaseSettings):
     # explicitly passes fleet_review=true, so the normal fast GET is unaffected.
     deployment_fleet_review_enabled: bool = Field(default=True)
 
+    # Fleet-authors / determinism-verifies pivot — the LLM AUTHORS the
+    # allocation and the deterministic verifier gates it (inverting the old
+    # deterministic-water-fill engine, which a plain LLM prompt beat). When
+    # True, /deploy-cash builds a decision packet, runs the author→verify→
+    # bounce loop, and renders the accepted proposal; on rejection/timeout it
+    # falls back to the deterministic cash_only_deploy engine LABELLED
+    # degraded. Default False = opt-in (reversible) until the live author path
+    # is proven on a stable backend. Per-call/env override via
+    # ARGOSY_DEPLOYMENT_AUTHOR_ENABLED.
+    deployment_author_enabled: bool = Field(default=False)
+    # Backend override for the deployment-author money path ONLY. None = use
+    # the global anthropic.backend (claude_code). Set to "api_key" to route
+    # the money decision to the direct Anthropic SDK (no flaky claude.exe
+    # subprocess, honest HTTP timeouts) once an API key is configured — the
+    # production-preferred path. The reliability wrapper hardens whichever
+    # backend is active (hard timeout + process-tree kill on claude_code).
+    deployment_author_backend: str | None = Field(default=None)
+
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
     # 2024/2025 values; override per tax year via ARGOSY_SURTAX_THRESHOLD_NIS /

@@ -422,6 +422,97 @@ def disposition_to_dto(d) -> "DeploymentDispositionDTO":
     )
 
 
+class AuthoredBuyDTO(BaseModel):
+    symbol: str
+    amount_usd: float
+    sleeve: str = ""
+    justification: str = ""
+    claimed_us_weight: float | None = None
+
+
+class AuthoredSellDTO(BaseModel):
+    symbol: str
+    amount_usd: float
+    reason: str = ""
+
+
+class GateFailureDTO(BaseModel):
+    code: str
+    detail: str
+    severity: str  # "block" | "revision"
+
+
+class AuthoredAllocationDTO(BaseModel):
+    """The fleet-AUTHORED allocation (pivot: the fleet authors, determinism verifies).
+
+    ``status`` is accepted / rejected / unavailable. ``degraded=True`` means the
+    surfaced ``tiers`` are the deterministic FALLBACK (the author couldn't produce a
+    verifier-passing proposal, or was unavailable) — shown labelled, never silently.
+    """
+
+    status: str
+    degraded: bool
+    attempts: int = 0
+    cash_to_deploy: float = 0.0
+    cash_to_reserve: float = 0.0
+    cash_reserved_for_tax: float = 0.0
+    buys: list[AuthoredBuyDTO] = []
+    sells: list[AuthoredSellDTO] = []
+    holds: list[str] = []
+    rationale: str = ""
+    gate_status: str | None = None
+    gate_failures: list[GateFailureDTO] = []
+    notes: list[str] = []
+
+
+def authored_outcome_to_dto(outcome, *, extra_notes: list[str] | None = None) -> "AuthoredAllocationDTO":
+    """Map an ``AuthorOutcome`` (accepted/rejected/unavailable) to the DTO the UI
+    renders. On a non-accepted outcome ``degraded`` is set so the caller's
+    deterministic ``tiers`` are surfaced as the labelled fallback."""
+    p = getattr(outcome, "proposal", None)
+    rep = getattr(outcome, "report", None)
+    degraded = outcome.status != "accepted"
+    dto = AuthoredAllocationDTO(
+        status=outcome.status,
+        degraded=degraded,
+        attempts=int(getattr(outcome, "attempts", 0) or 0),
+        gate_status=(rep.status.value if rep is not None else None),
+        gate_failures=[
+            GateFailureDTO(code=f.code, detail=f.detail, severity=f.severity)
+            for f in (getattr(rep, "failures", []) or [])
+        ],
+        notes=list(extra_notes or []),
+    )
+    if p is not None:
+        dto.cash_to_deploy = float(p.cash_to_deploy)
+        dto.cash_to_reserve = float(p.cash_to_reserve)
+        dto.cash_reserved_for_tax = float(p.cash_reserved_for_tax)
+        dto.buys = [
+            AuthoredBuyDTO(
+                symbol=b.symbol, amount_usd=float(b.amount_usd), sleeve=b.sleeve,
+                justification=b.justification, claimed_us_weight=b.claimed_us_weight,
+            )
+            for b in p.buys
+        ]
+        dto.sells = [
+            AuthoredSellDTO(symbol=s.symbol, amount_usd=float(s.amount_usd), reason=s.reason)
+            for s in p.sells
+        ]
+        dto.holds = list(p.holds)
+        dto.rationale = p.rationale
+    if degraded:
+        _why = {
+            "rejected": "the author could not produce a proposal that passed the "
+                        "deterministic verifier within the allowed revisions",
+            "unavailable": "the author was unavailable (timeout / circuit-open / "
+                           "no backend)",
+        }.get(outcome.status, outcome.status)
+        dto.notes.append(
+            f"Showing the deterministic engine's allocation (labelled degraded): {_why}."
+        )
+    return dto
+
+
 class DeploymentPlanDTO(BaseModel):
     deploy_amount_usd: float
     as_of: str
@@ -438,6 +529,11 @@ class DeploymentPlanDTO(BaseModel):
     # The fleet's affirmative "what to do with the full amount" recommendation
     # (phase-2 fleet review only). null when the fleet didn't run / failed.
     disposition: DeploymentDispositionDTO | None = None
+    # The fleet-AUTHORED allocation (fleet-authors / determinism-verifies pivot).
+    # Present only when deployment_author_enabled and the author path ran; when
+    # degraded, the `tiers` above are the labelled deterministic fallback. null
+    # otherwise (pivot off / not requested).
+    authored: AuthoredAllocationDTO | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
