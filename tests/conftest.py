@@ -77,6 +77,34 @@ def _guard_alternatives_phase(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _guard_deployment_author(monkeypatch):
+    """Keep the fleet-authored deploy path OFF by default in tests.
+
+    ``deployment_author_enabled`` defaults to True in production (the live author
+    path is proven), so /deploy-cash would run the author→verify→bounce loop —
+    a REAL claude.exe call — for any deploy-cash test that doesn't stub it, hanging
+    the suite (same class as the alternatives-phase gotcha above). Force it off for
+    every test; the tests that exercise the ON path opt in via their own
+    ``setenv("ARGOSY_DEPLOYMENT_AUTHOR_ENABLED", "1")`` + stubbed ``authored_allocation``
+    (their monkeypatch runs after this fixture, so it wins). Not stubbed at the
+    ``authored_allocation`` source because ``test_allocation_reliable`` calls that
+    function directly with test doubles and needs the real implementation.
+    """
+    monkeypatch.setenv("ARGOSY_DEPLOYMENT_AUTHOR_ENABLED", "false")
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001 — never block tests on settings shape
+        pass
+    yield
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _structlog_isolation():
     """Ensure clean structlog / stdlib-logging state for every test.
 

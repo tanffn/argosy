@@ -204,10 +204,11 @@ class Settings(BaseSettings):
     # True, /deploy-cash builds a decision packet, runs the author→verify→
     # bounce loop, and renders the accepted proposal; on rejection/timeout it
     # falls back to the deterministic cash_only_deploy engine LABELLED
-    # degraded. Default False = opt-in (reversible) until the live author path
-    # is proven on a stable backend. Per-call/env override via
-    # ARGOSY_DEPLOYMENT_AUTHOR_ENABLED.
-    deployment_author_enabled: bool = Field(default=False)
+    # degraded. Default True: the live author path is proven (accepted, verifier-
+    # gated, plan-filling allocations first-attempt against a real claude.exe) and
+    # the whole feature is reversible — additive on /deploy-cash, degrades to the
+    # deterministic engine, flip off via ARGOSY_DEPLOYMENT_AUTHOR_ENABLED=false.
+    deployment_author_enabled: bool = Field(default=True)
     # Backend override for the deployment-author money path ONLY. None = use
     # the global anthropic.backend (claude_code). Set to "api_key" to route
     # the money decision to the direct Anthropic SDK (no flaky claude.exe
