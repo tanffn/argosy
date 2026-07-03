@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     # Set ARGOSY_INCREMENTAL_PLAN=0 to revert to the authority-only path.
     argosy_incremental_plan: bool = Field(default=True)
 
+    # Blind anti-correlation gate (plan Risk/Constraint Kernel): at promotion, the
+    # deterministic kernel re-derives the DRAFT's TARGET single-name look-through
+    # exposure (direct + fund-embedded NVDA) and records whether it breaches the plan's
+    # own cap — the fleet-missed incoherence (12% direct + embedded > 13% cap). The
+    # verdict is ALWAYS computed + logged + attached as the `lookthrough_cap` authority
+    # (visible/beta). It only BLOCKS promotion when this flag is True (default False so
+    # it surfaces without bricking the currently-incoherent live plan). Env override
+    # ARGOSY_PLAN_LOOKTHROUGH_GATE_ENFORCE.
+    plan_lookthrough_gate_enforce: bool = Field(default=False)
+
     # Registry-rendered reader anchor (Phase 2): the whole-artifact reviewer is
     # given a reviewer-only "canonical reconciliation anchor" rendered from the
     # derivation-graph surfaces (one owner per figure), so it judges plan prose

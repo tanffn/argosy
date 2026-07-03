@@ -94,4 +94,44 @@ def evaluate_single_name_cap(
     )
 
 
-__all__ = ["Violation", "RiskKernelResult", "evaluate_single_name_cap"]
+def target_holdings_from_doc(doc, *, scale: float = 100.0) -> dict[str, float]:
+    """Convert a plan's TARGET allocation into a symbol->notional map (scale-invariant;
+    defaults to a 100-unit book so the values read as target %s). Each class's
+    ``target_pct`` is split across its instruments by ``weight_within_class_pct`` (equal
+    weights if unset). This lets the kernel measure the *target end-state* on a
+    look-through basis — a 12% direct NVDA sleeve plus embedded NVDA in the US sleeves."""
+    out: dict[str, float] = {}
+    for c in getattr(doc, "classes", []) or []:
+        tp = float(getattr(c, "target_pct", 0.0) or 0.0)
+        instrs = getattr(c, "instruments", []) or []
+        if not instrs:
+            continue
+        wsum = sum(float(getattr(i, "weight_within_class_pct", 0.0) or 0.0) for i in instrs)
+        for i in instrs:
+            sym = (getattr(i, "symbol", "") or "").strip()
+            if not sym:
+                continue
+            w = float(getattr(i, "weight_within_class_pct", 0.0) or 0.0)
+            share = (w / wsum) if wsum > 0 else (1.0 / len(instrs))
+            out[sym] = out.get(sym, 0.0) + tp * share * (scale / 100.0)
+    return out
+
+
+def evaluate_plan_target_single_name_cap(
+    doc,
+    *,
+    cap_pct: float | None = None,
+    effective_fn: Callable[[str, float], float] = _default_effective_fn,
+) -> RiskKernelResult:
+    """Does the plan's TARGET allocation breach its own single-name cap on a look-through
+    basis? (The plan-fleet miss: 12% direct NVDA + embedded NVDA in CSPX/R1GR can exceed
+    the 13% cap.) Blind: re-derived from the doc, not from any fleet claim."""
+    cap = float(cap_pct if cap_pct is not None else getattr(doc, "nvda_cap_pct", 13.0) or 13.0)
+    target = target_holdings_from_doc(doc)
+    return evaluate_single_name_cap(holdings_usd=target, cap_pct=cap, effective_fn=effective_fn)
+
+
+__all__ = [
+    "Violation", "RiskKernelResult", "evaluate_single_name_cap",
+    "target_holdings_from_doc", "evaluate_plan_target_single_name_cap",
+]

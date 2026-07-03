@@ -10,7 +10,12 @@ cap once CSPX/R1GR embedded NVDA is counted).
 """
 from __future__ import annotations
 
-from argosy.quality.plan_risk_kernel import evaluate_single_name_cap
+from types import SimpleNamespace
+
+from argosy.quality.plan_risk_kernel import (
+    evaluate_plan_target_single_name_cap,
+    evaluate_single_name_cap,
+)
 
 
 def _fake_effective(weights: dict[str, float]):
@@ -67,3 +72,35 @@ def test_proposed_buys_are_counted_post_trade():
     # book = 1,000,000; single-name = 200,000 + 56,000 = 256,000 = 25.6% > 13.
     assert not r2.ok
     assert round(r2.single_name_lookthrough_pct, 1) == 25.6
+
+
+def _doc(classes, cap=13.0):
+    return SimpleNamespace(
+        nvda_cap_pct=cap,
+        classes=[
+            SimpleNamespace(
+                target_pct=tp,
+                instruments=[
+                    SimpleNamespace(symbol=s, weight_within_class_pct=w) for s, w in inst
+                ],
+            )
+            for tp, inst in classes
+        ],
+    )
+
+
+def test_plan_target_cap_flags_embedded_breach():
+    # 12% direct NVDA sleeve is UNDER a 13% cap, but the 88% US sleeve embeds 10% NVDA,
+    # so the TARGET end-state is 20.8% single-name on look-through — the plan breaches its
+    # own cap. This is the fleet miss the gate must catch.
+    doc = _doc([(12.0, [("NVDA", 100.0)]), (88.0, [("CSPX", 100.0)])])
+    r = evaluate_plan_target_single_name_cap(doc, effective_fn=_fake_effective({"CSPX": 0.10}))
+    assert not r.ok
+    assert round(r.single_name_lookthrough_pct, 1) == 20.8
+
+
+def test_plan_target_cap_ok_when_within():
+    doc = _doc([(10.0, [("NVDA", 100.0)]), (90.0, [("EXUS", 100.0)])])  # EXUS 0% NVDA
+    r = evaluate_plan_target_single_name_cap(doc, effective_fn=_fake_effective({}))
+    assert r.ok
+    assert round(r.single_name_lookthrough_pct, 1) == 10.0

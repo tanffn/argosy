@@ -3351,6 +3351,33 @@ def post_draft_accept(
             "rederivation": "APPROVE" if _rederiv_clear else "BLOCK",
         }
 
+        # Blind anti-correlation gate: re-derive the DRAFT's TARGET single-name
+        # look-through from its own doc and record whether it breaches the plan's cap
+        # (the fleet-missed incoherence: 12% direct NVDA + embedded NVDA in the US
+        # sleeves > 13% cap). Always computed + logged + attached as an authority
+        # (visible); enforced (blocks) only behind plan_lookthrough_gate_enforce.
+        _lt_verdict = "APPROVE"
+        try:
+            from argosy.quality.plan_risk_kernel import (
+                evaluate_plan_target_single_name_cap,
+            )
+            from argosy.services.target_allocation_doc import (
+                load_plan_target_allocation,
+            )
+            _draft_doc = load_plan_target_allocation(pv)
+            if _draft_doc is not None:
+                _lt = evaluate_plan_target_single_name_cap(_draft_doc)
+                _lt_verdict = "APPROVE" if _lt.ok else "BLOCK"
+                logger.info(
+                    "plan.accept.lookthrough_cap draft=%s pct=%.1f cap=%.1f verdict=%s",
+                    draft_id, _lt.single_name_lookthrough_pct, _lt.cap_pct, _lt_verdict,
+                )
+        except Exception as exc:  # noqa: BLE001 — surfaced gate is best-effort
+            logger.warning(
+                "plan.accept.lookthrough_cap_unavailable draft=%s err=%s", draft_id, exc,
+            )
+        authorities["lookthrough_cap"] = _lt_verdict
+
         # Living-plan cutover (ARGOSY_INCREMENTAL_PLAN): build the derivation
         # graph for this draft, recheck cross-surface coherence, and fail closed
         # on any open coherence/hard flag IN ADDITION TO the authority set — so a
@@ -3383,6 +3410,21 @@ def post_draft_accept(
                 decision = None
         if decision is None:
             decision = evaluate_promotion(authorities)
+        # Enforce the look-through cap gate only when opted in — otherwise it's a
+        # surfaced-but-non-blocking authority (logged above). Fail-closed on breach.
+        if (
+            _get_settings().plan_lookthrough_gate_enforce
+            and _lt_verdict == "BLOCK"
+            and getattr(decision, "can_promote", False)
+            and not override_promote_gate
+        ):
+            decision.can_promote = False
+            if "lookthrough_cap" not in decision.blocking_authorities:
+                decision.blocking_authorities.append("lookthrough_cap")
+            decision.reasons.append(
+                "lookthrough_cap: target allocation breaches the single-name cap on a "
+                "direct+fund-embedded look-through basis"
+            )
         if not decision.can_promote:
             if override_promote_gate:
                 _publish(
