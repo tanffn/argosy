@@ -225,12 +225,20 @@ def _medium_worker(*, session: Session, user_id: str,
         # fatal, but NOT silently-NULL: a transient build failure carries forward
         # the prior CURRENT plan's doc so the amendment draft is never un-anchored
         # (the regression behind the draft-36 422).
+        # Carry authored overrides forward from the prior current plan so durable
+        # sleeve targets survive re-synthesis (migration 0076).
         from argosy.services.target_allocation_doc import (
+            inherit_overrides_from_parent,
             resolve_target_allocation_json,
         )
 
+        _prior_overrides_json = inherit_overrides_from_parent(prior_current) if prior_current else None
+        _authored_overrides: dict | None = (
+            json.loads(_prior_overrides_json) if _prior_overrides_json else None
+        )
         _target_allocation_json = resolve_target_allocation_json(
-            session, user_id, decision_run.id, datetime.now(timezone.utc).date()
+            session, user_id, decision_run.id, datetime.now(timezone.utc).date(),
+            authored_overrides=_authored_overrides,
         )
 
         draft = PlanVersion(
@@ -252,6 +260,9 @@ def _medium_worker(*, session: Session, user_id: str,
             horizon_short_md_audit=_horizon_md_audit(output.short),
             synthesis_inputs_json=inputs.model_dump_json(),
             target_allocation_json=_target_allocation_json,
+            # Durable authored overrides inherited from the prior current plan
+            # (migration 0076) so a refined sleeve target survives re-synthesis.
+            target_allocation_overrides_json=_prior_overrides_json,
             sections_json=json.dumps(
                 [s.model_dump(mode="json") for s in output.sections]
             ),

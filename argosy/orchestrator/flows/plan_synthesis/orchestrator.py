@@ -955,11 +955,23 @@ def run_synthesis(
         )
         _alternatives_sleeve = None
 
+    # Carry authored overrides forward from the prior current plan so durable
+    # sleeve targets survive re-synthesis ("option B" durability).  The prior
+    # current plan's overrides_json is parsed to a dict; None when not present.
+    from argosy.services.target_allocation_doc import inherit_overrides_from_parent
+    import json as _json_overrides
+    _prior_overrides_json = inherit_overrides_from_parent(prior_current) if prior_current else None
+    _authored_overrides: dict | None = (
+        _json_overrides.loads(_prior_overrides_json)
+        if _prior_overrides_json else None
+    )
+
     # Assemble every user-facing + audit body field from the synth output via
     # the SINGLE shared renderer (also used by the reader-reconcile re-persist).
     _bodies = _assemble_draft_bodies(
         session, output=output, user_id=user_id,
         decision_run_id=decision_run_id, alternatives_sleeve=_alternatives_sleeve,
+        authored_overrides=_authored_overrides,
     )
 
     draft = PlanVersion(
@@ -992,6 +1004,9 @@ def run_synthesis(
         horizon_short_md_audit=_bodies["horizon_short_md_audit"],
         synthesis_inputs_json=inputs.model_dump_json(),
         target_allocation_json=_bodies["target_allocation_json"],
+        # Durable authored overrides inherited from the prior current plan
+        # (migration 0076) so a refined sleeve target survives re-synthesis.
+        target_allocation_overrides_json=_prior_overrides_json,
         # Persist the structured sections so the plan-output gate can
         # evaluate section_coverage + evidence_per_section against the REAL
         # sections at promote-time (they were previously dropped on the floor).
@@ -1533,10 +1548,14 @@ def run_synthesis(
                 # the persisted draft IN PLACE so ``assemble_plan_artifact``
                 # re-reads the corrected plan. The alternatives decision is
                 # REUSED (its agent fleet is not re-run for a prose reconcile).
+                # Authored overrides are already carried on ``draft`` from the
+                # initial persist; reuse them here so the re-rendered doc is
+                # consistent.
                 _recon_bodies = _assemble_draft_bodies(
                     session, output=output, user_id=user_id,
                     decision_run_id=decision_run_id,
                     alternatives_sleeve=_alternatives_sleeve,
+                    authored_overrides=_authored_overrides,
                 )
                 draft.horizon_long_json = output.long.model_dump_json()
                 draft.horizon_medium_json = output.medium.model_dump_json()
@@ -3634,7 +3653,8 @@ def _surgical_reconcile_prepass(
 
 
 def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
-                           alternatives_sleeve):
+                           alternatives_sleeve,
+                           authored_overrides: "dict[str, float] | None" = None):
     """Render every user-facing + audit body field of the draft from a synth
     ``output``.
 
@@ -3643,6 +3663,10 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     one (a divergence between the two paths would itself be a new defect class:
     a reconciled body failing gates a normal body would not). Returns a dict of
     ``PlanVersion`` body fields.
+
+    ``authored_overrides`` is carried forward from the parent plan's
+    ``target_allocation_overrides_json`` so durable sleeve targets survive
+    re-synthesis.  ``None`` = no overrides (default, byte-identical behaviour).
     """
     import json as _json
     import os as _os
@@ -3661,6 +3685,7 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     _target_allocation_json = resolve_target_allocation_json(
         session, user_id, decision_run_id, datetime.now(timezone.utc).date(),
         alternatives_sleeve=alternatives_sleeve,
+        authored_overrides=authored_overrides,
     )
 
     # v4 block B1 — assemble the three plan-doc appendices ONCE (sections are
