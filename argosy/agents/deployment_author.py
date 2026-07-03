@@ -30,7 +30,15 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
     agent_role = "deployment_author"
     output_model = AllocationProposal
     require_citations = False  # an authored decision, gated by the verifier, not a cited artifact
-    use_structured_output = True  # emit the compact AllocationProposal JSON directly
+    # NOTE: use_structured_output stays OFF. The bundled claude.exe exits 1 (100%)
+    # on this model's --json-schema (anyOf-null claimed_us_weight + nested $defs), so
+    # we take the prose-JSON path instead: the prompt demands a single bare JSON
+    # object and _parse_output tolerates fences. Verified live 2026-07-03 (structured
+    # output → exit-1 storm; prose path is the working route).
+    use_structured_output = False
+    # Keep the SDK's internal transient-exit1 retries minimal — the reliability
+    # wrapper is the retry authority (fresh process + hard timeout + breaker).
+    claude_code_max_retries = 1
 
     def build_prompt(
         self,

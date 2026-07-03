@@ -1846,7 +1846,11 @@ class BaseAgent(Generic[T]):
         # an adversarially flaky agent can't waste 4*3=12 retries by
         # cycling through each trigger type.
         _retry_count = 0
-        _MAX_RETRIES = 3
+        # Per-agent override of the SDK's internal transient-exit1 retry budget.
+        # Default 3 (unchanged for every existing agent). The money-path author
+        # sets this low (1) so one wrapper attempt can't burn its whole 150s hard
+        # timeout on stacked internal retries before the fresh-process retry fires.
+        _MAX_RETRIES = getattr(self, "claude_code_max_retries", 3)
 
         async def _bump_retry_and_backoff(trigger_label: str) -> None:
             """Increment the shared retry counter and sleep one backoff step.
