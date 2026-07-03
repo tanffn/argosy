@@ -75,6 +75,7 @@ from argosy.quality.publish_gate import OpenFlag, can_publish_plan
 from argosy.quality.surface_rendering import (
     register_surface_concepts, recheck_coherence,
 )
+from argosy.quality.allocation_graph import build_allocation_nodes
 
 log = logging.getLogger(__name__)
 
@@ -289,6 +290,21 @@ def build_base_graph(
             graph.add_node(Node(key=key, kind=NodeKind.INPUT, value=value))
         else:
             graph.get(key).value = value
+
+    # Wire allocation sleeve nodes from the current TargetAllocationDoc.
+    # Guarded: if the doc is unavailable (no plan row yet, test context, etc.)
+    # the graph is still valid — allocation nodes are simply absent.
+    try:
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+        from argosy.state.queries import get_current_plan
+        pv = get_current_plan(session, user_id)
+        alloc_doc = load_plan_target_allocation(pv) if pv is not None else None
+        if alloc_doc is not None:
+            for alloc_node in build_allocation_nodes(alloc_doc):
+                if alloc_node.key not in graph.keys():
+                    graph.add_node(alloc_node)
+    except Exception:  # noqa: BLE001 — allocation doc optional; never block the graph
+        log.debug("allocation nodes skipped (doc unavailable)", exc_info=True)
 
     register_canonical_surfaces(graph, subject_node_map=SUBJECT_NODE_MAP)
     graph.recompute()
