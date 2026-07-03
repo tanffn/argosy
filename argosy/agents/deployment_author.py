@@ -171,8 +171,13 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             return "  (no live market context available — say so in the rationale)"
         snap = signals.get("snapshot") or {}
         labels = {
-            "sp500": "S&P 500 level", "vix": "VIX (fear)", "usd_nis": "USD/NIS",
-            "boi_rate": "BoI policy rate %", "oil_wti": "Oil WTI", "cpi_yoy": "CPI YoY %",
+            "sp500": "S&P 500 level", "sp_vs_trend_pct": "S&P vs 200d MA %",
+            "vix": "VIX (fear)",
+            "fed_funds": "US Fed funds %", "ust10": "US 10y Treasury %",
+            "real10": "US 10y REAL yield %", "breakeven10": "10y breakeven inflation %",
+            "ig_spread": "IG credit spread (OAS) %", "hy_spread": "HY credit spread (OAS) %",
+            "boi_rate": "BoI policy rate %", "usd_nis": "USD/NIS",
+            "oil_wti": "Oil WTI", "cpi_yoy": "CPI YoY %",
         }
         lines = []
         for key, label in labels.items():

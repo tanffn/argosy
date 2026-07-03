@@ -105,6 +105,12 @@ const SNAPSHOT_LABELS: Record<string, string> = {
   oil_wti: "Oil (WTI)",
   cpi_yoy: "CPI YoY",
   sp_vs_trend_pct: "S&P vs 200-day MA (%)",
+  fed_funds: "Fed Funds (%)",
+  ust10: "US 10y (%)",
+  real10: "US 10y real (%)",
+  breakeven10: "10y breakeven (%)",
+  ig_spread: "IG spread (%)",
+  hy_spread: "HY spread (%)",
 };
 
 function MarketContextStrip({ ctx }: { ctx: DeploymentMarketContextDTO }) {

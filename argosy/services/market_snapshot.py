@@ -42,6 +42,15 @@ _SERIES_OIL_WTI = "DCOILWTICO"
 _SERIES_SP500 = "SP500"
 _SERIES_CPI = "CPIAUCSL"
 _SERIES_BOI_RATE = "IRSTCI01ILM156N"  # Bank of Israel overnight rate, monthly
+# Regime series added so the deployment author can reason about equity-vs-bond
+# and the rate environment (the blind-to-the-market gap). All plain "latest value"
+# daily FRED series.
+_SERIES_UST10 = "DGS10"          # 10y Treasury constant-maturity yield %
+_SERIES_REAL10 = "DFII10"        # 10y TIPS (real) yield %
+_SERIES_BREAKEVEN10 = "T10YIE"   # 10y breakeven inflation %
+_SERIES_FED_FUNDS = "DFF"        # effective federal funds rate %
+_SERIES_IG_SPREAD = "BAMLC0A0CM"      # IG corporate OAS %
+_SERIES_HY_SPREAD = "BAMLH0A0HYM2"    # HY corporate OAS %
 
 # Max age for macro series (24 h).
 _MACRO_MAX_AGE = DEPLOY_FRESHNESS_MAX_AGE["macro"]
@@ -247,6 +256,12 @@ def market_snapshot(
         ("sp500", _SERIES_SP500),
         ("boi_rate", _SERIES_BOI_RATE),
         ("cpi_yoy", _SERIES_CPI),  # special: needs YoY computation
+        ("ust10", _SERIES_UST10),
+        ("real10", _SERIES_REAL10),
+        ("breakeven10", _SERIES_BREAKEVEN10),
+        ("fed_funds", _SERIES_FED_FUNDS),
+        ("ig_spread", _SERIES_IG_SPREAD),
+        ("hy_spread", _SERIES_HY_SPREAD),
     ]
 
     for field, series_id in _fred_series:
