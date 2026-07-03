@@ -1,6 +1,6 @@
-# Incremental Plan Refinement — Design Spec (v2, codex-reviewed)
+# Incremental Plan Refinement — Design Spec (v3, codex-reviewed + blind-code-verified)
 
-**Status:** design, GO-WITH-CHANGES from codex (all must-fixes folded in below). Ready to turn into a task-by-task implementation plan on approval.
+**Status:** design, GO-WITH-CHANGES from codex (all must-fixes folded in), then **blind-verified against raw code** (a reviewer given only the code + a refute-mandate — because codex reviewed this *spec*, not the codebase, and rubber-stamped two assumptions; see [[feedback_adversarial_review_must_re_derive_blind]]). Two corrections from that verification are marked **[BLIND-FIX]** below. Ready to turn into a task-by-task implementation plan.
 **Goal:** refine a plan by editing only what a change touches — never redeploy the full agent fleet, never rewrite the whole plan — and be **smart**: predict each change's blast radius on a sandbox graph and choose *scoped edit* vs *bounded re-derivation* vs *full rebuild* by **owner/topology/policy-axis**, not by node counts.
 
 **Acceptance is FUNCTIONAL, not test-suite-green.** A 3-hour green suite that yields mediocre-but-"correct-for-the-fixture" output is a failure. Every capability is accepted by *running a real refinement, reading proof artifacts (graph diff, agent-invocation trace, invariant report) to confirm what actually recomputed, and judging output quality* — unit tests are scaffolding, not the gate.
@@ -106,7 +106,9 @@ Node counts (`0.5*graph_size`, `hard_verdicts_flipped>=2`) are **removed as prim
 
 ## 4. Node metadata (drives the classifier; validated at graph build)
 
-Every node carries:
+**[BLIND-FIX] This metadata does NOT exist on nodes today.** Verified against `derivation_graph.py`: `Node` has only `key, kind, value, inputs, recipe, compute_version, input_hash` — no owner, domain, or axis field, and there is **no policy-axis concept anywhere** in the codebase. So `plan_node_meta.py` is a from-scratch addition. The clean anchor already exists: the node `key` is a stable dotted namespace (`retirement.*`, `concentration.*`, `portfolio.*`) already used for ownership routing by `change_adjudication.OwnershipMap.owner_of` and `ladder_participants._OWNER_BY_PREFIX`. Attach owner/axis metadata **keyed off the dotted node key + `OwnershipMap`**; do not invent a parallel node identity. Build fails loud if a mutable node has no owner/axis mapping (fail-closed).
+
+Every node carries (via the new metadata layer):
 - `owner_domain` — the topic-owner that may author/repair it.
 - `policy_axis` ∈ {risk, withdrawal, tax, allocation, estate, concentration, execution, prose}.
 - `authoring_mode` ∈ {deterministic, owner_authored, synthesis_authored}.
@@ -139,7 +141,11 @@ Response: { tier, reason, blast_radius, predicted_diff:[{key,before,after}], rer
 - **Audit log:** user/agent identity, payload, tier + reason, diff, invariant report, publish decision — every refinement.
 - A `PlanRevisitFlag` (SDD §1.7) is converted to a `ChangeRequest` and enters this path.
 
-**Allocation graph coverage** (`allocation_graph.py`) so allocation refinements are scoped: `sleeve_target::<id>` (INPUT, axis=allocation), `sleeve_band::<id>` (INPUT), `allocation_normalized` (DERIVED, owner=allocation, renormalize to 100), `glide_waypoint::<n>`/`glide_curve`, `single_name_cap` (INPUT, look-through, `rebuild_boundary=True`), and `sleeve_thesis::<id>` (SURFACE, `authoring_mode=owner_authored`). **Thesis nodes render/reconcile from structured facts + bounded owner repair — they must NOT invent strategic rationale** (that stays synthesis; see §7 line).
+**Allocation graph coverage** (`allocation_graph.py`) so allocation refinements are scoped: `sleeve_target::<id>` (INPUT, axis=allocation), `sleeve_band::<id>` (INPUT), `allocation_normalized` (DERIVED, owner=allocation, renormalize to 100), `glide_waypoint::<n>`/`glide_curve`, `single_name_cap` (INPUT, look-through, `rebuild_boundary=True`), and `sleeve_thesis::<id>` (SURFACE, `authoring_mode=owner_authored`). **Thesis nodes render/reconcile from structured facts + bounded owner repair — they must NOT invent strategic rationale** (that stays synthesis; see §6 line).
+
+**[BLIND-FIX] Two verified realities about allocation this must respect:**
+1. **Allocation targets are deterministic, but only from *hardcoded coarse sub-sleeve ratios*** (`allocation_plan.py:105-333`: static `ratio=` seeds renormalized in `_renormalise`) — "reproducible from baked policy seeds," NOT dynamically re-derived from live look-through. This is exactly the coarse water-fill the fleet-authors pivot exists to replace ([[feedback_fleet_authors_determinism_verifies]]). So model `sleeve_target::<id>` as an **INPUT node holding the authored/current target value** — the graph *refines* that value (a supplied change, or an owner/synthesis re-author). **Do NOT wire the coarse ratio recipe as a DERIVED node** — that would enshrine the water-fill as if it were derived truth. `allocation_normalized` may be DERIVED (pure renormalization to 100), but the underlying sleeve targets are authored inputs, not recomputed from ratios.
+2. **The owner agent JUDGES, it does not AUTHOR figures.** `PlanNodeOwnerAgent` returns ACCEPT/REJECT/UNRESOLVED on a *supplied* value; `owner_routed_reconcile` patches prose or *surfaces* a figure change, deferring genuine figure authoring to full re-synth. So T1 splits precisely: **(a) change SUPPLIES the value** ("set growth to 8") → deterministic renormalize + owner *votes* + arbiter → true T1; **(b) the value must be GENERATED from scratch** (no supplied number, needs judgment about which sleeves absorb the delta) → there is no scoped figure-authoring agent today, so this escalates to **T2** until such an owner-authoring capability is built. The classifier must detect "unsupplied figure change" and route it to T2, not pretend a scoped author exists.
 
 ---
 
