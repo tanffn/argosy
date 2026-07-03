@@ -131,7 +131,198 @@ def evaluate_plan_target_single_name_cap(
     return evaluate_single_name_cap(holdings_usd=target, cap_pct=cap, effective_fn=effective_fn)
 
 
+# ---------------------------------------------------------------------------
+# Slice 2: allocation-sum invariant
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class AllocationSumResult:
+    """Focused result for the allocation-sum check.
+
+    ``total_pct`` is the raw sum of all class target_pct values; ``violations``
+    is non-empty when that sum deviates from 100 by more than ``tolerance_pp``.
+    """
+    total_pct: float
+    violations: tuple[Violation, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.violations
+
+
+def evaluate_allocation_sum(doc, *, tolerance_pp: float = 0.5) -> AllocationSumResult:
+    """Sum every class ``target_pct`` in the plan doc; flag when it deviates from 100 by
+    more than ``tolerance_pp`` percentage points.
+
+    Why this matters: the plan-fleet sometimes produces classes that add to 101% or 99%
+    due to rounding or an editing error. Any such deviation means the plan is internally
+    inconsistent and must not be promoted.
+    """
+    total = sum(
+        float(getattr(c, "target_pct", 0.0) or 0.0)
+        for c in (getattr(doc, "classes", None) or [])
+    )
+    total = round(total, 6)  # remove floating-point dust
+    violations: list[Violation] = []
+    if abs(total - 100.0) > tolerance_pp:
+        violations.append(Violation(
+            code="allocation_sum",
+            detail=(
+                f"class target_pct values sum to {total:.4g}% "
+                f"(deviation {total - 100.0:+.4g}pp from 100%; "
+                f"tolerance ±{tolerance_pp}pp)."
+            ),
+        ))
+    return AllocationSumResult(total_pct=total, violations=tuple(violations))
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: US-situs estate-exposure invariant (proposed-buys only)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class UsSitusResult:
+    """Result for the US-situs new-exposure check.
+
+    Only proposed NEW buys are evaluated; existing holdings are out of scope
+    (the deploy-verifier doctrine: we cannot unwind history, only gate new flows).
+    """
+    violations: tuple[Violation, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.violations
+
+
+_DEFAULT_SANCTIONED: frozenset[str] = frozenset({"NVDA"})
+
+
+def evaluate_us_situs(
+    holdings_usd: dict[str, float],
+    *,
+    proposed_buys: dict[str, float] | None = None,
+    sanctioned: set[str] | frozenset[str] = _DEFAULT_SANCTIONED,
+    estate_safe_fn: Callable[[str], bool] | None = None,
+) -> UsSitusResult:
+    """Flag NEW unsanctioned US-situs estate exposure introduced by ``proposed_buys``.
+
+    A proposed buy symbol is flagged when ALL of the following hold:
+      1. it is NOT in ``sanctioned`` (NVDA is the one permitted US-situs sleeve);
+      2. it is NOT estate-safe according to ``estate_safe_fn`` (i.e. it is US-situs).
+
+    ``estate_safe_fn(sym) -> bool`` — injected for tests; production uses the canonical
+    ``argosy.services.instrument_reference.lookup`` in-memory table (no network).
+    ``holdings_usd`` is accepted (for call-site symmetry) but never inspected here —
+    existing holdings are outside this gate's remit.
+
+    Why proposed-buys only: we cannot retroactively unwind existing positions, so the
+    actionable gate is on NEW flows only (deploy-verifier doctrine).
+    """
+    if estate_safe_fn is None:
+        from argosy.services.instrument_reference import lookup as _ref
+
+        def estate_safe_fn(sym: str) -> bool:  # type: ignore[misc]
+            ref = _ref(sym)
+            if ref is None:
+                return True  # unknown → assume safe (fail-open for unknowns)
+            return bool(ref.estate_safe)
+
+    sanctioned_upper = frozenset(s.upper() for s in sanctioned)
+    violations: list[Violation] = []
+    for sym in (proposed_buys or {}):
+        if sym.upper() in sanctioned_upper:
+            continue
+        if not estate_safe_fn(sym):
+            violations.append(Violation(
+                code="us_situs",
+                detail=(
+                    f"{sym} is a US-situs instrument (not estate-safe) and is not in the "
+                    f"sanctioned set {sorted(sanctioned_upper)}. "
+                    "Buying this introduces new US-domiciled estate exposure."
+                ),
+            ))
+    return UsSitusResult(violations=tuple(violations))
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: composed invariant aggregator
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class InvariantReport:
+    """Aggregated result from all active invariant checks.
+
+    ``parts`` maps check-name -> individual result object (for introspection).
+    ``ok`` is True iff no violations across ALL checks run.
+    """
+    ok: bool
+    violations: tuple[Violation, ...]
+    parts: dict  # str -> AllocationSumResult | RiskKernelResult | UsSitusResult
+
+
+def evaluate_plan_invariants(
+    doc,
+    *,
+    holdings_usd: dict[str, float] | None = None,
+    proposed_buys: dict[str, float] | None = None,
+    cap_pct: float | None = None,
+    effective_fn: Callable[[str, float], float] = _default_effective_fn,
+    estate_safe_fn: Callable[[str], bool] | None = None,
+) -> InvariantReport:
+    """Composed aggregator: run all active deterministic invariant checks and collect
+    every violation into a single ``InvariantReport``.
+
+    Checks always run:
+      * single-name look-through cap against the plan's TARGET allocation
+      * allocation-sum (must sum to 100% within tolerance)
+
+    Checks run only when holdings context is provided:
+      * us_situs — proposed-buy US-situs estate-exposure gate
+
+    ``ok`` is True iff ALL checks pass (no violations anywhere).
+    """
+    all_violations: list[Violation] = []
+    parts: dict = {}
+
+    # 1. Single-name look-through cap on the plan TARGET
+    cap_result = evaluate_plan_target_single_name_cap(
+        doc, cap_pct=cap_pct, effective_fn=effective_fn,
+    )
+    parts["single_name_cap"] = cap_result
+    all_violations.extend(cap_result.violations)
+
+    # 2. Allocation sum
+    sum_result = evaluate_allocation_sum(doc)
+    parts["allocation_sum"] = sum_result
+    all_violations.extend(sum_result.violations)
+
+    # 3. US-situs (only when holdings context supplied)
+    if holdings_usd is not None or proposed_buys is not None:
+        situs_result = evaluate_us_situs(
+            holdings_usd=holdings_usd or {},
+            proposed_buys=proposed_buys,
+            estate_safe_fn=estate_safe_fn,
+        )
+        parts["us_situs"] = situs_result
+        all_violations.extend(situs_result.violations)
+
+    return InvariantReport(
+        ok=not all_violations,
+        violations=tuple(all_violations),
+        parts=parts,
+    )
+
+
 __all__ = [
-    "Violation", "RiskKernelResult", "evaluate_single_name_cap",
-    "target_holdings_from_doc", "evaluate_plan_target_single_name_cap",
+    "Violation",
+    "RiskKernelResult",
+    "AllocationSumResult",
+    "UsSitusResult",
+    "InvariantReport",
+    "evaluate_single_name_cap",
+    "target_holdings_from_doc",
+    "evaluate_plan_target_single_name_cap",
+    "evaluate_allocation_sum",
+    "evaluate_us_situs",
+    "evaluate_plan_invariants",
 ]
