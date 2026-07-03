@@ -1,6 +1,6 @@
 # Handover — 2026-07-03 · fleet-authors last mile (SHIPPED to master + live-proven)
 
-**Branch:** merged to `master` · **HEAD:** `10deedf` · tree clean.
+**Branch:** merged to `master` · **HEAD:** `e2c2dbd` · tree clean.
 Prime directive: the fleet-authors / determinism-verifies pivot
 ([[feedback_fleet_authors_determinism_verifies]]). Backend runs in a persistent
 terminal (see §6).
@@ -10,8 +10,19 @@ terminal (see §6).
 ## 1. START HERE — what's true now
 
 The pivot's last mile is **built, merged, and PROVEN LIVE against a real `claude.exe`.**
-The fleet AUTHORS the cash-deployment allocation; determinism VERIFIES it. It is
-behind `deployment_author_enabled` (default **off**), fully additive on `/deploy-cash`.
+The fleet AUTHORS the cash-deployment allocation; determinism VERIFIES it. It is now
+`deployment_author_enabled` **default ON** (proven + reversible — additive on
+`/deploy-cash`, degrades to the deterministic engine, flip off via the env var; an
+autouse conftest guard keeps it off in tests so no suite-hang on live calls).
+
+**NVDA-avoidance fix (2026-07-03, live before/after):** the author was declining EVERY
+under-target US-equity sleeve (the four largest plan gaps) because the book is 58.5%
+NVDA — a bad call: NVDA over-concentration is the SELL SCHEDULE's job, not a reason to
+refuse US buys ([[feedback_deployment_must_be_exposure_aware]]). Fixed in the prompt
+CONCENTRATION rule + the route `user_constraints`. After the fix the author fills all
+eight sleeves weighted by gap (US core largest), first attempt, ~53s. UI now shows
+`ticker · New/Add · value · reason` (authored buys carry `is_new`; per-buy justification
+required + UI fallback).
 
 **Live proof (real data, zero injected inputs):** given Argosy's own detected idle
 cash ($170,980), the author produced an ACCEPTED, verified allocation in ~90–130s,
@@ -69,6 +80,12 @@ Argosy — now Argosy does it itself, gated.
   `rationale` on any active disposition as REVISION_REQUIRED, so the author→verify→
   bounce loop re-authors until the move is explained — an ACCEPTED proposal can no
   longer ship without reasoning. Prompt got an explicit "ALWAYS fill rationale" rule.
+- ⬜ **Inbox / period-directive integration (Ariel asked):** the authored allocation
+  lives on `/deploy-cash` today; it should also surface as proactive **inbox actions**
+  (the push-not-pull contract, §1.6). `argosy/services/period_directive.py` is the
+  shared composition point the inbox + directive card + `/deploy-cash` all read — route
+  the authored buys through it so they appear as inbox actions, not only on the deploy
+  surface. Not started.
 - ⬜ **Off-plan redeployment (needs Ariel's decision):** the author only deploys
   *fresh cash*. The book carries an "Individual Stocks (non-NVDA, to redeploy)" bucket
   at ~7.3% (target 0% — BRK/B, GOOG, AMZN, RKT…). Letting the author *propose trims*
