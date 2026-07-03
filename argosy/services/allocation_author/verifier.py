@@ -66,7 +66,6 @@ def verify_allocation_proposal(
     known = {s.upper() for s in (packet.get("known_symbols") or set())}
     holdings = packet.get("holdings") or {}
     deployable = float(packet.get("deployable_usd") or 0.0)
-    cgt = float(packet.get("cgt_liability_usd") or 0.0)
 
     def _held(sym: str) -> float:
         return float(holdings.get(sym, holdings.get(sym.upper(), 0.0)) or 0.0)
@@ -80,7 +79,6 @@ def verify_allocation_proposal(
     for _label, _val in (
         ("cash_to_deploy", proposal.cash_to_deploy),
         ("cash_to_reserve", proposal.cash_to_reserve),
-        ("cash_reserved_for_tax", proposal.cash_reserved_for_tax),
     ):
         if _val < -0.01:
             fails.append(GateFailure(
@@ -132,24 +130,17 @@ def verify_allocation_proposal(
             "revision"))
     # Sell proceeds ADD to the funds being allocated (e.g. a deconcentration trim
     # frees cash to redeploy/reserve). Credit them so proceeds can't silently vanish
-    # from the books: deploy+reserve+tax must equal deployable + total sell proceeds.
+    # from the books: deploy+reserve must equal deployable + total sell proceeds.
+    # (No tax term — CGT on a sale is paid from that sale, not pre-reserved here.)
     sells_sum = round(sum(s.amount_usd for s in proposal.sells), 2)
     available = round(deployable + sells_sum, 2)
-    total = round(proposal.cash_to_deploy + proposal.cash_to_reserve
-                  + proposal.cash_reserved_for_tax, 2)
+    total = round(proposal.cash_to_deploy + proposal.cash_to_reserve, 2)
     if available > 0 and abs(total - available) > _MONEY_EPS:
         _proceeds = f" + sells ${sells_sum:,.0f}" if sells_sum else ""
         fails.append(GateFailure(
             "conservation",
-            f"deploy+reserve+tax ${total:,.0f} != deployable ${deployable:,.0f}"
+            f"deploy+reserve ${total:,.0f} != deployable ${deployable:,.0f}"
             f"{_proceeds} (available ${available:,.0f}).",
-            "revision"))
-
-    if cgt > 0 and proposal.cash_reserved_for_tax <= 0:
-        fails.append(GateFailure(
-            "tax_reserve",
-            f"A CGT/tax liability of ~${cgt:,.0f} is pending but no cash was reserved "
-            "for it (cash_reserved_for_tax=0).",
             "revision"))
 
     for b in proposal.buys:

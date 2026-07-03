@@ -15,7 +15,7 @@ from argosy.services.allocation_author.reliable import (
 )
 
 _PACKET = {
-    "deployable_usd": 180_000.0, "cgt_liability_usd": 100_000.0,
+    "deployable_usd": 180_000.0,
     "holdings": {"SCHD": 264_000.0}, "known_symbols": {"EXUS", "SPMV"},
     "plan_menu": [], "nvda": {"pct": 60.0, "cap_pct": 30.0},
     "reserve": {"shortfall_usd": 0.0}, "instrument_facts": [],
@@ -25,9 +25,9 @@ _PACKET = {
 
 def _good():
     return AllocationProposal(
-        cash_to_deploy=80_000.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="EXUS", amount_usd=50_000.0, sleeve="ex-US", claimed_us_weight=0.0),
-              Buy(symbol="SPMV", amount_usd=30_000.0, sleeve="US low-vol", claimed_us_weight=1.0)],
+        cash_to_deploy=180_000.0,
+        buys=[Buy(symbol="EXUS", amount_usd=120_000.0, sleeve="ex-US", claimed_us_weight=0.0),
+              Buy(symbol="SPMV", amount_usd=60_000.0, sleeve="US low-vol", claimed_us_weight=1.0)],
     )
 
 
@@ -166,4 +166,4 @@ def test_run_author_with_timeout_returns_output_on_success():
     out = _run_author_with_timeout(
         lambda: _FastAgent(), _PACKET, None, hard_timeout_s=5.0, killer=lambda: None,
     )
-    assert out.cash_to_deploy == 80_000.0
+    assert out.cash_to_deploy == 180_000.0

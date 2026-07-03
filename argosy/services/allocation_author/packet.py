@@ -26,7 +26,6 @@ def build_decision_packet(
     holdings_usd: dict[str, float],
     deployable_usd: float,
     cash_usd: float | None = None,
-    cgt_liability_usd: float = 0.0,
     reserve_target_usd: float = 0.0,
     reserve_current_usd: float = 0.0,
     nvda_lookthrough_usd: float | None = None,
@@ -106,7 +105,6 @@ def build_decision_packet(
     return {
         "deployable_usd": float(deployable_usd),
         "total_cash_usd": float(cash_usd) if cash_usd is not None else None,
-        "cgt_liability_usd": float(cgt_liability_usd),
         "holdings": holdings_usd,
         "known_symbols": known,
         "plan_menu": plan_menu,

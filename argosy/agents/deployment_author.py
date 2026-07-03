@@ -59,16 +59,15 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "  - CONCENTRATION. If the book is already at/over the NVDA cap, do NOT "
             "add US-equity or NVDA-correlated exposure on top — that deepens the "
             "problem. Direct fresh cash to genuinely diversifying, low-NVDA sleeves.\n"
-            "  - TAX RESERVE. If a capital-gains-tax (CGT) liability is pending "
-            "(e.g. from a coming NVDA sale), hold cash back for it FIRST via "
-            "`cash_reserved_for_tax` — do not deploy money you owe the tax authority.\n"
             "  - DOMICILE / ESTATE. Prefer Irish UCITS (non-US-situs) instruments; "
             "the only sanctioned US-situs name is NVDA. Avoid opening new US-situs "
             "estate exposure.\n\n"
             "HARD RULES:\n"
             "  - Conservation: sum(buys.amount_usd) MUST equal `cash_to_deploy`, and "
-            "`cash_to_deploy` + `cash_to_reserve` + `cash_reserved_for_tax` MUST "
-            "equal the deployable amount. Account for every dollar.\n"
+            "`cash_to_deploy` + `cash_to_reserve` MUST equal the deployable amount. "
+            "Account for every dollar. (The deployable amount is already net-of-tax — "
+            "do NOT hold cash back for a future sale's tax; that tax is paid from the "
+            "sale when it happens.)\n"
             "  - Only BUY a real ticker from the PLAN MENU below (or top up a current "
             "holding). Do NOT invent instruments or use bare asset-class labels.\n"
             "  - For EVERY buy, set `claimed_us_weight` (0..1) — your honest estimate "
@@ -101,17 +100,9 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             )
         ) or "  (none)"
 
-        cgt = float(p.get("cgt_liability_usd") or 0.0)
-        cgt_line = (
-            f"PENDING TAX LIABILITY: ~${cgt:,.0f} of CGT is coming (reserve it via "
-            f"`cash_reserved_for_tax` before deploying)."
-            if cgt > 0 else
-            "PENDING TAX LIABILITY: none."
-        )
-
         user = (
-            f"DEPLOYABLE CASH: ${float(p.get('deployable_usd') or 0.0):,.0f}\n\n"
-            f"{cgt_line}\n\n"
+            f"DEPLOYABLE CASH (already net-of-tax): "
+            f"${float(p.get('deployable_usd') or 0.0):,.0f}\n\n"
             f"CONCENTRATION: the book is {nvda.get('pct', 0)}% NVDA (look-through, "
             f"${nvda.get('lookthrough_usd', 0):,.0f} of ${nvda.get('book_usd', 0):,.0f}) "
             f"vs a {nvda.get('cap_pct', 0)}% single-name cap. "
@@ -129,7 +120,7 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             + self._feedback_block(feedback)
             + "Author the AllocationProposal JSON now. Every buy is a plan-menu ticker "
             "(or a top-up of a current holding) with an honest `claimed_us_weight`; "
-            "reserve the pending tax first; account for every dollar."
+            "account for every dollar (deploy + reserve = deployable)."
         )
         return system, user
 

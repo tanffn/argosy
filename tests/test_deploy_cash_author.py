@@ -106,7 +106,7 @@ def test_authored_unavailable_is_degraded(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_missing_cgt_adds_caveat(monkeypatch):
+def test_packet_carries_no_tax_reserve_field(monkeypatch):
     _patch_doc(monkeypatch)
     _enable(monkeypatch)
 
@@ -126,9 +126,9 @@ def test_missing_cgt_adds_caveat(monkeypatch):
         "argosy.services.allocation_author.reliable.authored_allocation", fake_author
     )
     client = TestClient(create_app())
-    # No pending_cgt_usd → caveat present and packet cgt is 0.
     a = client.get("/api/portfolio/deploy-cash", params={"cash_usd": 180000}).json()["authored"]
-    assert any("pending_cgt_usd" in n for n in a["notes"])
-    assert captured["packet"]["cgt_liability_usd"] == 0.0
+    # No tax-reserve concept anywhere: not in the packet, not in the DTO.
+    assert "cgt_liability_usd" not in captured["packet"]
+    assert "cash_reserved_for_tax" not in a
     from argosy.config import get_settings
     get_settings.cache_clear()

@@ -455,7 +455,6 @@ class AuthoredAllocationDTO(BaseModel):
     attempts: int = 0
     cash_to_deploy: float = 0.0
     cash_to_reserve: float = 0.0
-    cash_reserved_for_tax: float = 0.0
     buys: list[AuthoredBuyDTO] = []
     sells: list[AuthoredSellDTO] = []
     holds: list[str] = []
@@ -486,7 +485,6 @@ def authored_outcome_to_dto(outcome, *, extra_notes: list[str] | None = None) ->
     if p is not None:
         dto.cash_to_deploy = float(p.cash_to_deploy)
         dto.cash_to_reserve = float(p.cash_to_reserve)
-        dto.cash_reserved_for_tax = float(p.cash_reserved_for_tax)
         dto.buys = [
             AuthoredBuyDTO(
                 symbol=b.symbol, amount_usd=float(b.amount_usd), sleeve=b.sleeve,

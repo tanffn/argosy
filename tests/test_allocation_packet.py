@@ -42,10 +42,8 @@ def test_packet_carries_verifier_fields():
         doc=_doc(),
         holdings_usd={"SCHD": 264_000.0, "NVDA": 500_000.0},
         deployable_usd=180_000.0,
-        cgt_liability_usd=100_000.0,
     )
     assert pkt["deployable_usd"] == 180_000.0
-    assert pkt["cgt_liability_usd"] == 100_000.0
     assert pkt["holdings"] == {"SCHD": 264_000.0, "NVDA": 500_000.0}
     # known_symbols = plan tickers ∪ holdings, upper-cased (verifier gate).
     assert {"EXUS", "SPMV", "EIMI", "SCHD", "NVDA"} <= pkt["known_symbols"]

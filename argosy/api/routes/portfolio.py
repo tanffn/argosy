@@ -1520,17 +1520,6 @@ def get_deploy_cash(
             "Requires the deployment_fleet_review_enabled master switch."
         ),
     ),
-    pending_cgt_usd: float | None = Query(
-        None, ge=0.0,
-        description=(
-            "Pending capital-gains-tax liability (USD) the fleet author must reserve "
-            "before deploying — e.g. from a scheduled NVDA sale. Only used when the "
-            "deployment_author_enabled pivot is on. Omit to run WITHOUT an auto tax "
-            "reserve (the author DTO carries a caveat that none was computed); the "
-            "figure is not auto-derived to avoid a silent under-reserve on the money "
-            "path."
-        ),
-    ),
     db: Session = Depends(get_db),
 ) -> DeploymentPlanDTO:
     """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
@@ -1728,14 +1717,6 @@ def get_deploy_cash(
             from argosy.services.allocation_author.reliable import authored_allocation
             from argosy.services.contracts import authored_outcome_to_dto
 
-            _notes: list[str] = []
-            _cgt = float(pending_cgt_usd or 0.0)
-            if pending_cgt_usd is None:
-                _notes.append(
-                    "No pending-CGT reserve was supplied (pending_cgt_usd); the author "
-                    "did not hold cash back for tax. Pass pending_cgt_usd for a "
-                    "scheduled sale so the reserve is enforced."
-                )
             # Feed REAL NVDA look-through (CSPX/R1GR/FWRA re-buying NVDA is invisible
             # to raw holdings["NVDA"]) so the author reasons over TRUE concentration —
             # a core reason the deterministic engine lost. Best-effort.
@@ -1750,7 +1731,7 @@ def get_deploy_cash(
                 _log.warning("deploy_cash.lookthrough_failed", error=str(exc)[:120])
             packet = build_decision_packet(
                 doc=doc, holdings_usd=holdings, deployable_usd=amount,
-                cash_usd=snap_cash, cgt_liability_usd=_cgt,
+                cash_usd=snap_cash,
                 nvda_cap_pct=float(getattr(doc, "nvda_cap_pct", 0.0) or 0.0),
                 nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
                 user_constraints=(
@@ -1760,7 +1741,7 @@ def get_deploy_cash(
                 ),
             )
             outcome = authored_allocation(packet, user_id=user_id)
-            dto.authored = authored_outcome_to_dto(outcome, extra_notes=_notes)
+            dto.authored = authored_outcome_to_dto(outcome)
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(
                 "deploy_cash.author_failed", user_id=user_id, error=str(exc),

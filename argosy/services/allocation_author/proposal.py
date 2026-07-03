@@ -33,9 +33,13 @@ class AllocationProposal(BaseModel):
     # Non-negativity is a schema invariant AND re-checked in the verifier (the
     # authoritative money gate): a negative reserve must never be able to balance an
     # over-deploy through the pure-equality conservation checks.
+    #
+    # There is deliberately NO tax-reserve field. Capital-gains tax on a sale is paid
+    # from that sale's own proceeds when it is realized — you do not pre-fund a future
+    # sale's tax out of unrelated deployment cash. The deployable amount is treated as
+    # already net-of-tax.
     cash_to_deploy: float = Field(ge=0.0)
     cash_to_reserve: float = Field(default=0.0, ge=0.0)
-    cash_reserved_for_tax: float = Field(default=0.0, ge=0.0)
     buys: list[Buy] = Field(default_factory=list)
     sells: list[Sell] = Field(default_factory=list)
     holds: list[str] = Field(default_factory=list)

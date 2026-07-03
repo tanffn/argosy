@@ -16,7 +16,6 @@ from argosy.services.allocation_author.verifier import GateStatus, verify_alloca
 def _packet(**over):
     p = {
         "deployable_usd": 180_000.0,
-        "cgt_liability_usd": 100_000.0,   # a pending NVDA sale will owe ~$100k CGT
         "holdings": {"SCHD": 264_000.0, "NVDA": 2_296_000.0},
         "known_symbols": {"FUSA", "SPMV", "EXUS", "FWRA", "CSPX", "SCHD", "NVDA", "VEUR"},
     }
@@ -25,14 +24,15 @@ def _packet(**over):
 
 
 def _ok_proposal():
-    # Deploys most, reserves for the CGT bill, buys a TRUE ex-US fund (EXUS us≈0).
+    # Deploys the full net-of-tax amount into a TRUE ex-US fund (EXUS us≈0) + a
+    # low-vol sleeve. No tax reserve — CGT is paid from the sale that realizes it.
     return AllocationProposal(
-        cash_to_deploy=80_000.0, cash_to_reserve=0.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="EXUS", amount_usd=50_000.0, sleeve="International developed (ex-US)",
+        cash_to_deploy=180_000.0, cash_to_reserve=0.0,
+        buys=[Buy(symbol="EXUS", amount_usd=130_000.0, sleeve="International developed (ex-US)",
                   justification="true ex-US diversification", claimed_us_weight=0.0),
-              Buy(symbol="SPMV", amount_usd=30_000.0, sleeve="US low-volatility",
+              Buy(symbol="SPMV", amount_usd=50_000.0, sleeve="US low-volatility",
                   justification="uncovered low-vol factor", claimed_us_weight=1.0)],
-        sells=[], holds=[], rationale="diversify ex-US; reserve for CGT",
+        sells=[], holds=[], rationale="diversify ex-US",
     )
 
 
@@ -45,8 +45,8 @@ def test_fwra_treated_as_exus_is_bounced():
     """The exact failure: buying FWRA and calling it ex-US, when the registry knows
     FWRA is ~62% US. Must be REVISION_REQUIRED, not accepted."""
     p = AllocationProposal(
-        cash_to_deploy=80_000.0, cash_to_reserve=0.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="FWRA", amount_usd=80_000.0,
+        cash_to_deploy=180_000.0, cash_to_reserve=0.0,
+        buys=[Buy(symbol="FWRA", amount_usd=180_000.0,
                   sleeve="International developed (ex-US)",
                   justification="ex-US diversification", claimed_us_weight=0.0)],
         sells=[], holds=[], rationale="x",
@@ -54,14 +54,6 @@ def test_fwra_treated_as_exus_is_bounced():
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.REVISION_REQUIRED
     assert any("FWRA" in f.detail and "US" in f.detail for f in r.failures)
-
-
-def test_missing_tax_reserve_is_bounced():
-    p = _ok_proposal()
-    p = p.model_copy(update={"cash_reserved_for_tax": 0.0, "cash_to_deploy": 180_000.0})
-    r = verify_allocation_proposal(p, _packet())
-    assert r.status == GateStatus.REVISION_REQUIRED
-    assert any("tax" in f.detail.lower() or "cgt" in f.detail.lower() for f in r.failures)
 
 
 def test_conservation_failure_is_bounced():
@@ -103,7 +95,7 @@ def test_negative_reserve_balancing_overdeploy_is_blocked():
     equality checks. Built via model_construct to simulate a schema bypass — the
     verifier must BLOCK it regardless (it's the authoritative money gate)."""
     p = AllocationProposal.model_construct(
-        cash_to_deploy=180_100.0, cash_to_reserve=-100.0, cash_reserved_for_tax=0.0,
+        cash_to_deploy=180_100.0, cash_to_reserve=-100.0,
         buys=[Buy.model_construct(symbol="EXUS", amount_usd=180_100.0, sleeve="ex-US",
                                   justification="", claimed_us_weight=0.0)],
         sells=[], holds=[], rationale="",
@@ -129,8 +121,8 @@ def test_fwra_evasion_via_neutral_sleeve_still_caught():
     with no 'ex-US' words. Omitting claimed_us_weight now trips missing_us_weight;
     supplying a false 0.0 trips lookthrough_claim. Either way it can't pass ACCEPT."""
     omitted = AllocationProposal(
-        cash_to_deploy=80_000.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="FWRA", amount_usd=80_000.0, sleeve="Global diversifier",
+        cash_to_deploy=180_000.0,
+        buys=[Buy(symbol="FWRA", amount_usd=180_000.0, sleeve="Global diversifier",
                   justification="adds non-NVDA breadth", claimed_us_weight=None)],
     )
     r1 = verify_allocation_proposal(omitted, _packet())
@@ -147,13 +139,12 @@ def test_fwra_evasion_via_neutral_sleeve_still_caught():
 
 
 def test_sell_proceeds_credited_to_conservation():
-    """A deconcentration sell adds to the funds allocated: deploy+reserve+tax must
-    equal deployable + proceeds. A proposal that redeploys the proceeds balances;
-    one that ignores them fails conservation."""
-    # deployable 180k + sell 50k = 230k available; deploy 130k + reserve 0 + tax 100k.
+    """A deconcentration sell adds to the funds allocated: deploy+reserve must equal
+    deployable + proceeds. Redeploying the proceeds balances; ignoring them fails."""
+    # deployable 180k + sell 50k = 230k available; deploy all 230k.
     ok = AllocationProposal(
-        cash_to_deploy=130_000.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="EXUS", amount_usd=130_000.0, sleeve="ex-US",
+        cash_to_deploy=230_000.0,
+        buys=[Buy(symbol="EXUS", amount_usd=230_000.0, sleeve="ex-US",
                   claimed_us_weight=0.0)],
         sells=[Sell(symbol="NVDA", amount_usd=50_000.0, reason="deconcentrate")],
     )
@@ -162,8 +153,8 @@ def test_sell_proceeds_credited_to_conservation():
 
     # Same sell but only the original 180k is placed → 50k proceeds vanish.
     leak = ok.model_copy(update={
-        "cash_to_deploy": 80_000.0,
-        "buys": [Buy(symbol="EXUS", amount_usd=80_000.0, sleeve="ex-US",
+        "cash_to_deploy": 180_000.0,
+        "buys": [Buy(symbol="EXUS", amount_usd=180_000.0, sleeve="ex-US",
                      claimed_us_weight=0.0)],
     })
     r_leak = verify_allocation_proposal(leak, _packet())

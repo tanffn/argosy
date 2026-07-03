@@ -11,23 +11,23 @@ from argosy.services.allocation_author.flow import AuthorOutcome, run_allocation
 from argosy.services.allocation_author.proposal import AllocationProposal, Buy
 
 _PACKET = {
-    "deployable_usd": 180_000.0, "cgt_liability_usd": 100_000.0,
+    "deployable_usd": 180_000.0,
     "holdings": {"SCHD": 264_000.0}, "known_symbols": {"EXUS", "SPMV", "FWRA"},
 }
 
 
 def _good():
     return AllocationProposal(
-        cash_to_deploy=80_000.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="EXUS", amount_usd=50_000.0, sleeve="ex-US", claimed_us_weight=0.0),
-              Buy(symbol="SPMV", amount_usd=30_000.0, sleeve="US low-vol", claimed_us_weight=1.0)],
+        cash_to_deploy=180_000.0,
+        buys=[Buy(symbol="EXUS", amount_usd=120_000.0, sleeve="ex-US", claimed_us_weight=0.0),
+              Buy(symbol="SPMV", amount_usd=60_000.0, sleeve="US low-vol", claimed_us_weight=1.0)],
     )
 
 
 def _bad_fwra():
     return AllocationProposal(
-        cash_to_deploy=80_000.0, cash_reserved_for_tax=100_000.0,
-        buys=[Buy(symbol="FWRA", amount_usd=80_000.0, sleeve="ex-US", claimed_us_weight=0.0)],
+        cash_to_deploy=180_000.0,
+        buys=[Buy(symbol="FWRA", amount_usd=180_000.0, sleeve="ex-US", claimed_us_weight=0.0)],
     )
 
 
