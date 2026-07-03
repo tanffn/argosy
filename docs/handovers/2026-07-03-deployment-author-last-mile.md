@@ -1,6 +1,6 @@
 # Handover — 2026-07-03 · fleet-authors last mile (SHIPPED to master + live-proven)
 
-**Branch:** merged to `master` · **HEAD:** `6c066d5` · tree clean.
+**Branch:** merged to `master` · **HEAD:** `10deedf` · tree clean.
 Prime directive: the fleet-authors / determinism-verifies pivot
 ([[feedback_fleet_authors_determinism_verifies]]). Backend runs in a persistent
 terminal (see §6).
@@ -58,22 +58,35 @@ Argosy — now Argosy does it itself, gated.
 
 ## 3. NEXT — what's genuinely left
 
-- ⬜ **UI:** render `dto.authored` on the deploy surface (primary when accepted; a
-  clear "degraded — deterministic fallback" banner + the labelled `tiers` otherwise).
-  Still the biggest gap — the feature is API-only today.
-- ⬜ **Off-plan redeployment:** the author only deploys *fresh cash*. The book carries
-  an "Individual Stocks (non-NVDA, to redeploy)" bucket at ~7.3% (target 0% — BRK/B,
-  GOOG, AMZN, RKT…). Consider letting the author *propose trims* of these toward the
-  plan (it can emit `sells`; the verifier already credits sell proceeds to
-  conservation). A real next step, ask Ariel before enabling sell-authoring by default.
-- ⬜ **Rationale robustness:** `rationale` came back empty on one run (LLM variance).
-  Consider making it non-optional / retry-if-blank so a money recommendation always
-  carries its reasoning.
+- ✅ **UI (shipped):** `DeployCashCard` renders `dto.authored`. Accepted → the
+  authored allocation is the PRIMARY block (buys/sells/holds + cash split + rationale
+  + "fleet-authored · verifier-approved" badge) and the deterministic tiers demote to
+  a collapsed reference. Degraded (rejected/unavailable) → a loud "Degraded —
+  deterministic fallback" banner (with gate failures) while the labelled `tiers` stay
+  primary. `authored=null` (pivot off) → unchanged. Read-only for now (see below).
+  Frontend types + 3 tests added.
+- ✅ **Rationale robustness (shipped):** the verifier bounces a blank/whitespace
+  `rationale` on any active disposition as REVISION_REQUIRED, so the author→verify→
+  bounce loop re-authors until the move is explained — an ACCEPTED proposal can no
+  longer ship without reasoning. Prompt got an explicit "ALWAYS fill rationale" rule.
+- ⬜ **Off-plan redeployment (needs Ariel's decision):** the author only deploys
+  *fresh cash*. The book carries an "Individual Stocks (non-NVDA, to redeploy)" bucket
+  at ~7.3% (target 0% — BRK/B, GOOG, AMZN, RKT…). Letting the author *propose trims*
+  (emit `sells`; the verifier already credits sell proceeds to conservation) expands
+  its authority to selling existing positions — **ask before enabling by default.**
+- ⬜ **Action the authored buys:** the UI renders `dto.authored` read-only; the
+  per-line Accept/Defer decision ledger still lives on the demoted deterministic tiers.
+  Wiring Accept/Defer onto the authored buys (persisted allocation_actions) is a
+  money-semantics step — do it after the off-plan decision, together.
 - ⬜ **api_key backend:** no key in this env, so the money path runs on the flaky
   `claude_code` CLI (contained by the wrapper). Set `deployment_author_backend="api_key"`
   once a key exists → subprocess-free, no exit-1 storms.
 - ⬜ **Full suite (~3.5h) not run** this session; touched clusters green (author +
-  packet + reliable + verifier + flow + engine + deploy-cash all pass).
+  packet + reliable + verifier + flow + deploy-cash-author + UI). NOTE:
+  `test_deploy_cash_route.py::test_deploy_cash_returns_tiered_plan` fails in this env
+  **pre-existing** (unrelated to this work — confirmed by stashing): the engine
+  returns only a `core` tier on a `deploy_funnel.quote_miss` (no live quotes / DB
+  data), so the 4-tier assertion fails. Data-dependent, not a code regression.
 
 ## 4. Reviews
 
