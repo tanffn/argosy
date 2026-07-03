@@ -1459,7 +1459,10 @@ class BaseAgent(Generic[T]):
         Tests override this method directly to return a `ModelCall` stub
         without exercising either backend.
         """
-        backend = get_settings().anthropic.backend
+        # Per-instance backend override (money-path reliability wrapper sets this
+        # so the deployment author can run on the direct api_key backend — no
+        # flaky claude.exe subprocess — independently of the global default).
+        backend = getattr(self, "_backend_override", None) or get_settings().anthropic.backend
         if backend == "claude_code":
             return await self._call_via_claude_code(
                 system=system,
