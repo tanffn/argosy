@@ -279,3 +279,112 @@ class TestOverrideValidationErrors:
         assert total == pytest.approx(100.0, abs=0.05)
         result = {c.label: c.target_pct for c in alloc.classes}
         assert result["US broad-market core"] == pytest.approx(80.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 6. Rationale consistency — overall_rationale must use POST-override values
+# ---------------------------------------------------------------------------
+
+class TestRationaleConsistency:
+    """overall_rationale must quote the same fi_pct / nvda_pct as the
+    TargetAllocation struct fields (post-override), not the pre-override derived
+    values. The DeploymentAuthorAgent reads overall_rationale for plan-fit, so
+    stale numbers would mislead it."""
+
+    def test_fi_pct_quoted_in_rationale_matches_struct_fi_pct(self) -> None:
+        # Override the cash FI sleeve to a value that differs from the derived one.
+        # The reported fi_pct on the struct = cash_override + bonds_renorm.
+        cash_label = "Cash & T-bills (incl. ILS tranche)"
+        alloc = build_target_allocation(authored_overrides={cash_label: 12.0})
+        # The struct's fi_pct is the post-override sum of both FI sub-sleeves.
+        struct_fi = alloc.fi_pct
+        # The overall_rationale must contain the post-override fi_pct value.
+        rationale = alloc.overall_rationale
+        fi_str = f"{struct_fi:.1f}"
+        assert fi_str in rationale, (
+            f"overall_rationale quotes a stale fi_pct; expected '{fi_str}' "
+            f"(post-override struct fi_pct) to appear in:\n{rationale}"
+        )
+
+    def test_nvda_pct_quoted_in_rationale_matches_struct_nvda_pct(self) -> None:
+        # Override NVDA to a value that differs from the 12% default.
+        nvda_label = "Strategic single-stock (NVDA)"
+        alloc = build_target_allocation(authored_overrides={nvda_label: 9.0})
+        struct_nvda = alloc.nvda_pct
+        rationale = alloc.overall_rationale
+        nvda_str = f"{struct_nvda:.0f}"
+        assert nvda_str in rationale, (
+            f"overall_rationale quotes a stale nvda_pct; expected '{nvda_str}' "
+            f"(post-override struct nvda_pct={struct_nvda}) to appear in:\n{rationale}"
+        )
+
+    def test_no_override_rationale_fi_consistent(self) -> None:
+        # Sanity: without overrides the rationale and struct must also agree.
+        alloc = build_target_allocation()
+        fi_str = f"{alloc.fi_pct:.1f}"
+        assert fi_str in alloc.overall_rationale
+
+
+# ---------------------------------------------------------------------------
+# 7. Sum guard — hard ValueError on sum breach
+# ---------------------------------------------------------------------------
+
+class TestSumGuard:
+    """The internal sum guard must raise ValueError (not assert, which is
+    suppressible under python -O). Valid allocations must pass the tight 1e-6
+    tolerance without raising."""
+
+    def test_valid_allocation_does_not_raise(self) -> None:
+        # Normal path: engine-derived allocation is always balanced.
+        alloc = build_target_allocation()
+        total = sum(c.target_pct for c in alloc.classes)
+        assert total == pytest.approx(100.0, abs=0.05)
+
+    def test_valid_override_does_not_raise(self) -> None:
+        # An override that keeps the sum at 100 must not raise.
+        alloc = build_target_allocation(authored_overrides={"US growth tilt (ex-NVDA)": 8.0})
+        total = sum(c.target_pct for c in alloc.classes)
+        assert total == pytest.approx(100.0, abs=0.05)
+
+    def test_sum_guard_raises_value_error_not_assertion_error(self) -> None:
+        # Verify the sum guard is a hard ValueError (not a suppressible assert).
+        # Strategy: inspect the function source to confirm no bare `assert` guards
+        # the sum, AND verify the guard fires as ValueError by forcing the bad-sum
+        # branch via monkeypatching builtins.sum inside the module.
+        import builtins
+        import inspect
+        from unittest.mock import patch
+        from argosy.services import allocation_plan
+
+        src = inspect.getsource(allocation_plan._apply_authored_overrides)
+        # The old guard was: assert abs(sum(result.values()) - 100.0) < 0.1
+        # It must have been replaced by a ValueError raise.
+        assert "assert abs(sum(result" not in src, (
+            "Sum guard must not use a bare assert (suppressible under python -O)"
+        )
+        assert "ValueError" in src, "Sum guard must raise ValueError"
+
+        # Also confirm a valid call through the override path does not raise.
+        weights = {"A": 50.0, "B": 30.0, "C": 20.0}
+        result = allocation_plan._apply_authored_overrides(weights, {"A": 45.0})
+        assert abs(sum(result.values()) - 100.0) < 1e-6
+
+        # Force the guard to fire: patch builtins.sum so the guard's _total
+        # computation returns 95.0 for the result dict produced inside the function.
+        real_sum = builtins.sum
+        call_count = {"n": 0}
+
+        def patched_sum(iterable, *args, **kwargs):
+            # Return a bad total only for the specific result-dict values() call
+            # inside _apply_authored_overrides (heuristic: the 3rd dict-values sum
+            # in a call that has overrides). For safety, return 95.0 only once.
+            if call_count["n"] == 0:
+                call_count["n"] += 1
+                return 95.0
+            return real_sum(iterable, *args, **kwargs)
+
+        with patch.object(builtins, "sum", patched_sum):
+            with pytest.raises(ValueError, match="allocation weights sum to"):
+                allocation_plan._apply_authored_overrides(
+                    {"A": 50.0, "B": 30.0, "C": 20.0}, {"A": 45.0}
+                )

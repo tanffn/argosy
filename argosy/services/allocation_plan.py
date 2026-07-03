@@ -588,6 +588,16 @@ def _apply_authored_overrides(
     - All sleeves are overridden but their sum is not ≈ 100 → ValueError.
 
     When no overrides, returns ``weights`` unchanged (purity: identical path).
+
+    Sigma anchor: an authored override MAY move the portfolio's blended_sigma
+    off the derived anchor; this is intentional for option-B authored allocation.
+    The engine respects the override and reports the resulting blended_sigma. It
+    is the downstream risk/invariant gate's job to flag a sigma-anchor breach —
+    not the engine's to warn or clamp.
+
+    CASH_FRAC_OF_FI: the 70/30 cash/short-IG split is NOT re-enforced when only
+    one FI sub-sleeve is overridden granularly (accepted limitation of granular
+    authored overrides).
     """
     if not authored_overrides:
         return weights
@@ -643,9 +653,11 @@ def _apply_authored_overrides(
                 # Degenerate: all non-overridden sleeves had 0 weight; split evenly.
                 result[lbl] = remainder / len(non_overridden)
 
-    assert abs(sum(result.values()) - 100.0) < 0.1, (
-        f"Post-override weights do not sum to ~100: {sum(result.values()):.4f}"
-    )
+    _total = sum(result.values())
+    if abs(_total - 100.0) > 1e-6:
+        raise ValueError(
+            f"allocation weights sum to {_total:.8f}, expected 100.0"
+        )
     return result
 
 
@@ -750,6 +762,9 @@ def build_target_allocation(
     # TargetAllocation summary fields stay consistent with the class target_pcts.
     reported_fi_pct = round(cash_pct + bonds_pct, 2)
     reported_nvda_pct = round(weights[_NVDA_SLEEVE.label], 2)
+    reported_alternatives_pct = (
+        round(weights[_ALTERNATIVES_LABEL], 2) if alternatives_pct > 0 else 0.0
+    )
 
     # Report blended sigma on the SAME unrounded weights the FI solver certified
     # against the anchor — computing it from the 2dp-rounded class target_pcts
@@ -761,15 +776,15 @@ def build_target_allocation(
         alt_sigma=alternatives_sigma if alternatives_pct > 0 else None,
     )
     alts_clause = (
-        f"a {alternatives_pct:.1f}% team-sourced Alternatives sleeve (σ {alternatives_sigma:.3f}), "
+        f"a {reported_alternatives_pct:.1f}% team-sourced Alternatives sleeve (σ {alternatives_sigma:.3f}), "
         if alternatives_pct > 0
         else "no Alternatives sleeve (team sized it to 0%), "
     )
     overall = (
         f"Reconciled target for the deployable book at the end of the 2-year "
-        f"deconcentration. Total equity ~{100 - fi_pct - alternatives_pct:.0f}% (return "
+        f"deconcentration. Total equity ~{100 - reported_fi_pct - reported_alternatives_pct:.0f}% (return "
         f"engine + income/quality core + international + a min-vol damper), NVDA "
-        f"{nvda_pct:.0f}% just under the 13% cap, {alts_clause}FI/cash {fi_pct:.1f}% "
+        f"{reported_nvda_pct:.0f}% just under the 13% cap, {alts_clause}FI/cash {reported_fi_pct:.1f}% "
         f"DERIVED as the minimum weight at which the COVARIANCE-blended sigma "
         f"{blended:.4f} sits on the {anchor_sigma} anchor. The anchor is phase-aware: "
         f"in accumulation (salary covers expenses, no withdrawals) it is the 0.18 "
