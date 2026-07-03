@@ -3510,6 +3510,98 @@ def post_draft_accept(
     )
 
 
+# ---------------------------------------------------------------------------
+# Plan rollback endpoint — revert current plan to a prior superseded version.
+# ---------------------------------------------------------------------------
+
+
+class RollbackRequest(BaseModel):
+    user_id: str = "ariel"
+    target_version_id: int
+
+
+class RollbackResponse(BaseModel):
+    status: str
+    restored_version_id: int
+    message: str
+
+
+@router.post("/rollback", response_model=RollbackResponse)
+def post_plan_rollback(
+    req: RollbackRequest,
+    db: Session = Depends(get_db),
+) -> RollbackResponse:
+    """Revert the current plan to a previously-accepted (superseded) version.
+
+    This is a role flip against existing rows — superseded rows are never
+    deleted, so rollback is safe and atomic. The target must already be
+    role='superseded'; drafts and baselines cannot be rolled back to.
+
+    NOTE: this does NOT re-run the promote/coherence gate. The target version
+    was previously the 'current' plan (i.e. it was already fully vetted and
+    promoted by the accept handler), so re-running the gate would be redundant.
+    The operation is audit-logged via a 'plan.draft.rolled_back' event with
+    user_id, from_version, and to_version.
+
+    Idempotency/safety:
+      - target already current → 400 "already current"
+      - target doesn't exist / wrong user → 404
+      - target is draft/baseline → 400
+      - the current→superseded and superseded→current flips are performed in a
+        single db.commit() so no intermediate state is ever visible (atomicity).
+    """
+    from argosy.state.queries import get_current_plan
+
+    target = db.get(PlanVersion, req.target_version_id)
+    if target is None or target.user_id != req.user_id:
+        raise HTTPException(status_code=404, detail="version not found for user")
+
+    if target.role == "current":
+        raise HTTPException(
+            status_code=400,
+            detail="target version is already current — rollback not needed",
+        )
+
+    if target.role != "superseded":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"can only roll back to a superseded version; "
+                f"target has role='{target.role}' (must be 'superseded')"
+            ),
+        )
+
+    now = datetime.now(timezone.utc)
+    prior_current = get_current_plan(db, req.user_id)
+    from_version_id: int | None = None
+    if prior_current is not None:
+        from_version_id = prior_current.id
+        prior_current.role = "superseded"
+        prior_current.superseded_at = now
+
+    target.role = "current"
+    target.accepted_at = now
+    db.commit()
+
+    _publish(
+        "plan.draft.rolled_back",
+        {
+            "user_id": req.user_id,
+            "from_version_id": from_version_id,
+            "to_version_id": target.id,
+        },
+    )
+
+    return RollbackResponse(
+        status="rolled_back",
+        restored_version_id=target.id,
+        message=(
+            f"Plan rolled back to version {target.id}"
+            + (f" from version {from_version_id}" if from_version_id else "")
+        ),
+    )
+
+
 def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
     """Split a GateVerdict's violations into (blocking, warned) using the same
     enforce/warn policy the /accept handler applies. Extracted so BOTH the
