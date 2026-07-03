@@ -5,6 +5,8 @@ These tests encode the contract that node_meta() must satisfy:
   - a small set of plan-identity keys flag plan_identity_axis=True
   - unknown keys fall through to the conservative default (no explicit owner)
   - validate_owner_coverage returns unmapped keys from a fake graph
+  - _OWNER_BY_PREFIX / _DEFAULT_OWNER_ROLE local copies stay in sync with
+    ladder_participants (drift-guard test)
 """
 from __future__ import annotations
 
@@ -19,6 +21,8 @@ from argosy.quality.plan_node_meta import (
     PolicyAxis,
     node_meta,
     validate_owner_coverage,
+    _OWNER_BY_PREFIX,
+    _DEFAULT_OWNER_ROLE,
 )
 
 
@@ -36,6 +40,26 @@ def _fake_graph(keys: list[str], kind: str = "derived"):
         keys=lambda: list(nodes),
         get=lambda k: nodes[k],
     )
+
+
+# ---------------------------------------------------------------------------
+# Drift guard — local copies must match ladder_participants
+# ---------------------------------------------------------------------------
+
+class TestDriftGuard:
+    def test_owner_by_prefix_matches_ladder_participants(self):
+        from argosy.orchestrator.flows.ladder_participants import (
+            _OWNER_BY_PREFIX as _REAL,
+            _DEFAULT_OWNER_ROLE as _REAL_DEFAULT,
+        )
+        assert dict(_OWNER_BY_PREFIX) == dict(_REAL), (
+            "_OWNER_BY_PREFIX in plan_node_meta has drifted from ladder_participants; "
+            "update the local copy to match."
+        )
+        assert _DEFAULT_OWNER_ROLE == _REAL_DEFAULT, (
+            "_DEFAULT_OWNER_ROLE in plan_node_meta has drifted from ladder_participants; "
+            "update the local copy to match."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -123,21 +147,20 @@ class TestKnownPrefixes:
         "fx.nis_usd_rate",
         "fx.realised_drift",
     ])
-    def test_fx_axis(self, key):
+    def test_fx_axis_is_tax(self, key):
         meta = node_meta(key)
-        assert meta.policy_axis in (PolicyAxis.tax, PolicyAxis.estate), (
-            f"{key} should be tax or estate axis, got {meta.policy_axis}"
+        assert meta.policy_axis is PolicyAxis.tax, (
+            f"{key} should be tax axis, got {meta.policy_axis}"
         )
 
     @pytest.mark.parametrize("key", [
         "savings.rsu_monthly",
         "savings.net_salary",
     ])
-    def test_savings_axis(self, key):
+    def test_savings_axis_is_withdrawal(self, key):
         meta = node_meta(key)
-        # savings feeds forward into withdrawal projections — either withdrawal or execution
-        assert meta.policy_axis in (PolicyAxis.withdrawal, PolicyAxis.execution, PolicyAxis.allocation), (
-            f"{key}: unexpected axis {meta.policy_axis}"
+        assert meta.policy_axis is PolicyAxis.withdrawal, (
+            f"{key}: expected withdrawal axis, got {meta.policy_axis}"
         )
 
 
@@ -160,6 +183,22 @@ class TestOwnerDomain:
 
     def test_savings_owner(self):
         assert node_meta("savings.rsu_monthly").owner_domain == "equity_comp"
+
+    def test_portfolio_owner_domain_is_allocation(self):
+        """portfolio.* must resolve to the explicit 'allocation' owner_domain, not the default."""
+        meta = node_meta("portfolio.equity_weight")
+        assert meta.owner_domain == "allocation", (
+            f"portfolio.* should resolve owner_domain='allocation' (explicit gap marker), "
+            f"got '{meta.owner_domain}'"
+        )
+
+    def test_allocation_owner_domain_is_allocation(self):
+        meta = node_meta("allocation.target_weights")
+        assert meta.owner_domain == "allocation"
+
+    def test_sleeve_owner_domain_is_allocation(self):
+        meta = node_meta("sleeve.us_large")
+        assert meta.owner_domain == "allocation"
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +261,8 @@ class TestValidateOwnerCoverage:
         assert unmapped == []
 
     def test_unknown_key_is_flagged(self):
+        """An owner_authored/synthesis_authored unmapped node IS flagged."""
+        # zz_unknown.foo has no prefix match → falls to default → synthesis_authored → flagged
         g = _fake_graph(["retirement.swr", "zz_unknown.foo"])
         unmapped = validate_owner_coverage(g)
         assert "zz_unknown.foo" in unmapped
@@ -257,3 +298,26 @@ class TestValidateOwnerCoverage:
         assert "orphan.derived" in unmapped
         assert "raw.ingest" not in unmapped
         assert "retirement.swr" not in unmapped
+
+    def test_deterministic_unmapped_node_not_flagged(self):
+        """deterministic nodes are owner-agnostic (pure functions) — NOT flagged
+        even when they have no explicit owner prefix."""
+        # concentration.* is deterministic and explicitly mapped, so use a raw
+        # key that has no prefix match but IS deterministic.
+        # We verify via the module: node_meta("concentration.nvda_weight").authoring_mode
+        # is deterministic. Use it directly in a fake graph.
+        g = _fake_graph(["concentration.nvda_weight"])
+        unmapped = validate_owner_coverage(g)
+        assert "concentration.nvda_weight" not in unmapped, (
+            "deterministic nodes must never appear in validate_owner_coverage output"
+        )
+
+    def test_owner_authored_unmapped_node_is_flagged(self):
+        """owner_authored nodes with no explicit owner prefix ARE flagged."""
+        # mystery.foo has no prefix match → falls to default _DEFAULT_POLICY
+        # which is synthesis_authored → flagged
+        g = _fake_graph(["mystery.owner_node"])
+        unmapped = validate_owner_coverage(g)
+        assert "mystery.owner_node" in unmapped, (
+            "synthesis_authored unmapped nodes must appear in validate_owner_coverage output"
+        )

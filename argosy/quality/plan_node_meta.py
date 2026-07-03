@@ -13,13 +13,23 @@ WHY THIS EXISTS:
   deterministic, prefix-policy table.
 
 DESIGN CHOICES:
-  * We reuse _OWNER_BY_PREFIX and _DEFAULT_OWNER_ROLE from ladder_participants
-    rather than duplicating them — those are the canoncial ownership anchors.
+  * _OWNER_BY_PREFIX and _DEFAULT_OWNER_ROLE are DELIBERATELY DUPLICATED here
+    (not imported from ladder_participants) so this module stays import-pure
+    (ladder_participants has side-effectful agent imports).  The duplicates MUST
+    be kept in sync with ladder_participants; the drift-guard test in
+    tests/test_plan_node_meta.py will fail if they diverge.
+  * _LOCAL_OWNER_EXTENSIONS maps additional prefix→owner domains that are
+    known to this module but not yet wired in ladder_participants (e.g. the
+    "allocation" topic-owner agent, which is not yet built).  These are NOT
+    subject to the drift guard.
   * Unknown keys fall through to a CONSERVATIVE DEFAULT (synthesis_authored,
     default owner) — fail-closed so validate_owner_coverage can surface gaps.
   * plan_identity_axis keys are EXPLICIT and small — only keys whose change
     would invalidate the plan's core identity (risk posture, objective, residency).
     These are NOT derived from the prefix table; they are named individually.
+    plan_identity_axis=True is an OVERRIDE: the downstream tier classifier MUST
+    check this flag FIRST (before authoring_mode) — a plan-identity change always
+    escalates to full rebuild regardless of authoring_mode.
 """
 from __future__ import annotations
 
@@ -94,6 +104,10 @@ class NodeMeta:
                               invalidates the plan's core identity (risk posture,
                               objective, tax residency).  Changes to these ALWAYS
                               require a full rebuild + user confirmation.
+                              OVERRIDE: the downstream tier classifier MUST check
+                              this flag FIRST (before authoring_mode) — a
+                              plan-identity change always escalates to full rebuild
+                              regardless of authoring_mode.
       hard_verdict_severity — Severity when a hard verdict fires on this node, or
                               None if this node has no hard verdict gate.
     """
@@ -107,20 +121,54 @@ class NodeMeta:
 
 
 # ---------------------------------------------------------------------------
-# Ownership anchors — reused from ladder_participants (do not duplicate)
+# Ownership anchors — deliberately duplicated from ladder_participants for
+# import-purity (ladder_participants has side-effectful agent imports).
+# MUST be kept in sync with ladder_participants; the drift-guard test will
+# fail on divergence.  Do NOT add new entries here — use _LOCAL_OWNER_EXTENSIONS
+# for domains that are not yet wired in ladder_participants.
 # ---------------------------------------------------------------------------
 
-# Copied by reference so this module stays pure (no import of the LLM-wiring
-# module which has side-effectful agent imports).  If _OWNER_BY_PREFIX or
-# _DEFAULT_OWNER_ROLE change in ladder_participants, update here too.
 _DEFAULT_OWNER_ROLE = "withdrawal_sequencer"
 
-_OWNER_BY_PREFIX: tuple[tuple[str, str], ...] = (
-    ("retirement.", "withdrawal_sequencer"),
-    ("spend.",      "household_budget"),
-    ("concentration.", "concentration"),
-    ("fx.",         "fx"),
-    ("savings.",    "equity_comp"),
+# Sorted longest-prefix-first so the loop is unambiguous (longest match wins).
+_OWNER_BY_PREFIX: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        (
+            ("retirement.", "withdrawal_sequencer"),
+            ("spend.",      "household_budget"),
+            ("concentration.", "concentration"),
+            ("fx.",         "fx"),
+            ("savings.",    "equity_comp"),
+        ),
+        key=lambda t: len(t[0]),
+        reverse=True,
+    )
+)
+
+# Additional owner domains known to this module but not yet wired in
+# ladder_participants (e.g. allocation topic-owner agent not yet built).
+# NOT subject to the drift guard.  Sorted longest-prefix-first.
+_LOCAL_OWNER_EXTENSIONS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        (
+            # allocation topic-owner agent not yet built (known gap); domain
+            # is named here so coverage validation sees these as explicitly mapped.
+            ("portfolio.",  "allocation"),
+            ("allocation.", "allocation"),
+            ("sleeve",      "allocation"),
+        ),
+        key=lambda t: len(t[0]),
+        reverse=True,
+    )
+)
+
+# Combined lookup: _OWNER_BY_PREFIX first, then extensions. Sorted longest-first.
+_ALL_OWNER_PREFIXES: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        _OWNER_BY_PREFIX + _LOCAL_OWNER_EXTENSIONS,
+        key=lambda t: len(t[0]),
+        reverse=True,
+    )
 )
 
 
@@ -166,6 +214,8 @@ _PREFIX_POLICY: tuple[tuple[str, _PrefixPolicy], ...] = (
         hard_verdict_severity=HardVerdictSeverity.plan_basis,
     )),
     # ---- allocation / portfolio / sleeve --------------------------------- #
+    # allocation topic-owner agent not yet built (known gap); domain named
+    # explicitly so the policy table is consistent with _LOCAL_OWNER_EXTENSIONS.
     ("portfolio.", _PrefixPolicy(
         policy_axis=PolicyAxis.allocation,
         authoring_mode=AuthoringMode.owner_authored,
@@ -188,17 +238,17 @@ _PREFIX_POLICY: tuple[tuple[str, _PrefixPolicy], ...] = (
         rebuild_boundary=False,
         hard_verdict_severity=HardVerdictSeverity.localized,
     )),
-    # ---- FX — tax/estate (non-NZ/UK domicile; estate exposure) ---------- #
+    # ---- FX — tax axis (domicile / §102 calculations) ------------------- #
     ("fx.", _PrefixPolicy(
-        policy_axis=PolicyAxis.estate,  # FX feeds estate/domicile calculations primarily
+        policy_axis=PolicyAxis.tax,
         authoring_mode=AuthoringMode.deterministic,
         boundary_id="fx",
         rebuild_boundary=False,
         hard_verdict_severity=HardVerdictSeverity.localized,
     )),
-    # ---- savings / equity comp ------------------------------------------ #
+    # ---- savings / equity comp — feeds withdrawal/FI projection ---------- #
     ("savings.", _PrefixPolicy(
-        policy_axis=PolicyAxis.execution,
+        policy_axis=PolicyAxis.withdrawal,
         authoring_mode=AuthoringMode.deterministic,
         boundary_id="savings",
         rebuild_boundary=False,
@@ -250,20 +300,26 @@ def node_meta(key: str) -> NodeMeta:
       3. Conservative default (_DEFAULT_OWNER_ROLE, synthesis_authored).
 
     Pure and deterministic — no I/O, no LLM, no DB.
+
+    NOTE: plan_identity_axis=True is an OVERRIDE.  The downstream tier
+    classifier MUST check this flag FIRST (before authoring_mode) — a
+    plan-identity change always escalates to full rebuild regardless of
+    authoring_mode.
     """
     is_identity = key in _PLAN_IDENTITY_KEYS
 
-    # Longest-prefix match
+    # Longest-prefix match against policy table
     policy: _PrefixPolicy | None = None
-    matched_owner: str | None = None
     for prefix, ppol in _SORTED_POLICY:
         if key.startswith(prefix):
             policy = ppol
             break
 
-    # Owner domain — use the _OWNER_BY_PREFIX table (same source as
-    # ladder_participants._owner_role_for, replicated here to stay pure).
-    for prefix, owner in _OWNER_BY_PREFIX:
+    # Owner domain — longest-prefix match against combined owner table
+    # (_OWNER_BY_PREFIX synced with ladder_participants + _LOCAL_OWNER_EXTENSIONS
+    # for domains not yet wired there).  Already sorted longest-first.
+    matched_owner: str | None = None
+    for prefix, owner in _ALL_OWNER_PREFIXES:
         if key.startswith(prefix):
             matched_owner = owner
             break
@@ -285,7 +341,13 @@ def node_meta(key: str) -> NodeMeta:
 
 
 def validate_owner_coverage(graph: Any) -> list[str]:
-    """Return keys that are non-INPUT and fall through to the default owner mapping.
+    """Return keys that are non-INPUT, owner_authored or synthesis_authored,
+    and fall through to the default owner mapping.
+
+    Deterministic nodes are owner-agnostic (pure functions) and are NOT
+    flagged even if they have no explicit owner prefix — only nodes where
+    LLM judgment is involved (owner_authored / synthesis_authored) require
+    a bounded owner assignment.
 
     These are nodes with NO explicit bounded owner — the caller should treat
     this as a fail-loud condition (fail-closed: an unowned mutable node is a
@@ -297,7 +359,8 @@ def validate_owner_coverage(graph: Any) -> list[str]:
 
     Returns:
         List of node keys that resolve to the conservative default (no explicit
-        prefix match in _OWNER_BY_PREFIX).  Empty list = full coverage.
+        prefix match in _ALL_OWNER_PREFIXES) AND whose authoring_mode is
+        owner_authored or synthesis_authored.  Empty list = full coverage.
     """
     unmapped: list[str] = []
     for key in graph.keys():
@@ -306,8 +369,12 @@ def validate_owner_coverage(graph: Any) -> list[str]:
         # bounded owner is needed (the user/ingest pipeline IS the owner).
         if getattr(node.kind, "value", node.kind) == "input":
             continue
+        # Deterministic nodes are pure functions — owner-agnostic, not flagged.
+        meta = node_meta(key)
+        if meta.authoring_mode is AuthoringMode.deterministic:
+            continue
         # Check if the key falls through the ownership table to the default.
-        matched = any(key.startswith(prefix) for prefix, _ in _OWNER_BY_PREFIX)
+        matched = any(key.startswith(prefix) for prefix, _ in _ALL_OWNER_PREFIXES)
         if not matched:
             unmapped.append(key)
     return unmapped
