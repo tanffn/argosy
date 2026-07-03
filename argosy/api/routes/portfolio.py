@@ -1747,13 +1747,19 @@ def get_deploy_cash(
                 nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
                 current_pct_by_sleeve=_cur_by_sleeve,
                 user_constraints=(
-                    "Earliest safe retirement is the prime directive; reduce NVDA "
-                    "toward the plan cap (do not add US/NVDA-correlated exposure on a "
-                    "concentrated book); prefer Irish UCITS / estate-safe diversifiers."
+                    "Earliest safe retirement is the prime directive. NVDA single-name "
+                    "over-concentration is handled by the plan's SCHEDULED SELLS, not by "
+                    "refusing equity buys — so fill the plan's under-target sleeves by "
+                    "gap, INCLUDING its US-equity sleeves; a broad fund's incidental "
+                    "few-percent NVDA look-through is not a reason to decline it. Only "
+                    "avoid instruments that are themselves NVDA-heavy / single-name "
+                    "concentrated. Prefer Irish UCITS / estate-safe instruments."
                 ),
             )
             outcome = authored_allocation(packet, user_id=user_id)
-            dto.authored = authored_outcome_to_dto(outcome)
+            dto.authored = authored_outcome_to_dto(
+                outcome, held_symbols={s.upper() for s in holdings},
+            )
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(
                 "deploy_cash.author_failed", user_id=user_id, error=str(exc),

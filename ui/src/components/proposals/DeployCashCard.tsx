@@ -489,13 +489,31 @@ function AuthoredAllocationBlock({ authored }: { authored: AuthoredAllocationDTO
                   <div className="text-xs text-muted-foreground">{b.sleeve}</div>
                 )}
               </div>
-              <div className="w-24 shrink-0 font-semibold tabular-nums leading-tight">
-                {fmtMoney(b.amount_usd)}
+              <div className="w-28 shrink-0">
+                <div className="font-semibold tabular-nums leading-tight">
+                  {fmtMoney(b.amount_usd)}
+                </div>
+                <span
+                  title={
+                    b.is_new
+                      ? "Opens a position you don't currently hold"
+                      : "Adds to a position you already hold"
+                  }
+                  className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    b.is_new
+                      ? "bg-emerald-500/15 text-emerald-600"
+                      : "bg-sky-500/15 text-sky-600"
+                  }`}
+                >
+                  {b.is_new ? "New" : "Add"}
+                </span>
               </div>
               <div className="min-w-0 flex-1">
-                {b.justification && (
-                  <div className="text-sm leading-snug">{b.justification}</div>
-                )}
+                {/* Per-line reason: the author's justification, falling back to the
+                    sleeve so the column is never blank. */}
+                <div className="text-sm leading-snug">
+                  {b.justification || b.sleeve || "—"}
+                </div>
                 {b.claimed_us_weight !== null && (
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     {`Look-through US weight: ${fmtUsWeight(b.claimed_us_weight)}`}

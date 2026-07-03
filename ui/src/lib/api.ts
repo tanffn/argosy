@@ -667,6 +667,8 @@ export interface AuthoredBuyDTO {
   sleeve: string;
   justification: string;
   claimed_us_weight: number | null;
+  /** true = opens a new position; false = tops up an existing holding. */
+  is_new: boolean;
 }
 
 /** One fleet-authored sell (off-plan trim). The verifier credits sell proceeds

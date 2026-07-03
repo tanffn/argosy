@@ -428,6 +428,9 @@ class AuthoredBuyDTO(BaseModel):
     sleeve: str = ""
     justification: str = ""
     claimed_us_weight: float | None = None
+    # True = opens a position not currently held; False = tops up an existing one.
+    # Derived at mapping time from the caller's holdings (not authored by the LLM).
+    is_new: bool = False
 
 
 class AuthoredSellDTO(BaseModel):
@@ -464,10 +467,17 @@ class AuthoredAllocationDTO(BaseModel):
     notes: list[str] = []
 
 
-def authored_outcome_to_dto(outcome, *, extra_notes: list[str] | None = None) -> "AuthoredAllocationDTO":
+def authored_outcome_to_dto(
+    outcome,
+    *,
+    extra_notes: list[str] | None = None,
+    held_symbols: set[str] | None = None,
+) -> "AuthoredAllocationDTO":
     """Map an ``AuthorOutcome`` (accepted/rejected/unavailable) to the DTO the UI
     renders. On a non-accepted outcome ``degraded`` is set so the caller's
-    deterministic ``tiers`` are surfaced as the labelled fallback."""
+    deterministic ``tiers`` are surfaced as the labelled fallback. ``held_symbols``
+    (upper-cased tickers currently held) drives each buy's ``is_new`` flag."""
+    _held = {s.upper() for s in (held_symbols or set())}
     p = getattr(outcome, "proposal", None)
     rep = getattr(outcome, "report", None)
     degraded = outcome.status != "accepted"
@@ -489,6 +499,7 @@ def authored_outcome_to_dto(outcome, *, extra_notes: list[str] | None = None) ->
             AuthoredBuyDTO(
                 symbol=b.symbol, amount_usd=float(b.amount_usd), sleeve=b.sleeve,
                 justification=b.justification, claimed_us_weight=b.claimed_us_weight,
+                is_new=b.symbol.upper() not in _held,
             )
             for b in p.buys
         ]

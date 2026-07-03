@@ -95,9 +95,9 @@ const ACCEPTED_AUTHORED: AuthoredAllocationDTO = {
   buys: [
     { symbol: "EXUS", amount_usd: 70000, sleeve: "Ex-US developed",
       justification: "most under-target sleeve; real ex-US diversification",
-      claimed_us_weight: 0.0 },
+      claimed_us_weight: 0.0, is_new: true },
     { symbol: "EIMI", amount_usd: 40000, sleeve: "Emerging markets",
-      justification: "adds EM the book lacks", claimed_us_weight: 0.05 },
+      justification: "adds EM the book lacks", claimed_us_weight: 0.05, is_new: false },
   ],
   sells: [],
   holds: ["NVDA"],
