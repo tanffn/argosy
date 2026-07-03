@@ -223,6 +223,37 @@ _PREFIX_POLICY: tuple[tuple[str, _PrefixPolicy], ...] = (
         rebuild_boundary=False,
         hard_verdict_severity=HardVerdictSeverity.localized,
     )),
+    # allocation.sleeve_target.* — deterministic INPUT nodes.  These are the
+    # user-supplied ratio seeds for each sleeve.  A SUPPLIED change to one of
+    # these is a deterministic edit (the new value IS the new target; no LLM
+    # authoring is needed) so it must NOT fire missing_owner_for_changed_node.
+    # Longer prefix (26 chars) wins over "allocation." (11 chars).
+    ("allocation.sleeve_target.", _PrefixPolicy(
+        policy_axis=PolicyAxis.allocation,
+        authoring_mode=AuthoringMode.deterministic,
+        boundary_id="allocation",
+        rebuild_boundary=False,
+        hard_verdict_severity=None,
+    )),
+    # allocation.normalized — derived renormalization; deterministic recipe,
+    # no LLM judgment.  Longer prefix (22 chars) wins over "allocation." (11).
+    ("allocation.normalized", _PrefixPolicy(
+        policy_axis=PolicyAxis.allocation,
+        authoring_mode=AuthoringMode.deterministic,
+        boundary_id="allocation",
+        rebuild_boundary=False,
+        hard_verdict_severity=None,
+    )),
+    # allocation.single_name_cap — structural policy; changing it affects risk
+    # constraints globally, so mark as rebuild_boundary.  Longer prefix (27
+    # chars) wins over "allocation." (11 chars).
+    ("allocation.single_name_cap", _PrefixPolicy(
+        policy_axis=PolicyAxis.concentration,
+        authoring_mode=AuthoringMode.deterministic,
+        boundary_id="concentration",
+        rebuild_boundary=True,
+        hard_verdict_severity=HardVerdictSeverity.plan_basis,
+    )),
     ("allocation.", _PrefixPolicy(
         policy_axis=PolicyAxis.allocation,
         authoring_mode=AuthoringMode.owner_authored,

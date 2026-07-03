@@ -4789,6 +4789,112 @@ def get_plan_export(
     )
 
 
+# ---------------------------------------------------------------------------
+# Plan refinement preview — POST /api/plan/refine
+# Read-only: hydrates the live graph, runs the blast-radius + invariant
+# classifiers, returns the decision DTO. NO mutation, NO promotion, NO LLM.
+# ---------------------------------------------------------------------------
+
+
+class RefineChange(BaseModel):
+    node_key: str
+    new_value: float | str | None = None
+    supplies_value: bool = True
+
+
+class RefineRequest(BaseModel):
+    user_id: str = "ariel"
+    changes: list[RefineChange]
+    dry_run: bool = True
+
+
+class RefineDecisionDTO(BaseModel):
+    tier: str
+    reason: str
+    forced_by_invariant: bool
+    dirtied_count: int
+    owner_domains: list[str]
+    invariant_ok: bool | None
+    invariant_violations: list[str]
+    summary: str
+
+
+@router.post("/refine", response_model=RefineDecisionDTO)
+def post_plan_refine(
+    req: RefineRequest,
+    db: Session = Depends(get_db),
+) -> RefineDecisionDTO:
+    """Preview the blast radius + tier for a proposed set of plan node changes.
+
+    dry_run=True (default and only supported mode): hydrates the live graph,
+    classifies the change set, returns a RefineDecisionDTO. Nothing is written.
+
+    dry_run=False: returns HTTP 501 — mutation is not yet enabled.
+    """
+    if not req.dry_run:
+        raise HTTPException(
+            status_code=501,
+            detail="dry_run=False (mutation/promotion) is not yet enabled; "
+                   "this endpoint is preview-only. Send dry_run=true.",
+        )
+
+    from argosy.orchestrator.flows.incremental_plan import build_base_graph
+    from argosy.quality.blast_radius import ChangeRequest as BlastChangeRequest
+    from argosy.quality.refinement import run_refinement, summary as refinement_summary
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, req.user_id)
+    decision_run_id = (pv.decision_run_id if pv is not None else None) or 0
+
+    try:
+        graph = build_base_graph(db, req.user_id, decision_run_id=decision_run_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not hydrate plan graph for user '{req.user_id}': {exc}",
+        ) from exc
+
+    pre_doc = None
+    if pv is not None:
+        try:
+            pre_doc = load_plan_target_allocation(pv)
+        except Exception:
+            pass
+
+    crs = [
+        BlastChangeRequest(
+            node_key=ch.node_key,
+            new_value=ch.new_value,
+            supplies_value=ch.supplies_value,
+        )
+        for ch in req.changes
+    ]
+
+    try:
+        decision = run_refinement(graph, crs, pre_doc=pre_doc)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    br = decision.blast_radius
+    inv_ok: bool | None = None
+    inv_violations: list[str] = []
+    if decision.invariant_report is not None:
+        inv_ok = decision.invariant_report.ok
+        inv_violations = [v.code for v in decision.invariant_report.violations]
+
+    return RefineDecisionDTO(
+        tier=decision.tier.value,
+        reason=decision.reason,
+        forced_by_invariant=decision.forced_by_invariant,
+        dirtied_count=len(br.dirtied_keys),
+        owner_domains=sorted(br.owner_domains),
+        invariant_ok=inv_ok,
+        invariant_violations=inv_violations,
+        summary=refinement_summary(decision),
+    )
+
+
 __all__ = [
     "AcceptResponse",
     "ActionItem",
@@ -4805,6 +4911,9 @@ __all__ = [
     "InFlightSynthesisDTO",
     "InFlightSynthesisResponse",
     "NvdaPaceView",
+    "RefineChange",
+    "RefineDecisionDTO",
+    "RefineRequest",
     "RejectRequest",
     "SynthesisHealth",
     "TakeSpeculativeResponse",
