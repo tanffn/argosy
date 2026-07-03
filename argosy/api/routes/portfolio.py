@@ -1729,11 +1729,23 @@ def get_deploy_cash(
                 _book = _gi.book_usd
             except Exception as exc:  # noqa: BLE001 — fall back to raw holdings NVDA
                 _log.warning("deploy_cash.lookthrough_failed", error=str(exc)[:120])
+            # Canonical current-vs-target attribution (look-through aware) so the
+            # author fills the real under-target sleeves — plan-fit from within.
+            _cur_by_sleeve: dict[str, float] = {}
+            try:
+                from argosy.services.allocation_breakdown import build_allocation_breakdown
+                _snap_row = get_latest_snapshot_row(db, user_id)
+                if _snap_row is not None:
+                    for _cb in build_allocation_breakdown(row_to_snapshot(_snap_row), doc):
+                        _cur_by_sleeve[_cb.label] = float(_cb.current_pct)
+            except Exception as exc:  # noqa: BLE001 — gaps are best-effort
+                _log.warning("deploy_cash.breakdown_failed", error=str(exc)[:120])
             packet = build_decision_packet(
                 doc=doc, holdings_usd=holdings, deployable_usd=amount,
                 cash_usd=snap_cash,
                 nvda_cap_pct=float(getattr(doc, "nvda_cap_pct", 0.0) or 0.0),
                 nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
+                current_pct_by_sleeve=_cur_by_sleeve,
                 user_constraints=(
                     "Earliest safe retirement is the prime directive; reduce NVDA "
                     "toward the plan cap (do not add US/NVDA-correlated exposure on a "

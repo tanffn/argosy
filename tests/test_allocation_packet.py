@@ -96,6 +96,20 @@ def test_instrument_facts_include_lookthrough_for_menu_symbols():
     assert facts["FWRA"]["source"]
 
 
+def test_plan_menu_carries_current_and_gap_when_supplied():
+    # Canonical current-vs-target attribution → per-sleeve gap the author fills from.
+    pkt = build_decision_packet(
+        doc=_doc(), holdings_usd={}, deployable_usd=1000.0,
+        current_pct_by_sleeve={"Ex-US developed": 3.0, "Emerging": 0.0},
+    )
+    menu = {m["sleeve"]: m for m in pkt["plan_menu"]}
+    # Ex-US: target 15, current 3 → gap +12 (under-target).
+    assert menu["Ex-US developed"]["current_pct"] == 3.0
+    assert menu["Ex-US developed"]["gap_to_target_pct"] == 12.0
+    # A sleeve with no supplied current stays gap-less (no fabricated 0).
+    assert "current_pct" not in menu["US low-vol"]
+
+
 def test_policy_signals_and_constraints_pass_through():
     pkt = build_decision_packet(
         doc=_doc(), holdings_usd={}, deployable_usd=1000.0,

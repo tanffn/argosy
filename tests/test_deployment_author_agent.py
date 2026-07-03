@@ -14,10 +14,10 @@ def _packet():
         "holdings": {"NVDA": 600_000.0, "SCHD": 264_000.0},
         "known_symbols": {"EXUS", "SPMV", "EIMI", "NVDA", "SCHD"},
         "plan_menu": [
-            {"sleeve": "Ex-US developed", "target_pct": 15.0,
-             "tickers": ["EXUS"], "domiciles": ["IE"]},
-            {"sleeve": "US low-vol", "target_pct": 20.0,
-             "tickers": ["SPMV"], "domiciles": ["IE"]},
+            {"sleeve": "Ex-US developed", "target_pct": 15.0, "current_pct": 2.7,
+             "gap_to_target_pct": 12.3, "tickers": ["EXUS"], "domiciles": ["IE"]},
+            {"sleeve": "US low-vol", "target_pct": 20.0, "current_pct": 0.0,
+             "gap_to_target_pct": 20.0, "tickers": ["SPMV"], "domiciles": ["IE"]},
         ],
         "nvda": {"lookthrough_usd": 600_000.0, "book_usd": 1_000_000.0,
                  "pct": 60.0, "cap_pct": 30.0},
@@ -57,6 +57,9 @@ def test_prompt_carries_the_judgment_calls():
     # net-of-tax: the prompt must NOT tell the author to pre-reserve a future sale's tax
     assert "net-of-tax" in blob
     assert "cash_reserved_for_tax" not in blob
+    # plan-fit from within: per-sleeve gap shown + instruction to fill under-target first
+    assert "gap" in blob and "under-target" in blob
+    assert "12.3" in user  # the ex-US sleeve's supplied gap
 
 
 def test_revision_prompt_includes_verifier_failures():

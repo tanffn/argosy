@@ -56,9 +56,14 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "  - LOOK-THROUGH, not labels. An all-world / global fund is US-HEAVY "
             "(e.g. FWRA is ~62% US) — it is NOT ex-US diversification. Use the "
             "SOURCED INSTRUMENT FACTS below; never treat a US-heavy fund as ex-US.\n"
+            "  - PLAN FIT. Fill the most UNDER-target sleeves first — use each "
+            "sleeve's gap (target minus current, shown in the plan menu) as your "
+            "guide, spreading across the under-target sleeves rather than piling into "
+            "one. Do not add to an already at/over-target sleeve without a clear reason.\n"
             "  - CONCENTRATION. If the book is already at/over the NVDA cap, do NOT "
             "add US-equity or NVDA-correlated exposure on top — that deepens the "
-            "problem. Direct fresh cash to genuinely diversifying, low-NVDA sleeves.\n"
+            "problem, even if a US sleeve shows an under-target gap. Direct fresh cash "
+            "to the genuinely diversifying, low-NVDA under-target sleeves.\n"
             "  - DOMICILE / ESTATE. Prefer Irish UCITS (non-US-situs) instruments; "
             "the only sanctioned US-situs name is NVDA. Avoid opening new US-situs "
             "estate exposure.\n\n"
@@ -83,10 +88,17 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
         p = packet
         nvda = p.get("nvda") or {}
         reserve = p.get("reserve") or {}
+        def _menu_line(m: dict) -> str:
+            base = (f"  - {m.get('sleeve')}: target {m.get('target_pct')}%")
+            if "current_pct" in m:
+                gap = m.get("gap_to_target_pct", 0.0)
+                base += (f", current {m.get('current_pct')}% "
+                         f"(gap {gap:+.1f}pp {'UNDER' if gap > 0 else 'over'})")
+            base += f" -> tickers {m.get('tickers')} (domicile {m.get('domiciles')})"
+            return base
+
         menu_lines = "\n".join(
-            f"  - {m.get('sleeve')}: target {m.get('target_pct')}% -> "
-            f"tickers {m.get('tickers')} (domicile {m.get('domiciles')})"
-            for m in (p.get("plan_menu") or [])
+            _menu_line(m) for m in (p.get("plan_menu") or [])
         ) or "  (none)"
         facts_lines = "\n".join(
             f"  - {f.get('symbol')}: {f.get('us_weight', 0) * 100:.0f}% US "

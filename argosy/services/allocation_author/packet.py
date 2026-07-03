@@ -31,6 +31,7 @@ def build_decision_packet(
     nvda_lookthrough_usd: float | None = None,
     nvda_cap_pct: float | None = None,
     book_usd: float | None = None,
+    current_pct_by_sleeve: dict[str, float] | None = None,
     policy_signals: dict | None = None,
     user_constraints: str = "",
     extra_known_symbols: set[str] | None = None,
@@ -46,7 +47,12 @@ def build_decision_packet(
     """
     holdings_usd = {k: float(v) for k, v in (holdings_usd or {}).items()}
 
-    # --- plan menu (sleeve → target → tickers → domiciles) ----------------
+    # --- plan menu (sleeve → target → tickers → domiciles → current/gap) --
+    # current_pct_by_sleeve is Argosy's canonical current-vs-target attribution
+    # (from build_allocation_breakdown, look-through aware). Carrying the gap lets
+    # the author fill the most under-target sleeves from real numbers — plan-fit
+    # authored FROM WITHIN, not enforced by a deterministic gate.
+    cur_by = {str(k): float(v) for k, v in (current_pct_by_sleeve or {}).items()}
     plan_menu: list[dict[str, Any]] = []
     menu_symbols: set[str] = set()
     for c in getattr(doc, "classes", []) or []:
@@ -59,13 +65,19 @@ def build_decision_packet(
             tickers.append(sym)
             menu_symbols.add(sym.upper())
             domiciles.append((getattr(inst, "domicile", "") or "").strip())
-        plan_menu.append({
-            "sleeve": getattr(c, "label", ""),
+        label = getattr(c, "label", "")
+        target_pct = float(getattr(c, "target_pct", 0.0) or 0.0)
+        entry = {
+            "sleeve": label,
             "snapshot_category": getattr(c, "snapshot_category", ""),
-            "target_pct": float(getattr(c, "target_pct", 0.0) or 0.0),
+            "target_pct": target_pct,
             "tickers": tickers,
             "domiciles": domiciles,
-        })
+        }
+        if label in cur_by:
+            entry["current_pct"] = round(cur_by[label], 1)
+            entry["gap_to_target_pct"] = round(target_pct - cur_by[label], 1)
+        plan_menu.append(entry)
 
     # --- known symbols (verifier's invented-ticker gate) -------------------
     known = set(menu_symbols)
