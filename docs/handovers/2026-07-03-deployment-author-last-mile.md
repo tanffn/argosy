@@ -71,12 +71,25 @@ verifier 12 (existing), deploy-cash wiring 4 — wait, counts vary; run the clus
 - ⬜ **Full suite (~3.5h) not run** this session; touched areas green. Run before PR.
 - ⬜ Merge `feat/deployment-author-last-mile` → master when the live proof is in.
 
-## 4. Codex/adversarial review
+## 4. Adversarial review — verdict + fixes
 
-Money-path pieces reviewed adversarially this session (re-derived from raw files).
-Codex-tandem's `danger-full-access` sandbox is blocked by the auto-mode classifier;
-used an in-harness adversarial reviewer instead (satisfies "review must re-derive
-blind"). [Verdict + any fixes recorded in the commit log.]
+Money-path pieces reviewed adversarially (re-derived from raw files by a fresh
+reviewer — codex-tandem's `danger-full-access` sandbox is blocked by the auto-mode
+classifier, so an in-harness reviewer was used; satisfies "review must re-derive
+blind"). It found **2 real BLOCKERS, both now fixed** (commit "fix(author): close
+adversarial-review blockers"):
+
+1. **Over-deploy via negative reserve** — the conservation equalities let a negative
+   `cash_to_reserve` balance an over-deploy. Fixed: BLOCK-severity non-negativity in
+   the verifier + `ge=0` on the schema.
+2. **Evadable look-through** — optional `claimed_us_weight` + a dodgeable text
+   heuristic let FWRA pass as diversification. Fixed: `claimed_us_weight` now required
+   on every buy, so the sourced cross-check is un-skippable.
+
+Also fixed from the review: sell-proceeds conservation, fail-closed `known_symbols`,
+and feeding REAL NVDA look-through into the packet. Non-blocking item left open: the
+pending-CGT / net-of-tax-deployable field could double-count if a caller misuses
+`pending_cgt_usd` — documented in the param, durable fix is the CGT calculator (§3).
 
 ## 5. Run the backend
 ```
