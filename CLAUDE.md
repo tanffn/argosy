@@ -44,6 +44,6 @@ Don't trust dated prose for "where we are." Use:
 - `docs/design/SDD.md` §0, §13, §18 — wave roadmap, refreshed regularly.
 - This `CLAUDE.md` only routes; it doesn't track active work.
 
-**Fresh session: start at `docs/handovers/2026-07-02-cash-deployment-and-allocation.md`** — it opens with a plain-English "how cash deployment works", the current gaps, and the next main focus (**allocate Ariel's free ~$170k** — the buy side works; build the NVDA-SELL action into the inbox, glide-paced). Then skim `git log --oneline -25`.
+**Fresh session: start at `docs/handovers/2026-07-03-fleet-authors-pivot.md`** — the prime directive is now the **fleet-authors / determinism-verifies pivot** (a simple LLM prompt beat Argosy's deterministic allocation; invert it). The verifier spine + orchestration are SHIPPED + tested; next is the live `DeploymentAuthorAgent` + the `claude.exe` reliability wrapper (P0). Read memory `feedback_fleet_authors_determinism_verifies`, then skim `git log --oneline -25`.
 
-Prior milestone: Wave EX8 (merchant↔category tab + range-bulk labeling). Tests at ~1,020+ passing under `pytest -m "not llm_eval"`. Migrations 0001–0025 applied.
+Prior milestone: proactive period directive + exposure-aware deployment + the 4-category NVDA sell protocol + the decision funnel exposed as beta (2026-07-02/03).
