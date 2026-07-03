@@ -7,6 +7,7 @@ import {
   api,
   type AllocationActionListItem,
   type AllocationActionRequest,
+  type AuthoredAllocationDTO,
   type DeploymentLineDTO,
   type DeploymentDispositionDTO,
   type DeploymentMarketContextDTO,
@@ -424,6 +425,162 @@ function DeployLineActions({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Fleet-authors / determinism-verifies pivot: render the AUTHORED allocation.
+// When accepted it is the PRIMARY recommendation; the deterministic tiers are
+// demoted to a collapsed reference. When degraded (rejected/unavailable) a loud
+// banner explains why and the deterministic `tiers` become the labelled
+// fallback (their normal rendering).
+// ---------------------------------------------------------------------------
+
+/** Format a claimed look-through US weight (0..1 or 0..100) as a percent. */
+function fmtUsWeight(w: number): string {
+  const pct = w <= 1 ? w * 100 : w;
+  return `${Math.round(pct)}%`;
+}
+
+/** The accepted, verifier-approved fleet-authored allocation — shown as the
+ *  primary recommendation. Read-only for now: the per-line Accept/Defer ledger
+ *  still lives on the (demoted) deterministic tiers below. */
+function AuthoredAllocationBlock({ authored }: { authored: AuthoredAllocationDTO }) {
+  const buys = [...authored.buys].sort((a, b) => b.amount_usd - a.amount_usd);
+  return (
+    <div
+      data-testid="authored-allocation"
+      className="mt-3 rounded-md border border-emerald-300 bg-emerald-50/60 p-3 dark:border-emerald-900 dark:bg-emerald-950/30"
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+          Argosy&apos;s authored allocation
+        </div>
+        <span
+          data-testid="authored-verified-badge"
+          title="The fleet authored this allocation; the deterministic verifier approved it."
+          className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
+        >
+          Fleet-authored · verifier-approved
+        </span>
+      </div>
+
+      <div className="mt-1 text-xs text-muted-foreground">
+        {`Deploying ${fmtMoney(authored.cash_to_deploy)}`}
+        {authored.cash_to_reserve >= 1 &&
+          ` · holding ${fmtMoney(authored.cash_to_reserve)} as cash`}
+      </div>
+
+      {authored.rationale && (
+        <p className="mt-2 text-xs leading-snug text-foreground/90">
+          {authored.rationale}
+        </p>
+      )}
+
+      {/* Buys */}
+      {buys.length > 0 && (
+        <div className="mt-2 divide-y divide-emerald-200/50 rounded-md border border-emerald-200/60 dark:divide-emerald-900/50 dark:border-emerald-900/60">
+          {buys.map((b) => (
+            <div
+              key={`buy-${b.symbol}`}
+              className="flex items-start gap-3 px-3 py-2"
+              data-testid={`authored-buy-${b.symbol}`}
+            >
+              <div className="w-24 shrink-0">
+                <div className="font-semibold leading-tight">{b.symbol}</div>
+                {b.sleeve && (
+                  <div className="text-xs text-muted-foreground">{b.sleeve}</div>
+                )}
+              </div>
+              <div className="w-24 shrink-0 font-semibold tabular-nums leading-tight">
+                {fmtMoney(b.amount_usd)}
+              </div>
+              <div className="min-w-0 flex-1">
+                {b.justification && (
+                  <div className="text-sm leading-snug">{b.justification}</div>
+                )}
+                {b.claimed_us_weight !== null && (
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {`Look-through US weight: ${fmtUsWeight(b.claimed_us_weight)}`}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Sells (off-plan trims) */}
+      {authored.sells.length > 0 && (
+        <div className="mt-2" data-testid="authored-sells">
+          <div className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+            Proposed trims
+          </div>
+          <ul className="mt-1 space-y-1 text-xs">
+            {authored.sells.map((s) => (
+              <li key={`sell-${s.symbol}`} className="flex gap-2">
+                <span className="w-24 shrink-0 font-medium">
+                  {s.symbol} · {fmtMoney(s.amount_usd)}
+                </span>
+                <span className="text-muted-foreground">{s.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Holds */}
+      {authored.holds.length > 0 && (
+        <div className="mt-2 text-xs text-muted-foreground" data-testid="authored-holds">
+          {`Holding unchanged: ${authored.holds.join(", ")}`}
+        </div>
+      )}
+
+      {authored.notes.length > 0 && (
+        <ul className="mt-2 list-disc pl-5 text-[11px] text-muted-foreground">
+          {authored.notes.map((n, i) => (
+            <li key={i}>{n}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Loud, honest banner shown when the author could NOT produce a verifier-passing
+ *  allocation (rejected) or was unavailable (timeout / circuit-open / no backend).
+ *  The deterministic `tiers` below are then the labelled fallback. */
+function DegradedAuthorBanner({ authored }: { authored: AuthoredAllocationDTO }) {
+  const why =
+    authored.notes.find((n) => n.toLowerCase().includes("degraded")) ||
+    (authored.status === "unavailable"
+      ? "The fleet author was unavailable (timeout / circuit-open / no backend)."
+      : "The fleet author could not produce an allocation that passed the deterministic verifier.");
+  return (
+    <div
+      data-testid="authored-degraded-banner"
+      className="mt-3 rounded-md border border-amber-400 bg-amber-50/70 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+    >
+      <div className="flex items-center gap-2">
+        <span className="rounded bg-amber-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+          Degraded
+        </span>
+        <span className="text-xs font-semibold text-amber-800 dark:text-amber-300">
+          Showing the deterministic engine&apos;s allocation (fallback)
+        </span>
+      </div>
+      <p className="mt-1.5 text-xs text-foreground/90">{why}</p>
+      {authored.gate_failures.length > 0 && (
+        <ul className="mt-1.5 list-disc pl-5 text-[11px] text-muted-foreground">
+          {authored.gate_failures.map((f, i) => (
+            <li key={i}>
+              <span className="font-medium">{f.code}</span>
+              {f.detail ? `: ${f.detail}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function DeployCashCard({
   plan,
   loading,
@@ -460,6 +617,13 @@ export function DeployCashCard({
   >(new Map());
 
   const planAsOf = plan?.as_of ?? "";
+  // Pivot: the fleet-authored allocation is the primary recommendation only when
+  // it was accepted by the deterministic verifier. Otherwise (degraded / null)
+  // the deterministic tiers stay primary.
+  const authoredAccepted =
+    plan?.authored != null &&
+    plan.authored.status === "accepted" &&
+    !plan.authored.degraded;
 
   useEffect(() => {
     let cancelled = false;
@@ -548,16 +712,46 @@ export function DeployCashCard({
               fleetReviewing={fleetReviewing}
             />
           )}
-          {plan.tiers.map((t) => (
-            <TierBlock
-              key={t.name}
-              tier={t}
-              userId={userId}
-              planAsOf={planAsOf}
-              decisions={decisions}
-              onDecided={onDecided}
-            />
-          ))}
+          {/* Fleet-authors / determinism-verifies pivot. */}
+          {authoredAccepted && plan.authored && (
+            <AuthoredAllocationBlock authored={plan.authored} />
+          )}
+          {plan.authored && !authoredAccepted && (
+            <DegradedAuthorBanner authored={plan.authored} />
+          )}
+          {/* Deterministic tiers: primary normally; a collapsed reference once
+              the fleet-authored allocation is the accepted recommendation. */}
+          {authoredAccepted ? (
+            <details className="mt-4" data-testid="deterministic-tiers-details">
+              <summary className="cursor-pointer text-sm text-muted-foreground">
+                Deterministic engine&apos;s allocation (reference — not the
+                recommendation)
+              </summary>
+              <div>
+                {plan.tiers.map((t) => (
+                  <TierBlock
+                    key={t.name}
+                    tier={t}
+                    userId={userId}
+                    planAsOf={planAsOf}
+                    decisions={decisions}
+                    onDecided={onDecided}
+                  />
+                ))}
+              </div>
+            </details>
+          ) : (
+            plan.tiers.map((t) => (
+              <TierBlock
+                key={t.name}
+                tier={t}
+                userId={userId}
+                planAsOf={planAsOf}
+                decisions={decisions}
+                onDecided={onDecided}
+              />
+            ))
+          )}
           <ul className="mt-3 list-disc pl-5 text-xs text-muted-foreground">
             {plan.caveats.map((c, i) => (
               <li key={i}>{c}</li>

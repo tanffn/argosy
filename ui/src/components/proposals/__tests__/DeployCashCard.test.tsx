@@ -2,7 +2,11 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DeployCashCard } from "../DeployCashCard";
-import type { DeploymentMarketContextDTO, DeploymentPlanDTO } from "@/lib/api";
+import type {
+  AuthoredAllocationDTO,
+  DeploymentMarketContextDTO,
+  DeploymentPlanDTO,
+} from "@/lib/api";
 
 // The card prefetches prior allocation decisions on mount to render the
 // inline Accepted/Deferred pills. Stub the list endpoint so these unit tests
@@ -79,6 +83,44 @@ const PLAN_WITH_DCA: DeploymentPlanDTO = {
     }] },
     { name: "medium", cap_pct: 25, total_usd: 0, lines: [] },
     { name: "high", cap_pct: 5, total_usd: 0, lines: [] },
+  ],
+};
+
+const ACCEPTED_AUTHORED: AuthoredAllocationDTO = {
+  status: "accepted",
+  degraded: false,
+  attempts: 1,
+  cash_to_deploy: 170980,
+  cash_to_reserve: 0,
+  buys: [
+    { symbol: "EXUS", amount_usd: 70000, sleeve: "Ex-US developed",
+      justification: "most under-target sleeve; real ex-US diversification",
+      claimed_us_weight: 0.0 },
+    { symbol: "EIMI", amount_usd: 40000, sleeve: "Emerging markets",
+      justification: "adds EM the book lacks", claimed_us_weight: 0.05 },
+  ],
+  sells: [],
+  holds: ["NVDA"],
+  rationale: "The book is 58.5% NVDA, so fresh US core is declined despite the raw gap.",
+  gate_status: "accepted",
+  gate_failures: [],
+  notes: [],
+};
+
+const DEGRADED_AUTHORED: AuthoredAllocationDTO = {
+  status: "unavailable",
+  degraded: true,
+  attempts: 2,
+  cash_to_deploy: 0,
+  cash_to_reserve: 0,
+  buys: [],
+  sells: [],
+  holds: [],
+  rationale: "",
+  gate_status: null,
+  gate_failures: [],
+  notes: [
+    "Showing the deterministic engine's allocation (labelled degraded): the author was unavailable (timeout / circuit-open / no backend).",
   ],
 };
 
@@ -168,6 +210,60 @@ describe("DeployCashCard", () => {
       />
     );
     expect(screen.getByTestId("live-toggle")).toBeInTheDocument();
+  });
+
+  it("renders the accepted authored allocation as primary and demotes the tiers", () => {
+    render(
+      <DeployCashCard
+        plan={{ ...PLAN, authored: ACCEPTED_AUTHORED }}
+        loading={false}
+        amount={170980}
+        onAmountChange={vi.fn()}
+        unallocatedUsd={170980}
+        userId="ariel"
+      />,
+    );
+    // Authored block + verifier badge present
+    expect(screen.getByTestId("authored-allocation")).toBeInTheDocument();
+    expect(screen.getByTestId("authored-verified-badge")).toBeInTheDocument();
+    // Authored buys and rationale render
+    expect(screen.getByTestId("authored-buy-EXUS")).toBeInTheDocument();
+    expect(screen.getByText(/58\.5% NVDA/)).toBeInTheDocument();
+    // Deterministic tiers are demoted to the collapsed reference, not primary
+    expect(screen.getByTestId("deterministic-tiers-details")).toBeInTheDocument();
+    // No degraded banner on an accepted allocation
+    expect(screen.queryByTestId("authored-degraded-banner")).not.toBeInTheDocument();
+  });
+
+  it("shows a degraded banner and keeps the deterministic tiers primary when the author is unavailable", () => {
+    render(
+      <DeployCashCard
+        plan={{ ...PLAN, authored: DEGRADED_AUTHORED }}
+        loading={false}
+        amount={10000}
+        onAmountChange={vi.fn()}
+        unallocatedUsd={50000}
+        userId="ariel"
+      />,
+    );
+    expect(screen.getByTestId("authored-degraded-banner")).toBeInTheDocument();
+    expect(screen.getByText(/Degraded/)).toBeInTheDocument();
+    // Tiers are NOT demoted (rendered directly, no <details> wrapper)
+    expect(screen.queryByTestId("deterministic-tiers-details")).not.toBeInTheDocument();
+    expect(screen.getByText("CSPX")).toBeInTheDocument();
+    expect(screen.queryByTestId("authored-allocation")).not.toBeInTheDocument();
+  });
+
+  it("renders neither authored block nor banner when authored is absent (pivot off)", () => {
+    render(
+      <DeployCashCard plan={PLAN} loading={false} amount={10000}
+                      onAmountChange={vi.fn()} unallocatedUsd={50000} userId="ariel" />,
+    );
+    expect(screen.queryByTestId("authored-allocation")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("authored-degraded-banner")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("deterministic-tiers-details")).not.toBeInTheDocument();
+    // Tiers still render primary
+    expect(screen.getByText("CSPX")).toBeInTheDocument();
   });
 
   it("does not render MarketContextStrip when market_context is null", () => {

@@ -660,6 +660,48 @@ export interface DeploymentDispositionDTO {
   confidence?: string | null;
 }
 
+/** One fleet-authored buy in the fleet-authors / determinism-verifies pivot. */
+export interface AuthoredBuyDTO {
+  symbol: string;
+  amount_usd: number;
+  sleeve: string;
+  justification: string;
+  claimed_us_weight: number | null;
+}
+
+/** One fleet-authored sell (off-plan trim). The verifier credits sell proceeds
+ *  to conservation. */
+export interface AuthoredSellDTO {
+  symbol: string;
+  amount_usd: number;
+  reason: string;
+}
+
+/** A determinism-verifier failure on the authored proposal. */
+export interface GateFailureDTO {
+  code: string;
+  detail: string;
+  severity: "block" | "revision" | string;
+}
+
+/** The fleet-AUTHORED allocation (pivot: the fleet authors, determinism
+ *  verifies). `status` is accepted / rejected / unavailable. `degraded=true`
+ *  means the sibling `tiers` are the deterministic FALLBACK, shown labelled. */
+export interface AuthoredAllocationDTO {
+  status: "accepted" | "rejected" | "unavailable" | string;
+  degraded: boolean;
+  attempts: number;
+  cash_to_deploy: number;
+  cash_to_reserve: number;
+  buys: AuthoredBuyDTO[];
+  sells: AuthoredSellDTO[];
+  holds: string[];
+  rationale: string;
+  gate_status: string | null;
+  gate_failures: GateFailureDTO[];
+  notes: string[];
+}
+
 export interface DeploymentPlanDTO {
   deploy_amount_usd: number;
   as_of: string;
@@ -677,6 +719,10 @@ export interface DeploymentPlanDTO {
   preflight?: PreflightDTO | null;
   /** The fleet's affirmative "what to do with the full amount"; phase-2 only. */
   disposition?: DeploymentDispositionDTO | null;
+  /** The fleet-AUTHORED allocation. Present only when deployment_author_enabled
+   *  and the author path ran; when degraded, `tiers` is the labelled fallback.
+   *  null otherwise (pivot off / not requested). */
+  authored?: AuthoredAllocationDTO | null;
 }
 
 // ----------------------------------------------------------------------
