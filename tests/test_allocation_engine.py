@@ -125,6 +125,29 @@ def test_tradeable_holdings_filters_cash_and_nontradeable():
     assert cash == 500.0  # both cash rows aggregated, kept out of holdings
 
 
+def test_tradeable_holdings_excludes_typed_nonsymbol_asset_from_cash():
+    """A typed non-cash asset with a blank/'-' symbol (e.g. a real-estate line) must
+    NOT be swept into deployable cash — observed inflating deploy cash by a $69k
+    property. It is neither cash nor a tradeable holding."""
+    from argosy.services.allocation_engine import tradeable_holdings
+
+    class P:
+        def __init__(self, symbol, usd, asset_type="equity"):
+            self.symbol = symbol; self.usd_value_k = usd / 1000.0
+            self.asset_type = asset_type
+
+    class Snap:
+        positions = [
+            P("-", 144.94, "cash"),          # real USD cash
+            P("", 20.04, "cash"),            # real NIS cash (already USD-valued)
+            P("-", 69.0, "real estate"),     # a property with a blank ticker — NOT cash
+        ]
+
+    holdings, cash = tradeable_holdings(Snap())
+    assert holdings == {}
+    assert cash == round(144.94 + 20.04, 2)  # the $69 real-estate row is excluded
+
+
 def test_cash_only_deploy_never_trims_and_caps_at_cash():
     from datetime import date
     from argosy.services.allocation_engine import cash_only_deploy

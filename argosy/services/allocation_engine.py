@@ -119,7 +119,14 @@ def tradeable_holdings(snapshot) -> tuple[dict[str, float], float]:
             cash += usd
             continue
         if not sym or sym == "-":
-            cash += usd  # blank-symbol rows are cash lines
+            # A blank / "-" symbol row is a cash line ONLY when it isn't a typed
+            # non-cash asset. A real-estate (or other typed) holding can also carry a
+            # blank ticker; sweeping it into cash overstated deployable cash by the
+            # property's value (observed: a $69k "real estate" row inflated deploy
+            # cash). Such a row is neither deployable cash nor a tradeable holding —
+            # exclude it.
+            if not asset_type:
+                cash += usd
             continue
         if usd == 0.0:
             continue
