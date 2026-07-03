@@ -54,7 +54,7 @@ def build_allocation_nodes(doc: Any) -> list:
       - one ``allocation.single_name_cap`` INPUT node (value = doc.nvda_cap_pct).
 
     The doc is expected to have:
-      - doc.classes: iterable of objects with .id (str) and .target_pct (float)
+      - doc.classes: iterable of objects with .label (str) and .target_pct (float)
       - doc.nvda_cap_pct: float  (may be absent → defaults to 20.0)
     """
     from argosy.quality.derivation_graph import Node, NodeKind
@@ -63,8 +63,13 @@ def build_allocation_nodes(doc: Any) -> list:
     sleeve_ids: list[str] = []
 
     for cls in doc.classes:
-        key = sleeve_target_key(cls.id)
-        sleeve_ids.append(cls.id)
+        if cls.target_pct < 0:
+            raise ValueError(
+                f"sleeve '{cls.label}' has negative target_pct={cls.target_pct}; "
+                f"cannot build a valid allocation node"
+            )
+        key = sleeve_target_key(cls.label)
+        sleeve_ids.append(cls.label)
         nodes.append(Node(
             key=key,
             kind=NodeKind.INPUT,

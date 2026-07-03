@@ -304,7 +304,7 @@ def build_base_graph(
                 if alloc_node.key not in graph.keys():
                     graph.add_node(alloc_node)
     except Exception:  # noqa: BLE001 — allocation doc optional; never block the graph
-        log.debug("allocation nodes skipped (doc unavailable)", exc_info=True)
+        log.warning("allocation nodes skipped (doc build failed)", exc_info=True)
 
     register_canonical_surfaces(graph, subject_node_map=SUBJECT_NODE_MAP)
     graph.recompute()

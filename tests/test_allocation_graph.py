@@ -7,10 +7,10 @@ Coverage:
   4. ACCEPTANCE: SUPPLIED ChangeRequest to allocation.sleeve_target.* on a graph
      that contains allocation nodes → SCOPED_EDIT or BOUNDED_REDERIVE (NOT FULL_REBUILD).
   5. UNSUPPLIED sleeve change → FULL_REBUILD (authoring machinery missing).
+  6. LIVE-SHAPE: build_allocation_nodes works on the real AllocationClassDoc shape.
+  7. Negative target_pct raises ValueError.
 """
 from __future__ import annotations
-
-from types import SimpleNamespace
 
 import pytest
 
@@ -23,26 +23,66 @@ from argosy.quality.allocation_graph import (
 from argosy.quality.blast_radius import ChangeRequest, Tier, classify, size_blast_radius
 from argosy.quality.derivation_graph import DerivationGraph, Node, NodeKind
 from argosy.quality.plan_node_meta import AuthoringMode, node_meta
+from argosy.services.target_allocation_doc import (
+    AllocationClassDoc,
+    AllocationInstrument,
+    TargetAllocationDoc,
+)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — construct real Pydantic model instances
 # ---------------------------------------------------------------------------
 
-def _minimal_doc(classes=None, nvda_cap_pct=20.0):
-    """Build a minimal duck-typed allocation doc."""
+def _make_instrument(symbol: str = "CSPX", domicile: str = "IE") -> AllocationInstrument:
+    return AllocationInstrument(
+        symbol=symbol,
+        role="primary",
+        weight_within_class_pct=100.0,
+        rationale="test",
+        domicile=domicile,
+    )
+
+
+def _make_class(
+    label: str,
+    target_pct: float,
+    snapshot_category: str = "core equity",
+    sigma_class: str = "equity",
+) -> AllocationClassDoc:
+    return AllocationClassDoc(
+        label=label,
+        snapshot_category=snapshot_category,
+        sigma_class=sigma_class,
+        target_pct=target_pct,
+        instruments=[_make_instrument()],
+    )
+
+
+def _make_doc(
+    classes: list[AllocationClassDoc] | None = None,
+    nvda_cap_pct: float = 20.0,
+) -> TargetAllocationDoc:
     if classes is None:
         classes = [
-            SimpleNamespace(id="us_growth", target_pct=60.0),
-            SimpleNamespace(id="ex_us", target_pct=40.0),
+            _make_class("us_growth", 60.0),
+            _make_class("ex_us", 40.0),
         ]
-    return SimpleNamespace(classes=classes, nvda_cap_pct=nvda_cap_pct)
+    from datetime import date
+    return TargetAllocationDoc(
+        anchor_sigma=0.15,
+        blended_sigma=0.15,
+        nvda_cap_pct=nvda_cap_pct,
+        fi_pct=40.0,
+        provenance="test",
+        classes=classes,
+        glide=[],
+    )
 
 
-def _build_alloc_graph(doc=None) -> DerivationGraph:
-    """Build a DerivationGraph containing only the allocation nodes."""
+def _build_alloc_graph(doc: TargetAllocationDoc | None = None) -> DerivationGraph:
     if doc is None:
-        doc = _minimal_doc()
+        doc = _make_doc()
     g = DerivationGraph()
     for node in build_allocation_nodes(doc):
         g.add_node(node)
@@ -57,12 +97,12 @@ def _build_alloc_graph(doc=None) -> DerivationGraph:
 class TestBuildAllocationNodes:
     def test_returns_correct_node_count(self):
         """2 classes → 2 sleeve_target INPUTs + 1 normalized DERIVED + 1 cap INPUT = 4 nodes."""
-        doc = _minimal_doc()
+        doc = _make_doc()
         nodes = build_allocation_nodes(doc)
         assert len(nodes) == 4
 
     def test_sleeve_target_nodes_are_input(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         nodes = build_allocation_nodes(doc)
         sleeve_nodes = [n for n in nodes if n.key.startswith("allocation.sleeve_target.")]
         assert len(sleeve_nodes) == 2
@@ -70,14 +110,14 @@ class TestBuildAllocationNodes:
             assert node.kind is NodeKind.INPUT, f"{node.key} should be INPUT"
 
     def test_normalized_node_is_derived(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         nodes = build_allocation_nodes(doc)
         norm_nodes = [n for n in nodes if n.key == NORMALIZED_KEY]
         assert len(norm_nodes) == 1
         assert norm_nodes[0].kind is NodeKind.DERIVED
 
     def test_single_name_cap_is_input(self):
-        doc = _minimal_doc(nvda_cap_pct=15.0)
+        doc = _make_doc(nvda_cap_pct=15.0)
         nodes = build_allocation_nodes(doc)
         cap_nodes = [n for n in nodes if n.key == SINGLE_NAME_CAP_KEY]
         assert len(cap_nodes) == 1
@@ -85,31 +125,31 @@ class TestBuildAllocationNodes:
         assert cap_nodes[0].value == 15.0
 
     def test_sleeve_target_keys_match_helper(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         nodes = build_allocation_nodes(doc)
         keys = {n.key for n in nodes}
         assert sleeve_target_key("us_growth") in keys
         assert sleeve_target_key("ex_us") in keys
 
     def test_sleeve_target_values(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         nodes = build_allocation_nodes(doc)
         by_key = {n.key: n for n in nodes}
         assert by_key[sleeve_target_key("us_growth")].value == 60.0
         assert by_key[sleeve_target_key("ex_us")].value == 40.0
 
     def test_normalized_inputs_cover_all_sleeves(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         nodes = build_allocation_nodes(doc)
         norm = next(n for n in nodes if n.key == NORMALIZED_KEY)
         assert sleeve_target_key("us_growth") in norm.inputs
         assert sleeve_target_key("ex_us") in norm.inputs
 
     def test_three_classes(self):
-        doc = _minimal_doc(classes=[
-            SimpleNamespace(id="a", target_pct=33.0),
-            SimpleNamespace(id="b", target_pct=33.0),
-            SimpleNamespace(id="c", target_pct=34.0),
+        doc = _make_doc(classes=[
+            _make_class("a", 33.0),
+            _make_class("b", 33.0),
+            _make_class("c", 34.0),
         ])
         nodes = build_allocation_nodes(doc)
         # 3 sleeve_target + 1 normalized + 1 cap = 5
@@ -123,13 +163,10 @@ class TestBuildAllocationNodes:
 class TestNormalizedRecipe:
     def test_renormalize_90_30_gives_75_25(self):
         """90 + 30 = 120 total. us_growth = 90/120*100 = 75, ex_us = 30/120*100 = 25."""
-        doc = SimpleNamespace(
-            classes=[
-                SimpleNamespace(id="us_growth", target_pct=90.0),
-                SimpleNamespace(id="ex_us", target_pct=30.0),
-            ],
-            nvda_cap_pct=20.0,
-        )
+        doc = _make_doc(classes=[
+            _make_class("us_growth", 90.0),
+            _make_class("ex_us", 30.0),
+        ])
         g = _build_alloc_graph(doc)
         norm_val = g.get(NORMALIZED_KEY).value
         assert isinstance(norm_val, dict)
@@ -138,7 +175,7 @@ class TestNormalizedRecipe:
 
     def test_renormalize_already_sums_100(self):
         """When inputs already sum to 100, output is unchanged."""
-        doc = _minimal_doc()  # 60 + 40 = 100
+        doc = _make_doc()  # 60 + 40 = 100
         g = _build_alloc_graph(doc)
         norm_val = g.get(NORMALIZED_KEY).value
         assert abs(norm_val["us_growth"] - 60.0) < 1e-9
@@ -146,7 +183,7 @@ class TestNormalizedRecipe:
 
     def test_renormalize_updates_on_sleeve_change(self):
         """After changing a sleeve_target INPUT, recompute updates normalized."""
-        doc = _minimal_doc()  # 60/40
+        doc = _make_doc()  # 60/40
         g = _build_alloc_graph(doc)
         # Change us_growth from 60 → 90 (total becomes 130 → 90/130, 40/130)
         g.set_input(sleeve_target_key("us_growth"), 90.0)
@@ -156,13 +193,10 @@ class TestNormalizedRecipe:
 
     def test_renormalize_zero_total_raises(self):
         """Zero-sum sleeve targets should raise (not silently NaN)."""
-        doc = SimpleNamespace(
-            classes=[
-                SimpleNamespace(id="a", target_pct=0.0),
-                SimpleNamespace(id="b", target_pct=0.0),
-            ],
-            nvda_cap_pct=20.0,
-        )
+        doc = _make_doc(classes=[
+            _make_class("a", 0.0),
+            _make_class("b", 0.0),
+        ])
         g = DerivationGraph()
         for node in build_allocation_nodes(doc):
             g.add_node(node)
@@ -214,6 +248,7 @@ class TestNodeMetaSleeveTarget:
 
 # ---------------------------------------------------------------------------
 # 4. ACCEPTANCE — SUPPLIED sleeve change → SCOPED_EDIT or BOUNDED_REDERIVE
+#    Now uses REAL AllocationClassDoc shape.
 # ---------------------------------------------------------------------------
 
 class TestAcceptanceSuppliedSleeveChange:
@@ -221,7 +256,7 @@ class TestAcceptanceSuppliedSleeveChange:
     on a graph containing allocation nodes must NOT classify as FULL_REBUILD."""
 
     def test_supplied_sleeve_change_not_full_rebuild(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -241,7 +276,7 @@ class TestAcceptanceSuppliedSleeveChange:
         )
 
     def test_supplied_sleeve_change_tier_is_scoped_or_bounded(self):
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -260,7 +295,7 @@ class TestAcceptanceSuppliedSleeveChange:
 
     def test_missing_owner_not_set_for_supplied_sleeve_change(self):
         """The specific flag that previously caused escalation must be False."""
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -277,7 +312,7 @@ class TestAcceptanceSuppliedSleeveChange:
 
     def test_normalized_is_in_dirtied_keys(self):
         """Changing a sleeve_target must dirty allocation.normalized."""
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -294,7 +329,7 @@ class TestAcceptanceSuppliedSleeveChange:
 
     def test_acceptance_actual_tier_logged(self, capsys):
         """Emit the actual tier so the parent agent can verify it."""
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -311,7 +346,7 @@ class TestAcceptanceSuppliedSleeveChange:
 
 
 # ---------------------------------------------------------------------------
-# 5. UNSUPPLIED sleeve change → FULL_REBUILD
+# 5. UNSUPPLIED sleeve change
 # ---------------------------------------------------------------------------
 
 class TestUnsuppliedSleeveChange:
@@ -328,14 +363,11 @@ class TestUnsuppliedSleeveChange:
     is responsible for ensuring a concrete value is supplied (supplies_value=True)
     for sleeve_target edits; otherwise no propagation occurs.  The ACCEPTANCE
     test (test 4) — SUPPLIED change → not full_rebuild — is the primary contract.
-
-    If the spec is hardened to require T2 for unsupplied deterministic nodes,
-    blast_radius._detect_missing_owner must be extended (out of scope here).
     """
 
     def test_unsupplied_sleeve_change_missing_owner_is_false(self):
         """Deterministic nodes do NOT fire missing_owner on unsupplied changes."""
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -346,14 +378,13 @@ class TestUnsuppliedSleeveChange:
             )
         ]
         br = size_blast_radius(g, changes)
-        # deterministic → missing_owner is NOT set (by design of blast_radius)
         assert br.missing_owner_for_changed_node is False
 
     def test_unsupplied_sleeve_change_dirtied_normalized(self):
         """Even without a supplied value, normalized appears in dirtied_keys
         because blast_radius computes dependents from the graph topology regardless
         of whether set_input was called."""
-        doc = _minimal_doc()
+        doc = _make_doc()
         g = _build_alloc_graph(doc)
 
         changes = [
@@ -364,7 +395,6 @@ class TestUnsuppliedSleeveChange:
             )
         ]
         br = size_blast_radius(g, changes)
-        # Dependents are computed from topology even without value propagation
         assert NORMALIZED_KEY in br.dirtied_keys
 
     def test_contrast_owner_authored_unsupplied_is_full_rebuild(self):
@@ -392,3 +422,61 @@ class TestUnsuppliedSleeveChange:
         br = size_blast_radius(g, changes)
         tier, _ = classify(br)
         assert tier == Tier.FULL_REBUILD  # owner_authored + unsupplied → T2
+
+
+# ---------------------------------------------------------------------------
+# 6. LIVE-SHAPE guard — real TargetAllocationDoc with ≥2 real classes
+# ---------------------------------------------------------------------------
+
+class TestLiveShapeGuard:
+    """Prove build_allocation_nodes works on the production AllocationClassDoc shape."""
+
+    def test_build_nodes_on_real_doc_shape(self):
+        """Real TargetAllocationDoc with 2 classes → correct sleeve_target nodes keyed by label."""
+        doc = _make_doc(classes=[
+            _make_class("US broad-market core", 55.0, snapshot_category="core equity"),
+            _make_class("International developed (ex-US)", 20.0, snapshot_category="international"),
+        ])
+        nodes = build_allocation_nodes(doc)
+        by_key = {n.key: n for n in nodes}
+
+        # Sleeve nodes keyed by label (not id)
+        assert sleeve_target_key("US broad-market core") in by_key
+        assert sleeve_target_key("International developed (ex-US)") in by_key
+        assert by_key[sleeve_target_key("US broad-market core")].value == 55.0
+        assert by_key[sleeve_target_key("International developed (ex-US)")].value == 20.0
+
+    def test_normalized_correct_on_real_doc(self):
+        """allocation.normalized renormalizes correctly on the real doc shape."""
+        doc = _make_doc(classes=[
+            _make_class("US broad-market core", 55.0),
+            _make_class("International developed (ex-US)", 20.0),
+        ])
+        g = _build_alloc_graph(doc)
+        norm_val = g.get(NORMALIZED_KEY).value
+        total = 75.0
+        assert abs(norm_val["US broad-market core"] - 55.0 / total * 100.0) < 1e-9
+        assert abs(norm_val["International developed (ex-US)"] - 20.0 / total * 100.0) < 1e-9
+
+    def test_single_name_cap_on_real_doc(self):
+        """allocation.single_name_cap reads nvda_cap_pct from the real doc."""
+        doc = _make_doc(nvda_cap_pct=13.0)
+        nodes = build_allocation_nodes(doc)
+        cap = next(n for n in nodes if n.key == SINGLE_NAME_CAP_KEY)
+        assert cap.value == 13.0
+
+
+# ---------------------------------------------------------------------------
+# 7. Negative target_pct → ValueError
+# ---------------------------------------------------------------------------
+
+class TestNegativeTargetPct:
+    def test_negative_target_pct_raises(self):
+        """A negative target_pct must raise ValueError immediately, not produce
+        a negative normalized weight."""
+        doc = _make_doc(classes=[
+            _make_class("valid", 60.0),
+            _make_class("bad", -10.0),
+        ])
+        with pytest.raises(ValueError, match="negative target_pct"):
+            build_allocation_nodes(doc)
