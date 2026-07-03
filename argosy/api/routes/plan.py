@@ -4806,6 +4806,10 @@ class RefineRequest(BaseModel):
     user_id: str = "ariel"
     changes: list[RefineChange]
     dry_run: bool = True
+    # Optimistic concurrency: when provided, the current plan's id must match.
+    # If it doesn't (another draft was accepted between preview and apply),
+    # the endpoint returns 409 CONFLICT.
+    base_plan_version: int | None = None
 
 
 class RefineDecisionDTO(BaseModel):
@@ -4817,6 +4821,12 @@ class RefineDecisionDTO(BaseModel):
     invariant_ok: bool | None
     invariant_violations: list[str]
     summary: str
+    # Populated only when dry_run=False and a staged draft was created.
+    draft_id: int | None = None
+    message: str | None = None
+
+
+_SLEEVE_TARGET_PREFIX = "allocation.sleeve_target."
 
 
 @router.post("/refine", response_model=RefineDecisionDTO)
@@ -4824,28 +4834,44 @@ def post_plan_refine(
     req: RefineRequest,
     db: Session = Depends(get_db),
 ) -> RefineDecisionDTO:
-    """Preview the blast radius + tier for a proposed set of plan node changes.
+    """Preview or apply a proposed set of plan node changes.
 
-    dry_run=True (default and only supported mode): hydrates the live graph,
-    classifies the change set, returns a RefineDecisionDTO. Nothing is written.
+    dry_run=True (default): hydrates the live graph, classifies the change set,
+    returns a RefineDecisionDTO. Nothing is written.
 
-    dry_run=False: returns HTTP 501 — mutation is not yet enabled.
+    dry_run=False: applies allocation sleeve-target changes as a staged DRAFT
+    PlanVersion.  Returns 200 with the new draft_id when the tier is SCOPED_EDIT
+    or BOUNDED_REDERIVE and the change only targets allocation sleeve-target nodes.
+    Returns 409 when:
+      - the tier is FULL_REBUILD or forced_by_invariant (requires re-synthesis)
+      - any change targets a non-allocation-sleeve-target node (not yet supported)
+      - base_plan_version is provided and does not match the current plan's id
+        (optimistic concurrency conflict)
+    Does NOT promote the draft — that remains the gated
+    POST /api/plan/draft/{id}/accept path.
     """
-    if not req.dry_run:
-        raise HTTPException(
-            status_code=501,
-            detail="dry_run=False (mutation/promotion) is not yet enabled; "
-                   "this endpoint is preview-only. Send dry_run=true.",
-        )
-
     from argosy.orchestrator.flows.incremental_plan import build_base_graph
     from argosy.quality.blast_radius import ChangeRequest as BlastChangeRequest
+    from argosy.quality.blast_radius import Tier
     from argosy.quality.refinement import run_refinement, summary as refinement_summary
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
 
     pv = get_current_plan(db, req.user_id)
     decision_run_id = (pv.decision_run_id if pv is not None else None) or 0
+
+    # ---- Optimistic concurrency check (apply path only) ---------------------
+    if not req.dry_run and req.base_plan_version is not None:
+        current_id = pv.id if pv is not None else None
+        if current_id != req.base_plan_version:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Concurrency conflict: base_plan_version={req.base_plan_version} "
+                    f"does not match the current plan id={current_id}. "
+                    "Fetch the latest plan and retry."
+                ),
+            )
 
     try:
         graph = build_base_graph(db, req.user_id, decision_run_id=decision_run_id)
@@ -4883,7 +4909,7 @@ def post_plan_refine(
         inv_ok = decision.invariant_report.ok
         inv_violations = [v.code for v in decision.invariant_report.violations]
 
-    return RefineDecisionDTO(
+    base_dto = RefineDecisionDTO(
         tier=decision.tier.value,
         reason=decision.reason,
         forced_by_invariant=decision.forced_by_invariant,
@@ -4893,6 +4919,62 @@ def post_plan_refine(
         invariant_violations=inv_violations,
         summary=refinement_summary(decision),
     )
+
+    # ---- dry_run=True: preview only, return now ----------------------------
+    if req.dry_run:
+        return base_dto
+
+    # ---- dry_run=False: APPLY path -----------------------------------------
+
+    # Gate 1: non-allocation-sleeve-target nodes are not yet supported.
+    non_sleeve = [
+        ch.node_key
+        for ch in req.changes
+        if not ch.node_key.startswith(_SLEEVE_TARGET_PREFIX)
+    ]
+    if non_sleeve:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"mutation not yet supported for node type(s): {non_sleeve}. "
+                "Only allocation sleeve-target nodes "
+                f"(prefix '{_SLEEVE_TARGET_PREFIX}') can be applied as a scoped draft."
+            ),
+        )
+
+    # Gate 2: FULL_REBUILD or invariant-forced → cannot apply as scoped draft.
+    if decision.tier is Tier.FULL_REBUILD or decision.forced_by_invariant:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This change requires full re-synthesis (tier={decision.tier.value}, "
+                f"forced_by_invariant={decision.forced_by_invariant}): {decision.reason}. "
+                "Trigger a full synthesis run instead of a scoped apply."
+            ),
+        )
+
+    # Extract sleeve label → new_value dict (label is the suffix after the prefix).
+    sleeve_overrides: dict[str, float] = {}
+    for ch in req.changes:
+        label = ch.node_key[len(_SLEEVE_TARGET_PREFIX):]
+        sleeve_overrides[label] = float(ch.new_value)  # type: ignore[arg-type]
+
+    # Create the staged draft (validate-on-write: ValueError → 400).
+    from argosy.services.plan_refinement import create_refinement_draft
+
+    try:
+        draft = create_refinement_draft(db, req.user_id, sleeve_overrides)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    base_dto.draft_id = draft.id
+    base_dto.message = (
+        f"staged draft created (id={draft.id}); "
+        f"promote via POST /api/plan/draft/{draft.id}/accept"
+    )
+    return base_dto
 
 
 __all__ = [
