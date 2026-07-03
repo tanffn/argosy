@@ -179,6 +179,13 @@ class PlanVersion(Base):
     # forward on synthesis and backfilled for the current plan.
     target_allocation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Durable authored allocation overrides (migration 0076). Stores a JSON
+    # object ``{sleeve_label: pct}`` that ``build_target_allocation`` applies
+    # via ``authored_overrides=``.  NULL = no overrides (byte-identical to the
+    # un-overridden engine output).  Carried forward onto every new draft so a
+    # refined sleeve target survives re-synthesis ("option B" durability).
+    target_allocation_overrides_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Structured synthesis sections (the flat ``PlanSynthesisOutput.sections``
     # list — each Section carries its own ``horizon`` + evidence contract).
     # The synthesizer already produces these at runtime; persisting them lets

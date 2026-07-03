@@ -91,6 +91,12 @@ def run_small(
                 horizon_long_md=seed_current.horizon_long_md,
                 horizon_medium_md=seed_current.horizon_medium_md,
                 horizon_short_md=seed_current.horizon_short_md,
+                # Carry authored overrides forward (migration 0076) so the
+                # column is not dropped on a small-amendment draft even though
+                # target_allocation_json stays NULL for small amendments.
+                target_allocation_overrides_json=(
+                    seed_current.target_allocation_overrides_json
+                ),
             )
             session.add(target)
             session.commit()

@@ -264,6 +264,7 @@ def build_target_allocation_doc(
     quarters: int = 8,
     anchor_sigma: float | None = None,
     alternatives_sleeve: "object | None" = None,
+    authored_overrides: "dict[str, float] | None" = None,
 ) -> TargetAllocationDoc:
     """Assemble the canonical doc from the deterministic ``allocation_plan`` engine.
 
@@ -274,6 +275,10 @@ def build_target_allocation_doc(
     basis-sensitive snapshot derivation lives in (and is verified by) the wiring
     layer. Imports of ``allocation_plan`` are local to break the import cycle
     (``allocation_plan`` imports ``AllocationInstrument`` from this module).
+
+    ``authored_overrides`` pins named sleeve targets (by label) to human/fleet-
+    authored values.  ``None`` or ``{}`` is byte-identical to the un-overridden
+    result.
     """
     from argosy.services.allocation_plan import (
         build_redistribution_schedule,
@@ -285,7 +290,11 @@ def build_target_allocation_doc(
     )
 
     anchor = SIGMA_DIVERSIFIED if anchor_sigma is None else anchor_sigma
-    alloc = build_target_allocation(anchor_sigma=anchor, alternatives_sleeve=alternatives_sleeve)
+    alloc = build_target_allocation(
+        anchor_sigma=anchor,
+        alternatives_sleeve=alternatives_sleeve,
+        authored_overrides=authored_overrides or None,
+    )
 
     classes = [
         AllocationClassDoc(
@@ -422,6 +431,7 @@ def _prior_glide_q0(db: "Session", user_id: str) -> dict[str, float] | None:
 def build_plan_target_allocation_doc(
     db: "Session", user_id: str, decision_run_id: int, today: date,
     *, alternatives_sleeve: "object | None" = None,
+    authored_overrides: "dict[str, float] | None" = None,
 ) -> TargetAllocationDoc | None:
     """The DB-aware entry T1.5/backfill call: derive today's composition then
     build the canonical doc, or ``None`` when no anchor at all can be derived.
@@ -439,7 +449,11 @@ def build_plan_target_allocation_doc(
     The deconcentration glide spans the optimizer-chosen sell-down horizon
     (T4.2, :func:`_deconcentration_quarters`) instead of a fixed 2-year taper.
     ``alternatives_sleeve`` is the team's verified sleeve decision (or None for no
-    sleeve), threaded into the engine."""
+    sleeve), threaded into the engine.
+
+    ``authored_overrides`` pins named sleeve targets (by label) to durable
+    human/fleet-authored values.  ``None`` = no overrides (default behaviour).
+    """
     comp = load_full_book_today_composition(db, user_id, decision_run_id)
     stale_anchor = False
     if comp is None:
@@ -451,6 +465,7 @@ def build_plan_target_allocation_doc(
     doc = build_target_allocation_doc(
         today=today, today_composition=comp, quarters=quarters,
         alternatives_sleeve=alternatives_sleeve,
+        authored_overrides=authored_overrides,
     )
     if stale_anchor:
         # The TARGET is this-run-fresh; only the glide's q0 start is borrowed.
@@ -519,9 +534,24 @@ def _strip_stale_alternatives(doc: "TargetAllocationDoc") -> None:
     )
 
 
+def inherit_overrides_from_parent(parent: "object") -> "str | None":
+    """Return the ``target_allocation_overrides_json`` string from ``parent``, or
+    ``None`` when the parent carries no overrides.
+
+    Used by synthesis and amendment draft-creation to carry durable overrides
+    forward onto every new draft so a refined sleeve target survives re-synthesis.
+    ``parent`` is any object with a ``target_allocation_overrides_json`` attribute
+    (typically a ``PlanVersion`` row)."""
+    raw = getattr(parent, "target_allocation_overrides_json", None)
+    if not raw:
+        return None
+    return raw
+
+
 def resolve_target_allocation_json(
     db: "Session", user_id: str, decision_run_id: int, today: date,
     *, alternatives_sleeve: "object | None" = None,
+    authored_overrides: "dict[str, float] | None" = None,
 ) -> str | None:
     """Persistence-time resolver: the canonical doc JSON for a new draft, with a
     carry-forward fallback so a transient build failure never produces an
@@ -548,7 +578,9 @@ def resolve_target_allocation_json(
     """
     try:
         doc = build_plan_target_allocation_doc(
-            db, user_id, decision_run_id, today, alternatives_sleeve=alternatives_sleeve
+            db, user_id, decision_run_id, today,
+            alternatives_sleeve=alternatives_sleeve,
+            authored_overrides=authored_overrides,
         )
         if doc is not None:
             return doc.model_dump_json()

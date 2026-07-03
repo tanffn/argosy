@@ -574,6 +574,93 @@ def _candidate_to_instrument(c) -> AllocationInstrument:
     )
 
 
+def _apply_authored_overrides(
+    weights: dict[str, float],
+    authored_overrides: dict[str, float],
+) -> dict[str, float]:
+    """Apply authored sleeve overrides to engine-derived weights, renormalising
+    the non-overridden sleeves to fill the remainder proportionally.
+
+    Validation (fail loud):
+    - Any override value < 0 → ValueError.
+    - Any override key not present in ``weights`` (unknown label) → ValueError.
+    - sum(override values) > 100 + eps → ValueError.
+    - All sleeves are overridden but their sum is not ≈ 100 → ValueError.
+
+    When no overrides, returns ``weights`` unchanged (purity: identical path).
+
+    Sigma anchor: an authored override MAY move the portfolio's blended_sigma
+    off the derived anchor; this is intentional for option-B authored allocation.
+    The engine respects the override and reports the resulting blended_sigma. It
+    is the downstream risk/invariant gate's job to flag a sigma-anchor breach —
+    not the engine's to warn or clamp.
+
+    CASH_FRAC_OF_FI: the 70/30 cash/short-IG split is NOT re-enforced when only
+    one FI sub-sleeve is overridden granularly (accepted limitation of granular
+    authored overrides).
+    """
+    if not authored_overrides:
+        return weights
+
+    eps = 1e-6
+    known_labels = set(weights.keys())
+
+    # --- Validation ---
+    for label, pct in authored_overrides.items():
+        if label not in known_labels:
+            raise ValueError(
+                f"Unknown sleeve label in authored_overrides: {label!r}. "
+                f"Known labels: {sorted(known_labels)}"
+            )
+        if pct < 0.0:
+            raise ValueError(
+                f"authored_overrides contains a negative value for {label!r}: {pct}. "
+                "Sleeve targets must be >= 0."
+            )
+
+    override_sum = sum(authored_overrides.values())
+    if override_sum > 100.0 + eps:
+        raise ValueError(
+            f"authored_overrides sum {override_sum:.4f} exceeds 100. "
+            "The overridden sleeves cannot consume more than the full book."
+        )
+
+    # --- Determine non-overridden sleeves and their engine-derived base total ---
+    overridden = set(authored_overrides.keys())
+    non_overridden = {lbl: w for lbl, w in weights.items() if lbl not in overridden}
+
+    # When ALL sleeves are overridden: verify sum ≈ 100, use as-is.
+    if not non_overridden:
+        if abs(override_sum - 100.0) > 0.05:
+            raise ValueError(
+                f"All sleeves are overridden but their values sum to {override_sum:.4f}, "
+                "not ~100. When overriding every sleeve the values must sum to 100."
+            )
+        return {lbl: authored_overrides[lbl] for lbl in weights}
+
+    # --- Renormalise the non-overridden set to fill the remainder ---
+    remainder = 100.0 - override_sum
+    base_non_overridden_sum = sum(non_overridden.values())
+
+    result: dict[str, float] = {}
+    for lbl in weights:
+        if lbl in overridden:
+            result[lbl] = authored_overrides[lbl]
+        else:
+            if base_non_overridden_sum > eps:
+                result[lbl] = non_overridden[lbl] / base_non_overridden_sum * remainder
+            else:
+                # Degenerate: all non-overridden sleeves had 0 weight; split evenly.
+                result[lbl] = remainder / len(non_overridden)
+
+    _total = sum(result.values())
+    if abs(_total - 100.0) > 1e-6:
+        raise ValueError(
+            f"allocation weights sum to {_total:.8f}, expected 100.0"
+        )
+    return result
+
+
 def build_target_allocation(
     *,
     anchor_sigma: float = SIGMA_DIVERSIFIED,
@@ -582,6 +669,7 @@ def build_target_allocation(
     years_to_retirement: float | None = None,
     fi_step: float = 0.01,
     deployable_nis: float | None = None,
+    authored_overrides: dict[str, float] | None = None,
 ) -> TargetAllocation:
     """Assemble the canonical target allocation with the FI weight derived to the
     steady-state sigma anchor via the covariance-aware blend. Pure: no DB, no clock.
@@ -595,7 +683,14 @@ def build_target_allocation(
     (or a 0% decision) there is NO alternatives class and the book is the
     equity-panel + NVDA + FI baseline. When supplied, its ``target_pct`` is held as
     a fixed policy weight (subtracted before equity renorm) and its SOURCED
-    ``sleeve_sigma`` flows into the FI solver."""
+    ``sleeve_sigma`` flows into the FI solver.
+
+    ``authored_overrides`` pins named sleeve targets (by label) to human/fleet-
+    authored values, surviving re-synthesis. The engine's derived value for each
+    named sleeve is replaced by the override; the remaining sleeves are renormalised
+    to fill the remainder proportionally. ``None`` (or ``{}``) is byte-identical to
+    the un-overridden result. Keys must be exact sleeve labels as returned by this
+    function; unknown labels raise ``ValueError`` immediately."""
     if years_to_retirement is not None:
         anchor_sigma = anchor_sigma_for_phase(years_to_retirement)
     alternatives_pct = (
@@ -615,6 +710,7 @@ def build_target_allocation(
     weights = _renormalise(
         nvda_pct=nvda_pct, fi_pct=fi_pct, alternatives_pct=alternatives_pct
     )
+    weights = _apply_authored_overrides(weights, authored_overrides or {})
 
     classes: list[AllocationClass] = []
     for s in _EQUITY_SLEEVES:
@@ -662,6 +758,14 @@ def build_target_allocation(
     classes.append(AllocationClass(**{**_FI_CASH.__dict__, "target_pct": cash_pct}))
     classes.append(AllocationClass(**{**_FI_BONDS.__dict__, "target_pct": bonds_pct}))
 
+    # Derive the reported fi_pct / nvda_pct from the post-override weights so the
+    # TargetAllocation summary fields stay consistent with the class target_pcts.
+    reported_fi_pct = round(cash_pct + bonds_pct, 2)
+    reported_nvda_pct = round(weights[_NVDA_SLEEVE.label], 2)
+    reported_alternatives_pct = (
+        round(weights[_ALTERNATIVES_LABEL], 2) if alternatives_pct > 0 else 0.0
+    )
+
     # Report blended sigma on the SAME unrounded weights the FI solver certified
     # against the anchor — computing it from the 2dp-rounded class target_pcts
     # instead lets per-class rounding accumulate and read fractionally OVER the
@@ -672,15 +776,15 @@ def build_target_allocation(
         alt_sigma=alternatives_sigma if alternatives_pct > 0 else None,
     )
     alts_clause = (
-        f"a {alternatives_pct:.1f}% team-sourced Alternatives sleeve (σ {alternatives_sigma:.3f}), "
+        f"a {reported_alternatives_pct:.1f}% team-sourced Alternatives sleeve (σ {alternatives_sigma:.3f}), "
         if alternatives_pct > 0
         else "no Alternatives sleeve (team sized it to 0%), "
     )
     overall = (
         f"Reconciled target for the deployable book at the end of the 2-year "
-        f"deconcentration. Total equity ~{100 - fi_pct - alternatives_pct:.0f}% (return "
+        f"deconcentration. Total equity ~{100 - reported_fi_pct - reported_alternatives_pct:.0f}% (return "
         f"engine + income/quality core + international + a min-vol damper), NVDA "
-        f"{nvda_pct:.0f}% just under the 13% cap, {alts_clause}FI/cash {fi_pct:.1f}% "
+        f"{reported_nvda_pct:.0f}% just under the 13% cap, {alts_clause}FI/cash {reported_fi_pct:.1f}% "
         f"DERIVED as the minimum weight at which the COVARIANCE-blended sigma "
         f"{blended:.4f} sits on the {anchor_sigma} anchor. The anchor is phase-aware: "
         f"in accumulation (salary covers expenses, no withdrawals) it is the 0.18 "
@@ -702,8 +806,8 @@ def build_target_allocation(
         classes=classes,
         blended_sigma=round(blended, 4),
         anchor_sigma=anchor_sigma,
-        fi_pct=round(fi_pct, 2),
-        nvda_pct=nvda_pct,
+        fi_pct=reported_fi_pct,
+        nvda_pct=reported_nvda_pct,
         cash_pct=cash_pct,
         bonds_pct=bonds_pct,
         overall_rationale=overall,
@@ -847,4 +951,5 @@ __all__ = [
     "build_target_allocation",
     "derive_fi_weight",
     "to_synth_targets",
+    "_apply_authored_overrides",
 ]

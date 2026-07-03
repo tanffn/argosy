@@ -105,6 +105,32 @@ def _guard_deployment_author(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _guard_lookthrough_gate(monkeypatch):
+    """Keep the look-through cap ENFORCEMENT off by default in tests.
+
+    ``plan_lookthrough_gate_enforce`` defaults to True in production (fail-closed: a
+    plan whose target breaches its own single-name cap can't be promoted). But most
+    promotion tests use fixtures that aren't cap-relevant, and enforcing would block
+    them spuriously. Force it off for every test; the tests that exercise the enforced
+    path opt in via their own ``setenv("ARGOSY_PLAN_LOOKTHROUGH_GATE_ENFORCE", "1")``.
+    The gate is still COMPUTED + attached as the `lookthrough_cap` authority regardless;
+    only the block is gated. (Same pattern as ``_guard_deployment_author``.)
+    """
+    monkeypatch.setenv("ARGOSY_PLAN_LOOKTHROUGH_GATE_ENFORCE", "false")
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+    yield
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _structlog_isolation():
     """Ensure clean structlog / stdlib-logging state for every test.
 

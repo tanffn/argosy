@@ -136,11 +136,14 @@ class Settings(BaseSettings):
     # deterministic kernel re-derives the DRAFT's TARGET single-name look-through
     # exposure (direct + fund-embedded NVDA) and records whether it breaches the plan's
     # own cap — the fleet-missed incoherence (12% direct + embedded > 13% cap). The
-    # verdict is ALWAYS computed + logged + attached as the `lookthrough_cap` authority
-    # (visible/beta). It only BLOCKS promotion when this flag is True (default False so
-    # it surfaces without bricking the currently-incoherent live plan). Env override
-    # ARGOSY_PLAN_LOOKTHROUGH_GATE_ENFORCE.
-    plan_lookthrough_gate_enforce: bool = Field(default=False)
+    # verdict is ALWAYS computed + logged + attached as the `lookthrough_cap` authority.
+    # It BLOCKS promotion when this flag is True. Default True (fail-closed): a plan whose
+    # TARGET breaches its own single-name cap on a look-through basis must not be promoted
+    # — and there is now an apply path to FIX it (POST /api/plan/refine → a staged draft
+    # with a durable allocation override that lowers the look-through). Reversible via
+    # ARGOSY_PLAN_LOOKTHROUGH_GATE_ENFORCE=false; the test suite forces it off (opt-in in
+    # tests) so promotions of non-cap-relevant fixtures aren't blocked.
+    plan_lookthrough_gate_enforce: bool = Field(default=True)
 
     # Registry-rendered reader anchor (Phase 2): the whole-artifact reviewer is
     # given a reviewer-only "canonical reconciliation anchor" rendered from the
