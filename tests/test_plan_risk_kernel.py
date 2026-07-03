@@ -222,6 +222,20 @@ def test_us_situs_multiple_buys_flags_only_unsafe():
     assert any("SPY" in v.detail for v in r.violations)
 
 
+def test_us_situs_unknown_symbol_is_flagged_fail_closed():
+    # An unknown/uncurated symbol (estate_safe_fn returns False for anything not listed)
+    # must be FLAGGED — fail-closed. The kernel cannot assume safety for uncurated instruments.
+    # We simulate "unknown" by providing an estate_safe_fn that returns False for NEWETF.
+    r = evaluate_us_situs(
+        holdings_usd={},
+        proposed_buys={"NEWETF": 10_000.0},
+        estate_safe_fn=_us_situs_estate_safe_fn(set()),  # NEWETF not in safe set → flagged
+    )
+    assert not r.ok
+    assert any(v.code == "us_situs" for v in r.violations)
+    assert any("NEWETF" in v.detail for v in r.violations)
+
+
 # ---------------------------------------------------------------------------
 # Slice 2 tests: evaluate_plan_invariants (aggregator)
 # ---------------------------------------------------------------------------
@@ -245,8 +259,10 @@ def test_invariants_all_ok():
 
 
 def test_invariants_aggregates_multiple_violations():
-    # Doc has 101% sum AND proposes a US-situs buy → two distinct violations.
-    doc = _doc([(41.0, [("EXUS", 100.0)]), (60.0, [("NVDA", 100.0)])])  # 101% sum
+    # Doc has 101% sum AND a 60% NVDA target (breaches 13% cap) AND a US-situs buy
+    # → three distinct violation codes: single_name_lookthrough_cap, allocation_sum,
+    # us_situs. All three must be present.
+    doc = _doc([(41.0, [("EXUS", 100.0)]), (60.0, [("NVDA", 100.0)])])  # 101% sum, 60% NVDA
     report = evaluate_plan_invariants(
         doc,
         holdings_usd={"EXUS": 41_000.0, "NVDA": 60_000.0},
@@ -256,8 +272,9 @@ def test_invariants_aggregates_multiple_violations():
     )
     assert not report.ok
     codes = {v.code for v in report.violations}
-    assert "allocation_sum" in codes
-    assert "us_situs" in codes
+    assert "single_name_lookthrough_cap" in codes  # 60% NVDA target >> 13% cap
+    assert "allocation_sum" in codes               # 41 + 60 = 101% > 0.5pp tolerance
+    assert "us_situs" in codes                     # SPY is US-situs
 
 
 def test_invariants_without_holdings_skips_us_situs():
@@ -271,3 +288,19 @@ def test_invariants_without_holdings_skips_us_situs():
     )
     assert report.ok
     assert "us_situs" not in report.parts  # not run — no holdings context
+
+
+def test_invariants_holdings_only_runs_us_situs_no_violation():
+    # holdings_usd supplied, proposed_buys=None → us_situs check RUNS (present in parts)
+    # but produces no violation because existing holdings are never flagged.
+    doc = _doc([(90.0, [("EXUS", 100.0)]), (10.0, [("NVDA", 100.0)])])
+    report = evaluate_plan_invariants(
+        doc,
+        holdings_usd={"SPY": 50_000.0, "NVDA": 10_000.0},  # SPY is US-situs but already held
+        proposed_buys=None,
+        effective_fn=_fake_effective({}),
+        estate_safe_fn=_us_situs_estate_safe_fn(set()),
+    )
+    assert report.ok
+    assert "us_situs" in report.parts        # check ran
+    assert report.parts["us_situs"].ok       # no violations — holdings only, nothing new bought

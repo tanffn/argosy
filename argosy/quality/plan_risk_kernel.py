@@ -17,8 +17,9 @@ same module.
 """
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Mapping
 
 # $ tolerance so floating-point noise never fabricates a breach.
 _PCT_EPS = 0.05  # percentage points
@@ -218,29 +219,49 @@ def evaluate_us_situs(
     Why proposed-buys only: we cannot retroactively unwind existing positions, so the
     actionable gate is on NEW flows only (deploy-verifier doctrine).
     """
+    sanctioned_upper = frozenset(s.upper() for s in sanctioned)
+    violations: list[Violation] = []
+
     if estate_safe_fn is None:
         from argosy.services.instrument_reference import lookup as _ref
 
-        def estate_safe_fn(sym: str) -> bool:  # type: ignore[misc]
+        for sym in (proposed_buys or {}):
+            if sym.upper() in sanctioned_upper:
+                continue
             ref = _ref(sym)
             if ref is None:
-                return True  # unknown → assume safe (fail-open for unknowns)
-            return bool(ref.estate_safe)
+                # Unknown symbol → fail CLOSED (uncurated = US-situs conservatively).
+                violations.append(Violation(
+                    code="us_situs",
+                    detail=(
+                        f"{sym} is not in instrument_reference and is treated as US-situs "
+                        "conservatively (fail-closed). Confirm its domicile and add it to "
+                        "instrument_reference before buying."
+                    ),
+                ))
+            elif not ref.estate_safe:
+                violations.append(Violation(
+                    code="us_situs",
+                    detail=(
+                        f"{sym} is a US-situs instrument (not estate-safe) and is not in the "
+                        f"sanctioned set {sorted(sanctioned_upper)}. "
+                        "Buying this introduces new US-domiciled estate exposure."
+                    ),
+                ))
+    else:
+        for sym in (proposed_buys or {}):
+            if sym.upper() in sanctioned_upper:
+                continue
+            if not estate_safe_fn(sym):
+                violations.append(Violation(
+                    code="us_situs",
+                    detail=(
+                        f"{sym} is a US-situs instrument (not estate-safe) and is not in the "
+                        f"sanctioned set {sorted(sanctioned_upper)}. "
+                        "Buying this introduces new US-domiciled estate exposure."
+                    ),
+                ))
 
-    sanctioned_upper = frozenset(s.upper() for s in sanctioned)
-    violations: list[Violation] = []
-    for sym in (proposed_buys or {}):
-        if sym.upper() in sanctioned_upper:
-            continue
-        if not estate_safe_fn(sym):
-            violations.append(Violation(
-                code="us_situs",
-                detail=(
-                    f"{sym} is a US-situs instrument (not estate-safe) and is not in the "
-                    f"sanctioned set {sorted(sanctioned_upper)}. "
-                    "Buying this introduces new US-domiciled estate exposure."
-                ),
-            ))
     return UsSitusResult(violations=tuple(violations))
 
 
@@ -257,7 +278,7 @@ class InvariantReport:
     """
     ok: bool
     violations: tuple[Violation, ...]
-    parts: dict  # str -> AllocationSumResult | RiskKernelResult | UsSitusResult
+    parts: Mapping[str, object]  # str -> AllocationSumResult | RiskKernelResult | UsSitusResult
 
 
 def evaluate_plan_invariants(
@@ -266,6 +287,7 @@ def evaluate_plan_invariants(
     holdings_usd: dict[str, float] | None = None,
     proposed_buys: dict[str, float] | None = None,
     cap_pct: float | None = None,
+    tolerance_pp: float = 0.5,
     effective_fn: Callable[[str, float], float] = _default_effective_fn,
     estate_safe_fn: Callable[[str], bool] | None = None,
 ) -> InvariantReport:
@@ -274,7 +296,7 @@ def evaluate_plan_invariants(
 
     Checks always run:
       * single-name look-through cap against the plan's TARGET allocation
-      * allocation-sum (must sum to 100% within tolerance)
+      * allocation-sum (must sum to 100% within ``tolerance_pp``; default 0.5pp)
 
     Checks run only when holdings context is provided:
       * us_situs — proposed-buy US-situs estate-exposure gate
@@ -291,8 +313,8 @@ def evaluate_plan_invariants(
     parts["single_name_cap"] = cap_result
     all_violations.extend(cap_result.violations)
 
-    # 2. Allocation sum
-    sum_result = evaluate_allocation_sum(doc)
+    # 2. Allocation sum — tolerance_pp threaded from public entry point
+    sum_result = evaluate_allocation_sum(doc, tolerance_pp=tolerance_pp)
     parts["allocation_sum"] = sum_result
     all_violations.extend(sum_result.violations)
 
@@ -309,7 +331,7 @@ def evaluate_plan_invariants(
     return InvariantReport(
         ok=not all_violations,
         violations=tuple(all_violations),
-        parts=parts,
+        parts=types.MappingProxyType(parts),
     )
 
 
