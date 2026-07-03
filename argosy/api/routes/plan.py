@@ -4853,6 +4853,7 @@ def post_plan_refine(
     from argosy.orchestrator.flows.incremental_plan import build_base_graph
     from argosy.quality.blast_radius import ChangeRequest as BlastChangeRequest
     from argosy.quality.blast_radius import Tier
+    from argosy.quality.derivation_graph import UnknownNodeError
     from argosy.quality.refinement import run_refinement, summary as refinement_summary
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
@@ -4899,6 +4900,14 @@ def post_plan_refine(
 
     try:
         decision = run_refinement(graph, crs, pre_doc=pre_doc)
+    except UnknownNodeError as exc:
+        # A node_key that isn't in the hydrated graph is valid client input (the
+        # key might be real but absent from this graph snapshot) — return 400 not 500.
+        key = exc.args[0] if exc.args else str(exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown node key: {key!r}",
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -4960,6 +4969,9 @@ def post_plan_refine(
         sleeve_overrides[label] = float(ch.new_value)  # type: ignore[arg-type]
 
     # Create the staged draft (validate-on-write: ValueError → 400).
+    # NOTE: this apply is NOT idempotent — a retry creates another draft row.
+    # Optimistic concurrency is opt-in: conflict detection only runs when
+    # base_plan_version is supplied (checked above).
     from argosy.services.plan_refinement import create_refinement_draft
 
     try:

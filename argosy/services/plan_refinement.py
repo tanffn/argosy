@@ -47,9 +47,10 @@ def create_refinement_draft(
        any write.
     4. Resolve the full ``target_allocation_json`` for the draft via
        ``build_target_allocation_doc`` wired to the current plan's
-       decision_run_id (or 0 when absent).  Falls back to carry-forward
-       of the current plan's doc exactly as the synthesis path does —
-       never raises.
+       decision_run_id (or 0 when absent).  When the composition is absent
+       (no snapshot), the doc is left as None rather than falling back to
+       a stale doc that would lack the override.  Raises on doc-build
+       failure so a draft is never committed without the applied override.
     5. Persist a new PlanVersion(role='draft') with:
          derived_from_id  = current.id
          target_allocation_overrides_json = merged (JSON)
@@ -110,28 +111,22 @@ def create_refinement_draft(
     today = datetime.now(timezone.utc).date()
 
     resolved_doc_json: str | None = None
-    try:
-        comp = load_full_book_today_composition(session, user_id, decision_run_id)
-        if comp is None:
-            comp = _prior_glide_q0(session, user_id)
-        if comp is not None:
-            quarters = _deconcentration_quarters(session, user_id, today)
-            doc = build_target_allocation_doc(
-                today=today,
-                today_composition=comp,
-                quarters=quarters,
-                authored_overrides=merged,
-            )
-            _assert_conserving_glide(doc)
-            resolved_doc_json = doc.model_dump_json()
-    except Exception as exc:  # noqa: BLE001 — never block the draft on the alloc doc
-        log.warning(
-            "plan_refinement.doc_build_failed_using_carried_forward",
-            user_id=user_id,
-            error=str(exc),
+    comp = load_full_book_today_composition(session, user_id, decision_run_id)
+    if comp is None:
+        comp = _prior_glide_q0(session, user_id)
+    if comp is not None:
+        # If build_target_allocation_doc fails AFTER the validation in step 3
+        # succeeded, fail loud — a silent carry-forward would produce a draft
+        # whose target_allocation_json lacks the override entirely.
+        quarters = _deconcentration_quarters(session, user_id, today)
+        doc = build_target_allocation_doc(
+            today=today,
+            today_composition=comp,
+            quarters=quarters,
+            authored_overrides=merged,
         )
-        # Fall back to carry-forward from current plan (mirrors synthesis path)
-        resolved_doc_json = getattr(current, "target_allocation_json", None)
+        _assert_conserving_glide(doc)
+        resolved_doc_json = doc.model_dump_json()
 
     # ---- 5. Create the draft PlanVersion ------------------------------------
     merged_json = json.dumps(merged)

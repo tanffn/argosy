@@ -643,3 +643,112 @@ def test_create_refinement_draft_no_current_plan_raises(client_with_db):
     with SF() as session:
         with pytest.raises(RuntimeError, match="no current plan"):
             create_refinement_draft(session, "ariel", {"US broad-market core": 15.0})
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — real-path unknown-node test (no run_refinement monkeypatch)
+# ---------------------------------------------------------------------------
+
+def test_unknown_node_key_returns_400_real_path(client_with_db, monkeypatch):
+    """A node_key absent from the hydrated graph must return 400, not 500.
+
+    Does NOT monkeypatch run_refinement — exercises the real blast-radius
+    classifier so UnknownNodeError actually propagates.  build_base_graph is
+    patched only to avoid the heavy resolver/snapshot path (which needs real
+    DB data), returning a minimal but real DerivationGraph.
+    """
+    _seed_current_plan(client_with_db)
+
+    # Provide a real but minimal graph (one INPUT node only).
+    # run_refinement and the blast-radius classifier are NOT mocked — they
+    # will call clone.get("retirement.risk_posture") which is absent, raising
+    # UnknownNodeError.  The handler must catch it and return 400.
+    from argosy.quality.derivation_graph import DerivationGraph, Node, NodeKind
+
+    minimal_graph = DerivationGraph()
+    minimal_graph.add_node(Node(key="portfolio.fx_usd_nis", kind=NodeKind.INPUT, value=3.7))
+    minimal_graph.recompute()
+
+    monkeypatch.setattr(
+        "argosy.orchestrator.flows.incremental_plan.build_base_graph",
+        lambda session, user_id, *, decision_run_id: minimal_graph,
+    )
+
+    r = client_with_db.post(
+        "/api/plan/refine",
+        json={
+            "user_id": "ariel",
+            "changes": [{"node_key": "retirement.risk_posture", "new_value": "conservative"}],
+            "dry_run": True,
+        },
+    )
+    assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+    detail = r.json()["detail"]
+    assert "unknown node key" in detail.lower(), f"unexpected detail: {detail}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — end-to-end apply: target_allocation_json reflects the override
+# ---------------------------------------------------------------------------
+
+def test_apply_target_allocation_json_reflects_override(client_with_db, monkeypatch):
+    """dry_run=False: the draft's target_allocation_json must contain the override,
+    not just target_allocation_overrides_json.  This proves the override is APPLIED
+    into the doc, not merely stored.
+    """
+    from argosy.services.allocation_plan import build_target_allocation
+
+    alloc = build_target_allocation()
+    labels = [c.label for c in alloc.classes]
+    sleeve_label = labels[0]  # "US broad-market core"
+    override_pct = 20.0
+
+    _seed_current_plan(client_with_db)
+    _patch_graph_and_decision(monkeypatch, tier_value="scoped_edit")
+
+    # Build a real per-label composition (equal weights) to inject so the doc
+    # builder can produce a real TargetAllocationDoc with the override applied.
+    comp = {label: 100.0 / len(labels) for label in labels}
+
+    monkeypatch.setattr(
+        "argosy.services.target_allocation_doc.load_full_book_today_composition",
+        lambda session, user_id, decision_run_id: comp,
+    )
+
+    r = client_with_db.post(
+        "/api/plan/refine",
+        json={
+            "user_id": "ariel",
+            "changes": [
+                {
+                    "node_key": f"allocation.sleeve_target.{sleeve_label}",
+                    "new_value": override_pct,
+                }
+            ],
+            "dry_run": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft_id = r.json().get("draft_id")
+    assert draft_id is not None
+
+    # Read the draft back and assert the resolved doc carries the override.
+    from argosy.state.models import PlanVersion
+    SF = client_with_db.app.state.session_factory
+    with SF() as session:
+        from sqlalchemy import select
+        draft = session.execute(
+            select(PlanVersion).where(PlanVersion.id == draft_id)
+        ).scalar_one()
+
+    assert draft.target_allocation_json is not None, (
+        "target_allocation_json must not be None — the override must be applied into the doc"
+    )
+    doc = json.loads(draft.target_allocation_json)
+    # Find the overridden sleeve in doc.classes
+    classes = doc.get("classes", [])
+    matched = [c for c in classes if c.get("label") == sleeve_label]
+    assert matched, f"sleeve {sleeve_label!r} not found in target_allocation_json classes"
+    assert matched[0]["target_pct"] == override_pct, (
+        f"expected target_pct={override_pct}, got {matched[0]['target_pct']}"
+    )
