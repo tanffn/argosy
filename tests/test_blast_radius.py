@@ -8,8 +8,15 @@ Coverage:
   * size_blast_radius() — integration tests using small real DerivationGraph
     objects; assertions on derived BlastRadius fields.
   * No-mutation guarantee: original graph is NOT changed after sizing.
+  * Fix 1: invalidates_global_invariant with real pre_doc/post_doc docs.
+  * Fix 2: add_edge cross-owner → T2; add_edge same-owner → T1.
+  * Fix 3: supplied change to owner_authored node with no wired agent → T2.
+  * Fix 4: change to DERIVED node raises ValueError.
+  * Fix 5: T2 intra-precedence pins.
 """
 from __future__ import annotations
+
+import types
 
 import pytest
 
@@ -123,6 +130,30 @@ def _owner_authored_graph() -> DerivationGraph:
         kind=NodeKind.DERIVED,
         inputs=("portfolio.target_weight",),
         recipe=lambda iv: iv["portfolio.target_weight"] * 2,
+        compute_version="v1",
+    ))
+    g.recompute()
+    return g
+
+
+def _cross_owner_edge_graph() -> DerivationGraph:
+    """Graph for edge-mutation tests.
+
+    savings.monthly  (equity_comp domain) — INPUT
+    fx.rate          (fx domain)           — INPUT
+    savings.total    (equity_comp domain)  — DERIVED from savings.monthly
+
+    An add_edge from fx.rate → savings.total crosses the equity_comp/fx boundary.
+    An add_edge from savings.monthly → savings.total stays within equity_comp.
+    """
+    g = DerivationGraph()
+    g.add_node(Node(key="savings.monthly", kind=NodeKind.INPUT, value=5_000.0))
+    g.add_node(Node(key="fx.rate", kind=NodeKind.INPUT, value=3.7))
+    g.add_node(Node(
+        key="savings.total",
+        kind=NodeKind.DERIVED,
+        inputs=("savings.monthly",),
+        recipe=lambda iv: iv["savings.monthly"] * 12,
         compute_version="v1",
     ))
     g.recompute()
@@ -447,6 +478,278 @@ class TestSizeBlastRadius:
         if br.dirtied_boundary_fraction > 0.0:
             tier, _ = classify(br, cfg=cfg)
             assert tier != Tier.SCOPED_EDIT
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: invalidates_global_invariant — pre_doc / post_doc comparison
+# ---------------------------------------------------------------------------
+
+class TestInvalidatesGlobalInvariant:
+    """Fix 1: invalidates_global_invariant is inert without both docs; fires when
+    post_doc introduces a new violation code not present in pre_doc."""
+
+    def _ok_doc(self):
+        """Doc whose classes sum to 100% → no allocation_sum violation."""
+        cls = types.SimpleNamespace(target_pct=100.0, instruments=[])
+        return types.SimpleNamespace(classes=[cls], nvda_cap_pct=13.0)
+
+    def _bad_doc(self):
+        """Doc whose classes sum to 110% → allocation_sum violation fires."""
+        cls = types.SimpleNamespace(target_pct=110.0, instruments=[])
+        return types.SimpleNamespace(classes=[cls], nvda_cap_pct=13.0)
+
+    def test_inert_without_docs(self):
+        """No docs supplied → invalidates_global_invariant is False."""
+        g = _scalar_graph()
+        changes = [ChangeRequest(node_key="savings.monthly", new_value=1.0)]
+        br = size_blast_radius(g, changes)
+        assert br.invalidates_global_invariant is False
+
+    def test_inert_with_only_pre_doc(self):
+        """Only pre_doc supplied → still inert (need both)."""
+        g = _scalar_graph()
+        changes = [ChangeRequest(node_key="savings.monthly", new_value=1.0)]
+        br = size_blast_radius(g, changes, pre_doc=self._ok_doc())
+        assert br.invalidates_global_invariant is False
+
+    def test_inert_with_only_post_doc(self):
+        """Only post_doc supplied → still inert (need both)."""
+        g = _scalar_graph()
+        changes = [ChangeRequest(node_key="savings.monthly", new_value=1.0)]
+        br = size_blast_radius(g, changes, post_doc=self._bad_doc())
+        assert br.invalidates_global_invariant is False
+
+    def test_fires_when_new_violation_appears(self):
+        """pre_doc ok + post_doc with new violation → invalidates_global_invariant=True → T2."""
+        g = _scalar_graph()
+        changes = [ChangeRequest(node_key="savings.monthly", new_value=1.0)]
+        br = size_blast_radius(
+            g, changes,
+            pre_doc=self._ok_doc(),
+            post_doc=self._bad_doc(),
+        )
+        assert br.invalidates_global_invariant is True
+        tier, reason = classify(br)
+        assert tier == Tier.FULL_REBUILD
+        assert "invariant" in reason.lower()
+
+    def test_no_new_violation_stays_false(self):
+        """Both docs ok → invalidates_global_invariant remains False."""
+        g = _scalar_graph()
+        changes = [ChangeRequest(node_key="savings.monthly", new_value=1.0)]
+        br = size_blast_radius(
+            g, changes,
+            pre_doc=self._ok_doc(),
+            post_doc=self._ok_doc(),
+        )
+        assert br.invalidates_global_invariant is False
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: add_edge / remove_edge mutations applied to clone
+# ---------------------------------------------------------------------------
+
+class TestEdgeMutations:
+    """Fix 2: add_edge/remove_edge are applied to the clone; structural flags set correctly."""
+
+    def test_add_edge_cross_owner_t2(self):
+        """add_edge linking savings (equity_comp) → savings.total TARGET from fx (fx domain)
+        crosses the owner boundary → adds_cross_owner_dependency=True → T2."""
+        g = _cross_owner_edge_graph()
+        # Add edge: fx.rate → savings.total (cross-owner: fx domain → equity_comp domain)
+        changes = [
+            ChangeRequest(
+                node_key="fx.rate",
+                new_value=None,
+                supplies_value=False,
+                add_edge=True,
+                edge_target_key="savings.total",
+            )
+        ]
+        br = size_blast_radius(g, changes)
+        assert br.adds_cross_owner_dependency is True
+        assert br.introduces_structure is True
+        tier, reason = classify(br)
+        assert tier == Tier.FULL_REBUILD
+        assert "cross" in reason.lower() or "owner" in reason.lower()
+
+    def test_add_edge_same_owner_t1(self):
+        """add_edge within the same owner domain (savings.annual → savings.total, both equity_comp)
+        → introduces_structure=True, adds_cross_owner_dependency=False → T1."""
+        g = _cross_owner_edge_graph()
+        # Add edge: savings.annual → savings.total (same equity_comp domain)
+        changes = [
+            ChangeRequest(
+                node_key="savings.annual",
+                new_value=None,
+                supplies_value=False,
+                add_edge=True,
+                edge_target_key="savings.total",
+            )
+        ]
+        # Need savings.annual in the graph
+        g.add_node(Node(key="savings.annual", kind=NodeKind.INPUT, value=60_000.0))
+        br = size_blast_radius(g, changes)
+        assert br.introduces_structure is True
+        assert br.adds_cross_owner_dependency is False
+        # adds_or_removes_owner_domain should NOT be set (no new domain)
+        assert br.adds_or_removes_owner_domain is False
+        tier, reason = classify(br)
+        assert tier == Tier.BOUNDED_REDERIVE
+        assert "structure" in reason.lower() or "owner" in reason.lower()
+
+    def test_edge_actually_applied_to_clone_not_original(self):
+        """The original graph must not be mutated by an add_edge change request."""
+        g = _cross_owner_edge_graph()
+        original_inputs = g.get("savings.total").inputs
+        changes = [
+            ChangeRequest(
+                node_key="fx.rate",
+                new_value=None,
+                supplies_value=False,
+                add_edge=True,
+                edge_target_key="savings.total",
+            )
+        ]
+        size_blast_radius(g, changes)
+        # Original graph node must be unchanged
+        assert g.get("savings.total").inputs == original_inputs
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: supplied change to owner_authored node with no wired agent → T2
+# ---------------------------------------------------------------------------
+
+class TestMissingOwnerSuppliedChange:
+    """Fix 3: missing_owner_for_changed_node fires even when supplies_value=True
+    if the node's owner_domain has no wired backing agent."""
+
+    def test_supplied_change_to_unbuilt_owner_agent_t2(self):
+        """portfolio.target_weight is owner_authored in 'allocation' domain.
+        The allocation agent is not yet built (only in _LOCAL_OWNER_EXTENSIONS,
+        not _OWNER_BY_PREFIX). A supplied change → missing_owner=True → T2."""
+        g = _owner_authored_graph()
+        # supplies_value=True — a concrete value IS provided, but the 'allocation'
+        # agent doesn't exist as a wired scoped agent.
+        changes = [
+            ChangeRequest(
+                node_key="portfolio.target_weight",
+                new_value=0.30,
+                supplies_value=True,
+            )
+        ]
+        br = size_blast_radius(g, changes)
+        assert br.missing_owner_for_changed_node is True
+        tier, reason = classify(br)
+        assert tier == Tier.FULL_REBUILD
+        assert "owner" in reason.lower()
+
+    def test_deterministic_node_with_supplied_value_not_flagged(self):
+        """A supplied change to a deterministic node (savings.monthly, equity_comp domain)
+        must NOT set missing_owner_for_changed_node — equity_comp IS a wired agent."""
+        g = _scalar_graph()
+        changes = [
+            ChangeRequest(node_key="savings.monthly", new_value=6_000.0, supplies_value=True)
+        ]
+        br = size_blast_radius(g, changes)
+        assert br.missing_owner_for_changed_node is False
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: ValueError on direct value-set to a non-INPUT node
+# ---------------------------------------------------------------------------
+
+class TestDerivedNodeValueSetRaises:
+    """Fix 4: setting a value directly on a DERIVED/SURFACE node must raise ValueError."""
+
+    def test_change_to_derived_node_raises(self):
+        """savings.total is DERIVED; a ChangeRequest targeting it must raise ValueError."""
+        g = _scalar_graph()
+        changes = [
+            ChangeRequest(
+                node_key="savings.total",
+                new_value=999.0,
+                supplies_value=True,
+            )
+        ]
+        with pytest.raises(ValueError, match="savings.total"):
+            size_blast_radius(g, changes)
+
+    def test_change_to_input_node_does_not_raise(self):
+        """Sanity: INPUT node is always ok."""
+        g = _scalar_graph()
+        changes = [ChangeRequest(node_key="savings.monthly", new_value=1.0, supplies_value=True)]
+        br = size_blast_radius(g, changes)  # must not raise
+        assert br is not None
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: T2 intra-precedence tests
+# ---------------------------------------------------------------------------
+
+class TestT2Precedence:
+    """Fix 5: T2 intra-precedence ordering is pinned."""
+
+    def _br(self, **overrides) -> BlastRadius:
+        defaults = dict(
+            dirtied_keys=(),
+            owner_domains=frozenset({"withdrawal_sequencer"}),
+            flipped_hard_verdicts=(),
+            introduces_structure=False,
+            structure_scope="none",
+            changed_policy_axes=frozenset(),
+            changes_plan_identity_axis=False,
+            adds_or_removes_owner_domain=False,
+            adds_cross_owner_dependency=False,
+            invalidates_global_invariant=False,
+            missing_owner_for_changed_node=False,
+            touched_rebuild_boundaries=frozenset(),
+            touches_owner_authored_surface=False,
+            dirtied_boundary_fraction=0.0,
+        )
+        defaults.update(overrides)
+        return BlastRadius(**defaults)
+
+    def test_identity_beats_invalidates_global_invariant(self):
+        """changes_plan_identity_axis fires BEFORE invalidates_global_invariant
+        in the precedence table (identity is 2nd, invariant is 5th)."""
+        br = self._br(
+            changes_plan_identity_axis=True,
+            invalidates_global_invariant=True,
+        )
+        tier, reason = classify(br)
+        assert tier == Tier.FULL_REBUILD
+        # Reason should reflect the FIRST trigger = identity, not invariant
+        assert "identity" in reason.lower() or "policy" in reason.lower()
+        assert "invariant" not in reason.lower()
+
+    def test_cross_owner_dependency_beats_invalidates_global_invariant(self):
+        """adds_cross_owner_dependency fires BEFORE invalidates_global_invariant
+        (cross-owner is 4th, invariant is 5th in the T2 precedence table)."""
+        br = self._br(
+            adds_cross_owner_dependency=True,
+            invalidates_global_invariant=True,
+        )
+        tier, reason = classify(br)
+        assert tier == Tier.FULL_REBUILD
+        # Reason should reflect the FIRST trigger = cross-owner
+        assert "cross" in reason.lower() or "owner" in reason.lower()
+        assert "invariant" not in reason.lower()
+
+    def test_missing_owner_beats_all_other_t2_triggers(self):
+        """missing_owner is the very first T2 check — beats everything."""
+        br = self._br(
+            missing_owner_for_changed_node=True,
+            changes_plan_identity_axis=True,
+            adds_or_removes_owner_domain=True,
+            adds_cross_owner_dependency=True,
+            invalidates_global_invariant=True,
+        )
+        tier, reason = classify(br)
+        assert tier == Tier.FULL_REBUILD
+        assert "owner" in reason.lower()
+        assert "invariant" not in reason.lower()
+        assert "cross" not in reason.lower()
 
 
 # ---------------------------------------------------------------------------

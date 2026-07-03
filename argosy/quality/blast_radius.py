@@ -17,10 +17,24 @@ DESIGN CHOICES:
   * The ``missing_owner_for_changed_node`` flag doubles as the unsupplied-figure
     guard: an owner_authored / synthesis_authored node changed without a
     supplied concrete value has no bounded agent to produce the figure, so it
-    must escalate to T2 regardless of blast radius.
+    must escalate to T2 regardless of blast radius.  It also fires when a
+    supplied change targets such a node whose owner_domain has no wired agent
+    (falls through to _DEFAULT_OWNER_ROLE or resolves to a _LOCAL_OWNER_EXTENSIONS
+    domain — the allocation topic-owner agent is not yet built).
   * All dataclasses are frozen to prevent accidental mutation of intermediate
     sizer results.
   * This module is PURE / DETERMINISTIC: no DB, no LLM, no network.
+
+KNOWN GAP — invalidates_global_invariant:
+  The sizer works on a graph clone, but the plan document (the allocations, prose,
+  etc.) is NOT modelled in the derivation graph today.  Therefore the sizer cannot
+  reconstruct the POST-change document from the graph alone.  The
+  ``invalidates_global_invariant`` field is INERT unless the caller supplies BOTH
+  ``pre_doc`` and ``post_doc`` to size_blast_radius().  This is an HONEST gap — it
+  does NOT produce false-negatives in production because the endpoint / promotion
+  gate runs evaluate_plan_invariants() directly on the resulting plan object as its
+  own safety net; an invariant break can never ship even though the sizer cannot
+  predict it here.  The gap will close once allocation is modelled in the graph.
 """
 from __future__ import annotations
 
@@ -30,7 +44,12 @@ from enum import Enum
 from typing import Any, Sequence
 
 from argosy.quality.derivation_graph import DerivationGraph, Node, NodeKind
-from argosy.quality.plan_node_meta import AuthoringMode, node_meta
+from argosy.quality.plan_node_meta import (
+    AuthoringMode,
+    _ALL_OWNER_PREFIXES,
+    _OWNER_BY_PREFIX,
+    node_meta,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +121,11 @@ class BlastRadius:
     """True when a new edge crosses an owner domain boundary."""
 
     invalidates_global_invariant: bool
-    """True when evaluate_plan_invariants flips ok→not-ok (new violation)."""
+    """True when evaluate_plan_invariants flips ok→not-ok (new violation).
+
+    INERT unless both pre_doc and post_doc are supplied to size_blast_radius().
+    See module docstring for the documented gap.
+    """
 
     missing_owner_for_changed_node: bool
     """True when an owner_authored / synthesis_authored node is changed without
@@ -148,6 +171,14 @@ class ChangeRequest:
         ChangeRequest(node_key="old.key", new_value=None, supplies_value=False,
                       remove_node=True)
 
+    Structural — add an edge from node_key to edge_target_key:
+        ChangeRequest(node_key="src.key", new_value=None, supplies_value=False,
+                      add_edge=True, edge_target_key="dst.key")
+
+    Structural — remove an edge:
+        ChangeRequest(node_key="src.key", new_value=None, supplies_value=False,
+                      remove_edge=True, edge_target_key="dst.key")
+
     ``supplies_value=False`` on an owner_authored or synthesis_authored node
     triggers T2 (no bounded agent can produce the figure without authoring
     machinery that does not yet exist).
@@ -170,6 +201,21 @@ class ChangeRequest:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+# The set of owner domains that have a wired agent (synced with ladder_participants
+# via _OWNER_BY_PREFIX).  Domains that only appear in _LOCAL_OWNER_EXTENSIONS are
+# topic-owner stubs not yet backed by a real agent.
+_WIRED_OWNER_DOMAINS: frozenset[str] = frozenset(v for _, v in _OWNER_BY_PREFIX)
+
+
+def _has_no_bounded_owner(owner_domain: str) -> bool:
+    """True when the owner_domain has no real wired agent.
+
+    Domains in _LOCAL_OWNER_EXTENSIONS (e.g. 'allocation') are named for policy
+    consistency but the backing agent does not yet exist → treat as unbounded.
+    """
+    return owner_domain not in _WIRED_OWNER_DOMAINS
+
 
 def _owner_domains_for_keys(keys: Sequence[str]) -> frozenset[str]:
     return frozenset(node_meta(k).owner_domain for k in keys)
@@ -221,17 +267,71 @@ def _apply_changes_to_clone(
             changed_keys.add(cr.node_key)
             continue
 
-        # ---- scalar value change on an INPUT node ------------------------
+        # ---- structural: add edge ----------------------------------------
+        # Semantics: the TARGET node gains a new inbound edge from node_key.
+        # Rebuild the target node with inputs extended (tuple, so we replace).
+        if cr.add_edge and cr.edge_target_key is not None:
+            introduces_structure = True
+            target = clone.get(cr.edge_target_key)
+            if cr.node_key not in target.inputs:
+                new_inputs = target.inputs + (cr.node_key,)
+                # Replace the node with updated inputs (Node is a plain dataclass).
+                clone._nodes[cr.edge_target_key] = Node(  # noqa: SLF001
+                    key=target.key,
+                    kind=target.kind,
+                    value=target.value,
+                    inputs=new_inputs,
+                    recipe=target.recipe,
+                    compute_version=target.compute_version,
+                    input_hash=None,  # invalidate: inbound structure changed
+                )
+            # Detect cross-owner dependency: does src domain != target domain?
+            src_domain = node_meta(cr.node_key).owner_domain
+            dst_domain = node_meta(cr.edge_target_key).owner_domain
+            if src_domain != dst_domain:
+                adds_cross_owner_dep = True
+            changed_keys.add(cr.edge_target_key)
+            continue
+
+        # ---- structural: remove edge -------------------------------------
+        if cr.remove_edge and cr.edge_target_key is not None:
+            introduces_structure = True
+            target = clone.get(cr.edge_target_key)
+            new_inputs = tuple(k for k in target.inputs if k != cr.node_key)
+            clone._nodes[cr.edge_target_key] = Node(  # noqa: SLF001
+                key=target.key,
+                kind=target.kind,
+                value=target.value,
+                inputs=new_inputs,
+                recipe=target.recipe,
+                compute_version=target.compute_version,
+                input_hash=None,
+            )
+            changed_keys.add(cr.edge_target_key)
+            continue
+
+        # ---- scalar value change -----------------------------------------
+        # A change targeting a non-INPUT node (DERIVED/SURFACE) is invalid:
+        # derived values are computed by their recipe from inputs — hand-setting
+        # them bypasses the derivation chain and silently under-sizes the blast
+        # radius (dirtied set comes back empty → T0 instead of the correct tier).
+        # Per change-adjudication doctrine SET_DERIVED is illegal; raise loudly.
+        node = clone.get(cr.node_key)
+        if node.kind is not NodeKind.INPUT:
+            raise ValueError(
+                f"ChangeRequest targets '{cr.node_key}' which is a {node.kind.value} node, "
+                f"not an INPUT. Setting a value directly on a derived/surface node bypasses "
+                f"the derivation chain. Change the node's inputs or recipe instead."
+            )
+
         # If supplies_value=False, we still mark the key as changed (so
         # blast-radius fields like owner_domains and missing_owner are
         # computed correctly) but do NOT set a value on the clone — there
         # is no concrete value to propagate, and _detect_missing_owner will
         # flag T2 before any dependent recomputation is needed.
-        node = clone.get(cr.node_key)
-        if node.kind is NodeKind.INPUT:
-            if cr.supplies_value:
-                clone.set_input(cr.node_key, cr.new_value)
-            changed_keys.add(cr.node_key)
+        if cr.supplies_value:
+            clone.set_input(cr.node_key, cr.new_value)
+        changed_keys.add(cr.node_key)
 
     # Determine structural scope
     if introduces_structure:
@@ -244,6 +344,9 @@ def _apply_changes_to_clone(
             # Domain removed
             structure_scope = "new_owner_domain"
             adds_or_removes_domain = True
+        elif adds_cross_owner_dep:
+            # Cross-owner edge added (domains didn't change set, but a new link crosses)
+            structure_scope = "cross_owner"
         else:
             changed_domain_set = _owner_domains_for_keys(list(changed_keys))
             if len(changed_domain_set) > 1:
@@ -266,19 +369,32 @@ def _detect_missing_owner(
     clone: DerivationGraph,
 ) -> bool:
     """Return True if any change is unsupplied on an owner_authored /
-    synthesis_authored node, OR if such a node has no explicit prefix mapping.
+    synthesis_authored node, OR if a SUPPLIED change targets such a node that
+    has no bounded (wired) owner agent.
 
     WHY: the only scoped-edit agent today is a deterministic rewrite;
     generating a new judgment figure requires full owner-agent authoring
     machinery.  Until that exists, any unsupplied figure must escalate to T2.
+    Similarly, a node whose owner_domain has no wired agent (e.g. 'allocation'
+    — the topic-owner stub in _LOCAL_OWNER_EXTENSIONS) cannot be handled by any
+    scoped agent regardless of whether a concrete value is supplied.
     """
     for cr in changes:
+        # Skip structural-only requests (add/remove node/edge without a value change)
+        if cr.add_node or cr.remove_node or cr.add_edge or cr.remove_edge:
+            continue
         meta = node_meta(cr.node_key)
         authored = meta.authoring_mode in (
             AuthoringMode.owner_authored,
             AuthoringMode.synthesis_authored,
         )
-        if authored and not cr.supplies_value:
+        if not authored:
+            continue
+        # Unsupplied figure on an authored node → T2 (no agent can produce it)
+        if not cr.supplies_value:
+            return True
+        # Supplied but no wired agent → T2 (no scoped agent can accept the edit)
+        if _has_no_bounded_owner(meta.owner_domain):
             return True
     return False
 
@@ -308,7 +424,8 @@ def size_blast_radius(
     graph: DerivationGraph,
     change_requests: Sequence[ChangeRequest],
     *,
-    doc: Any = None,
+    pre_doc: Any = None,
+    post_doc: Any = None,
 ) -> BlastRadius:
     """Compute the predicted BlastRadius of ``change_requests`` on ``graph``.
 
@@ -318,13 +435,20 @@ def size_blast_radius(
     Args:
         graph:           The live derivation graph (read-only after entry).
         change_requests: Sequence of proposed changes to evaluate.
-        doc:             Optional plan document; when supplied,
-                         evaluate_plan_invariants is run on the post-change
-                         state and ``invalidates_global_invariant`` is derived
-                         from whether a NEW violation appeared.
+        pre_doc:         Optional pre-change plan document.  When BOTH pre_doc
+                         and post_doc are supplied, evaluate_plan_invariants is
+                         run on each and ``invalidates_global_invariant`` is set
+                         when a NEW violation code appears in post_doc that was
+                         not present in pre_doc.  When either is absent the
+                         field is False (inert) — see module docstring.
+        post_doc:        Optional post-change plan document (see pre_doc).
 
     Returns:
         A frozen BlastRadius describing the predicted impact.
+
+    Raises:
+        ValueError: if any ChangeRequest attempts to set a value directly on a
+                    non-INPUT (DERIVED/SURFACE) node.
     """
     # ---- 0. Clone — isolate from the live graph --------------------------
     # copy.deepcopy works: recipes (Callable) are copied by reference (pure
@@ -398,14 +522,16 @@ def size_blast_radius(
     # ---- 11. Missing owner / unsupplied figure ---------------------------
     missing_owner_for_changed_node = _detect_missing_owner(change_requests, clone)
 
-    # ---- 12. Global invariant (only when doc supplied) -------------------
+    # ---- 12. Global invariant — only when BOTH pre_doc and post_doc supplied ---
+    # HONEST GAP: when either is absent, this field stays False.  The endpoint /
+    # promotion gate runs evaluate_plan_invariants() directly on the resulting plan
+    # object as its own safety net, so an invariant break can never ship even though
+    # the sizer cannot predict it here (allocation is not yet modelled in the graph).
     invalidates_global_invariant = False
-    if doc is not None:
+    if pre_doc is not None and post_doc is not None:
         from argosy.quality.plan_risk_kernel import evaluate_plan_invariants
-        # Run on pre-change state too to detect NEW violations only
-        pre_report = evaluate_plan_invariants(doc)
-        post_report = evaluate_plan_invariants(doc)
-        # A new violation = post has violations that pre did not have
+        pre_report = evaluate_plan_invariants(pre_doc)
+        post_report = evaluate_plan_invariants(post_doc)
         pre_codes = {v.code for v in pre_report.violations}
         post_codes = {v.code for v in post_report.violations}
         if post_codes - pre_codes:
