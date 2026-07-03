@@ -75,7 +75,15 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "their own gaps — just don't STARVE the US sleeves to get there.\n"
             "  - DOMICILE / ESTATE. Prefer Irish UCITS (non-US-situs) instruments; "
             "the only sanctioned US-situs name is NVDA. Avoid opening new US-situs "
-            "estate exposure.\n\n"
+            "estate exposure.\n"
+            "  - MARKET REGIME. Read the MARKET CONTEXT below and let it shape the "
+            "equity-vs-defensive and US-vs-ex-US balance — do NOT reflexively deploy "
+            "everything into equity. If fear is low and equities look extended while "
+            "cash/short bonds yield well, it is legitimate to weight the defensive and "
+            "international sleeves more and stage into the richest equity. Reason with "
+            "the data you are given; if a field you would want (e.g. equity valuation, "
+            "real yields, credit spreads) is absent, say so in the rationale rather "
+            "than assuming.\n\n"
             "HARD RULES:\n"
             "  - Conservation: sum(buys.amount_usd) MUST equal `cash_to_deploy`, and "
             "`cash_to_deploy` + `cash_to_reserve` MUST equal the deployable amount. "
@@ -142,7 +150,8 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             f"SOURCED INSTRUMENT FACTS (US-equity look-through — trust THESE over labels):\n"
             f"{facts_lines}\n\n"
             f"CURRENT HOLDINGS (USD):\n{holdings_lines}\n\n"
-            f"POLICY SIGNALS: {p.get('policy_signals') or '(none)'}\n\n"
+            f"MARKET CONTEXT (current regime — factor into equity-vs-defensive & "
+            f"US-vs-ex-US):\n{self._market_lines(p.get('policy_signals'))}\n\n"
             f"USER CONSTRAINTS: {p.get('user_constraints') or '(none)'}\n\n"
             + self._feedback_block(feedback)
             + "Author the AllocationProposal JSON now. Every buy is a plan-menu ticker "
@@ -150,6 +159,34 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "account for every dollar (deploy + reserve = deployable)."
         )
         return system, user
+
+    @staticmethod
+    def _market_lines(signals: dict | None) -> str:
+        """Render the live market/macro regime for the prompt. Labels the fields
+        we DO have (S&P level, VIX, USD/NIS, BoI rate, oil, CPI + a NVDA quote) and
+        is explicit about freshness; absent series (valuations / real yields / credit
+        spreads) are simply not shown, and the system prompt tells the author to say
+        so rather than assume them."""
+        if not signals:
+            return "  (no live market context available — say so in the rationale)"
+        snap = signals.get("snapshot") or {}
+        labels = {
+            "sp500": "S&P 500 level", "vix": "VIX (fear)", "usd_nis": "USD/NIS",
+            "boi_rate": "BoI policy rate %", "oil_wti": "Oil WTI", "cpi_yoy": "CPI YoY %",
+        }
+        lines = []
+        for key, label in labels.items():
+            if key in snap and snap[key]:
+                lines.append(f"  - {label}: {snap[key]:,.2f}")
+        nq = signals.get("nvda_quote") or {}
+        if nq.get("price"):
+            ok = nq.get("consistent")
+            tag = "verified" if ok is True else ("INCONSISTENT" if ok is False else "unverified")
+            lines.append(f"  - NVDA quote: ${nq['price']:,.2f} ({tag})")
+        stale = " [STALE — treat with caution]" if signals.get("is_stale") else ""
+        age = signals.get("as_of") or "unknown"
+        header = f"  (as of {age}{stale})"
+        return (header + "\n" + "\n".join(lines)) if lines else header
 
     @staticmethod
     def _feedback_block(feedback: list | None) -> str:

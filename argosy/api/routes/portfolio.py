@@ -1740,12 +1740,33 @@ def get_deploy_cash(
                         _cur_by_sleeve[_cb.label] = float(_cb.current_pct)
             except Exception as exc:  # noqa: BLE001 — gaps are best-effort
                 _log.warning("deploy_cash.breakdown_failed", error=str(exc)[:120])
+            # Live market/macro regime so the author reasons about the current
+            # environment (equity-vs-bond, US-vs-exUS) instead of deploying blind.
+            # Best-effort; the author still runs if this is unavailable.
+            _market_signals: dict = {}
+            try:
+                from argosy.services.deployment_market_context import (
+                    assemble_deployment_market_context,
+                )
+                _mc = assemble_deployment_market_context(db)
+                _market_signals = {
+                    "as_of": _mc.overall_age_label,
+                    "is_stale": _mc.is_any_stale,
+                    "snapshot": {k: float(v) for k, v in _mc.snapshot.items()},
+                }
+                if _mc.nvda is not None:
+                    _market_signals["nvda_quote"] = {
+                        "price": _mc.nvda.price, "consistent": _mc.nvda.consistent,
+                    }
+            except Exception as exc:  # noqa: BLE001 — market ctx is best-effort
+                _log.warning("deploy_cash.market_context_failed", error=str(exc)[:120])
             packet = build_decision_packet(
                 doc=doc, holdings_usd=holdings, deployable_usd=amount,
                 cash_usd=snap_cash,
                 nvda_cap_pct=float(getattr(doc, "nvda_cap_pct", 0.0) or 0.0),
                 nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
                 current_pct_by_sleeve=_cur_by_sleeve,
+                policy_signals=_market_signals,
                 user_constraints=(
                     "Earliest safe retirement is the prime directive. NVDA single-name "
                     "over-concentration is handled by the plan's SCHEDULED SELLS, not by "
