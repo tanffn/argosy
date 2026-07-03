@@ -44,6 +44,6 @@ Don't trust dated prose for "where we are." Use:
 - `docs/design/SDD.md` §0, §13, §18 — wave roadmap, refreshed regularly.
 - This `CLAUDE.md` only routes; it doesn't track active work.
 
-**Fresh session: start at `docs/handovers/2026-07-03-fleet-authors-pivot.md`** — the prime directive is now the **fleet-authors / determinism-verifies pivot** (a simple LLM prompt beat Argosy's deterministic allocation; invert it). The verifier spine + orchestration are SHIPPED + tested; next is the live `DeploymentAuthorAgent` + the `claude.exe` reliability wrapper (P0). Read memory `feedback_fleet_authors_determinism_verifies`, then skim `git log --oneline -25`.
+**Fresh session: start at `docs/handovers/2026-07-03-deployment-author-last-mile.md`** — the prime directive is the **fleet-authors / determinism-verifies pivot** (a simple LLM prompt beat Argosy's deterministic allocation; invert it). The full last mile is now SHIPPED + unit-tested on `feat/deployment-author-last-mile`: live `DeploymentAuthorAgent` + decision-packet builder + the P0 reliability wrapper (hard timeout + process-tree kill + circuit breaker) + `/deploy-cash` wired behind `deployment_author_enabled` (default off). NEXT = live proof through a running backend + the pending-CGT calculator + UI. Read memory `feedback_fleet_authors_determinism_verifies`, then skim `git log --oneline -25`.
 
 Prior milestone: proactive period directive + exposure-aware deployment + the 4-category NVDA sell protocol + the decision funnel exposed as beta (2026-07-02/03).

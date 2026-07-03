@@ -88,3 +88,93 @@ def test_invented_ticker_is_blocked():
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.BLOCK
     assert any("ZZZZ" in f.detail for f in r.failures)
+
+
+def test_schema_forbids_negative_money():
+    """Defense-in-depth: the schema itself rejects a negative reserve/deploy/amount."""
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AllocationProposal(cash_to_deploy=80_000.0, cash_to_reserve=-100.0)
+
+
+def test_negative_reserve_balancing_overdeploy_is_blocked():
+    """The exploit: a negative reserve balances an over-deploy through the pure
+    equality checks. Built via model_construct to simulate a schema bypass — the
+    verifier must BLOCK it regardless (it's the authoritative money gate)."""
+    p = AllocationProposal.model_construct(
+        cash_to_deploy=180_100.0, cash_to_reserve=-100.0, cash_reserved_for_tax=0.0,
+        buys=[Buy.model_construct(symbol="EXUS", amount_usd=180_100.0, sleeve="ex-US",
+                                  justification="", claimed_us_weight=0.0)],
+        sells=[], holds=[], rationale="",
+    )
+    r = verify_allocation_proposal(p, _packet())
+    assert r.status == GateStatus.BLOCK
+    assert any(f.code == "negative_amount" for f in r.failures)
+
+
+def test_missing_claimed_us_weight_is_bounced():
+    """A buy with no claimed_us_weight can't be cross-checked — must be REVISION."""
+    p = _ok_proposal().model_copy(update={
+        "buys": [Buy(symbol="EXUS", amount_usd=80_000.0, sleeve="ex-US",
+                     justification="", claimed_us_weight=None)],
+    })
+    r = verify_allocation_proposal(p, _packet())
+    assert r.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "missing_us_weight" for f in r.failures)
+
+
+def test_fwra_evasion_via_neutral_sleeve_still_caught():
+    """The evasion the reviewer flagged: buy FWRA into a 'Global diversifier' sleeve
+    with no 'ex-US' words. Omitting claimed_us_weight now trips missing_us_weight;
+    supplying a false 0.0 trips lookthrough_claim. Either way it can't pass ACCEPT."""
+    omitted = AllocationProposal(
+        cash_to_deploy=80_000.0, cash_reserved_for_tax=100_000.0,
+        buys=[Buy(symbol="FWRA", amount_usd=80_000.0, sleeve="Global diversifier",
+                  justification="adds non-NVDA breadth", claimed_us_weight=None)],
+    )
+    r1 = verify_allocation_proposal(omitted, _packet())
+    assert r1.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "missing_us_weight" for f in r1.failures)
+
+    false_claim = omitted.model_copy(update={
+        "buys": [Buy(symbol="FWRA", amount_usd=80_000.0, sleeve="Global diversifier",
+                     justification="adds non-NVDA breadth", claimed_us_weight=0.0)],
+    })
+    r2 = verify_allocation_proposal(false_claim, _packet())
+    assert r2.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "lookthrough_claim" for f in r2.failures)
+
+
+def test_sell_proceeds_credited_to_conservation():
+    """A deconcentration sell adds to the funds allocated: deploy+reserve+tax must
+    equal deployable + proceeds. A proposal that redeploys the proceeds balances;
+    one that ignores them fails conservation."""
+    # deployable 180k + sell 50k = 230k available; deploy 130k + reserve 0 + tax 100k.
+    ok = AllocationProposal(
+        cash_to_deploy=130_000.0, cash_reserved_for_tax=100_000.0,
+        buys=[Buy(symbol="EXUS", amount_usd=130_000.0, sleeve="ex-US",
+                  claimed_us_weight=0.0)],
+        sells=[Sell(symbol="NVDA", amount_usd=50_000.0, reason="deconcentrate")],
+    )
+    r_ok = verify_allocation_proposal(ok, _packet())
+    assert r_ok.status == GateStatus.ACCEPT, r_ok.failures
+
+    # Same sell but only the original 180k is placed → 50k proceeds vanish.
+    leak = ok.model_copy(update={
+        "cash_to_deploy": 80_000.0,
+        "buys": [Buy(symbol="EXUS", amount_usd=80_000.0, sleeve="ex-US",
+                     claimed_us_weight=0.0)],
+    })
+    r_leak = verify_allocation_proposal(leak, _packet())
+    assert r_leak.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "conservation" for f in r_leak.failures)
+
+
+def test_empty_known_symbols_fails_closed():
+    """No known-symbol universe → every buy is unvalidatable and BLOCKED (never
+    silently admitted)."""
+    p = _ok_proposal()
+    r = verify_allocation_proposal(p, _packet(known_symbols=set()))
+    assert r.status == GateStatus.BLOCK
+    assert any(f.code == "invented_ticker" for f in r.failures)

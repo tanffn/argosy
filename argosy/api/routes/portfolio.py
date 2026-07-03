@@ -1736,10 +1736,23 @@ def get_deploy_cash(
                     "did not hold cash back for tax. Pass pending_cgt_usd for a "
                     "scheduled sale so the reserve is enforced."
                 )
+            # Feed REAL NVDA look-through (CSPX/R1GR/FWRA re-buying NVDA is invisible
+            # to raw holdings["NVDA"]) so the author reasons over TRUE concentration —
+            # a core reason the deterministic engine lost. Best-effort.
+            _nvda_ltv = None
+            _book = None
+            try:
+                from argosy.services.deployment_funnel.from_plan import build_gate_inputs
+                _gi = build_gate_inputs(doc=doc, holdings_usd=holdings, cash_usd=snap_cash)
+                _nvda_ltv = _gi.current_effective_nvda_usd
+                _book = _gi.book_usd
+            except Exception as exc:  # noqa: BLE001 — fall back to raw holdings NVDA
+                _log.warning("deploy_cash.lookthrough_failed", error=str(exc)[:120])
             packet = build_decision_packet(
                 doc=doc, holdings_usd=holdings, deployable_usd=amount,
                 cash_usd=snap_cash, cgt_liability_usd=_cgt,
                 nvda_cap_pct=float(getattr(doc, "nvda_cap_pct", 0.0) or 0.0),
+                nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
                 user_constraints=(
                     "Earliest safe retirement is the prime directive; reduce NVDA "
                     "toward the plan cap (do not add US/NVDA-correlated exposure on a "
