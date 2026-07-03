@@ -147,6 +147,7 @@ def test_sell_proceeds_credited_to_conservation():
         buys=[Buy(symbol="EXUS", amount_usd=230_000.0, sleeve="ex-US",
                   claimed_us_weight=0.0)],
         sells=[Sell(symbol="NVDA", amount_usd=50_000.0, reason="deconcentrate")],
+        rationale="trim NVDA and redeploy the proceeds plus cash into ex-US",
     )
     r_ok = verify_allocation_proposal(ok, _packet())
     assert r_ok.status == GateStatus.ACCEPT, r_ok.failures
@@ -160,6 +161,21 @@ def test_sell_proceeds_credited_to_conservation():
     r_leak = verify_allocation_proposal(leak, _packet())
     assert r_leak.status == GateStatus.REVISION_REQUIRED
     assert any(f.code == "conservation" for f in r_leak.failures)
+
+
+def test_blank_rationale_on_a_real_move_is_bounced():
+    """A money recommendation must carry its reasoning: an otherwise-clean proposal
+    with a blank/whitespace rationale is REVISION_REQUIRED, so the loop re-authors
+    until the move is explained. It never reaches ACCEPT without a rationale."""
+    blank = _ok_proposal().model_copy(update={"rationale": "   "})
+    r = verify_allocation_proposal(blank, _packet())
+    assert r.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "missing_rationale" for f in r.failures)
+
+    # Same proposal WITH a rationale accepts — the check is completeness, not the
+    # decision (it never dictates what to buy).
+    r_ok = verify_allocation_proposal(_ok_proposal(), _packet())
+    assert r_ok.status == GateStatus.ACCEPT, r_ok.failures
 
 
 def test_empty_known_symbols_fails_closed():

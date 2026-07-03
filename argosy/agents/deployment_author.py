@@ -80,7 +80,10 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "sourced facts; a buy you call ex-US that is actually US-heavy is rejected.\n"
             "  - A sell may not exceed the held value of that symbol.\n"
             "  - Holding cash is valid ONLY with a stated reason in the rationale "
-            "(valuations / macro / awaiting deconcentration) — never idle residue.\n\n"
+            "(valuations / macro / awaiting deconcentration) — never idle residue.\n"
+            "  - ALWAYS fill `rationale` with a non-empty explanation of the move: "
+            "what it fills, what it deliberately declines, and why. A recommendation "
+            "with no reasoning is rejected.\n\n"
             "OUTPUT: a single JSON object conforming to the AllocationProposal schema. "
             "No prose outside the JSON."
         )

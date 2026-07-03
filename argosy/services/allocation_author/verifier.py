@@ -143,6 +143,19 @@ def verify_allocation_proposal(
             f"{_proceeds} (available ${available:,.0f}).",
             "revision"))
 
+    # A money recommendation MUST carry its reasoning. A blank rationale on any
+    # active disposition (buys / sells / a deliberate cash hold) is a revision, not
+    # an accept — the loop bounces it back so the author always explains the move.
+    # This checks the artifact is COMPLETE; it does not dictate the decision.
+    if (proposal.buys or proposal.sells or proposal.cash_to_reserve > _MONEY_EPS) \
+            and not (proposal.rationale or "").strip():
+        fails.append(GateFailure(
+            "missing_rationale",
+            "the proposal has no rationale — state why this allocation "
+            "(what it fills, what it declines, and why) so the recommendation "
+            "carries its reasoning.",
+            "revision"))
+
     for b in proposal.buys:
         # Require an explicit US-weight claim on every buy so the sourced cross-check
         # below can never be silently skipped (the text heuristic alone is evadable —

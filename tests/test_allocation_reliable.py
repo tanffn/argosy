@@ -28,6 +28,7 @@ def _good():
         cash_to_deploy=180_000.0,
         buys=[Buy(symbol="EXUS", amount_usd=120_000.0, sleeve="ex-US", claimed_us_weight=0.0),
               Buy(symbol="SPMV", amount_usd=60_000.0, sleeve="US low-vol", claimed_us_weight=1.0)],
+        rationale="fill the ex-US and low-vol gaps; no US-large-cap into a NVDA-heavy book",
     )
 
 
