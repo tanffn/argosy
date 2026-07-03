@@ -1,110 +1,99 @@
-# Handover — 2026-07-03 · the fleet-authors last mile (SHIPPED)
+# Handover — 2026-07-03 · fleet-authors last mile (SHIPPED to master + live-proven)
 
-**Branch:** `feat/deployment-author-last-mile` · base `master` · tree clean.
-Supersedes `2026-07-03-fleet-authors-pivot.md` (the spine handover). Backend must
-run in a persistent terminal (see §5).
+**Branch:** merged to `master` · **HEAD:** `6c066d5` · tree clean.
+Prime directive: the fleet-authors / determinism-verifies pivot
+([[feedback_fleet_authors_determinism_verifies]]). Backend runs in a persistent
+terminal (see §6).
 
 ---
 
-## 1. START HERE — what shipped
+## 1. START HERE — what's true now
 
-The fleet-authors / determinism-verifies pivot's **last mile is built + tested**. A
-plain LLM prompt beat Argosy's deterministic water-fill; the fix inverts it — the
-fleet AUTHORS the allocation, determinism VERIFIES it. The spine (verifier +
-author→verify→bounce flow) was already shipped. This session added the live author,
-the packet, the reliability wrapper, and the wiring:
+The pivot's last mile is **built, merged, and PROVEN LIVE against a real `claude.exe`.**
+The fleet AUTHORS the cash-deployment allocation; determinism VERIFIES it. It is
+behind `deployment_author_enabled` (default **off**), fully additive on `/deploy-cash`.
 
-- ✅ **DeploymentAuthorAgent** (`argosy/agents/deployment_author.py`) — LLM authors a
-  compact `AllocationProposal` in one holistic pass (look-through over labels, no US
-  on a concentrated book, reserve the CGT first, UCITS/estate-aware). One call, not a
-  debate fleet. Re-authors from the verifier's machine-readable failures on a bounce.
-  Dedicated `deployment_author` role: Opus 4.8, effort high, 180s SDK ceiling.
-- ✅ **Decision-packet builder** (`argosy/services/allocation_author/packet.py`) —
-  `build_decision_packet()` shapes holdings + deployable cash + plan menu (with
-  domicile) + NVDA look-through concentration + reserve shortfall + pending CGT +
-  sourced instrument facts + policy signals into the one object the author reasons
-  over and the verifier gates against. Pure, no LLM/DB.
-- ✅ **Reliability wrapper (P0)** (`argosy/services/allocation_author/reliable.py`) —
-  the fix that makes the flaky `claude.exe` money path usable: authoritative ~150s
-  hard timeout + **process-tree kill** (psutil, scoped to THIS process's own
-  claude.exe children — never the dev's Claude Code session) + retry-on-fresh-process
-  + **circuit breaker** (open/half-open/cooldown) + **packet-hash cache** +
-  **backend selection** (`_backend_override` hook in `BaseAgent._call_model`). Honest
-  degrade: `unavailable`/`rejected` → deterministic fallback, never a fabricated
-  allocation. LLM call + kill are injectable → fully unit-tested with no subprocess.
-- ✅ **/deploy-cash wiring** (behind `deployment_author_enabled`, default OFF) —
-  builds the packet, runs `authored_allocation`, attaches `authored` to the DTO:
-  accepted → primary recommendation; rejected/unavailable → `degraded=True` with the
-  deterministic `tiers` as the LABELLED fallback. Additive, never 500s.
-- ✅ **Acceptance test** (`tests/test_deployment_author_acceptance.py`) — the exact
-  $180k / 60%-NVDA / FWRA-known-US-heavy / $100k-pending-CGT case: verifier catches
-  today's failure, the bounce converges, the accepted allocation reserves the CGT,
-  accounts for every dollar, uses genuine ex-US (EXUS) not the US-heavy all-world fund.
+**Live proof (real data, zero injected inputs):** given Argosy's own detected idle
+cash ($170,980), the author produced an ACCEPTED, verified allocation in ~90–130s,
+first attempt — spreading across four under-target sleeves (EXUS/EIMI/IBTA/DPYA)
+weighted by gap, correctly declining the biggest raw gap (US core) because the book
+is 58.5% NVDA, and explaining itself. That is the prompt-quality reasoning that beat
+Argosy — now Argosy does it itself, gated.
 
-Test cluster: 36 pass (reliable 8, packet 6, author agent 4, acceptance 3, flow +
-verifier 12 (existing), deploy-cash wiring 4 — wait, counts vary; run the cluster).
+**Components (all on master):**
+- `argosy/agents/deployment_author.py` — the LLM author. `use_structured_output=False`
+  (the `--json-schema` path makes the bundled claude.exe exit-1; prose-JSON works),
+  `claude_code_max_retries=1`.
+- `argosy/services/allocation_author/packet.py` — `build_decision_packet()`: holdings,
+  deployable cash, plan menu **with per-sleeve current_pct + gap_to_target_pct**, NVDA
+  look-through concentration, sourced instrument facts, policy signals.
+- `argosy/services/allocation_author/reliable.py` — the P0 wrapper: hard ~150s timeout
+  + psutil **process-tree kill** (own children only) + retry-on-fresh-process +
+  circuit breaker + packet-hash cache + backend selection. **Confirmed live**: on a
+  claude.exe exit-1 storm it hit the timeout → killed children → retried → degraded
+  honestly, no hang.
+- `verifier.py` / `flow.py` — the gate + author→verify→bounce (spine, unchanged core).
+- `/deploy-cash` wiring (`api/routes/portfolio.py`) + `AuthoredAllocationDTO`
+  (`contracts.py`): accepted → primary; else `degraded=True` with the deterministic
+  `tiers` as the labelled fallback.
 
-## 2. Key decisions / judgment calls made this session
+## 2. What changed this session AFTER the first cut (corrections — read these)
 
-- **Backend for the money path:** no API key is configured in this env (env +
-  keychain both empty), so the money path runs on `claude_code` (the flaky CLI) — which
-  is why the reliability wrapper is genuinely P0. Made it **configurable**
-  (`deployment_author_backend`, default None → global): the day an API key is added,
-  one config flip routes the money decision to the subprocess-free `api_key` backend.
-- **Pending CGT is NOT auto-derived.** The directive exposes a sell tranche (NIS) but
-  no clean CGT figure; fabricating a half-right tax number would silently under-reserve
-  on the money path. So CGT is an explicit `pending_cgt_usd` query param; when absent,
-  the author DTO carries a visible caveat (nothing hidden) instead of a guessed reserve.
-  **Follow-up:** a proper pending-CGT calculator (tranche qty × basis × §102 × rates)
-  is the right durable fix so the reserve is enforced automatically.
+- **NO tax-reserve.** The initial design/test pre-reserved a "pending CGT" from
+  deployment cash. Ariel: CGT is paid from the sale that realizes it, not pre-funded
+  from unrelated idle cash. The whole tax-reserve machinery was REMOVED
+  (`cash_reserved_for_tax`, `cgt_liability_usd`, the `tax_reserve` gate, the
+  `pending_cgt_usd` param, the prompt language). Deployable is treated as net-of-tax.
+  **Do not reintroduce a pre-reserve.**
+- **Don't manipulate the test.** The first "live" run hand-fed a fake $100k CGT to
+  force a scenario — that tested the script, not Argosy. Live tests must use ONLY real
+  inputs (omit `cash_usd` → Argosy detects it).
+- **Cash-detection bug fixed.** `tradeable_holdings` swept a blank-ticker real-estate
+  row into cash ($69k), inflating detected cash to $239,980. Fixed → real $170,980.
+- **Plan-fit from within, NOT a gate.** Adding a deterministic proportionality gate was
+  rejected (over-engineering; re-introduces deterministic authorship). Instead the
+  packet feeds the author Argosy's canonical current-vs-target gaps
+  (`build_allocation_breakdown`) and the prompt says "fill the most under-target
+  sleeves first." Codex-endorsed. **Keep plan-fit in the author, never a gate.**
 
-## 3. NEXT — what's left
+## 3. NEXT — what's genuinely left
 
-- ⬜ **Live proof through the backend.** The whole author path is unit-proven with
-  injected fakes; it has NOT been run against a live `claude.exe`. Restart the backend
-  (§5), set `ARGOSY_DEPLOYMENT_AUTHOR_ENABLED=1`, and GET `/deploy-cash?cash_usd=180000
-  &pending_cgt_usd=...&user_id=ariel` to see the author actually produce + pass the
-  gate. Watch for timeout/circuit behaviour (the reason the wrapper exists).
-- ⬜ **Pending-CGT calculator** (see §2) so the reserve is auto-enforced.
-- ⬜ **UI:** render `dto.authored` on the deploy surface (primary when accepted, a
-  clear degraded banner + the labelled deterministic tiers otherwise).
-- ⬜ **Full suite (~3.5h) not run** this session; touched areas green. Run before PR.
-- ⬜ Merge `feat/deployment-author-last-mile` → master when the live proof is in.
+- ⬜ **UI:** render `dto.authored` on the deploy surface (primary when accepted; a
+  clear "degraded — deterministic fallback" banner + the labelled `tiers` otherwise).
+  Still the biggest gap — the feature is API-only today.
+- ⬜ **Off-plan redeployment:** the author only deploys *fresh cash*. The book carries
+  an "Individual Stocks (non-NVDA, to redeploy)" bucket at ~7.3% (target 0% — BRK/B,
+  GOOG, AMZN, RKT…). Consider letting the author *propose trims* of these toward the
+  plan (it can emit `sells`; the verifier already credits sell proceeds to
+  conservation). A real next step, ask Ariel before enabling sell-authoring by default.
+- ⬜ **Rationale robustness:** `rationale` came back empty on one run (LLM variance).
+  Consider making it non-optional / retry-if-blank so a money recommendation always
+  carries its reasoning.
+- ⬜ **api_key backend:** no key in this env, so the money path runs on the flaky
+  `claude_code` CLI (contained by the wrapper). Set `deployment_author_backend="api_key"`
+  once a key exists → subprocess-free, no exit-1 storms.
+- ⬜ **Full suite (~3.5h) not run** this session; touched clusters green (author +
+  packet + reliable + verifier + flow + engine + deploy-cash all pass).
 
-## 4. Adversarial review — verdict + fixes
+## 4. Reviews
 
-Money-path pieces reviewed adversarially (re-derived from raw files by a fresh
-reviewer — codex-tandem's `danger-full-access` sandbox is blocked by the auto-mode
-classifier, so an in-harness reviewer was used; satisfies "review must re-derive
-blind"). It found **2 real BLOCKERS, both now fixed** (commit "fix(author): close
-adversarial-review blockers"):
+Two adversarial passes this session. (1) In-harness reviewer on the money path → found
++ fixed 2 blockers (over-deploy via negative reserve; evadable look-through). (2) Codex
+(via `sandbox="workspace-write"` — `danger-full-access` is blocked by the auto-mode
+classifier, see [[reference_codex_tandem]]) diagnosed the exit-1 (structured output)
+and endorsed the plan-fit-from-within approach.
 
-1. **Over-deploy via negative reserve** — the conservation equalities let a negative
-   `cash_to_reserve` balance an over-deploy. Fixed: BLOCK-severity non-negativity in
-   the verifier + `ge=0` on the schema.
-2. **Evadable look-through** — optional `claimed_us_weight` + a dodgeable text
-   heuristic let FWRA pass as diversification. Fixed: `claimed_us_weight` now required
-   on every buy, so the sourced cross-check is un-skippable.
+## 5. Verifier invariants (what determinism checks — keep it to FACTS, not authorship)
+Non-negativity (BLOCK), invented ticker / fail-closed on empty known-symbols (BLOCK),
+sell>holdings (BLOCK), unsanctioned US-situs (BLOCK, NVDA exempt), conservation
+(deploy+reserve == deployable + sell proceeds), required `claimed_us_weight` +
+look-through vs sourced facts (revision). NO tax reserve, NO plan-proportionality gate.
 
-Also fixed from the review: sell-proceeds conservation, fail-closed `known_symbols`,
-and feeding REAL NVDA look-through into the packet. Non-blocking item left open: the
-pending-CGT / net-of-tax-deployable field could double-count if a caller misuses
-`pending_cgt_usd` — documented in the param, durable fix is the CGT calculator (§3).
-
-## 5. Run the backend
+## 6. Run the backend (author path on)
 ```
 ARGOSY_DEPLOYMENT_AUTHOR_ENABLED=true \
 ARGOSY_EXPENSE_SAMPLES_ROOT="D:/Google Drive/Family/Finances/Portfolio/Resources" \
   .venv/Scripts/python.exe -m uvicorn argosy.api.main:create_app --factory --port 8000
 ```
-
-## 6. Files
-- New: `argosy/agents/deployment_author.py`,
-  `argosy/services/allocation_author/{packet,reliable}.py`.
-- Changed: `argosy/agents/base.py` (deployment_author role tables + `_backend_override`
-  hook), `argosy/config.py` (`deployment_author_enabled` / `deployment_author_backend`),
-  `argosy/api/routes/portfolio.py` (`/deploy-cash` author branch + `pending_cgt_usd`),
-  `argosy/services/contracts.py` (`AuthoredAllocationDTO` + mapper).
-- Tests: `tests/test_allocation_{packet,reliable}.py`,
-  `tests/test_deployment_author_{agent,acceptance}.py`, `tests/test_deploy_cash_author.py`.
-- Spine (prior): `argosy/services/allocation_author/{proposal,instrument_facts,verifier,flow}.py`.
+Honest live test (nothing injected): `GET /api/portfolio/deploy-cash?user_id=ariel`
+(omit `cash_usd` so Argosy detects it). Takes ~90–150s (real claude.exe).
