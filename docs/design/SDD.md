@@ -385,6 +385,20 @@ Surfaced *because the team noticed*, not because the user asked.
 
 ---
 
+### 1.7 Plan vs execution — separation of concerns
+
+Argosy reasons on two distinct time horizons, and conflating them is a design error the system explicitly guards against. **The plan is strategic policy; execution is tactical maneuver inside that policy.**
+
+**The plan is strategic policy (5–30 years)** — the investment policy statement (§6.11 embodies it). It carries goals, the risk budget, durable allocation **bands** (min / target / max per sleeve), tax/estate constraints (non-US-person → UCITS preference), single-name caps, and structural diversifiers. It is a **policy, not a forecast**: it must be **regime-robust** — correct whether bonds are attractive today or not. A *cyclical* signal (the 10-year moves 50bps, VIX spikes, growth looks rich this quarter) never rewrites the plan. The plan admits only **secular** conditions — long-horizon capital-market assumptions, a durable real-rate or inflation-volatility regime, structural valuation starting points — and only through a **governed refresh**: versioned assumptions, threshold tests, and reviewer sign-off. *Secular is not a loophole for tactical drift.* Asking the plan "are bonds attractive now?" is a category error.
+
+**Execution is tactical (0–5 years)** — the deployment / allocation-author layer (§20.5 and the fleet-authored deploy path). It decides how to move *within* the plan's bands given **current** conditions (yields, valuations, credit spreads, liquidity, VIX) and the portfolio's **transition state**. Live regime data lives here, never in the plan. Execution owns transition logic: while a single-name concentration (NVDA) is above the plan's look-through cap, execution does not fill the plan's *steady-state* gaps that would deepen the correlated exposure (it does not add a US-growth tilt onto a growth-concentrated book), routing new capital to the genuinely diversifying and defensive sleeves until the concentration unwinds. A plan sleeve target is an *end-state*, not a "buy this today" instruction.
+
+**The interface is a one-way flag.** Execution — which watches the market daily — can raise a **plan-revisit flag** ("a *secular* shift is detected; the plan should be reviewed"), carrying evidence, a category, and a severity. Execution **never rewrites the plan**; it escalates. The plan defines the bands and hard constraints; execution operates and maneuvers inside them and reports back.
+
+**Portfolio physics are enforced deterministically.** Look-through exposure (direct **plus** fund-embedded single-name / factor / sector), the single-name cap measured on a *total-economic* basis, minimum defensive/real-asset allocations, and the transition constraints are computed and gated by deterministic code. Consistent with the **fleet-authors / determinism-verifies** doctrine (§20.5), the fleet **authors** allocations and the deterministic layer **verifies** them against these facts; agents produce judgment and explanations, they do not override the physics.
+
+---
+
 ## 2. System Architecture
 
 ![System architecture](diagrams/01-system-architecture.png)
