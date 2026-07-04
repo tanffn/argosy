@@ -7,6 +7,8 @@ from argosy.services.stock_decision import (
     actionable_verdicts,
     decide_holdings,
     research_bundle,
+    run_holdings_review,
+    write_stock_decision_proposal,
 )
 
 
@@ -54,3 +56,48 @@ def test_hold_stays_silent_only_actionable_surface():
     assert len(verdicts) == 2                      # both decided (audit trail)
     surfaced = actionable_verdicts(verdicts)
     assert [v.ticker for v in surfaced] == ["RKT"]  # only the TRIM surfaces; HOLD silent
+
+
+def test_run_holdings_review_writes_only_actionable(monkeypatch):
+    verdicts_by_ticker = {
+        "RKT": StockDecisionOutput(ticker="RKT", verdict="SELL", confidence="HIGH", reason="thesis broken"),
+        "CSPX": StockDecisionOutput(ticker="CSPX", verdict="HOLD", confidence="HIGH", reason="intact"),
+        "TINY": StockDecisionOutput(ticker="TINY", verdict="SELL", confidence="LOW", reason="n/a"),
+    }
+    written = []
+
+    def _decide(ticker, *, context, bundle, user_id="ariel"):
+        return verdicts_by_ticker[ticker]
+
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"RKT": 42_000.0, "CSPX": 156_000.0, "TINY": 200.0},
+        fetchers={"news": lambda t: "headline"},
+        decide=_decide,
+        sink=lambda v: written.append(v.ticker) or object(),
+    )
+    # TINY skipped by triage; RKT (SELL) written; CSPX (HOLD) silent.
+    assert summary["reviewed"] == 2
+    assert summary["actionable"] == 1
+    assert written == ["RKT"]
+
+
+def test_write_stock_decision_proposal_builds_actionproposal():
+    captured = {}
+
+    class _FakeDb:
+        def add(self, row): captured["row"] = row
+        def commit(self): pass
+        def rollback(self): pass
+
+    v = StockDecisionOutput(
+        ticker="RKT", verdict="TRIM", confidence="MED",
+        reason="housing macro deteriorating", evidence=["-27% YTD"], data_gaps=["fundamentals"],
+    )
+    row = write_stock_decision_proposal(_FakeDb(), "ariel", v)
+    assert row is captured["row"]
+    assert row.kind == "stock_decision"
+    assert row.severity == "warning"                         # TRIM -> warning
+    assert row.dedup_key == "stock_decision:ariel:RKT"
+    assert "Trim RKT" in row.summary
+    assert "-27% YTD" in row.rationale_md and "fundamentals" in row.rationale_md

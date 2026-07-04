@@ -9,6 +9,14 @@ from argosy.services.stock_decision.service import (
     actionable_verdicts,
     decide_holdings,
     research_bundle,
+    run_holdings_review,
+    write_stock_decision_proposal,
 )
 
-__all__ = ["research_bundle", "decide_holdings", "actionable_verdicts"]
+__all__ = [
+    "research_bundle",
+    "decide_holdings",
+    "actionable_verdicts",
+    "run_holdings_review",
+    "write_stock_decision_proposal",
+]
