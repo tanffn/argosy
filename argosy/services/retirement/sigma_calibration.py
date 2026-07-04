@@ -35,6 +35,11 @@ from argosy.services.wealth_dashboard import _latest_snapshot
 # Asset-class sigma defaults (historical post-1970 annualized).
 _SIGMA_BY_CLASS: dict[str, float] = {
     "concentrated_equity": 0.45,  # single-stock heavy (NVDA, TSLA, etc.)
+    "high_growth_basket": 0.35,   # diversified ~8-12 name global high-growth basket:
+                                   # single-stock vol ~0.50-0.60 diversified across
+                                   # imperfectly-correlated names (avg pairwise rho
+                                   # ~0.25-0.35) lands the basket ~0.33-0.36, well
+                                   # below the 0.45 single-name level (codex-verified).
     "us_equity": 0.18,             # diversified US (S&P 500)
     "us_growth_equity": 0.21,      # large-cap growth tilt (R1GR/IWF-like): higher
                                    # beta (~1.15) + mega-cap concentration than the

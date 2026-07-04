@@ -97,6 +97,13 @@ class SnapshotOrLiveProvider:
         self._snap = {k.upper(): v for k, v in (snapshot_prices or {}).items()}
         self._live: dict[str, float | None] = {}
 
+    # yfinance ticker-suffix candidates: bare first (US listings), then the UCITS
+    # exchange suffixes (LSE / Amsterdam / Milan / Xetra). Irish-domiciled UCITS
+    # ETFs (FUSA, R1GR, SPMV, EXUS, IBTA, ...) are NOT quoted under their bare
+    # symbol on Yahoo — they need e.g. "FUSA.L". Bare-first keeps US symbols on
+    # their canonical listing and avoids cross-exchange ticker collisions.
+    _YF_QUOTE_SUFFIXES: tuple[str, ...] = ("", ".L", ".AS", ".MI", ".DE")
+
     def _live_quote(self, symbol: str) -> float | None:
         if symbol in self._live:
             return self._live[symbol]
@@ -104,11 +111,18 @@ class SnapshotOrLiveProvider:
         try:
             from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
-            q = asyncio.run(YFinanceAdapter().get_quote(symbol))
-            price = float(getattr(q, "price", None)) if q is not None else None
+            adapter = YFinanceAdapter()
+            for suffix in self._YF_QUOTE_SUFFIXES:
+                q = asyncio.run(adapter.get_quote(f"{symbol}{suffix}"))
+                p = float(getattr(q, "price", None)) if q is not None and getattr(q, "price", None) is not None else None
+                if p is not None:
+                    price = p
+                    break
         except Exception as exc:  # noqa: BLE001 — best-effort; stale => defer
             _log.info("deploy_funnel.quote_miss", extra={"symbol": symbol, "err": str(exc)})
             price = None
+        if price is None:
+            _log.info("deploy_funnel.quote_miss", extra={"symbol": symbol, "err": "no price on any listing suffix"})
         self._live[symbol] = price
         return price
 

@@ -14,6 +14,8 @@ import pytest
 
 from argosy.services.allocation_plan import (
     CASH_FRAC_OF_FI,
+    HIGH_GROWTH_DEFAULT_SIGMA,
+    HIGH_GROWTH_LABEL,
     NVDA_TARGET_PCT,
     _ALTERNATIVES_LABEL,
     _blended_sigma_for,
@@ -63,6 +65,60 @@ from argosy.services.sigma_glidepath import (
     map_glidepath_class_to_sigma_class,
     sigma_from_composition,
 )
+
+
+class TestHighGrowthSleeve:
+    """The permanent ~5% high-growth / high-potential moonshot sleeve, modeled like
+    Alternatives: a fixed weight held out before the equity renorm, whose sourced
+    sigma feeds the FI solver so the covariance sigma stays on the anchor."""
+
+    def test_zero_high_growth_is_byte_identical_default(self) -> None:
+        assert build_target_allocation(high_growth_pct=0.0) == build_target_allocation()
+
+    def test_sleeve_appears_at_its_target(self) -> None:
+        alloc = build_target_allocation(high_growth_pct=5.0)
+        hg = [c for c in alloc.classes if c.label == HIGH_GROWTH_LABEL]
+        assert hg, "high-growth sleeve missing from classes"
+        assert hg[0].target_pct == pytest.approx(5.0, abs=0.05)
+        assert hg[0].sigma_class == "high_growth_basket"
+
+    def test_weights_sum_to_100_with_high_growth(self) -> None:
+        alloc = build_target_allocation(high_growth_pct=5.0)
+        assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.1)
+
+    def test_blended_sigma_still_on_anchor_with_high_growth(self) -> None:
+        alloc = build_target_allocation(high_growth_pct=5.0)
+        assert alloc.blended_sigma <= alloc.anchor_sigma + 1e-6
+
+    def test_high_growth_forces_at_least_as_much_fi_as_baseline(self) -> None:
+        # A volatile 0.45-sigma sleeve can only push the FI solver up (or equal),
+        # never down — it adds risk the FI must offset to hold the same anchor.
+        base = build_target_allocation().fi_pct
+        hg = build_target_allocation(high_growth_pct=5.0).fi_pct
+        assert hg >= base
+
+    def test_high_growth_pinned_through_authored_overrides(self) -> None:
+        # A fixed strategic sleeve must NOT drift when OTHER sleeves are pinned by
+        # authored overrides (regression: a 5% sleeve crept to 5.15% alongside the
+        # v63 NVDA/core/growth overrides).
+        ov = {
+            "Strategic single-stock (NVDA)": 8.0,
+            "US broad-market core": 31.49,
+            "US growth tilt (ex-NVDA)": 11.0,
+        }
+        alloc = build_target_allocation(authored_overrides=ov, high_growth_pct=5.0)
+        hg = [c for c in alloc.classes if c.label == HIGH_GROWTH_LABEL]
+        assert hg and hg[0].target_pct == pytest.approx(5.0, abs=0.01)
+        assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.1)
+
+    def test_sourced_sigma_is_honored(self) -> None:
+        # A higher sourced sigma forces at least as much FI as the default.
+        default_fi = build_target_allocation(high_growth_pct=5.0).fi_pct
+        hotter_fi = build_target_allocation(
+            high_growth_pct=5.0, high_growth_sigma=0.60,
+        ).fi_pct
+        assert hotter_fi >= default_fi
+        assert HIGH_GROWTH_DEFAULT_SIGMA == pytest.approx(0.35)
 
 
 class TestDeriveFiWeight:

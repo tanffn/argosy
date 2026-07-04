@@ -134,6 +134,10 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
                 (p.get("holdings") or {}).items(), key=lambda kv: -kv[1]
             )
         ) or "  (none)"
+        research = p.get("candidate_research") or {}
+        research_lines = "\n".join(
+            f"  - {sym}: {summary}" for sym, summary in sorted(research.items())
+        )
 
         user = (
             f"DEPLOYABLE CASH (already net-of-tax): "
@@ -152,7 +156,14 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             f"CURRENT HOLDINGS (USD):\n{holdings_lines}\n\n"
             f"MARKET CONTEXT (current regime — factor into equity-vs-defensive & "
             f"US-vs-ex-US):\n{self._market_lines(p.get('policy_signals'))}\n\n"
-            f"USER CONSTRAINTS: {p.get('user_constraints') or '(none)'}\n\n"
+            + (
+                "FRESH PER-CANDIDATE RESEARCH (live news/price on names you may "
+                "buy — weigh it; if a name's news is materially negative, prefer "
+                "another instrument for that sleeve):\n"
+                f"{research_lines}\n\n"
+                if research_lines else ""
+            )
+            + f"USER CONSTRAINTS: {p.get('user_constraints') or '(none)'}\n\n"
             + self._feedback_block(feedback)
             + "Author the AllocationProposal JSON now. Every buy is a plan-menu ticker "
             "(or a top-up of a current holding) with an honest `claimed_us_weight`; "

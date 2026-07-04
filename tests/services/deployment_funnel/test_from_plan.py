@@ -3,10 +3,59 @@ from types import SimpleNamespace
 
 from argosy.services.deployment_funnel.contracts import CandidateStatus
 from argosy.services.deployment_funnel.from_plan import (
+    SnapshotOrLiveProvider,
     build_gate_inputs,
     plan_to_candidates,
     run_preflight_for_plan,
 )
+
+
+class _StubQuote:
+    def __init__(self, price):
+        self.price = price
+
+
+def test_live_quote_retries_ucits_exchange_suffix(monkeypatch):
+    """Regression: Irish UCITS ETFs (FUSA, R1GR, SPMV, ...) are NOT quoted under
+    their bare symbol on Yahoo — they need an exchange suffix like '.L'. The
+    provider must try bare first (US listings), then the UCITS suffixes, instead
+    of giving up on the bare miss (which zeroed/deferred every UCITS buy)."""
+    calls: list[str] = []
+
+    class _FakeAdapter:
+        async def get_quote(self, ticker):
+            calls.append(ticker)
+            return _StubQuote(42.0) if ticker == "FUSA.L" else _StubQuote(None)
+
+    # _live_quote imports YFinanceAdapter from the adapter module at call time.
+    monkeypatch.setattr(
+        "argosy.adapters.data.yfinance_adapter.YFinanceAdapter",
+        lambda *a, **k: _FakeAdapter(),
+    )
+    prov = SnapshotOrLiveProvider()  # empty snapshot -> forces the live path
+    price = prov.quote("FUSA")
+    assert price == 42.0
+    assert calls[0] == "FUSA", "must try the bare symbol first (US listings)"
+    assert "FUSA.L" in calls, "must retry the LSE (.L) suffix for a UCITS miss"
+
+
+def test_live_quote_prefers_bare_us_symbol(monkeypatch):
+    """A US symbol resolves on its bare listing and must NOT be over-queried on
+    foreign suffixes once found."""
+    calls: list[str] = []
+
+    class _FakeAdapter:
+        async def get_quote(self, ticker):
+            calls.append(ticker)
+            return _StubQuote(308.0) if ticker == "AAPL" else _StubQuote(None)
+
+    monkeypatch.setattr(
+        "argosy.adapters.data.yfinance_adapter.YFinanceAdapter",
+        lambda *a, **k: _FakeAdapter(),
+    )
+    prov = SnapshotOrLiveProvider()
+    assert prov.quote("AAPL") == 308.0
+    assert calls == ["AAPL"], "bare hit must short-circuit before suffix retries"
 
 
 def _doc():
