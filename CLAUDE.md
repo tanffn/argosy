@@ -17,6 +17,7 @@ Multi-agent financial-advisor system. Python + FastAPI + Next.js. Single user to
 - **`docs/design/SDD.md` is the only canonical SDD.** Do NOT edit `.docx` siblings or any other "SDD" file. If a tool offers to update both, decline.
 - **Manual UI smokes are skipped.** Backend tests + live-LLM e2e are the verification surface; don't propose manual click-through plans.
 - **Use the codex-tandem kit for risky work** (money math, parsers, migrations, decision flows). Skip for UI / lint / docs. Kit at `tools/codex-tandem/` (gitignored, NVIDIA-internal). See `reference_codex_tandem.md` in auto-memory for invocation patterns.
+- **The LLM TEAM is the architecture — not deterministic gates.** A *judgment* failure (bad rationale, wrong instrument, imprudent call) is caught by ANOTHER agent that re-derives blind — never by adding a per-symptom deterministic gate (that's the whack-a-mole antipattern). Determinism is the **inviolable-arithmetic floor only** (conservation, estate/us-situs); it never judges "is this a good decision." Default response to a bad decision = *"which agent should have caught this, and why didn't it — fix the team (inputs / blind-review / reliability)."* Adding a gate for a judgment failure is the exception and needs explicit justification to Ariel. The team was once cut for timing out — the fix is the P0 reliability wrapper, NOT retreating to determinism. See memory `feedback_fleet_authors_determinism_verifies` (2026-07-04 correction).
 
 ## Environment
 
