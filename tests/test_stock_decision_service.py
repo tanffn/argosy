@@ -8,6 +8,7 @@ from argosy.services.stock_decision import (
     decide_holdings,
     research_bundle,
     run_holdings_review,
+    verify_verdict,
     write_stock_decision_proposal,
 )
 
@@ -80,6 +81,45 @@ def test_run_holdings_review_writes_only_actionable(monkeypatch):
     assert summary["reviewed"] == 2
     assert summary["actionable"] == 1
     assert written == ["RKT"]
+
+
+def test_verify_verdict_blind_rederivation_gate():
+    sell = StockDecisionOutput(ticker="RKT", verdict="SELL", confidence="HIGH", reason="broken")
+    bundle = {"news": "x"}
+
+    # Re-derivation confirms a reduce -> passes.
+    def _confirm(ticker, *, context, bundle, user_id="ariel"):
+        return StockDecisionOutput(ticker=ticker, verdict="TRIM", confidence="MED", reason="agrees reduce")
+    assert verify_verdict(sell, bundle=bundle, decide=_confirm) is True
+
+    # Re-derivation diverges to HOLD -> fails (fail-closed; the trade won't surface).
+    def _diverge(ticker, *, context, bundle, user_id="ariel"):
+        return StockDecisionOutput(ticker=ticker, verdict="HOLD", confidence="HIGH", reason="intact")
+    assert verify_verdict(sell, bundle=bundle, decide=_diverge) is False
+
+    # HOLD never reaches the gate.
+    hold = StockDecisionOutput(ticker="CSPX", verdict="HOLD", confidence="HIGH", reason="ok")
+    assert verify_verdict(hold, bundle=bundle, decide=_diverge) is True
+
+
+def test_run_holdings_review_holds_unverified_trades():
+    # RKT decides SELL, but the blind re-derivation diverges -> not surfaced.
+    def _decide(ticker, *, context, bundle, user_id="ariel"):
+        return StockDecisionOutput(ticker=ticker, verdict="SELL", confidence="HIGH", reason="first pass")
+
+    written = []
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"RKT": 42_000.0},
+        fetchers={"news": lambda t: "headline"},
+        decide=_decide,
+        sink=lambda v: written.append(v.ticker) or object(),
+        verify=lambda v, bundle: False,   # re-derivation refuses to confirm
+    )
+    assert summary["actionable"] == 1
+    assert summary["written"] == 0
+    assert summary["held_unverified"] == 1
+    assert written == []
 
 
 def test_write_stock_decision_proposal_builds_actionproposal():

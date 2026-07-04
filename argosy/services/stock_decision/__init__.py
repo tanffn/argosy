@@ -10,6 +10,7 @@ from argosy.services.stock_decision.service import (
     decide_holdings,
     research_bundle,
     run_holdings_review,
+    verify_verdict,
     write_stock_decision_proposal,
 )
 
@@ -18,5 +19,6 @@ __all__ = [
     "decide_holdings",
     "actionable_verdicts",
     "run_holdings_review",
+    "verify_verdict",
     "write_stock_decision_proposal",
 ]

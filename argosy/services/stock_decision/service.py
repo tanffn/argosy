@@ -85,6 +85,38 @@ def actionable_verdicts(
     return [v for v in verdicts if is_actionable(v.verdict)]
 
 
+_REDUCE_VERDICTS = frozenset({"SELL", "TRIM"})
+
+
+def verify_verdict(
+    v: StockDecisionOutput,
+    *,
+    bundle: dict[str, Any],
+    decide: Callable[..., StockDecisionOutput] = decide_stock,
+    user_id: str = "ariel",
+) -> bool:
+    """Blind re-derivation gate for a consequential verdict.
+
+    Independently re-decides from the SAME raw bundle (the re-run is NOT shown the
+    original verdict or its reasoning — it re-derives from the evidence) and confirms
+    the actionable DIRECTION. Fail-closed: a SELL/TRIM must be re-confirmed as a
+    reduce, a BUY as a buy; anything else (incl. a re-derived HOLD) fails the gate,
+    so a trade only surfaces when two independent passes agree it is warranted.
+    HOLD is not actionable and never reaches this gate. See
+    ``feedback_adversarial_review_must_re_derive_blind``.
+    """
+    if not is_actionable(v.verdict):
+        return True
+    redo = decide(v.ticker, context="independent blind re-review", bundle=bundle, user_id=user_id)
+    orig = v.verdict.upper()
+    again = (redo.verdict or "").upper()
+    if orig in _REDUCE_VERDICTS:
+        return again in _REDUCE_VERDICTS
+    if orig == "BUY":
+        return again == "BUY"
+    return False
+
+
 def write_stock_decision_proposal(db: Any, user_id: str, v: StockDecisionOutput) -> Any:
     """Persist an actionable verdict as an open ActionProposal (the inbox 'note'
     sink). Idempotent per (user, ticker) via dedup_key; a collision is swallowed."""
@@ -134,12 +166,16 @@ def run_holdings_review(
     fetchers: dict[str, Fetcher] | None = None,
     decide: Callable[..., StockDecisionOutput] = decide_stock,
     sink: Callable[[StockDecisionOutput], Any] | None = None,
+    verify: "Callable[[StockDecisionOutput, dict], bool] | None | bool" = None,
 ) -> dict[str, Any]:
     """Review the book per-name and act: triage to material positions, fetch fresh
-    data, decide, and write ONLY actionable verdicts to the inbox. HOLD verdicts
-    are logged for audit and stay silent. Returns a summary + the full verdict list.
+    data, decide, blind-verify actionable verdicts, and write ONLY the confirmed
+    ones to the inbox. HOLD verdicts are logged for audit and stay silent. Returns
+    a summary + the full verdict list.
 
-    All collaborators default to the live wiring but are injectable for tests.
+    ``verify`` gates each actionable verdict (fail-closed on divergence): ``None``
+    uses the default blind re-derivation, a callable overrides it, and ``False``
+    disables the gate. All collaborators are injectable for tests.
     """
     if holdings is None:
         from argosy.api.routes.portfolio import _load_current_doc_and_holdings
@@ -152,28 +188,39 @@ def run_holdings_review(
     if sink is None:
         def sink(v: StockDecisionOutput) -> Any:
             return write_stock_decision_proposal(db, user_id, v)
+    if verify is None:
+        def verify(v: StockDecisionOutput, bundle: dict[str, Any]) -> bool:
+            return verify_verdict(v, bundle=bundle, decide=decide, user_id=user_id)
 
-    verdicts = decide_holdings(
-        holdings, fetchers=fetchers,
-        context_of=lambda t, usd: f"held ${usd:,.0f}",
-        triage=lambda t, usd: usd >= min_position_usd,
-        decide=decide, user_id=user_id,
-    )
-    surfaced = actionable_verdicts(verdicts)
+    verdicts: list[StockDecisionOutput] = []
     written = 0
-    for v in surfaced:
+    actionable = 0
+    held_unverified = 0
+    for ticker, usd in (holdings or {}).items():
+        if float(usd) < min_position_usd:
+            continue  # tiering: skip immaterial positions (no expensive research)
+        bundle = research_bundle(ticker, fetchers=fetchers)
+        v = decide(ticker, context=f"held ${float(usd):,.0f}", bundle=bundle, user_id=user_id)
+        verdicts.append(v)
+        if not is_actionable(v.verdict):
+            log.info("stock_decision.hold", ticker=v.ticker, reason=(v.reason or "")[:120])
+            continue
+        actionable += 1
+        # Fail-closed: a consequential trade must survive a blind re-derivation.
+        if verify is not False and not verify(v, bundle):
+            held_unverified += 1
+            log.info("stock_decision.held_unverified", ticker=v.ticker, verdict=v.verdict)
+            continue
         try:
             if sink(v) is not None:
                 written += 1
         except Exception as exc:  # noqa: BLE001 — one bad write must not abort the review
             log.warning("stock_decision.sink_failed", ticker=v.ticker, err=str(exc)[:120])
-    for v in verdicts:
-        if not is_actionable(v.verdict):
-            log.info("stock_decision.hold", ticker=v.ticker, reason=(v.reason or "")[:120])
     return {
         "reviewed": len(verdicts),
-        "actionable": len(surfaced),
+        "actionable": actionable,
         "written": written,
+        "held_unverified": held_unverified,
         "verdicts": verdicts,
     }
 
