@@ -265,6 +265,8 @@ def build_target_allocation_doc(
     anchor_sigma: float | None = None,
     alternatives_sleeve: "object | None" = None,
     authored_overrides: "dict[str, float] | None" = None,
+    high_growth_pct: float = 0.0,
+    high_growth_instruments: "list | tuple | None" = None,
 ) -> TargetAllocationDoc:
     """Assemble the canonical doc from the deterministic ``allocation_plan`` engine.
 
@@ -281,6 +283,7 @@ def build_target_allocation_doc(
     result.
     """
     from argosy.services.allocation_plan import (
+        HIGH_GROWTH_DEFAULT_SIGMA,
         build_redistribution_schedule,
         build_target_allocation,
     )
@@ -294,6 +297,9 @@ def build_target_allocation_doc(
         anchor_sigma=anchor,
         alternatives_sleeve=alternatives_sleeve,
         authored_overrides=authored_overrides or None,
+        high_growth_pct=float(high_growth_pct or 0.0),
+        high_growth_sigma=HIGH_GROWTH_DEFAULT_SIGMA,
+        high_growth_instruments=tuple(high_growth_instruments or ()),
     )
 
     classes = [

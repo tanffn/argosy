@@ -86,6 +86,24 @@ _ALTERNATIVES_LABEL = "Alternatives"
 _ALTERNATIVES_SIGMA_CLASS = "alternatives"
 _ALTERNATIVES_SNAPSHOT_CATEGORY = "Alternative"
 
+# --- High-growth / high-potential sleeve (TEAM/DISCOVERY-SOURCED). -----------
+# A PERMANENT strategic ~5% "moonshot" sleeve of the highest-potential names
+# GLOBALLY (US / EU / ISR / anywhere) — sourced by the discovery funnel purely by
+# UPSIDE and deliberately NOT estate-gated (unlike the core sleeves): US-situs
+# estate exposure on a small high-conviction sleeve is an accepted cost of x10
+# upside (Ariel's call). Modeled exactly like the Alternatives sleeve: a fixed
+# weight held out before the equity renorm, whose SOURCED sigma is fed to the FI
+# solver so the book's covariance-blended sigma stays on the anchor (a volatile
+# sleeve correctly forces slightly MORE FI). Correlation tier = concentrated_equity
+# (single-stock high-beta). A 0% sleeve adds no class (byte-identical default).
+HIGH_GROWTH_LABEL = "High-growth / high-potential"
+HIGH_GROWTH_SIGMA_CLASS = "high_growth_basket"
+HIGH_GROWTH_SNAPSHOT_CATEGORY = "Individual Stocks"
+# Fleet-sourced default (codex-verified): a diversified ~8-12 name global high-growth
+# basket blends to ~0.35, NOT the 0.45 single-stock level, and correlates ~0.60 with
+# the NVDA single name (not 1.0) — see the high_growth_basket tier in sigma_glidepath.
+HIGH_GROWTH_DEFAULT_SIGMA = 0.35
+
 
 # --- Agreed equity/alts sleeves (the panel's mix, NVDA + FI handled above). --
 # ``ratio`` is the panel's agreed RELATIVE weight among the non-NVDA, non-FI
@@ -386,20 +404,27 @@ def _blended_sigma_for(
     *,
     alt_label: str | None = None,
     alt_sigma: float | None = None,
+    hg_label: str | None = None,
+    hg_sigma: float | None = None,
 ) -> float:
     """Covariance-aware blended sigma. When an Alternatives sleeve is present its
     sigma is the SOURCED ``alt_sigma`` (pinned by label), not the fixed class
     constant — so a gold-only sleeve blends at 0.16 and an 80/20 gold/BTC sleeve
     at 0.268, exactly as the team sourced it — while its CORRELATION to the rest of
-    the book uses the ``alternatives`` tier."""
-    if alt_label is None or alt_sigma is None:
+    the book uses the ``alternatives`` tier. The high-growth sleeve is pinned the
+    same way against its SOURCED ``hg_sigma`` in the ``concentrated_equity`` tier."""
+    alt_pinned = alt_label is not None and alt_sigma is not None
+    hg_pinned = hg_label is not None and hg_sigma is not None
+    if not alt_pinned and not hg_pinned:
         return sigma_from_composition(weights)
     items: list[tuple[str, float, float]] = []
     for label, pct in weights.items():
         if pct <= 0:
             continue
-        if label == alt_label:
+        if alt_pinned and label == alt_label:
             items.append((_ALTERNATIVES_SIGMA_CLASS, pct, alt_sigma))
+        elif hg_pinned and label == hg_label:
+            items.append((HIGH_GROWTH_SIGMA_CLASS, pct, hg_sigma))
         else:
             cls = map_glidepath_class_to_sigma_class(label)
             items.append((cls, pct, _SIGMA_BY_CLASS.get(cls, 0.20)))
@@ -407,16 +432,20 @@ def _blended_sigma_for(
 
 
 def _renormalise(
-    *, nvda_pct: float, fi_pct: float, alternatives_pct: float = 0.0
+    *,
+    nvda_pct: float,
+    fi_pct: float,
+    alternatives_pct: float = 0.0,
+    high_growth_pct: float = 0.0,
 ) -> dict[str, float]:
-    """Hold NVDA + FI + Alternatives fixed; distribute the rest among the
-    equity sleeves at their agreed ratios; split FI into cash + short-IG bonds.
+    """Hold NVDA + FI + Alternatives + High-growth fixed; distribute the rest among
+    the equity sleeves at their agreed ratios; split FI into cash + short-IG bonds.
 
-    The team-sourced Alternatives weight is subtracted off the book BEFORE the
-    equity sleeves are sized (it displaces the non-NVDA risky sleeves pro
-    rata), so a larger sleeve shrinks equity and — via its sigma — indirectly
-    forces more FI to hold the anchor. ``alternatives_pct=0`` adds no class."""
-    other_total = 100.0 - nvda_pct - fi_pct - alternatives_pct
+    The team-sourced Alternatives and High-growth weights are subtracted off the
+    book BEFORE the equity sleeves are sized (they displace the non-NVDA risky
+    sleeves pro rata), so a larger fixed sleeve shrinks equity and — via its sigma —
+    indirectly forces more FI to hold the anchor. A ``*_pct=0`` sleeve adds no class."""
+    other_total = 100.0 - nvda_pct - fi_pct - alternatives_pct - high_growth_pct
     ratio_sum = sum(s.ratio for s in _EQUITY_SLEEVES)
     weights: dict[str, float] = {
         s.label: s.ratio / ratio_sum * other_total for s in _EQUITY_SLEEVES
@@ -424,6 +453,8 @@ def _renormalise(
     weights[_NVDA_SLEEVE.label] = nvda_pct
     if alternatives_pct > 0:
         weights[_ALTERNATIVES_LABEL] = alternatives_pct
+    if high_growth_pct > 0:
+        weights[HIGH_GROWTH_LABEL] = high_growth_pct
     weights["Cash & T-bills (incl. ILS tranche)"] = fi_pct * CASH_FRAC_OF_FI
     weights["Short-duration IG bonds"] = fi_pct * (1.0 - CASH_FRAC_OF_FI)
     return weights
@@ -466,6 +497,8 @@ def derive_fi_weight(
     nvda_pct: float = NVDA_TARGET_PCT,
     alternatives_pct: float = 0.0,
     alternatives_sigma: float = 0.0,
+    high_growth_pct: float = 0.0,
+    high_growth_sigma: float = 0.0,
     fi_step: float = 0.01,
     fi_lo: float = 8.0,
     fi_hi: float = 35.0,
@@ -475,16 +508,21 @@ def derive_fi_weight(
     optimizer used to certify the earliest-safe age. Self-consistency, not a
     chosen constant. A team-sourced Alternatives sleeve is held at
     ``alternatives_pct`` and its SOURCED ``alternatives_sigma`` is what FI must
-    offset (a higher sourced sigma forces more FI)."""
+    offset (a higher sourced sigma forces more FI); the High-growth sleeve is
+    held + offset identically via ``high_growth_pct`` / ``high_growth_sigma``."""
     alt_label = _ALTERNATIVES_LABEL if alternatives_pct > 0 else None
     alt_sigma = alternatives_sigma if alternatives_pct > 0 else None
+    hg_label = HIGH_GROWTH_LABEL if high_growth_pct > 0 else None
+    hg_sigma = high_growth_sigma if high_growth_pct > 0 else None
 
     def clears(weight: float) -> bool:
         weights = _renormalise(
-            nvda_pct=nvda_pct, fi_pct=weight, alternatives_pct=alternatives_pct
+            nvda_pct=nvda_pct, fi_pct=weight, alternatives_pct=alternatives_pct,
+            high_growth_pct=high_growth_pct,
         )
         return _blended_sigma_for(
-            weights, alt_label=alt_label, alt_sigma=alt_sigma
+            weights, alt_label=alt_label, alt_sigma=alt_sigma,
+            hg_label=hg_label, hg_sigma=hg_sigma,
         ) <= (anchor_sigma + 1e-9)
 
     fi = fi_lo
@@ -670,6 +708,9 @@ def build_target_allocation(
     fi_step: float = 0.01,
     deployable_nis: float | None = None,
     authored_overrides: dict[str, float] | None = None,
+    high_growth_pct: float = 0.0,
+    high_growth_sigma: float = HIGH_GROWTH_DEFAULT_SIGMA,
+    high_growth_instruments: "tuple[AllocationInstrument, ...]" = (),
 ) -> TargetAllocation:
     """Assemble the canonical target allocation with the FI weight derived to the
     steady-state sigma anchor via the covariance-aware blend. Pure: no DB, no clock.
@@ -701,16 +742,27 @@ def build_target_allocation(
     alternatives_sigma = (
         alternatives_sleeve.sleeve_sigma if alternatives_pct > 0 else 0.0
     )
+    hg_pct = float(high_growth_pct) if high_growth_pct and high_growth_pct > 0 else 0.0
+    hg_sigma = float(high_growth_sigma) if hg_pct > 0 else 0.0
 
     fi_pct = derive_fi_weight(
         anchor_sigma=anchor_sigma, nvda_pct=nvda_pct,
         alternatives_pct=alternatives_pct, alternatives_sigma=alternatives_sigma,
+        high_growth_pct=hg_pct, high_growth_sigma=hg_sigma,
         fi_step=fi_step,
     )
     weights = _renormalise(
-        nvda_pct=nvda_pct, fi_pct=fi_pct, alternatives_pct=alternatives_pct
+        nvda_pct=nvda_pct, fi_pct=fi_pct, alternatives_pct=alternatives_pct,
+        high_growth_pct=hg_pct,
     )
-    weights = _apply_authored_overrides(weights, authored_overrides or {})
+    # The high-growth sleeve is a FIXED strategic weight (like NVDA / Alternatives),
+    # so pin it THROUGH the authored-override renorm — otherwise it is treated as a
+    # non-overridden sleeve and drifts off its target when other sleeves are pinned
+    # (e.g. a 5% sleeve crept to 5.15% alongside the v63 NVDA/core/growth overrides).
+    effective_overrides = dict(authored_overrides or {})
+    if hg_pct > 0 and HIGH_GROWTH_LABEL not in effective_overrides:
+        effective_overrides[HIGH_GROWTH_LABEL] = round(weights[HIGH_GROWTH_LABEL], 2)
+    weights = _apply_authored_overrides(weights, effective_overrides)
 
     classes: list[AllocationClass] = []
     for s in _EQUITY_SLEEVES:
@@ -739,6 +791,26 @@ def build_target_allocation(
                 instruments=tuple(
                     _candidate_to_instrument(c) for c in alternatives_sleeve.instruments
                 ),
+            )
+        )
+    if hg_pct > 0 and HIGH_GROWTH_LABEL in weights:
+        classes.append(
+            AllocationClass(
+                label=HIGH_GROWTH_LABEL,
+                target_pct=round(weights[HIGH_GROWTH_LABEL], 2),
+                sigma_class=HIGH_GROWTH_SIGMA_CLASS,
+                snapshot_category=HIGH_GROWTH_SNAPSHOT_CATEGORY,
+                agreement="team-sourced",
+                rationale=(
+                    "Permanent high-growth / high-potential 'moonshot' sleeve: the "
+                    "highest-conviction upside names sourced GLOBALLY by the discovery "
+                    "funnel (US/EU/ISR/anywhere), deliberately NOT estate-gated — a small "
+                    "high-conviction sleeve accepts US-situs exposure as the cost of x10 "
+                    "upside. Held as a fixed strategic weight; its sourced sigma feeds the "
+                    "FI solver so the book's covariance sigma stays on the anchor."
+                ),
+                dissent="",
+                instruments=tuple(high_growth_instruments or ()),
             )
         )
     classes.append(
@@ -774,6 +846,8 @@ def build_target_allocation(
         weights,
         alt_label=_ALTERNATIVES_LABEL if alternatives_pct > 0 else None,
         alt_sigma=alternatives_sigma if alternatives_pct > 0 else None,
+        hg_label=HIGH_GROWTH_LABEL if hg_pct > 0 else None,
+        hg_sigma=hg_sigma if hg_pct > 0 else None,
     )
     alts_clause = (
         f"a {reported_alternatives_pct:.1f}% team-sourced Alternatives sleeve (σ {alternatives_sigma:.3f}), "

@@ -54,6 +54,15 @@ _LABEL_TO_SIGMA_CLASS: tuple[tuple[str, str], ...] = (
     ("tsla", "concentrated_equity"),
     ("individual stock", "concentrated_equity"),
     ("concentrated", "concentrated_equity"),
+    # High-growth / high-potential "moonshot" BASKET — a diversified ~8-12 name
+    # global high-vol equity basket (σ≈0.35), NOT a single concentrated name and
+    # NOT plain large-cap growth. MUST precede the generic "growth" needle below so
+    # it is not collapsed to us_growth_equity (0.21).
+    ("high-growth", "high_growth_basket"),
+    ("high growth", "high_growth_basket"),
+    ("high-potential", "high_growth_basket"),
+    ("high potential", "high_growth_basket"),
+    ("moonshot", "high_growth_basket"),
     # Min-vol / quality-defensive EQUITY — its own ~0.13 class. MUST precede
     # the generic "equity"/"defensive" needles so a min-vol equity sleeve is
     # not collapsed to plain diversified equity (0.18) or, worse, IG bonds
@@ -166,7 +175,8 @@ _EQUITY_CORR_CLASSES = frozenset(
 )
 _FI_CORR_CLASSES = frozenset({"bonds", "cash"})
 KNOWN_CORR_CLASSES = (
-    _EQUITY_CORR_CLASSES | _FI_CORR_CLASSES | {"concentrated_equity", "alternatives"}
+    _EQUITY_CORR_CLASSES | _FI_CORR_CLASSES
+    | {"concentrated_equity", "alternatives", "high_growth_basket"}
 )
 
 
@@ -176,6 +186,20 @@ def class_correlation(a: str, b: str) -> float:
     if a == b:
         return 1.0
     pair = {a, b}
+    # High-growth moonshot BASKET — diversified high-beta equity, correlated with
+    # (but not a clone of) the NVDA single name. Must precede the concentrated /
+    # equity branches so the basket↔NVDA pair resolves to 0.60, not 1.0.
+    if "high_growth_basket" in pair:
+        other = (pair - {"high_growth_basket"}).pop()
+        if other == "concentrated_equity":
+            return 0.60
+        if other in _EQUITY_CORR_CLASSES:
+            return 0.75
+        if other == "alternatives":
+            return 0.25
+        if other in _FI_CORR_CLASSES:
+            return 0.10
+        return 1.0
     if "concentrated_equity" in pair:
         other = (pair - {"concentrated_equity"}).pop()
         if other in _EQUITY_CORR_CLASSES:
