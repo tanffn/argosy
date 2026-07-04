@@ -1760,6 +1760,36 @@ def get_deploy_cash(
                     }
             except Exception as exc:  # noqa: BLE001 — market ctx is best-effort
                 _log.warning("deploy_cash.market_context_failed", error=str(exc)[:120])
+            # Fetch-before-buy: fresh per-candidate research (live news + price) on
+            # the INDIVIDUAL-STOCK candidates (the moonshot / single-name sleeves),
+            # where fresh diligence matters most — broad diversified ETFs don't need
+            # per-name news. Best-effort + bounded; author reasons over CURRENT data
+            # instead of a static menu. Absent research leaves the packet unchanged.
+            _candidate_research: dict[str, str] = {}
+            try:
+                from argosy.services.stock_decision.fetchers import (
+                    news_fetcher, price_fetcher,
+                )
+                _single_name_syms: list[str] = []
+                for _c in getattr(doc, "classes", []) or []:
+                    if (getattr(_c, "snapshot_category", "") or "") != "Individual Stocks":
+                        continue  # only single-name sleeves (high-growth + NVDA)
+                    for _i in getattr(_c, "instruments", []) or []:
+                        _s = (getattr(_i, "symbol", "") or "").strip()
+                        if _s and _s.upper() != "NVDA":  # NVDA won't be bought (over cap)
+                            _single_name_syms.append(_s)
+                for _s in dict.fromkeys(_single_name_syms):  # dedup, preserve order
+                    _parts = []
+                    _p = price_fetcher(_s)
+                    _n = news_fetcher(_s)
+                    if _p:
+                        _parts.append(_p)
+                    if _n:
+                        _parts.append("news: " + _n[:200])
+                    if _parts:
+                        _candidate_research[_s] = " | ".join(_parts)
+            except Exception as exc:  # noqa: BLE001 — research is additive/best-effort
+                _log.warning("deploy_cash.candidate_research_failed", error=str(exc)[:120])
             packet = build_decision_packet(
                 doc=doc, holdings_usd=holdings, deployable_usd=amount,
                 cash_usd=snap_cash,
@@ -1767,6 +1797,7 @@ def get_deploy_cash(
                 nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
                 current_pct_by_sleeve=_cur_by_sleeve,
                 policy_signals=_market_signals,
+                candidate_research=_candidate_research,
                 user_constraints=(
                     "Earliest safe retirement is the prime directive. NVDA single-name "
                     "over-concentration is handled by the plan's SCHEDULED SELLS, not by "

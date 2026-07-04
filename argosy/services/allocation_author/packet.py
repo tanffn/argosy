@@ -35,6 +35,7 @@ def build_decision_packet(
     policy_signals: dict | None = None,
     user_constraints: str = "",
     extra_known_symbols: set[str] | None = None,
+    candidate_research: dict[str, str] | None = None,
     facts_lookup: Callable[[str], Any] = lookup_facts,
 ) -> dict[str, Any]:
     """Shape the raw deploy inputs into the author/verifier decision packet.
@@ -133,6 +134,12 @@ def build_decision_packet(
         },
         "instrument_facts": facts,
         "policy_signals": dict(policy_signals or {}),
+        # Fresh per-candidate research (ticker -> short summary of live news/price),
+        # so the author reasons over CURRENT data on each name it might buy instead
+        # of a static menu. Best-effort + additive: empty when unavailable.
+        "candidate_research": {
+            str(k): str(v) for k, v in (candidate_research or {}).items() if v
+        },
         "user_constraints": user_constraints or "",
     }
 
