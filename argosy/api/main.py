@@ -583,6 +583,29 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # HoldingsReviewJob — daily per-holding research -> verdict pass. Triage to
+        # material positions, fetch fresh data (news/price/plan thesis), decide
+        # BUY/HOLD/SELL/TRIM; only actionable verdicts surface (HOLD stays silent).
+        # The "acting half" the monitoring stack was missing. source_kind='monitor'.
+        try:
+            from argosy.services.jobs.holdings_review import (  # noqa: PLC0415
+                HoldingsReviewJob,
+                holdings_review_metadata,
+            )
+
+            holdings_review_loop = HoldingsReviewJob(enabled=True, user_id="ariel")
+            scheduler.register_loop(holdings_review_loop)
+            registry.register(
+                job=holdings_review_loop,
+                metadata=holdings_review_metadata(),
+            )
+            log.info("scheduler.holdings_review_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.holdings_review_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # HolisticRebalanceReviewLoop — quarterly whole-portfolio rebalance
         # review. 10:00 IDT on the 1st of Jan/Apr/Jul/Oct, source_kind='monitor'.
         # Deterministic composer; writes a proposed-only 'rebalance' proposal
