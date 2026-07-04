@@ -48,6 +48,42 @@ def _make_boi_adapter(rate: float = 3.65, source: str = "boi") -> Any:
     return adapter
 
 
+class TestBoiAdapterFallbackInjection:
+    """Regression: market_snapshot MUST inject FRED + yfinance into BoiAdapter.
+
+    A bare ``BoiAdapter()`` leaves the BoI->FRED->yfinance fallback chain all-None,
+    so every fallback guard is skipped and it silently yields NO USD/NIS rate. The
+    other tests replace BoiAdapter wholesale (``lambda **kw: fake``), so this
+    construction bug was invisible — this test asserts the real call site injects
+    the fallbacks."""
+
+    def test_market_snapshot_injects_fred_and_yf_into_boi(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def _spy_boi(**kwargs: Any):
+            captured.update(kwargs)
+            return _make_boi_adapter(rate=3.65)
+
+        monkeypatch.setattr(
+            "argosy.services.market_snapshot.FredAdapter",
+            lambda **kw: _make_fred_adapter(FRED_DATA),
+        )
+        monkeypatch.setattr(
+            "argosy.services.market_snapshot.YFinanceAdapter",
+            lambda **kw: MagicMock(),
+        )
+        monkeypatch.setattr(
+            "argosy.services.market_snapshot.BoiAdapter", _spy_boi,
+        )
+        market_snapshot(session=None)
+        assert captured.get("fred") is not None, (
+            "BoiAdapter constructed without a FRED fallback — the chain cannot run"
+        )
+        assert captured.get("yf") is not None, (
+            "BoiAdapter constructed without a yfinance fallback — the chain cannot run"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Nominal path — all series available
 # ---------------------------------------------------------------------------
@@ -62,6 +98,13 @@ FRED_DATA: dict[str, list[dict[str, Any]]] = {
         ("2026-05-01", 317.0),   # latest
     ),
     "IRSTCI01ILM156N": _fred_rows(("2026-04-01", 4.5), ("2026-05-01", 4.25)),
+    # Enriched regime feed (added with the real-yields/breakevens/spreads commit).
+    "DGS10": _fred_rows(("2026-06-10", 4.40), ("2026-06-11", 4.42)),
+    "DFII10": _fred_rows(("2026-06-10", 2.20), ("2026-06-11", 2.25)),
+    "T10YIE": _fred_rows(("2026-06-10", 2.30), ("2026-06-11", 2.32)),
+    "DFF": _fred_rows(("2026-06-10", 4.30), ("2026-06-11", 4.33)),
+    "BAMLC0A0CM": _fred_rows(("2026-06-10", 0.90), ("2026-06-11", 0.95)),
+    "BAMLH0A0HYM2": _fred_rows(("2026-06-10", 2.70), ("2026-06-11", 2.74)),
 }
 
 # S&P needs >=50 observations for the 200-day trend computation; give the nominal
@@ -93,7 +136,10 @@ class TestMarketSnapshotNominal:
 
     def test_returns_all_six_keys(self):
         result = market_snapshot(session=None)
-        assert set(result.keys()) == {"sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
+        assert set(result.keys()) == {
+            "sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy",
+            "ust10", "real10", "breakeven10", "fed_funds", "ig_spread", "hy_spread",
+        }
 
     def test_vix_value(self):
         result = market_snapshot(session=None)
@@ -183,7 +229,10 @@ class TestMarketSnapshotMissingData:
 
     def test_still_returns_all_six_keys(self):
         result = market_snapshot(session=None)
-        assert set(result.keys()) == {"sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
+        assert set(result.keys()) == {
+            "sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy",
+            "ust10", "real10", "breakeven10", "fed_funds", "ig_spread", "hy_spread",
+        }
 
     def test_missing_fred_series_flagged_stale(self):
         result = market_snapshot(session=None)
@@ -224,7 +273,10 @@ class TestMarketSnapshotBoiFailure:
 
     def test_returns_six_keys_despite_boi_failure(self):
         result = market_snapshot(session=None)
-        assert set(result.keys()) == {"sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
+        assert set(result.keys()) == {
+            "sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy",
+            "ust10", "real10", "breakeven10", "fed_funds", "ig_spread", "hy_spread",
+        }
 
     def test_usd_nis_flagged_stale_on_failure(self):
         result = market_snapshot(session=None)

@@ -25,6 +25,7 @@ from typing import Any
 
 from argosy.adapters.data.boi_adapter import BoiAdapter
 from argosy.adapters.data.fred_adapter import FredAdapter
+from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 from argosy.logging import get_logger
 from argosy.services.deployment_market_context import (
     DEPLOY_FRESHNESS_MAX_AGE,
@@ -246,7 +247,12 @@ def market_snapshot(
     Never raises.
     """
     fred = FredAdapter()
-    boi = BoiAdapter()
+    # BoiAdapter's BoI->FRED->yfinance fallback chain only runs for adapters that
+    # are injected; a bare BoiAdapter() leaves all three None and silently yields
+    # NO rate (the guards skip every fallback and it raises MissingDataSourceError).
+    # Inject the real fallbacks so USD/NIS resolves via FRED (CCUSMA02ILM618N) or
+    # yfinance (USDILS=X) when the direct BoI path is absent.
+    boi = BoiAdapter(fred=fred, yf=YFinanceAdapter())
     result: dict[str, tuple[float, DataFreshness]] = {}
 
     # --- FRED series (synchronous via asyncio.run, mirroring inputs.py) ---
