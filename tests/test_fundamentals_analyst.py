@@ -259,3 +259,33 @@ async def test_fundamentals_build_prompt_empty_payload() -> None:
     assert sources == []
     assert "Attached fundamentals sources: (none)" in usr
     assert "NVDA" in usr and "TSLA" in usr
+
+
+# ----------------------------------------------------------------------
+# Live web access (2026-07-05, decision_runs 127/128 finding).
+# ----------------------------------------------------------------------
+
+
+def test_fundamentals_analyst_enables_websearch_tool() -> None:
+    assert FundamentalsAnalystAgent.claude_code_allowed_tools == ("WebSearch",)
+
+
+def test_fundamentals_analyst_prompt_has_search_instruction_and_citation_mandate() -> None:
+    agent = FundamentalsAnalystAgent(user_id="ariel")
+    system, _user, _sources = agent.build_prompt(
+        tickers=["ELF"],
+        fundamentals_payload={"ELF": {"pe_ratio": 30.0, "current_price": 100.0}},
+    )
+    lower = system.lower()
+    assert "websearch" in lower
+    assert "1-3" in system
+    assert "regulatory" in lower
+    assert "tariffs" in lower
+    # Conditional search — only when the payload doesn't explain the picture.
+    assert "do not spend a search" in lower
+    # Citation mandate for web findings.
+    assert "cite the url" in lower
+    # Payload metrics stay the arithmetic ground truth; web = context only.
+    assert "arithmetic ground truth" in lower
+    assert "never" in lower and "fabricate" in lower
+    assert "nothing material" in lower

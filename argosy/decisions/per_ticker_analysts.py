@@ -261,6 +261,17 @@ async def run_per_ticker_analysts(
         ticker=ticker, tickers=tickers, user_id=user_id, mode=mode,
     )
 
+    # 1b) News-derived sentiment fallback (2026-07-05). The social
+    # gather is empty for essentially every non-held ticker (TipRanks
+    # 403s; finnhub social unavailable on this tier), so the sentiment
+    # analyst was ALWAYS pre-skipped by the empty-payload guard below.
+    # When social is empty but news is not, map the news items into the
+    # social-payload item shape the SentimentAnalystAgent consumes,
+    # with source labeled "news-derived" so downstream readers never
+    # mistake it for retail/social chatter. The pre-skip then fires
+    # only when BOTH social and news are empty.
+    _apply_sentiment_news_fallback(payloads, ticker=ticker)
+
     # 2) Pre-skip analysts whose data payload is empty. Without inputs,
     # the analyst will (a) emit a no-citation output that fails the
     # gate, or (b) hallucinate citations to placate the gate. Both are
@@ -380,6 +391,11 @@ async def run_per_ticker_analysts(
             payloads = await _gather_inputs_for_ticker(
                 ticker=t, tickers=[t], user_id=user_id, mode=mode,
             )
+            # Re-apply the news-derived sentiment fallback: a fresh
+            # gather will come back with an empty social payload again
+            # (the sources structurally 403 / are unavailable), and a
+            # sentiment re-run must not regress to an empty payload.
+            _apply_sentiment_news_fallback(payloads, ticker=t)
             return True
         return False
 
@@ -468,6 +484,73 @@ async def run_per_ticker_analysts(
 # ----------------------------------------------------------------------
 # Internals
 # ----------------------------------------------------------------------
+
+
+#: Source-label prefix for sentiment-payload items synthesized from
+#: news headlines. The SentimentAnalystAgent's prompt keys off this
+#: prefix so news-derived tone is NEVER reported as retail/social
+#: sentiment.
+NEWS_DERIVED_SOURCE_PREFIX: str = "news-derived"
+
+
+def _news_to_social_payload(
+    news_payload: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Map a news payload (Finnhub/yfinance headline dicts) into the
+    social-payload item shape ``SentimentAnalystAgent.build_prompt``
+    consumes: per-ticker lists of ``{text, polarity, source}``.
+
+    - ``text``   = headline title, plus the summary when present.
+    - ``polarity`` = None — news items carry no pre-scored polarity;
+      the sentiment analyst infers tone itself.
+    - ``source`` = ``"news-derived (<original source>) <url>"`` so the
+      item is never mistaken for retail/social chatter and the URL
+      stays citable.
+
+    Tickers whose item list is empty are dropped, so an all-empty news
+    payload maps to ``{}`` (and the caller keeps the sentiment
+    pre-skip).
+    """
+    derived: dict[str, list[dict[str, Any]]] = {}
+    for ticker, items in (news_payload or {}).items():
+        mapped: list[dict[str, Any]] = []
+        for it in items or []:
+            title = (it.get("headline") or it.get("title") or "").strip()
+            summary = (it.get("summary") or "").strip()
+            if not title and not summary:
+                continue
+            text = f"{title} — {summary}" if (title and summary) else (title or summary)
+            orig_source = (it.get("source") or "").strip()
+            url = (it.get("url") or "").strip()
+            label = NEWS_DERIVED_SOURCE_PREFIX
+            if orig_source:
+                label += f" ({orig_source})"
+            if url:
+                label += f" {url}"
+            mapped.append({"text": text, "polarity": None, "source": label})
+        if mapped:
+            derived[ticker] = mapped
+    return derived
+
+
+def _apply_sentiment_news_fallback(
+    payloads: dict[str, Any], *, ticker: str,
+) -> bool:
+    """If the social payload is empty but news is not, replace it
+    in-place with the news-derived mapping. Returns True when the
+    fallback was applied. See ``_news_to_social_payload``."""
+    if payloads.get("social"):
+        return False
+    derived = _news_to_social_payload(payloads.get("news") or {})
+    if not derived:
+        return False
+    payloads["social"] = derived
+    log.info(
+        "per_ticker_analysts.sentiment_news_derived_fallback",
+        ticker=ticker,
+        items={t: len(v) for t, v in derived.items()},
+    )
+    return True
 
 
 def _has_any_citation(report: AgentReport) -> bool:
@@ -722,6 +805,7 @@ __all__ = [
     "InsufficientAnalystQuorum",
     "LONG_HOLD_ROLES",
     "MIN_QUORUM_TOTAL",
+    "NEWS_DERIVED_SOURCE_PREFIX",
     "PerTickerAnalystsResult",
     "ROLES_BY_MODE",
     "TACTICAL_TRADE_ROLES",

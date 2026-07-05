@@ -82,6 +82,35 @@ class SentimentAnalystAgent(BaseAgent[SentimentReport]):
         """
         options_flow_payload = options_flow_payload or {}
 
+        # News-derived fallback (2026-07-05): when true social chatter is
+        # unavailable (structural for non-held tickers), the orchestrator
+        # feeds this agent news items mapped into the social item shape,
+        # with source labeled "news-derived (...)". Acknowledge them
+        # explicitly so the agent reads them as press tone, never as
+        # retail/crowd sentiment. Conditional — the extra rule is only
+        # emitted when such items are actually present.
+        has_news_derived = any(
+            str(it.get("source") or "").startswith("news-derived")
+            for items in social_payload.values()
+            for it in (items or [])
+        )
+        news_derived_rule = (
+            "  - Some (or all) attached items carry a source labeled "
+            "'news-derived (...)'. These are NEWS HEADLINES mapped into "
+            "the social item shape because no retail/social chatter was "
+            "available — they reflect PRESS coverage tone, NOT retail "
+            "crowd sentiment. Classify the regime from their tone, but "
+            "say in `summary` / `overall_summary` that the read is "
+            "news-derived, do not describe it as social/retail "
+            "sentiment, and do not infer crowd metrics (mention_count "
+            "hype, fear-greed extremes driven by retail chatter) from "
+            "them. Their `polarity` is null by design — infer tone "
+            "yourself. Cite the news-derived source (its label carries "
+            "the article URL) like any other source.\n"
+            if has_news_derived
+            else ""
+        )
+
         system = (
             "You are the sentiment analyst on the Argosy fleet. You read "
             "social chatter and options flow to classify per-ticker "
@@ -99,7 +128,9 @@ class SentimentAnalystAgent(BaseAgent[SentimentReport]):
             "  - options_flow_imbalance=True only if put/call ratio is "
             ">=1.5 (bearish skew) or <=0.5 (bullish skew).\n"
             "  - Cite the data source for every per-ticker entry "
-            "(e.g. 'social/NVDA', 'options/NVDA').\n\n"
+            "(e.g. 'social/NVDA', 'options/NVDA').\n"
+            + news_derived_rule
+            + "\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{SentimentReport.model_json_schema()}\n"
         )

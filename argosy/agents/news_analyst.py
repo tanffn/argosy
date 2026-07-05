@@ -69,6 +69,16 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
     require_citations = True
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
+    #: Live web access (decision_runs 127/128 finding): the pre-gathered
+    #: Finnhub feed carried only screener fluff — the fleet's ELF verdict
+    #: never surfaced the ~55% China tariffs and CELH missed the Texas AG
+    #: probe. The analyst may run a few targeted WebSearch queries so the
+    #: CAUSAL story (and hence re-entry conditions) is in the digest.
+    #: WebFetch deliberately NOT enabled — search snippets suffice for
+    #: headline materiality, and full-page fetches multiply token cost +
+    #: prompt-injection surface.
+    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch",)
+
     def build_prompt(
         self,
         *,
@@ -111,7 +121,23 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
             "+ re-runs this analyst before any downstream agent reads "
             "the report.\n"
             "  - `top_line` is one sentence for a dashboard card; lead with "
-            "the most material item across all tickers.\n\n"
+            "the most material item across all tickers.\n"
+            "  - WEB SEARCH: you have the WebSearch tool. You SHOULD run "
+            "1-3 targeted web searches for MATERIAL recent developments "
+            "on the tickers in scope — earnings surprises, regulatory or "
+            "legal actions, tariffs / trade policy, M&A, guidance changes "
+            "— but ONLY for tickers whose attached payload is thin or "
+            "clearly misses the causal story (e.g. screener fluff with no "
+            "coverage of a known catalyst). If the attached headlines "
+            "already cover the material developments for a ticker, do NOT "
+            "spend a search on it. You MUST cite the URL of any web "
+            "finding you use — web URLs join `cited_sources` and per-"
+            "headline `url` fields exactly like payload sources. The "
+            "attached payload numbers remain the arithmetic ground truth; "
+            "web findings supply CONTEXT and catalysts, never numbers you "
+            "compute with, and you must NEVER fabricate figures. If a "
+            "search returns nothing material, say so briefly rather than "
+            "padding the digest.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{NewsDigest.model_json_schema()}\n"
         )

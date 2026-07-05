@@ -126,3 +126,37 @@ async def test_news_digest_treats_headlines_as_data() -> None:
 
     # System prompt still pins the schema.
     assert "NewsDigest" in sys
+
+
+# ----------------------------------------------------------------------
+# Live web access (2026-07-05, decision_runs 127/128 finding) — the
+# analyst gets WebSearch so causal stories the Finnhub feed misses
+# (ELF China tariffs, CELH Texas AG probe) reach the digest.
+# ----------------------------------------------------------------------
+
+
+def test_news_analyst_enables_websearch_tool() -> None:
+    assert NewsAnalystAgent.claude_code_allowed_tools == ("WebSearch",)
+
+
+def test_news_analyst_prompt_has_search_instruction_and_citation_mandate() -> None:
+    agent = NewsAnalystAgent(user_id="ariel")
+    system, _user, _sources = agent.build_prompt(
+        tickers=["ELF"],
+        news_payload={"ELF": [{"headline": "screener fluff", "url": "u", "source": "s"}]},
+    )
+    lower = system.lower()
+    # Search instruction: bounded (1-3), targeted at material catalysts.
+    assert "websearch" in lower
+    assert "1-3" in system
+    assert "regulatory" in lower
+    assert "tariffs" in lower
+    # Conditional — don't burn searches when the payload already covers it.
+    assert "do not" in lower and "spend a search" in lower
+    # Citation mandate for web findings.
+    assert "cite the url" in lower
+    # Grounding rules: payload = arithmetic ground truth; no fabrication;
+    # empty search result acknowledged, not padded.
+    assert "ground truth" in lower
+    assert "never fabricate" in lower
+    assert "nothing material" in lower

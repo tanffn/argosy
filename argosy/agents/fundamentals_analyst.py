@@ -125,6 +125,15 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
     require_citations = True
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
+    #: Live web access (decision_runs 127/128 finding): payload-only
+    #: reasoning missed the ELF China-tariff margin hit and the CELH
+    #: Texas AG probe. A few targeted WebSearch queries let the analyst
+    #: catch catalysts (earnings, regulatory/legal, tariffs, M&A,
+    #: guidance) the pre-gathered feed didn't carry. Payload metrics
+    #: remain the arithmetic ground truth. WebFetch NOT enabled — see
+    #: NewsAnalystAgent for rationale.
+    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch",)
+
     def build_prompt(
         self,
         *,
@@ -197,7 +206,24 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             "report's ``remediation_requests`` list — never write the "
             "recommendation into ``summary`` prose. Include the affected "
             "ticker and a one-sentence reason citing the specific "
-            "inconsistency you observed.\n\n"
+            "inconsistency you observed.\n"
+            "  - WEB SEARCH: you have the WebSearch tool. You SHOULD run "
+            "1-3 targeted web searches for MATERIAL recent developments "
+            "on the tickers in scope — earnings surprises, regulatory or "
+            "legal actions, tariffs / trade policy, M&A, guidance changes "
+            "— but ONLY when the attached payload is thin or clearly does "
+            "not explain the valuation picture (e.g. a multiple that "
+            "looks dislocated with no attached context). If the attached "
+            "payload already covers the story for a ticker, do NOT spend "
+            "a search on it. You MUST cite the URL of any web finding "
+            "you use — web URLs join `cited_sources` exactly like "
+            "`fundamentals/<TICKER>` payload sources. The attached "
+            "payload metrics remain the ARITHMETIC GROUND TRUTH: web "
+            "findings supply CONTEXT and catalysts (put them in `notes` "
+            "/ `summary` and let them shape confidence), never numbers "
+            "you compute a fair-value estimate from, and you must NEVER "
+            "fabricate figures. If a search returns nothing material, "
+            "say so briefly rather than padding.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{FundamentalsReport.model_json_schema()}\n"
         )

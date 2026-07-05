@@ -174,3 +174,39 @@ async def test_sentiment_empty_payloads_emit_no_sources() -> None:
         social_payload={"NVDA": []},
     )
     assert sources == []
+
+
+# ----------------------------------------------------------------------
+# News-derived fallback awareness (2026-07-05): when the orchestrator
+# feeds news items mapped into the social shape (source labeled
+# 'news-derived'), the prompt must tell the agent it is press tone,
+# not retail sentiment. Rule is conditional on such items being present.
+# ----------------------------------------------------------------------
+
+
+def test_sentiment_prompt_acknowledges_news_derived_items() -> None:
+    agent = SentimentAnalystAgent(user_id="ariel")
+    system, _user, _sources = agent.build_prompt(
+        tickers=["CELH"],
+        social_payload={"CELH": [{
+            "text": "Texas AG probes Alani Nu — regulatory action",
+            "polarity": None,
+            "source": "news-derived (AP) https://example.com/probe",
+        }]},
+    )
+    lower = system.lower()
+    assert "news-derived" in lower
+    assert "not retail" in lower or "not retail crowd sentiment" in lower.replace(",", "")
+    # Must instruct the agent to disclose the news-derived basis.
+    assert "press" in lower
+
+
+def test_sentiment_prompt_omits_news_derived_rule_for_real_social() -> None:
+    agent = SentimentAnalystAgent(user_id="ariel")
+    system, _user, _sources = agent.build_prompt(
+        tickers=["NVDA"],
+        social_payload={"NVDA": [{
+            "text": "to the moon", "polarity": 0.9, "source": "reddit/wsb",
+        }]},
+    )
+    assert "news-derived" not in system.lower()

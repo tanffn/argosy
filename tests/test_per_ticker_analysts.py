@@ -712,6 +712,186 @@ def test_fundamentals_analyst_prompt_is_conservative_about_staleness() -> None:
     assert "0.10" in lower or "10%" in lower
 
 
+# ----------------------------------------------------------------------
+# News-derived sentiment fallback (2026-07-05). Social payload is
+# structurally empty for non-held tickers (TipRanks 403s, finnhub
+# social unavailable on this tier) — when news is non-empty, map it
+# into the social item shape so the sentiment analyst still runs.
+# ----------------------------------------------------------------------
+
+
+def test_news_to_social_payload_mapping_shape() -> None:
+    """News items map to {text, polarity, source} with the
+    'news-derived' label; polarity stays None; empty tickers drop."""
+    from argosy.decisions.per_ticker_analysts import (
+        NEWS_DERIVED_SOURCE_PREFIX,
+        _news_to_social_payload,
+    )
+
+    news = {
+        "ELF": [
+            {
+                "headline": "Tariffs hit ELF margins",
+                "summary": "~55% China tariffs crush gross margin",
+                "source": "Reuters",
+                "url": "https://example.com/elf-tariffs",
+            },
+            {"headline": "Screener fluff", "summary": "", "source": "", "url": ""},
+            {"headline": "", "summary": ""},  # no content → dropped
+        ],
+        "CELH": [],  # empty list → ticker dropped entirely
+    }
+    derived = _news_to_social_payload(news)
+
+    assert set(derived) == {"ELF"}
+    assert len(derived["ELF"]) == 2
+
+    first = derived["ELF"][0]
+    assert first["text"] == (
+        "Tariffs hit ELF margins — ~55% China tariffs crush gross margin"
+    )
+    assert first["polarity"] is None
+    assert first["source"].startswith(NEWS_DERIVED_SOURCE_PREFIX)
+    assert "Reuters" in first["source"]
+    assert "https://example.com/elf-tariffs" in first["source"]
+
+    second = derived["ELF"][1]
+    assert second["text"] == "Screener fluff"
+    assert second["source"] == NEWS_DERIVED_SOURCE_PREFIX
+
+
+def test_news_to_social_payload_empty_inputs() -> None:
+    """All-empty news maps to {} so the pre-skip still fires."""
+    from argosy.decisions.per_ticker_analysts import _news_to_social_payload
+
+    assert _news_to_social_payload({}) == {}
+    assert _news_to_social_payload({"XYL": []}) == {}
+    assert _news_to_social_payload({"XYL": [{"headline": "", "summary": ""}]}) == {}
+
+
+@pytest.mark.asyncio
+async def test_sentiment_runs_on_news_derived_payload_when_social_empty(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Social empty + news non-empty → the sentiment analyst is NOT
+    pre-skipped; it receives the news-derived payload (source labeled
+    'news-derived') instead."""
+    captured: dict[str, Any] = {}
+
+    async def _mixed(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "fundamentals": {"XYL": {"pe": 20.0}},
+            "news": {"XYL": [{
+                "headline": "Texas AG probes Alani Nu",
+                "summary": "regulatory action",
+                "source": "AP",
+                "url": "https://example.com/probe",
+            }]},
+            "indicators": {"XYL": {"rsi_14": 55.0}},
+            "social": {},  # structurally empty (non-held ticker)
+            "macro": {"vix": 15.0},
+            "fx": {"USD/NIS": {"latest": 3.7}},
+        }
+    monkeypatch.setattr(pta, "_gather_inputs_for_ticker", _mixed)
+
+    def _make_stub(role: str):
+        async def _stub(*_args: Any, **_kwargs: Any) -> AgentReport:
+            return _canned_report(role, cited=[f"{role}:source"])
+        return _stub
+
+    async def _sentiment_stub(
+        _user_id: str, _tickers: list[str], payload: Any,
+    ) -> AgentReport:
+        captured["payload"] = payload
+        return _canned_report("sentiment", cited=["sentiment:source"])
+
+    monkeypatch.setattr(pta, "_run_fundamentals", _make_stub("fundamentals"))
+    monkeypatch.setattr(pta, "_run_technical", _make_stub("technical"))
+    monkeypatch.setattr(pta, "_run_news", _make_stub("news"))
+    monkeypatch.setattr(pta, "_run_sentiment", _sentiment_stub)
+    monkeypatch.setattr(pta, "_run_macro", _make_stub("macro"))
+    monkeypatch.setattr(pta, "_run_fx", _make_stub("fx"))
+
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(
+        user_id="ariel", ticker="XYL", tier_value="T2",
+    )
+    result = await run_per_ticker_analysts(
+        user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",
+    )
+
+    assert "sentiment" in result.succeeded_roles
+    assert ("sentiment", "empty_payload (no social data)") not in result.skipped_roles
+    payload = captured["payload"]
+    assert set(payload) == {"XYL"}
+    item = payload["XYL"][0]
+    assert item["source"].startswith("news-derived")
+    assert item["polarity"] is None
+    assert "Texas AG probes Alani Nu" in item["text"]
+
+
+@pytest.mark.asyncio
+async def test_sentiment_pre_skipped_only_when_social_and_news_both_empty(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both social AND news empty → the fallback has nothing to map;
+    the sentiment analyst is pre-skipped with no LLM call."""
+    invoked = {"sentiment": 0}
+
+    async def _mixed(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "fundamentals": {"XYL": {"pe": 20.0}},
+            "news": {},      # empty → nothing to derive from
+            "indicators": {"XYL": {"rsi_14": 55.0}},
+            "social": {},    # empty
+            "macro": {"vix": 15.0},
+            "fx": {"USD/NIS": {"latest": 3.7}},
+        }
+    monkeypatch.setattr(pta, "_gather_inputs_for_ticker", _mixed)
+
+    def _make_stub(role: str):
+        async def _stub(*_args: Any, **_kwargs: Any) -> AgentReport:
+            if role == "sentiment":
+                invoked["sentiment"] += 1
+            return _canned_report(role, cited=[f"{role}:source"])
+        return _stub
+
+    monkeypatch.setattr(pta, "_run_fundamentals", _make_stub("fundamentals"))
+    monkeypatch.setattr(pta, "_run_technical", _make_stub("technical"))
+    monkeypatch.setattr(pta, "_run_news", _make_stub("news"))
+    monkeypatch.setattr(pta, "_run_sentiment", _make_stub("sentiment"))
+    monkeypatch.setattr(pta, "_run_macro", _make_stub("macro"))
+    monkeypatch.setattr(pta, "_run_fx", _make_stub("fx"))
+
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(
+        user_id="ariel", ticker="XYL", tier_value="T2",
+    )
+    result = await run_per_ticker_analysts(
+        user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",
+    )
+
+    assert invoked["sentiment"] == 0
+    reasons = {r: why for r, why in result.skipped_roles}
+    assert "sentiment" in reasons
+    assert "empty_payload" in reasons["sentiment"]
+
+
+def test_apply_sentiment_news_fallback_noop_when_social_present() -> None:
+    """Real social chatter is never overwritten by the fallback."""
+    from argosy.decisions.per_ticker_analysts import _apply_sentiment_news_fallback
+
+    real_social = {"XYL": [{"text": "to the moon", "polarity": 0.9, "source": "reddit"}]}
+    payloads = {
+        "social": real_social,
+        "news": {"XYL": [{"headline": "h", "summary": "s"}]},
+    }
+    assert _apply_sentiment_news_fallback(payloads, ticker="XYL") is False
+    assert payloads["social"] is real_social
+
+
 def test_trader_prompt_writes_for_non_investor() -> None:
     """Both trader prompts (2026-05-31) include the WRITE-FOR-A-NON-
     INVESTOR directive — spell out acronyms, explain contradictions,
