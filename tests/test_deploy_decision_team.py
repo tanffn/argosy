@@ -79,6 +79,31 @@ def test_team_is_fail_open_when_a_reviewer_dies():
     assert decision.all_clear and [b.symbol for b in decision.approved] == ["EXUS"]
 
 
+def test_team_decision_maps_to_dto():
+    # The route maps a TeamDecision -> TeamReviewDTO; lock that shape.
+    from argosy.services.contracts import TeamFlaggedBuyDTO, TeamObjectionDTO, TeamReviewDTO
+
+    def _review(lens, packet, buys, *, user_id="ariel"):
+        if lens == "concentration":
+            return DeploymentReviewOutput(lens=lens, objections=[
+                ReviewObjection(ticker="R1GR", concern="14% NVDA", severity="block")])
+        return DeploymentReviewOutput(lens=lens, objections=[])
+
+    d = run_deploy_decision_team(
+        _packet(), _proposal(_buy("R1GR", 18000, "growth"), _buy("EXUS", 26000, "intl")),
+        review_fn=_review,
+    )
+    dto = TeamReviewDTO(
+        reviewers_ran=d.reviewers_ran, reviewers_expected=d.reviewers_expected,
+        degraded=d.degraded, approved=[b.symbol for b in d.approved],
+        flagged=[TeamFlaggedBuyDTO(symbol=f["symbol"], amount_usd=f["amount_usd"],
+                 objections=[TeamObjectionDTO(**o) for o in f["objections"]]) for f in d.flagged],
+    )
+    assert dto.approved == ["EXUS"]
+    assert dto.flagged[0].symbol == "R1GR"
+    assert dto.flagged[0].objections[0].severity == "block"
+
+
 def test_team_enriches_facts_with_nvda_lookthrough():
     captured = {}
 
