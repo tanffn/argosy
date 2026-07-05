@@ -638,16 +638,19 @@ async def test_call_via_claude_code_inner_max_turns_scales_with_chunking(
     await agent._call_via_claude_code_inner(
         system="sys", user="ingest", pdf_attachments=pdfs,
     )
-    # 3 chunks → max_turns should be 4 (chunks + 1 headroom).
-    assert captured["options"].max_turns == 4
+    # 3 chunks → max_turns should be 5 (chunks + 1 chunking headroom + 1
+    # adaptive-thinking continuation turn).
+    assert captured["options"].max_turns == 5
 
 
 @pytest.mark.asyncio
 async def test_call_via_claude_code_inner_max_turns_unchanged_for_single_batch(
     tmp_path, monkeypatch,
 ):
-    """Single-message path keeps the default max_turns=1 — we only bump
-    when chunking is actually firing."""
+    """Single-message path uses the default max_turns=3 (one continuation
+    turn of headroom for the Opus 4.8 adaptive-thinking root cause — see
+    the options_kwargs comment in base.py); the chunked bump only fires
+    when chunking actually yields multiple user messages."""
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, "p.pdf", size_bytes=10 * 1024))]
@@ -659,7 +662,7 @@ async def test_call_via_claude_code_inner_max_turns_unchanged_for_single_batch(
     await agent._call_via_claude_code_inner(
         system="sys", user="ingest", pdf_attachments=pdfs,
     )
-    assert captured["options"].max_turns == 1
+    assert captured["options"].max_turns == 3
 
 
 def test_build_claude_code_messages_oversize_single_attachment_stays_one_batch(tmp_path):

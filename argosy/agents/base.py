@@ -1675,16 +1675,29 @@ class BaseAgent(Generic[T]):
             # (it sometimes carries deprecation notices etc.).
             self._log.warning("claude_code.stderr", line=line.rstrip())
 
-        # max_turns: cap on the SDK's agent loop. For a plain single-user-
-        # message call this is 1 (the original behavior). When attachment
-        # chunking fires (see `_build_claude_code_messages`), we yield N
-        # user messages and need N assistant turns — we set max_turns
-        # below (after computing expected_turns) so the loop has headroom.
-        # An undersized max_turns may have contributed to the "expected N
-        # turns, got N-1" failures observed when chunking 3+ batches.
+        # max_turns: cap on the SDK's agent loop. When attachment chunking
+        # fires (see `_build_claude_code_messages`), we yield N user messages
+        # and need N assistant turns — we set max_turns below (after computing
+        # expected_turns) so the loop has headroom. An undersized max_turns may
+        # have contributed to the "expected N turns, got N-1" failures observed
+        # when chunking 3+ batches.
+        #
+        # ROOT CAUSE of the "transient claude.exe exit-1, empty stderr" flake
+        # (2026-07-05, decision_runs 122/123/125): with Opus 4.8 + adaptive
+        # thinking, the model sometimes doesn't complete its final text within
+        # ONE turn and the CLI needs a continuation turn; at max_turns=1 the
+        # CLI prints "Error: Reached max turns (1)" to STDOUT (stderr stays
+        # empty — the exact silent-flake fingerprint) and exits 1. Heavier
+        # prompts (fundamentals/news analysts, bear_researcher, fund_manager)
+        # hit it near-deterministically; retries only won when the model
+        # happened to finish in one turn. Reproduced in isolation (4/4 fail at
+        # max_turns=1, then 2/2 pass at max_turns=2 with retries disabled).
+        # The cap is 3 for one extra continuation of headroom; it is only a
+        # CAP — single-turn completions are unaffected, and allowed_tools=[]
+        # means extra turns can't do anything but finish the text.
         options_kwargs: dict[str, Any] = {
             "system_prompt": system,
-            "max_turns": 1,
+            "max_turns": 3,
             "allowed_tools": [],  # one-shot reasoning; no tool use during agent runs
             # Headless server context — there is no human at the terminal to
             # answer permission prompts. `bypassPermissions` silences the
@@ -1804,7 +1817,9 @@ class BaseAgent(Generic[T]):
         # may be the underlying cause of "expected N turns, got N-1"
         # mid-stream failures observed against multi-batch sends.
         if expected_turns > 1:
-            options_kwargs["max_turns"] = expected_turns + 1
+            # +2: one turn of chunking headroom (historical) + one continuation
+            # turn for the adaptive-thinking root cause documented above.
+            options_kwargs["max_turns"] = expected_turns + 2
             # Re-build options now that max_turns is finalized.
             options = ClaudeAgentOptions(**options_kwargs)
 
