@@ -29,7 +29,6 @@ from __future__ import annotations
 import concurrent.futures as _cf
 import hashlib
 import json
-import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -37,6 +36,10 @@ from argosy.logging import get_logger
 from argosy.services.allocation_author.flow import AuthorOutcome, run_allocation_author
 from argosy.services.allocation_author.proposal import AllocationProposal
 from argosy.services.allocation_author.verifier import GateReport, verify_allocation_proposal
+from argosy.services.fleet_reliability import (
+    CircuitBreaker,
+    _kill_claude_children,
+)
 
 _log = get_logger("argosy.allocation_author.reliable")
 
@@ -54,43 +57,9 @@ class ReliabilityConfig:
     backend: str | None = None           # None → config's deployment_author_backend / global
 
 
-class CircuitBreaker:
-    """Trip after ``fail_threshold`` consecutive failures; short-circuit for
-    ``cooldown_s`` then half-open (allow one trial, reset on its success)."""
-
-    def __init__(
-        self,
-        *,
-        fail_threshold: int = 3,
-        cooldown_s: float = 300.0,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self.fail_threshold = fail_threshold
-        self.cooldown_s = cooldown_s
-        self._clock = clock
-        self.failures = 0
-        self.opened_at: float | None = None
-
-    def allow(self) -> bool:
-        if self.opened_at is None:
-            return True
-        if self._clock() - self.opened_at >= self.cooldown_s:
-            # Half-open: reset and allow a single trial call.
-            self.opened_at = None
-            self.failures = 0
-            return True
-        return False
-
-    def record_success(self) -> None:
-        self.failures = 0
-        self.opened_at = None
-
-    def record_failure(self) -> None:
-        self.failures += 1
-        if self.failures >= self.fail_threshold:
-            self.opened_at = self._clock()
-            _log.warning("deployment_author.breaker_open", failures=self.failures)
-
+# CircuitBreaker + _kill_claude_children now live in
+# ``argosy.services.fleet_reliability`` (shared by the whole fleet) and are
+# re-exported here for existing importers.
 
 # Module-level breaker + cache persist across route calls in one process.
 _BREAKER = CircuitBreaker()
@@ -111,35 +80,6 @@ def packet_hash(packet: dict[str, Any]) -> str:
 
     blob = json.dumps(_norm(packet), sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def _kill_claude_children() -> None:
-    """Kill the ``claude.exe`` subprocesses spawned under THIS process. Scoped to
-    our own subtree via psutil — it never touches sibling / parent claude.exe (e.g.
-    the developer's Claude Code session), only the children the SDK spawned here."""
-    try:
-        import os
-
-        import psutil
-    except Exception as exc:  # noqa: BLE001 — psutil missing: nothing we can do safely
-        _log.warning("deployment_author.kill_unavailable", error=str(exc)[:120])
-        return
-    try:
-        me = psutil.Process(os.getpid())
-        victims = [
-            c for c in me.children(recursive=True)
-            if "claude" in (c.name() or "").lower()
-        ]
-        for c in victims:
-            try:
-                c.kill()
-            except Exception:  # noqa: BLE001 — best-effort per child
-                continue
-        if victims:
-            psutil.wait_procs(victims, timeout=3)
-            _log.warning("deployment_author.killed_children", n=len(victims))
-    except Exception as exc:  # noqa: BLE001 — kill is best-effort, never raises
-        _log.warning("deployment_author.kill_failed", error=str(exc)[:120])
 
 
 def _invoke_agent(agent: Any, packet: dict[str, Any], feedback: list | None) -> AllocationProposal:

@@ -594,45 +594,83 @@ async def _gather_inputs_for_ticker(
 # Per-analyst runners — each takes the relevant slice of the payload bag
 # and returns an AgentReport. Defined as small async wrappers so the
 # main gather can hand them in uniformly.
+#
+# Each runner goes through the shared fleet-reliability envelope
+# (``call_reliably_async``): the claude.exe exit-1 flake arrives in
+# minutes-long BURSTS that outlive BaseAgent's in-call sub-second
+# retries (proven live on decision_runs 122/123 — every analyst
+# exhausted its inner budget and the quorum failed twice). The outer
+# envelope retries on a completely fresh agent after a LONG backoff so
+# the attempt lands past the burst; deterministic errors (schema,
+# citations) surface unretried. A fresh agent is constructed inside the
+# attempt factory so retries share no state.
 # ----------------------------------------------------------------------
+
+_ANALYST_SCOPE = "consult_analysts"
+
+
+async def _run_analyst_reliably(make_agent, /, **inputs: Any) -> AgentReport:
+    from argosy.services.fleet_reliability import (
+        CONSULT_ANALYST_CONFIG,
+        call_reliably_async,
+    )
+
+    async def _attempt() -> AgentReport:
+        return await make_agent().run(**inputs)
+
+    return await call_reliably_async(
+        _attempt, scope=_ANALYST_SCOPE, config=CONSULT_ANALYST_CONFIG,
+    )
 
 
 async def _run_fundamentals(
     user_id: str, tickers: list[str], payload: dict[str, dict[str, Any]],
 ) -> AgentReport:
-    agent = FundamentalsAnalystAgent(user_id=user_id)
-    return await agent.run(tickers=tickers, fundamentals_payload=payload)
+    return await _run_analyst_reliably(
+        lambda: FundamentalsAnalystAgent(user_id=user_id),
+        tickers=tickers, fundamentals_payload=payload,
+    )
 
 
 async def _run_technical(
     user_id: str, tickers: list[str], payload: dict[str, dict[str, Any]],
 ) -> AgentReport:
-    agent = TechnicalAnalystAgent(user_id=user_id)
-    return await agent.run(tickers=tickers, indicators_payload=payload)
+    return await _run_analyst_reliably(
+        lambda: TechnicalAnalystAgent(user_id=user_id),
+        tickers=tickers, indicators_payload=payload,
+    )
 
 
 async def _run_news(
     user_id: str, tickers: list[str], payload: dict[str, list[dict[str, Any]]],
 ) -> AgentReport:
-    agent = NewsAnalystAgent(user_id=user_id)
-    return await agent.run(tickers=tickers, news_payload=payload)
+    return await _run_analyst_reliably(
+        lambda: NewsAnalystAgent(user_id=user_id),
+        tickers=tickers, news_payload=payload,
+    )
 
 
 async def _run_sentiment(
     user_id: str, tickers: list[str], payload: dict[str, list[dict[str, Any]]],
 ) -> AgentReport:
-    agent = SentimentAnalystAgent(user_id=user_id)
-    return await agent.run(tickers=tickers, social_payload=payload)
+    return await _run_analyst_reliably(
+        lambda: SentimentAnalystAgent(user_id=user_id),
+        tickers=tickers, social_payload=payload,
+    )
 
 
 async def _run_macro(user_id: str, payload: dict[str, float]) -> AgentReport:
-    agent = MacroAnalystAgent(user_id=user_id)
-    return await agent.run(macro_snapshot=payload)
+    return await _run_analyst_reliably(
+        lambda: MacroAnalystAgent(user_id=user_id),
+        macro_snapshot=payload,
+    )
 
 
 async def _run_fx(user_id: str, payload: dict[str, dict[str, float]]) -> AgentReport:
-    agent = FXAnalystAgent(user_id=user_id)
-    return await agent.run(fx_payload=payload)
+    return await _run_analyst_reliably(
+        lambda: FXAnalystAgent(user_id=user_id),
+        fx_payload=payload,
+    )
 
 
 # ----------------------------------------------------------------------

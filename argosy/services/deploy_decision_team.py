@@ -77,10 +77,25 @@ def _enrich_facts_with_nvda(packet: dict[str, Any], extra_symbols: set[str] | No
 
 
 def _default_review(lens: str, packet: dict[str, Any], buys: list[dict[str, Any]], *, user_id: str):
-    from argosy.agents.deployment_reviewer import DeploymentReviewerAgent
+    """One reviewer call through the shared fleet-reliability envelope: the
+    claude.exe exit-1 flake arrives in minutes-long bursts that outlive the
+    agent's in-call sub-second retries (a reviewer died live on 2026-07-05 and
+    only fail-open covered it). Long-backoff retries on a fresh agent + a hard
+    timeout with process-tree kill; the team's fail-open stays the last resort."""
+    from argosy.services.fleet_reliability import (
+        DEPLOY_REVIEWER_CONFIG,
+        call_reliably_sync,
+    )
 
-    agent = DeploymentReviewerAgent(user_id=user_id)
-    return agent.run_sync(lens=lens, packet=packet, buys=buys).output
+    def _attempt():
+        from argosy.agents.deployment_reviewer import DeploymentReviewerAgent
+
+        agent = DeploymentReviewerAgent(user_id=user_id)
+        return agent.run_sync(lens=lens, packet=packet, buys=buys).output
+
+    return call_reliably_sync(
+        _attempt, scope="deploy_reviewers", config=DEPLOY_REVIEWER_CONFIG,
+    )
 
 
 def run_deploy_decision_team(
