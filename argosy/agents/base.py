@@ -123,6 +123,35 @@ def _probe_claude_code_sdk_thinking_field() -> str | None:
 
 _CLAUDE_CODE_SDK_THINKING_FIELD = _probe_claude_code_sdk_thinking_field()
 
+# TOKEN ACCOUNTING TRUTH (2026-07-05) — make the thinking-tokens telemetry
+# posture explicit ONCE at startup instead of silently reporting 0 forever.
+# Live finding: the probe resolves ``thinking_tokens`` (the string exists in
+# the bundled claude.exe), but the CLI's ResultMessage.usage payload does NOT
+# carry a per-call thinking-token field on the current bundle — with adaptive
+# thinking on Opus 4.8, thinking output is billed/reported inside
+# ``output_tokens``. So agent_reports.thinking_tokens == 0 on the claude_code
+# backend is EXPECTED (not an extraction bug); the extractor stays wired so
+# the field starts populating the moment a future bundle emits it.
+if _CLAUDE_CODE_SDK_THINKING_FIELD is None:
+    get_logger("argosy.agents.base").warning(
+        "claude_code.thinking_tokens_unavailable",
+        detail=(
+            "bundled claude.exe exposes no known thinking-token usage field; "
+            "thinking_tokens will report 0 on the claude_code backend "
+            "(thinking output is folded into output_tokens)"
+        ),
+    )
+else:
+    get_logger("argosy.agents.base").info(
+        "claude_code.thinking_tokens_field_resolved",
+        field=_CLAUDE_CODE_SDK_THINKING_FIELD,
+        detail=(
+            "extractor reads this key from ResultMessage.usage when present; "
+            "current bundled claude.exe does not emit it per-call, so 0 is "
+            "expected until the CLI surfaces per-call thinking usage"
+        ),
+    )
+
 # Phase 1+2 model defaults. Phase 2 reads overrides from
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
@@ -905,6 +934,16 @@ class BaseAgent(Generic[T]):
     #: claude.exe doesn't understand keep the legacy free-form path.
     use_structured_output: ClassVar[bool] = False
 
+    #: Per-agent tool allowlist for the claude_code backend (2026-07-05).
+    #: Default ``()`` keeps today's no-tools behavior for every agent
+    #: (one-shot reasoning, ``allowed_tools=[]``). Agents that need live
+    #: tool use (e.g. WebSearch-capable analysts) override with a tuple of
+    #: Claude Code tool names, e.g. ``("WebSearch", "WebFetch")``. When
+    #: non-empty, ``_call_via_claude_code_inner`` also bumps that call's
+    #: ``max_turns`` to at least 6 — tool use consumes agent-loop turns
+    #: (see the max_turns history comment in that function).
+    claude_code_allowed_tools: ClassVar[tuple[str, ...]] = ()
+
     # Number of EXTRA attempts to make when the model's output fails
     # schema validation (ValidationError / not-valid-JSON). 0 (default)
     # preserves the original behavior exactly — one attempt, then raise —
@@ -1341,6 +1380,20 @@ class BaseAgent(Generic[T]):
                 model=report.model,
                 tokens_in=call.tokens_in,
                 tokens_out=call.tokens_out,
+                # TOKEN ACCOUNTING TRUTH (2026-07-05): `tokens_in` is the
+                # UNCACHED remainder only — on the claude_code backend the
+                # real input lives in the cache buckets (e.g. run 127:
+                # tokens_in=3, cache_read=37287, cache_creation=39449).
+                # `effective_input_tokens` is the true prompt size a human
+                # should read at a glance. DB schema unchanged by design.
+                effective_input_tokens=(
+                    call.tokens_in
+                    + call.cache_input_tokens
+                    + call.cache_creation_tokens
+                ),
+                cache_read_tokens=call.cache_input_tokens,
+                cache_creation_tokens=call.cache_creation_tokens,
+                thinking_tokens=call.thinking_tokens,
                 cost_usd=cost,
                 confidence=confidence.value if confidence else None,
             )
@@ -1695,18 +1748,54 @@ class BaseAgent(Generic[T]):
         # The cap is 3 for one extra continuation of headroom; it is only a
         # CAP — single-turn completions are unaffected, and allowed_tools=[]
         # means extra turns can't do anything but finish the text.
+        # Per-agent tool allowlist (2026-07-05 contract). Default () keeps
+        # the historical no-tools posture; a non-empty allowlist enables
+        # exactly those Claude Code tools for this agent AND bumps max_turns
+        # to at least 6 (tool use consumes agent-loop turns; see the
+        # max_turns history above).
+        allowed_tools = list(self.claude_code_allowed_tools)
         options_kwargs: dict[str, Any] = {
             "system_prompt": system,
             "max_turns": 3,
-            "allowed_tools": [],  # one-shot reasoning; no tool use during agent runs
+            "allowed_tools": allowed_tools,
             # Headless server context — there is no human at the terminal to
             # answer permission prompts. `bypassPermissions` silences the
-            # interactive flow; `allowed_tools=[]` already prevents any
-            # actual tool invocation, so this is a safe pairing.
+            # interactive flow; the (default-empty) allowlist above prevents
+            # any tool invocation outside it, so this is a safe pairing.
             "permission_mode": "bypassPermissions",
             "model": self.model,
             "stderr": _capture_stderr,
         }
+        if allowed_tools:
+            options_kwargs["max_turns"] = max(options_kwargs["max_turns"], 6)
+
+        # CONFIG ISOLATION (2026-07-05, default ON — see
+        # AnthropicSettings.claude_code_isolated). Without this, the bundled
+        # claude.exe loads the developer's PERSONAL Claude Code user config
+        # (global CLAUDE.md, auto-memory MEMORY.md, superpowers skills/hooks)
+        # into EVERY fleet agent session: live telemetry showed ~35-75k
+        # cache_creation/cache_read input tokens per call for prompts whose
+        # actual content was <8k chars, and skill/hook preamble leaking into
+        # agent outputs. `setting_sources=[]` is the SDK's documented
+        # isolation mode (no user/project/local settings, no CLAUDE.md, no
+        # filesystem skills/hooks). OAuth session auth still works —
+        # credentials are not a "setting source" (verified live 2026-07-05).
+        try:
+            _isolated = get_settings().anthropic.claude_code_isolated
+        except Exception:  # noqa: BLE001 — settings load must never kill a call
+            _isolated = True
+        if _isolated:
+            options_kwargs["setting_sources"] = []
+            # Also trim the CLI's BASE tool set to exactly the per-agent
+            # allowlist. Without this, claude.exe loads its default tool
+            # schemas (~14k tokens) into every session even though
+            # `allowed_tools` already blocks their use — measured live
+            # 2026-07-05: setting_sources=[] alone left 24,945
+            # cache_creation tokens; setting_sources=[] + tools=[] dropped
+            # to 10,426 (the CLI's irreducible core prompt). Behavior-
+            # preserving: unlisted tools were unusable before, now their
+            # schemas are simply not loaded.
+            options_kwargs["tools"] = list(allowed_tools)
         # Wave A.5 / Opus 4.7 migration: thread thinking config through to
         # the agent-sdk. Prefer adaptive thinking (the canonical Opus 4.6+
         # pattern) when ``thinking_effort`` is configured — Anthropic
@@ -1819,7 +1908,11 @@ class BaseAgent(Generic[T]):
         if expected_turns > 1:
             # +2: one turn of chunking headroom (historical) + one continuation
             # turn for the adaptive-thinking root cause documented above.
-            options_kwargs["max_turns"] = expected_turns + 2
+            # Preserve the >=6 floor when a tool allowlist is active.
+            options_kwargs["max_turns"] = max(
+                expected_turns + 2,
+                options_kwargs["max_turns"] if allowed_tools else 0,
+            )
             # Re-build options now that max_turns is finalized.
             options = ClaudeAgentOptions(**options_kwargs)
 
@@ -2747,28 +2840,37 @@ class BaseAgent(Generic[T]):
           * Output tokens           -- output rate
           * Thinking tokens         -- priced as output
 
-        ``tokens_in`` from the SDK already includes cached + uncached input.
-        Subtract to derive the uncached portion.
+        Input-bucket semantics (corrected 2026-07-05): per Anthropic's
+        current Messages API, ``usage.input_tokens`` is the UNCACHED
+        remainder ONLY — total prompt size = ``input_tokens +
+        cache_creation_input_tokens + cache_read_input_tokens``. Both the
+        claude_code and api_key backends pass ``usage.input_tokens``
+        through unchanged, so on any cached call ``cache_input_tokens +
+        cache_creation_tokens > tokens_in`` is the NORMAL shape (e.g. live
+        run 127 fundamentals: tokens_in=3, cache_read=37287,
+        cache_creation=39449), not a telemetry glitch.
 
-        Edge case: if upstream telemetry rounding causes
-        ``cache_input_tokens + cache_creation_tokens > tokens_in`` (rare,
-        observed when the SDK reports tier-grouped buckets), we treat
-        ``tokens_in`` as ground truth and proportionally scale the cached
-        buckets down so they sum to at most ``tokens_in``. Without this
-        guard the function would over-bill in the bad-telemetry path
-        (uncached clamps to 0, but full cached counts still get charged).
+        The pre-2026-07-05 code assumed ``tokens_in`` was inclusive and
+        "normalized" the cache buckets down to fit inside it — on the run-
+        127 shape that scaled ~77k cache tokens down to 3, under-billing
+        cache costs to ~zero. We now branch on the observed shape:
+
+        * ``cached_total > tokens_in`` — exclusive semantics (the live
+          API): ``tokens_in`` IS the uncached portion; bill cache buckets
+          at their full reported counts.
+        * ``cached_total <= tokens_in`` — legacy/inclusive shape (older
+          fixtures, hand-built telemetry): keep the historical subtract so
+          existing totals don't shift.
         """
         price_in_per_m, price_out_per_m = _PRICE_BY_MODEL.get(
             self.model, _PRICE_BY_MODEL[FALLBACK_MODEL],
         )
 
-        # Normalize cached buckets so they fit inside reported total input.
         cached_total = cache_input_tokens + cache_creation_tokens
-        if cached_total > tokens_in and cached_total > 0:
-            scale = tokens_in / cached_total
-            cache_input_tokens = cache_input_tokens * scale
-            cache_creation_tokens = cache_creation_tokens * scale
-            uncached_input = 0.0
+        if cached_total > tokens_in:
+            # Exclusive semantics — tokens_in is already the uncached
+            # remainder; cache buckets are billed in full.
+            uncached_input = float(tokens_in)
         else:
             uncached_input = tokens_in - cached_total
 

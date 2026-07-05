@@ -1593,3 +1593,135 @@ async def test_claude_code_shared_budget_across_exit1_and_malformed(monkeypatch)
         if ev == "claude_code.malformed_json_retry"
     ]
     assert len(malformed_events) == 2
+
+
+# ----------------------------------------------------------------------
+# 2026-07-05 telemetry fixes — config isolation, per-agent tool allowlist,
+# effective_input_tokens in the agent.run.finished structured log.
+# ----------------------------------------------------------------------
+
+
+class _FakeAnthropicSettings:
+    def __init__(self, isolated: bool) -> None:
+        self.claude_code_isolated = isolated
+        self.backend = "claude_code"
+
+
+class _FakeSettings:
+    def __init__(self, isolated: bool) -> None:
+        self.anthropic = _FakeAnthropicSettings(isolated)
+
+
+@pytest.mark.asyncio
+async def test_isolation_options_present_by_default(monkeypatch):
+    """FIX 1 — default (ISOLATED) posture: setting_sources=[] (no personal
+    user config / CLAUDE.md / skills / hooks) and tools=[] (no default CLI
+    tool schemas) on every claude_code call."""
+    captured = _install_fake_query(monkeypatch)
+    monkeypatch.setattr(
+        "argosy.agents.base.get_settings", lambda: _FakeSettings(True)
+    )
+    agent = _make_agent()
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    opts = captured["options"]
+    assert opts.setting_sources == [], (
+        "isolation mode must pass setting_sources=[] so the developer's "
+        "personal Claude Code config never loads into fleet agent sessions"
+    )
+    assert opts.tools == [], (
+        "isolation mode must trim the CLI base tool set to the (empty) "
+        "per-agent allowlist so default tool schemas don't bloat the prompt"
+    )
+
+
+@pytest.mark.asyncio
+async def test_isolation_disabled_via_config_knob(monkeypatch):
+    """FIX 1 revert knob — claude_code_isolated=False restores the
+    pre-fix behavior exactly (SDK defaults: setting_sources/tools unset)."""
+    captured = _install_fake_query(monkeypatch)
+    monkeypatch.setattr(
+        "argosy.agents.base.get_settings", lambda: _FakeSettings(False)
+    )
+    agent = _make_agent()
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    opts = captured["options"]
+    assert opts.setting_sources is None
+    assert opts.tools is None
+
+
+@pytest.mark.asyncio
+async def test_allowed_tools_default_empty_and_max_turns_3(monkeypatch):
+    """FIX 3 — default claude_code_allowed_tools=() keeps today's
+    no-tools, max_turns=3 posture."""
+    captured = _install_fake_query(monkeypatch)
+    agent = _make_agent()
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    opts = captured["options"]
+    assert opts.allowed_tools == []
+    assert opts.max_turns == 3
+
+
+@pytest.mark.asyncio
+async def test_allowed_tools_from_class_attribute_bumps_max_turns(monkeypatch):
+    """FIX 3 contract — a non-empty claude_code_allowed_tools tuple lands in
+    options.allowed_tools AND bumps max_turns to at least 6 (tool use
+    consumes agent-loop turns)."""
+    captured = _install_fake_query(monkeypatch)
+
+    class _ToolAgent(_Subagent):
+        agent_role = "test_tool_agent_2026_07_05"
+        claude_code_allowed_tools = ("WebSearch", "WebFetch")
+
+    agent = _ToolAgent(user_id="test")
+    agent.thinking_effort = None
+    agent.thinking_budget = 0
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    opts = captured["options"]
+    assert opts.allowed_tools == ["WebSearch", "WebFetch"]
+    assert opts.max_turns >= 6
+    # Isolation mode also loads ONLY the allowlisted tool schemas.
+    assert opts.tools == ["WebSearch", "WebFetch"]
+
+
+@pytest.mark.asyncio
+async def test_effective_input_tokens_in_finished_log(monkeypatch):
+    """FIX 2(b) — agent.run.finished structured log carries
+    effective_input_tokens = tokens_in + cache_read + cache_creation so a
+    human reading logs sees the TRUE input size (tokens_in alone is the
+    uncached remainder — single digits on cached fleet calls)."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    msg_text = AssistantMessage(
+        content=[TextBlock(text='{"text": "ok"}')], model="claude-opus-4-8"
+    )
+    result = _make_result_message(
+        input_tokens=3,
+        output_tokens=50,
+        cache_read_input_tokens=37287,
+        cache_creation_input_tokens=39449,
+    )
+    _install_fake_query(monkeypatch, yielded=[msg_text, result])
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecorderLog:
+        def info(self, event, **kw):
+            events.append((event, kw))
+
+        def __getattr__(self, name):
+            def _noop(*a, **kw):
+                return None
+            return _noop
+
+    agent = _make_agent()
+    agent._log = _RecorderLog()
+    report = await agent.run()
+    assert report.tokens_in == 3
+
+    finished = [kw for ev, kw in events if ev == "agent.run.finished"]
+    assert finished, "agent.run.finished must be logged on success"
+    kw = finished[-1]
+    assert kw["effective_input_tokens"] == 3 + 37287 + 39449
+    assert kw["cache_read_tokens"] == 37287
+    assert kw["cache_creation_tokens"] == 39449
+    assert kw["tokens_in"] == 3

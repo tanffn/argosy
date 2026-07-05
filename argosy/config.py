@@ -72,6 +72,18 @@ class AnthropicSettings(BaseSettings):
     # Switchable per-environment via `argosy.toml [anthropic] backend = ...` or
     # via the `ARGOSY_ANTHROPIC__BACKEND` env var.
     backend: str = "claude_code"
+    # Config isolation for the claude_code backend (2026-07-05 telemetry fix).
+    # When True (default), fleet agent sessions run the bundled claude.exe with
+    # ``ClaudeAgentOptions(setting_sources=[])`` so the developer's PERSONAL
+    # Claude Code user config (global CLAUDE.md, auto-memory, skills, hooks,
+    # settings.json) is NOT loaded into agent context. Live telemetry showed
+    # every fleet call carrying ~35-75k cache tokens of that personal config
+    # for prompts whose actual content was <8k chars, plus leaked skill/hook
+    # preamble in agent outputs. OAuth session auth is unaffected (credentials
+    # are not a "setting source" — verified live).
+    # Revert via env: `ARGOSY_ANTHROPIC__CLAUDE_CODE_ISOLATED=false` or
+    # `argosy.toml [anthropic] claude_code_isolated = false`.
+    claude_code_isolated: bool = True
 
 
 class Settings(BaseSettings):
@@ -276,6 +288,15 @@ def _build_settings() -> Settings:
     # the field assignment; routing through os.environ keeps test
     # monkeypatch.setenv working without a reload dance.
     admin_token = os.environ.get("ARGOSY_ADMIN_TOKEN") or None
+
+    # Config-isolation revert knob (2026-07-05). Like admin_token above, the
+    # explicit-kwargs constructor bypasses the SettingsConfigDict env plumbing,
+    # so the documented `ARGOSY_ANTHROPIC__CLAUDE_CODE_ISOLATED` env var is
+    # wired by hand here. Env wins over argosy.toml — it's the emergency
+    # revert switch. Pydantic coerces "false"/"0"/"true"/"1" strings to bool.
+    _iso_env = os.environ.get("ARGOSY_ANTHROPIC__CLAUDE_CODE_ISOLATED")
+    if _iso_env is not None:
+        anthropic_cfg = {**anthropic_cfg, "claude_code_isolated": _iso_env}
 
     return Settings(
         home=home,

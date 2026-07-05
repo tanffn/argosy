@@ -81,23 +81,46 @@ def test_estimate_usd_combined(agent):
     assert cost == pytest.approx(0.02430, rel=1e-3)
 
 
-def test_estimate_usd_caps_cached_overflow(agent):
-    """Edge case: if upstream telemetry reports cached sums > tokens_in,
-    cap proportionally so we never bill more than the true total input.
+def test_estimate_usd_exclusive_input_semantics(agent):
+    """cached_total > tokens_in is the live API's NORMAL shape (corrected
+    2026-07-05): ``usage.input_tokens`` EXCLUDES the cache buckets, so
+    tokens_in is the uncached remainder and cache buckets bill in full.
 
-    tokens_in=1000, cache_read=900, cache_write=300 -> cached_total=1200 > 1000.
-    Scale = 1000/1200 = 0.8333; scaled read=750, scaled write=250.
-    cost = 0 + 750*3*0.10/1M + 250*3*1.25/1M + 500*15/1M
-         = 0.000225      + 0.0009375           + 0.0075
-         = 0.0086625
-    Without the cap, the buggy path would charge for the full 900+300 plus
-    zero uncached -- a ~17% overcharge in this scenario.
+    The pre-fix code treated this as a telemetry glitch and scaled the
+    cache buckets down to fit inside tokens_in — on the live run-127
+    shape (tokens_in=3, cache_read=37287, cache_creation=39449) that
+    under-billed ~77k cache tokens to ~3.
+
+    tokens_in=1000 (uncached), cache_read=900, cache_write=300:
+    cost = 1000*3/1M + 900*3*0.10/1M + 300*3*1.25/1M + 500*15/1M
+         = 0.003     + 0.00027       + 0.001125      + 0.0075
+         = 0.011895
     """
     cost = agent._estimate_usd(
         tokens_in=1000, tokens_out=500,
         cache_input_tokens=900, cache_creation_tokens=300, thinking_tokens=0,
     )
-    assert cost == pytest.approx(0.0086625, rel=1e-3)
+    assert cost == pytest.approx(0.011895, rel=1e-3)
+
+
+def test_estimate_usd_run_127_shape(agent):
+    """Real telemetry shape from decision run 127 (fundamentals analyst):
+    tokens_in=3, cache_read=37287, cache_creation=39449, out=1200.
+
+    Sonnet rates for this fixture agent ($3/M in, $15/M out):
+    uncached: 3*3/1M            = 0.000009
+    read:     37287*3*0.10/1M   = 0.0111861
+    write:    39449*3*1.25/1M   = 0.14793375
+    output:   1200*15/1M        = 0.018
+    total                       = 0.17712885
+    (Pre-fix code billed the whole input side as if it were 3 tokens.)
+    """
+    cost = agent._estimate_usd(
+        tokens_in=3, tokens_out=1200,
+        cache_input_tokens=37287, cache_creation_tokens=39449,
+        thinking_tokens=0,
+    )
+    assert cost == pytest.approx(0.17712885, rel=1e-3)
 
 
 def test_estimate_usd_opus_pricing():
