@@ -72,6 +72,46 @@ class FundamentalsReport(BaseModel):
     )
 
 
+# Stable render order for the per-ticker payload source documents.
+# Anchors first (the analyst needs price + EPS / share count to derive a
+# per-share fair value), then ratios / growth / quality, then metadata.
+# Keys NOT in this list still render (sorted, after these) — see
+# build_prompt.
+_PAYLOAD_KEY_ORDER: tuple[str, ...] = (
+    "current_price",
+    "market_cap",
+    "market_cap_m",
+    "shares_outstanding",
+    "eps_ttm",
+    "eps_forward",
+    "pe_ratio",
+    "pe_ratio_ttm",
+    "pe_normalized_annual",
+    "forward_pe",
+    "peg_ratio",
+    "ev_ebitda",
+    "revenue_ttm",
+    "revenue_growth_yoy",
+    "revenue_per_share_ttm",
+    "net_income_ttm",
+    "earnings_growth_yoy",
+    "free_cashflow",
+    "dividend_yield",
+    "payout_ratio",
+    "gross_margin_ttm",
+    "operating_margin_ttm",
+    "net_margin_ttm",
+    "debt_to_equity",
+    "return_on_equity",
+    "52w_high",
+    "52w_low",
+    "beta",
+    "sector",
+    "industry",
+    "source_url",
+)
+
+
 class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
     """Sonnet-class fundamentals analyst.
 
@@ -97,9 +137,13 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             tickers: ordered list of tickers in scope.
             fundamentals_payload: per-ticker dict carrying the metric
                 inputs. Expected keys per ticker (any subset OK):
+                anchors — current_price, eps_ttm, eps_forward,
+                shares_outstanding, market_cap / market_cap_m,
+                revenue_ttm, net_income_ttm, free_cashflow; ratios —
                 pe_ratio, peg_ratio, ev_ebitda, revenue_growth_yoy,
-                earnings_growth_yoy, debt_to_equity, current_price,
-                source_url (the SEC filing or yfinance reference).
+                earnings_growth_yoy, debt_to_equity, dividend_yield;
+                plus source_url (the SEC filing or yfinance reference).
+                Unknown keys render too (sorted, after the known set).
 
         Returns:
             ``(system, user, sources)``. Each ticker's pre-computed
@@ -134,9 +178,9 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             "for a ticker IS NOT evidence of staleness. Only flag a "
             "remediation_request when you can DEMONSTRATE an internal "
             "inconsistency in the supplied data itself:\n"
-            "    * ``marketCap`` is present AND ``sharesOutstanding`` is "
+            "    * ``market_cap`` is present AND ``shares_outstanding`` is "
             "present AND ``current_price`` is present, AND "
-            "``abs(marketCap / sharesOutstanding - current_price) / "
+            "``abs(market_cap / shares_outstanding - current_price) / "
             "current_price > 0.10`` (the implied price diverges from the "
             "reported price by more than 10%). This means the fields "
             "are internally inconsistent — one of them is wrong. Emit "
@@ -166,17 +210,19 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
                 missing.append(t)
                 continue
             lines: list[str] = []
-            for key in (
-                "pe_ratio",
-                "peg_ratio",
-                "ev_ebitda",
-                "revenue_growth_yoy",
-                "earnings_growth_yoy",
-                "debt_to_equity",
-                "current_price",
-                "source_url",
-            ):
-                if key in data:
+            rendered: set[str] = set()
+            # Known keys first, in a stable analyst-friendly order —
+            # anchors (price / EPS / share count / absolute financials)
+            # ahead of ratios. Then ANY remaining payload keys, sorted,
+            # so upstream gatherers never get silently dropped here
+            # (the old fixed whitelist swallowed eps_ttm / market_cap /
+            # free_cashflow — decision_run 126's "no per-share anchor").
+            for key in _PAYLOAD_KEY_ORDER:
+                if key in data and data[key] is not None:
+                    lines.append(f"  - {key}: {data[key]}")
+                    rendered.add(key)
+            for key in sorted(data):
+                if key not in rendered and data[key] is not None:
                     lines.append(f"  - {key}: {data[key]}")
             sources.append((f"fundamentals/{t}", "\n".join(lines)))
 

@@ -1515,12 +1515,55 @@ def _gather_fundamentals(
     return out
 
 
+# Per-share fair-value ANCHOR fields — without at least price + an EPS
+# (or share-count) anchor the fundamentals analyst cannot derive a
+# per-share fair value (live gap: decision_run 126 / ACN, the trader
+# reported "no earnings-per-share, price, or share-count anchor").
+# Maps payload key -> ordered yfinance ``Ticker.info`` candidate keys.
+_YF_ANCHOR_FIELDS: dict[str, tuple[str, ...]] = {
+    "current_price": ("currentPrice", "regularMarketPrice", "previousClose"),
+    "eps_ttm": ("trailingEps",),
+    "eps_forward": ("forwardEps",),
+    "shares_outstanding": ("sharesOutstanding",),
+    "market_cap": ("marketCap",),
+    "revenue_ttm": ("totalRevenue",),
+    "net_income_ttm": ("netIncomeToCommon",),
+    "free_cashflow": ("freeCashflow",),
+}
+
+
+def _extract_yf_anchors(info: dict[str, Any]) -> dict[str, Any]:
+    """Pull the anchor fields out of a yfinance ``info`` dict.
+
+    Missing fields are omitted (never fabricated) — first non-None
+    candidate key wins per field.
+    """
+    anchors: dict[str, Any] = {}
+    for field_name, info_keys in _YF_ANCHOR_FIELDS.items():
+        for info_key in info_keys:
+            value = info.get(info_key)
+            if value is not None:
+                anchors[field_name] = value
+                break
+    return anchors
+
+
 def _yfinance_fundamentals_fallback(
     tickers: list[str], out: dict[str, dict[str, Any]],
 ) -> None:
-    """Best-effort yfinance backfill for tickers Finnhub didn't cover.
+    """Best-effort yfinance backfill for tickers Finnhub didn't cover,
+    plus ANCHOR enrichment for tickers Finnhub DID cover.
 
-    Mutates ``out`` in place — only fills tickers absent from ``out``.
+    Mutates ``out`` in place:
+
+    * Tickers absent from ``out`` get the full yfinance payload
+      (ratios + anchors).
+    * Tickers already covered by Finnhub get ONLY the missing anchor
+      fields backfilled (Finnhub's ``/stock/metric`` carries ratios +
+      ``eps_ttm``/``market_cap_m`` but NO current price / share count /
+      absolute revenue / net income / FCF — the per-share fair-value
+      anchors). Existing non-None values are never overwritten.
+
     Errors are logged + swallowed (defensive). yfinance is already a
     project dependency so the ``import`` should succeed; if not, log
     + return.
@@ -1532,8 +1575,11 @@ def _yfinance_fundamentals_fallback(
         return
 
     for ticker in tickers[:25]:
-        if ticker in out:
-            continue
+        existing = out.get(ticker)
+        if existing is not None and all(
+            existing.get(k) is not None for k in _YF_ANCHOR_FIELDS
+        ):
+            continue  # already fully anchored — no fetch needed
         try:
             info = yf.Ticker(ticker).info or {}
         except Exception as exc:  # noqa: BLE001 - per-ticker defensive
@@ -1543,6 +1589,14 @@ def _yfinance_fundamentals_fallback(
             )
             continue
         if not info:
+            continue
+        anchors = _extract_yf_anchors(info)
+        if existing is not None:
+            # Finnhub covered the ratios — backfill only the missing
+            # anchor fields; never overwrite the primary source.
+            for k, v in anchors.items():
+                if existing.get(k) is None:
+                    existing[k] = v
             continue
         payload = {
             "pe_ratio": info.get("trailingPE"),
@@ -1554,11 +1608,9 @@ def _yfinance_fundamentals_fallback(
             "revenue_growth_yoy": info.get("revenueGrowth"),
             "earnings_growth_yoy": info.get("earningsGrowth"),
             "return_on_equity": info.get("returnOnEquity"),
-            "free_cashflow": info.get("freeCashflow"),
-            "market_cap": info.get("marketCap"),
-            "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
             "sector": info.get("sector"),
             "industry": info.get("industry"),
+            **anchors,
             "source_url": f"yfinance:{ticker}",
         }
         # Drop None-valued keys to keep the prompt tight.

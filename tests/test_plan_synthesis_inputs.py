@@ -592,6 +592,147 @@ def test_fundamentals_helper_caps_fanout_at_25(monkeypatch):
     assert set(out.keys()) == set(tickers[:25])
 
 
+class _FakeYFTicker:
+    """Minimal stand-in for ``yfinance.Ticker`` — carries a canned info."""
+
+    _INFO = {
+        "currentPrice": 137.35,
+        "trailingEps": 12.5065,
+        "forwardEps": 14.673,
+        "sharesOutstanding": 611_942_109,
+        "marketCap": 84_050_247_680,
+        "totalRevenue": 73_100_591_104,
+        "netIncomeToCommon": 7_789_751_808,
+        "freeCashflow": 12_089_380_864,
+        "trailingPE": 10.98,
+        "forwardPE": 9.36,
+        "enterpriseToEbitda": 6.28,
+        "dividendYield": 4.75,
+        "debtToEquity": 16.12,
+        "revenueGrowth": 0.067,
+        "sector": "Technology",
+    }
+
+    def __init__(self, ticker: str) -> None:
+        self.ticker = ticker
+
+    @property
+    def info(self) -> dict:
+        return dict(self._INFO)
+
+
+def _install_fake_yfinance(monkeypatch):
+    import sys
+    import types
+
+    fake_yf = types.ModuleType("yfinance")
+    fake_yf.Ticker = _FakeYFTicker
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+    return fake_yf
+
+
+def test_fundamentals_yfinance_fallback_emits_anchor_fields(monkeypatch):
+    """decision_run 126 fix: when Finnhub has no data for a ticker, the
+    yfinance fallback payload must carry the per-share fair-value ANCHOR
+    fields — current price, trailing+forward EPS, share count, market
+    cap, revenue, net income, FCF — not just ratios."""
+    from argosy.adapters import MissingDataSourceError
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+
+    class _FakeAdapter:
+        async def get_company_financials(self, ticker: str) -> dict[str, object]:
+            raise MissingDataSourceError(f"finnhub: empty metrics for {ticker}")
+
+    import argosy.adapters.data.finnhub_adapter as fh_mod
+
+    monkeypatch.setattr(fh_mod, "FinnhubAdapter", lambda *_a, **_kw: _FakeAdapter())
+    _install_fake_yfinance(monkeypatch)
+
+    out = inputs_mod._gather_fundamentals(["ACN"], with_yfinance_fallback=True)
+    payload = out["ACN"]
+    assert payload["current_price"] == 137.35
+    assert payload["eps_ttm"] == 12.5065
+    assert payload["eps_forward"] == 14.673
+    assert payload["shares_outstanding"] == 611_942_109
+    assert payload["market_cap"] == 84_050_247_680
+    assert payload["revenue_ttm"] == 73_100_591_104
+    assert payload["net_income_ttm"] == 7_789_751_808
+    assert payload["free_cashflow"] == 12_089_380_864
+    # Ratios still present.
+    assert payload["pe_ratio"] == 10.98
+    assert payload["source_url"] == "yfinance:ACN"
+
+
+def test_fundamentals_yfinance_enriches_finnhub_payload_with_anchors(monkeypatch):
+    """When Finnhub DID answer (ratios + eps_ttm but no price / share
+    count), the yfinance pass backfills ONLY the missing anchor fields —
+    it never overwrites a non-None value from the primary source."""
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+
+    class _FakeAdapter:
+        async def get_company_financials(self, ticker: str) -> dict[str, object]:
+            return {
+                "pe_ratio": 10.79,       # Finnhub value ≠ fake yfinance 10.98
+                "eps_ttm": 12.51,        # Finnhub value ≠ fake yfinance 12.5065
+                "market_cap_m": 84050.26,
+                "dividend_yield": None,  # present-but-None → backfilled
+                "source_url": f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}",
+            }
+
+    import argosy.adapters.data.finnhub_adapter as fh_mod
+
+    monkeypatch.setattr(fh_mod, "FinnhubAdapter", lambda *_a, **_kw: _FakeAdapter())
+    _install_fake_yfinance(monkeypatch)
+
+    out = inputs_mod._gather_fundamentals(["ACN"], with_yfinance_fallback=True)
+    payload = out["ACN"]
+    # Finnhub-sourced values are NOT overwritten.
+    assert payload["pe_ratio"] == 10.79
+    assert payload["eps_ttm"] == 12.51
+    assert payload["source_url"].startswith("https://finnhub.io/")
+    # Missing anchors got backfilled from yfinance.
+    assert payload["current_price"] == 137.35
+    assert payload["eps_forward"] == 14.673
+    assert payload["shares_outstanding"] == 611_942_109
+    assert payload["market_cap"] == 84_050_247_680
+    assert payload["revenue_ttm"] == 73_100_591_104
+    assert payload["net_income_ttm"] == 7_789_751_808
+    assert payload["free_cashflow"] == 12_089_380_864
+
+
+def test_fundamentals_yfinance_enrich_skipped_when_fully_anchored(monkeypatch):
+    """No yfinance fetch is issued for a ticker whose payload already
+    carries every anchor field (avoid doubling network calls)."""
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+
+    anchored = {
+        "current_price": 1.0, "eps_ttm": 1.0, "eps_forward": 1.0,
+        "shares_outstanding": 1, "market_cap": 1, "revenue_ttm": 1,
+        "net_income_ttm": 1, "free_cashflow": 1,
+    }
+
+    class _FakeAdapter:
+        async def get_company_financials(self, ticker: str) -> dict[str, object]:
+            return dict(anchored)
+
+    import argosy.adapters.data.finnhub_adapter as fh_mod
+
+    monkeypatch.setattr(fh_mod, "FinnhubAdapter", lambda *_a, **_kw: _FakeAdapter())
+    fake_yf = _install_fake_yfinance(monkeypatch)
+    calls: list[str] = []
+
+    class _CountingTicker(_FakeYFTicker):
+        def __init__(self, ticker: str) -> None:
+            calls.append(ticker)
+            super().__init__(ticker)
+
+    fake_yf.Ticker = _CountingTicker
+
+    out = inputs_mod._gather_fundamentals(["ACN"], with_yfinance_fallback=True)
+    assert out["ACN"] == anchored
+    assert calls == []
+
+
 # ----------------------------------------------------------------------
 # NVDA YTD pace — assembler must populate nvda_shares_sold_ytd /
 # nvda_target_shares_ytd when fills + a plan target exist.

@@ -189,6 +189,60 @@ async def test_legitimate_citations_no_hallucination_flag() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fundamentals_build_prompt_renders_anchor_fields() -> None:
+    """decision_run 126 fix: the per-ticker source document must render
+    the fair-value anchor fields (price / EPS / share count / market cap
+    / revenue / net income / FCF) — the old fixed whitelist silently
+    dropped them, so the model saw ratios with nothing to anchor a
+    per-share estimate to. Unknown extra keys must render too; None
+    values must not."""
+    canned = {
+        "per_ticker": {},
+        "summary": "(unused)",
+        "confidence": "LOW",
+        "cited_sources": ["fundamentals/ACN"],
+    }
+    agent = _MockFundamentalsAgent(user_id="ariel", canned_output=canned)
+    _sys, _usr, sources = agent.build_prompt(
+        tickers=["ACN"],
+        fundamentals_payload={
+            "ACN": {
+                "pe_ratio": 10.79,
+                "eps_ttm": 12.51,
+                "eps_forward": 14.67,
+                "current_price": 137.35,
+                "shares_outstanding": 611_942_109,
+                "market_cap": 84_050_247_680,
+                "revenue_ttm": 73_100_591_104,
+                "net_income_ttm": 7_789_751_808,
+                "free_cashflow": 12_089_380_864,
+                "dividend_yield": None,      # None → not rendered
+                "some_new_upstream_key": 42,  # unknown → still rendered
+                "source_url": "yfinance:ACN",
+            }
+        },
+    )
+    acn_source = next(c for sid, c in sources if sid == "fundamentals/ACN")
+    for expected in (
+        "current_price: 137.35",
+        "eps_ttm: 12.51",
+        "eps_forward: 14.67",
+        "shares_outstanding: 611942109",
+        "market_cap: 84050247680",
+        "revenue_ttm: 73100591104",
+        "net_income_ttm: 7789751808",
+        "free_cashflow: 12089380864",
+        "pe_ratio: 10.79",
+        "some_new_upstream_key: 42",
+        "source_url: yfinance:ACN",
+    ):
+        assert expected in acn_source, f"missing from source doc: {expected}"
+    assert "dividend_yield" not in acn_source
+    # Anchors render BEFORE ratios (stable analyst-friendly order).
+    assert acn_source.index("current_price") < acn_source.index("pe_ratio")
+
+
+@pytest.mark.asyncio
 async def test_fundamentals_build_prompt_empty_payload() -> None:
     """When no tickers have payload, sources is empty and missing list covers all."""
     canned = {

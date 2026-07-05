@@ -704,8 +704,10 @@ def test_fundamentals_analyst_prompt_is_conservative_about_staleness() -> None:
     assert "trust the supplied data" in lower
     assert "stock split" in lower or "corporate action" in lower
     # The internal-inconsistency criterion must be specified, not vibes.
-    assert "marketcap" in lower
-    assert "sharesoutstanding" in lower
+    # (keys renamed to snake_case to match the actual payload keys —
+    # market_cap / shares_outstanding — decision_run 126 follow-up)
+    assert "market_cap" in lower
+    assert "shares_outstanding" in lower
     # The 10% tolerance must be specified.
     assert "0.10" in lower or "10%" in lower
 
