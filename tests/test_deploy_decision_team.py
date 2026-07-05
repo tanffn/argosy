@@ -104,6 +104,49 @@ def test_team_decision_maps_to_dto():
     assert dto.flagged[0].objections[0].severity == "block"
 
 
+def test_write_team_flag_proposals_builds_inbox_rows():
+    from argosy.services.deploy_decision_team import (
+        TeamDecision,
+        write_team_flag_proposals,
+    )
+
+    captured = []
+
+    class _FakeDb:
+        def add(self, row): captured.append(row)
+        def commit(self): pass
+        def rollback(self): pass
+
+    decision = TeamDecision(flagged=[{
+        "symbol": "R1GR", "amount_usd": 18000.0,
+        "objections": [
+            {"lens": "concentration", "concern": "~14% NVDA — not a diversifier", "severity": "block"},
+            {"lens": "prudence", "concern": "adds to an extended sleeve", "severity": "warn"},
+        ],
+    }])
+    n = write_team_flag_proposals(_FakeDb(), "ariel", decision)
+    assert n == 1
+    row = captured[0]
+    assert row.kind == "deploy_team_flag"
+    assert row.dedup_key == "deploy_team_flag:ariel:R1GR"
+    assert row.severity == "warning"                 # worst objection is block
+    assert "R1GR" in row.summary and "$18,000" in row.summary
+    assert "~14% NVDA" in row.rationale_md and "NOT executed" in row.rationale_md
+    assert row.status == "open"
+
+
+def test_write_team_flag_proposals_nothing_flagged_is_a_noop():
+    from argosy.services.deploy_decision_team import (
+        TeamDecision,
+        write_team_flag_proposals,
+    )
+
+    class _ExplodingDb:
+        def add(self, row): raise AssertionError("no rows expected")
+
+    assert write_team_flag_proposals(_ExplodingDb(), "ariel", TeamDecision()) == 0
+
+
 def test_team_enriches_facts_with_nvda_lookthrough():
     captured = {}
 

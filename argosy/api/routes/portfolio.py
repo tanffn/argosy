@@ -1825,6 +1825,18 @@ def get_deploy_cash(
                         run_deploy_decision_team,
                     )
                     _team = run_deploy_decision_team(packet, _proposal, user_id=user_id)
+                    if _team.flagged:
+                        # A flagged buy is the client's decision — surface it in
+                        # the inbox (idempotent per symbol), don't just ride the DTO.
+                        try:
+                            from argosy.services.deploy_decision_team import (
+                                write_team_flag_proposals,
+                            )
+                            write_team_flag_proposals(db, user_id, _team)
+                        except Exception as exc:  # noqa: BLE001 — sink is additive
+                            _log.warning(
+                                "deploy_cash.team_flag_sink_failed", error=str(exc)[:120],
+                            )
                     dto.team_review = TeamReviewDTO(
                         reviewers_ran=_team.reviewers_ran,
                         reviewers_expected=_team.reviewers_expected,
