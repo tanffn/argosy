@@ -3636,6 +3636,34 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
     return blocking, warned
 
 
+def _nearest_ancestor_decision_run_id(
+    db: "Session", pv: "PlanVersion", *, max_hops: int = 10
+) -> int | None:
+    """Walk a refinement draft's ``derived_from_id`` chain to the nearest
+    ancestor plan version that carries a ``decision_run_id`` (a real synthesis
+    product) and return that run id, or None.
+
+    Refinement drafts (``run_refinement``) copy horizon markdown verbatim from
+    the plan they refine and set ``decision_run_id=None`` by design, so the
+    ancestor's resolver manifest IS the derivation authority for their headline
+    numbers. Cycle-safe and hop-bounded (defense-in-depth on corrupt lineage).
+    """
+    seen: set[int] = {pv.id}
+    current = pv
+    for _ in range(max_hops):
+        parent_id = getattr(current, "derived_from_id", None)
+        if not parent_id or parent_id in seen:
+            return None
+        seen.add(parent_id)
+        parent = db.get(PlanVersion, parent_id)
+        if parent is None:
+            return None
+        if parent.decision_run_id is not None:
+            return parent.decision_run_id
+        current = parent
+    return None
+
+
 def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
     """Phase 6 helper — run plan_output_gate on a draft PlanVersion.
 
@@ -3713,8 +3741,28 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
         resolved = None
         resolver_error: str | None = None
         if db is not None:
-            if pv.decision_run_id is None:
-                resolver_error = "draft has no decision_run_id"
+            # Refinement-path drafts (run_refinement: role='draft',
+            # decision_run_id=None, derived_from_id set) copy their horizon
+            # markdown VERBATIM from the plan they refine, so every headline
+            # number in them traces to the nearest ANCESTOR synthesis run's
+            # deterministic resolver manifest. Failing closed on the missing
+            # own-run id structurally blocked ALL refinement drafts while the
+            # unified promote-gate barrier already (knowingly) scopes itself to
+            # synthesis drafts. The honest fix: rebuild the manifest from the
+            # nearest ancestor with a decision_run_id and validate the headline
+            # numbers against THAT (the resolver is the single blind derivation
+            # engine — same authority the rederivation verdict uses). A
+            # refinement draft with NO synthesis ancestor still fails closed.
+            _resolver_run_id = pv.decision_run_id
+            _resolver_run_source = "own"
+            if _resolver_run_id is None and getattr(pv, "derived_from_id", None):
+                _resolver_run_id = _nearest_ancestor_decision_run_id(db, pv)
+                _resolver_run_source = "refinement-ancestor"
+            if _resolver_run_id is None:
+                resolver_error = (
+                    "draft has no decision_run_id and no synthesis ancestor "
+                    "with one"
+                )
             else:
                 try:
                     from argosy.services.plan_numeric_resolver import (
@@ -3727,15 +3775,24 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
                     resolved = resolve_plan_numbers(
                         db,
                         user_id=pv.user_id,
-                        decision_run_id=pv.decision_run_id,
+                        decision_run_id=_resolver_run_id,
                         include_canonical_ages=True,
                     )
+                    if _resolver_run_source == "refinement-ancestor":
+                        import logging
+                        logging.getLogger(__name__).info(
+                            "headline_numeric_source: refinement draft pv=%s has "
+                            "no own decision_run_id; validating against ancestor "
+                            "run %s manifest (horizon markdown is inherited from "
+                            "that lineage)",
+                            pv.id, _resolver_run_id,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     resolver_error = f"resolver raised: {exc}"
                     import logging
                     logging.getLogger(__name__).warning(
-                        "headline_numeric_resolver_failed pv=%s err=%s",
-                        pv.id, exc,
+                        "headline_numeric_resolver_failed pv=%s run=%s(%s) err=%s",
+                        pv.id, _resolver_run_id, _resolver_run_source, exc,
                     )
 
         # #11 — wire the whole-artifact + freshness inputs so the dormant

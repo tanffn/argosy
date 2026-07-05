@@ -109,6 +109,84 @@ def test_full_engine_doc_has_no_domicile_violations():
     assert validate_instrument_domicile(doc) == []
 
 
+def _doc_with_classes(classes: list[AllocationClassDoc]) -> TargetAllocationDoc:
+    return TargetAllocationDoc(
+        anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0, fi_pct=21.3,
+        provenance="test", classes=classes,
+        glide=[GlideWaypoint(quarter=0, date=date(2026, 7, 4),
+                             composition_pct_by_class={c.label: c.target_pct for c in classes})],
+    )
+
+
+def test_high_growth_sleeve_is_domicile_exempt_by_sleeve_class():
+    """Ariel's binding policy: the high-growth/moonshot sleeve is deliberately
+    domicile-agnostic. US-domiciled (and unstamped) instruments INSIDE the
+    ``high_growth_basket`` sleeve raise no violations — the exemption is keyed
+    on the sleeve's sigma_class, never on ticker identity."""
+    doc = _doc_with_classes([
+        AllocationClassDoc(
+            label="High-growth / high-potential", snapshot_category="Growth",
+            sigma_class="high_growth_basket", target_pct=100.0,
+            instruments=[
+                AllocationInstrument(symbol="RKLB", role="primary",
+                                     weight_within_class_pct=50.0, domicile="US"),
+                AllocationInstrument(symbol="NU", role="primary",
+                                     weight_within_class_pct=50.0),  # unstamped
+            ],
+        ),
+    ])
+    assert validate_instrument_domicile(doc) == []
+
+
+def test_same_us_ticker_outside_high_growth_sleeve_is_still_red():
+    """The carve-out is sleeve-scoped, not ticker-scoped: the SAME US-domiciled
+    ticker held in any other sleeve is still flagged RED."""
+    doc = _doc_with_classes([
+        AllocationClassDoc(
+            label="High-growth / high-potential", snapshot_category="Growth",
+            sigma_class="high_growth_basket", target_pct=50.0,
+            instruments=[AllocationInstrument(
+                symbol="RKLB", role="primary",
+                weight_within_class_pct=100.0, domicile="US")],
+        ),
+        AllocationClassDoc(
+            label="US growth tilt (ex-NVDA)", snapshot_category="Growth",
+            sigma_class="us_growth_equity", target_pct=50.0,
+            instruments=[AllocationInstrument(
+                symbol="RKLB", role="primary",
+                weight_within_class_pct=100.0, domicile="US")],
+        ),
+    ])
+    v = validate_instrument_domicile(doc)
+    assert len(v) == 1
+    assert v[0].severity == "RED"
+    assert v[0].symbol == "RKLB"
+    assert v[0].class_label == "US growth tilt (ex-NVDA)"
+
+
+def test_non_exempt_sleeves_stay_fully_gated_alongside_exempt_sleeve():
+    """A doc with the exempt sleeve present must not weaken the gate for the
+    rest of the book: an unstamped instrument in a core sleeve is still YELLOW."""
+    doc = _doc_with_classes([
+        AllocationClassDoc(
+            label="High-growth / high-potential", snapshot_category="Growth",
+            sigma_class="high_growth_basket", target_pct=5.0,
+            instruments=[AllocationInstrument(
+                symbol="IONQ", role="primary",
+                weight_within_class_pct=100.0, domicile="US")],
+        ),
+        AllocationClassDoc(
+            label="US broad-market core", snapshot_category="Core Equity",
+            sigma_class="us_equity", target_pct=95.0,
+            instruments=[AllocationInstrument(
+                symbol="MYSTERY", role="primary", weight_within_class_pct=100.0)],
+        ),
+    ])
+    v = validate_instrument_domicile(doc)
+    assert len(v) == 1
+    assert v[0].severity == "YELLOW" and v[0].symbol == "MYSTERY"
+
+
 def test_us_person_skips_the_estate_check():
     doc = _doc([AllocationInstrument(
         symbol="VOO", role="primary", weight_within_class_pct=100.0, domicile="US",

@@ -103,6 +103,17 @@ class TargetAllocationDoc(BaseModel):
 # everything else must be non-US-situs for a non-US-person.
 _SANCTIONED_US_SITUS_SYMBOLS: frozenset[str] = frozenset({"NVDA"})
 
+# Sleeve CLASSES (by sigma_class) that are deliberately domicile-agnostic per
+# Ariel's binding policy: the high-growth / moonshot sleeve picks the best
+# thesis instruments regardless of domicile (many have no UCITS twin at all),
+# and the sleeve is small (~5%) and managed as a basket. The exemption is keyed
+# on the sleeve's sigma_class — NOT on ticker names — so any instrument the
+# team rotates into the sleeve inherits the policy, and the same ticker held
+# in ANY OTHER sleeve is still fully gated. Matches
+# allocation_plan.HIGH_GROWTH_SIGMA_CLASS (string duplicated here because
+# allocation_plan imports from this module — import-cycle).
+_DOMICILE_EXEMPT_SIGMA_CLASSES: frozenset[str] = frozenset({"high_growth_basket"})
+
 
 class DomicileViolation(BaseModel):
     symbol: str
@@ -117,6 +128,7 @@ def validate_instrument_domicile(
     *,
     non_us_person: bool = True,
     sanctioned_us_situs: frozenset[str] = _SANCTIONED_US_SITUS_SYMBOLS,
+    exempt_sigma_classes: frozenset[str] = _DOMICILE_EXEMPT_SIGMA_CLASSES,
 ) -> list[DomicileViolation]:
     """Flag canonical instruments that add US-situs estate exposure (RED) or whose
     domicile is unstamped (YELLOW). Empty list = clean.
@@ -125,11 +137,20 @@ def validate_instrument_domicile(
     a $60K exemption are taxed up to 40%. US-domiciled ETF shares ARE US-situs;
     Irish/Lux UCITS shares are not. This is reporting-grade only when
     ``non_us_person`` is False (returns []).
+
+    Sleeves whose ``sigma_class`` is in ``exempt_sigma_classes`` (the
+    deliberately domicile-agnostic high-growth/moonshot basket) are skipped
+    entirely — instruments there are exempt BY SLEEVE MEMBERSHIP, never by
+    ticker; every other sleeve stays fully gated.
     """
     if not non_us_person:
         return []
     out: list[DomicileViolation] = []
     for c in doc.classes:
+        if c.sigma_class in exempt_sigma_classes:
+            # Ariel's binding policy: the high-growth sleeve is domicile-
+            # agnostic; the estate guardrail does not apply inside it.
+            continue
         for instr in c.instruments:
             sym = instr.symbol.upper()
             if sym in sanctioned_us_situs:
