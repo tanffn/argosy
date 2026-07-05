@@ -135,6 +135,51 @@ def test_write_team_flag_proposals_builds_inbox_rows():
     assert row.status == "open"
 
 
+def test_write_team_flag_proposals_survives_the_real_schema(alembic_engine_at_head):
+    """REAL-DB write test — the class of test the fake-db version can't be.
+    The original fake-db test was green while every live insert died on
+    ck_action_proposals_kind (kind='deploy_team_flag' wasn't in the 0055
+    CHECK enum; the sink swallowed the IntegrityError as a presumed dedup
+    collision). This test writes through the real migrated schema, so a
+    constraint regression fails loudly instead of silently killing the sink."""
+    from sqlalchemy.orm import Session
+
+    from argosy.services.deploy_decision_team import (
+        TeamDecision,
+        write_team_flag_proposals,
+    )
+
+    decision = TeamDecision(flagged=[{
+        "symbol": "R1GR", "amount_usd": 16000.0,
+        "objections": [{"lens": "concentration", "concern": "~14% NVDA", "severity": "block"}],
+    }])
+    with Session(alembic_engine_at_head) as s:
+        assert write_team_flag_proposals(s, "ariel", decision) == 1
+        # Second write same symbol → dedup collision, swallowed, not re-written.
+        assert write_team_flag_proposals(s, "ariel", decision) == 0
+        row = s.execute(
+            __import__("sqlalchemy").text(
+                "SELECT kind, severity, status FROM action_proposals "
+                "WHERE dedup_key = 'deploy_team_flag:ariel:R1GR'"
+            )
+        ).fetchone()
+    assert row is not None and row[0] == "deploy_team_flag" and row[1] == "warning"
+
+
+def test_write_stock_decision_proposal_survives_the_real_schema(alembic_engine_at_head):
+    """Same real-schema regression net for the holdings-review sink
+    (kind='stock_decision' had the identical silent CHECK failure)."""
+    from sqlalchemy.orm import Session
+
+    from argosy.agents.stock_decision import StockDecisionOutput
+    from argosy.services.stock_decision.service import write_stock_decision_proposal
+
+    v = StockDecisionOutput(ticker="RKT", verdict="TRIM", confidence="MED", reason="probe")
+    with Session(alembic_engine_at_head) as s:
+        row = write_stock_decision_proposal(s, "ariel", v)
+        assert row is not None and row.id is not None
+
+
 def test_write_team_flag_proposals_nothing_flagged_is_a_noop():
     from argosy.services.deploy_decision_team import (
         TeamDecision,

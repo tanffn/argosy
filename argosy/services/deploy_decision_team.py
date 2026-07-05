@@ -207,8 +207,16 @@ def write_team_flag_proposals(db: Any, user_id: str, decision: TeamDecision) -> 
         try:
             db.commit()
             written += 1
-        except IntegrityError:  # an open peer already holds the dedup slot
+        except IntegrityError as exc:
+            # Expected on a dedup collision (an open peer holds the slot) — but
+            # log the actual error: a CHECK-constraint failure looked exactly
+            # like a dedup collision here and silently killed this sink for a
+            # day (migration 0077 relaxed the kind CHECK).
             db.rollback()
+            log.warning(
+                "deploy_team.flag_write_skipped",
+                symbol=f["symbol"], error=str(exc.orig)[:160],
+            )
     if written:
         log.info("deploy_team.flags_surfaced", n=written)
     return written

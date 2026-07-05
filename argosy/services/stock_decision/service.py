@@ -152,8 +152,16 @@ def write_stock_decision_proposal(db: Any, user_id: str, v: StockDecisionOutput)
     try:
         db.commit()
         return row
-    except IntegrityError:  # an open peer already holds the dedup slot
+    except IntegrityError as exc:
+        # Expected on a dedup collision (an open peer holds the slot) — but log
+        # the actual error: a CHECK-constraint failure looked exactly like a
+        # dedup collision here and silently killed this sink from ship day
+        # until migration 0077 relaxed the kind CHECK (2026-07-05).
         db.rollback()
+        log.warning(
+            "stock_decision.proposal_write_skipped",
+            ticker=v.ticker, error=str(exc.orig)[:160],
+        )
         return None
 
 
