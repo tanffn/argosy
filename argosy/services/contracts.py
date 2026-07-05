@@ -522,6 +522,33 @@ def authored_outcome_to_dto(
     return dto
 
 
+class TeamObjectionDTO(BaseModel):
+    """One reviewer's judgment objection to a proposed buy."""
+
+    lens: str
+    concern: str
+    severity: str  # "block" | "warn"
+
+
+class TeamFlaggedBuyDTO(BaseModel):
+    symbol: str
+    amount_usd: float
+    objections: list[TeamObjectionDTO] = []
+
+
+class TeamReviewDTO(BaseModel):
+    """The deploy decision TEAM's verdict on the author's proposal — judgment
+    reviewed by judgment (blind reviewers), not a deterministic gate. ``flagged``
+    buys drew an objection and should be reviewed before executing; ``degraded``
+    means fewer reviewers ran than expected (fewer eyes, not a block)."""
+
+    reviewers_ran: int
+    reviewers_expected: int
+    degraded: bool
+    approved: list[str] = []
+    flagged: list[TeamFlaggedBuyDTO] = []
+
+
 class DeploymentPlanDTO(BaseModel):
     deploy_amount_usd: float
     as_of: str
@@ -543,6 +570,10 @@ class DeploymentPlanDTO(BaseModel):
     # degraded, the `tiers` above are the labelled deterministic fallback. null
     # otherwise (pivot off / not requested).
     authored: AuthoredAllocationDTO | None = None
+    # The deploy decision TEAM's judgment review of `authored` (blind reviewers).
+    # Present when the author produced a proposal the team could review; `flagged`
+    # buys drew an objection and want a look before executing. null otherwise.
+    team_review: TeamReviewDTO | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:

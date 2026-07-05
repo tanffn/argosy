@@ -1812,6 +1812,34 @@ def get_deploy_cash(
             dto.authored = authored_outcome_to_dto(
                 outcome, held_symbols={s.upper() for s in holdings},
             )
+            # The decision TEAM reviews the author's proposal by JUDGMENT (blind
+            # reviewers re-derive from raw facts and object) — the R1GR-class catch,
+            # no gate. Additive + best-effort: it annotates, never changes the buys.
+            _proposal = getattr(outcome, "proposal", None)
+            if _proposal is not None and getattr(_proposal, "buys", None):
+                try:
+                    from argosy.services.contracts import (
+                        TeamFlaggedBuyDTO, TeamObjectionDTO, TeamReviewDTO,
+                    )
+                    from argosy.services.deploy_decision_team import (
+                        run_deploy_decision_team,
+                    )
+                    _team = run_deploy_decision_team(packet, _proposal, user_id=user_id)
+                    dto.team_review = TeamReviewDTO(
+                        reviewers_ran=_team.reviewers_ran,
+                        reviewers_expected=_team.reviewers_expected,
+                        degraded=_team.degraded,
+                        approved=[b.symbol for b in _team.approved],
+                        flagged=[
+                            TeamFlaggedBuyDTO(
+                                symbol=f["symbol"], amount_usd=f["amount_usd"],
+                                objections=[TeamObjectionDTO(**o) for o in f["objections"]],
+                            )
+                            for f in _team.flagged
+                        ],
+                    )
+                except Exception as exc:  # noqa: BLE001 — team review is additive
+                    _log.warning("deploy_cash.team_review_failed", error=str(exc)[:120])
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(
                 "deploy_cash.author_failed", user_id=user_id, error=str(exc),
