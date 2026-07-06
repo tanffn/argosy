@@ -606,6 +606,29 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # SnapshotRefreshJob — self-refresh the portfolio snapshot (quantities
+        # carried, live reprice + fresh FX, provenance-marked insert). The TSV
+        # is an OUTPUT, never an input dependency. Registered enabled=False:
+        # manual 'Run now' works today; flip enabled to schedule it.
+        try:
+            from argosy.services.jobs.snapshot_refresh_job import (  # noqa: PLC0415
+                SnapshotRefreshJob,
+                snapshot_refresh_metadata,
+            )
+
+            snapshot_refresh_loop = SnapshotRefreshJob(enabled=False, user_id="ariel")
+            scheduler.register_loop(snapshot_refresh_loop)
+            registry.register(
+                job=snapshot_refresh_loop,
+                metadata=snapshot_refresh_metadata(),
+            )
+            log.info("scheduler.snapshot_refresh_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.snapshot_refresh_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # HolisticRebalanceReviewLoop — quarterly whole-portfolio rebalance
         # review. 10:00 IDT on the 1st of Jan/Apr/Jul/Oct, source_kind='monitor'.
         # Deterministic composer; writes a proposed-only 'rebalance' proposal
