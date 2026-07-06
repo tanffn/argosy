@@ -405,8 +405,233 @@ def refresh_portfolio_snapshot(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Broker-fill application (executed buys → new snapshot row)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Fill:
+    """One executed broker buy to fold into the latest snapshot.
+
+    ``symbol`` must be the SNAPSHOT convention (bare ticker, e.g. "CSPX" not
+    "CSPX.L"); put the listing hint in ``details`` ("... CSPX LN") so the
+    self-refresh repricer can quote the right exchange later.
+    """
+
+    symbol: str
+    shares: float
+    price: float
+    asset_type: str = ""
+    details: str = ""
+    location: str = "Leumi"
+    currency: str = "USD"
+
+    @property
+    def cost(self) -> float:
+        return float(self.shares) * float(self.price)
+
+
+@dataclass
+class ApplyFillsResult:
+    """What one apply-fills run did — for logs / verification."""
+
+    row: PortfolioSnapshotRow | None
+    snapshot: PortfolioSnapshot | None
+    old_total_usd_k: float = 0.0
+    new_total_usd_k: float = 0.0
+    cash_before_local: float | None = None
+    cash_after_local: float | None = None
+    merged: list[str] = field(default_factory=list)
+    added: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _pct_unit_is_percent(p: PortfolioPosition) -> bool:
+    """Detect the row's pct_change unit (Schwab stores 24.0, Leumi 0.24)."""
+    if p.pct_change is None or not p.avg_price or not p.current_price:
+        return False
+    frac = p.current_price / p.avg_price - 1.0
+    return abs(p.pct_change - frac * 100.0) < abs(p.pct_change - frac)
+
+
+def apply_fills_to_snapshot(
+    session: Session,
+    *,
+    fills: list[Fill],
+    source_tag: str,
+    user_id: str = "ariel",
+    cash_location: str = "Leumi",
+    cash_currency: str = "USD",
+    extra_warnings: tuple[str, ...] | list[str] = (),
+    today: date | None = None,
+    commit: bool = True,
+) -> ApplyFillsResult:
+    """Fold executed broker fills into the latest snapshot; INSERT a new row.
+
+    Rules (conservation — cash becomes positions, nothing appears/vanishes):
+
+    * A fill whose (symbol, location, currency) matches a held non-cash
+      position MERGES: shares add, ``avg_price`` is the honest blended
+      average ``(old_sh*old_avg + fill_sh*fill_px) / total_sh``, and the
+      position is re-valued at the snapshot's ``current_price`` (fresher
+      than the fill print when the snapshot was repriced the same day).
+    * A non-matching fill ADDS a new position with
+      ``avg_price = current_price = fill price``.
+    * The single cash position at (``cash_location``, ``cash_currency``)
+      is reduced by the total cost. Missing cash row → ``ValueError``
+      (never invent a funding source). A negative resulting balance is
+      NOT an error — the executed fills are facts — but it is recorded
+      loudly as ``cash_overdraft:...`` in ``parse_warnings`` (stale
+      snapshot cash vs the real broker balance; next ingest reconciles).
+    * Totals are an INDEPENDENT sum over the new positions (model
+      property), never old-total ± delta.
+    * Every applied fill is recorded in ``parse_warnings`` as
+      ``fill-applied:<sym>:<shares>@<price>``; callers append
+      closed-loop expectation notes via ``extra_warnings``.
+    """
+    today = today or date.today()
+    old_row = get_latest_snapshot_row(session, user_id)
+    if old_row is None:
+        raise ValueError(f"no prior portfolio snapshot for user {user_id!r}")
+    old = row_to_snapshot(old_row)
+
+    result = ApplyFillsResult(
+        row=None, snapshot=None, old_total_usd_k=old.total_usd_value_k,
+    )
+
+    positions = [p.model_copy(deep=True) for p in old.positions]
+
+    def _find_position(fill: Fill) -> PortfolioPosition | None:
+        for p in positions:
+            if (
+                (p.symbol or "").strip().upper() == fill.symbol.strip().upper()
+                and (p.location or "").strip().lower() == fill.location.strip().lower()
+                and (p.currency or "").strip().upper() == fill.currency.strip().upper()
+                and (p.asset_type or "").strip().lower() != "cash"
+            ):
+                return p
+        return None
+
+    for fill in fills:
+        if fill.shares <= 0 or fill.price <= 0:
+            raise ValueError(f"non-positive fill for {fill.symbol}: {fill}")
+        held = _find_position(fill)
+        if held is not None and held.shares:
+            old_sh = float(held.shares)
+            old_avg = held.avg_price if held.avg_price is not None else fill.price
+            if held.avg_price is None:
+                result.warnings.append(f"fill_merge_no_avg:{fill.symbol}")
+            total_sh = old_sh + fill.shares
+            blended = (old_sh * old_avg + fill.shares * fill.price) / total_sh
+            price_basis = (
+                held.current_price if held.current_price else fill.price
+            )
+            pct_is_percent = _pct_unit_is_percent(held)  # judge on OLD row
+            held.shares = total_sh
+            held.avg_price = round(blended, 4)
+            held.current_price = float(price_basis)
+            held.current_value_local = total_sh * float(price_basis)
+            held.usd_value_k = _to_usd_k(
+                held.current_value_local, held.currency,
+                fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
+            )
+            if held.avg_price:
+                frac = float(price_basis) / held.avg_price - 1.0
+                held.pct_change = round(frac * 100.0 if pct_is_percent else frac, 4)
+            result.merged.append(fill.symbol)
+        else:
+            value_local = fill.cost
+            positions.append(
+                PortfolioPosition(
+                    location=fill.location,
+                    currency=fill.currency,
+                    asset_type=fill.asset_type,
+                    details=fill.details,
+                    symbol=fill.symbol,
+                    shares=float(fill.shares),
+                    current_price=float(fill.price),
+                    avg_price=float(fill.price),
+                    current_value_local=value_local,
+                    usd_value_k=_to_usd_k(
+                        value_local, fill.currency,
+                        fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
+                    ),
+                    pct_change=0.0,
+                )
+            )
+            result.added.append(fill.symbol)
+
+    # ---- Cash deduction (single funding source, fail-loud if absent) -------
+    total_cost = sum(f.cost for f in fills)
+    cash_pos = next(
+        (
+            p for p in positions
+            if (p.asset_type or "").strip().lower() == "cash"
+            and (p.location or "").strip().lower() == cash_location.strip().lower()
+            and (p.currency or "").strip().upper() == cash_currency.strip().upper()
+        ),
+        None,
+    )
+    if cash_pos is None or cash_pos.current_value_local is None:
+        raise ValueError(
+            f"no cash position at {cash_location}/{cash_currency} to fund "
+            f"${total_cost:,.2f} of fills"
+        )
+    result.cash_before_local = cash_pos.current_value_local
+    cash_pos.current_value_local = cash_pos.current_value_local - total_cost
+    cash_pos.usd_value_k = _to_usd_k(
+        cash_pos.current_value_local, cash_pos.currency,
+        fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
+    )
+    result.cash_after_local = cash_pos.current_value_local
+    if cash_pos.current_value_local < 0:
+        result.warnings.append(
+            f"cash_overdraft:{cash_location}:{cash_currency}:"
+            f"{cash_pos.current_value_local:,.2f} — snapshot cash was stale "
+            f"vs the real broker balance; next real ingest must reconcile"
+        )
+
+    fill_notes = [
+        f"fill-applied:{f.symbol}:{f.shares:g}@{f.price:g}" for f in fills
+    ]
+
+    new_snap = PortfolioSnapshot(
+        source_path=source_tag,
+        snapshot_date=today,
+        fx_usd_nis=old.fx_usd_nis,
+        fx_usd_eur=old.fx_usd_eur,
+        positions=positions,
+        real_estate=[r.model_copy(deep=True) for r in old.real_estate],
+        allocations=[a.model_copy(deep=True) for a in old.allocations],
+        nvda_sales=[s.model_copy(deep=True) for s in old.nvda_sales],
+        pensions=[pe.model_copy(deep=True) for pe in old.pensions],
+        parse_warnings=fill_notes + list(result.warnings) + list(extra_warnings),
+    )
+    result.new_total_usd_k = new_snap.total_usd_value_k
+
+    row = persist_snapshot(session, user_id=user_id, snapshot=new_snap, commit=commit)
+    result.row = row
+    result.snapshot = new_snap
+    _log.info(
+        "snapshot_refresh.fills_applied",
+        user_id=user_id,
+        source_tag=source_tag,
+        merged=result.merged,
+        added=result.added,
+        old_total_usd_k=round(result.old_total_usd_k, 2),
+        new_total_usd_k=round(result.new_total_usd_k, 2),
+        cash_after_local=result.cash_after_local,
+        warnings=result.warnings,
+    )
+    return result
+
+
 __all__ = [
+    "ApplyFillsResult",
+    "Fill",
     "RefreshResult",
+    "apply_fills_to_snapshot",
     "default_fx_fn",
     "default_quote_fn",
     "refresh_portfolio_snapshot",

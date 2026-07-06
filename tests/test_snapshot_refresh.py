@@ -257,3 +257,133 @@ def test_exchange_hint_orders_suffixes():
     assert _hinted_suffixes("(ISHR DM PRPTY YD) IWDP SW")[0] == ".SW"
     assert _hinted_suffixes("Stock, Med")[0] == ""
     assert _hinted_suffixes("")[0] == ""
+
+
+# ---------------------------------------------------------------------------
+# apply_fills_to_snapshot — executed broker buys folded into a new row
+# ---------------------------------------------------------------------------
+
+from argosy.services.snapshot_refresh import Fill, apply_fills_to_snapshot  # noqa: E402
+
+
+def _seed_for_fills(session) -> None:
+    snap = PortfolioSnapshot(
+        source_path="self-refresh:reprice-of-2026-06-29",
+        snapshot_date=date(2026, 7, 6),
+        fx_usd_nis=3.0,
+        fx_usd_eur=0.85,
+        positions=[
+            PortfolioPosition(
+                location="Leumi", currency="USD", asset_type="Core Equity",
+                details="(ISHR CORE S&P500) CSPX LN", symbol="CSPX",
+                shares=100.0, current_price=800.0, avg_price=700.0,
+                current_value_local=80_000.0, usd_value_k=80.0,
+                pct_change=0.1429,  # fraction unit (Leumi convention)
+            ),
+            PortfolioPosition(
+                location="Leumi", currency="USD", asset_type="Cash",
+                symbol="", current_value_local=50_000.0, usd_value_k=50.0,
+            ),
+            PortfolioPosition(  # NIS cash — must NOT be touched as funding
+                location="Leumi", currency="NIS", asset_type="Cash",
+                symbol="", current_value_local=6_000.0, usd_value_k=2.0,
+            ),
+        ],
+    )
+    persist_snapshot(session, user_id="ariel", snapshot=snap)
+
+
+def test_fill_merge_blends_avg_and_revalues_at_current_price(session):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(
+        session,
+        fills=[Fill(symbol="CSPX", shares=50.0, price=820.0)],
+        source_tag="fills-applied:test",
+        today=date(2026, 7, 6),
+    )
+    cspx = next(p for p in res.snapshot.positions if p.symbol == "CSPX")
+    assert cspx.shares == 150.0
+    # blended avg: (100*700 + 50*820) / 150 = 740.0
+    assert cspx.avg_price == pytest.approx(740.0)
+    # revalued at the snapshot's current price, not the fill print
+    assert cspx.current_price == 800.0
+    assert cspx.current_value_local == pytest.approx(150 * 800.0)
+    assert cspx.usd_value_k == pytest.approx(120.0)
+    # pct_change recomputed in the row's own unit (fraction): 800/740 - 1
+    assert cspx.pct_change == pytest.approx(800.0 / 740.0 - 1.0, abs=1e-4)
+    assert res.merged == ["CSPX"]
+
+
+def test_fill_adds_new_position_and_reduces_cash(session):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(
+        session,
+        fills=[
+            Fill(symbol="EXUS", shares=100.0, price=45.0,
+                 asset_type="International", details="(XTR WLD EXUSA) EXUS LN"),
+        ],
+        source_tag="fills-applied:test",
+        today=date(2026, 7, 6),
+    )
+    exus = next(p for p in res.snapshot.positions if p.symbol == "EXUS")
+    assert exus.avg_price == exus.current_price == 45.0
+    assert exus.current_value_local == pytest.approx(4_500.0)
+    assert exus.location == "Leumi" and exus.currency == "USD"
+    cash = next(
+        p for p in res.snapshot.positions
+        if p.asset_type == "Cash" and p.currency == "USD"
+    )
+    assert cash.current_value_local == pytest.approx(45_500.0)
+    # NIS cash untouched
+    nis = next(
+        p for p in res.snapshot.positions
+        if p.asset_type == "Cash" and p.currency == "NIS"
+    )
+    assert nis.current_value_local == 6_000.0
+    # conservation: value bought at fill price == cash spent → total unchanged
+    assert res.new_total_usd_k == pytest.approx(res.old_total_usd_k, abs=1e-9)
+    assert res.added == ["EXUS"]
+    assert "fill-applied:EXUS:100@45" in res.snapshot.parse_warnings
+
+
+def test_fill_overdraft_warns_loudly_but_applies(session):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(
+        session,
+        fills=[Fill(symbol="EXUS", shares=2_000.0, price=45.0,
+                    asset_type="International")],
+        source_tag="fills-applied:test",
+        today=date(2026, 7, 6),
+    )
+    assert res.cash_after_local == pytest.approx(50_000.0 - 90_000.0)
+    assert any(w.startswith("cash_overdraft:Leumi:USD:") for w in res.warnings)
+
+
+def test_fill_without_cash_position_fails_loud(session):
+    _seed_for_fills(session)
+    with pytest.raises(ValueError, match="no cash position"):
+        apply_fills_to_snapshot(
+            session,
+            fills=[Fill(symbol="EXUS", shares=1.0, price=45.0)],
+            source_tag="fills-applied:test",
+            cash_location="Schwab",  # no cash row there in the seed
+        )
+
+
+def test_fills_persist_new_row_with_source_tag_and_extra_warnings(session):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(
+        session,
+        fills=[Fill(symbol="CSPX", shares=10.0, price=810.0)],
+        source_tag="fills-applied:2026-07-06-deploy",
+        extra_warnings=["expectation:next-real-ingest:CSPX 110 sh"],
+        today=date(2026, 7, 6),
+    )
+    row = session.get(PortfolioSnapshotRow, res.row.id)
+    assert row.source_path == "fills-applied:2026-07-06-deploy"
+    warnings = json.loads(row.parse_warnings_json)
+    assert "fill-applied:CSPX:10@810" in warnings
+    assert "expectation:next-real-ingest:CSPX 110 sh" in warnings
+    # totals_json is the independent sum over the persisted positions
+    totals = json.loads(row.totals_json)
+    assert totals["total_usd_value_k"] == pytest.approx(res.new_total_usd_k)
