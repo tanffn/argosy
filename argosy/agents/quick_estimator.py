@@ -62,15 +62,23 @@ class QuickEstimatorAgent(BaseAgent[EstimatorOutput]):
         super().__init__(user_id=user_id, model=model or "claude-sonnet-4-6")
 
     def build_prompt(self, *, candidate):
+        from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
+
         system = (
-            "You are Argosy's quick discovery triage. Given ONE trend-radar "
-            "candidate, give a fast go/no-go screen for whether it is worth a "
-            "full multi-agent grading. Weigh fundamentals + thesis durability + "
-            "sentiment; favour names with a real growth story, not just a "
-            "momentum spike. Be decisive and terse.\n"
-            "Return go=true only for candidates worth deeper research; otherwise "
-            "go=false. conviction is HIGH/MED/LOW; sentiment is -1..1; one_line "
-            "is a single clause."
+            "You are Argosy's quick discovery triage for the x10 moonshot "
+            "sleeve. Given ONE trend-radar candidate, give a fast go/no-go "
+            "screen for whether it is worth a full multi-agent grading AS A "
+            "SLEEVE CANDIDATE under the binding mandate below. Be decisive and "
+            "terse.\n\n"
+            f"{X10_SLEEVE_MANDATE}\n\n"
+            "Apply the CAP-MATH test from the candidate's market_cap: go=true "
+            "only when a plausible x10 path exists in 5-10 years (not just a "
+            "real growth story or a momentum spike — a safe compounder that "
+            "might 2x is a NO for this sleeve). conviction is the ASYMMETRY "
+            "grade (upside-asymmetry x plausibility), HIGH/MED/LOW — "
+            "defensibility must not raise it; sentiment is -1..1; one_line is a "
+            "single clause and should carry the cap-math (cap today -> "
+            "plausible outcome)."
         )
         user = (
             "RADAR CANDIDATE:\n"

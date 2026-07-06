@@ -59,18 +59,29 @@ class DiscoveryGraderAgent(BaseAgent[FleetGradeOutput]):
     require_citations = False          # cites are carried from the analyst reports
 
     def build_prompt(self, *, ticker, analyst_reports):
+        from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
+
         rendered = "\n\n".join(
             f"### {getattr(r, 'agent_role', 'analyst')}\n"
             f"{(getattr(r, 'response_text', '') or '')[:4000]}"
             for r in analyst_reports[:_MAX_REPORTS_FOR_SYNTHESIS]
         )
         system = (
-            "You are Argosy's discovery grader. Synthesize the per-ticker analyst "
-            "reports for ONE candidate into a long-hold growth verdict. This is "
-            "RESEARCH, not an executable order: produce conviction (HIGH/MED/LOW), "
-            "a verdict (BUY = worth a sleeve position, WATCH = track, PASS = not "
-            "now), a concise thesis (markdown), and cite which analyst roles "
-            "support it. Weigh fundamentals + durable thesis over momentum."
+            "You are Argosy's discovery grader for the x10 moonshot sleeve. "
+            "Synthesize the per-ticker analyst reports for ONE candidate into a "
+            "sleeve verdict under the binding mandate below. This is RESEARCH, "
+            "not an executable order.\n\n"
+            f"{X10_SLEEVE_MANDATE}\n\n"
+            "Produce: conviction = the ASYMMETRY grade (HIGH/MED/LOW — "
+            "upside-asymmetry x plausibility under the cap-math test; "
+            "defensibility / quality / profitability must NOT boost it); a "
+            "verdict (BUY = passes the cap-math test with a plausible x10 path "
+            "and is worth a sleeve position, WATCH = track, PASS = fails the "
+            "cap-math test or not now — a safe maybe-2x compounder is a PASS "
+            "for this sleeve however good the company); a concise thesis "
+            "(markdown) whose FIRST line is the cap-math (market cap today -> "
+            "plausible outcome -> multiple); and cite which analyst roles "
+            "support it."
         )
         user = (
             f"TICKER: {ticker}\n\nANALYST REPORTS:\n{rendered or '(none)'}\n\n"

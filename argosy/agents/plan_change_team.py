@@ -243,10 +243,175 @@ class DiversifierAdjudicatorAgent(BaseAgent[DiversifierAdjudication]):
         return system, user
 
 
+# --------------------------------------------------------------------------
+# x10 moonshot sleeve composition — author + blind re-derivation.
+#
+# The permanent ~5% high-growth sleeve is re-sourced under the BINDING x10
+# asymmetry mandate (high_potential_sleeve.X10_SLEEVE_MANDATE): cap-math test,
+# accepted per-name loss = 100% (defensibility never boosts rank), rank =
+# upside-asymmetry x plausibility, weights = the deploy fill order. The author
+# re-grades the current names and may source new candidates (WebSearch); the
+# blind reviewer re-derives independently; divergence is compared IN CODE and
+# forces a reconciliation round — never auto-resolved.
+# --------------------------------------------------------------------------
+class MoonshotName(BaseModel):
+    ticker: str
+    action: str = "KEEP"          # KEEP | ADD | EXIT
+    weight_pct: float = Field(default=0.0, ge=0.0, le=100.0)  # of the sleeve; 0 for EXIT
+    cap_math: str = ""            # one line: cap today -> plausible outcome -> multiple
+    disposition: str = ""         # for EXIT: what to do with any existing fill
+
+
+class MoonshotSleeveComposition(BaseModel):
+    names: list[MoonshotName] = Field(default_factory=list)
+    rationale: str = ""
+
+
+_MOONSHOT_OUTPUT_SPEC = (
+    "OUTPUT: a single JSON object {\"names\": [{\"ticker\": str, \"action\": "
+    "\"KEEP|ADD|EXIT\", \"weight_pct\": number, \"cap_math\": str, "
+    "\"disposition\": str}], \"rationale\": str}. Rules: KEEP/ADD weights are % "
+    "of the sleeve, MUST sum to 100, and MUST be ordered + sized "
+    "asymmetry-first (highest asymmetry rank = largest weight = filled first); "
+    "EXIT names get weight_pct=0 plus a disposition (existing small fills are "
+    "held or migrated on a scheduled rebalance — never a forced sell); every "
+    "name's cap_math is ONE line with real numbers: market cap today -> "
+    "plausible 5-10y outcome -> implied multiple. 6-10 surviving names. No "
+    "prose outside the JSON."
+)
+
+
+def _moonshot_user_block(
+    current_sleeve: list[dict[str, Any]],
+    book: dict[str, Any],
+    notes: str,
+) -> str:
+    cur = "\n".join(
+        f"  - {c.get('ticker')}: weight {c.get('weight_pct')}% — "
+        f"{(c.get('thesis') or '')[:200]}"
+        for c in current_sleeve
+    ) or "  (none)"
+    return (
+        f"CURRENT SLEEVE COMPOSITION (plan v66, ~5% of the book):\n{cur}\n\n"
+        f"THE BOOK TODAY (raw):\n{_book_block(book)}\n\n"
+        f"CONTEXT NOTES:\n{notes or '  (none)'}\n\n"
+        "Use WebSearch to verify each name's CURRENT market cap and to source "
+        "any new candidates; apply the cap-math test to every name with real "
+        "numbers. Compose the sleeve now."
+    )
+
+
+class MoonshotSleeveAuthorAgent(BaseAgent[MoonshotSleeveComposition]):
+    """Authors the x10 sleeve composition under the binding asymmetry mandate."""
+
+    agent_role = "moonshot_sleeve_author"   # not in tables -> Opus fallback
+    output_model = MoonshotSleeveComposition
+    require_citations = False
+    use_structured_output = False
+    claude_code_max_retries = 1
+    claude_code_allowed_tools = ("WebSearch", "WebFetch")
+
+    def build_prompt(
+        self,
+        *,
+        current_sleeve: list[dict[str, Any]],
+        book: dict[str, Any],
+        notes: str = "",
+    ) -> tuple[str, str]:
+        from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
+
+        system = (
+            "You are the moonshot-sleeve author on the Argosy fleet, composing "
+            "the permanent ~5% high-growth sleeve of a long-hold, Israeli-"
+            "resident (non-US-person) investor's strategic plan. The sleeve is "
+            "deliberately domicile-agnostic (not estate-gated).\n\n"
+            f"{PRIME_DIRECTIVE}\n\n"
+            f"{X10_SLEEVE_MANDATE}\n\n"
+            "Re-grade EVERY current name against the mandate (verify its market "
+            "cap live — do not trust memory) and EXIT any that fail the "
+            "cap-math test, however good the company: index-covered maybe-2x "
+            "compounders are the opposite of this sleeve's job. You may ADD new "
+            "candidates you source yourself, applying the same test.\n\n"
+            f"{_MOONSHOT_OUTPUT_SPEC}"
+        )
+        return system, _moonshot_user_block(current_sleeve, book, notes)
+
+
+class MoonshotSleeveBlindReviewerAgent(BaseAgent[MoonshotSleeveComposition]):
+    """BLIND re-derivation of the sleeve composition — same raw inputs, never
+    the author's picks or reasoning. Code compares the two compositions;
+    divergence forces reconciliation, never auto-resolution."""
+
+    agent_role = "moonshot_sleeve_blind_reviewer"
+    output_model = MoonshotSleeveComposition
+    require_citations = False
+    use_structured_output = False
+    claude_code_max_retries = 1
+    claude_code_allowed_tools = ("WebSearch", "WebFetch")
+
+    def build_prompt(
+        self,
+        *,
+        current_sleeve: list[dict[str, Any]],
+        book: dict[str, Any],
+        notes: str = "",
+    ) -> tuple[str, str]:
+        from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
+
+        system = (
+            "You are an independent reviewer on the Argosy fleet. ANOTHER agent "
+            "has already composed the moonshot sleeve below — you have NOT seen "
+            "its composition or reasoning, and you must not try to guess it. "
+            "RE-DERIVE the sleeve yourself from the raw inputs and the binding "
+            "mandate, as an adversarial check: verify every market cap live and "
+            "be ruthless with the cap-math test.\n\n"
+            f"{PRIME_DIRECTIVE}\n\n"
+            f"{X10_SLEEVE_MANDATE}\n\n"
+            f"{_MOONSHOT_OUTPUT_SPEC}"
+        )
+        return system, _moonshot_user_block(current_sleeve, book, notes)
+
+
+def moonshot_divergences(
+    author: MoonshotSleeveComposition,
+    reviewer: MoonshotSleeveComposition,
+    *,
+    weight_tolerance_pp: float = 5.0,
+) -> list[str]:
+    """Deterministic comparison of the two blind compositions. Returns a list of
+    human-readable divergences (empty = agreement). Compared IN CODE — the
+    reviewer never adjudicates its own agreement."""
+    def _kept(c: MoonshotSleeveComposition) -> dict[str, float]:
+        return {
+            n.ticker.upper(): float(n.weight_pct)
+            for n in c.names
+            if n.action.upper() in ("KEEP", "ADD") and n.weight_pct > 0
+        }
+
+    a, r = _kept(author), _kept(reviewer)
+    out: list[str] = []
+    for t in sorted(a.keys() - r.keys()):
+        out.append(f"{t}: author keeps at {a[t]:.0f}%, reviewer excludes it")
+    for t in sorted(r.keys() - a.keys()):
+        out.append(f"{t}: reviewer keeps at {r[t]:.0f}%, author excludes it")
+    for t in sorted(a.keys() & r.keys()):
+        if abs(a[t] - r[t]) > weight_tolerance_pp:
+            out.append(
+                f"{t}: weight diverges by {abs(a[t] - r[t]):.0f}pp "
+                f"(author {a[t]:.0f}% vs reviewer {r[t]:.0f}%)"
+            )
+    return out
+
+
 __all__ = [
     "InstrumentSwapDecision",
     "DiversifierAdjudication",
     "SleeveInstrumentAuthorAgent",
     "SleeveInstrumentBlindReviewerAgent",
     "DiversifierAdjudicatorAgent",
+    "MoonshotName",
+    "MoonshotSleeveComposition",
+    "MoonshotSleeveAuthorAgent",
+    "MoonshotSleeveBlindReviewerAgent",
+    "moonshot_divergences",
 ]

@@ -94,10 +94,12 @@ _ALTERNATIVES_SIGMA_CLASS = "alternatives"
 _ALTERNATIVES_SNAPSHOT_CATEGORY = "Alternative"
 
 # --- High-growth / high-potential sleeve (TEAM/DISCOVERY-SOURCED). -----------
-# A PERMANENT strategic ~5% "moonshot" sleeve of the highest-potential names
-# GLOBALLY (US / EU / ISR / anywhere) — sourced by the discovery funnel purely by
-# UPSIDE and deliberately NOT estate-gated (unlike the core sleeves): US-situs
-# estate exposure on a small high-conviction sleeve is an accepted cost of x10
+# A PERMANENT strategic ~5% "moonshot" sleeve sourced GLOBALLY (US / EU / ISR /
+# anywhere) under the binding x10-ASYMMETRY mandate (Ariel 2026-07-06, see
+# high_potential_sleeve.X10_SLEEVE_MANDATE): names that can plausibly 10x on
+# cap-math, ranked asymmetry-first with accepted per-name loss = 100% — NOT
+# conviction-safety. Deliberately NOT estate-gated (unlike the core sleeves):
+# US-situs estate exposure on this small sleeve is an accepted cost of x10
 # upside (Ariel's call). Modeled exactly like the Alternatives sleeve: a fixed
 # weight held out before the equity renorm, whose SOURCED sigma is fed to the FI
 # solver so the book's covariance-blended sigma stays on the anchor (a volatile
@@ -918,12 +920,18 @@ def build_target_allocation(
                 snapshot_category=HIGH_GROWTH_SNAPSHOT_CATEGORY,
                 agreement="team-sourced",
                 rationale=(
-                    "Permanent high-growth / high-potential 'moonshot' sleeve: the "
-                    "highest-conviction upside names sourced GLOBALLY by the discovery "
-                    "funnel (US/EU/ISR/anywhere), deliberately NOT estate-gated — a small "
-                    "high-conviction sleeve accepts US-situs exposure as the cost of x10 "
-                    "upside. Held as a fixed strategic weight; its sourced sigma feeds the "
-                    "FI solver so the book's covariance sigma stays on the anchor."
+                    "Permanent high-growth / high-potential 'moonshot' sleeve — the x10 "
+                    "ASYMMETRY sleeve (binding mandate): names that can plausibly 10x in "
+                    "5-10 years on cap-math (current market cap vs addressable outcome; "
+                    "favors sub-~$20-30B earlier-stage; >$50B needs an extraordinary "
+                    "written justification), sourced GLOBALLY (US/EU/ISR/anywhere) and "
+                    "deliberately NOT estate-gated. Accepted per-name loss is 100%, so "
+                    "defensibility never boosts rank; rank and deploy fill order are "
+                    "asymmetry-first (upside-asymmetry x plausibility — the instrument "
+                    "weights ARE the asymmetry rank). Safe maybe-2x compounders belong "
+                    "in the core/growth sleeves, not here. Held as a fixed strategic "
+                    "weight; its sourced sigma feeds the FI solver so the book's "
+                    "covariance sigma stays on the anchor."
                 ),
                 dissent="",
                 instruments=tuple(high_growth_instruments or ()),

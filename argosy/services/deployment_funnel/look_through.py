@@ -128,6 +128,12 @@ LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     "RKLB": {"nvda": 0.00, "us": 1.00},   # plan v64 draft high-growth
     "RKT": {"nvda": 0.00, "us": 1.00},    # HELD — Rocket Companies
     "RXRX": {"nvda": 0.00, "us": 1.00},   # plan v64 draft high-growth
+    # x10 sleeve re-sourcing (2026-07-06 team run, asymmetry mandate) — all
+    # US-incorporated single names: us=1.0, nvda=0.0 by construction.
+    "ACHR": {"nvda": 0.00, "us": 1.00},   # Archer Aviation — eVTOL, Delaware-inc
+    "RGTI": {"nvda": 0.00, "us": 1.00},   # Rigetti Computing — quantum, Delaware-inc
+    "TEM": {"nvda": 0.00, "us": 1.00},    # Tempus AI — AI diagnostics, Delaware-inc
+    "ASTS": {"nvda": 0.00, "us": 1.00},   # AST SpaceMobile — direct-to-cell, Delaware-inc
     "SOFI": {"nvda": 0.00, "us": 1.00},   # HELD; high-potential seed
     # Space Exploration Technologies Corp — the SpaceX stock itself (NASDAQ
     # IPO 2026-06-12, ticker SPCX per etf.com/Yahoo); US company => us=1.0.

@@ -73,6 +73,8 @@ def create_refinement_draft(
     user_id: str,
     sleeve_overrides: dict[str, float],
     alternatives_sleeve: "object | None" = None,
+    high_growth_instruments_override: "tuple | None" = None,
+    version_label: str | None = None,
 ) -> "object":
     """Create and persist a staged draft PlanVersion carrying ``sleeve_overrides``.
 
@@ -158,6 +160,12 @@ def create_refinement_draft(
     # the validation and the doc build (see _fixed_sleeves_from_current) so the
     # refinement edits sleeve targets without dropping the sleeve.
     hg_pct, hg_instruments = _fixed_sleeves_from_current(current)
+    # A team-sourced re-composition of the high-growth sleeve (e.g. the x10
+    # asymmetry re-sourcing) replaces the carried instruments while keeping the
+    # sleeve's target_pct from the current plan. Only honoured when the current
+    # plan actually carries the sleeve — an override can't conjure a sleeve.
+    if high_growth_instruments_override is not None and hg_pct > 0:
+        hg_instruments = tuple(high_growth_instruments_override)
     build_target_allocation(
         authored_overrides=merged,
         alternatives_sleeve=alternatives_sleeve,
@@ -192,7 +200,7 @@ def create_refinement_draft(
 
     # ---- 5. Create the draft PlanVersion ------------------------------------
     merged_json = json.dumps(merged)
-    version_label = (
+    version_label = version_label or (
         f"refinement-draft-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')}"
     )
     draft = PlanVersion(

@@ -18,6 +18,12 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from argosy.services.allocation_author.instrument_facts import lookup_facts
+from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
+
+# Duplicated from allocation_plan.HIGH_GROWTH_SIGMA_CLASS to avoid importing the
+# heavy allocation engine into the pure packet builder (same convention as
+# target_allocation_doc._DOMICILE_EXEMPT_SIGMA_CLASSES).
+HIGH_GROWTH_SIGMA_CLASS = "high_growth_basket"
 
 
 def build_decision_packet(
@@ -78,6 +84,12 @@ def build_decision_packet(
         if label in cur_by:
             entry["current_pct"] = round(cur_by[label], 1)
             entry["gap_to_target_pct"] = round(target_pct - cur_by[label], 1)
+        # The x10 moonshot sleeve carries its BINDING mandate into the packet so
+        # the author fills it asymmetry-first (the stored instrument order IS the
+        # asymmetry rank) and never reverts to safety-first tranches. Keyed on
+        # sigma_class — instrument rotation inherits the mandate automatically.
+        if getattr(c, "sigma_class", "") == HIGH_GROWTH_SIGMA_CLASS:
+            entry["mandate"] = X10_SLEEVE_MANDATE
         plan_menu.append(entry)
 
     # --- known symbols (verifier's invented-ticker gate) -------------------

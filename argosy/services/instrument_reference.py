@@ -132,6 +132,12 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "MELI": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_EM, STRUCT_STOCK),
     "NU": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_EM, STRUCT_STOCK),
     "INVZ": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_ISRAEL, STRUCT_STOCK),
+    # x10 sleeve re-sourcing (2026-07-06 team run, asymmetry mandate) — all
+    # Delaware-incorporated = US-situs single names.
+    "ACHR": InstrumentRef(ASSET_EQUITY, SECTOR_OTHER, REGION_US, STRUCT_STOCK),      # eVTOL
+    "RGTI": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),       # quantum
+    "TEM": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US, STRUCT_STOCK),  # AI diagnostics
+    "ASTS": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),       # direct-to-cell space
     # US broad-market index ETFs (US- and UCITS-domiciled both track the S&P).
     "VOO": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
     "VTI": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
@@ -204,6 +210,8 @@ _US_SITUS_TICKERS: frozenset[str] = frozenset({
     # NASDAQ-listed — US-SITUS despite LatAm economics). NU (Cayman) and
     # INVZ (Israel) are deliberately NOT here.
     "CRWD", "RKLB", "OKLO", "IONQ", "RXRX", "MELI",
+    # x10 sleeve re-sourcing 2026-07-06 — Delaware-incorporated = US-situs.
+    "ACHR", "RGTI", "TEM", "ASTS",
 })
 
 # Flip the US-domiciled entries to estate-exposed (the table defaults safe).
@@ -296,6 +304,10 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "MELI": "MercadoLibre",
     "NU": "Nu Holdings",
     "INVZ": "Innoviz Technologies",
+    "ACHR": "Archer Aviation",
+    "RGTI": "Rigetti Computing",
+    "TEM": "Tempus AI",
+    "ASTS": "AST SpaceMobile",
     "VOO": "Vanguard S&P 500 ETF",
     "VTI": "Vanguard Total US Market ETF",
     "CSPX": "iShares Core S&P 500 (UCITS)",

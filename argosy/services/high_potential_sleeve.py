@@ -27,6 +27,39 @@ from typing import Literal
 Conviction = Literal["HIGH", "MEDIUM", "LOW"]
 Vehicle = Literal["ucits_thematic", "single_name"]
 
+# --- Binding sleeve mandate (Ariel, 2026-07-06) -------------------------------
+# The permanent ~5% high-growth / moonshot sleeve's criterion is x10 ASYMMETRY,
+# NOT conviction-safety. Ariel: "it should be the x10 sleeve, not maybe x2 if
+# they are lucky (higher risk)." Every surface that grades, ranks, sizes, or
+# fills this sleeve embeds this text — the first live tranche went to $70-120B
+# maybe-2x compounders (NU/MELI/CRWD) precisely because the fill order was
+# conviction-safety-descending; that is the failure mode this mandate bans.
+X10_SLEEVE_MANDATE = (
+    "SLEEVE MANDATE — x10 ASYMMETRY (binding). This is the moonshot sleeve: its "
+    "job is names that can plausibly 10x, NOT safe growth compounders that might "
+    "2x if they are lucky.\n"
+    "  (a) CAP-MATH TEST: a candidate must plausibly 10x in 5-10 years given its "
+    "CURRENT market cap vs its addressable outcome (what is the company worth if "
+    "the thesis works, and is 10x that cap a believable end-state?). This "
+    "mechanically favors sub-~$20-30B, earlier-stage names; a >$50B company "
+    "needs an EXTRAORDINARY written justification — a $70-120B company that can "
+    "'maybe 2x' is the OPPOSITE of this sleeve's job (it belongs in the "
+    "core/growth sleeves, not here).\n"
+    "  (b) ACCEPTED PER-NAME LOSS = 100%. Every name is sized so a total loss is "
+    "survivable; therefore 'defensibility' / quality / already-profitable safety "
+    "must NOT boost a name's rank in this sleeve.\n"
+    "  (c) RANK = upside-asymmetry x plausibility (the expected multiple times "
+    "the chance the path is real) — never conviction-safety.\n"
+    "  (d) DEPLOY FILL ORDER = asymmetry-first: tranches fill the "
+    "highest-asymmetry names first (the sleeve's stored instrument weights ARE "
+    "the asymmetry rank), never safety-first."
+)
+
+# Weight per grade. NOTE (x10 mandate): within THIS sleeve a grade is an
+# ASYMMETRY grade — HIGH means the strongest upside-asymmetry x plausibility
+# under the cap-math test above, NOT the safest / most defensible name. The
+# graders (quick_estimator / discovery_grader) are prompted with the mandate so
+# the existing weight math below ranks and fills asymmetry-first by meaning.
 _CONVICTION_WEIGHT: dict[str, float] = {"HIGH": 3.0, "MEDIUM": 2.0, "LOW": 1.0}
 
 
@@ -146,6 +179,7 @@ def sleeve_vehicle_split(allocs: list[SleeveAllocation]) -> dict[str, float]:
 
 
 __all__ = [
+    "X10_SLEEVE_MANDATE",
     "SleeveCandidate",
     "SleeveAllocation",
     "build_high_potential_sleeve",

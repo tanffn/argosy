@@ -73,6 +73,13 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "concentrated (direct NVDA, a fund with a large NVDA/single-name weight). "
             "Genuine diversifiers (ex-US, EM, bonds, real assets) still earn weight on "
             "their own gaps — just don't STARVE the US sleeves to get there.\n"
+            "  - SLEEVE MANDATES. When a plan-menu sleeve carries a MANDATE, it is "
+            "BINDING for which tickers you pick within that sleeve and in what "
+            "order. In particular the x10 moonshot sleeve fills ASYMMETRY-FIRST "
+            "(the sleeve's instrument order IS the asymmetry rank): the highest "
+            "upside-asymmetry names get the tranche first, and 'safer' / larger / "
+            "more defensible names in the sleeve must NOT be preferred for safety "
+            "— per-name loss of 100% is accepted there by design.\n"
             "  - DOMICILE / ESTATE. Prefer Irish UCITS (non-US-situs) instruments; "
             "the only sanctioned US-situs name is NVDA. Avoid opening new US-situs "
             "estate exposure.\n"
@@ -118,6 +125,11 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
                 base += (f", current {m.get('current_pct')}% "
                          f"(gap {gap:+.1f}pp {'UNDER' if gap > 0 else 'over'})")
             base += f" -> tickers {m.get('tickers')} (domicile {m.get('domiciles')})"
+            if m.get("mandate"):
+                # Binding per-sleeve mandate (e.g. the x10 moonshot sleeve fills
+                # asymmetry-first) — rendered verbatim so it can't be diluted.
+                indented = str(m["mandate"]).replace("\n", "\n      ")
+                base += f"\n      {indented}"
             return base
 
         menu_lines = "\n".join(
