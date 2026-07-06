@@ -704,6 +704,26 @@ export interface AuthoredAllocationDTO {
   notes: string[];
 }
 
+/** Cash in ONE account+currency bucket (WHERE the deploy money sits). */
+export interface FundingRowDTO {
+  account: string;
+  currency: string;
+  /** Balance in `currency` (local units). */
+  balance: number;
+  /** Snapshot-FX USD; rows sum to the deployable total. */
+  usd_equiv: number;
+}
+
+/** The deploy cash funding table + deterministic pre-execution actions
+ *  ("convert ~NIS X → USD at Leumi before executing"). Snapshot-derived. */
+export interface FundingBreakdownDTO {
+  rows: FundingRowDTO[];
+  total_usd: number;
+  /** Must-do-first strings — render ABOVE the buy list, loudly. */
+  required_actions: string[];
+  note: string;
+}
+
 export interface DeploymentPlanDTO {
   deploy_amount_usd: number;
   as_of: string;
@@ -725,6 +745,9 @@ export interface DeploymentPlanDTO {
    *  and the author path ran; when degraded, `tiers` is the labelled fallback.
    *  null otherwise (pivot off / not requested). */
   authored?: AuthoredAllocationDTO | null;
+  /** WHERE the deploy money sits (per account+currency, snapshot-derived) +
+   *  deterministic pre-execution actions. null when no snapshot is available. */
+  funding?: FundingBreakdownDTO | null;
 }
 
 // ----------------------------------------------------------------------

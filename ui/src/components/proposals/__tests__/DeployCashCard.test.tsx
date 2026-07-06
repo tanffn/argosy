@@ -6,6 +6,7 @@ import type {
   AuthoredAllocationDTO,
   DeploymentMarketContextDTO,
   DeploymentPlanDTO,
+  FundingBreakdownDTO,
 } from "@/lib/api";
 
 // The card prefetches prior allocation decisions on mount to render the
@@ -122,6 +123,19 @@ const DEGRADED_AUTHORED: AuthoredAllocationDTO = {
   notes: [
     "Showing the deterministic engine's allocation (labelled degraded): the author was unavailable (timeout / circuit-open / no backend).",
   ],
+};
+
+const FUNDING: FundingBreakdownDTO = {
+  rows: [
+    { account: "Leumi", currency: "USD", balance: 3700, usd_equiv: 3700 },
+    { account: "Leumi", currency: "NIS", balance: 58945, usd_equiv: 15900 },
+    { account: "Schwab", currency: "USD", balance: 5900, usd_equiv: 5900 },
+  ],
+  total_usd: 25500,
+  required_actions: [
+    "Convert ~NIS 58,945 -> USD at Leumi before executing",
+  ],
+  note: "",
 };
 
 describe("DeployCashCard", () => {
@@ -264,6 +278,49 @@ describe("DeployCashCard", () => {
     expect(screen.queryByTestId("deterministic-tiers-details")).not.toBeInTheDocument();
     // Tiers still render primary
     expect(screen.getByText("CSPX")).toBeInTheDocument();
+  });
+
+  it("renders the funding breakdown with required actions ABOVE the buy list", () => {
+    render(
+      <DeployCashCard
+        plan={{ ...PLAN, funding: FUNDING }}
+        loading={false}
+        amount={25500}
+        onAmountChange={vi.fn()}
+        unallocatedUsd={25500}
+        userId="ariel"
+      />,
+    );
+    const block = screen.getByTestId("funding-breakdown");
+    expect(block).toBeInTheDocument();
+    // The must-do-first action is loud and present
+    expect(screen.getByTestId("funding-required-actions")).toBeInTheDocument();
+    expect(screen.getByText(/Convert ~NIS 58,945/)).toBeInTheDocument();
+    // Per-account rows + total
+    expect(screen.getByText("Leumi · NIS")).toBeInTheDocument();
+    expect(screen.getByText("Schwab · USD")).toBeInTheDocument();
+    expect(screen.getByText("$25,500")).toBeInTheDocument();
+    // Rendered ABOVE the buy list: the funding block precedes the CSPX line
+    const cspx = screen.getByText("CSPX");
+    expect(
+      block.compareDocumentPosition(cspx) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders no funding block when funding is absent or empty", () => {
+    const { rerender } = render(
+      <DeployCashCard plan={PLAN} loading={false} amount={10000}
+                      onAmountChange={vi.fn()} unallocatedUsd={50000} userId="ariel" />,
+    );
+    expect(screen.queryByTestId("funding-breakdown")).not.toBeInTheDocument();
+    rerender(
+      <DeployCashCard
+        plan={{ ...PLAN, funding: { rows: [], total_usd: 0, required_actions: [], note: "" } }}
+        loading={false} amount={10000}
+        onAmountChange={vi.fn()} unallocatedUsd={50000} userId="ariel"
+      />,
+    );
+    expect(screen.queryByTestId("funding-breakdown")).not.toBeInTheDocument();
   });
 
   it("does not render MarketContextStrip when market_context is null", () => {

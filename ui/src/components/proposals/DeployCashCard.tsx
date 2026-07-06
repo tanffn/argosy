@@ -13,6 +13,7 @@ import {
   type DeploymentMarketContextDTO,
   type DeploymentPlanDTO,
   type DeploymentTierDTO,
+  type FundingBreakdownDTO,
   type PreflightDTO,
   type WindfallHorizon,
 } from "@/lib/api";
@@ -185,6 +186,88 @@ function MarketContextStrip({ ctx }: { ctx: DeploymentMarketContextDTO }) {
           {ctx.nvda.note && (
             <span className="ml-2 text-muted-foreground">— {ctx.nvda.note}</span>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Funding breakdown — WHERE the deploy money sits (per account+currency) and
+// the deterministic must-do-first actions ("convert ~NIS X → USD at Leumi
+// before executing"). Rendered ABOVE the buy list so the client sees the
+// funding constraint before the buys — born from a live incident where all
+// fills hit one account and drove it negative.
+// ---------------------------------------------------------------------------
+
+function FundingBlock({ funding }: { funding: FundingBreakdownDTO }) {
+  if (funding.rows.length === 0 && funding.required_actions.length === 0) {
+    return null;
+  }
+  return (
+    <div
+      data-testid="funding-breakdown"
+      className="mt-3 rounded-md border border-border bg-muted/20 p-3"
+    >
+      <div className="text-xs font-semibold">Where the money sits</div>
+
+      {/* Must-do-first actions — loud, before anything else. */}
+      {funding.required_actions.length > 0 && (
+        <div
+          data-testid="funding-required-actions"
+          className="mt-2 rounded-md border border-amber-400 bg-amber-50/70 p-2.5 dark:border-amber-800 dark:bg-amber-950/30"
+        >
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-amber-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+              Before executing
+            </span>
+          </div>
+          <ul className="mt-1.5 list-disc pl-5 text-xs font-medium text-amber-900 dark:text-amber-200">
+            {funding.required_actions.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Per-account cash rows */}
+      {funding.rows.length > 0 && (
+        <div className="mt-2 divide-y divide-border/40 rounded-md border border-border/50 text-xs">
+          {funding.rows.map((r) => (
+            <div
+              key={`${r.account}-${r.currency}`}
+              className="flex items-baseline gap-3 px-3 py-1.5"
+            >
+              <span className="w-40 shrink-0 font-medium">
+                {r.account} · {r.currency}
+              </span>
+              {/* Exact local balance (not niceRound — a negative or short
+                  balance must read exactly), USD equivalent alongside. */}
+              <span
+                className={`tabular-nums ${r.balance < 0 ? "font-semibold text-red-600" : ""}`}
+              >
+                {r.balance.toLocaleString(undefined, { maximumFractionDigits: 0 })}{" "}
+                {r.currency}
+              </span>
+              {r.currency !== "USD" && (
+                <span className="tabular-nums text-muted-foreground">
+                  ≈ ${r.usd_equiv.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </span>
+              )}
+            </div>
+          ))}
+          <div className="flex items-baseline gap-3 px-3 py-1.5 font-semibold">
+            <span className="w-40 shrink-0">Total deployable</span>
+            <span className="tabular-nums">
+              ${funding.total_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {funding.note && (
+        <div className="mt-1.5 text-[11px] text-muted-foreground">
+          {funding.note}
         </div>
       )}
     </div>
@@ -725,6 +808,9 @@ export function DeployCashCard({
             {plan.us_situs_sanctioned_usd > 0 &&
               ` · sanctioned NVDA sleeve: ${fmtMoney(plan.us_situs_sanctioned_usd)}`}
           </div>
+          {/* Funding first: the client must see WHERE the money sits (and any
+              convert-before-executing action) before the buy list. */}
+          {plan.funding && <FundingBlock funding={plan.funding} />}
           {plan.market_context && (
             <MarketContextStrip ctx={plan.market_context} />
           )}
