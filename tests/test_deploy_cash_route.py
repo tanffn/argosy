@@ -51,11 +51,23 @@ def _make_fake_market_context():
 
 
 def test_deploy_cash_returns_tiered_plan(monkeypatch):
+    # This test pins the P1 deterministic tier contract. The research-preflight
+    # funnel re-ranks the list from env-dependent state (dev-DB snapshot prices,
+    # live quotes) and drops empty tiers, so it collapses the tier set when run
+    # against a populated main env. Pin it OFF here — the funnel's own behavior
+    # is covered by tests/services/deployment_funnel/.
+    monkeypatch.setenv("ARGOSY_DEPLOYMENT_FUNNEL_ENABLED", "0")
+    from argosy.config import get_settings
+    get_settings.cache_clear()
+
     import argosy.api.routes.portfolio as portfolio
     monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
                         lambda user_id: (_doc(), {}, 0.0))
-    client = TestClient(create_app())
-    resp = client.get("/api/portfolio/deploy-cash", params={"cash_usd": 10000})
+    try:
+        client = TestClient(create_app())
+        resp = client.get("/api/portfolio/deploy-cash", params={"cash_usd": 10000})
+    finally:
+        get_settings.cache_clear()
     assert resp.status_code == 200
     body = resp.json()
     assert body["deploy_amount_usd"] == 10000.0
