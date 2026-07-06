@@ -28,10 +28,51 @@ from argosy.logging import get_logger
 log = get_logger(__name__)
 
 
+def _fixed_sleeves_from_current(current) -> tuple[float, tuple]:
+    """Reconstruct the team-sourced HIGH-GROWTH sleeve (pct, instruments) from the
+    current plan's stored ``target_allocation_json`` so a scoped refinement draft
+    CARRIES it instead of silently dropping it.
+
+    Why: ``build_target_allocation`` only emits the high-growth class when
+    ``high_growth_pct`` is passed explicitly; the sleeve is team-sourced (not an
+    engine constant), so the stored doc of the plan being refined is its source
+    of truth. Without this, any refinement on top of a plan carrying the sleeve
+    (e.g. v64's 5% moonshot basket) would emit a draft WITHOUT it — a silent,
+    unauthored plan change. Returns ``(0.0, ())`` when the current plan has no
+    high-growth class (byte-identical legacy behaviour).
+    """
+    from argosy.services.allocation_plan import HIGH_GROWTH_SIGMA_CLASS
+    from argosy.services.target_allocation_doc import AllocationInstrument
+
+    raw = getattr(current, "target_allocation_json", None)
+    if not raw:
+        return 0.0, ()
+    try:
+        doc = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return 0.0, ()
+    for c in doc.get("classes") or []:
+        if c.get("sigma_class") == HIGH_GROWTH_SIGMA_CLASS:
+            instruments = tuple(
+                AllocationInstrument(
+                    symbol=i.get("symbol", ""),
+                    role=i.get("role", "primary"),
+                    weight_within_class_pct=float(i.get("weight_within_class_pct") or 0.0),
+                    rationale=i.get("rationale", "") or "",
+                    domicile=i.get("domicile"),
+                )
+                for i in (c.get("instruments") or [])
+                if i.get("symbol")
+            )
+            return float(c.get("target_pct") or 0.0), instruments
+    return 0.0, ()
+
+
 def create_refinement_draft(
     session,
     user_id: str,
     sleeve_overrides: dict[str, float],
+    alternatives_sleeve: "object | None" = None,
 ) -> "object":
     """Create and persist a staged draft PlanVersion carrying ``sleeve_overrides``.
 
@@ -104,7 +145,16 @@ def create_refinement_draft(
     # ---- 3. Validate merged overrides (validate-on-write) -------------------
     # ``build_target_allocation`` is pure and raises ValueError on bad labels or
     # sum > 100.  We call it here for validation ONLY — the doc is built in step 4.
-    build_target_allocation(authored_overrides=merged)
+    # The current plan's team-sourced high-growth sleeve is carried through BOTH
+    # the validation and the doc build (see _fixed_sleeves_from_current) so the
+    # refinement edits sleeve targets without dropping the sleeve.
+    hg_pct, hg_instruments = _fixed_sleeves_from_current(current)
+    build_target_allocation(
+        authored_overrides=merged,
+        alternatives_sleeve=alternatives_sleeve,
+        high_growth_pct=hg_pct,
+        high_growth_instruments=hg_instruments,
+    )
 
     # ---- 4. Resolve target_allocation_json for the new draft ----------------
     decision_run_id = getattr(current, "decision_run_id", None) or 0
@@ -124,6 +174,9 @@ def create_refinement_draft(
             today_composition=comp,
             quarters=quarters,
             authored_overrides=merged,
+            alternatives_sleeve=alternatives_sleeve,
+            high_growth_pct=hg_pct,
+            high_growth_instruments=hg_instruments,
         )
         _assert_conserving_glide(doc)
         resolved_doc_json = doc.model_dump_json()

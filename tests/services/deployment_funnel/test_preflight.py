@@ -83,16 +83,19 @@ def test_aggregate_cap_enforced_across_batch():
 
 def test_unmapped_symbol_is_flagged_not_silently_trusted():
     # codex H2: a symbol with no look-through entry -> concentration unverified.
+    # Uses a synthetic ticker: the map is completeness-tested against the real
+    # plan/holdings universe, so any real ticker here eventually gets mapped
+    # (WTAI did, in the v2 completeness pass) and silently inverts the test.
     gi = GateInputs(
         current_effective_nvda_usd=0.0, book_usd=1_000_000.0, nvda_cap_pct=13.0,
         reserve_shortfall_usd=0.0, plan_classes=frozenset({"x"}),
         class_of={},  # no class -> not a plan gap; symbol also not in map
     )
     res = run_preflight(
-        [_c("WTAI", 1364.0)], symbol_of=lambda c: c.legs[0].symbol,
+        [_c("ZZUNMAPPED", 1364.0)], symbol_of=lambda c: c.legs[0].symbol,
         gate_inputs=gi, provider=_Provider(), signals_by_symbol={},
         deployable_usd=1364.0)
-    assert any("UNVERIFIED" in n and "WTAI" in n for n in res.notes)
+    assert any("UNVERIFIED" in n and "ZZUNMAPPED" in n for n in res.notes)
 
 
 def test_oversized_tbill_capped_to_reserve_shortfall():

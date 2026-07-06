@@ -10,7 +10,12 @@ from __future__ import annotations
 # explicit entry, so blind reviewers are never forced onto world-knowledge
 # guesses (live finding: DPYA was missing and got mis-guessed as a US
 # quality-dividend fund).
-LOOKTHROUGH_VERSION = 2
+# v3 (2026-07-06): plan-change candidate pass — every instrument the plan-change
+# team adjudicated (R1GR-replacement growth candidates + diversifier-sleeve
+# candidates) has a sourced entry. NVDA/US weights from justETF holdings as of
+# 2026-05-29 (conservative-high bound where NVDA sits below the fund's top-10
+# disclosure cut). R1GR baseline reconfirmed 13.93% → stays 0.14.
+LOOKTHROUGH_VERSION = 3
 
 LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     # US broad / growth — carry index NVDA weight.
@@ -46,6 +51,44 @@ LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     # NVDA below the top-10 cut (<3.4%), Yahoo holdings showed 3.96% — 0.04
     # is the conservative-high of the two.
     "WTAI": {"nvda": 0.04, "us": 0.66},
+    # Growth-sleeve replacement candidates (plan-change team, 2026-07-06).
+    # Sources: justETF holdings as of 2026-05-29 unless noted; NVDA weights are
+    # conservative-high bounds where NVDA sits below the top-10 disclosure cut.
+    # iShares Edge MSCI USA Quality Factor (IE00BD1F4L37): NVDA 6.27% (#3).
+    "QDVB": {"nvda": 0.063, "us": 1.00},
+    # iShares Edge MSCI World Quality Factor (IE00BP3QZ601): NVDA 5.11% (#3),
+    # US 66.66%.
+    "IWQU": {"nvda": 0.052, "us": 0.67},
+    # iShares Edge MSCI World Momentum (IE00BP3QZ825): NVDA not in top 10
+    # (<2.06% bound; REGIME-DEPENDENT — can rotate back ~5-6% at a semi-annual
+    # rebalance), US 50.05%.
+    "IWMO": {"nvda": 0.02, "us": 0.50},
+    # Xtrackers MSCI World Momentum 1C (IE00BL25JP72): same index as IWMO.
+    "XDEM": {"nvda": 0.02, "us": 0.51},
+    # Xtrackers S&P 500 Equal Weight 1C (IE00BLNMYC90): NVDA ~0.2% BY
+    # CONSTRUCTION (durable); 0.005 is the conservative-high entry.
+    "XDEW": {"nvda": 0.005, "us": 1.00},
+    # Invesco EQQQ Nasdaq-100 Acc (IE00BFZXGZ54): NVDA 8.31% (#1).
+    "EQQB": {"nvda": 0.083, "us": 1.00},
+    # SPDR S&P 400 US Mid Cap (IE00B4YBJ215): NVDA 0 by construction (large-cap
+    # excluded).
+    "SPY4": {"nvda": 0.00, "us": 1.00},
+    # Xtrackers Russell 2000 1C (IE00BJZ2DD79): NVDA 0 by construction.
+    "XRS2": {"nvda": 0.00, "us": 1.00},
+    # Invesco NASDAQ-100 Equal Weight (IE000L2SA8K5): ~1% NVDA by construction.
+    "EWQA": {"nvda": 0.01, "us": 1.00},
+    # Diversifier-sleeve candidates (plan-change team, 2026-07-06).
+    # iShares MSCI World Small Cap (IE00BF4RFH31): NVDA 0 (large-cap excluded),
+    # US 51.5% (justETF 2026-05-29).
+    "WSML": {"nvda": 0.00, "us": 0.52},
+    # iShares Global Infrastructure (IE00B1FZS467): NVDA 0, US 62.6%
+    # (justETF 2026-05-29).
+    "INFR": {"nvda": 0.00, "us": 0.63},
+    # VanEck Gold Miners UCITS (IE00BQQP9F84): gold-miner equities (Newmont
+    # etc.) — miners are ~half US-listed; NVDA 0. Conservative 0.50 US.
+    "GDGB": {"nvda": 0.00, "us": 0.50},
+    # L&G All Commodities (IE00BF0BCP69): commodity futures — no equity.
+    "BCOM": {"nvda": 0.00, "us": 0.00},
     # Israeli-account index trackers — HELD via Leumi (snapshot symbols are the
     # display names, not exchange tickers).
     "MSCI WORLD": {"nvda": 0.05, "us": 0.70},   # MTF MSCI World tracker — same index look-through as IWDA

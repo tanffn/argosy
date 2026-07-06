@@ -214,7 +214,17 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
             "~11 (with emerging markets split into its own sleeve) because ex-US "
             "developed equity hedges USD-CONCENTRATION but NOT the named shekel-"
             "appreciation risk (it is EUR/JPY/GBP, not NIS), and the engine models "
-            "its sigma (0.20) above US equity (0.18)."
+            "its sigma (0.20) above US equity (0.18). DIVERSIFIER ADJUDICATION "
+            "(2026-07-06, gold ON TRIAL, author + blind re-derivation both "
+            "independently concluded GOLD LOSES): the ~4pp deepening of this sleeve "
+            "(authored override) IS the plan's diversifier decision — EXUS (0% US, "
+            "0% NVDA, EUR/JPY/GBP) beat a physical-gold slice on the prime "
+            "directive (gold: sterile ~3-4%/yr real vs the equity premium, a 3-5% "
+            "slice too small to insure the NVDA tail the glide already de-risks, "
+            "entry after a ~25% YoY run-up with the equity correlation currently "
+            "flipped positive), and beat WSML (51.5% US) / INFR (62.6% US) / EIMI "
+            "deepening (~48% Taiwan+Korea AI-chain overlap) on actual look-through. "
+            "Funded by trimming US broad-market core -3pp and US low-vol -1pp."
         ),
         dissent=(
             "Direction (lift from ~2%) is the strongest cross-lens agreement; "
@@ -258,17 +268,31 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=13.0,
         instruments=(
             AllocationInstrument(
-                symbol="R1GR", role="primary", weight_within_class_pct=100.0, domicile="IE",
+                symbol="IWQU", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
-                    "US large-cap growth via the Irish UCITS R1GR (iShares Russell 1000 "
-                    "Growth, Acc, ~0.18% TER), NOT US-domiciled SCHG. Closest UCITS growth "
-                    "twin; note it is NOT literally ex-NVDA — the Russell 1000 Growth index "
-                    "still holds NVDA (~14% of the fund), so at this ~13% sleeve weight it "
-                    "adds ~1.8% INDIRECT NVDA on top of the direct 12% strategic position. "
-                    "That index look-through (plus NVDA inside CSPX/FUSA) means economic "
-                    "NVDA exceeds the 12% DIRECT ceiling — surfaced as an open item, since "
-                    "no UCITS true-ex-NVDA growth ETF exists. UCITS domicile avoids US-situs "
-                    "estate exposure; cite estate_tax_nonresidents.md."
+                    "Quality-growth via the Irish UCITS IWQU (iShares Edge MSCI World "
+                    "Quality Factor, Acc, ISIN IE00BP3QZ601, ~0.25% TER, ~EUR 4.9bn). "
+                    "PLAN-CHANGE TEAM DECISION (2026-07-06; author + blind re-derivation "
+                    "diverged QDVB-vs-IWQU, reconciled to IWQU — the author conceded the "
+                    "blind reviewer): replaces R1GR (Russell 1000 Growth UCITS), which was "
+                    "13.93% NVDA (justETF IE000NITTFF2, 2026-05-29) — the densest NVDA "
+                    "instrument in the plan on a book deconcentrating from NVDA; the old "
+                    "open item ('no UCITS true-ex-NVDA growth ETF exists') is closed by "
+                    "accepting a quality-growth FACTOR engine instead of a growth index. "
+                    "IWQU is 5.11% NVDA (justETF IE00BP3QZ601, 2026-05-29) — at the "
+                    "client's <=~5% target, ~-63% vs R1GR — and its mega-cap-AI top-3 "
+                    "(MSFT 5.76 + AAPL 5.58 + NVDA 5.11 = ~16.4%) is far below R1GR's "
+                    "~36%. Honest trade-offs recorded: (a) WORLD quality — ~33% of the "
+                    "sleeve is ex-US and overlaps the International sleeve (directionally "
+                    "aligned with de-concentrating a ~92%-US book; manage via look-through); "
+                    "(b) 5.11% NVDA is at the tolerance edge and quality indices rebalance — "
+                    "re-pull holdings before execution. Durable-zero-NVDA alternatives "
+                    "(XDEW equal-weight / SPY4 mid-cap / XRS2 small-cap) REJECTED: they "
+                    "abandon the large-cap-growth factor this sleeve exists for (an FI "
+                    "cost); momentum (IWMO/XDEM, ~2% NVDA today) REJECTED: the low NVDA is "
+                    "regime-dependent (can rotate back ~5-6% at a semi-annual rebalance) "
+                    "and only ~50% US. UCITS domicile avoids US-situs estate exposure; "
+                    "cite estate_tax_nonresidents.md."
                 ),
             ),
         ),
@@ -278,8 +302,10 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         rationale=(
             "Raised to ~13% (from a ~6% sliver) as the core of the accumulation-phase "
             "wealth-maximization mandate: a salaried, no-withdrawal, 5+yr investor is "
-            "under-served by a token growth weight. SCHG-style compounding upside via "
-            "UCITS R1GR. Still bounded below NVDA-stacking territory — NVDA already "
+            "under-served by a token growth weight. Quality-growth compounding via "
+            "UCITS IWQU (replaced R1GR 2026-07-06 — 13.93% NVDA was re-adding the "
+            "single-name risk the glide sheds). Still bounded below NVDA-stacking "
+            "territory — NVDA already "
             "supplies concentrated high-beta tech at the 12% cap, so growth is held "
             "below the point where correlated tech beta re-adds the factor risk the "
             "deconcentration sheds. Label deliberately avoids the 'nvda' substring "
