@@ -101,32 +101,47 @@ def target_values_by_symbol(doc, total: float, as_of: date) -> dict[str, float]:
 _CASH_TYPES = {"cash", "money_market", "mmf"}
 
 
+def is_cash_position(p) -> bool:
+    """True when a snapshot position row is a CASH row for deploy math.
+
+    THE single cash classifier: ``tradeable_holdings`` (which produces the
+    deployable-cash total /deploy-cash shows the client) and the deploy
+    funding breakdown (which shows WHERE that cash sits, per account/currency)
+    both call this, so the funding table sums to the same deployable number by
+    construction.
+
+    A row is cash when its asset_type is cash-like, OR when the symbol is the
+    cash sentinel ("-"/blank) AND it carries no asset_type. A blank-symbol row
+    with a non-cash asset_type (e.g. a real-estate line) is neither cash nor a
+    tradeable holding."""
+    asset_type = (getattr(p, "asset_type", "") or "").lower()
+    if asset_type in _CASH_TYPES:
+        return True
+    sym = (getattr(p, "symbol", "") or "").strip()
+    return (not sym or sym == "-") and not asset_type
+
+
 def tradeable_holdings(snapshot) -> tuple[dict[str, float], float]:
     """(holdings_by_symbol_usd, total_cash_usd) from a PortfolioSnapshot.
 
     Filters the cash sentinel ("-"/blank) and cash-typed rows out of holdings
     and aggregates them into total_cash_usd. Symbols are upper-cased + summed.
-    Account/currency splitting is deferred (v1 needs only the total for the
-    cash-deploy math)."""
+    Per-account/currency splitting of the cash total lives in
+    ``deployment_funding.derive_cash_funding`` (same ``is_cash_position``
+    classifier)."""
     holdings: dict[str, float] = {}
     cash = 0.0
     for p in getattr(snapshot, "positions", []) or []:
         sym = (getattr(p, "symbol", "") or "").strip().upper()
         usd_k = getattr(p, "usd_value_k", None) or 0.0
         usd = float(usd_k) * 1000.0
-        asset_type = (getattr(p, "asset_type", "") or "").lower()
-        if asset_type in _CASH_TYPES:
+        if is_cash_position(p):
             cash += usd
             continue
         if not sym or sym == "-":
-            # A blank / "-" symbol row is a cash line ONLY when it isn't a typed
-            # non-cash asset. A real-estate (or other typed) holding can also carry a
-            # blank ticker; sweeping it into cash overstated deployable cash by the
-            # property's value (observed: a $69k "real estate" row inflated deploy
-            # cash). Such a row is neither deployable cash nor a tradeable holding —
-            # exclude it.
-            if not asset_type:
-                cash += usd
+            # Blank/"-" symbol with a typed non-cash asset (e.g. a $69k real-
+            # estate row): neither deployable cash nor a tradeable holding —
+            # exclude it (sweeping it into cash overstated deploy cash).
             continue
         if usd == 0.0:
             continue
@@ -451,6 +466,7 @@ def compute_allocation(doc, holdings: dict[str, float], mode: AllocationMode, *,
 __all__ = [
     "AllocationMode", "AllocationLeg", "AllocationCandidate", "REPLACES_SYMBOLS",
     "UNMAPPED_BUCKET", "class_targets_as_of", "target_values_by_symbol",
-    "tradeable_holdings", "cash_only_deploy", "rebalance_candidates",
+    "is_cash_position", "tradeable_holdings", "cash_only_deploy",
+    "rebalance_candidates",
     "compute_allocation",
 ]

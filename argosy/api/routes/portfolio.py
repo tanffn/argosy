@@ -1567,6 +1567,28 @@ def get_deploy_cash(
     )
     dto = deployment_plan_to_dto(plan, market_context=ctx)
 
+    # FUNDING BREAKDOWN — WHERE the deploy money sits (2026-07-06 incident:
+    # the surface said HOW MUCH but not that the pool spanned Leumi USD +
+    # Leumi NIS + Schwab USD; the client filled everything from Leumi USD and
+    # went negative). Pure snapshot derivation (same cash classifier as the
+    # deployable total, so the table sums to the same number). Best-effort —
+    # never breaks the route.
+    try:
+        from argosy.services.contracts import funding_breakdown_to_dto
+        from argosy.services.deployment_funding import derive_cash_funding
+
+        _funding_dto = None
+        _fund_row = get_latest_snapshot_row(db, user_id)
+        if _fund_row is not None:
+            _funding_dto = funding_breakdown_to_dto(
+                derive_cash_funding(row_to_snapshot(_fund_row), amount)
+            )
+        dto.funding = _funding_dto
+    except Exception as exc:  # noqa: BLE001 — additive; never break the route
+        _funding_dto = None
+        _log.warning("deploy_cash.funding_failed", user_id=user_id,
+                     error=str(exc)[:200])
+
     # Shadow research preflight (deterministic; behind the kill switch). Annotates
     # the response with per-candidate status/reason (look-through cap, reserve,
     # plan-gap) WITHOUT altering `tiers`. Never breaks deploy-cash on failure.
@@ -1697,6 +1719,7 @@ def get_deploy_cash(
                 dto = deployment_plan_to_dto(
                     rerank_plan(plan, sized), market_context=ctx
                 )
+                dto.funding = _funding_dto  # rebuild must not drop the table
             dto.preflight = preflight_result_to_dto(result)
             if _disposition is not None:
                 from argosy.services.contracts import disposition_to_dto

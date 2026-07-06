@@ -549,6 +549,43 @@ class TeamReviewDTO(BaseModel):
     flagged: list[TeamFlaggedBuyDTO] = []
 
 
+class FundingRowDTO(BaseModel):
+    """Cash in ONE account+currency bucket (WHERE the deploy money sits)."""
+
+    account: str
+    currency: str
+    balance: float  # in `currency` (local units)
+    usd_equiv: float  # snapshot-FX USD; rows sum to the deployable total
+
+
+class FundingBreakdownDTO(BaseModel):
+    """The deploy CASH FUNDING TABLE + deterministic pre-execution actions.
+
+    Derived purely from the latest portfolio snapshot (same cash classifier
+    as the deployable total, so ``total_usd`` matches the deploy amount by
+    construction; ``note`` labels any difference when the amount is an
+    explicit override). ``required_actions`` are must-do-first strings —
+    e.g. "Convert ~NIS 58,945 -> USD at Leumi before executing" — generated
+    whenever the single largest USD account can't cover the full deploy, or
+    an account balance is already negative."""
+
+    rows: list[FundingRowDTO] = []
+    total_usd: float = 0.0
+    required_actions: list[str] = []
+    note: str = ""
+
+
+def funding_breakdown_to_dto(fb) -> FundingBreakdownDTO:
+    return FundingBreakdownDTO(
+        rows=[FundingRowDTO(account=r.account, currency=r.currency,
+                            balance=r.balance, usd_equiv=r.usd_equiv)
+              for r in fb.rows],
+        total_usd=fb.total_usd,
+        required_actions=list(fb.required_actions),
+        note=fb.note,
+    )
+
+
 class DeploymentPlanDTO(BaseModel):
     deploy_amount_usd: float
     as_of: str
@@ -574,6 +611,10 @@ class DeploymentPlanDTO(BaseModel):
     # Present when the author produced a proposal the team could review; `flagged`
     # buys drew an objection and want a look before executing. null otherwise.
     team_review: TeamReviewDTO | None = None
+    # WHERE the deploy money sits (per account+currency, snapshot-derived) +
+    # deterministic pre-execution actions (convert NIS->USD, wire from broker,
+    # cover a negative balance). null when no snapshot is available.
+    funding: FundingBreakdownDTO | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
@@ -666,4 +707,7 @@ __all__ = [
     "market_context_to_dto",
     "DeploymentPlanDTO",
     "deployment_plan_to_dto",
+    "FundingRowDTO",
+    "FundingBreakdownDTO",
+    "funding_breakdown_to_dto",
 ]
