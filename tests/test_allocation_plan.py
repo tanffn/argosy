@@ -139,8 +139,10 @@ class TestDeriveFiWeight:
 
     def test_fi_is_minimal_one_step_less_breaches_a_binding_anchor(self) -> None:
         # At accumulation the 8% floor binds; to test the solver's minimality use
-        # a near-retirement phase whose lower anchor binds ABOVE the floor.
-        anch = anchor_sigma_for_phase(1.0)
+        # a phase whose lower anchor binds ABOVE the floor. With the cap-derived
+        # 8% NVDA default the book is light enough that only the drawdown anchor
+        # (years_to_retirement=0) binds above the floor.
+        anch = anchor_sigma_for_phase(0.0)
         fi = derive_fi_weight(anchor_sigma=anch, fi_step=0.001)
         assert fi > 8.0  # the anchor binds here, not the floor
         at = _renormalise(nvda_pct=NVDA_TARGET_PCT, fi_pct=fi)
@@ -188,13 +190,16 @@ class TestDeriveFiWeight:
         assert sigma_from_composition(comp) < SIGMA_DIVERSIFIED
 
     def test_phase_anchor_glides_fi_up_toward_retirement(self) -> None:
-        # Accumulation ~8%, gliding to ~15% as retirement nears, ~20%+ in drawdown.
+        # Accumulation ~8% (floor), rising as retirement nears, highest in
+        # drawdown. With the cap-derived 8% NVDA default the book carries less
+        # single-name sigma, so the glide is shallower than under the old 12%
+        # target — the ORDERING (monotone FI rebuild) is the invariant.
         accum = build_target_allocation(years_to_retirement=5.0).fi_pct
         near = build_target_allocation(years_to_retirement=0.5).fi_pct
         drawdown = build_target_allocation(years_to_retirement=0.0).fi_pct
         assert 8.0 <= accum <= 10.0
-        assert 12.0 <= near <= 17.0
-        assert drawdown >= 18.0
+        assert accum < near <= 12.0
+        assert drawdown >= 15.0
         assert accum < near < drawdown
 
 
@@ -203,7 +208,7 @@ class TestBuildTargetAllocation:
         alloc = build_target_allocation()
         assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.05)
 
-    def test_nvda_held_at_user_pick(self) -> None:
+    def test_nvda_held_at_cap_derived_target(self) -> None:
         alloc = build_target_allocation()
         nvda = next(c for c in alloc.classes if "NVDA" in c.label and c.sigma_class == "concentrated_equity")
         assert nvda.target_pct == pytest.approx(NVDA_TARGET_PCT)
@@ -390,9 +395,15 @@ class TestAlternativesSleeve:
     def test_sourced_sigma_flows_into_solver(self) -> None:
         # The FI solver consumes the SOURCED sleeve sigma: a higher-σ sleeve
         # (80/20 gold/BTC, 0.268) requires strictly more FI than a gold-only one
-        # (0.16). fi_lo=2 so the floor doesn't flatten both onto 8%.
-        gold_only = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.16, fi_lo=2.0, fi_step=0.001)
-        with_btc = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.268, fi_lo=2.0, fi_step=0.001)
+        # (0.16). fi_lo=2 so the floor doesn't flatten both; a 0.165 anchor so
+        # the anchor actually binds (at the 0.18 default the cap-derived 8% NVDA
+        # book clears it at the lo-bound for both sigmas, masking the effect).
+        gold_only = derive_fi_weight(
+            anchor_sigma=0.165, alternatives_pct=3.0, alternatives_sigma=0.16,
+            fi_lo=2.0, fi_step=0.001)
+        with_btc = derive_fi_weight(
+            anchor_sigma=0.165, alternatives_pct=3.0, alternatives_sigma=0.268,
+            fi_lo=2.0, fi_step=0.001)
         assert gold_only < with_btc
 
     def test_supplied_sleeve_estate_clean_non_us(self) -> None:

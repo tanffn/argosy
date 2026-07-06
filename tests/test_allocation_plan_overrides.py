@@ -330,7 +330,7 @@ class TestRationaleConsistency:
         )
 
     def test_nvda_pct_quoted_in_rationale_matches_struct_nvda_pct(self) -> None:
-        # Override NVDA to a value that differs from the 12% default.
+        # Override NVDA to a value that differs from the cap-derived default.
         nvda_label = "Strategic single-stock (NVDA)"
         alloc = build_target_allocation(authored_overrides={nvda_label: 9.0})
         struct_nvda = alloc.nvda_pct

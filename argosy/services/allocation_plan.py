@@ -12,11 +12,15 @@ plan input so every downstream surface reads ONE allocation, not a side file.
 Two numbers are not free panel choices and are handled specially so nothing is
 a magic constant:
 
-  * **Strategic single-stock (NVDA)** is held at ``NVDA_TARGET_PCT`` — Ariel's
-    explicit sign-off within the optimizer's 10-13% band (the optimizer cap is
-    ``DEFAULT_NVDA_CAP_PCT`` = 13%, the MIN-of-four-constraints figure). Held
-    just below the hard cap so post-transformation drift doesn't immediately
-    breach the do-not-re-concentrate ceiling.
+  * **Strategic single-stock (NVDA)** is held at ``NVDA_TARGET_PCT`` — a
+    CAP-DERIVED figure decided by Argosy's allocation analysis, not a user
+    pick. The binding constraint is the PLAN-LOOK-THROUGH concentration cap
+    (``DEFAULT_NVDA_CAP_PCT`` = 13%, the MIN-of-four-constraints figure):
+    because the index sleeves themselves carry NVDA weight, the direct target
+    must sit well below the headline cap. At 8% direct the plan's total NVDA
+    look-through is ~11.5% (< 13%) with the current instrument set; at 12% it
+    breaches (~16.8%). Re-validated every synthesis against live index
+    weights — the constant here is a seed, not authority.
 
   * **Fixed-income / cash** weight is DERIVED, not asserted. FI is sized as the
     MINIMUM weight (NVDA held fixed, the other equity sleeves kept at their agreed
@@ -61,9 +65,12 @@ from argosy.services.sigma_glidepath import (
 from argosy.services.target_allocation_doc import AllocationInstrument
 
 # --- The two specially-handled weights (auditable, not magic). ---------------
-# Ariel's sign-off, inside the optimizer's 10-13% band; cap is the canonical
-# DEFAULT_NVDA_CAP_PCT (0.13). Held just below the cap for drift headroom.
-NVDA_TARGET_PCT = 12.0
+# CAP-DERIVED by Argosy's allocation analysis: the 13% DEFAULT_NVDA_CAP_PCT is
+# a LOOK-THROUGH cap, and the index sleeves already carry NVDA, so the direct
+# target must leave room for indirect exposure. 8.0 direct ⇒ ~11.5% plan
+# look-through < 13% with the current instruments; 12 breaches. Re-validated
+# every synthesis — this constant is a SEED, not authority.
+NVDA_TARGET_PCT = 8.0
 assert NVDA_TARGET_PCT <= DEFAULT_NVDA_CAP_PCT * 100.0 + 1e-9
 
 # The FI sleeve is split into a liquid cash/T-bill tranche (home of the
@@ -446,18 +453,26 @@ _NVDA_SLEEVE = _PanelSleeve(
     snapshot_category="Individual Stocks",
     agreement="contested",
     rationale=(
-        f"Held at {NVDA_TARGET_PCT:.0f}% — Ariel's sign-off just below the "
-        "optimizer's 13% cap (the MIN-of-four-constraints ceiling: sequence / "
-        "tail-loss / risk-contribution / tax-liquidity). Retains essentially all "
-        "optimizer-sanctioned conviction upside + low-basis CGT deferral while "
-        "reserving ~1pp headroom below the hard cap so normal drift does not "
-        "immediately breach the do-not-re-concentrate rule. Pair with a "
-        "trim-on-breach band. NVDA's ~0.45 single-name sigma remains the dominant "
-        "variance contributor even at 12% — the accepted residual idiosyncratic tail."
+        f"Held at {NVDA_TARGET_PCT:.0f}% — CAP-DERIVED by Argosy's allocation "
+        "analysis against the 13% LOOK-THROUGH concentration cap (the "
+        "MIN-of-four-constraints ceiling: sequence / tail-loss / "
+        "risk-contribution / tax-liquidity). The cap counts NVDA held INSIDE "
+        "the index sleeves too: with the current instrument set, an 8% direct "
+        "target puts total plan look-through at ~11.5% (< 13% with headroom "
+        "for drift); a 12% direct target breaches at ~16.8%. Retains the "
+        "conviction position + low-basis CGT deferral within the cap. Pair "
+        "with a trim-on-breach band. NVDA's ~0.45 single-name sigma remains a "
+        "dominant variance contributor even at 8% — the accepted residual "
+        "idiosyncratic tail. Re-validated every synthesis; the constant is a "
+        "seed, not authority."
     ),
     dissent=(
-        "13 (long-hold/Boglehead/risk) vs 10 (capital-preservation); Ariel chose 12. "
-        "~NIS 87k of deployable book per point — conviction-upside vs single-name tail."
+        "Panel lenses spanned 13 (long-hold/Boglehead/risk) vs 10 "
+        "(capital-preservation) on the DIRECT weight; the binding constraint "
+        "is the 13% look-through cap, which only clears at 8 with current "
+        "instruments — Argosy's cap-derived answer supersedes both lens "
+        "anchors. ~NIS 87k of deployable book per point — conviction-upside "
+        "vs single-name tail."
     ),
 )
 
@@ -953,7 +968,8 @@ def build_target_allocation(
         f"Reconciled target for the deployable book at the end of the 2-year "
         f"deconcentration. Total equity ~{100 - reported_fi_pct - reported_alternatives_pct:.0f}% (return "
         f"engine + income/quality core + international + a min-vol damper), NVDA "
-        f"{reported_nvda_pct:.0f}% just under the 13% cap, {alts_clause}FI/cash {reported_fi_pct:.1f}% "
+        f"{reported_nvda_pct:.0f}% direct (cap-derived so total plan look-through "
+        f"clears the 13% concentration cap), {alts_clause}FI/cash {reported_fi_pct:.1f}% "
         f"DERIVED as the minimum weight at which the COVARIANCE-blended sigma "
         f"{blended:.4f} sits on the {anchor_sigma} anchor. The anchor is phase-aware: "
         f"in accumulation (salary covers expenses, no withdrawals) it is the 0.18 "
@@ -965,8 +981,10 @@ def build_target_allocation(
         "70/30 cash/short-IG). Caveats: correlation tiers are documented strategic "
         "long-run estimates (an adversarial reviewer can reconcile them in sigma_glidepath), "
         "and the MC holds mu_real constant regardless of FI (sees the volatility benefit, "
-        "not the return drag). | Strategic-NVDA 10-13 band, Ariel "
-        "chose 12. | FX hedge not fully neutralised at portfolio level — even with "
+        "not the return drag). | Strategic-NVDA: panel lenses spanned 10-13 direct; "
+        "the target is CAP-DERIVED by Argosy (8 direct ⇒ ~11.5% plan look-through "
+        "< the 13% cap with current instruments; 12 breaches), re-validated every "
+        "synthesis. | FX hedge not fully neutralised at portfolio level — even with "
         "International 12 + the ILS cash tranche, most of the book stays USD-correlated. "
         "| Implementation: deploy NEW NVDA-proceeds cash into the target classes; do NOT "
         "force-sell appreciated non-NVDA sleeves (avoids fresh CGT)."

@@ -1505,7 +1505,12 @@ def _apply_fi_crossing_year(values):
         formula="first year FV(liquid, real return, end-of-year real-savings annuity) >= FI total capital")
 
 
-_NVDA_IPS_TARGET_W = 0.12  # IPS sleeve target (policy constraint)
+# IPS sleeve target — bound to the canonical cap-derived constant in
+# allocation_plan (Argosy's allocation analysis: the direct target that keeps
+# total plan LOOK-THROUGH under the 13% cap), never a hand-typed duplicate.
+from argosy.services.allocation_plan import NVDA_TARGET_PCT as _NVDA_TARGET_PCT
+
+_NVDA_IPS_TARGET_W = _NVDA_TARGET_PCT / 100.0
 
 
 def _apply_nvda_deconcentration(
@@ -1516,16 +1521,18 @@ def _apply_nvda_deconcentration(
     a guess — when inputs are missing."""
     keys = ("concentration.nvda_target_sh", "concentration.nvda_sell_sh",
             "concentration.nvda_eligible_now_sh")
-    # The IPS target WEIGHT (12%) is a policy constant DISTINCT from the 13% hard
-    # cap — held ~1pp below it for drift headroom (Ariel sign-off, SDD §3479).
-    # Register it as its own resolved pct so the prose's "12% target" traces to a
-    # canonical value (and can be placeholdered) without collapsing into the cap.
+    # The IPS target WEIGHT is a policy constant DISTINCT from the 13% hard cap:
+    # the cap is LOOK-THROUGH (counts NVDA inside the index sleeves), so the
+    # direct target is CAP-DERIVED by Argosy's allocation analysis to keep total
+    # plan look-through under it (re-validated every synthesis). Register it as
+    # its own resolved pct so the prose's target traces to a canonical value
+    # (and can be placeholdered) without collapsing into the cap.
     # Always present (a constant), even when the share-count derivation is pending.
     values["concentration.nvda_target_pct"] = ResolvedValue(
         key="concentration.nvda_target_pct", value=_NVDA_IPS_TARGET_W, unit="pct",
         status="resolved", source_locator="plan_numeric_resolver._NVDA_IPS_TARGET_W",
         confidence="HIGH",
-        formula="IPS single-name target weight (held ~1pp below the hard cap for drift headroom)",
+        formula="IPS single-name direct target (cap-derived: keeps total plan look-through under the 13% concentration cap)",
     )
     w = values.get("concentration.nvda_current_pct")
     cap = values.get("concentration.nvda_cap_pct")
