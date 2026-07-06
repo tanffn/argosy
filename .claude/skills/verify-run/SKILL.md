@@ -86,9 +86,9 @@ Grep the run window for these EXACT event families (all verified present in `arg
 - `agent.parse_output.recovered_from_scan` (JSON parse fell back to scanning —
   tolerable at low rate; the SAME role recovering on every call = prompt/schema drift → WARN)
 - `agent.hallucinated_sources` (cited source_ids not in supplied sources — flag-don't-strip,
-  `argosy/agents/base.py` ~line 1252). **Known detector quirk:** the model citing a full
-  URL that IS inside the payload body while the supplied source_id is e.g. `news/ELF`
-  triggers this. Verify against `sources_json` content before calling it a real hallucination.
+  `argosy/agents/base.py::_detect_hallucinated_sources`). URL-form citations are NOT flagged
+  when the URL appears in a supplied source's content or the agent has WebSearch, so a hit
+  here is a real invented id (or a URL from an agent with no web access) — treat it seriously.
 - generic: `"level": "warning"|"error"`, `*.failed`, `*_skipped`, `degraded`, `timeout`
 
 For each hit: is it EXPLAINABLE (labeled downstream — e.g. deploy `dto.authored.degraded=true`,

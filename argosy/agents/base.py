@@ -2822,6 +2822,16 @@ class BaseAgent(Generic[T]):
         We do NOT strip offending ids from the output — the AgentReport
         carries the flagged list so callers / detectors can decide what
         to do. Fleet self-review D4 reads from this field directly.
+
+        Two classes of citation are GROUNDED even though they don't match
+        a supplied source_id (verify-run false-positive fix):
+          * A citation that appears verbatim inside a supplied source's
+            CONTENT (e.g. the model cites the article URL carried in the
+            ``news/ELF`` payload body) — the model read it in its inputs.
+          * A URL-form citation from an agent that has live WebSearch
+            (``claude_code_allowed_tools``): web URLs join
+            ``cited_sources`` by instruction, and the allowlist cannot
+            know them in advance.
         """
         if not sources:
             return []
@@ -2830,6 +2840,9 @@ class BaseAgent(Generic[T]):
         except Exception:
             return []
         known = {sid for sid, _content in sources}
+        has_web_search = "WebSearch" in tuple(
+            getattr(self, "claude_code_allowed_tools", ()) or ()
+        )
 
         cited: list[str] = []
 
@@ -2855,6 +2868,13 @@ class BaseAgent(Generic[T]):
             if sid in known or sid in seen:
                 continue
             seen.add(sid)
+            if sid.startswith(("http://", "https://")):
+                # Grounded if the URL appears in any supplied source's
+                # content, or the agent legitimately searched the live web.
+                if has_web_search or any(
+                    sid in content for _sid, content in sources
+                ):
+                    continue
             unknown.append(sid)
         return unknown
 
