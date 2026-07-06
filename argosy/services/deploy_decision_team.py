@@ -281,8 +281,49 @@ def write_team_flag_proposals(db: Any, user_id: str, decision: TeamDecision) -> 
     return written
 
 
+def supersede_cleared_flags(
+    db: Any, user_id: str, decision: TeamDecision, reviewed_symbols: set[str],
+) -> int:
+    """Close open deploy_team_flag rows for symbols the team RE-REVIEWED this
+    run and did NOT flag (approved, or dropped from the proposal entirely).
+    A resolved flag must DISAPPEAR from the client's checklist — the team
+    cleared it, so leaving yesterday's objection open punts a settled question
+    back to the client. Rows for symbols not reviewed this run are left alone
+    (their flags may still be live concerns). Returns rows superseded."""
+    from argosy.state.models import ActionProposal
+
+    still_flagged = {str(f["symbol"]).upper() for f in decision.flagged}
+    cleared = {s.upper() for s in reviewed_symbols} - still_flagged
+    if not cleared:
+        return 0
+    superseded = 0
+    try:
+        open_rows = (
+            db.query(ActionProposal)
+            .filter_by(user_id=user_id, kind="deploy_team_flag", status="open")
+            .all()
+        )
+        for row in open_rows:
+            sym = (row.dedup_key or "").rsplit(":", 1)[-1].upper()
+            if sym in cleared:
+                row.status = "superseded"
+                superseded += 1
+                log.info(
+                    "deploy_team.flag_superseded",
+                    symbol=sym, proposal_id=row.id,
+                    reason="re-reviewed this run and cleared",
+                )
+        if superseded:
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 — cleanup is additive/best-effort
+        db.rollback()
+        log.warning("deploy_team.flag_supersede_failed", error=str(exc)[:160])
+    return superseded
+
+
 __all__ = [
     "run_deploy_decision_team",
+    "supersede_cleared_flags",
     "write_team_flag_proposals",
     "TeamDecision",
     "DEFAULT_LENSES",

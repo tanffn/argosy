@@ -1844,18 +1844,27 @@ def get_deploy_cash(
                         run_deploy_decision_team,
                     )
                     _team = run_deploy_decision_team(packet, _proposal, user_id=user_id)
-                    if _team.flagged:
-                        # A flagged buy is the client's decision — surface it in
-                        # the inbox (idempotent per symbol), don't just ride the DTO.
-                        try:
-                            from argosy.services.deploy_decision_team import (
-                                write_team_flag_proposals,
-                            )
+                    try:
+                        from argosy.services.deploy_decision_team import (
+                            supersede_cleared_flags,
+                            write_team_flag_proposals,
+                        )
+                        if _team.flagged:
+                            # A flagged buy is the client's decision — surface it
+                            # in the inbox (refresh-in-place per symbol), don't
+                            # just ride the DTO.
                             write_team_flag_proposals(db, user_id, _team)
-                        except Exception as exc:  # noqa: BLE001 — sink is additive
-                            _log.warning(
-                                "deploy_cash.team_flag_sink_failed", error=str(exc)[:120],
-                            )
+                        # A flag the team re-reviewed and CLEARED this run must
+                        # disappear from the client's checklist (resolved items
+                        # never punt back to the client).
+                        supersede_cleared_flags(
+                            db, user_id, _team,
+                            reviewed_symbols={b.symbol for b in (_proposal.buys or [])},
+                        )
+                    except Exception as exc:  # noqa: BLE001 — sink is additive
+                        _log.warning(
+                            "deploy_cash.team_flag_sink_failed", error=str(exc)[:120],
+                        )
                     dto.team_review = TeamReviewDTO(
                         reviewers_ran=_team.reviewers_ran,
                         reviewers_expected=_team.reviewers_expected,

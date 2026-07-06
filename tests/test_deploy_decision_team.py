@@ -202,6 +202,37 @@ def test_write_stock_decision_proposal_survives_the_real_schema(alembic_engine_a
         assert row is not None and row.id is not None
 
 
+def test_supersede_cleared_flags_closes_rereviewed_symbols(alembic_engine_at_head):
+    """A flag the team re-reviewed and CLEARED must disappear from the client's
+    checklist; flags for symbols NOT reviewed this run stay open."""
+    from sqlalchemy.orm import Session
+
+    from argosy.services.deploy_decision_team import (
+        TeamDecision,
+        supersede_cleared_flags,
+        write_team_flag_proposals,
+    )
+
+    def _flag(sym, amt):
+        return {"symbol": sym, "amount_usd": amt,
+                "objections": [{"lens": "prudence", "concern": "x", "severity": "warn"}]}
+
+    with Session(alembic_engine_at_head) as s:
+        # Yesterday: SPMV and XOLD flagged.
+        write_team_flag_proposals(s, "ariel", TeamDecision(flagged=[_flag("SPMV", 20000), _flag("XOLD", 9000)]))
+        # Today: SPMV re-reviewed and cleared (approved); XOLD not in the proposal.
+        today = TeamDecision(flagged=[_flag("CSPX", 42000)])
+        write_team_flag_proposals(s, "ariel", today)
+        n = supersede_cleared_flags(s, "ariel", today, reviewed_symbols={"SPMV", "CSPX", "EXUS"})
+        assert n == 1
+        rows = dict(s.execute(__import__("sqlalchemy").text(
+            "SELECT dedup_key, status FROM action_proposals WHERE kind='deploy_team_flag'"
+        )).fetchall())
+        assert rows["deploy_team_flag:ariel:SPMV"] == "superseded"   # cleared this run
+        assert rows["deploy_team_flag:ariel:XOLD"] == "open"          # not re-reviewed
+        assert rows["deploy_team_flag:ariel:CSPX"] == "open"          # still flagged
+
+
 def test_write_team_flag_proposals_nothing_flagged_is_a_noop():
     from argosy.services.deploy_decision_team import (
         TeamDecision,
