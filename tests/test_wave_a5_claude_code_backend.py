@@ -822,7 +822,10 @@ class _RecordingLogger:
         self.warnings.append((event, dict(kwargs)))
 
     # Defensive — claude_code path only emits warning() today but other
-    # code paths in BaseAgent may call info/error during construction.
+    # code paths in BaseAgent may call debug/info/error during construction.
+    def debug(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
     def info(self, *args: Any, **kwargs: Any) -> None:
         return None
 
@@ -1725,3 +1728,159 @@ async def test_effective_input_tokens_in_finished_log(monkeypatch):
     assert kw["cache_read_tokens"] == 37287
     assert kw["cache_creation_tokens"] == 39449
     assert kw["tokens_in"] == 3
+
+
+# ----------------------------------------------------------------------
+# Final-message selection — a multi-turn run (max_turns > 1) narrates in
+# earlier assistant messages of the SAME turn buffer; the parse target is
+# the last message when it alone satisfies the output schema. (This was
+# the "debate agents hit recovered_from_scan ~100%" verify-run finding.)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_multi_message_turn_prefers_final_json_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Narration message + JSON message in one query → text is the JSON only."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(
+            content=[TextBlock(text="I have everything I need to produce the verdict. ")],
+            model="claude-sonnet-4-6",
+        ),
+        AssistantMessage(
+            content=[TextBlock(text='{"text": "verdict"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=10, output_tokens=5),
+    ])
+
+    agent = _make_agent()
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert call.text == '{"text": "verdict"}'
+
+
+@pytest.mark.anyio
+async def test_multi_message_turn_falls_back_to_joined_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Answer SPLIT across two messages → last message alone doesn't parse,
+    so the joined turn buffer (which does) is kept."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(
+            content=[TextBlock(text='{"text": "long ans')],
+            model="claude-sonnet-4-6",
+        ),
+        AssistantMessage(
+            content=[TextBlock(text='wer"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=10, output_tokens=5),
+    ])
+
+    agent = _make_agent()
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert call.text == '{"text": "long answer"}'
+
+
+@pytest.mark.anyio
+async def test_multi_message_turn_postscript_keeps_joined_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JSON message followed by a prose postscript → the postscript alone
+    doesn't parse, joined buffer kept; downstream raw_decode still reads the
+    leading JSON and discards the trailing prose."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(
+            content=[TextBlock(text='{"text": "done"}')],
+            model="claude-sonnet-4-6",
+        ),
+        AssistantMessage(
+            content=[TextBlock(text="That completes the analysis.")],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=10, output_tokens=5),
+    ])
+
+    agent = _make_agent()
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert call.text == '{"text": "done"}That completes the analysis.'
+    # The joined text still parses via the tolerant decoder.
+    parsed = agent._parse_output(call.text)
+    assert parsed.text == "done"
+
+
+@pytest.mark.anyio
+async def test_single_message_turn_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The common single-message case is byte-identical to prior behavior."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(
+            content=[TextBlock(text='{"text": "solo"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=10, output_tokens=5),
+    ])
+
+    agent = _make_agent()
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert call.text == '{"text": "solo"}'
+
+
+@pytest.mark.anyio
+async def test_multi_message_turn_fires_no_recovery_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Narration + JSON messages must produce ZERO parse-scan recovery
+    warnings end-to-end: the malformed-JSON retry gate and the ModelCall
+    assembly both probe the SAME selected text (the clean last message),
+    so `agent.parse_output.recovered_from_scan` never fires. This pins the
+    verify-run finding (debate agents recovering on ~100% of calls)."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(
+            content=[TextBlock(text="I have everything I need to produce the verdict. ")],
+            model="claude-sonnet-4-6",
+        ),
+        AssistantMessage(
+            content=[TextBlock(text='{"text": "verdict"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=10, output_tokens=5),
+    ])
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert call.text == '{"text": "verdict"}'
+    scan_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "agent.parse_output.recovered_from_scan"
+    ]
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.malformed_json_retry"
+    ]
+    assert scan_events == [], (
+        f"narration+JSON must not need the scan recovery: {recorder.warnings}"
+    )
+    assert retry_events == [], (
+        f"narration+JSON must not trigger a malformed-json re-roll: {recorder.warnings}"
+    )

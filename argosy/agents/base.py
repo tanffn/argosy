@@ -992,8 +992,10 @@ class BaseAgent(Generic[T]):
         "  LOW = data > 3 months stale, self-reported, or single thin source.\n"
         "4. If a needed fact is missing, set confidence=LOW and explicitly "
         "recommend that the domain-refresh agent investigate; do not fabricate.\n"
-        "5. Output strictly conforms to the JSON schema you are given. No "
-        "extra commentary outside the schema.\n"
+        "5. Output strictly conforms to the JSON schema you are given. Your "
+        "FINAL message must be exactly one JSON object — no prose, headings, "
+        "or code fences before or after it. Narration and tool planning "
+        "belong in earlier turns only, never in the final message.\n"
         "6. Only cite source_ids that appear verbatim in the attached "
         "`<sources>` block (or in the document blocks supplied via the "
         "Citations API). Do NOT invent, paraphrase, abbreviate, or "
@@ -1996,6 +1998,10 @@ class BaseAgent(Generic[T]):
             # cache reads from prior turns).
             turn_buffers: list[list[str]] = [[]]
             turns_seen = 0
+            # Text of each individual assistant MESSAGE (a multi-turn run —
+            # max_turns > 1 with thinking/tool turns — emits several messages
+            # into ONE turn buffer; the final answer is the last of them).
+            assistant_msg_texts: list[str] = []
 
             # Reset the captured-stderr buffer on each attempt so the
             # transient-flake detector below only inspects this attempt's
@@ -2027,9 +2033,15 @@ class BaseAgent(Generic[T]):
                 async with asyncio.timeout(self.sdk_timeout_seconds):
                     async for message in query(prompt=sdk_prompt, options=options):
                         if isinstance(message, AssistantMessage):
-                            for block in getattr(message, "content", []) or []:
-                                if isinstance(block, TextBlock):
-                                    turn_buffers[-1].append(block.text)
+                            _msg_parts = [
+                                block.text
+                                for block in getattr(message, "content", []) or []
+                                if isinstance(block, TextBlock)
+                            ]
+                            turn_buffers[-1].extend(_msg_parts)
+                            _msg_text = "".join(_msg_parts)
+                            if _msg_text.strip():
+                                assistant_msg_texts.append(_msg_text)
                         elif isinstance(message, ResultMessage):
                             turns_seen += 1
                             cost_usd_from_sdk += float(
@@ -2071,6 +2083,18 @@ class BaseAgent(Generic[T]):
                             # if this was the last; harmless — we use the
                             # last non-empty buffer below).
                             turn_buffers.append([])
+                # Resolve the response text ONCE per attempt: the last
+                # assistant message when it alone satisfies the output
+                # schema, else the joined turn buffer (see
+                # `_select_response_text`). The retry gates below and the
+                # ModelCall assembly after the loop must all probe the SAME
+                # text — a gate that trial-parses the narration-prefixed
+                # joined buffer instead would fire the parse-scan recovery
+                # warning on every multi-turn call, which is exactly the
+                # verify-run symptom this selection exists to remove.
+                selected_text = self._select_response_text(
+                    turn_buffers, assistant_msg_texts,
+                )
                 # ----- Empty-output retry (W2.A-v2) -------------------
                 # Live synthesis runs #6, #9, #10 surfaced a second flake
                 # distinct from the W2.A exit-1 path: the SDK stream
@@ -2096,21 +2120,16 @@ class BaseAgent(Generic[T]):
                 #      branch below with a clearer diagnostic, and
                 #      mid-stream emptiness on intermediate batches is
                 #      normal (acknowledgement turns).
-                #   2. We compute the same "last non-empty turn
-                #      buffer" the post-loop code uses, so the check
-                #      mirrors exactly what `ModelCall.text` would
-                #      contain — no risk of disagreeing with the
-                #      downstream parser about whether output exists.
+                #   2. We probe `selected_text` — the exact text
+                #      `ModelCall.text` will carry — so the check can't
+                #      disagree with the downstream parser about
+                #      whether output exists.
                 #   3. Whitespace-only counts as empty: a model that
                 #      emitted only `\n` or spaces cannot survive
                 #      `_parse_output` either, and the live-run
                 #      fingerprint was exactly this.
                 if expected_turns == 1 and _retry_count < _MAX_RETRIES:
-                    candidate_buf = next(
-                        (b for b in reversed(turn_buffers) if b), [],
-                    )
-                    candidate_text = "".join(candidate_buf)
-                    if not candidate_text or not candidate_text.strip():
+                    if not selected_text or not selected_text.strip():
                         self._log.warning(
                             "claude_code.empty_output_retry",
                             agent_role=self.agent_role,
@@ -2158,12 +2177,8 @@ class BaseAgent(Generic[T]):
                 # mode has a different failure surface) AND we haven't
                 # already retried.
                 if expected_turns == 1 and _retry_count < _MAX_RETRIES:
-                    candidate_buf = next(
-                        (b for b in reversed(turn_buffers) if b), [],
-                    )
-                    candidate_text = "".join(candidate_buf)
                     try:
-                        self._parse_output(candidate_text)
+                        self._parse_output(selected_text)
                     except json.JSONDecodeError as parse_exc:
                         self._log.warning(
                             "claude_code.malformed_json_retry",
@@ -2320,15 +2335,12 @@ class BaseAgent(Generic[T]):
                 f"{stderr_suffix}"
             )
 
-        # Use the LAST non-empty turn buffer as the final response. With
-        # single-batch (no chunking) this is just the only turn's text;
-        # with chunking, intermediate turns are short acknowledgements
-        # ("got the docs, awaiting more") and the structured response
-        # lives in the final batch's turn.
-        final_buf = next((b for b in reversed(turn_buffers) if b), [])
-
+        # `selected_text` was resolved once per attempt right after the
+        # stream completed (last assistant message when it alone satisfies
+        # the output schema, else the last non-empty turn buffer joined) —
+        # the same text the retry gates probed.
         return ModelCall(
-            text="".join(final_buf),
+            text=selected_text,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             model=self.model,
@@ -2641,6 +2653,45 @@ class BaseAgent(Generic[T]):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _select_response_text(
+        self,
+        turn_buffers: list[list[str]],
+        assistant_msg_texts: list[str],
+    ) -> str:
+        """Resolve the model's response text from a completed SDK stream.
+
+        Baseline: the LAST non-empty turn buffer, joined. With single-batch
+        (no chunking) that is the only turn's text; with chunking,
+        intermediate turns are short acknowledgements and the structured
+        response lives in the final batch's turn.
+
+        Refinement: a turn buffer holds EVERY assistant message of its
+        query, so a multi-turn run (max_turns > 1: the model narrates /
+        plans tool use in earlier messages, answers in the last) carries
+        that narration in front of the final JSON — which forced the
+        parse-scan recovery on virtually every debate-agent call. Prefer
+        the LAST assistant message when it alone satisfies the output
+        schema; the joined buffer stays the fallback so an answer split
+        across messages keeps working.
+        """
+        final_buf = next((b for b in reversed(turn_buffers) if b), [])
+        joined = "".join(final_buf)
+        if assistant_msg_texts:
+            last_msg = assistant_msg_texts[-1]
+            if last_msg.strip() != joined.strip():
+                try:
+                    self._parse_output(last_msg)
+                except Exception:  # noqa: BLE001 — fall back to the joined buffer
+                    pass
+                else:
+                    self._log.debug(
+                        "claude_code.final_message_selected",
+                        agent_role=self.agent_role,
+                        dropped_chars=len(joined) - len(last_msg),
+                    )
+                    return last_msg
+        return joined
 
     def _parse_output(self, text: str) -> BaseModel:
         import json
