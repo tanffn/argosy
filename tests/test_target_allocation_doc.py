@@ -202,7 +202,7 @@ def test_derive_full_book_composition_matches_codex_verified() -> None:
     assert comp["Dividend-quality income"] == pytest.approx(6.4236, abs=0.001)
     assert comp["International developed (ex-US)"] == pytest.approx(0.8293, abs=0.001)
     # growth ALONE (10.9 x 0.3514), NOT folded with the other singles
-    assert comp["US growth tilt (ex-NVDA)"] == pytest.approx(3.8303, abs=0.001)
+    assert comp["Global quality growth (ex-NVDA-dense)"] == pytest.approx(3.8303, abs=0.001)
     assert comp["US low-volatility equity"] == pytest.approx(1.8083, abs=0.001)
     assert comp["Short-duration IG bonds"] == pytest.approx(2.0782, abs=0.001)
     assert comp["Cash & T-bills (incl. ILS tranche)"] == pytest.approx(4.5471, abs=0.001)

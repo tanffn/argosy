@@ -185,7 +185,7 @@ _SNAPSHOT_CAT_TO_LABEL: dict[str, str] = {
     "core equity": "US broad-market core",
     "dividend": "Dividend-quality income",
     "international": "International developed (ex-US)",
-    "growth": "US growth tilt (ex-NVDA)",
+    "growth": "Global quality growth (ex-NVDA-dense)",
     "cash": "Cash & T-bills (incl. ILS tranche)",
     "alternative": "Real assets (REIT/TIPS)",
 }

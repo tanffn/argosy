@@ -105,6 +105,44 @@ HIGH_GROWTH_SNAPSHOT_CATEGORY = "Individual Stocks"
 HIGH_GROWTH_DEFAULT_SIGMA = 0.35
 
 
+# --- Sleeve label migration (relabel without breaking durable overrides). ----
+# Sleeve labels are KEYS in persisted ``target_allocation_overrides_json`` rows
+# (option-B durable authored overrides survive re-synthesis), so an honest
+# relabel must keep legacy keys working. ``normalize_override_labels`` migrates
+# legacy keys to the current label; an explicit current-label entry wins over a
+# legacy alias on collision.
+# 2026-07-06 relabel: "US growth tilt (ex-NVDA)" → "Global quality growth
+# (ex-NVDA-dense)". The sleeve's primary is IWQU (iShares Edge MSCI World
+# Quality Factor) — a WORLD quality-factor fund, ~33% ex-US and NOT literally
+# ex-NVDA (~6.45% NVDA at the 2026-07 holdings refresh). The old label
+# overstated both the US-ness and the NVDA exclusion (v65 blind-review finding).
+US_GROWTH_LEGACY_LABEL = "US growth tilt (ex-NVDA)"
+GLOBAL_QUALITY_GROWTH_LABEL = "Global quality growth (ex-NVDA-dense)"
+SLEEVE_LABEL_ALIASES: dict[str, str] = {
+    US_GROWTH_LEGACY_LABEL: GLOBAL_QUALITY_GROWTH_LABEL,
+}
+
+
+def normalize_sleeve_label(label: str) -> str:
+    """Map a (possibly legacy) sleeve label to its current canonical label."""
+    return SLEEVE_LABEL_ALIASES.get(label, label)
+
+
+def normalize_override_labels(overrides: dict[str, float]) -> dict[str, float]:
+    """Migrate legacy sleeve-label keys in an authored-overrides dict to the
+    current labels. On collision (both the legacy and the current key present)
+    the explicit CURRENT-label entry wins — a fresh edit outranks a carried
+    legacy row."""
+    if not overrides:
+        return dict(overrides or {})
+    legacy = {k: v for k, v in overrides.items() if k in SLEEVE_LABEL_ALIASES}
+    current = {k: v for k, v in overrides.items() if k not in SLEEVE_LABEL_ALIASES}
+    out: dict[str, float] = {}
+    for k, v in {**legacy, **current}.items():
+        out[SLEEVE_LABEL_ALIASES.get(k, k)] = v
+    return out
+
+
 # --- Agreed equity/alts sleeves (the panel's mix, NVDA + FI handled above). --
 # ``ratio`` is the panel's agreed RELATIVE weight among the non-NVDA, non-FI
 # sleeves; absolute weights are filled by renormalisation once FI is derived.
@@ -218,12 +256,26 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
             "(2026-07-06, gold ON TRIAL, author + blind re-derivation both "
             "independently concluded GOLD LOSES): the ~4pp deepening of this sleeve "
             "(authored override) IS the plan's diversifier decision — EXUS (0% US, "
-            "0% NVDA, EUR/JPY/GBP) beat a physical-gold slice on the prime "
-            "directive (gold: sterile ~3-4%/yr real vs the equity premium, a 3-5% "
-            "slice too small to insure the NVDA tail the glide already de-risks, "
-            "entry after a ~25% YoY run-up with the equity correlation currently "
-            "flipped positive), and beat WSML (51.5% US) / INFR (62.6% US) / EIMI "
-            "deepening (~48% Taiwan+Korea AI-chain overlap) on actual look-through. "
+            "0% NVDA, EUR/JPY/GBP) beat a physical-gold slice, and beat WSML "
+            "(51.5% US) / INFR (62.6% US) / EIMI deepening (~48% Taiwan+Korea "
+            "AI-chain overlap) on actual look-through. ADJUDICATED BY MODEL "
+            "(2026-07-06 v65 remediation, covariance kernel + return arithmetic; "
+            "the retirement MC is single-mu so per-class returns are arithmetic, "
+            "not simulated): a 3% gold sleeve (sigma 0.16 per the framework's "
+            "sourced gold-ETC vol; funded -2pp US core / -1pp EXUS) cuts blended "
+            "sigma 0.1682 -> 0.1644 (framework rho_gold-equity 0.25; 0.1631 at "
+            "the reviewers' long-run rho 0.0) — but the book is ALREADY under the "
+            "0.18 anchor without it, so the sigma credit buys no solvency the "
+            "plan needs. Cost: gold's long-run real return ~0.7-1.0%/yr (UBS/CS "
+            "Global Investment Returns Yearbook 1900-2023 ~0.7%; Erb & Harvey "
+            "2013 ~0-1%) vs the MC's 5.0% real equity base = ~0.12pp/yr expected "
+            "real-return drag on the book. Geometric-growth net (g = mu - "
+            "sigma^2/2, the model's own arithmetic): -0.056pp/yr at central "
+            "parameters, still -0.021pp/yr at gold's BEST case (rho 0.0, 1.5% "
+            "real) — gold lowers the compounding rate in every parameterization, "
+            "so it is OUT on the numbers. The 'produces nothing' objection is "
+            "thus quantified, not rhetorical: the insurance premium (~0.12pp/yr) "
+            "exceeds the variance benefit (~0.06-0.08pp/yr CE) for this book. "
             "Funded by trimming US broad-market core -3pp and US low-vol -1pp."
         ),
         dissent=(
@@ -264,7 +316,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ),
     ),
     _PanelSleeve(
-        label="US growth tilt (ex-NVDA)",
+        label=GLOBAL_QUALITY_GROWTH_LABEL,
         ratio=13.0,
         instruments=(
             AllocationInstrument(
@@ -286,7 +338,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
                     "sleeve is ex-US and overlaps the International sleeve (directionally "
                     "aligned with de-concentrating a ~92%-US book; manage via look-through); "
                     "(b) 5.11% NVDA is at the tolerance edge and quality indices rebalance — "
-                    "re-pull holdings before execution. Durable-zero-NVDA alternatives "
+                    "re-pull holdings before execution. HOLDINGS REFRESH 2026-07: NVDA is "
+                    "now IWQU's #1 holding at ~6.45% (stockanalysis.com / iShares product "
+                    "page, 2026-07) — ABOVE the ~5% target edge; the look-through table "
+                    "models it at 0.065 conservative-high (LOOKTHROUGH_VERSION 4) and the "
+                    "13% NVDA look-through cap is verified against that number. "
+                    "Durable-zero-NVDA alternatives "
                     "(XDEW equal-weight / SPY4 mid-cap / XRS2 small-cap) REJECTED: they "
                     "abandon the large-cap-growth factor this sleeve exists for (an FI "
                     "cost); momentum (IWMO/XDEM, ~2% NVDA today) REJECTED: the low NVDA is "
@@ -296,7 +353,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
                 ),
             ),
         ),
-        sigma_class="us_growth_equity",
+        sigma_class="world_quality_equity",
         snapshot_category="Growth",
         agreement="moderate",
         rationale=(
@@ -304,12 +361,19 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
             "wealth-maximization mandate: a salaried, no-withdrawal, 5+yr investor is "
             "under-served by a token growth weight. Quality-growth compounding via "
             "UCITS IWQU (replaced R1GR 2026-07-06 — 13.93% NVDA was re-adding the "
-            "single-name risk the glide sheds). Still bounded below NVDA-stacking "
-            "territory — NVDA already "
-            "supplies concentrated high-beta tech at the 12% cap, so growth is held "
+            "single-name risk the glide sheds). HONEST LABEL (v65 remediation): IWQU "
+            "is a WORLD quality-factor fund, ~33% ex-US — this sleeve is neither "
+            "US-only nor growth-index, so it is labeled and risk-modeled as world "
+            "quality equity (world_quality_equity, 0.17), not US large-cap growth "
+            "(0.21). DISCLOSURE — total ex-US shift of the v65 refinement: ~+7.6pp "
+            "of the book (EXUS +4.0pp headline authored override, plus ~+3.6pp "
+            "embedded here: 11% sleeve x ~33% ex-US via IWQU), on top of the EM "
+            "sleeve. Still bounded below NVDA-stacking territory — NVDA already "
+            "supplies concentrated high-beta tech at the cap, so growth is held "
             "below the point where correlated tech beta re-adds the factor risk the "
-            "deconcentration sheds. Label deliberately avoids the 'nvda' substring "
-            "trap so it maps to us_growth_equity (0.21), not the 0.45 single-stock."
+            "deconcentration sheds. The '(ex-NVDA-dense)' suffix is stripped by the "
+            "sigma-mapper's exclusion regex, so the label maps to "
+            "world_quality_equity, not the 0.45 single-stock class."
         ),
         dissent=(
             "Magnitude raised per the rebuild verdict (growth was under-weight for the "
@@ -665,6 +729,11 @@ def _apply_authored_overrides(
     """
     if not authored_overrides:
         return weights
+
+    # Legacy sleeve-label keys (persisted durable overrides predating a relabel)
+    # are migrated to the current labels before validation, so a relabel never
+    # breaks stored plan rows (see SLEEVE_LABEL_ALIASES).
+    authored_overrides = normalize_override_labels(authored_overrides)
 
     eps = 1e-6
     known_labels = set(weights.keys())
@@ -1048,6 +1117,11 @@ __all__ = [
     "TargetAllocation",
     "NVDA_TARGET_PCT",
     "CASH_FRAC_OF_FI",
+    "GLOBAL_QUALITY_GROWTH_LABEL",
+    "US_GROWTH_LEGACY_LABEL",
+    "SLEEVE_LABEL_ALIASES",
+    "normalize_sleeve_label",
+    "normalize_override_labels",
     "build_target_allocation",
     "derive_fi_weight",
     "to_synth_targets",

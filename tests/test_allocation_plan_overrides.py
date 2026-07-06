@@ -16,7 +16,9 @@ from __future__ import annotations
 import pytest
 
 from argosy.services.allocation_plan import (
+    GLOBAL_QUALITY_GROWTH_LABEL,
     NVDA_TARGET_PCT,
+    US_GROWTH_LEGACY_LABEL,
     build_target_allocation,
 )
 from argosy.services.retirement.scenario_mc import SIGMA_DIVERSIFIED
@@ -72,9 +74,9 @@ class TestOverridesNoneIsIdentical:
         assert base.blended_sigma == with_none.blended_sigma
 
     def test_snapshot_us_growth_sleeve_nonzero_in_baseline(self) -> None:
-        # Sanity: the US growth sleeve has a derived non-zero target in baseline.
+        # Sanity: the quality-growth sleeve has a derived non-zero target in baseline.
         base = _baseline()
-        assert base["US growth tilt (ex-NVDA)"] > 0.0
+        assert base[GLOBAL_QUALITY_GROWTH_LABEL] > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -85,16 +87,37 @@ class TestSingleSleeveOverride:
     """Override one sleeve → exact authored value; others renormalise; total ≈ 100."""
 
     def test_overridden_sleeve_is_exact(self) -> None:
-        # Override US growth from its derived ~13 to 8.0.
-        override_label = "US growth tilt (ex-NVDA)"
+        # Override quality growth from its derived ~13 to 8.0.
+        override_label = GLOBAL_QUALITY_GROWTH_LABEL
         authored_pct = 8.0
         alloc = build_target_allocation(authored_overrides={override_label: authored_pct})
         result = {c.label: c.target_pct for c in alloc.classes}
         assert result[override_label] == pytest.approx(authored_pct, abs=1e-9)
 
+    def test_legacy_label_override_key_is_migrated(self) -> None:
+        # A persisted override row from before the 2026-07 relabel keys the
+        # sleeve by the LEGACY label; the alias map must apply it to the
+        # current sleeve, never raise unknown-label.
+        alloc = build_target_allocation(
+            authored_overrides={US_GROWTH_LEGACY_LABEL: 8.0}
+        )
+        result = {c.label: c.target_pct for c in alloc.classes}
+        assert US_GROWTH_LEGACY_LABEL not in result
+        assert result[GLOBAL_QUALITY_GROWTH_LABEL] == pytest.approx(8.0, abs=1e-9)
+
+    def test_current_label_wins_over_legacy_alias_on_collision(self) -> None:
+        alloc = build_target_allocation(
+            authored_overrides={
+                US_GROWTH_LEGACY_LABEL: 6.0,
+                GLOBAL_QUALITY_GROWTH_LABEL: 9.0,
+            }
+        )
+        result = {c.label: c.target_pct for c in alloc.classes}
+        assert result[GLOBAL_QUALITY_GROWTH_LABEL] == pytest.approx(9.0, abs=1e-9)
+
     def test_overridden_sleeve_differs_from_baseline(self) -> None:
         # The baseline has a different (higher) value so the override actually changed it.
-        override_label = "US growth tilt (ex-NVDA)"
+        override_label = GLOBAL_QUALITY_GROWTH_LABEL
         authored_pct = 8.0
         base = _baseline()
         alloc = build_target_allocation(authored_overrides={override_label: authored_pct})
@@ -104,13 +127,13 @@ class TestSingleSleeveOverride:
         assert result[override_label] == pytest.approx(authored_pct, abs=1e-9)
 
     def test_total_sums_to_100_with_single_override(self) -> None:
-        alloc = build_target_allocation(authored_overrides={"US growth tilt (ex-NVDA)": 8.0})
+        alloc = build_target_allocation(authored_overrides={GLOBAL_QUALITY_GROWTH_LABEL: 8.0})
         total = sum(c.target_pct for c in alloc.classes)
         assert total == pytest.approx(100.0, abs=0.05)
 
     def test_non_overridden_sleeves_fill_remainder_proportionally(self) -> None:
         # The non-overridden sleeves together must sum to (100 - override).
-        override_label = "US growth tilt (ex-NVDA)"
+        override_label = GLOBAL_QUALITY_GROWTH_LABEL
         authored_pct = 8.0
         alloc = build_target_allocation(authored_overrides={override_label: authored_pct})
         non_overridden_total = sum(
@@ -121,7 +144,7 @@ class TestSingleSleeveOverride:
     def test_non_overridden_sleeves_maintain_relative_proportions(self) -> None:
         # Among non-overridden sleeves, their relative weights should be the same
         # as in the baseline (renormalised proportionally).
-        override_label = "US growth tilt (ex-NVDA)"
+        override_label = GLOBAL_QUALITY_GROWTH_LABEL
         base = _baseline()
         alloc = build_target_allocation(authored_overrides={override_label: 8.0})
         result = {c.label: c.target_pct for c in alloc.classes}
@@ -163,7 +186,7 @@ class TestTwoSleeveOverride:
 
     def test_both_overrides_exact(self) -> None:
         overrides = {
-            "US growth tilt (ex-NVDA)": 8.0,
+            GLOBAL_QUALITY_GROWTH_LABEL: 8.0,
             "Dividend-quality income": 5.0,
         }
         alloc = build_target_allocation(authored_overrides=overrides)
@@ -173,7 +196,7 @@ class TestTwoSleeveOverride:
 
     def test_total_sums_to_100_with_two_overrides(self) -> None:
         overrides = {
-            "US growth tilt (ex-NVDA)": 8.0,
+            GLOBAL_QUALITY_GROWTH_LABEL: 8.0,
             "Dividend-quality income": 5.0,
         }
         alloc = build_target_allocation(authored_overrides=overrides)
@@ -182,7 +205,7 @@ class TestTwoSleeveOverride:
 
     def test_non_overridden_sleeves_proportional_with_two_overrides(self) -> None:
         overrides = {
-            "US growth tilt (ex-NVDA)": 8.0,
+            GLOBAL_QUALITY_GROWTH_LABEL: 8.0,
             "Dividend-quality income": 5.0,
         }
         base = _baseline()
@@ -232,18 +255,18 @@ class TestOverrideValidationErrors:
 
     def test_negative_override_raises(self) -> None:
         with pytest.raises(ValueError, match="negative"):
-            build_target_allocation(authored_overrides={"US growth tilt (ex-NVDA)": -1.0})
+            build_target_allocation(authored_overrides={GLOBAL_QUALITY_GROWTH_LABEL: -1.0})
 
     def test_zero_override_is_allowed(self) -> None:
         # Zero is a valid authored override (remove the sleeve).
-        alloc = build_target_allocation(authored_overrides={"US growth tilt (ex-NVDA)": 0.0})
+        alloc = build_target_allocation(authored_overrides={GLOBAL_QUALITY_GROWTH_LABEL: 0.0})
         result = {c.label: c.target_pct for c in alloc.classes}
-        assert result["US growth tilt (ex-NVDA)"] == pytest.approx(0.0, abs=1e-9)
+        assert result[GLOBAL_QUALITY_GROWTH_LABEL] == pytest.approx(0.0, abs=1e-9)
         assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.05)
 
     def test_sum_over_100_raises(self) -> None:
         overrides = {
-            "US growth tilt (ex-NVDA)": 60.0,
+            GLOBAL_QUALITY_GROWTH_LABEL: 60.0,
             "Dividend-quality income": 50.0,  # 60+50 > 100
         }
         with pytest.raises(ValueError, match="sum"):
@@ -342,7 +365,7 @@ class TestSumGuard:
 
     def test_valid_override_does_not_raise(self) -> None:
         # An override that keeps the sum at 100 must not raise.
-        alloc = build_target_allocation(authored_overrides={"US growth tilt (ex-NVDA)": 8.0})
+        alloc = build_target_allocation(authored_overrides={GLOBAL_QUALITY_GROWTH_LABEL: 8.0})
         total = sum(c.target_pct for c in alloc.classes)
         assert total == pytest.approx(100.0, abs=0.05)
 

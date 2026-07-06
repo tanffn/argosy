@@ -140,7 +140,16 @@ def create_refinement_draft(
                 user_id=user_id,
                 plan_version_id=current.id,
             )
-    merged: dict[str, float] = {**existing, **sleeve_overrides}
+    # Normalize legacy sleeve-label keys (pre-relabel durable overrides) to the
+    # current canonical labels BEFORE merging, so (a) a relabel never breaks a
+    # stored override row and (b) the persisted merged JSON is label-migrated
+    # rather than carrying both the legacy and current key for one sleeve.
+    from argosy.services.allocation_plan import normalize_override_labels
+
+    merged: dict[str, float] = {
+        **normalize_override_labels(existing),
+        **normalize_override_labels(sleeve_overrides),
+    }
 
     # ---- 3. Validate merged overrides (validate-on-write) -------------------
     # ``build_target_allocation`` is pure and raises ValueError on bad labels or

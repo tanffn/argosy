@@ -46,6 +46,18 @@ _SIGMA_BY_CLASS: dict[str, float] = {
                                    # cap-weighted market, so modeled ABOVE plain
                                    # us_equity (0.18) — folding it at 0.18 understated
                                    # the growth sleeve's risk.
+    "world_quality_equity": 0.17,  # world quality-factor equity (IWQU / MSCI World
+                                   # Quality-like). Source: MSCI World Quality Index
+                                   # factsheets show ~0.93-0.95x the parent MSCI
+                                   # World's annualized std dev (quality screens on
+                                   # high ROE / stable earnings / low leverage damp
+                                   # vol slightly); scaled onto this table's basis
+                                   # (us_equity 0.18 / intl_equity 0.20 world blend
+                                   # ~0.185) => ~0.17. Structurally BELOW
+                                   # us_growth_equity (0.21): a quality FACTOR fund
+                                   # is not a high-beta growth index — modeling IWQU
+                                   # at 0.21 overstated the sleeve's risk (v65
+                                   # blind-review remediation, 2026-07-06).
     "low_vol_equity": 0.13,        # min-vol / quality-defensive equity (USMV-like):
                                    # ~0.11-0.13 realized vs ~0.15-0.18 for the cap-
                                    # weighted market — a real equity sleeve, NOT the

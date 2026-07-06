@@ -15,7 +15,12 @@ from __future__ import annotations
 # candidates) has a sourced entry. NVDA/US weights from justETF holdings as of
 # 2026-05-29 (conservative-high bound where NVDA sits below the fund's top-10
 # disclosure cut). R1GR baseline reconfirmed 13.93% → stays 0.14.
-LOOKTHROUGH_VERSION = 3
+# v4 (2026-07-06): IWQU holdings refresh — NVIDIA is now the fund's #1 holding
+# at ~6.45% (stockanalysis.com quote page + iShares product page, 2026-07); the
+# stale 5.11%/0.052 entry understated the plan's NVDA look-through. Set 0.065
+# conservative-high. IWQU is the v65 growth-sleeve primary, so the 13% NVDA cap
+# is verified against this number.
+LOOKTHROUGH_VERSION = 4
 
 LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     # US broad / growth — carry index NVDA weight.
@@ -56,9 +61,12 @@ LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     # conservative-high bounds where NVDA sits below the top-10 disclosure cut.
     # iShares Edge MSCI USA Quality Factor (IE00BD1F4L37): NVDA 6.27% (#3).
     "QDVB": {"nvda": 0.063, "us": 1.00},
-    # iShares Edge MSCI World Quality Factor (IE00BP3QZ601): NVDA 5.11% (#3),
-    # US 66.66%.
-    "IWQU": {"nvda": 0.052, "us": 0.67},
+    # iShares Edge MSCI World Quality Factor (IE00BP3QZ601): holdings refresh
+    # 2026-07 — NVDA 6.45% (#1 holding; stockanalysis.com / iShares product
+    # page, 2026-07), up from 5.11% (justETF 2026-05-29). 0.065 is the
+    # conservative-high modeling of the refreshed weight. US 66.66% (~33%
+    # ex-US — disclosed in the plan sleeve rationale).
+    "IWQU": {"nvda": 0.065, "us": 0.67},
     # iShares Edge MSCI World Momentum (IE00BP3QZ825): NVDA not in top 10
     # (<2.06% bound; REGIME-DEPENDENT — can rotate back ~5-6% at a semi-annual
     # rebalance), US 50.05%.

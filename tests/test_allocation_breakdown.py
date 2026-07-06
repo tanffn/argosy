@@ -100,7 +100,7 @@ def test_breakdown_blank_asset_type_inherits_sibling_ticker_type():
     rows = build_allocation_breakdown(snap, _doc())
     labels = {r.label for r in rows}
     assert "Unclassified" not in labels
-    growth = next(r for r in rows if r.label == "US growth tilt (ex-NVDA)")
+    growth = next(r for r in rows if r.label == "Global quality growth (ex-NVDA-dense)")
     assert {h.symbol for h in growth.holdings} == {"SCHG"}
     assert round(growth.current_value_k, 1) == 20.0
 
@@ -213,7 +213,9 @@ def test_exclude_nvda_does_not_zero_ex_nvda_labelled_classes():
     rows = build_allocation_breakdown(snap, doc, exclude_nvda=True)
     by = {r.label: r for r in rows}
     assert "Strategic single-stock (NVDA)" not in by
-    assert (by["US growth tilt (ex-NVDA)"].target_pct or 0) > 0  # NOT zeroed
+    # The doc above deliberately keeps the LEGACY sleeve label — the breakdown
+    # normalizes doc labels through the alias map, so the row keys the CURRENT one.
+    assert (by["Global quality growth (ex-NVDA-dense)"].target_pct or 0) > 0  # NOT zeroed
     assert round(sum(r.target_pct or 0.0 for r in rows), 0) == 100.0
 
 

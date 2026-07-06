@@ -90,6 +90,13 @@ _LABEL_TO_SIGMA_CLASS: tuple[tuple[str, str], ...] = (
     ("intl", "intl_equity"),
     ("ex-us", "intl_equity"),
     ("dividend", "us_equity"),
+    # World QUALITY-factor equity (IWQU-like, e.g. "Global quality growth
+    # (ex-NVDA-dense)") is its own ~0.17 class — a quality FACTOR fund, not a
+    # high-beta growth index. MUST precede the generic "growth" needle below so
+    # the quality-growth sleeve is not modeled at us_growth_equity (0.21).
+    ("quality growth", "world_quality_equity"),
+    ("world quality", "world_quality_equity"),
+    ("global quality", "world_quality_equity"),
     # Large-cap GROWTH tilt is its own ~0.21 class (higher beta + mega-cap
     # concentration than the cap-weighted market) — MUST precede the generic
     # equity needles so a growth sleeve is not modeled at the 0.18 market sigma.
@@ -170,8 +177,8 @@ def map_glidepath_class_to_sigma_class(class_name: str) -> str:
 # a silent mid value, so a novel exposure cannot understate risk; the allocation
 # layer additionally gates that every class it uses is explicitly modeled.
 _EQUITY_CORR_CLASSES = frozenset(
-    {"us_equity", "us_growth_equity", "low_vol_equity", "intl_equity",
-     "emerging_equity", "real_estate"}
+    {"us_equity", "us_growth_equity", "world_quality_equity", "low_vol_equity",
+     "intl_equity", "emerging_equity", "real_estate"}
 )
 _FI_CORR_CLASSES = frozenset({"bonds", "cash"})
 KNOWN_CORR_CLASSES = (

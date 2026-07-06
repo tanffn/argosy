@@ -34,7 +34,7 @@ _ASSET_TYPE_TO_LABEL: dict[str, str] = {
     # plan target.
     "equity": "US broad-market core",
     "dividend": "Dividend-quality income",
-    "growth": "US growth tilt (ex-NVDA)",
+    "growth": "Global quality growth (ex-NVDA-dense)",
     "international": "International developed (ex-US)",
     "cash": "Cash & T-bills (incl. ILS tranche)",
     "defensive": "Short-duration IG bonds",
@@ -100,9 +100,18 @@ def _label_for(asset_type: str, symbol: str = "", details: str = "") -> str:
 
 
 def _doc_targets_by_label(doc) -> dict[str, float]:
+    """Targets keyed by CURRENT canonical label. A persisted doc from before a
+    sleeve relabel (e.g. the v64 current plan's "US growth tilt (ex-NVDA)") is
+    normalized through the alias map so the live-vs-target join never drops a
+    sleeve's target across a relabel."""
     if doc is None:
         return {}
-    return {c.label: c.target_pct for c in getattr(doc, "classes", [])}
+    from argosy.services.allocation_plan import normalize_sleeve_label
+
+    return {
+        normalize_sleeve_label(c.label): c.target_pct
+        for c in getattr(doc, "classes", [])
+    }
 
 
 def _is_cash(p) -> bool:
