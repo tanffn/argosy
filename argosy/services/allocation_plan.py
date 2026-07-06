@@ -271,9 +271,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
             "not simulated): a 3% gold sleeve (sigma 0.16 per the framework's "
             "sourced gold-ETC vol; funded -2pp US core / -1pp EXUS) cuts blended "
             "sigma 0.1682 -> 0.1644 (framework rho_gold-equity 0.25; 0.1631 at "
-            "the reviewers' long-run rho 0.0) — but the book is ALREADY under the "
-            "0.18 anchor without it, so the sigma credit buys no solvency the "
-            "plan needs. Cost: gold's long-run real return ~0.7-1.0%/yr (UBS/CS "
+            "the reviewers' long-run rho 0.0; the 0.1682 baseline is the "
+            "adjudication's -2pp-core/-1pp-EXUS funding-mix scenario, vs the "
+            "plan's as-staged 0.1715 — a blind re-derivation confirmed the "
+            "verdict sign is unchanged at the 0.1715 basis) — but the book is "
+            "ALREADY under the 0.18 anchor without it, so the sigma credit buys "
+            "no solvency the plan needs. Cost: gold's long-run real return ~0.7-1.0%/yr (UBS/CS "
             "Global Investment Returns Yearbook 1900-2023 ~0.7%; Erb & Harvey "
             "2013 ~0-1%) vs the MC's 5.0% real equity base = ~0.12pp/yr expected "
             "real-return drag on the book. Geometric-growth net (g = mu - "
@@ -469,10 +472,13 @@ _NVDA_SLEEVE = _PanelSleeve(
     dissent=(
         "Panel lenses spanned 13 (long-hold/Boglehead/risk) vs 10 "
         "(capital-preservation) on the DIRECT weight; the binding constraint "
-        "is the 13% look-through cap, which only clears at 8 with current "
-        "instruments — Argosy's cap-derived answer supersedes both lens "
-        "anchors. ~NIS 87k of deployable book per point — conviction-upside "
-        "vs single-name tail."
+        "is the 13% look-through cap. With current instruments the cap "
+        "clears up to ~9.5 direct; 8 is held as a DELIBERATE ~1.5pp drift "
+        "buffer — index look-through weights demonstrably drift (IWQU's NVDA "
+        "weight moved +1.3pp in five weeks) and a breach forces trades. "
+        "Buffer size is re-validated every synthesis (~NIS 87k of deployable "
+        "book per point: over-buffering is anti-goal, under-buffering forces "
+        "churn)."
     ),
 )
 
@@ -660,7 +666,7 @@ _FI_CASH = AllocationClass(
     dissent=(
         "FI was the panel's most-contested class (8/13/24/29). It is DERIVED, not "
         "asserted: the minimum weight at which the book's covariance-blended sigma "
-        "sits on the phase-aware anchor. In accumulation (salary = safety net) that "
+        "sits AT OR UNDER the phase-aware anchor (the solver floors and discretizes, so the blended sigma typically lands slightly below it). In accumulation (salary = safety net) that "
         "is ~8%; the sleeve rebuilds toward ~15% as retirement nears."
     ),
     instruments=(
@@ -971,7 +977,7 @@ def build_target_allocation(
         f"{reported_nvda_pct:.0f}% direct (cap-derived so total plan look-through "
         f"clears the 13% concentration cap), {alts_clause}FI/cash {reported_fi_pct:.1f}% "
         f"DERIVED as the minimum weight at which the COVARIANCE-blended sigma "
-        f"{blended:.4f} sits on the {anchor_sigma} anchor. The anchor is phase-aware: "
+        f"{blended:.4f} sits at or under the {anchor_sigma} anchor (solver floors/discretization land it slightly below). The anchor is phase-aware: "
         f"in accumulation (salary covers expenses, no withdrawals) it is the 0.18 "
         f"diversified steady-state, sized to a low single-digit FI; it glides down "
         f"to rebuild FI toward ~15% as actual retirement nears."
@@ -983,8 +989,9 @@ def build_target_allocation(
         "and the MC holds mu_real constant regardless of FI (sees the volatility benefit, "
         "not the return drag). | Strategic-NVDA: panel lenses spanned 10-13 direct; "
         "the target is CAP-DERIVED by Argosy (8 direct ⇒ ~11.5% plan look-through "
-        "< the 13% cap with current instruments; 12 breaches), re-validated every "
-        "synthesis. | FX hedge not fully neutralised at portfolio level — even with "
+        "< the 13% cap; the cap clears up to ~9.5 direct — 8 holds a deliberate "
+        "~1.5pp drift buffer since look-through weights drift; 12 breaches), "
+        "re-validated every synthesis. | FX hedge not fully neutralised at portfolio level — even with "
         "International 12 + the ILS cash tranche, most of the book stays USD-correlated. "
         "| Implementation: deploy NEW NVDA-proceeds cash into the target classes; do NOT "
         "force-sell appreciated non-NVDA sleeves (avoids fresh CGT)."
