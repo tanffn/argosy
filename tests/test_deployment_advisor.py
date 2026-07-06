@@ -57,6 +57,52 @@ class TestContracts:
         assert plan.deployed_total_usd == 1000.0
 
 
+class TestAuthoredEstateExposure:
+    """The estate HEADLINE must be recomputed from the AUTHORED buys the team
+    actually approved — situs by instrument-reference facts, never by the
+    author's claimed weights, conservative for uncurated symbols."""
+
+    def _buy(self, sym, amt):
+        from types import SimpleNamespace
+        return SimpleNamespace(symbol=sym, amount_usd=amt)
+
+    def test_recomputes_from_authored_buys_by_situs_facts(self):
+        from argosy.services.deployment_advisor import authored_estate_exposure
+
+        exposed, sanctioned = authored_estate_exposure([
+            self._buy("CSPX", 42_000.0),   # Irish UCITS — estate-safe
+            self._buy("EXUS", 37_000.0),   # UCITS — estate-safe
+            self._buy("RKLB", 4_000.0),    # US-inc single stock — exposed
+            self._buy("CRWD", 4_000.0),    # US-inc single stock — exposed
+            self._buy("MELI", 3_980.0),    # Delaware-inc (LatAm economics) — exposed
+            self._buy("NU", 4_000.0),      # Cayman-inc — estate-safe
+        ])
+        assert exposed == pytest.approx(11_980.0)   # RKLB + CRWD + MELI only
+        assert sanctioned == 0.0
+
+    def test_nvda_counts_as_sanctioned_not_exposed(self):
+        from argosy.services.deployment_advisor import authored_estate_exposure
+
+        exposed, sanctioned = authored_estate_exposure(
+            [self._buy("NVDA", 10_000.0), self._buy("CSPX", 5_000.0)])
+        assert exposed == 0.0 and sanctioned == 10_000.0
+
+    def test_uncurated_symbol_is_conservatively_exposed(self):
+        from types import SimpleNamespace
+
+        from argosy.services.deployment_advisor import authored_estate_exposure
+
+        # No reference row, no stamped domicile -> counted EXPOSED (the estate
+        # tail is never hidden by a missing table row).
+        exposed, _ = authored_estate_exposure([self._buy("ZZZNEW", 7_000.0)])
+        assert exposed == 7_000.0
+        # A plan-doc stamped non-US domicile clears it.
+        doc = SimpleNamespace(classes=[SimpleNamespace(
+            label="x", instruments=[SimpleNamespace(symbol="ZZZNEW", domicile="IE")])])
+        exposed2, _ = authored_estate_exposure([self._buy("ZZZNEW", 7_000.0)], doc)
+        assert exposed2 == 0.0
+
+
 class TestTierClassification:
     def test_plan_bound_gap_fill_is_core_in_p1(self):
         # Every cash_only_deploy candidate is plan-bound gap-fill -> core.

@@ -257,3 +257,42 @@ def test_redirect_overflow_into_diversifiers():
     added = sum(l.amount_usd for t in plan4.tiers for l in t.lines
                 if l.symbol.upper() in {"EXUS", "EIMI", "DPYA"})
     assert abs(added - 30000.0) < 0.005   # exact to the cent
+
+
+def test_redirect_lines_carry_honest_per_instrument_facts():
+    """The synthesized redirect lines must carry HONEST per-instrument facts —
+    a plan-menu single US stock (high-growth sleeve: RKLB/CRWD/MELI/...) is
+    type 'Stock' + us_situs_exposed, never a default IE/estate_safe 'ETF'."""
+    from argosy.services.deployment_funnel.from_plan import (
+        _redirect_estate_tag, _redirect_line_type,
+    )
+
+    doc = SimpleNamespace(nvda_cap_pct=13.0, classes=[
+        SimpleNamespace(label="High-growth / high-potential", target_pct=5.0,
+                        instruments=[
+                            SimpleNamespace(symbol="RKLB", domicile="US"),
+                            SimpleNamespace(symbol="MELI", domicile="unknown"),
+                            SimpleNamespace(symbol="NU", domicile="unknown"),
+                        ]),
+        SimpleNamespace(label="International developed (ex-US)", target_pct=11.0,
+                        instruments=[SimpleNamespace(symbol="EXUS", domicile="IE")]),
+    ])
+    # US-incorporated single stock — honest Stock + estate-exposed.
+    assert _redirect_line_type("RKLB") == "Stock"
+    rklb = _redirect_estate_tag("RKLB", doc)
+    assert rklb.status == "us_situs_exposed" and rklb.domicile == "US"
+    # MELI: Delaware-incorporated (US-situs) even though economics are LatAm
+    # and the plan doc left domicile unstamped — the curated reference decides.
+    meli = _redirect_estate_tag("MELI", doc)
+    assert meli.status == "us_situs_exposed"
+    # NU: Cayman-incorporated — non-US-situs single stock.
+    nu = _redirect_estate_tag("NU", doc)
+    assert nu.status == "estate_safe"
+    assert _redirect_line_type("NU") == "Stock"
+    # UCITS diversifier keeps its honest ETF/estate-safe tag (domicile from doc).
+    assert _redirect_line_type("EXUS") == "ETF"
+    exus = _redirect_estate_tag("EXUS", doc)
+    assert exus.status == "estate_safe" and exus.domicile == "IE"
+    # Uncurated + unstamped never silently reads estate_safe.
+    zzz = _redirect_estate_tag("ZZZNEW", doc)
+    assert zzz.status == "unstamped"

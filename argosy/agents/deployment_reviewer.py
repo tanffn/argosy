@@ -40,7 +40,10 @@ _LENS_BRIEF: dict[str, str] = {
         "overall prudence for a long-hold, non-US-person investor given the CURRENT "
         "book. OBJECT to imprudent moves: piling into an already-extended/over-target "
         "sleeve, new US-situs estate exposure beyond the sanctioned sleeve, or "
-        "additive buys that duplicate a held position instead of migrating it."
+        "additive buys that duplicate a held position instead of migrating it. "
+        "Derive US-situs from the provided incorporation/domicile facts, never from "
+        "the buy's claimed weights — a US-listed, US-incorporated company is US-situs "
+        "even when its economics/revenue are foreign."
     ),
 }
 
@@ -72,6 +75,11 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
         facts_lines = "\n".join(
             f"  - {f.get('symbol')}: {f.get('us_weight', 0) * 100:.0f}% US"
             + (f", ~{f.get('nvda_weight', 0) * 100:.0f}% NVDA" if f.get("nvda_weight") is not None else "")
+            + (
+                f", {'US-SITUS (estate-exposed)' if f['us_situs'] else 'non-US-situs'}"
+                f" [domicile: {f.get('domicile', 'n/a')}]"
+                if f.get("us_situs") is not None else ""
+            )
             for f in facts
         ) or "  (none)"
         menu_lines = "\n".join(

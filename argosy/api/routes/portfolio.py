@@ -1812,6 +1812,25 @@ def get_deploy_cash(
             dto.authored = authored_outcome_to_dto(
                 outcome, held_symbols={s.upper() for s in holdings},
             )
+            # The estate HEADLINE must describe the allocation the client will
+            # actually act on: when the author's proposal is ACCEPTED, recompute
+            # us_situs_exposed/sanctioned from the AUTHORED buys (situs by
+            # instrument-reference facts, conservative for uncurated) instead of
+            # the legacy deterministic `tiers` list. The tiers-based number
+            # stays only when there is no accepted authored allocation.
+            if dto.authored is not None and dto.authored.status == "accepted" \
+                    and dto.authored.buys:
+                try:
+                    from argosy.services.deployment_advisor import (
+                        authored_estate_exposure,
+                    )
+                    _exp, _sanc = authored_estate_exposure(dto.authored.buys, doc)
+                    dto.us_situs_exposed_usd = _exp
+                    dto.us_situs_sanctioned_usd = _sanc
+                except Exception as exc:  # noqa: BLE001 — keep tiers-based number
+                    _log.warning(
+                        "deploy_cash.authored_estate_failed", error=str(exc)[:120],
+                    )
             # The decision TEAM reviews the author's proposal by JUDGMENT (blind
             # reviewers re-derive from raw facts and object) — the R1GR-class catch,
             # no gate. Additive + best-effort: it annotates, never changes the buys.

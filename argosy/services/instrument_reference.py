@@ -114,6 +114,24 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "BRK/B": InstrumentRef(ASSET_EQUITY, SECTOR_CONGLOMERATE, REGION_US, STRUCT_STOCK),
     "BRK.B": InstrumentRef(ASSET_EQUITY, SECTOR_CONGLOMERATE, REGION_US, STRUCT_STOCK),
     "BMY": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US, STRUCT_STOCK),
+    # US single names — consumer / enterprise software (US-incorporated = US-situs).
+    "NKE": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_US, STRUCT_STOCK),
+    "CRM": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    "NOW": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    # SpaceX exposure (private; US company = US-situs).
+    "SPCX": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    # High-growth sleeve single names (plan v64+). SITUS is by INCORPORATION,
+    # not economics: MELI is Delaware-incorporated / NASDAQ-listed = US-SITUS
+    # even though its economics are LatAm; NU (Nu Holdings) is Cayman-
+    # incorporated = non-US-situs; INVZ (Innoviz) is Israeli-incorporated.
+    "CRWD": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    "RKLB": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    "OKLO": InstrumentRef(ASSET_EQUITY, SECTOR_OTHER, REGION_US, STRUCT_STOCK),
+    "IONQ": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    "RXRX": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US, STRUCT_STOCK),
+    "MELI": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_EM, STRUCT_STOCK),
+    "NU": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_EM, STRUCT_STOCK),
+    "INVZ": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_ISRAEL, STRUCT_STOCK),
     # US broad-market index ETFs (US- and UCITS-domiciled both track the S&P).
     "VOO": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
     "VTI": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
@@ -133,6 +151,8 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "SCHD": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND, REGION_US),
     "FUSA": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND, REGION_US),
     "VTV": InstrumentRef(ASSET_EQUITY, SECTOR_VALUE, REGION_US),
+    # Global quality-factor UCITS (iShares Edge MSCI World Quality — IWQU.L).
+    "IWQU": InstrumentRef(ASSET_EQUITY, SECTOR_GROWTH, REGION_GLOBAL),
     # Global / developed-world broad-index ETFs.
     "EXUS": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
     "FWRA": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
@@ -179,6 +199,11 @@ _US_SITUS_TICKERS: frozenset[str] = frozenset({
     "NVDA", "AMD", "GOOG", "GOOGL", "AMZN", "META", "TSLA", "SOFI", "RKT",
     "BRK/B", "BRK.B", "BMY", "VOO", "VTI", "SCHD", "SCHG", "SPMO", "VTV",
     "QQQM", "SGOV", "O", "IBIT",
+    "NKE", "CRM", "NOW", "SPCX",
+    # High-growth sleeve: US-incorporated names, incl. MELI (Delaware-inc,
+    # NASDAQ-listed — US-SITUS despite LatAm economics). NU (Cayman) and
+    # INVZ (Israel) are deliberately NOT here.
+    "CRWD", "RKLB", "OKLO", "IONQ", "RXRX", "MELI",
 })
 
 # Flip the US-domiciled entries to estate-exposed (the table defaults safe).
@@ -259,6 +284,18 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "BRK/B": "Berkshire Hathaway",
     "BRK.B": "Berkshire Hathaway",
     "BMY": "Bristol-Myers Squibb",
+    "NKE": "Nike",
+    "CRM": "Salesforce",
+    "NOW": "ServiceNow",
+    "SPCX": "SpaceX (private exposure)",
+    "CRWD": "CrowdStrike",
+    "RKLB": "Rocket Lab",
+    "OKLO": "Oklo",
+    "IONQ": "IonQ",
+    "RXRX": "Recursion Pharmaceuticals",
+    "MELI": "MercadoLibre",
+    "NU": "Nu Holdings",
+    "INVZ": "Innoviz Technologies",
     "VOO": "Vanguard S&P 500 ETF",
     "VTI": "Vanguard Total US Market ETF",
     "CSPX": "iShares Core S&P 500 (UCITS)",
@@ -273,6 +310,7 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "FUSA": "Fidelity US Quality Income (UCITS)",
     "DPYA": "iShares Dev Markets Property Yield (UCITS)",
     "VTV": "Vanguard Value ETF",
+    "IWQU": "iShares Edge MSCI World Quality (UCITS)",
     "EXUS": "World ex-US equity (UCITS)",
     "FWRA": "Invesco FTSE All-World (UCITS)",
     "ACWD": "SPDR MSCI ACWI (UCITS)",

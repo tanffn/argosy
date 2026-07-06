@@ -155,15 +155,37 @@ def test_write_team_flag_proposals_survives_the_real_schema(alembic_engine_at_he
     }])
     with Session(alembic_engine_at_head) as s:
         assert write_team_flag_proposals(s, "ariel", decision) == 1
-        # Second write same symbol → dedup collision, swallowed, not re-written.
-        assert write_team_flag_proposals(s, "ariel", decision) == 0
-        row = s.execute(
+        first = s.execute(
             __import__("sqlalchemy").text(
-                "SELECT kind, severity, status FROM action_proposals "
+                "SELECT id, summary FROM action_proposals "
                 "WHERE dedup_key = 'deploy_team_flag:ariel:R1GR'"
             )
         ).fetchone()
-    assert row is not None and row[0] == "deploy_team_flag" and row[1] == "warning"
+        assert first is not None and "$16,000" in first[1]
+        # Second write same symbol (today's run, NEW amount + objections) →
+        # dedup collision REFRESHES the open row IN PLACE — the inbox must
+        # never show yesterday's stale amount for a buy that no longer exists.
+        decision2 = TeamDecision(flagged=[{
+            "symbol": "R1GR", "amount_usd": 13000.0,
+            "objections": [{"lens": "diversification",
+                            "concern": "fake diversifier — mega-cap clone",
+                            "severity": "warn"}],
+        }])
+        assert write_team_flag_proposals(s, "ariel", decision2) == 1
+        rows = s.execute(
+            __import__("sqlalchemy").text(
+                "SELECT id, kind, severity, status, summary, rationale_md "
+                "FROM action_proposals "
+                "WHERE dedup_key = 'deploy_team_flag:ariel:R1GR'"
+            )
+        ).fetchall()
+    assert len(rows) == 1                              # still ONE row (same slot)
+    row = rows[0]
+    assert row[0] == first[0]                          # row id kept
+    assert row[1] == "deploy_team_flag" and row[3] == "open"
+    assert row[2] == "info"                            # worst objection now warn
+    assert "$13,000" in row[4] and "$16,000" not in row[4]   # amount refreshed
+    assert "fake diversifier" in row[5]                # objections refreshed
 
 
 def test_write_stock_decision_proposal_survives_the_real_schema(alembic_engine_at_head):
@@ -199,7 +221,34 @@ def test_team_enriches_facts_with_nvda_lookthrough():
         captured["facts"] = packet.get("instrument_facts")
         return DeploymentReviewOutput(lens=lens, objections=[])
 
-    run_deploy_decision_team(_packet(), _proposal(_buy("R1GR", 18000)),
+    run_deploy_decision_team(_packet(), _proposal(_buy("R1GR", 18000), _buy("MELI", 6000)),
                              lenses=("concentration",), review_fn=_review)
     r1gr = next(f for f in captured["facts"] if f["symbol"] == "R1GR")
     assert r1gr["nvda_weight"] > 0.1  # raw NVDA ground truth handed to the reviewer
+    # Situs FACTS travel with each instrument, so reviewers re-derive estate
+    # exposure from incorporation/domicile — never from the author's claims.
+    assert r1gr["us_situs"] is False                    # Irish UCITS, estate-safe
+    meli = next(f for f in captured["facts"] if f["symbol"] == "MELI")
+    assert meli["us_situs"] is True                     # Delaware-inc = US-situs
+    assert meli["domicile"] == "US"
+    assert meli["us_weight"] == 0.0   # geographic weight ≠ situs — both facts present
+
+
+def test_prudence_brief_and_prompt_carry_situs_facts():
+    """The prudence reviewer must re-derive US-situs from the provided
+    incorporation/domicile facts — never accept the author's claimed weights —
+    and the prompt must actually render those facts."""
+    agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+    packet = dict(_packet())
+    packet["instrument_facts"] = [
+        {"symbol": "MELI", "us_weight": 0.0, "us_situs": True, "domicile": "US"},
+        {"symbol": "EXUS", "us_weight": 0.0, "us_situs": False,
+         "domicile": "non-US (UCITS/IL)"},
+    ]
+    system, user = DeploymentReviewerAgent.build_prompt(
+        agent, lens="prudence", packet=packet,
+        buys=[{"symbol": "MELI", "amount_usd": 6000, "sleeve": "high-growth"}],
+    )
+    assert "never from" in system and "claimed weights" in system
+    assert "US-SITUS (estate-exposed)" in user          # MELI's situs fact rendered
+    assert "non-US-situs" in user                       # EXUS's too

@@ -202,6 +202,58 @@ def run_preflight_for_plan(
     return result
 
 
+def _redirect_line_type(symbol: str) -> str:
+    """Honest instrument TYPE for a synthesized redirect line, from the curated
+    instrument reference (a plan-menu single stock is 'Stock', never a default
+    'ETF'). Uncurated symbols keep the historical 'ETF' default — the plan's
+    diversifier sleeves are UCITS funds unless curated otherwise."""
+    from argosy.services.instrument_reference import lookup
+
+    ref = lookup(symbol)
+    return ref.structure if ref is not None else "ETF"
+
+
+def _redirect_estate_tag(symbol: str, doc):
+    """Honest per-instrument estate tag for a synthesized redirect line.
+
+    The old code stamped EVERY redirect target ``domicile="IE" / estate_safe`` —
+    wrong the moment the plan's zero-NVDA 'diversifiers' include single US
+    stocks (high-growth sleeve: CRWD/RKLB/MELI/... are US-situs). Classify from
+    the curated instrument reference first; fall back to the plan doc's stamped
+    domicile; an unknown stays ``unstamped`` (never silently estate_safe)."""
+    from argosy.services.deployment_advisor import EstateTag
+    from argosy.services.instrument_reference import lookup
+
+    sym = (symbol or "").upper()
+    # The plan doc's stamped domicile (display detail; the reference decides situs).
+    doc_domicile: str | None = None
+    for c in getattr(doc, "classes", []) or []:
+        for instr in getattr(c, "instruments", []) or []:
+            if (getattr(instr, "symbol", "") or "").upper() == sym:
+                d = getattr(instr, "domicile", None)
+                if d and d != "unknown":
+                    doc_domicile = d
+
+    ref = lookup(sym)
+    if ref is not None:
+        if ref.estate_safe:
+            dom = doc_domicile or ref.region
+            return EstateTag(domicile=dom, status="estate_safe",
+                             note=f"non-US-situs ({dom}) redirect target")
+        return EstateTag(
+            domicile=doc_domicile or "US", status="us_situs_exposed",
+            note=f"{sym} is US-situs (estate-exposed) — redirect target; "
+                 "adds to the estate-tax tail above the $60k exemption.")
+    if doc_domicile == "US":
+        return EstateTag(domicile="US", status="us_situs_exposed",
+                         note=f"{sym} is US-domiciled per the plan — redirect target")
+    if doc_domicile is not None:
+        return EstateTag(domicile=doc_domicile, status="estate_safe",
+                         note=f"non-US-situs ({doc_domicile}) redirect target")
+    return EstateTag(domicile=None, status="unstamped",
+                     note="domicile unverified (redirect target) — curate before buying")
+
+
 def redirect_overflow_to_diversifiers(plan, result, doc, holdings=None):
     """Cash the funnel won't place in its NATURAL sleeve — an over-cap instrument
     (R1GR at 14% NVDA) or T-bills when the reserve is already funded — is REDIRECTED
@@ -217,7 +269,7 @@ def redirect_overflow_to_diversifiers(plan, result, doc, holdings=None):
     held fund instead of opening the plan's ticker (same rule as the core deploy)."""
     from dataclasses import replace
 
-    from argosy.services.deployment_advisor import DeploymentLine, EstateTag
+    from argosy.services.deployment_advisor import DeploymentLine
     from argosy.services.deployment_funnel.look_through import effective_nvda_usd
     from argosy.services.deployment_funnel.reserve import CASH_LIKE_SYMBOLS
 
@@ -298,14 +350,13 @@ def redirect_overflow_to_diversifiers(plan, result, doc, holdings=None):
     if to_add:
         synth = [
             DeploymentLine(
-                symbol=sym, type="ETF", amount_usd=amt, timing="now",
+                symbol=sym, type=_redirect_line_type(sym), amount_usd=amt, timing="now",
                 # Reflect the ACTUAL held position: is_new / held_value must match
                 # the book (a redirected top-up of a held fund is not "new").
                 is_new=(round(float(holdings.get(sym, 0.0)), 2) <= 0.0),
                 held_value_usd=round(float(holdings.get(sym, 0.0)), 2),
                 tier="core", horizon="10yr+",
-                estate=EstateTag(domicile="IE", status="estate_safe",
-                                 note="Irish UCITS diversifier (redirect target)"),
+                estate=_redirect_estate_tag(sym, doc),
                 cap_note="redirected overflow (over-cap/funded-reserve cash)",
                 net_of_tax_caveat="",
                 rationale=(

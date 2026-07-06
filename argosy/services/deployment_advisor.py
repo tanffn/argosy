@@ -110,6 +110,43 @@ def _substitute_estate_tag(symbol: str) -> EstateTag:
                      note="US-situs held substitute")
 
 
+def authored_estate_exposure(buys, doc=None) -> tuple[float, float]:
+    """(us_situs_exposed_usd, us_situs_sanctioned_usd) recomputed from the
+    AUTHORED buys — the allocation the team actually approved — never from the
+    legacy deterministic tier list. Situs comes from per-instrument FACTS
+    (curated instrument reference; plan-doc stamped domicile as fallback), not
+    from the author's claimed weights. Uncurated symbols with no stamped
+    domicile count as EXPOSED (conservative: the estate tail is never hidden
+    by a missing table row)."""
+    from argosy.services.instrument_reference import estate_safe_for
+
+    doc_domicile: dict[str, str] = {}
+    for c in getattr(doc, "classes", []) or []:
+        for instr in getattr(c, "instruments", []) or []:
+            d = getattr(instr, "domicile", None)
+            sym = (getattr(instr, "symbol", "") or "").upper()
+            if sym and d and d != "unknown":
+                doc_domicile[sym] = d
+
+    exposed = 0.0
+    sanctioned = 0.0
+    for b in buys or []:
+        sym = (getattr(b, "symbol", "") or "").upper()
+        amt = round(float(getattr(b, "amount_usd", 0.0) or 0.0), 2)
+        if not sym or amt <= 0.0:
+            continue
+        if sym in SANCTIONED_US_SITUS:
+            sanctioned += amt
+            continue
+        safe = estate_safe_for(sym)
+        if safe is None:
+            dom = doc_domicile.get(sym)
+            safe = None if dom is None else dom != "US"
+        if safe is None or not safe:
+            exposed += amt
+    return round(exposed, 2), round(sanctioned, 2)
+
+
 def build_estate_map(doc) -> dict[str, EstateTag]:
     """Per-symbol :class:`EstateTag` for every instrument in the canonical doc.
 

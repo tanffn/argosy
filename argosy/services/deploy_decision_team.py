@@ -42,12 +42,32 @@ class TeamDecision:
         return self.reviewers_ran < self.reviewers_expected
 
 
+def _situs_facts(symbol: str) -> dict[str, Any]:
+    """Per-symbol US-situs / domicile FACT from the curated instrument reference
+    (estate classification), so reviewers re-derive estate exposure from
+    incorporation facts — never from the author's claimed weights. A geographic
+    'us_weight' of 0 does NOT mean non-US-situs (MELI: LatAm economics but
+    Delaware-incorporated = US-situs). Empty dict when the symbol is uncurated."""
+    from argosy.services.instrument_reference import estate_safe_for
+
+    safe = estate_safe_for(symbol)
+    if safe is None:
+        return {}
+    return {
+        "us_situs": not safe,
+        "domicile": "US" if not safe else "non-US (UCITS/IL)",
+    }
+
+
 def _enrich_facts_with_nvda(packet: dict[str, Any], extra_symbols: set[str] | None = None) -> dict[str, Any]:
     """Hand the reviewers the raw per-instrument NVDA look-through as ground truth,
     so a false 'diversifier' (e.g. R1GR) is refuted from FACTS, not world knowledge.
-    Annotates existing facts AND adds a row for every plan-menu / proposed symbol
-    that has a look-through entry but no fact yet (R1GR lives in the menu, not the
-    sourced-facts table). Best-effort; leaves the packet unchanged on any failure."""
+    Also stamps each fact with the instrument's US-situs / domicile (from the
+    curated reference) so estate exposure is re-derived, never taken from the
+    author's claims. Annotates existing facts AND adds a row for every plan-menu /
+    proposed symbol that has a look-through or situs entry but no fact yet (R1GR
+    lives in the menu, not the sourced-facts table). Best-effort; leaves the
+    packet unchanged on any failure."""
     try:
         from argosy.services.deployment_funnel.look_through import LOOKTHROUGH_MAP, _weight
 
@@ -55,21 +75,28 @@ def _enrich_facts_with_nvda(packet: dict[str, Any], extra_symbols: set[str] | No
         seen = {f.get("symbol", "").upper() for f in facts}
         for f in facts:
             f["nvda_weight"] = _weight(f.get("symbol", ""), "nvda")
+            f.update(_situs_facts(f.get("symbol", "")))
         # Collect every symbol the reviewers might judge: menu tickers + proposed buys.
         candidates: set[str] = set(extra_symbols or set())
         for m in packet.get("plan_menu") or []:
             for t in m.get("tickers") or []:
                 candidates.add(str(t).upper())
         for sym in sorted(candidates):
-            if sym in seen or sym not in LOOKTHROUGH_MAP:
+            if sym in seen:
                 continue
-            facts.append({
+            situs = _situs_facts(sym)
+            if sym not in LOOKTHROUGH_MAP and not situs:
+                continue
+            row: dict[str, Any] = {
                 "symbol": sym,
-                "us_weight": _weight(sym, "us"),
-                "nvda_weight": _weight(sym, "nvda"),
                 "source": "lookthrough_map",
                 "confidence": "table",
-            })
+                **situs,
+            }
+            if sym in LOOKTHROUGH_MAP:
+                row["us_weight"] = _weight(sym, "us")
+                row["nvda_weight"] = _weight(sym, "nvda")
+            facts.append(row)
         return {**packet, "instrument_facts": facts}
     except Exception as exc:  # noqa: BLE001 — enrichment is additive/best-effort
         log.warning("deploy_team.fact_enrich_failed", err=str(exc)[:120])
@@ -160,9 +187,11 @@ _SEVERITY_BY_OBJECTION = {"block": "warning", "warn": "info"}
 def write_team_flag_proposals(db: Any, user_id: str, decision: TeamDecision) -> int:
     """Surface each team-flagged buy as an open ActionProposal (the inbox sink) —
     the author proposed it, a blind reviewer objected, so the disagreement is
-    the client's to decide. Idempotent per (user, symbol) via dedup_key; a
-    collision (an open flag already surfaced for the symbol) is swallowed.
-    Returns the number of rows written."""
+    the client's to decide. Idempotent per (user, symbol) via dedup_key; on a
+    collision (an open flag already surfaced for the symbol) the OPEN row is
+    REFRESHED IN PLACE (amount / objections / severity / surfaced_at) so the
+    inbox always shows TODAY's flag, never a stale amount for a buy that no
+    longer exists. Returns the number of rows written or refreshed."""
     import json
     from datetime import datetime, timedelta, timezone
 
@@ -180,27 +209,32 @@ def write_team_flag_proposals(db: Any, user_id: str, decision: TeamDecision) -> 
             f"- **{o.get('lens')}** ({o.get('severity')}): {o.get('concern')}"
             for o in objections
         )
+        summary = (
+            f"Deploy team flagged buying {f['symbol']} "
+            f"(${f.get('amount_usd', 0):,.0f}) — {lenses} objection"
+        )
+        rationale_md = (
+            "The deploy author proposed this buy; blind reviewers re-derived "
+            "from the raw facts and objected:\n\n" + concerns +
+            "\n\nThe buy was NOT executed — your call."
+        )
+        suggested_payload = json.dumps({
+            "symbol": f["symbol"], "amount_usd": f.get("amount_usd"),
+            "objections": objections,
+        })
+        severity = _SEVERITY_BY_OBJECTION.get(worst, "info")
+        dedup_key = f"deploy_team_flag:{user_id}:{str(f['symbol']).upper()}"
         row = ActionProposal(
             user_id=user_id,
-            summary=(
-                f"Deploy team flagged buying {f['symbol']} "
-                f"(${f.get('amount_usd', 0):,.0f}) — {lenses} objection"
-            ),
-            rationale_md=(
-                "The deploy author proposed this buy; blind reviewers re-derived "
-                "from the raw facts and objected:\n\n" + concerns +
-                "\n\nThe buy was NOT executed — your call."
-            ),
-            suggested_payload=json.dumps({
-                "symbol": f["symbol"], "amount_usd": f.get("amount_usd"),
-                "objections": objections,
-            }),
-            severity=_SEVERITY_BY_OBJECTION.get(worst, "info"),
+            summary=summary,
+            rationale_md=rationale_md,
+            suggested_payload=suggested_payload,
+            severity=severity,
             surfaced_at=now,
             expires_at=now + timedelta(days=14),
             status="open",
             kind="deploy_team_flag",
-            dedup_key=f"deploy_team_flag:{user_id}:{str(f['symbol']).upper()}",
+            dedup_key=dedup_key,
             execution_state="proposed",
         )
         db.add(row)
@@ -208,15 +242,40 @@ def write_team_flag_proposals(db: Any, user_id: str, decision: TeamDecision) -> 
             db.commit()
             written += 1
         except IntegrityError as exc:
-            # Expected on a dedup collision (an open peer holds the slot) — but
-            # log the actual error: a CHECK-constraint failure looked exactly
-            # like a dedup collision here and silently killed this sink for a
-            # day (migration 0077 relaxed the kind CHECK).
+            # A dedup collision means yesterday's OPEN flag holds the slot —
+            # refresh it in place with TODAY's flag (keep the row id and
+            # status='open') instead of skipping, so the inbox never shows a
+            # stale amount/objection set. Log the actual error too: a
+            # CHECK-constraint failure looked exactly like a dedup collision
+            # here and silently killed this sink for a day (migration 0077
+            # relaxed the kind CHECK).
             db.rollback()
-            log.warning(
-                "deploy_team.flag_write_skipped",
-                symbol=f["symbol"], error=str(exc.orig)[:160],
-            )
+            try:
+                existing = (
+                    db.query(ActionProposal)
+                    .filter_by(dedup_key=dedup_key, status="open")
+                    .first()
+                )
+            except Exception:  # noqa: BLE001 — fake/limited test DBs
+                existing = None
+            if existing is not None:
+                existing.summary = summary
+                existing.rationale_md = rationale_md
+                existing.suggested_payload = suggested_payload
+                existing.severity = severity
+                existing.surfaced_at = now
+                existing.expires_at = now + timedelta(days=14)
+                db.commit()
+                written += 1
+                log.info(
+                    "deploy_team.flag_refreshed",
+                    symbol=f["symbol"], proposal_id=existing.id,
+                )
+            else:
+                log.warning(
+                    "deploy_team.flag_write_skipped",
+                    symbol=f["symbol"], error=str(exc.orig)[:160],
+                )
     if written:
         log.info("deploy_team.flags_surfaced", n=written)
     return written
