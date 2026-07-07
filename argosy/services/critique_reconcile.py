@@ -294,6 +294,7 @@ async def reconcile_critique(
     corrections_applied: list[str] = []
     escalations: list[dict[str, Any]] = []  # escalated original findings
     disputes: list[dict[str, Any]] = []  # {finding, rebuttal}
+    resynth_findings: list[dict[str, Any]] = []  # aggregated into ONE proposal
 
     for idx, f in selected:
         route = routes_by_index.get(idx)
@@ -326,31 +327,12 @@ async def reconcile_critique(
 
         if action == "requires_resynthesis":
             status = "escalated"
-            await _upsert_action_proposal(
-                user_id=user_id,
-                kind="replan_full",
-                dedup_key=(
-                    f"critique_resynth:{user_id}:"
-                    f"{_dedup_suffix(f.get('plan_item_ref') or f.get('topic') or str(idx))}"
-                ),
-                summary=(
-                    f"Plan re-synthesis needed — {f.get('topic')}: "
-                    f"{(f.get('summary') or '')[:180]}"
-                ),
-                rationale_md=(
-                    "The weekly critique flagged this finding and the "
-                    "reconcile closer confirmed it lives in a surface derived "
-                    "from the structured plan that only re-renders at "
-                    "synthesis (refinement-unreachable). Re-synthesize to "
-                    "clear it.\n\n"
-                    f"**Finding ({f.get('severity')})**: {f.get('summary')}\n\n"
-                    f"**Ref**: {f.get('plan_item_ref')}"
-                    + (f"\n\n_{detail}_" if detail else "")
-                ),
-                payload={"finding": f, "detail": detail},
-                severity=_severity_for(f.get("severity") or ""),
-                now=_now,
-            )
+            # Collect — ONE aggregated proposal is written after the loop.
+            # N findings that all clear via the same re-synthesis are ONE
+            # decision for the client, never N checklist rows (client-in-
+            # loop-only-when-needed: the greeting showed 9 replan_full rows
+            # for a single yes).
+            resynth_findings.append({"finding": f, "detail": detail})
             escalations.append(f)
             outcome.escalated += 1
         elif action == "refresh_snapshot":
@@ -418,6 +400,65 @@ async def reconcile_critique(
                 "status": status,
                 "detail": detail,
             }
+        )
+
+    # ONE aggregated re-synthesis proposal for every finding in the class —
+    # a re-synthesis is a single client decision. Supersede any prior
+    # per-finding rows (older suffixed dedup keys) so the checklist never
+    # stacks N rows for one yes.
+    if resynth_findings:
+        _topics = [
+            str((r["finding"].get("topic") or "?")) for r in resynth_findings
+        ]
+        _lines = []
+        for r in resynth_findings:
+            _f = r["finding"]
+            _lines.append(
+                f"- **{_f.get('severity')} · {_f.get('topic')}**: "
+                f"{_f.get('summary')}"
+                + (f" _(ref: {_f.get('plan_item_ref')})_"
+                   if _f.get("plan_item_ref") else "")
+                + (f" _[{r['detail']}]_" if r.get("detail") else "")
+            )
+        async with db_mod.get_session() as session:
+            stale = (
+                await session.execute(
+                    select(ActionProposal).where(
+                        ActionProposal.user_id == user_id,
+                        ActionProposal.status == "open",
+                        ActionProposal.dedup_key.like(
+                            f"critique_resynth:{user_id}:%"
+                        ),
+                    )
+                )
+            ).scalars().all()
+            for row in stale:
+                row.status = "superseded"
+            if stale:
+                await session.commit()
+        await _upsert_action_proposal(
+            user_id=user_id,
+            kind="replan_full",
+            dedup_key=f"critique_resynth:{user_id}",
+            summary=(
+                f"Plan re-synthesis needed — {len(resynth_findings)} critique "
+                f"finding(s) clear in one run: {', '.join(_topics[:4])}"
+                + ("…" if len(_topics) > 4 else "")
+            ),
+            rationale_md=(
+                "The weekly critique flagged these findings and the reconcile "
+                "closer confirmed they live in surfaces derived from the "
+                "structured plan that only re-render at synthesis "
+                "(refinement-unreachable). ONE re-synthesis clears all of "
+                "them.\n\n" + "\n".join(_lines)
+            ),
+            payload={"findings": [r["finding"] for r in resynth_findings]},
+            severity=max(
+                (_severity_for(r["finding"].get("severity") or "")
+                 for r in resynth_findings),
+                key=lambda s: {"info": 0, "warning": 1, "critical": 2}.get(s, 0),
+            ),
+            now=_now,
         )
 
     # Persist prose edits (if any landed).

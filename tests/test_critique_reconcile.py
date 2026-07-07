@@ -465,3 +465,58 @@ def test_findings_match_topic_and_ref_overlap() -> None:
     assert not findings_match(
         a, {"topic": "Other", "plan_item_ref": "completely unrelated thing"}
     )
+
+
+@pytest.mark.asyncio
+async def test_resynth_escalations_aggregate_to_one_proposal(engine: None) -> None:
+    """N refinement-unreachable findings = ONE re-synthesis decision = ONE
+    inbox row; prior per-finding rows (suffixed dedup keys) are superseded.
+    (Live regression: the greeting showed 9 replan_full rows for one yes.)"""
+    await _seed_plan("# Plan -- content")
+    # Pre-existing per-finding rows from the old sink shape.
+    from datetime import datetime, timedelta, timezone as _tz
+
+    _now = datetime.now(_tz.utc)
+    async with db_mod.get_session() as session:
+        for i in range(2):
+            session.add(ActionProposal(
+                user_id="ariel", kind="replan_full", status="open",
+                dedup_key=f"critique_resynth:ariel:oldsuffix{i}",
+                summary=f"old row {i}", rationale_md="",
+                suggested_payload="{}", severity="warning",
+                surfaced_at=_now, expires_at=_now + timedelta(days=30),
+            ))
+        await session.commit()
+
+    findings = [
+        _finding("RED", f"Topic{i}", f"ref{i}", f"summary {i}") for i in range(3)
+    ]
+    routes = [
+        {"finding_index": i, "action": "requires_resynthesis", "rationale": "r"}
+        for i in range(3)
+    ]
+    reverify = _reverify_json(findings)  # escalated findings may re-appear
+    calls: list[str] = []
+
+    outcome = await reconcile_critique(
+        user_id="ariel",
+        plan_version_id=1,
+        plan_label="Test Plan",
+        plan_markdown="(export)",
+        report=_report(findings),
+        source_critique_id=None,
+        closer_factory=_closer_factory(routes, calls),
+        critique_factory=_critique_factory(reverify, calls, []),
+    )
+
+    assert outcome.escalated == 3
+    rows = [
+        r for r in await _open_proposals()
+        if r.dedup_key and r.dedup_key.startswith("critique_resynth:ariel")
+    ]
+    open_rows = [r for r in rows if r.status == "open"]
+    superseded = [r for r in rows if r.status == "superseded"]
+    assert len(open_rows) == 1, [(r.dedup_key, r.status) for r in rows]
+    assert open_rows[0].dedup_key == "critique_resynth:ariel"
+    assert "3 critique finding(s)" in open_rows[0].summary
+    assert len(superseded) == 2
