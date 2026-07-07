@@ -403,6 +403,147 @@ def moonshot_divergences(
     return out
 
 
+# --------------------------------------------------------------------------
+# NVDA glide-SCHEDULE adjudication — author + blind re-derivation.
+#
+# The question on trial: over how many months / which per-tax-year quotas
+# should the plan's NVDA deconcentration glide run (12mo / 24mo / a
+# tax-year-optimized split)? The 12-month glide in plan v67 was inherited,
+# not deliberately adjudicated — this pair makes the decision deliberate.
+# Both agents get the SAME deterministic facts pack (position, basis,
+# per-schedule CGT arithmetic, exposure-months, the deconcentration-optimizer
+# FI grid); the blind reviewer never sees the author's verdict. Divergence is
+# compared IN CODE and forces a reconciliation round — never auto-resolved.
+# The verdict reaches the owner as a needs-confirm inbox proposal; it is
+# NEVER auto-applied to the plan (a schedule change = governed re-synthesis).
+# --------------------------------------------------------------------------
+class GlideScheduleVerdict(BaseModel):
+    chosen_schedule: str          # "12mo" | "24mo" | "tax_year_optimized" | short custom label
+    horizon_months: int = Field(ge=1, le=60)
+    quota_2026_shares: float = Field(ge=0.0)
+    quota_2027_shares: float = Field(ge=0.0)
+    quota_2028_shares: float = Field(ge=0.0)
+    rationale: str
+    tradeoff_sentence: str        # ONE sentence: months of concentration risk vs tax delta
+    changes_current_glide: bool
+
+
+_GLIDE_SCHEDULE_OUTPUT_SPEC = (
+    "OUTPUT: a single JSON object with keys chosen_schedule (string label), "
+    "horizon_months (int), quota_2026_shares, quota_2027_shares, "
+    "quota_2028_shares (numbers — NVDA shares to sell per Israeli calendar "
+    "tax year; 0 for years with no sales), rationale, tradeoff_sentence "
+    "(ONE sentence stating months of concentration exposure vs the tax "
+    "delta in NIS), changes_current_glide (bool — true iff your schedule "
+    "differs materially from the current 12-month glide). No prose outside "
+    "the JSON."
+)
+
+_GLIDE_SCHEDULE_SYSTEM = (
+    "You are adjudicating the NVDA deconcentration SCHEDULE for a long-hold, "
+    "Israeli-resident (non-US-person) investor whose salary is also NVIDIA. "
+    "The strategic plan already decided the DESTINATION (NVDA down to its "
+    "single-stock sleeve target; that is NOT on trial). ON TRIAL is only the "
+    "PACE: should the glide run ~12 months (the current, inherited schedule), "
+    "~24 months, a tax-year-optimized quota schedule, or something else you "
+    "derive — expressed as Dec-31 Israeli-calendar-tax-year share quotas, "
+    "which is how the owner actually manages sales.\n\n"
+    f"{PRIME_DIRECTIVE}\n\n"
+    "DECISION CRITERION: earliest SAFE retirement on the household's ACTUAL "
+    "book. Weigh BOTH failure modes with the numbers in the facts pack:\n"
+    "  - Slower schedules keep a very large single-name + employer-correlated "
+    "exposure on the book longer (sequence risk; the facts pack quantifies "
+    "exposure-months above 30%/20% weight and the optimizer's FI-age grid).\n"
+    "  - Faster schedules bunch the realized real gain into fewer tax years "
+    "(Israeli CGT surtax arithmetic is in the facts pack — note carefully "
+    "WHICH surtax layers are actually avoidable by spreading, given salary "
+    "already exceeds the threshold) and give up option value / deferral.\n\n"
+    "HARD CONSTRAINTS: never schedule sales beyond the Section-102 "
+    "capital-track-eligible pool at the capital rate (selling ineligible "
+    "shares early is ordinary income at ~50-62% — a different, worse trade); "
+    "quotas must sum to approximately the shares-to-target in the facts "
+    "pack. Ground EVERY number you use in the facts pack — do not invent "
+    "rates, thresholds, or share counts.\n\n"
+    f"{_GLIDE_SCHEDULE_OUTPUT_SPEC}"
+)
+
+
+class GlideScheduleAdjudicatorAgent(BaseAgent[GlideScheduleVerdict]):
+    """Adjudicates the NVDA glide pace (12mo/24mo/tax-optimized) on the merits."""
+
+    agent_role = "plan_glide_schedule_adjudicator"   # not in tables -> Opus fallback
+    output_model = GlideScheduleVerdict
+    require_citations = False
+    use_structured_output = False
+    claude_code_max_retries = 1
+
+    def build_prompt(
+        self,
+        *,
+        facts_md: str,
+        blind_rederive: bool = False,
+        reconcile_md: str = "",
+    ) -> tuple[str, str]:
+        system = _GLIDE_SCHEDULE_SYSTEM
+        if blind_rederive:
+            system = (
+                "You are an INDEPENDENT reviewer: another agent has already "
+                "adjudicated this question — you have NOT seen its verdict and "
+                "must not guess it; re-derive your own schedule from the raw "
+                "facts alone (your verdict is compared in code and divergence "
+                "forces a reconciliation round).\n\n"
+            ) + system
+        user = (
+            "DETERMINISTIC FACTS PACK (raw; every number cites its source):\n\n"
+            f"{facts_md}\n\n"
+        )
+        if reconcile_md:
+            user += (
+                "RECONCILIATION ROUND (code-forced): an independent blind "
+                "reviewer re-derived the schedule from the same raw facts and "
+                "reached a DIFFERENT verdict. Its re-derivation is below. "
+                "Reconcile ON THE NUMBERS: either concede to the reviewer's "
+                "schedule (and say what you got wrong) or refute it with "
+                "specific arithmetic from the facts pack. Output your FINAL "
+                "verdict in the same JSON schema.\n\n"
+                f"--- BLIND REVIEWER'S RE-DERIVATION ---\n{reconcile_md}\n\n"
+            )
+        user += "Adjudicate the schedule now."
+        return system, user
+
+
+def glide_schedule_divergences(
+    author: GlideScheduleVerdict,
+    reviewer: GlideScheduleVerdict,
+    *,
+    month_tolerance: int = 3,
+    share_tolerance: float = 500.0,
+) -> list[str]:
+    """Deterministic comparison of two blind schedule verdicts. Returns
+    human-readable divergences (empty = agreement). Compared IN CODE — the
+    reviewer never adjudicates its own agreement."""
+    out: list[str] = []
+    if abs(int(author.horizon_months) - int(reviewer.horizon_months)) > month_tolerance:
+        out.append(
+            f"horizon diverges: author {author.horizon_months}mo vs "
+            f"reviewer {reviewer.horizon_months}mo"
+        )
+    for year in (2026, 2027, 2028):
+        a = float(getattr(author, f"quota_{year}_shares"))
+        r = float(getattr(reviewer, f"quota_{year}_shares"))
+        if abs(a - r) > share_tolerance:
+            out.append(
+                f"tax-year {year} quota diverges by {abs(a - r):,.0f} shares "
+                f"(author {a:,.0f} vs reviewer {r:,.0f})"
+            )
+    if author.changes_current_glide != reviewer.changes_current_glide:
+        out.append(
+            f"keep-vs-change diverges: author changes_current_glide="
+            f"{author.changes_current_glide}, reviewer={reviewer.changes_current_glide}"
+        )
+    return out
+
+
 __all__ = [
     "InstrumentSwapDecision",
     "DiversifierAdjudication",
@@ -414,4 +555,7 @@ __all__ = [
     "MoonshotSleeveAuthorAgent",
     "MoonshotSleeveBlindReviewerAgent",
     "moonshot_divergences",
+    "GlideScheduleVerdict",
+    "GlideScheduleAdjudicatorAgent",
+    "glide_schedule_divergences",
 ]
