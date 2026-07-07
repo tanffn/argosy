@@ -1,0 +1,174 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import type { GreetingDTO } from "@/lib/api";
+
+// Mock the api singleton so the card renders a fixture greeting.
+const homeGreeting = vi.fn();
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      homeGreeting: (...args: unknown[]) => homeGreeting(...args),
+    },
+  };
+});
+
+import {
+  FMGreetingCard,
+  formatBookUsd,
+  salutation,
+} from "../FMGreetingCard";
+
+const GREETING: GreetingDTO = {
+  greeting_name: "Ariel",
+  book: {
+    total_usd: 3999279.0,
+    on_plan: false,
+    on_plan_note:
+      "transition in progress — biggest gap: Individual Stocks (non-NVDA, to redeploy) 18.4% vs 0.0% target",
+    fi_line: "FI track: 2028 (age 46)",
+  },
+  needs_you: [
+    {
+      id: "proposal:47",
+      kind: "allocate",
+      headline: "Deploy ~$98k idle cash: EXUS $19k, CSPX $18k …",
+      why_md: "Your idle cash sits above the plan-target threshold.",
+      cta: { label: "Open the deploy tool", href: "/inbox#deploy-cash" },
+    },
+  ],
+  watching: [
+    {
+      id: "flag:86",
+      headline: "A USD cash account flipped negative alongside an ~83% drawdown",
+      note: "No action needed — resolves with the next broker export.",
+    },
+    {
+      id: "flag:85",
+      headline: "NKE thesis weakened: sustained fundamental deterioration",
+      note: "No action needed — the team is monitoring.",
+    },
+  ],
+  quiet: false,
+  next_review_local: "17:00",
+};
+
+const QUIET_GREETING: GreetingDTO = {
+  greeting_name: "Ariel",
+  book: {
+    total_usd: 4000000,
+    on_plan: true,
+    on_plan_note: "all classes within ±5pp of target (ex-NVDA glide)",
+    fi_line: "FI track: 2028 (age 46)",
+  },
+  needs_you: [],
+  watching: [],
+  quiet: true,
+  next_review_local: "17:00",
+};
+
+describe("FMGreetingCard", () => {
+  it("renders the book line, needs-you item and CTA, and expands why", async () => {
+    homeGreeting.mockResolvedValueOnce(GREETING);
+    render(<FMGreetingCard userId="ariel" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("book-line")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("book-line").textContent).toContain("$4.00M");
+    expect(screen.getByTestId("book-line").textContent).toContain(
+      "FI track: 2028",
+    );
+    expect(screen.getByTestId("book-line").textContent).toContain(
+      "in transition",
+    );
+
+    // needs-you: header + headline + CTA link to the deploy tool.
+    expect(screen.getByText("I need one thing from you:")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Deploy ~\$98k idle cash/),
+    ).toBeInTheDocument();
+    const cta = screen.getByTestId("cta-proposal:47");
+    expect(cta).toHaveAttribute("href", "/inbox#deploy-cash");
+    expect(cta.textContent).toContain("Open the deploy tool");
+
+    // "Show me why" expands the rationale, one click away.
+    expect(screen.queryByTestId("why-proposal:47")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("why-toggle-proposal:47"));
+    expect(screen.getByTestId("why-proposal:47").textContent).toContain(
+      "idle cash sits above the plan-target threshold",
+    );
+  });
+
+  it("renders watching lines with their explicit no-action notes", async () => {
+    homeGreeting.mockResolvedValueOnce(GREETING);
+    render(<FMGreetingCard userId="ariel" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("watching")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText("Worth your attention (2):"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("No action needed — resolves with the next broker export."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("No action needed — the team is monitoring."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the quiet state with the next scheduled review", async () => {
+    homeGreeting.mockResolvedValueOnce(QUIET_GREETING);
+    render(<FMGreetingCard userId="ariel" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("quiet-line")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("quiet-line").textContent).toContain(
+      "Everything is quiet — nothing needs you.",
+    );
+    expect(screen.getByTestId("quiet-line").textContent).toContain(
+      "Next scheduled review: 17:00.",
+    );
+    expect(screen.queryByTestId("needs-you")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("watching")).not.toBeInTheDocument();
+    expect(screen.getByTestId("book-line").textContent).toContain("on plan");
+  });
+
+  it("fires onShowFullDetail from the options row", async () => {
+    homeGreeting.mockResolvedValueOnce(QUIET_GREETING);
+    const onShow = vi.fn();
+    render(<FMGreetingCard userId="ariel" onShowFullDetail={onShow} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("full-detail-btn")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("full-detail-btn"));
+    expect(onShow).toHaveBeenCalledTimes(1);
+
+    // [Ask me anything] routes to the consult surface.
+    expect(screen.getByText("Ask me anything")).toHaveAttribute(
+      "href",
+      "/consult",
+    );
+  });
+});
+
+describe("helpers", () => {
+  it("salutation follows local time of day", () => {
+    expect(salutation(8)).toBe("Good morning");
+    expect(salutation(13)).toBe("Good afternoon");
+    expect(salutation(21)).toBe("Good evening");
+    expect(salutation(2)).toBe("Good evening");
+  });
+
+  it("formatBookUsd renders clean size-proportional figures", () => {
+    expect(formatBookUsd(3999279)).toBe("$4.00M");
+    expect(formatBookUsd(412345)).toBe("$412K");
+    expect(formatBookUsd(null)).toBe("—");
+  });
+});

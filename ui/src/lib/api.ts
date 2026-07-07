@@ -2082,6 +2082,46 @@ export interface InboxFeedDTO {
   dropped: unknown[];
 }
 
+// ----------------------------------------------------------------------
+// FM first-greeting (GET /api/home/greeting) — the home page's opening
+// card. Server-side assembly; the client renders it verbatim (no
+// client-side triage). Mirrors argosy/api/routes/home.py.
+// ----------------------------------------------------------------------
+export interface GreetingCtaDTO {
+  label: string;
+  href: string;
+}
+
+export interface GreetingNeedsYouItemDTO {
+  id: string;
+  kind: string;
+  headline: string;
+  why_md: string;
+  cta: GreetingCtaDTO;
+}
+
+export interface GreetingWatchingItemDTO {
+  id: string;
+  headline: string;
+  note: string;
+}
+
+export interface GreetingBookDTO {
+  total_usd: number | null;
+  on_plan: boolean;
+  on_plan_note: string;
+  fi_line: string;
+}
+
+export interface GreetingDTO {
+  greeting_name: string;
+  book: GreetingBookDTO;
+  needs_you: GreetingNeedsYouItemDTO[];
+  watching: GreetingWatchingItemDTO[];
+  quiet: boolean;
+  next_review_local: string | null;
+}
+
 export const api = {
   overview: (userId: string) =>
     getJSON<OverviewResponse>(
@@ -3885,6 +3925,12 @@ export const api = {
     if (debug) qs.set("debug", "true");
     return getJSON<InboxFeedDTO>(`/api/inbox?${qs.toString()}`);
   },
+  // FM first-greeting — the home page's opening card (how you stand /
+  // what I need from you / what I'm watching). Server-side assembly.
+  homeGreeting: (userId: string): Promise<GreetingDTO> =>
+    getJSON<GreetingDTO>(
+      `/api/home/greeting?user_id=${encodeURIComponent(userId)}`,
+    ),
 };
 
 // ----------------------------------------------------------------------

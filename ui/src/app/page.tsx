@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
+import { FMGreetingCard } from "@/components/home/FMGreetingCard";
 import { RedFlagStrip } from "@/components/home/RedFlagStrip";
 import { LiveClock } from "@/components/live-clock";
 import { WindfallBanner } from "@/components/retirement/WindfallBanner";
@@ -195,6 +196,20 @@ export default function Home() {
   // counter when its event arrives, so a fresh `.argosy-flash-border`
   // class reliably re-triggers the CSS animation.
   const [proposalFlash, setProposalFlash] = useState(0);
+
+  // "Full detail" region — the demoted plumbing (red-flag strip, run
+  // banners, legacy cards, system health). Collapsed by default; the
+  // greeting card's [Full detail →] button opens + scrolls to it.
+  const [fullDetailOpen, setFullDetailOpen] = useState(false);
+  const showFullDetail = useCallback(() => {
+    setFullDetailOpen(true);
+    // Scroll after the region mounts.
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById("full-detail")
+        ?.scrollIntoView({ behavior: "smooth" });
+    });
+  }, []);
   // activityFlash removed — agent.run.finished no longer drives home-page
   // refresh (see useWSEvents comment below). The accordion's own live
   // updates are the signal; FlashBorderBox receives a static key of 0.
@@ -487,8 +502,6 @@ export default function Home() {
     return decliningCurve(nvdaPct, 15, 12);
   }, [nvdaPct]);
 
-  const proposalsSeries = useMemo(() => Array(12).fill(0), []);
-
   // Argonaut P&L since inception (reverse-chronologically corrected).
   const argonautSeries = useMemo(() => {
     const snaps = data.argonautSnapshots;
@@ -592,55 +605,26 @@ export default function Home() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
-      {/* Brand hero card — pinned to the very top of <main> so the user
-          always lands on the welcome header above all banners + the
-          red-flag strip. Pared-down treatment after the Plan/Codex
-          ideation pass: the prior version stacked three gradient
-          flourishes (.argosy-hero-ring + top-edge stripe + the body
-          radial glow) in 500px of viewport, which both engines
-          flagged as competing for attention. Kept ONE atmospheric
-          (the body radial), replaced the rest with a single
-          left-edge accent rule in the brand-green semantic token.
-          The 🚢 emoji also got swapped for a Lucide Anchor icon in a
-          tinted CardIcon-style square — same nautical metaphor,
-          finance-serious typography. */}
+      {/* Slim brand bar — name + clock only. The internal pills (agent
+          count, cadence loops, paper mode, version) are plumbing the
+          client doesn't open the app for; they live in the Full-detail
+          region's System health block now. */}
       <section
         className="relative rounded-xl overflow-hidden bg-card/80 backdrop-blur-sm border border-border border-l-2 border-l-success/60"
         data-slot="brand-hero"
       >
-        <div className="relative px-6 py-5 flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex items-start gap-4 min-w-0">
+        <div className="relative px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
             {/* eslint-disable-next-line @next/next/no-img-element -- static brand mark */}
             <img
               src="/logo.png"
               alt=""
-              className="h-12 w-12 shrink-0 rounded-md"
+              className="h-8 w-8 shrink-0 rounded-md"
               aria-hidden
             />
-            <div className="min-w-0">
-              <h1 className="font-mono font-bold text-2xl leading-tight">
-                <span className="text-foreground">Welcome to </span>
-                <span className="text-success">Argosy</span>
-              </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                A fleet of agents at your helm — paper-mode by default,
-                audit-trail by design.
-              </p>
-              <div className="flex items-center gap-2 mt-3 flex-wrap">
-                <StatusPill tone="neutral" mono>
-                  v0.1.0
-                </StatusPill>
-                <StatusPill tone="neutral" mono>
-                  {data.fleetCount ?? AGENT_FLEET_SIZE_FALLBACK} agents
-                </StatusPill>
-                <StatusPill tone="neutral" mono>
-                  {CADENCE_LOOPS} cadence loops
-                </StatusPill>
-                <StatusPill tone="accent" mono>
-                  paper mode
-                </StatusPill>
-              </div>
-            </div>
+            <h1 className="font-mono font-bold text-xl leading-tight">
+              <span className="text-success">Argosy</span>
+            </h1>
           </div>
           <div className="shrink-0">
             <LiveClock className="text-base" />
@@ -648,48 +632,28 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Sprint commit #17 — Home Red-Flag Strip. Renders one row per
-          active monitor_flags entry (allocation_drift / mc_regression /
-          macro_shift / thesis_monitor_*). Returns null when no flags are
-          active so the strip occupies zero vertical space — the right
-          empty-state UX is silent, not a "no flags" reassurance row.
-          Sits just below the brand hero so alerts surface above the
-          money sections. */}
-      <RedFlagStrip userId={USER_ID} />
+      {/* ============================================================
+          THE GREETING — the FM's opening word, the first and dominant
+          surface. How you stand, what I need from you, what I'm
+          watching. Everything operational (banners, strips, tiles,
+          system telemetry) is demoted BELOW it or into the collapsed
+          Full-detail region at the bottom.
+          ============================================================ */}
+      <FMGreetingCard userId={USER_ID} onShowFullDetail={showFullDetail} />
 
       {/* Windfall banner — auto-detected from the user's monthly TSV
           dropped into $ARGOSY_EXPENSE_SAMPLES_ROOT. Renders only when a
           cash delta crossed the $25K USD / ₪75K NIS threshold; otherwise
           the component returns null and the home page stays uncluttered.
-          The whole point of this design is "Argosy notices, you don't
-          push" — no upload button anywhere. */}
+          Quiet-by-design, so it may stay — but BELOW the greeting. */}
       <WindfallBanner />
 
-      {/* In-flight synthesis banner — surfaces a "Synthesis #N in
-          flight" card at the top of home so the user can SEE that
-          the fleet is actively working without first having to
-          navigate to /plan.  Suppressed when nothing is running.
-          The polling effect above ticks the phase counter up live
-          every 10 s while non-null. */}
-      {data.inFlightSynthesis ? (
-        <InFlightSynthesisBanner inFlight={data.inFlightSynthesis} />
-      ) : null}
-
-      {/* EX2 — anomaly-detection banner. Renders ABOVE the
-          fleet-self-review banner so user-money-impacting alerts
-          (e.g. Card 2923's fee-waiver promotion disappearing) sit
-          AT THE TOP of the home page. Only renders when the latest
-          report carries at least one RED anomaly. */}
+      {/* EX2 — anomaly-detection banner. Only renders when the latest
+          report carries at least one RED anomaly (e.g. Card 2923's
+          fee-waiver promotion disappearing) — quiet-by-design, below
+          the greeting. */}
       {hasRedAnomaly(data.anomalyReport) ? (
         <AnomalyBanner report={data.anomalyReport!} />
-      ) : null}
-
-      {/* Fleet self-review banner — auto-fires after every synthesis +
-          daily.  Surfaces RED/AMBER counts so the user can SEE
-          anomalies without asking "did anything go wrong?".  Hidden
-          when no report exists yet (fresh install). */}
-      {data.fleetReview ? (
-        <FleetSelfReviewBanner report={data.fleetReview} />
       ) : null}
 
       {/* Advisor brief — front-and-center glance card so the advisor is a
@@ -713,10 +677,14 @@ export default function Home() {
           "System health" section near the bottom.
           ============================================================ */}
 
-      {/* Compact metric row — now with sparklines. */}
+      {/* Compact metric row — now with sparklines. The hardcoded
+          "Pending proposals 0/idle" tile was DROPPED (it contradicted
+          the DB, which had 40 open action proposals); what needs the
+          client lives in the greeting's needs-you list, and the full
+          queue lives on /inbox. */}
       <section>
         <SectionHeader label="OVERVIEW" />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <MetricTile
             label="Net worth"
             value={loading ? "…" : `$${netWorth.toLocaleString()}K`}
@@ -743,119 +711,80 @@ export default function Home() {
             sparkData={concentrationSeries}
             sparkTone="accent"
           />
-          <MetricTile
-            label="Pending proposals"
-            value="0"
-            pillLabel="idle"
-            pillTone="neutral"
-            sub="No proposals yet"
-            sparkData={proposalsSeries}
-            sparkTone="neutral"
-          />
         </div>
       </section>
 
-      {/* PROPOSALS — flashes border on proposal.created/updated WS events. */}
-      <section>
-        <SectionHeader label="PROPOSALS" count={0} />
-        <FlashBorderBox flashKey={proposalFlash}>
-          <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-6 text-center text-xs text-muted-foreground font-mono">
-            No proposals queued
-          </div>
-        </FlashBorderBox>
-      </section>
-
-      {/* Plan + brief row */}
+      {/* Plan adherence — the Phase 2 legacy brief card that used to sit
+          beside it (permanently empty) is demoted to Full detail. */}
       <section>
         <SectionHeader label="PLAN" count={1} />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="font-mono">Plan adherence</CardTitle>
-                <StatusPill tone={planStatus.tone} mono>
-                  {planStatus.label}
-                </StatusPill>
-              </div>
-              <CardDescription>
-                {data.plan?.version_label
-                  ? `Latest: ${data.plan.version_label}`
-                  : "No plan imported yet."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              {planSummary?.overall_summary ||
-                "Run `argosy ingest plan <path>` then `argosy critique`."}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="font-mono">Phase 2 brief summary</CardTitle>
-              <CardDescription>
-                {data.brief?.run_at
-                  ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
-                  : "No legacy four-agent brief yet."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
-                {data.brief?.summary_text || "(no Phase 2 brief on file)"}
-              </pre>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      {/* T4.5 — Daily brief.  The user sees it first thing in the
-          morning. When the T4.5 runner has produced a brief, render its
-          content_md; otherwise render a placeholder explaining when the
-          next brief will land. */}
-      <section>
-        <SectionHeader
-          label="TODAY'S BRIEF"
-          action={
-            data.brief?.brief_date ? (
-              <a
-                href="/briefs"
-                className="text-[11px] font-mono text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-              >
-                view all
-              </a>
-            ) : null
-          }
-        />
         <Card>
           <CardHeader>
-            <CardTitle className="font-mono">
-              {data.brief?.brief_date
-                ? `Brief — ${data.brief.brief_date}`
-                : "Daily brief will land tomorrow at 07:00"}
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="font-mono">Plan adherence</CardTitle>
+              <StatusPill tone={planStatus.tone} mono>
+                {planStatus.label}
+              </StatusPill>
+            </div>
             <CardDescription>
-              {data.brief?.run_at
-                ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
-                : "Set ARGOSY_DAILY_BRIEF_ENABLED=1 to enable the production scheduler, or run `argosy brief --user-id ariel` for a one-shot."}
+              {data.plan?.version_label
+                ? `Latest: ${data.plan.version_label}`
+                : "No plan imported yet."}
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            {data.brief?.content_md ? (
-              <pre className="whitespace-pre-wrap text-xs font-mono text-foreground tabular-nums">
-                {data.brief.content_md}
-              </pre>
-            ) : data.brief?.summary_text ? (
-              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
-                {data.brief.summary_text}
-              </pre>
-            ) : (
-              <p className="text-xs font-mono text-muted-foreground">
-                No brief on file yet. The runner fires daily at 07:00
-                Asia/Jerusalem when enabled.
-              </p>
-            )}
+          <CardContent className="text-sm text-muted-foreground">
+            {planSummary?.overall_summary ||
+              "Run `argosy ingest plan <path>` then `argosy critique`."}
           </CardContent>
         </Card>
       </section>
+
+      {/* T4.5 — Daily brief. Rendered ONLY when a brief exists; the old
+          empty-state placeholder printed env-var/CLI instructions at the
+          client, which is plumbing — a missing brief simply doesn't
+          render. */}
+      {data.brief?.content_md || data.brief?.summary_text ? (
+        <section>
+          <SectionHeader
+            label="TODAY'S BRIEF"
+            action={
+              data.brief?.brief_date ? (
+                <a
+                  href="/briefs"
+                  className="text-[11px] font-mono text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                >
+                  view all
+                </a>
+              ) : null
+            }
+          />
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-mono">
+                {data.brief?.brief_date
+                  ? `Brief — ${data.brief.brief_date}`
+                  : "Today's brief"}
+              </CardTitle>
+              <CardDescription>
+                {data.brief?.run_at
+                  ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
+                  : null}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.brief?.content_md ? (
+                <pre className="whitespace-pre-wrap text-xs font-mono text-foreground tabular-nums">
+                  {data.brief.content_md}
+                </pre>
+              ) : (
+                <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
+                  {data.brief?.summary_text}
+                </pre>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
 
       {/* NVDA PACE tile — finance-relevant (sell-down schedule), so it
           stays in YOUR MONEY rather than the demoted System-health block. */}
@@ -939,14 +868,92 @@ export default function Home() {
       </section>
 
       {/* ============================================================
-          SYSTEM HEALTH — demoted ops/debug telemetry. Collapsed by
-          default and parked at the bottom: engine/kill-switch/spend/DB
-          tiles, cadence ticks, domain-KB freshness, and the fleet
-          decision-activity accordion. Children are lazy-mounted by
-          <CollapsibleSection/> (only rendered while expanded) so the
-          self-fetching DecisionAccordion doesn't fire its requests
-          until the user opens this section.
+          FULL DETAIL — everything demoted from the default view. The
+          greeting is the client surface; this region keeps the
+          operational components alive (demoted, not deleted): the
+          red-flag strip, run banners, the proposals placeholder, the
+          legacy Phase-2 brief card, internal pills, and the System
+          health block (which stays collapsed inside). Children are
+          lazy-mounted by <CollapsibleSection/> so none of it fetches
+          until the client asks for it.
           ============================================================ */}
+      <div id="full-detail" className="scroll-mt-6">
+      <CollapsibleSection
+        title="Full detail"
+        summary={`engine ${engineActive ? "active" : "down"} · ${data.fleetCount ?? AGENT_FLEET_SIZE_FALLBACK} agents · ${CADENCE_LOOPS} cadence loops`}
+        open={fullDetailOpen}
+        onOpenChange={setFullDetailOpen}
+      >
+
+      {/* Internal pills — formerly in the brand hero. */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <StatusPill tone="neutral" mono>
+          v0.1.0
+        </StatusPill>
+        <StatusPill tone="neutral" mono>
+          {data.fleetCount ?? AGENT_FLEET_SIZE_FALLBACK} agents
+        </StatusPill>
+        <StatusPill tone="neutral" mono>
+          {CADENCE_LOOPS} cadence loops
+        </StatusPill>
+        <StatusPill tone="accent" mono>
+          paper mode
+        </StatusPill>
+      </div>
+
+      {/* Home Red-Flag Strip — one row per active monitor_flags entry.
+          The greeting already projects the flags that matter to the
+          client (needs-you / watching); this strip is the FULL surface,
+          including internal data-gap observations. */}
+      <RedFlagStrip userId={USER_ID} />
+
+      {/* In-flight synthesis banner — "Synthesis #N in flight". The
+          polling effect above ticks the phase counter every 10 s while
+          non-null; the backend liveness reaper guarantees a dead run
+          never renders here as in-flight. */}
+      {data.inFlightSynthesis ? (
+        <InFlightSynthesisBanner inFlight={data.inFlightSynthesis} />
+      ) : null}
+
+      {/* Fleet self-review banner — RED/AMBER counts per synthesis. */}
+      {data.fleetReview ? (
+        <FleetSelfReviewBanner report={data.fleetReview} />
+      ) : null}
+
+      {/* PROPOSALS — flashes border on proposal.created/updated WS events. */}
+      <section>
+        <SectionHeader label="PROPOSALS" />
+        <FlashBorderBox flashKey={proposalFlash}>
+          <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-6 text-center text-xs text-muted-foreground font-mono">
+            The action queue lives on{" "}
+            <Link href="/inbox" className="text-info hover:underline">
+              /inbox
+            </Link>
+          </div>
+        </FlashBorderBox>
+      </section>
+
+      {/* Legacy Phase 2 brief summary card (usually empty). */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="font-mono">Phase 2 brief summary</CardTitle>
+          <CardDescription>
+            {data.brief?.run_at
+              ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
+              : "No legacy four-agent brief yet."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
+            {data.brief?.summary_text || "(no Phase 2 brief on file)"}
+          </pre>
+        </CardContent>
+      </Card>
+
+      {/* SYSTEM HEALTH — ops/debug telemetry. Stays collapsed inside
+          Full detail: engine/kill-switch/spend/DB tiles, cadence ticks,
+          domain-KB freshness, and the fleet decision-activity
+          accordion. */}
       <CollapsibleSection
         title="System health"
         summary={`engine ${engineActive ? "active" : "down"} · DB ${data.dbSize ?? "—"}`}
@@ -1113,6 +1120,8 @@ export default function Home() {
         </FlashBorderBox>
       </section>
       </CollapsibleSection>
+      </CollapsibleSection>
+      </div>
 
       {data.error && (
         <p className="text-sm text-error font-mono">{data.error}</p>
