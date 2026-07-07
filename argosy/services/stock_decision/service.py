@@ -87,6 +87,78 @@ def actionable_verdicts(
 
 _REDUCE_VERDICTS = frozenset({"SELL", "TRIM"})
 
+# Thesis-monitor flag kinds that ELEVATE a holding past the size triage: a
+# deteriorating thesis means the name gets a deep pass regardless of position
+# size (a small position can still go to zero while the warning hides in a flag).
+_ELEVATING_FLAG_KINDS = ("thesis_monitor_weakened", "thesis_monitor_broken")
+
+
+def load_elevated_thesis_flags(
+    db: Any, user_id: str, *, now: "Any | None" = None
+) -> dict[str, dict[str, str]]:
+    """Active, unexpired ``thesis_monitor_weakened`` / ``thesis_monitor_broken``
+    monitor flags keyed by TICKER (uppercased, from the flag payload — the
+    thesis_monitor writes it directly; see ``write_thesis_flag``).
+
+    Each value carries ``kind``, ``status`` (weakened/broken) and ``summary``
+    (the flag's rationale — the deteriorating-thesis evidence, fed to the
+    decision agent as labelled input). ``broken`` wins over ``weakened`` when a
+    ticker somehow carries both. Best-effort: any failure returns ``{}`` so the
+    review degrades to plain size triage rather than aborting.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    out: dict[str, dict[str, str]] = {}
+    try:
+        from sqlalchemy import and_, select
+
+        from argosy.state.models import MonitorFlag
+
+        rows = db.execute(
+            select(MonitorFlag).where(
+                and_(
+                    MonitorFlag.user_id == user_id,
+                    MonitorFlag.status == "active",
+                    MonitorFlag.acknowledged_at.is_(None),
+                    MonitorFlag.kind.in_(_ELEVATING_FLAG_KINDS),
+                )
+            )
+        ).scalars().all()
+    except Exception as exc:  # noqa: BLE001 — elevation is additive, never fatal
+        log.warning("holdings_review.thesis_flags_load_failed", err=str(exc)[:120])
+        return out
+    for r in rows:
+        # Skip expired flags (best-effort; expires_at may be None / naive).
+        exp = getattr(r, "expires_at", None)
+        if exp is not None:
+            try:
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                if exp < now:
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            payload = json.loads(r.payload or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        ticker = (payload.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        status = str(payload.get("thesis_status") or r.kind.removeprefix("thesis_monitor_"))
+        entry = {
+            "kind": r.kind,
+            "status": status,
+            "summary": (payload.get("rationale_md") or "")[:400],
+        }
+        prior = out.get(ticker)
+        if prior is None or (status == "broken" and prior["status"] != "broken"):
+            out[ticker] = entry
+    return out
+
 
 def verify_verdict(
     v: StockDecisionOutput,
@@ -175,11 +247,18 @@ def run_holdings_review(
     decide: Callable[..., StockDecisionOutput] = decide_stock,
     sink: Callable[[StockDecisionOutput], Any] | None = None,
     verify: "Callable[[StockDecisionOutput, dict], bool] | None | bool" = None,
+    elevated_flags: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Review the book per-name and act: triage to material positions, fetch fresh
     data, decide, blind-verify actionable verdicts, and write ONLY the confirmed
     ones to the inbox. HOLD verdicts are logged for audit and stay silent. Returns
     a summary + the full verdict list.
+
+    Triage is (material by size) OR (active thesis_monitor weakened/broken flag):
+    a deteriorating thesis elevates the name into the deep pass regardless of
+    position size, and the flag's evidence is appended to the agent's context as
+    labelled INPUT — the agent still makes the judgment. ``elevated_flags``
+    (ticker -> flag dict) overrides the default DB load for tests.
 
     ``verify`` gates each actionable verdict (fail-closed on divergence): ``None``
     uses the default blind re-derivation, a callable overrides it, and ``False``
@@ -199,16 +278,35 @@ def run_holdings_review(
     if verify is None:
         def verify(v: StockDecisionOutput, bundle: dict[str, Any]) -> bool:
             return verify_verdict(v, bundle=bundle, decide=decide, user_id=user_id)
+    if elevated_flags is None:
+        elevated_flags = (
+            load_elevated_thesis_flags(db, user_id) if db is not None else {}
+        )
 
     verdicts: list[StockDecisionOutput] = []
     written = 0
     actionable = 0
     held_unverified = 0
+    elevated: list[str] = []
     for ticker, usd in (holdings or {}).items():
-        if float(usd) < min_position_usd:
+        flag = elevated_flags.get(ticker.upper())
+        if flag is None and float(usd) < min_position_usd:
             continue  # tiering: skip immaterial positions (no expensive research)
+        context = f"held ${float(usd):,.0f}"
+        if flag is not None:
+            # A weakened/broken thesis elevates the name past the size gate —
+            # a small position can still go to zero. Auditable escalation.
+            elevated.append(ticker.upper())
+            log.info(
+                "holdings_review.elevated_by_thesis",
+                ticker=ticker.upper(), kind=flag.get("kind"),
+            )
+            context += (
+                f"; thesis_monitor status: {flag.get('status')}"
+                f" — {flag.get('summary') or '(no rationale recorded)'}"
+            )
         bundle = research_bundle(ticker, fetchers=fetchers)
-        v = decide(ticker, context=f"held ${float(usd):,.0f}", bundle=bundle, user_id=user_id)
+        v = decide(ticker, context=context, bundle=bundle, user_id=user_id)
         verdicts.append(v)
         if not is_actionable(v.verdict):
             log.info("stock_decision.hold", ticker=v.ticker, reason=(v.reason or "")[:120])
@@ -229,6 +327,7 @@ def run_holdings_review(
         "actionable": actionable,
         "written": written,
         "held_unverified": held_unverified,
+        "elevated": elevated,
         "verdicts": verdicts,
     }
 
@@ -236,4 +335,5 @@ def run_holdings_review(
 __all__ = [
     "research_bundle", "decide_holdings", "actionable_verdicts", "Fetcher",
     "run_holdings_review", "write_stock_decision_proposal",
+    "load_elevated_thesis_flags",
 ]

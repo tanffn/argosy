@@ -6,6 +6,7 @@ from argosy.agents.stock_decision import StockDecisionOutput
 from argosy.services.stock_decision import (
     actionable_verdicts,
     decide_holdings,
+    load_elevated_thesis_flags,
     research_bundle,
     run_holdings_review,
     verify_verdict,
@@ -120,6 +121,143 @@ def test_run_holdings_review_holds_unverified_trades():
     assert summary["written"] == 0
     assert summary["held_unverified"] == 1
     assert written == []
+
+
+# ---------------------------------------------------------------------------
+# Thesis-flag elevation: a weakened/broken thesis bypasses the size triage.
+# ---------------------------------------------------------------------------
+
+def _decide_recorder(researched, contexts=None):
+    def _decide(ticker, *, context, bundle, user_id="ariel"):
+        researched.append(ticker)
+        if contexts is not None:
+            contexts[ticker] = context
+        return StockDecisionOutput(ticker=ticker, verdict="HOLD", confidence="LOW", reason="x")
+    return _decide
+
+
+def test_elevated_small_position_gets_deep_pass():
+    """A weakened thesis elevates TINY past the size gate; the flag's evidence
+    rides in the agent's context as labelled input, and the summary is auditable."""
+    researched, contexts = [], {}
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"BIG": 100_000.0, "TINY": 200.0},
+        fetchers={},
+        decide=_decide_recorder(researched, contexts),
+        elevated_flags={"TINY": {
+            "kind": "thesis_monitor_weakened", "status": "weakened",
+            "summary": "guidance cut; core product losing share",
+        }},
+    )
+    assert sorted(researched) == ["BIG", "TINY"]   # TINY deep-passed despite size
+    assert summary["elevated"] == ["TINY"]
+    assert "thesis_monitor status: weakened — guidance cut" in contexts["TINY"]
+    assert "thesis_monitor" not in contexts["BIG"]  # non-elevated context unchanged
+
+
+def test_no_flags_size_triage_unchanged():
+    researched = []
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"BIG": 100_000.0, "TINY": 200.0},
+        fetchers={},
+        decide=_decide_recorder(researched),
+        elevated_flags={},
+    )
+    assert researched == ["BIG"]                   # TINY still skipped by size
+    assert summary["elevated"] == []
+
+
+def test_broken_thesis_also_elevates():
+    researched, contexts = [], {}
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"TINY": 200.0},
+        fetchers={},
+        decide=_decide_recorder(researched, contexts),
+        elevated_flags={"TINY": {
+            "kind": "thesis_monitor_broken", "status": "broken",
+            "summary": "chapter-11 filing",
+        }},
+    )
+    assert researched == ["TINY"]
+    assert summary["elevated"] == ["TINY"]
+    assert "thesis_monitor status: broken — chapter-11 filing" in contexts["TINY"]
+
+
+def test_flag_for_unheld_ticker_is_ignored():
+    researched = []
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"BIG": 100_000.0},
+        fetchers={},
+        decide=_decide_recorder(researched),
+        elevated_flags={"GHOST": {
+            "kind": "thesis_monitor_broken", "status": "broken", "summary": "gone",
+        }},
+    )
+    assert researched == ["BIG"]                   # GHOST not held -> nothing to review
+    assert summary["elevated"] == []
+
+
+def test_load_elevated_thesis_flags_reads_active_unexpired_only(tmp_path):
+    """Loader keys ACTIVE, unexpired thesis_monitor_* flags by payload ticker and
+    ignores expired / acknowledged / other-kind rows; 'broken' wins over 'weakened'."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import Base, MonitorFlag, User
+
+    engine = sa.create_engine(
+        f"sqlite:///{tmp_path / 'flags.db'}", connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    now = datetime(2026, 7, 6, tzinfo=timezone.utc)
+    db.add(User(id="ariel", plan="free"))
+
+    def _flag(kind, ticker, status, *, expires=None, acked=None, row_status="active",
+              rationale="thesis evidence"):
+        return MonitorFlag(
+            user_id="ariel", kind=kind, severity="warning",
+            payload=json.dumps({
+                "ticker": ticker, "thesis_status": status, "rationale_md": rationale,
+            }),
+            surfaced_at=now - timedelta(days=1),
+            expires_at=expires, acknowledged_at=acked,
+            dedup_key=f"v1|thesis_monitor|ariel|{ticker}|{status}|{kind}",
+            status=row_status,
+        )
+
+    db.add_all([
+        _flag("thesis_monitor_weakened", "RKT", "weakened",
+              expires=now + timedelta(days=5), rationale="housing macro deteriorating"),
+        _flag("thesis_monitor_broken", "RKT", "broken",
+              expires=now + timedelta(days=5)),                       # broken wins
+        _flag("thesis_monitor_weakened", "OLD", "weakened",
+              expires=now - timedelta(days=1)),                       # expired -> out
+        _flag("thesis_monitor_broken", "ACK", "broken",
+              expires=now + timedelta(days=5), acked=now),            # acked -> out
+        _flag("thesis_monitor_weakened", "SUP", "weakened",
+              expires=now + timedelta(days=5), row_status="superseded"),  # inactive -> out
+        MonitorFlag(
+            user_id="ariel", kind="alpha_report_caution", severity="warning",
+            payload=json.dumps({"caution": "NVDA looks stretched"}),
+            surfaced_at=now, dedup_key="v1|alpha|x", status="active",
+        ),                                                            # other kind -> out
+    ])
+    db.commit()
+
+    flags = load_elevated_thesis_flags(db, "ariel", now=now)
+    db.close()
+    assert set(flags) == {"RKT"}
+    assert flags["RKT"]["kind"] == "thesis_monitor_broken"
+    assert flags["RKT"]["status"] == "broken"
+    assert flags["RKT"]["summary"] == "thesis evidence"
 
 
 def test_write_stock_decision_proposal_builds_actionproposal():

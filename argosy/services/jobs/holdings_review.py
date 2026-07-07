@@ -63,8 +63,9 @@ def holdings_review_metadata() -> JobMetadata:
         schedule_human="Daily 17:30 IDT",
         source_kind="monitor",
         description=(
-            "Per-holding research -> verdict review: triage to material positions, "
-            "fetch fresh data (news/price/plan thesis) on each, decide "
+            "Per-holding research -> verdict review: triage to material positions "
+            "(a weakened/broken thesis_monitor flag elevates a name past the size "
+            "gate), fetch fresh data (news/price/plan thesis) on each, decide "
             "BUY/HOLD/SELL/TRIM. Only actionable verdicts surface to the inbox; "
             "HOLD (thesis intact) stays silent. Manual Run now uses the same tick."
         ),
@@ -116,6 +117,7 @@ class HoldingsReviewJob(CadenceLoop):
             "reviewed": summary.get("reviewed", 0),
             "actionable": summary.get("actionable", 0),
             "written": summary.get("written", 0),
+            "elevated": summary.get("elevated", []),
         }
         self.last_output_summary = out
         _log.info("holdings_review.tick.done", **out)

@@ -8,6 +8,7 @@ fleet-timeout), and reach a per-name verdict where HOLD stays silent.
 from argosy.services.stock_decision.service import (
     actionable_verdicts,
     decide_holdings,
+    load_elevated_thesis_flags,
     research_bundle,
     run_holdings_review,
     verify_verdict,
@@ -18,6 +19,7 @@ __all__ = [
     "research_bundle",
     "decide_holdings",
     "actionable_verdicts",
+    "load_elevated_thesis_flags",
     "run_holdings_review",
     "verify_verdict",
     "write_stock_decision_proposal",
