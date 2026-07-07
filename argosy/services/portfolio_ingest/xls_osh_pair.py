@@ -300,8 +300,11 @@ def handle_xls_upload(
     # is DB-first) reflects the paired month. commit=True: the part row was
     # already committed by _add_part_with_race_recovery, so this is a standalone
     # upload-time write.
-    _write_through_resolved_snapshot(db, user_id=user_id, tsv_path=target_path,
-                                     commit=True)
+    closed_loop_lines = _write_through_resolved_snapshot(
+        db, user_id=user_id, tsv_path=target_path, commit=True,
+    )
+    if closed_loop_lines:
+        synth_warnings = synth_warnings + closed_loop_lines
 
     # Reconciliation gate: diff the persisted snapshot against the RAW source
     # (XLS positions + both cash balances) and surface any mismatch LOUDLY.
@@ -341,7 +344,7 @@ def handle_xls_upload(
 
 def _write_through_resolved_snapshot(
     db: Session, *, user_id: str, tsv_path: Path, commit: bool,
-) -> None:
+) -> list[str]:
     """Persist the freshly-synthesized merged TSV into the DB snapshot store so
     GET /snapshot (DB-first) reflects the paired month immediately — instead of
     silently leaving the prior snapshot live (the write-through gap).
@@ -349,7 +352,15 @@ def _write_through_resolved_snapshot(
     Best-effort: the pair is already durable (file + part row), so a write-through
     failure must NEVER break the resolution — it degrades to "the next snapshot
     read picks it up on its own filesystem fallback." ``commit`` is False when the
-    caller owns an atomic batch (the Osh-arrival hook runs mid-ingest)."""
+    caller owns an atomic batch (the Osh-arrival hook runs mid-ingest).
+
+    When a NEW snapshot row lands, the closed-loop expectation verifier runs
+    against it: armed ``fills-applied:*`` expectations from prior self-writes
+    are checked against this ingested truth (SDD §20.4 — "the next real
+    ingest verifies the armed expectations"). Returns the closed-loop
+    reconcile lines (empty on no-op / nothing armed) so the caller surfaces
+    them in the resolution's parse_warnings."""
+    row = None
     try:
         from argosy.ingest.tsv import parse_portfolio_tsv
         from argosy.services.portfolio_snapshot_store import (
@@ -357,12 +368,30 @@ def _write_through_resolved_snapshot(
         )
 
         snap = parse_portfolio_tsv(tsv_path)
-        write_through_if_changed(db, user_id=user_id, snapshot=snap, commit=commit)
+        row = write_through_if_changed(
+            db, user_id=user_id, snapshot=snap, commit=commit,
+        )
     except Exception as exc:  # noqa: BLE001 — additive; never break the pair
         _log.warning(
             "portfolio_snapshot.pair_write_through_failed",
             extra={"path": str(tsv_path), "error": str(exc)},
         )
+        return []
+    if row is None:
+        return []
+    try:
+        from argosy.services.closed_loop import verify_and_record_on_ingest
+
+        result = verify_and_record_on_ingest(
+            db, user_id=user_id, new_row=row, commit=commit,
+        )
+        return result.reconcile_lines() if result is not None else []
+    except Exception as exc:  # noqa: BLE001 — the gate never breaks an ingest
+        _log.warning(
+            "portfolio_snapshot.closed_loop_verify_failed",
+            extra={"error": str(exc)},
+        )
+        return []
 
 
 def try_resolve_pending_on_osh_arrival(
@@ -486,8 +515,11 @@ def try_resolve_pending_on_osh_arrival(
     # Write-through so /portfolio reflects the paired month. commit=False: this
     # hook runs mid-ingest and the caller (orchestrator/route) owns the commit,
     # so the snapshot row lands atomically with the part resolution.
-    _write_through_resolved_snapshot(db, user_id=osh.user_id,
-                                     tsv_path=target_path, commit=False)
+    closed_loop_lines = _write_through_resolved_snapshot(
+        db, user_id=osh.user_id, tsv_path=target_path, commit=False,
+    )
+    if closed_loop_lines:
+        synth_warnings = synth_warnings + closed_loop_lines
 
     return PairResolution(
         status="resolved",

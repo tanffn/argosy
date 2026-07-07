@@ -185,7 +185,8 @@ async def test_daily_loop_resolves_on_real_verdict(engine: None) -> None:
         user_id="ariel", consult_runner=_stub,
     )
     summary = await loop.tick()
-    assert summary == {
+    assert "closed_loop" in summary  # the closed-loop sweep step reports
+    assert {k: v for k, v in summary.items() if k != "closed_loop"} == {
         "swept": 1, "resolved": 1, "still_pending": 0, "abandoned": 0,
         "proposals_expired": 0,
     }
@@ -268,7 +269,8 @@ async def test_daily_loop_no_rows_returns_zero_summary(engine: None) -> None:
     await _seed_user()
     loop = PendingReevaluationDailyLoop(user_id="ariel")
     summary = await loop.tick()
-    assert summary == {
+    assert "closed_loop" in summary  # the closed-loop sweep step reports
+    assert {k: v for k, v in summary.items() if k != "closed_loop"} == {
         "swept": 0, "resolved": 0, "still_pending": 0, "abandoned": 0,
         "proposals_expired": 0,
     }

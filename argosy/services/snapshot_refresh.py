@@ -488,7 +488,11 @@ def apply_fills_to_snapshot(
       property), never old-total ± delta.
     * Every applied fill is recorded in ``parse_warnings`` as
       ``fill-applied:<sym>:<shares>@<price>``; callers append
-      closed-loop expectation notes via ``extra_warnings``.
+      closed-loop expectation notes via ``extra_warnings``. A
+      machine-readable ``closed_loop_expectations:{json}`` entry is
+      ALSO written (expected final share counts + post-fill cash) —
+      ``argosy.services.closed_loop`` verifies it on the next real
+      ingest; the prose stays for humans.
     """
     today = today or date.today()
     old_row = get_latest_snapshot_row(session, user_id)
@@ -596,6 +600,50 @@ def apply_fills_to_snapshot(
         f"fill-applied:{f.symbol}:{f.shares:g}@{f.price:g}" for f in fills
     ]
 
+    # Machine-readable closed-loop expectations blob (the prose entries above
+    # are kept for humans; this is what argosy.services.closed_loop parses
+    # losslessly — expected FINAL share counts from the post-fill book, the
+    # funding account's post-fill balance, and the caller's manual notes).
+    import json as _json
+
+    touched_keys = {
+        (f.symbol.strip().upper(), f.location.strip().lower(),
+         f.currency.strip().upper())
+        for f in fills
+    }
+    expected_positions = [
+        {
+            "symbol": (p.symbol or "").strip().upper(),
+            "location": p.location,
+            "currency": (p.currency or "USD").strip().upper(),
+            "shares": p.shares,
+            "price": p.current_price,
+        }
+        for p in positions
+        if (p.asset_type or "").strip().lower() != "cash"
+        and (
+            (p.symbol or "").strip().upper(),
+            (p.location or "").strip().lower(),
+            (p.currency or "USD").strip().upper(),
+        ) in touched_keys
+    ]
+    expectations_blob = "closed_loop_expectations:" + _json.dumps({
+        "v": 1,
+        "source_tag": source_tag,
+        "fills": [
+            {"symbol": f.symbol, "shares": f.shares, "price": f.price,
+             "location": f.location, "currency": f.currency}
+            for f in fills
+        ],
+        "expected_positions": expected_positions,
+        "cash": {
+            "location": cash_location,
+            "currency": cash_currency,
+            "after_local": result.cash_after_local,
+        },
+        "manual": [str(w) for w in extra_warnings],
+    }, default=str)
+
     new_snap = PortfolioSnapshot(
         source_path=source_tag,
         snapshot_date=today,
@@ -606,7 +654,10 @@ def apply_fills_to_snapshot(
         allocations=[a.model_copy(deep=True) for a in old.allocations],
         nvda_sales=[s.model_copy(deep=True) for s in old.nvda_sales],
         pensions=[pe.model_copy(deep=True) for pe in old.pensions],
-        parse_warnings=fill_notes + list(result.warnings) + list(extra_warnings),
+        parse_warnings=(
+            fill_notes + list(result.warnings) + list(extra_warnings)
+            + [expectations_blob]
+        ),
     )
     result.new_total_usd_k = new_snap.total_usd_value_k
 

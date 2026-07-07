@@ -127,6 +127,40 @@ class PendingReevaluationDailyLoop(CadenceLoop):
                 "pending_reevaluation_daily.expiry_failed", error=str(exc)[:200]
             )
 
+        # Closed-loop expectation sweep (SDD §20.4): broker-fill expectations
+        # armed by fills-applied snapshot rows that have seen NO real ingest
+        # for STALE_AFTER_DAYS get ONE dedup'd needs-info proposal ("send the
+        # current broker export"); nothing armed → the open proposal is
+        # auto-superseded so resolved items leave the client's checklist.
+        closed_loop_summary: dict[str, Any] | None = None
+        try:
+            import asyncio as _asyncio
+
+            from argosy.services.closed_loop import sweep_unverified_expectations
+
+            _now = now() if now is not None else None
+
+            def _sweep_closed_loop() -> dict[str, Any]:
+                from argosy.orchestrator.loops.state_observer import (
+                    _build_default_session_factory,
+                )
+
+                sf = _build_default_session_factory()
+                s = sf()
+                try:
+                    return sweep_unverified_expectations(
+                        s, user_id=self.user_id, now=_now,
+                    )
+                finally:
+                    s.close()
+
+            closed_loop_summary = await _asyncio.to_thread(_sweep_closed_loop)
+        except Exception as exc:  # noqa: BLE001 — never block the queue sweep
+            _log.warning(
+                "pending_reevaluation_daily.closed_loop_failed",
+                error=str(exc)[:200],
+            )
+
         rows = await list_pending_for_sweep(user_id=self.user_id)
         if not rows:
             summary = {
@@ -135,6 +169,7 @@ class PendingReevaluationDailyLoop(CadenceLoop):
                 "still_pending": 0,
                 "abandoned": 0,
                 "proposals_expired": expired_count,
+                "closed_loop": closed_loop_summary,
             }
             self.last_output_summary = summary
             _log.info("pending_reevaluation_daily.no_rows", **summary)
@@ -212,6 +247,7 @@ class PendingReevaluationDailyLoop(CadenceLoop):
             "still_pending": still_pending,
             "abandoned": abandoned,
             "proposals_expired": expired_count,
+            "closed_loop": closed_loop_summary,
         }
         self.last_output_summary = summary
         _log.info("pending_reevaluation_daily.summary", **summary)
