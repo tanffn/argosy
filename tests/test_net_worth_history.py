@@ -22,11 +22,15 @@ def _seed_row(
     imported_at: datetime | None = None,
     total_usd_value_k: float = 1000.0,
     nvda_usd_value_k: float = 400.0,
+    stored_total_usd_value_k: float | None = None,
 ) -> int:
-    # A cash row rides along in every fixture: nvda_pct must be computed
-    # against the TRADEABLE SECURITIES book (canonical
-    # ``nvda_concentration_pct``), so cash never dilutes the weight — the
-    # same denominator basis as the TargetAllocationDoc glide.
+    # ``total_usd_value_k`` is the TRADEABLE (securities) sum; a $250K
+    # cash row rides along on top of it. nvda_pct must be computed
+    # against the tradeable book (canonical ``nvda_concentration_pct``),
+    # so cash never dilutes the weight — the same denominator basis as
+    # the TargetAllocationDoc glide. The served total is the
+    # POSITIONS-SUM = tradeable + cash. ``stored_total_usd_value_k``
+    # lets a test store a deliberately stale grand total.
     positions = [
         {"symbol": "NVDA", "asset_type": "stock", "usd_value_k": nvda_usd_value_k},
         {
@@ -47,7 +51,14 @@ def _seed_row(
         real_estate_json="[]",
         pensions_json="[]",
         totals_json=json.dumps(
-            {"total_usd_value_k": total_usd_value_k, "cash_balances_usd_k": 0.0}
+            {
+                "total_usd_value_k": (
+                    stored_total_usd_value_k
+                    if stored_total_usd_value_k is not None
+                    else total_usd_value_k + 250.0
+                ),
+                "cash_balances_usd_k": 250.0,
+            }
         ),
         fx_usd_nis=3.7,
         fx_usd_eur=4.0,
@@ -89,10 +100,24 @@ def test_history_returns_chronological_points_with_nvda_pct(client_with_db):
         (today - timedelta(days=60)).isoformat(),
         (today - timedelta(days=30)).isoformat(),
     ]
-    assert pts[0]["total_usd"] == 1_000_000.0
-    assert pts[0]["nvda_pct"] == 50.0
-    assert pts[1]["total_usd"] == 1_200_000.0
+    # Total = POSITIONS-SUM (tradeable + the $250K cash row).
+    assert pts[0]["total_usd"] == 1_250_000.0
+    assert pts[0]["nvda_pct"] == 50.0  # 500 / (500+500) tradeable — cash excluded
+    assert pts[1]["total_usd"] == 1_450_000.0
     assert pts[1]["nvda_pct"] == 40.0
+    # Delta-tooltip decomposition inputs: NVDA position value + cash
+    # balances per point (USD), so the UI can attribute a book move to
+    # NVDA repricing vs cash flow vs the rest of the book.
+    assert pts[0]["nvda_usd"] == 500_000.0
+    assert pts[1]["nvda_usd"] == 480_000.0
+    assert pts[0]["cash_usd"] == 250_000.0
+    assert pts[1]["cash_usd"] == 250_000.0
+    # Currency dimension: each point converted at ITS OWN snapshot fx.
+    assert pts[0]["fx_usd_nis"] == 3.7
+    assert pts[0]["total_nis"] == 1_250_000.0 * 3.7
+    assert pts[1]["total_nis"] == 1_450_000.0 * 3.7
+    # No NIS-denominated positions in the fixture.
+    assert pts[0]["nis_denominated_usd"] == 0.0
 
 
 def test_history_dedupes_same_date_keeping_freshest_import(client_with_db):
@@ -119,7 +144,8 @@ def test_history_dedupes_same_date_keeping_freshest_import(client_with_db):
     assert res.status_code == 200
     pts = res.json()["points"]
     assert len(pts) == 1
-    assert pts[0]["total_usd"] == 950_000.0
+    # Positions-sum of the freshest import: 950 tradeable + 250 cash.
+    assert pts[0]["total_usd"] == 1_200_000.0
 
 
 def test_history_window_excludes_old_snapshots(client_with_db):
@@ -137,6 +163,35 @@ def test_history_window_excludes_old_snapshots(client_with_db):
     assert res.status_code == 200
     pts = res.json()["points"]
     assert [p["date"] for p in pts] == [(today - timedelta(days=5)).isoformat()]
+
+
+def test_history_total_is_positions_sum_never_stored_totals(client_with_db):
+    """BASIS RULE: mixed-provenance rows (TSV / self-refresh /
+    fills-applied) must all report the POSITIONS-SUM as the total — a
+    stale stored grand total (the stale-allocations bug class) must not
+    leak into the series."""
+    SF = client_with_db.app.state.session_factory
+    today = date.today()
+    with SF() as s:
+        s.add(User(id="ariel", plan="free"))
+        s.commit()
+        row_id = _seed_row(
+            s,
+            snapshot_date=today - timedelta(days=3),
+            total_usd_value_k=1000.0,  # positions sum to 1000 + 250 cash
+            nvda_usd_value_k=400.0,
+            stored_total_usd_value_k=999.0,  # deliberately stale stored total
+        )
+        # Sanity: the seeded stored total disagrees with the rows.
+        row = s.get(PortfolioSnapshotRow, row_id)
+        assert json.loads(row.totals_json)["total_usd_value_k"] == 999.0
+
+    res = client_with_db.get("/api/portfolio/net-worth-history?user_id=ariel")
+    assert res.status_code == 200
+    pt = res.json()["points"][0]
+    # NVDA 400 + SCHD 600 + cash 250 = 1250 (positions-sum), not 999.
+    assert pt["total_usd"] == 1_250_000.0
+    assert pt["total_nis"] == 1_250_000.0 * 3.7
 
 
 def test_history_empty_for_unknown_user(client_with_db):

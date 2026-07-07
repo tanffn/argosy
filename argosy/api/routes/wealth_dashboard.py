@@ -214,6 +214,21 @@ class NetWorthHistoryPointDTO(BaseModel):
     #: fund look-through — historical snapshots carry positions only, so
     #: look-through can't be re-derived retroactively.
     nvda_pct: float | None
+    #: Decomposition inputs for the UI's delta tooltip ("why did the book
+    #: move between snapshots"): the NVDA position value and the cash
+    #: balances at that snapshot, both USD. Consecutive-point deltas of
+    #: these attribute a book move to NVDA repricing vs cash flow vs the
+    #: rest of the book.
+    nvda_usd: float | None = None
+    cash_usd: float | None = None
+    #: Currency dimension — each point converted at ITS OWN snapshot-date
+    #: fx so the ₪ view is the true NIS-perspective wealth (what matters
+    #: for FI-in-Israel), not a single-rate rescale of the USD series.
+    fx_usd_nis: float | None = None
+    total_nis: float | None = None
+    #: USD value of the NIS-denominated positions at that snapshot —
+    #: the base for the tooltip's explicit FX (translation) component.
+    nis_denominated_usd: float | None = None
 
 
 class NetWorthHistoryResponseDTO(BaseModel):
@@ -259,23 +274,79 @@ def get_net_worth_history(
             continue
         total_usd: float | None = None
         nvda_pct: float | None = None
+        nvda_usd: float | None = None
+        cash_usd: float | None = None
+        fx: float | None = (
+            float(row.fx_usd_nis)
+            if isinstance(row.fx_usd_nis, (int, float)) and row.fx_usd_nis > 0
+            else None
+        )
+        nis_denominated_usd: float | None = None
         try:
             totals = _json.loads(row.totals_json or "{}")
-            total_k = totals.get("total_usd_value_k")
-            if isinstance(total_k, (int, float)):
-                total_usd = float(total_k) * 1000.0
+            cash_k = totals.get("cash_balances_usd_k")
+            if isinstance(cash_k, (int, float)):
+                cash_usd = float(cash_k) * 1000.0
             positions = _json.loads(row.positions_json or "[]")
+            # BASIS RULE: total = POSITIONS-SUM, never the stored
+            # totals_json grand total. History rows mix provenances
+            # (TSV ingest / self-refresh reprice / fills-applied) and a
+            # stored total can go stale independently of the position
+            # rows (the stale-allocations bug class); summing the rows
+            # themselves keeps every provenance on one basis. The stored
+            # total is only a fallback for rows with no position rows.
+            if isinstance(positions, list) and len(positions) > 0:
+                total_usd = (
+                    sum(
+                        float(p.get("usd_value_k") or 0.0)
+                        for p in positions
+                        if isinstance(p, dict)
+                    )
+                    * 1000.0
+                )
+            else:
+                total_k = totals.get("total_usd_value_k")
+                if isinstance(total_k, (int, float)):
+                    total_usd = float(total_k) * 1000.0
             if isinstance(positions, list):
                 # Canonical concentration: NVDA ÷ tradeable securities book
                 # (excl. cash + physical real estate) — one NVDA weight
                 # across surfaces, and the same basis the plan glide uses.
                 nvda_pct = nvda_concentration_pct(positions)
+                nvda_usd = (
+                    sum(
+                        float(p.get("usd_value_k") or 0.0)
+                        for p in positions
+                        if isinstance(p, dict)
+                        and str(p.get("symbol") or "").upper() == "NVDA"
+                    )
+                    * 1000.0
+                )
+                nis_denominated_usd = (
+                    sum(
+                        float(p.get("usd_value_k") or 0.0)
+                        for p in positions
+                        if isinstance(p, dict)
+                        and str(p.get("currency") or "").upper()
+                        in ("NIS", "ILS")
+                    )
+                    * 1000.0
+                )
         except (ValueError, TypeError):
-            pass  # keep the dated point; total_usd/nvda_pct stay None
+            pass  # keep the dated point; the value fields stay None
         # rows iterate oldest-import first, so a later re-import of the same
         # snapshot date overwrites the stale one.
         by_date[d.isoformat()] = NetWorthHistoryPointDTO(
-            date=d.isoformat(), total_usd=total_usd, nvda_pct=nvda_pct
+            date=d.isoformat(),
+            total_usd=total_usd,
+            nvda_pct=nvda_pct,
+            nvda_usd=nvda_usd,
+            cash_usd=cash_usd,
+            fx_usd_nis=fx,
+            total_nis=(
+                total_usd * fx if (total_usd is not None and fx is not None) else None
+            ),
+            nis_denominated_usd=nis_denominated_usd,
         )
 
     points = [by_date[k] for k in sorted(by_date)]
