@@ -27,6 +27,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 import {
+  formatCritiqueTimestamp,
   materialChangeSinceCritique,
   nextReviewLabel,
   PlanAdherenceCard,
@@ -146,7 +147,11 @@ describe("PlanAdherenceCard", () => {
     expect(line).toContain("critique: 3 findings");
     expect(line).toContain("1 RED");
     expect(line).toContain("2 YELLOW");
-    expect(line).toContain("3d ago");
+    // Absolute generation date-time (browser-localized), then relative age.
+    const expectedStamp = formatCritiqueTimestamp(
+      plan().latest_critique_created_at!,
+    )!;
+    expect(line).toContain(`${expectedStamp} (3d ago)`);
     // Cron "0 18 * * SUN" → Sun 18:00.
     expect(line).toContain("Sun 18:00");
     expect(screen.queryByTestId("adherence-overdue")).not.toBeInTheDocument();
@@ -199,6 +204,87 @@ describe("PlanAdherenceCard", () => {
     // Toggle closes again.
     fireEvent.click(screen.getByTestId("adherence-findings-toggle"));
     expect(screen.queryByTestId("adherence-findings")).not.toBeInTheDocument();
+  });
+
+  it("expands one finding row to its full text and collapses it again", async () => {
+    render(
+      <PlanAdherenceCard
+        userId="ariel"
+        plan={plan({
+          latest_critique_json: {
+            overall_summary: "s",
+            findings: [
+              {
+                severity: "RED",
+                topic: "Cross-surface Consistency",
+                summary: "NVDA 12% vs 8%.",
+                plan_item_ref: "IPS / Concentration — NVDA sleeve target",
+                evidence: ["Table says 8.0%.", "Prose says 12.0%."],
+                recommended_action: "Re-synthesize the plan.",
+              },
+              { severity: "GREEN", topic: "FI Math", summary: "OK." },
+            ],
+          },
+        })}
+        greeting={GREETING}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("adherence-findings-toggle"));
+    // Row 0 (the RED) has detail behind a per-row expand; collapsed first.
+    expect(
+      screen.queryByTestId("adherence-finding-detail-0"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("adherence-finding-toggle-0"));
+    const detail = screen.getByTestId("adherence-finding-detail-0");
+    expect(detail.textContent).toContain("NVDA sleeve target");
+    expect(detail.textContent).toContain("Table says 8.0%.");
+    expect(detail.textContent).toContain("Recommended: Re-synthesize the plan.");
+    fireEvent.click(screen.getByTestId("adherence-finding-toggle-0"));
+    expect(
+      screen.queryByTestId("adherence-finding-detail-0"),
+    ).not.toBeInTheDocument();
+    // The GREEN row has no detail payload → no expand affordance.
+    expect(
+      screen.queryByTestId("adherence-finding-toggle-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the reconcile summary line and per-row outcome tags", async () => {
+    render(
+      <PlanAdherenceCard
+        userId="ariel"
+        plan={plan({
+          latest_critique_json: {
+            overall_summary: "s",
+            findings: [
+              { severity: "RED", topic: "Ghost Row", summary: "Still stale." },
+              { severity: "YELLOW", topic: "FX", summary: "Aging." },
+            ],
+            reconcile: {
+              fixed: 1,
+              escalated: 2,
+              disputed_withdrawn: 1,
+              summary_line:
+                "reconciled: 1 fixed, 2 escalated, 1 disputed-withdrawn",
+              converged: true,
+              finding_status: ["escalated", null],
+            },
+          },
+        })}
+        greeting={GREETING}
+      />,
+    );
+    expect(screen.getByTestId("adherence-reconcile").textContent).toBe(
+      "reconciled: 1 fixed, 2 escalated, 1 disputed-withdrawn",
+    );
+    fireEvent.click(screen.getByTestId("adherence-findings-toggle"));
+    // finding_status is index-aligned to the ORIGINAL order; the tagged RED
+    // sorts first and carries its outcome tag.
+    const list = screen.getByTestId("adherence-findings");
+    const items = list.querySelectorAll("li");
+    expect(items[0].textContent).toContain("Ghost Row");
+    expect(items[0].textContent).toContain("escalated");
+    expect(items[1].textContent).not.toContain("escalated");
   });
 
   it("runs a review on demand, shows the running state, and refetches", async () => {
@@ -313,6 +399,13 @@ describe("helpers", () => {
     const fresh = summarizeCritique(plan(), NOW)!;
     expect(fresh).toMatchObject({ total: 3, red: 1, yellow: 2, overdue: false });
     expect(fresh.ageDays).toBe(3);
+    // Localized absolute timestamp of the generation time.
+    expect(fresh.createdLabel).toBe(
+      formatCritiqueTimestamp(plan().latest_critique_created_at!),
+    );
+    expect(fresh.createdLabel).toBeTruthy();
+    expect(formatCritiqueTimestamp(null)).toBeNull();
+    expect(formatCritiqueTimestamp("not-a-date")).toBeNull();
     const stale = summarizeCritique(
       plan({
         latest_critique_created_at: new Date(NOW - 9 * DAY_MS).toISOString(),

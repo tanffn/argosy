@@ -57,11 +57,28 @@ export interface CritiqueFinding {
   topic?: string;
   summary?: string;
   plan_item_ref?: string;
+  evidence?: string[];
+  recommended_action?: string | null;
+  /** Reconcile-loop outcome tag for this row (attached client-side from
+   * the critique JSON's reconcile.finding_status, index-aligned). */
+  outcome?: string | null;
+}
+
+/** Reconcile-loop payload embedded in the re-verify critique JSON. */
+export interface CritiqueReconcile {
+  fixed?: number;
+  escalated?: number;
+  disputed_withdrawn?: number;
+  summary_line?: string;
+  converged?: boolean;
+  /** Index-aligned to the critique's findings array. */
+  finding_status?: (string | null)[];
 }
 
 interface CritiqueShape {
   overall_summary?: string;
   findings?: CritiqueFinding[];
+  reconcile?: CritiqueReconcile;
 }
 
 /** REDs first, then YELLOW/AMBER, then GREEN, stable within a band. */
@@ -103,7 +120,23 @@ export interface CritiqueLine {
   red: number;
   yellow: number;
   ageDays: number | null;
+  /** Localized generation date-time, e.g. "Jul 7, 21:34" (browser locale). */
+  createdLabel: string | null;
   overdue: boolean;
+}
+
+/** "Jul 7, 21:34" in the browser's locale/timezone. */
+export function formatCritiqueTimestamp(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 export function summarizeCritique(
@@ -117,6 +150,9 @@ export function summarizeCritique(
   const yellow = findings.filter((f) => f.severity === "YELLOW").length;
   let ageDays: number | null = null;
   let overdue = false;
+  const createdLabel = formatCritiqueTimestamp(
+    plan?.latest_critique_created_at ?? null,
+  );
   if (plan?.latest_critique_created_at) {
     const t = new Date(plan.latest_critique_created_at).getTime();
     if (!Number.isNaN(t)) {
@@ -124,7 +160,7 @@ export function summarizeCritique(
       overdue = now - t > CRITIQUE_OVERDUE_MS;
     }
   }
-  return { total: findings.length, red, yellow, ageDays, overdue };
+  return { total: findings.length, red, yellow, ageDays, createdLabel, overdue };
 }
 
 /**
@@ -249,10 +285,38 @@ export function PlanAdherenceCard({ userId, plan: planProp, greeting }: Props) {
     () => summarizeCritique(plan, nowTs ?? 0),
     [plan, nowTs],
   );
+  const critiqueShape = (plan?.latest_critique_json ?? null) as
+    | CritiqueShape
+    | null;
+  const reconcile = critiqueShape?.reconcile ?? null;
   const findings = useMemo(() => {
-    const c = (plan?.latest_critique_json ?? null) as CritiqueShape | null;
-    return sortFindingsBySeverity(c?.findings ?? []);
+    const raw = critiqueShape?.findings ?? [];
+    // Attach the reconcile outcome tag BEFORE sorting — finding_status is
+    // index-aligned to the critique's original findings order.
+    const status = critiqueShape?.reconcile?.finding_status ?? [];
+    return sortFindingsBySeverity(
+      raw.map((f, i) => ({ ...f, outcome: status[i] ?? null })),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
+  // Per-row drill-in: which finding rows show their full text. Keyed by
+  // the critique's timestamp so a fresh critique renders collapsed without
+  // needing a reset effect.
+  const critiqueKey = plan?.latest_critique_created_at ?? null;
+  const [openRowsState, setOpenRowsState] = useState<{
+    key: string | null;
+    rows: Set<number>;
+  }>({ key: null, rows: new Set() });
+  const openRows =
+    openRowsState.key === critiqueKey ? openRowsState.rows : new Set<number>();
+  const toggleRow = (i: number) =>
+    setOpenRowsState((prev) => {
+      const rows =
+        prev.key === critiqueKey ? new Set(prev.rows) : new Set<number>();
+      if (rows.has(i)) rows.delete(i);
+      else rows.add(i);
+      return { key: critiqueKey, rows };
+    });
   const nextReview = useMemo(() => nextReviewLabel(weeklyReview), [weeklyReview]);
   const materialChange = useMemo(
     () => materialChangeSinceCritique(flags, plan, nowTs ?? 0),
@@ -310,7 +374,14 @@ export function PlanAdherenceCard({ userId, plan: planProp, greeting }: Props) {
               ? `critique: ${critique.total} finding${critique.total === 1 ? "" : "s"}` +
                 (critique.red > 0 ? ` · ${critique.red} RED` : "") +
                 (critique.yellow > 0 ? ` · ${critique.yellow} YELLOW` : "") +
-                (critique.ageDays !== null ? ` · ${critique.ageDays}d ago` : "")
+                (critique.createdLabel
+                  ? ` · ${critique.createdLabel}` +
+                    (critique.ageDays !== null
+                      ? ` (${critique.ageDays}d ago)`
+                      : "")
+                  : critique.ageDays !== null
+                    ? ` · ${critique.ageDays}d ago`
+                    : "")
               : "no critique on file yet"}
             {nextReview ? ` · next auto-review ${nextReview}` : ""}
           </p>
@@ -326,30 +397,90 @@ export function PlanAdherenceCard({ userId, plan: planProp, greeting }: Props) {
           ) : null}
         </div>
 
-        {/* Expandable findings list — REDs first, severity-colored. The
-            data is already on the /api/plan/current DTO the page fetched;
-            expanding renders it, no extra round-trip. */}
+        {/* Reconcile-loop outcome — "what Argosy did about the findings". */}
+        {reconcile?.summary_line ? (
+          <p
+            className="font-mono text-xs tabular-nums"
+            data-testid="adherence-reconcile"
+          >
+            {reconcile.summary_line}
+          </p>
+        ) : null}
+
+        {/* Expandable findings list — REDs first, one scannable row per
+            finding (severity chip · bold topic · one-line summary ·
+            optional reconcile outcome tag), full text behind a per-row
+            expand. Data is already on the /api/plan/current DTO. */}
         {expanded && findings.length > 0 ? (
           <ul
             className="flex flex-col gap-1.5 mt-1"
             data-testid="adherence-findings"
           >
-            {findings.map((f, i) => (
-              <li key={i} className="flex items-start gap-2">
-                <StatusPill tone={severityTone(f.severity)} mono>
-                  {f.severity ?? "?"}
-                </StatusPill>
-                <span className="text-xs">
-                  {f.topic ? (
-                    <span className="font-medium text-foreground">
-                      {f.topic}
-                      {" — "}
+            {findings.map((f, i) => {
+              const open = openRows.has(i);
+              const hasDetail = Boolean(
+                f.plan_item_ref ||
+                  (f.evidence && f.evidence.length > 0) ||
+                  f.recommended_action,
+              );
+              return (
+                <li key={i} className="flex flex-col gap-1">
+                  <div className="flex items-start gap-2">
+                    <StatusPill tone={severityTone(f.severity)} mono>
+                      {f.severity ?? "?"}
+                    </StatusPill>
+                    <span className="text-xs min-w-0">
+                      {f.topic ? (
+                        <span className="font-medium text-foreground">
+                          {f.topic}
+                          {" — "}
+                        </span>
+                      ) : null}
+                      {f.summary ?? f.plan_item_ref ?? ""}
                     </span>
+                    {f.outcome ? (
+                      <StatusPill
+                        tone={f.outcome === "unresolved" ? "error" : "neutral"}
+                        mono
+                        data-testid={`adherence-finding-outcome-${i}`}
+                      >
+                        {f.outcome}
+                      </StatusPill>
+                    ) : null}
+                    {hasDetail ? (
+                      <button
+                        type="button"
+                        className="font-mono text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground shrink-0"
+                        data-testid={`adherence-finding-toggle-${i}`}
+                        onClick={() => toggleRow(i)}
+                      >
+                        {open ? "less" : "more"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {open ? (
+                    <div
+                      className="ml-2 pl-3 border-l text-xs flex flex-col gap-1"
+                      data-testid={`adherence-finding-detail-${i}`}
+                    >
+                      {f.plan_item_ref ? (
+                        <p className="font-mono text-muted-foreground">
+                          {f.plan_item_ref}
+                        </p>
+                      ) : null}
+                      {(f.evidence ?? []).map((e, j) => (
+                        <p key={j}>{e}</p>
+                      ))}
+                      {f.recommended_action ? (
+                        <p className="text-foreground">
+                          Recommended: {f.recommended_action}
+                        </p>
+                      ) : null}
+                    </div>
                   ) : null}
-                  {f.summary ?? f.plan_item_ref ?? ""}
-                </span>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         ) : null}
 
