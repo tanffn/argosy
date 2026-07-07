@@ -92,7 +92,14 @@ class PendingReevaluationDailyLoop(CadenceLoop):
         self._max_attempts = max_attempts
         self.last_output_summary: dict[str, Any] | None = None
 
-    async def tick(self) -> dict[str, Any] | None:
+    async def tick(
+        self, *, now: Callable[[], datetime] | None = None,
+    ) -> dict[str, Any] | None:
+        # `now` is the scheduler's injected clock (Scheduler calls
+        # `loop.tick(now=self.clock)`); this sweep derives its own
+        # timestamps downstream, so the clock is accepted for the
+        # scheduler contract but unused. Missing it made every scheduled
+        # fire raise TypeError — the queue never swept on cron.
         # Proposal expiry (P4): sweep open, past-TTL proposals to EXPIRED so a
         # stale recommendation can't be acted on against drifted facts. Runs
         # daily regardless of whether the decision funnel is enabled.

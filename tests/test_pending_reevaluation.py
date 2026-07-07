@@ -275,6 +275,21 @@ async def test_daily_loop_no_rows_returns_zero_summary(engine: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_daily_loop_tick_accepts_scheduler_clock(engine: None) -> None:
+    """Regression: the Scheduler invokes `loop.tick(now=self.clock)`
+    (argosy/orchestrator/scheduler.py). The loop's tick REFUSED the kwarg
+    for over a month — every scheduled fire raised TypeError and the queue
+    never swept on cron (cadence_state showed status=error). Pin the real
+    calling convention, not just the bare tick()."""
+    from datetime import datetime, timezone as _tz
+
+    await _seed_user()
+    loop = PendingReevaluationDailyLoop(user_id="ariel")
+    summary = await loop.tick(now=lambda: datetime.now(_tz.utc))
+    assert summary is not None and summary["swept"] == 0
+
+
+@pytest.mark.asyncio
 async def test_daily_loop_handles_consult_exception(engine: None) -> None:
     """If the consult call raises, treat as an attempt (record_attempt)
     so we don't loop forever on a broken retry path."""
