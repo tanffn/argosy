@@ -2096,8 +2096,12 @@ export interface GreetingNeedsYouItemDTO {
   id: string;
   kind: string;
   headline: string;
-  why_md: string;
-  cta: GreetingCtaDTO;
+  // why_md / cta are rendered generically and tolerated as absent — the
+  // backend wires new needs_you kinds (verified / needs-confirm action
+  // items) additively, and the card must not break on an item that
+  // carries no CTA or no rationale.
+  why_md?: string | null;
+  cta?: GreetingCtaDTO | null;
 }
 
 export interface GreetingWatchingItemDTO {
@@ -3606,6 +3610,13 @@ export const api = {
   // see argosy/services/wealth_dashboard.py for per-block semantics.
   // ----------------------------------------------------------------------
 
+  // Snapshot-history series (GET /api/portfolio/net-worth-history) —
+  // per-snapshot actual net worth + direct NVDA % of book. Powers the
+  // home page's wealth-trajectory and deconcentration charts.
+  netWorthHistory: (userId: string, months: number = 12) =>
+    getJSON<NetWorthHistoryResponse>(
+      `/api/portfolio/net-worth-history?user_id=${encodeURIComponent(userId)}&months=${months}`,
+    ),
   wealthDashboard: (userId: string, excludeNvda: boolean = false) =>
     getJSON<WealthDashboardDTO>(
       `/api/portfolio/wealth-dashboard?user_id=${encodeURIComponent(userId)}` +
@@ -5279,6 +5290,20 @@ export interface WealthAssumptions {
   nvda_target_source: string | null;
   snapshot_date: string | null;
   plan_version_id: number | null;
+}
+
+// GET /api/portfolio/net-worth-history — mirrors
+// argosy.api.routes.wealth_dashboard.NetWorthHistoryResponseDTO.
+export interface NetWorthHistoryPointDTO {
+  date: string; // ISO date
+  total_usd: number | null;
+  // Direct NVDA position % of book (0-100) at that snapshot.
+  nvda_pct: number | null;
+}
+
+export interface NetWorthHistoryResponse {
+  user_id: string;
+  points: NetWorthHistoryPointDTO[];
 }
 
 export interface WealthDashboardDTO {
