@@ -292,6 +292,42 @@ export function trendDelta(actuals: Row[]): number | null {
   return last.actual! - fit;
 }
 
+/**
+ * Dot renderer for the actual line: solid for real ingested snapshots,
+ * hollow + dashed outline for RECONSTRUCTED points (backfilled from
+ * archived TSV exports) — the visual contract that a reconstruction is
+ * never mistaken for a real snapshot.
+ */
+export function renderActualDot(props: {
+  cx?: number;
+  cy?: number;
+  index?: number;
+  payload?: Row;
+}) {
+  const { cx, cy, index, payload } = props;
+  if (
+    typeof cx !== "number" ||
+    typeof cy !== "number" ||
+    payload?.actual === undefined
+  ) {
+    return <g key={`wealth-dot-${index}`} />;
+  }
+  const recon = payload.point?.reconstructed === true;
+  return (
+    <circle
+      key={`wealth-dot-${index}`}
+      cx={cx}
+      cy={cy}
+      r={3}
+      stroke={ACTUAL_COLOR}
+      strokeWidth={recon ? 1.25 : 1}
+      strokeDasharray={recon ? "2 2" : undefined}
+      fill={recon ? "transparent" : ACTUAL_COLOR}
+      data-testid={recon ? "wealth-dot-reconstructed" : "wealth-dot-actual"}
+    />
+  );
+}
+
 function TrajectoryTooltip(props: {
   active?: boolean;
   label?: number;
@@ -307,6 +343,11 @@ function TrajectoryTooltip(props: {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0]?.payload;
   const delta = row?.delta;
+  // Reconstructed points carry their evidence trail — show it so a
+  // backfilled point is never mistaken for a real ingested snapshot.
+  const provenanceNote = row?.point?.reconstructed
+    ? (row.point.provenance ?? "reconstructed from an archived export")
+    : null;
   // Price-vintage note: the point plots at the row's price vintage; when
   // the stamped snapshot_date differs (TSV exported later than dated),
   // say so explicitly instead of implying the book was marked that day.
@@ -343,6 +384,14 @@ function TrajectoryTooltip(props: {
           data-testid="vintage-note"
         >
           {vintageNote}
+        </p>
+      ) : null}
+      {provenanceNote ? (
+        <p
+          className="mt-1 text-muted-foreground italic"
+          data-testid="provenance-note"
+        >
+          {provenanceNote}
         </p>
       ) : null}
       {delta ? (
@@ -441,6 +490,9 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
   const delta = useMemo(() => trendDelta(actuals), [actuals]);
 
   const hasActual = actuals.length > 0;
+  const hasReconstructed = actuals.some(
+    (r) => r.point?.reconstructed === true,
+  );
   const hasProjection = projection.length > 0;
   const latestActual = hasActual ? actuals[actuals.length - 1] : null;
   // The axis always spans the full window: 1y back from today.
@@ -581,7 +633,7 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
                 name="actual"
                 stroke={ACTUAL_COLOR}
                 strokeWidth={2}
-                dot={{ r: 3 }}
+                dot={renderActualDot}
                 connectNulls
                 isAnimationActive={false}
               />
@@ -601,6 +653,9 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
           </ResponsiveContainer>
           <div className="text-[11px] text-muted-foreground tabular-nums">
             {hasActual ? "solid: past year actual (quarterly)" : null}
+            {hasReconstructed
+              ? " · hollow: reconstructed from archived exports"
+              : null}
             {hasActual && hasProjection ? " · " : null}
             {hasProjection
               ? "dashed/shaded: 1y projected (canonical growth rates, anchored at the latest actual)"

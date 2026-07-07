@@ -27,6 +27,7 @@ import {
   deltaBreakdown,
   formatMoneyCompact,
   formatUsdCompact,
+  renderActualDot,
   trendDelta,
   WealthTrajectoryCard,
 } from "../WealthTrajectoryCard";
@@ -337,5 +338,76 @@ describe("formatters", () => {
     expect(formatUsdCompact(412_345)).toBe("$412K");
     expect(formatMoneyCompact(13_597_549, "NIS")).toBe("₪13.60M");
     expect(formatMoneyCompact(412_345, "NIS")).toBe("₪412K");
+  });
+});
+
+describe("reconstructed history points", () => {
+  it("renderActualDot draws real snapshots solid and reconstructions hollow/dashed", () => {
+    const real = renderActualDot({
+      cx: 10,
+      cy: 20,
+      index: 0,
+      payload: { ts: 1, actual: 3_311_000, point: pt(200, 3_311_000) },
+    });
+    expect(real.props["data-testid"]).toBe("wealth-dot-actual");
+    expect(real.props.fill).not.toBe("transparent");
+    expect(real.props.strokeDasharray).toBeUndefined();
+
+    const recon = renderActualDot({
+      cx: 10,
+      cy: 20,
+      index: 1,
+      payload: {
+        ts: 1,
+        actual: 3_311_000,
+        point: pt(260, 3_311_000, 3.31, {
+          reconstructed: true,
+          provenance: "reconstructed: archived TSV export (25 Oct.tsv)",
+        }),
+      },
+    });
+    expect(recon.props["data-testid"]).toBe("wealth-dot-reconstructed");
+    expect(recon.props.fill).toBe("transparent");
+    expect(recon.props.strokeDasharray).toBe("2 2");
+  });
+
+  it("renderActualDot renders nothing for projection rows", () => {
+    const el = renderActualDot({
+      cx: 10,
+      cy: 20,
+      index: 2,
+      payload: { ts: 1, projMid: 4_000_000 },
+    });
+    expect(el.type).toBe("g");
+  });
+
+  it("legend explains the hollow marker only when reconstructions exist", async () => {
+    const h = history();
+    h.points[0] = {
+      ...h.points[0],
+      reconstructed: true,
+      provenance: "reconstructed: archived TSV export (25 Oct.tsv)",
+    };
+    netWorthHistory.mockResolvedValue(h);
+    wealthDashboard.mockResolvedValue(DASH);
+    render(<WealthTrajectoryCard userId="ariel" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("wealth-latest")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/hollow: reconstructed from archived exports/),
+    ).toBeInTheDocument();
+  });
+
+  it("legend omits the hollow note for all-real history", async () => {
+    netWorthHistory.mockResolvedValue(history());
+    wealthDashboard.mockResolvedValue(DASH);
+    render(<WealthTrajectoryCard userId="ariel" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("wealth-latest")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/hollow: reconstructed/),
+    ).toBeNull();
   });
 });

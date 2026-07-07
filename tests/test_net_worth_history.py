@@ -11,7 +11,16 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from argosy.state.models import PortfolioSnapshotRow, User
+
+
+@pytest.fixture(autouse=True)
+def _no_backfill_root(monkeypatch):
+    """Keep the dev machine's real archived TSVs (Google Drive) from
+    leaking reconstructed points into these fixtures."""
+    monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
 
 
 def _seed_row(

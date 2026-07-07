@@ -5343,6 +5343,13 @@ export interface NetWorthHistoryPointDTO {
   total_nis?: number | null;
   // USD value of NIS-denominated positions — base of the FX term.
   nis_denominated_usd?: number | null;
+  // True for points RECONSTRUCTED from archived TSV exports on disk
+  // (pre-ingest history) — the chart renders these hollow so a
+  // reconstruction is never mistaken for a real ingested snapshot.
+  reconstructed?: boolean;
+  // Evidence trail for reconstructed points ("reconstructed: archived
+  // TSV export (…)"). Null/absent on real snapshots.
+  provenance?: string | null;
 }
 
 export interface NetWorthHistoryResponse {

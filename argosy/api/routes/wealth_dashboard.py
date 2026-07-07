@@ -15,11 +15,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db
+from argosy.logging import get_logger
 from argosy.services.wealth_dashboard import (
     WealthDashboard,
     compute_wealth_dashboard,
     wealth_dashboard_to_dict,
 )
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio", "wealth-dashboard"])
 
@@ -242,6 +245,16 @@ class NetWorthHistoryPointDTO(BaseModel):
     #: USD value of the NIS-denominated positions at that snapshot —
     #: the base for the tooltip's explicit FX (translation) component.
     nis_denominated_usd: float | None = None
+    #: True for points RECONSTRUCTED from archived TSV exports on disk
+    #: (pre-ingest history; see ``argosy.services.net_worth_backfill``).
+    #: Never persisted to portfolio_snapshots — the UI renders these
+    #: hollow/dashed so a reconstruction is never mistaken for a real
+    #: ingested snapshot.
+    reconstructed: bool = False
+    #: Human-readable evidence trail for reconstructed points, e.g.
+    #: "reconstructed: archived TSV export (Family Finances Status -
+    #: 25 Oct.tsv, dated from the file mtime)". None on real snapshots.
+    provenance: str | None = None
 
 
 class NetWorthHistoryResponseDTO(BaseModel):
@@ -372,6 +385,44 @@ def get_net_worth_history(
             ),
             nis_denominated_usd=nis_denominated_usd,
         )
+
+    # Backfill: evidence-grade reconstructed points from the archived
+    # on-disk TSV exports, strictly BEFORE the earliest real snapshot
+    # (reconstructions never compete with ingested history) and inside
+    # the requested window. Computed on demand + mtime-cached in the
+    # service; nothing is persisted to portfolio_snapshots.
+    try:
+        from argosy.services.net_worth_backfill import (
+            reconstructed_net_worth_points,
+        )
+
+        earliest_real = min(
+            (_date.fromisoformat(k) for k in by_date), default=None,
+        )
+        for rp in reconstructed_net_worth_points(before=earliest_real):
+            if rp.date < cutoff:
+                continue
+            iso = rp.date.isoformat()
+            if iso in by_date:
+                continue  # a real snapshot always wins the date
+            by_date[iso] = NetWorthHistoryPointDTO(
+                date=iso,
+                snapshot_date=(
+                    rp.snapshot_date.isoformat()
+                    if rp.snapshot_date is not None else None
+                ),
+                total_usd=rp.total_usd,
+                nvda_pct=rp.nvda_pct,
+                nvda_usd=rp.nvda_usd,
+                cash_usd=rp.cash_usd,
+                fx_usd_nis=rp.fx_usd_nis,
+                total_nis=rp.total_nis,
+                nis_denominated_usd=rp.nis_denominated_usd,
+                reconstructed=True,
+                provenance=rp.provenance,
+            )
+    except Exception:  # noqa: BLE001 — backfill is enrichment, never a 500
+        logger.warning("net-worth-history: backfill failed", exc_info=True)
 
     points = [by_date[k] for k in sorted(by_date)]
     return NetWorthHistoryResponseDTO(user_id=user_id, points=points)
