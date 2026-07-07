@@ -39,6 +39,7 @@ import {
   type MonitorFlagDTO,
   type PlanCurrentDTO,
 } from "@/lib/api";
+import { formatPlanLabel } from "@/lib/plan-label";
 
 /** weekly cadence + 1 day of grace before "refresh overdue". */
 const CRITIQUE_OVERDUE_MS = 8 * 24 * 3600 * 1000;
@@ -207,9 +208,10 @@ export function PlanAdherenceCard({ userId, plan, greeting }: Props) {
             ) : null}
           </div>
         </div>
-        <CardDescription>
-          {plan?.version_label
-            ? `Current plan: ${plan.version_label}`
+        {/* Human-readable plan name — never the internal draft slug. */}
+        <CardDescription data-testid="adherence-plan-name">
+          {formatPlanLabel(plan)
+            ? `Current plan: ${formatPlanLabel(plan)}`
             : "No plan imported yet."}
         </CardDescription>
       </CardHeader>

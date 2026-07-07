@@ -35,7 +35,7 @@ const NOW = Date.now();
 function plan(overrides: Partial<PlanCurrentDTO> = {}): PlanCurrentDTO {
   return {
     plan_version_id: 67,
-    version_label: "v67",
+    version_label: "x10-sleeve-draft-20260706-124710",
     raw_markdown: "",
     imported_at: new Date(NOW - 20 * DAY_MS).toISOString(),
     latest_critique_json: {
@@ -119,6 +119,10 @@ describe("PlanAdherenceCard", () => {
     expect(screen.getByTestId("adherence-note").textContent).toContain(
       "biggest gap",
     );
+    // Human-readable plan name — never the internal draft slug.
+    const name = screen.getByTestId("adherence-plan-name").textContent!;
+    expect(name).toContain("Plan v67 · x10 sleeve");
+    expect(name).not.toContain("x10-sleeve-draft-20260706-124710");
   });
 
   it("shows the critique verdict with its age and the next auto-review", async () => {
