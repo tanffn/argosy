@@ -24,6 +24,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -51,9 +52,50 @@ const MATERIAL_FLAG_KINDS = [
   "allocation_drift",
 ];
 
+export interface CritiqueFinding {
+  severity?: string;
+  topic?: string;
+  summary?: string;
+  plan_item_ref?: string;
+}
+
 interface CritiqueShape {
   overall_summary?: string;
-  findings?: { severity?: string }[];
+  findings?: CritiqueFinding[];
+}
+
+/** REDs first, then YELLOW/AMBER, then GREEN, stable within a band. */
+const SEVERITY_ORDER: Record<string, number> = {
+  RED: 0,
+  AMBER: 1,
+  YELLOW: 1,
+  GREEN: 2,
+};
+
+export function sortFindingsBySeverity(
+  findings: CritiqueFinding[],
+): CritiqueFinding[] {
+  return [...findings].sort(
+    (a, b) =>
+      (SEVERITY_ORDER[a.severity ?? ""] ?? 3) -
+      (SEVERITY_ORDER[b.severity ?? ""] ?? 3),
+  );
+}
+
+export function severityTone(
+  severity: string | undefined,
+): "success" | "warning" | "error" | "neutral" {
+  switch (severity) {
+    case "RED":
+      return "error";
+    case "YELLOW":
+    case "AMBER":
+      return "warning";
+    case "GREEN":
+      return "success";
+    default:
+      return "neutral";
+  }
 }
 
 export interface CritiqueLine {
@@ -147,11 +189,40 @@ interface Props {
   greeting: GreetingDTO | null;
 }
 
-export function PlanAdherenceCard({ userId, plan, greeting }: Props) {
+export function PlanAdherenceCard({ userId, plan: planProp, greeting }: Props) {
   const [weeklyReview, setWeeklyReview] = useState<JobView | null>(null);
   const [flags, setFlags] = useState<MonitorFlagDTO[]>([]);
   // Clock stamped from the effect so render stays pure.
   const [nowTs, setNowTs] = useState<number | null>(null);
+  // Findings drill-in (collapsed by default — the one-line summary stays
+  // the primary surface; expanding shows the severity-sorted list).
+  const [expanded, setExpanded] = useState(false);
+  // "Run review now" — mirrors DeployCashCard's fleet-review UX: the
+  // POST is a synchronous Opus call that takes minutes, so the button
+  // flips to a disabled "running… (minutes)" label and we refetch
+  // /api/plan/current when it returns. The fresh plan (with the new
+  // critique) overrides the page-supplied prop until the next reload.
+  const [reviewRunning, setReviewRunning] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [freshPlan, setFreshPlan] = useState<PlanCurrentDTO | null>(null);
+
+  const plan = freshPlan ?? planProp;
+
+  const runReviewNow = async () => {
+    setReviewRunning(true);
+    setReviewError(null);
+    try {
+      await api.recritique(userId);
+      const updated = await api.planCurrent(userId);
+      setFreshPlan(updated);
+      setNowTs(Date.now());
+      setExpanded(true);
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewRunning(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +249,10 @@ export function PlanAdherenceCard({ userId, plan, greeting }: Props) {
     () => summarizeCritique(plan, nowTs ?? 0),
     [plan, nowTs],
   );
+  const findings = useMemo(() => {
+    const c = (plan?.latest_critique_json ?? null) as CritiqueShape | null;
+    return sortFindingsBySeverity(c?.findings ?? []);
+  }, [plan]);
   const nextReview = useMemo(() => nextReviewLabel(weeklyReview), [weeklyReview]);
   const materialChange = useMemo(
     () => materialChangeSinceCritique(flags, plan, nowTs ?? 0),
@@ -226,15 +301,87 @@ export function PlanAdherenceCard({ userId, plan, greeting }: Props) {
         ) : null}
 
         {/* Critique verdict + age + next auto-review. */}
-        <p className="font-mono text-xs tabular-nums" data-testid="adherence-critique">
-          {critique
-            ? `critique: ${critique.total} finding${critique.total === 1 ? "" : "s"}` +
-              (critique.red > 0 ? ` · ${critique.red} RED` : "") +
-              (critique.yellow > 0 ? ` · ${critique.yellow} YELLOW` : "") +
-              (critique.ageDays !== null ? ` · ${critique.ageDays}d ago` : "")
-            : "no critique on file yet"}
-          {nextReview ? ` · next auto-review ${nextReview}` : ""}
-        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <p
+            className="font-mono text-xs tabular-nums"
+            data-testid="adherence-critique"
+          >
+            {critique
+              ? `critique: ${critique.total} finding${critique.total === 1 ? "" : "s"}` +
+                (critique.red > 0 ? ` · ${critique.red} RED` : "") +
+                (critique.yellow > 0 ? ` · ${critique.yellow} YELLOW` : "") +
+                (critique.ageDays !== null ? ` · ${critique.ageDays}d ago` : "")
+              : "no critique on file yet"}
+            {nextReview ? ` · next auto-review ${nextReview}` : ""}
+          </p>
+          {findings.length > 0 ? (
+            <button
+              type="button"
+              className="font-mono text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground"
+              data-testid="adherence-findings-toggle"
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? "hide findings" : "show findings"}
+            </button>
+          ) : null}
+        </div>
+
+        {/* Expandable findings list — REDs first, severity-colored. The
+            data is already on the /api/plan/current DTO the page fetched;
+            expanding renders it, no extra round-trip. */}
+        {expanded && findings.length > 0 ? (
+          <ul
+            className="flex flex-col gap-1.5 mt-1"
+            data-testid="adherence-findings"
+          >
+            {findings.map((f, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <StatusPill tone={severityTone(f.severity)} mono>
+                  {f.severity ?? "?"}
+                </StatusPill>
+                <span className="text-xs">
+                  {f.topic ? (
+                    <span className="font-medium text-foreground">
+                      {f.topic}
+                      {" — "}
+                    </span>
+                  ) : null}
+                  {f.summary ?? f.plan_item_ref ?? ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {/* Run + deep-link row. */}
+        <div className="flex items-center gap-3 mt-1 flex-wrap">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={reviewRunning}
+            data-testid="adherence-run-review"
+            onClick={runReviewNow}
+          >
+            {reviewRunning ? "Reviewing… (minutes)" : "Run review now"}
+          </Button>
+          {critique ? (
+            <a
+              href="/plan#critique"
+              className="font-mono text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground"
+              data-testid="adherence-full-report"
+            >
+              full report →
+            </a>
+          ) : null}
+        </div>
+        {reviewError ? (
+          <p
+            className="font-mono text-xs text-destructive"
+            data-testid="adherence-review-error"
+          >
+            review failed: {reviewError}
+          </p>
+        ) : null}
 
         {/* Material change since the last critique — surfaced from the
             state observer's allocation/concentration flags. */}

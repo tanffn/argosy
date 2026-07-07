@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import type {
@@ -10,6 +10,8 @@ import type {
 
 const jobsList = vi.fn();
 const monitorFlags = vi.fn();
+const recritique = vi.fn();
+const planCurrent = vi.fn();
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
@@ -18,6 +20,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
       ...actual.api,
       jobs: { ...actual.api.jobs, list: (...args: unknown[]) => jobsList(...args) },
       monitorFlags: (...args: unknown[]) => monitorFlags(...args),
+      recritique: (...args: unknown[]) => recritique(...args),
+      planCurrent: (...args: unknown[]) => planCurrent(...args),
     },
   };
 });
@@ -26,6 +30,8 @@ import {
   materialChangeSinceCritique,
   nextReviewLabel,
   PlanAdherenceCard,
+  severityTone,
+  sortFindingsBySeverity,
   summarizeCritique,
 } from "../PlanAdherenceCard";
 
@@ -41,9 +47,9 @@ function plan(overrides: Partial<PlanCurrentDTO> = {}): PlanCurrentDTO {
     latest_critique_json: {
       overall_summary: "Plan holds.",
       findings: [
-        { severity: "RED" },
-        { severity: "YELLOW" },
-        { severity: "YELLOW" },
+        { severity: "YELLOW", topic: "Data Staleness", summary: "Holdings 25d stale." },
+        { severity: "RED", topic: "Cross-surface Consistency", summary: "NVDA 12% vs 8%." },
+        { severity: "YELLOW", topic: "Tax Treatment", summary: "CGT unverified." },
       ],
     },
     latest_critique_created_at: new Date(NOW - 3 * DAY_MS).toISOString(),
@@ -101,6 +107,8 @@ function flag(overrides: Partial<MonitorFlagDTO> = {}): MonitorFlagDTO {
 beforeEach(() => {
   jobsList.mockReset();
   monitorFlags.mockReset();
+  recritique.mockReset();
+  planCurrent.mockReset();
   jobsList.mockResolvedValue({ jobs: [weeklyReviewJob()] });
   monitorFlags.mockResolvedValue([]);
 });
@@ -174,6 +182,89 @@ describe("PlanAdherenceCard", () => {
     );
   });
 
+  it("expands to a severity-sorted findings list (REDs first) on toggle", async () => {
+    render(
+      <PlanAdherenceCard userId="ariel" plan={plan()} greeting={GREETING} />,
+    );
+    // Collapsed by default.
+    expect(screen.queryByTestId("adherence-findings")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("adherence-findings-toggle"));
+    const list = screen.getByTestId("adherence-findings");
+    const items = list.querySelectorAll("li");
+    expect(items).toHaveLength(3);
+    // The RED finding leads even though the fixture lists it second.
+    expect(items[0].textContent).toContain("RED");
+    expect(items[0].textContent).toContain("Cross-surface Consistency");
+    expect(items[0].textContent).toContain("NVDA 12% vs 8%.");
+    // Toggle closes again.
+    fireEvent.click(screen.getByTestId("adherence-findings-toggle"));
+    expect(screen.queryByTestId("adherence-findings")).not.toBeInTheDocument();
+  });
+
+  it("runs a review on demand, shows the running state, and refetches", async () => {
+    let resolveCritique: (v: unknown) => void = () => {};
+    recritique.mockImplementation(
+      () => new Promise((res) => (resolveCritique = res)),
+    );
+    const freshPlan = plan({
+      latest_critique_json: {
+        overall_summary: "All clear.",
+        findings: [{ severity: "GREEN", topic: "FI Math", summary: "OK." }],
+      },
+      latest_critique_created_at: new Date(NOW).toISOString(),
+    });
+    planCurrent.mockResolvedValue(freshPlan);
+    render(
+      <PlanAdherenceCard userId="ariel" plan={plan()} greeting={GREETING} />,
+    );
+    const btn = screen.getByTestId("adherence-run-review");
+    expect(btn.textContent).toBe("Run review now");
+    fireEvent.click(btn);
+    // Long-poll UX: disabled + honest "minutes" label while in flight.
+    expect(btn.textContent).toBe("Reviewing… (minutes)");
+    expect(btn).toBeDisabled();
+    resolveCritique({ status: "ok", critique_id: 2, detail: "" });
+    await waitFor(() =>
+      expect(screen.getByTestId("adherence-run-review").textContent).toBe(
+        "Run review now",
+      ),
+    );
+    // Refetched plan overrides the prop: 1 finding, auto-expanded.
+    expect(planCurrent).toHaveBeenCalledWith("ariel");
+    expect(
+      screen.getByTestId("adherence-critique").textContent,
+    ).toContain("critique: 1 finding");
+    expect(screen.getByTestId("adherence-findings").textContent).toContain(
+      "FI Math",
+    );
+  });
+
+  it("surfaces a review failure without losing the existing critique", async () => {
+    recritique.mockRejectedValue(new Error("502 upstream"));
+    render(
+      <PlanAdherenceCard userId="ariel" plan={plan()} greeting={GREETING} />,
+    );
+    fireEvent.click(screen.getByTestId("adherence-run-review"));
+    await waitFor(() =>
+      expect(screen.getByTestId("adherence-review-error")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId("adherence-review-error").textContent,
+    ).toContain("502 upstream");
+    // Old critique line still renders.
+    expect(
+      screen.getByTestId("adherence-critique").textContent,
+    ).toContain("critique: 3 findings");
+  });
+
+  it("deep-links to the full report on /plan#critique", async () => {
+    render(
+      <PlanAdherenceCard userId="ariel" plan={plan()} greeting={GREETING} />,
+    );
+    const link = screen.getByTestId("adherence-full-report");
+    expect(link.getAttribute("href")).toBe("/plan#critique");
+  });
+
   it("degrades honestly with no critique on file", async () => {
     render(
       <PlanAdherenceCard
@@ -195,6 +286,29 @@ describe("PlanAdherenceCard", () => {
 });
 
 describe("helpers", () => {
+  it("sortFindingsBySeverity orders RED, then YELLOW/AMBER, then GREEN", () => {
+    const sorted = sortFindingsBySeverity([
+      { severity: "GREEN" },
+      { severity: "YELLOW" },
+      { severity: "RED" },
+      { severity: "AMBER" },
+    ]);
+    expect(sorted.map((f) => f.severity)).toEqual([
+      "RED",
+      "YELLOW",
+      "AMBER",
+      "GREEN",
+    ]);
+  });
+
+  it("severityTone maps severities to pill tones", () => {
+    expect(severityTone("RED")).toBe("error");
+    expect(severityTone("YELLOW")).toBe("warning");
+    expect(severityTone("AMBER")).toBe("warning");
+    expect(severityTone("GREEN")).toBe("success");
+    expect(severityTone(undefined)).toBe("neutral");
+  });
+
   it("summarizeCritique counts severities and flags overdue past 8 days", () => {
     const fresh = summarizeCritique(plan(), NOW)!;
     expect(fresh).toMatchObject({ total: 3, red: 1, yellow: 2, overdue: false });

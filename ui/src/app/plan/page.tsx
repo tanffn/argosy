@@ -889,9 +889,11 @@ export default function PlanPage() {
         />
       )}
 
-      {/* Section 5 — Critique findings (unchanged) */}
+      {/* Section 5 — Critique findings (unchanged). The id anchors the
+          home PlanAdherenceCard's "full report → /plan#critique" deep
+          link; scroll-mt keeps the heading clear of any sticky chrome. */}
       {critique && (
-        <Card>
+        <Card id="critique" className="scroll-mt-6">
           <CardHeader>
             <CardTitle>Critique findings</CardTitle>
             <CardDescription>{critique.overall_summary}</CardDescription>
