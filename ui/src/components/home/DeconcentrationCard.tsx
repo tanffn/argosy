@@ -2,18 +2,22 @@
 
 /**
  * DeconcentrationCard — "is the NVDA sell-down on schedule?" in one
- * glance. Plots the concentrated position's % of book over time:
+ * glance. Plots the concentrated position's % of the TRADEABLE book:
  *
- *  - ACTUAL: direct NVDA % per historical snapshot
- *    (GET /api/portfolio/net-worth-history — snapshot history is
- *    positions-only, so this is direct-position weight, not fund
- *    look-through).
- *  - PLAN GLIDE: the TargetAllocationDoc glide waypoints, from the same
- *    source /plan renders (GET /api/plan/current/allocation-glidepath),
- *    taking the NVDA band's stitched trajectory.
+ *  - ACTUAL: canonical NVDA concentration per historical snapshot
+ *    (GET /api/portfolio/net-worth-history — nvda_concentration_pct,
+ *    i.e. NVDA ÷ tradeable securities book, the SAME denominator the
+ *    plan glide uses; direct-position weight, not fund look-through).
+ *  - PLAN GLIDE: the TargetAllocationDoc's quarterly glide waypoints,
+ *    from the same source /plan renders
+ *    (GET /api/plan/current/allocation-glidepath). Each glide point IS
+ *    a dated plan waypoint — rendered as a marker dot, and listed under
+ *    the chart as "due <date>: ≤N%".
  *
- * A status pill compares the latest actual against the glide value due
- * today: at/below (with a small tolerance) = ON SCHEDULE, above = BEHIND.
+ * The status pill compares the latest actual against the waypoint
+ * CURRENTLY DUE (the last waypoint dated at-or-before the latest
+ * snapshot — never the end-state target). Upticks between waypoints are
+ * normal price drift between sales; the footer says so explicitly.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -38,13 +42,19 @@ import {
 const ACTUAL_COLOR = "#f97316"; // orange — today's over-weight (matches NvdaWinddown)
 const GLIDE_COLOR = "#10b981"; // emerald — plan target
 
-/** Tolerance band (percentage points) before "above glide" reads BEHIND. */
+/** Tolerance band (percentage points) before "above the due waypoint" reads BEHIND. */
 const ON_SCHEDULE_TOLERANCE_PP = 1.0;
 
 interface Row {
   ts: number;
   actual?: number;
   glide?: number;
+}
+
+export interface Waypoint {
+  ts: number;
+  date: string; // ISO
+  target_pct: number;
 }
 
 /** Pick the glidepath band that is the concentrated NVDA position. */
@@ -60,9 +70,31 @@ export function findNvdaClass(
   );
 }
 
+/**
+ * The plan's dated NVDA waypoints, straight from the glidepath points
+ * (the doc-backed glidepath serves the TargetAllocationDoc's quarterly
+ * waypoints verbatim — each point is a real waypoint, not an
+ * interpolation).
+ */
+export function extractWaypoints(
+  glidepath: AllocationGlidepathResponse | null,
+): Waypoint[] {
+  const cls = findNvdaClass(glidepath);
+  if (!cls || !glidepath) return [];
+  const out: Waypoint[] = [];
+  for (const p of glidepath.points) {
+    const v = p.composition_pct_by_class[cls];
+    if (typeof v !== "number") continue;
+    const ts = new Date(p.date).getTime();
+    if (Number.isNaN(ts)) continue;
+    out.push({ ts, date: p.date.slice(0, 10), target_pct: v });
+  }
+  return out.sort((a, b) => a.ts - b.ts);
+}
+
 export function buildRows(
   history: NetWorthHistoryResponse | null,
-  glidepath: AllocationGlidepathResponse | null,
+  waypoints: Waypoint[],
 ): Row[] {
   const rows: Row[] = [];
   for (const p of history?.points ?? []) {
@@ -71,32 +103,39 @@ export function buildRows(
     if (Number.isNaN(ts)) continue;
     rows.push({ ts, actual: p.nvda_pct });
   }
-  const cls = findNvdaClass(glidepath);
-  if (cls && glidepath) {
-    for (const p of glidepath.points) {
-      const v = p.composition_pct_by_class[cls];
-      if (typeof v !== "number") continue;
-      const ts = new Date(p.date).getTime();
-      if (Number.isNaN(ts)) continue;
-      rows.push({ ts, glide: v });
-    }
+  for (const w of waypoints) {
+    rows.push({ ts: w.ts, glide: w.target_pct });
   }
   return rows.sort((a, b) => a.ts - b.ts);
 }
 
 /**
- * ON SCHEDULE / BEHIND verdict: latest actual vs the glide value in
- * force at that moment (last glide point at-or-before the latest
- * actual, else the first glide point). Null when either side missing.
+ * The waypoint CURRENTLY DUE for the latest actual: the last waypoint
+ * dated at-or-before it (falling back to the first waypoint when the
+ * glide starts in the future). Null when either side is missing.
  */
-export function scheduleVerdict(rows: Row[]): "on" | "behind" | null {
+export function dueWaypoint(
+  rows: Row[],
+  waypoints: Waypoint[],
+): Waypoint | null {
   const actuals = rows.filter((r) => r.actual !== undefined);
-  const glides = rows.filter((r) => r.glide !== undefined);
-  if (actuals.length === 0 || glides.length === 0) return null;
+  if (actuals.length === 0 || waypoints.length === 0) return null;
   const latest = actuals[actuals.length - 1];
-  const due =
-    [...glides].reverse().find((g) => g.ts <= latest.ts) ?? glides[0];
-  return latest.actual! <= due.glide! + ON_SCHEDULE_TOLERANCE_PP
+  return (
+    [...waypoints].reverse().find((w) => w.ts <= latest.ts) ?? waypoints[0]
+  );
+}
+
+/** ON SCHEDULE / BEHIND verdict vs the currently-due waypoint. */
+export function scheduleVerdict(
+  rows: Row[],
+  waypoints: Waypoint[],
+): "on" | "behind" | null {
+  const due = dueWaypoint(rows, waypoints);
+  if (due === null) return null;
+  const actuals = rows.filter((r) => r.actual !== undefined);
+  const latest = actuals[actuals.length - 1];
+  return latest.actual! <= due.target_pct + ON_SCHEDULE_TOLERANCE_PP
     ? "on"
     : "behind";
 }
@@ -106,6 +145,12 @@ function monthLabel(ts: number): string {
     month: "short",
     year: "2-digit",
   });
+}
+
+function shortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function DeconTooltip(props: {
@@ -165,9 +210,17 @@ export function DeconcentrationCard({ userId }: { userId: string }) {
     };
   }, [userId]);
 
-  const rows = useMemo(() => buildRows(history, glidepath), [history, glidepath]);
-  const verdict = useMemo(() => scheduleVerdict(rows), [rows]);
-  const hasGlide = rows.some((r) => r.glide !== undefined);
+  const waypoints = useMemo(() => extractWaypoints(glidepath), [glidepath]);
+  const rows = useMemo(
+    () => buildRows(history, waypoints),
+    [history, waypoints],
+  );
+  const due = useMemo(() => dueWaypoint(rows, waypoints), [rows, waypoints]);
+  const verdict = useMemo(
+    () => scheduleVerdict(rows, waypoints),
+    [rows, waypoints],
+  );
+  const hasGlide = waypoints.length > 0;
   const latestActual = [...rows]
     .reverse()
     .find((r) => r.actual !== undefined)?.actual;
@@ -179,7 +232,7 @@ export function DeconcentrationCard({ userId }: { userId: string }) {
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Deconcentration — NVDA % of book
+          Deconcentration — NVDA % of tradeable book
         </span>
         <div className="flex items-center gap-2">
           {latestActual !== undefined ? (
@@ -195,12 +248,28 @@ export function DeconcentrationCard({ userId }: { userId: string }) {
               tone={verdict === "on" ? "success" : "warning"}
               mono
               data-testid="decon-verdict"
+              title={
+                due
+                  ? `vs the waypoint currently due: ≤${due.target_pct.toFixed(1)}% by ${due.date}`
+                  : undefined
+              }
             >
-              {verdict === "on" ? "ON SCHEDULE" : "BEHIND GLIDE"}
+              {verdict === "on" ? "ON SCHEDULE" : "BEHIND WAYPOINT"}
             </StatusPill>
           ) : null}
         </div>
       </div>
+      {due ? (
+        <p
+          className="text-[11px] text-muted-foreground font-mono tabular-nums"
+          data-testid="decon-due-line"
+        >
+          due waypoint: ≤{due.target_pct.toFixed(1)}% by {shortDate(due.date)}
+          {latestActual !== undefined
+            ? ` · actual ${latestActual.toFixed(1)}%`
+            : ""}
+        </p>
+      ) : null}
       {loading ? (
         <div
           className="h-[180px] flex items-center justify-center text-xs text-muted-foreground font-mono"
@@ -253,7 +322,7 @@ export function DeconcentrationCard({ userId }: { userId: string }) {
               ) : null}
               <Line
                 dataKey="actual"
-                name="actual (direct position)"
+                name="actual (tradeable-book weight)"
                 stroke={ACTUAL_COLOR}
                 strokeWidth={2}
                 dot={{ r: 2 }}
@@ -261,22 +330,42 @@ export function DeconcentrationCard({ userId }: { userId: string }) {
                 isAnimationActive={false}
               />
               {hasGlide ? (
+                // Waypoint markers: every dot on this line IS a dated
+                // plan waypoint (the doc glide is quarterly, not an
+                // interpolated series).
                 <Line
                   dataKey="glide"
-                  name="plan glide"
+                  name="plan waypoint"
                   stroke={GLIDE_COLOR}
                   strokeWidth={2}
                   strokeDasharray="5 4"
-                  dot={false}
+                  dot={{ r: 4, fill: GLIDE_COLOR, strokeWidth: 0 }}
                   connectNulls
                   isAnimationActive={false}
                 />
               ) : null}
             </LineChart>
           </ResponsiveContainer>
+          {hasGlide ? (
+            <div
+              className="flex flex-wrap gap-1.5"
+              data-testid="decon-waypoints"
+            >
+              {waypoints.map((w) => (
+                <span
+                  key={w.date}
+                  className="rounded-full border border-border bg-secondary/40 px-2 py-0.5 font-mono text-[10px] tabular-nums"
+                  title={`plan waypoint: NVDA ≤${w.target_pct.toFixed(1)}% by ${w.date}`}
+                >
+                  {shortDate(w.date)} · ≤{Math.round(w.target_pct)}%
+                </span>
+              ))}
+            </div>
+          ) : null}
           <div className="text-[11px] text-muted-foreground tabular-nums">
-            solid: snapshot history
-            {hasGlide ? " · dashed: plan glide waypoints" : " · plan glide unavailable"}
+            {hasGlide
+              ? "upticks between waypoints are price drift between sales — the schedule is judged at the dated waypoints"
+              : "solid: snapshot history · plan glide unavailable"}
           </div>
         </>
       )}
