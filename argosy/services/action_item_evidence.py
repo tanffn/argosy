@@ -94,12 +94,20 @@ class ActionEvidenceContext:
         ucits_symbols: frozenset[str],
         deploy_snapshot_dates: list[date],
         fills: list[Any],
+        nvda_sales: list[dict[str, Any]] | None = None,
+        nvda_sales_anchor_year: int | None = None,
     ) -> None:
         self.positions = positions
         self.snapshot_date = snapshot_date
         self.ucits_symbols = ucits_symbols
         self.deploy_snapshot_dates = deploy_snapshot_dates
         self.fills = fills
+        #: The latest snapshot's month-granular NVDA sale rows
+        #: (``{month, shares, price}``) + the year they anchor to — the
+        #: book's own record of whether the SALE half of "sell the vest →
+        #: park in SGOV" actually happened.
+        self.nvda_sales = nvda_sales or []
+        self.nvda_sales_anchor_year = nvda_sales_anchor_year
 
     # -- loading --------------------------------------------------------------
 
@@ -107,6 +115,8 @@ class ActionEvidenceContext:
     def load(cls, session: Any, user_id: str) -> "ActionEvidenceContext":
         positions: list[dict[str, Any]] = []
         snapshot_date: Any = None
+        nvda_sales: list[dict[str, Any]] = []
+        nvda_sales_anchor_year: int | None = None
         try:
             from argosy.services.portfolio_snapshot_store import (
                 get_latest_snapshot_row,
@@ -118,6 +128,15 @@ class ActionEvidenceContext:
                 if isinstance(parsed, list):
                     positions = [p for p in parsed if isinstance(p, dict)]
                 snapshot_date = getattr(row, "snapshot_date", None)
+            if row is not None and getattr(row, "nvda_sales_json", None):
+                parsed_sales = json.loads(row.nvda_sales_json)
+                if isinstance(parsed_sales, list):
+                    nvda_sales = [s for s in parsed_sales if isinstance(s, dict)]
+                snap_d = getattr(row, "snapshot_date", None)
+                if isinstance(snap_d, datetime):
+                    snap_d = snap_d.date()
+                if isinstance(snap_d, date):
+                    nvda_sales_anchor_year = snap_d.year
         except Exception:  # noqa: BLE001 — evidence is enrichment only
             log.warning("action_item_evidence.snapshot_load_failed", exc_info=True)
 
@@ -182,6 +201,8 @@ class ActionEvidenceContext:
             ucits_symbols=frozenset(ucits_symbols),
             deploy_snapshot_dates=deploy_dates,
             fills=fills,
+            nvda_sales=nvda_sales,
+            nvda_sales_anchor_year=nvda_sales_anchor_year,
         )
 
     # -- book accessors ---------------------------------------------------------
@@ -232,9 +253,74 @@ class ActionEvidenceContext:
             return bool(self.deploy_snapshot_dates)
         return any(d >= due for d in self.deploy_snapshot_dates)
 
+    def _nvda_sale_on_or_after(self, due: date | None) -> str | None:
+        """Evidence the NVDA SALE itself happened on/after ``due``.
+
+        Two sources, either satisfies:
+
+        * a SELL fill for NVDA with ``filled_at`` on/after the due date
+          (day-precise — the fills ledger is the canonical source);
+        * a ``nvda_sales_json`` row (month-granular ``{month, shares}``)
+          whose month resolves on/after the due month in the snapshot's
+          anchor year. The approximation is at most one month wide, and
+          only on the due date's own month — same convention as
+          ``nvda_sales_history._sum_monthly_sales``.
+
+        Returns a human-readable descriptor of the matched evidence, or
+        ``None`` when the book shows NO sale — SGOV merely existing
+        (a position that may long predate the vest) is NOT execution
+        evidence for "sell the vest".
+        """
+        # (a) day-precise fills ledger.
+        for f in self.fills:
+            tk = (getattr(f, "ticker", "") or "").strip().upper()
+            if tk != "NVDA":
+                continue
+            action = (getattr(f, "action", "") or "").strip().upper()
+            qty = float(getattr(f, "quantity", 0) or 0)
+            is_sell = qty < 0 or action.startswith("SELL") or action.startswith("SOLD")
+            if action.startswith("BUY") and qty >= 0:
+                is_sell = False
+            if not is_sell:
+                continue
+            filled_at = getattr(f, "filled_at", None)
+            fd = filled_at.date() if isinstance(filled_at, datetime) else filled_at
+            if due is not None:
+                if not isinstance(fd, date) or fd < due:
+                    continue
+            shares = int(round(abs(qty)))
+            when = f" on {fd.isoformat()}" if isinstance(fd, date) else ""
+            return f"an NVDA sale of {shares} shares filled{when}"
+
+        # (b) month-granular snapshot sale rows.
+        from argosy.services.nvda_sales_history import _month_index
+
+        for s in self.nvda_sales:
+            month = s.get("month")
+            shares = s.get("shares")
+            if not month or not shares:
+                continue
+            m_idx = _month_index(str(month))
+            if m_idx is None:
+                continue
+            if due is not None:
+                anchor = self.nvda_sales_anchor_year
+                if anchor is None or anchor < due.year:
+                    continue
+                if anchor == due.year and m_idx < due.month:
+                    continue
+            return f"the book records an NVDA sale of {shares} shares in {month}"
+        return None
+
     # -- matchers ---------------------------------------------------------------
 
     def _sgov_evidence(self, due: date | None) -> ActionEvidence | None:
+        # The item is "sell the vest → park in SGOV". Its evidence must
+        # include the SALE itself — an SGOV position alone can predate
+        # the vest by years and proves nothing about execution.
+        sale = self._nvda_sale_on_or_after(due)
+        if sale is None:
+            return None
         total, n_accounts = self._holding_usd("SGOV")
         sgov_buys = self._buy_fills(
             on_or_after=due, symbols=frozenset({"SGOV"})
@@ -243,8 +329,9 @@ class ActionEvidenceContext:
             return None
         as_of = f" as of {self.snapshot_date}" if self.snapshot_date else ""
         parts = [
+            sale,
             f"SGOV is held at {_fmt_usd(total)} across "
-            f"{n_accounts} account(s){as_of}"
+            f"{n_accounts} account(s){as_of}",
         ]
         if sgov_buys:
             parts.append(f"{len(sgov_buys)} SGOV buy fill(s) on record")

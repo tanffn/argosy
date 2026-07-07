@@ -43,6 +43,8 @@ def _ctx(
     ucits_symbols: frozenset[str] = frozenset({"CSPX", "EXUS", "FUSA", "IWQU", "EIMI"}),
     deploy_dates: list[date] | None = None,
     fills: list | None = None,
+    nvda_sales: list[dict] | None = None,
+    nvda_sales_anchor_year: int | None = 2026,
 ) -> ActionEvidenceContext:
     return ActionEvidenceContext(
         positions=positions or [],
@@ -50,7 +52,17 @@ def _ctx(
         ucits_symbols=ucits_symbols,
         deploy_snapshot_dates=deploy_dates or [],
         fills=fills or [],
+        nvda_sales=nvda_sales or [],
+        nvda_sales_anchor_year=nvda_sales_anchor_year,
     )
+
+
+class _FakeFill:
+    def __init__(self, ticker: str, action: str, quantity: float, filled_at: datetime):
+        self.ticker = ticker
+        self.action = action
+        self.quantity = quantity
+        self.filled_at = filled_at
 
 
 def _pos(symbol: str, usd_value_k: float, location: str = "Leumi") -> dict:
@@ -63,18 +75,75 @@ def _pos(symbol: str, usd_value_k: float, location: str = "Leumi") -> dict:
     }
 
 
-def test_sgov_evidence_matches_at_scale():
+def test_sgov_evidence_needs_the_sale_itself():
+    """A pre-existing SGOV position with NO NVDA sale on record is NOT
+    execution evidence — the item is 'SELL the vest → park', and the book
+    shows no sale (regression: the June-17 item false-verified on SGOV
+    merely existing)."""
     ctx = _ctx(positions=[_pos("SGOV", 85.37), _pos("SGOV", 20.09, "schwab 876")])
+    assert ctx.evidence_for(label=SGOV_LABEL, detail="", dated=date(2026, 6, 17)) is None
+
+
+def test_sgov_evidence_matches_with_sale_row_after_due():
+    ctx = _ctx(
+        positions=[_pos("SGOV", 85.37), _pos("SGOV", 20.09, "schwab 876")],
+        nvda_sales=[
+            {"month": "Apr", "shares": 520, "price": 199.56},
+            {"month": "Jun", "shares": 300, "price": 195.0},
+        ],
+    )
     ev = ctx.evidence_for(label=SGOV_LABEL, detail="", dated=date(2026, 6, 17))
     assert ev is not None
     assert ev.status == "looks_executed"
+    assert "NVDA sale" in ev.summary and "Jun" in ev.summary
     assert "SGOV" in ev.summary
     assert "$105.5k" in ev.summary
     assert "2 account(s)" in ev.summary
 
 
+def test_sgov_sale_rows_before_due_month_do_not_count():
+    """The live failure shape: sales history ends in April, the vest is
+    due June 17 — no June sale means genuinely OVERDUE."""
+    ctx = _ctx(
+        positions=[_pos("SGOV", 105.5)],
+        nvda_sales=[
+            {"month": "Jan", "shares": 560, "price": 191.0},
+            {"month": "Feb", "shares": 520, "price": 177.0},
+            {"month": "Apr", "shares": 520, "price": 199.56},
+            {"month": "Apr", "shares": 520, "price": 199.56},
+        ],
+    )
+    assert ctx.evidence_for(label=SGOV_LABEL, detail="", dated=date(2026, 6, 17)) is None
+
+
+def test_sgov_evidence_matches_with_sell_fill_after_due():
+    ctx = _ctx(
+        positions=[_pos("SGOV", 105.5)],
+        fills=[
+            _FakeFill("NVDA", "SELL", -300, datetime(2026, 6, 18, 15, 30)),
+        ],
+    )
+    ev = ctx.evidence_for(label=SGOV_LABEL, detail="", dated=date(2026, 6, 17))
+    assert ev is not None
+    assert "NVDA sale of 300 shares" in ev.summary
+    assert "2026-06-18" in ev.summary
+
+
+def test_sgov_sell_fill_before_due_does_not_count():
+    ctx = _ctx(
+        positions=[_pos("SGOV", 105.5)],
+        fills=[
+            _FakeFill("NVDA", "SELL", -520, datetime(2026, 4, 10, 15, 30)),
+        ],
+    )
+    assert ctx.evidence_for(label=SGOV_LABEL, detail="", dated=date(2026, 6, 17)) is None
+
+
 def test_sgov_dust_is_not_evidence():
-    ctx = _ctx(positions=[_pos("SGOV", 0.2)])
+    ctx = _ctx(
+        positions=[_pos("SGOV", 0.2)],
+        nvda_sales=[{"month": "Jun", "shares": 300, "price": 195.0}],
+    )
     assert ctx.evidence_for(label=SGOV_LABEL, detail="", dated=date(2026, 6, 17)) is None
 
 
@@ -179,7 +248,9 @@ def _seed_current_plan_with_items(client_with_db) -> int:
 
 def _seed_book_with_deploy(client_with_db) -> None:
     """Latest snapshot holding SGOV at scale + 3 plan UCITS names; the
-    snapshot itself is a fills-applied deploy row (Jul-6)."""
+    snapshot itself is a fills-applied deploy row (Jul-6). The sales
+    block records a June NVDA sale — the SALE half of the SGOV-park
+    item's evidence (SGOV existing alone no longer verifies it)."""
     positions = [
         _pos("SGOV", 85.37),
         _pos("SGOV", 20.09, "schwab 876"),
@@ -196,6 +267,9 @@ def _seed_book_with_deploy(client_with_db) -> None:
                 imported_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 source_path="fills-applied:2026-07-06-deploy",
                 positions_json=json.dumps(positions),
+                nvda_sales_json=json.dumps(
+                    [{"month": "Jun", "shares": 300, "price": 195.0}]
+                ),
                 totals_json=json.dumps({"total_usd_value_k": 3993.9}),
             )
         )
@@ -296,6 +370,53 @@ def test_no_evidence_stays_overdue(client_with_db):
     for it in body["items"]:
         assert it["argosy_verified"] is None
     assert body["overdue_count"] == 2
+
+
+def test_sgov_without_sale_stays_overdue_but_ucits_verifies(client_with_db):
+    """The live 2026-07 book shape: SGOV predates the vest, the sales
+    history ends in April (no June sale), the Jul-6 deploy covers the
+    UCITS tranche. The SGOV item must come back genuinely OVERDUE; the
+    UCITS item keeps its (real) evidence."""
+    pv_id = _seed_current_plan_with_items(client_with_db)
+    _seed_ucits_plan_doc(client_with_db, pv_id)
+    positions = [
+        _pos("SGOV", 85.37),
+        _pos("SGOV", 20.09, "schwab 876"),
+        _pos("CSPX", 194.6),
+        _pos("EXUS", 36.4),
+        _pos("FUSA", 13.0),
+    ]
+    sess = client_with_db.app.state.session_factory()
+    try:
+        sess.add(
+            PortfolioSnapshotRow(
+                user_id="ariel",
+                snapshot_date=date(2026, 7, 6),
+                imported_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                source_path="fills-applied:2026-07-06-deploy",
+                positions_json=json.dumps(positions),
+                nvda_sales_json=json.dumps(
+                    [
+                        {"month": "Jan", "shares": 560, "price": 191.0},
+                        {"month": "Feb", "shares": 520, "price": 177.0},
+                        {"month": "Apr", "shares": 520, "price": 199.56},
+                    ]
+                ),
+                totals_json=json.dumps({"total_usd_value_k": 3993.9}),
+            )
+        )
+        sess.commit()
+    finally:
+        sess.close()
+
+    body = client_with_db.get("/api/plan/action-items?user_id=ariel").json()
+    by_label = {it["label"]: it for it in body["items"]}
+    sgov = by_label[SGOV_LABEL]
+    ucits = by_label[UCITS_LABEL]
+    assert sgov["argosy_verified"] is None  # no sale → needs the client's action
+    assert sgov["status"] == "OVERDUE"
+    assert ucits["argosy_verified"] is True
+    assert body["overdue_count"] == 1  # only the SGOV item still nags
 
 
 def test_confirmed_item_disappears_from_greeting(client_with_db):
