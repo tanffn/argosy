@@ -64,6 +64,33 @@ def _normalized_position_dicts(positions: list) -> list[dict]:
     return out
 
 
+def dedup_nvda_sale_dicts(rows: list) -> list:
+    """Drop IDENTICAL ``(month, shares, price)`` NVDA sale repeats.
+
+    The hand-maintained TSV repeated the Apr-2026 row verbatim and the
+    duplicate then rode every snapshot carry (self-refresh, apply-fills)
+    forever. A verbatim repeat is a copy-paste artifact, never two real
+    sales; same-month rows that differ in shares or price are KEPT (two
+    genuine sales in one month are possible). Order is preserved.
+    Historical rows are never rewritten — this runs on read hydration
+    and on the next written row only.
+    """
+    seen: set[tuple] = set()
+    out: list = []
+    for r in rows:
+        if isinstance(r, dict):
+            key = (
+                str(r.get("month") or "").strip().lower(),
+                r.get("shares"),
+                r.get("price"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(r)
+    return out
+
+
 def persist_snapshot(
     session: Session,
     *,
@@ -99,7 +126,13 @@ def persist_snapshot(
             [a.model_dump() for a in snapshot.allocations], default=str,
         ),
         nvda_sales_json=json.dumps(
-            [s.model_dump() for s in snapshot.nvda_sales], default=str,
+            # Writer-side guard: a snapshot assembled from a dup-carrying
+            # source (TSV re-ingest, self-refresh carry of a historical
+            # row) still writes a CLEAN sales block.
+            dedup_nvda_sale_dicts(
+                [s.model_dump() for s in snapshot.nvda_sales]
+            ),
+            default=str,
         ),
         real_estate_json=json.dumps(
             [r.model_dump() for r in snapshot.real_estate], default=str,
@@ -162,7 +195,10 @@ def row_to_snapshot(row: PortfolioSnapshotRow) -> PortfolioSnapshot:
         positions=json.loads(row.positions_json or "[]"),
         real_estate=json.loads(row.real_estate_json or "[]"),
         allocations=json.loads(row.allocations_json or "[]"),
-        nvda_sales=json.loads(row.nvda_sales_json or "[]"),
+        # Read-side dedup: historical rows carry the duplicate Apr-2026 sale
+        # verbatim (never rewritten in place); every hydrating consumer —
+        # incl. the TSV export — sees the clean block.
+        nvda_sales=dedup_nvda_sale_dicts(json.loads(row.nvda_sales_json or "[]")),
         pensions=json.loads(row.pensions_json or "[]"),
         parse_warnings=json.loads(row.parse_warnings_json or "[]"),
     )
@@ -242,6 +278,7 @@ def write_through_if_changed(
 
 
 __all__ = [
+    "dedup_nvda_sale_dicts",
     "get_latest_snapshot_row",
     "latest_matches_snapshot",
     "persist_snapshot",

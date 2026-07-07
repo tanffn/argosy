@@ -146,9 +146,12 @@ def _sum_monthly_sales(
     """Sum month-granular sale rows for the ``[since or Jan 1 .. as_of]`` window.
 
     Shared by the snapshot- and TSV-sourced branches. Rows may be dicts
-    (snapshot ``nvda_sales_json``) or objects (parsed TSV). Dedups on
-    ``(month, shares)`` — the source occasionally repeats a row (observed
-    in run #25's snapshot and again in dev snapshot 12's double Apr row).
+    (snapshot ``nvda_sales_json``) or objects (parsed TSV). Dedups on the
+    IDENTICAL ``(month, shares, price)`` tuple — the source occasionally
+    repeats a row verbatim (observed in run #25's snapshot and again in
+    the dev snapshots' double "Apr 520 @ 199.56" row). Including the
+    price keeps two GENUINE same-size sales in one month (different
+    prices) both counted instead of silently collapsing them.
 
     ``since`` filters at MONTH granularity (the source has no day): a row in
     ``since``'s own month counts as inside the window — the approximation is
@@ -159,11 +162,12 @@ def _sum_monthly_sales(
             return s.get(key)
         return getattr(s, key, None)
 
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, float | None]] = set()
     total = 0
     for s in sales:
         month = _get(s, "month")
         shares = _get(s, "shares")
+        price = _get(s, "price")
         if not month or not shares:
             continue
         m_idx = _month_index(month)
@@ -184,7 +188,11 @@ def _sum_monthly_sales(
                 continue
             if since.year == anchor_year and m_idx < since.month:
                 continue
-        key = (str(month).strip().lower(), shares_int)
+        try:
+            price_f = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price_f = None
+        key = (str(month).strip().lower(), shares_int, price_f)
         if key in seen:
             continue
         seen.add(key)
@@ -230,8 +238,9 @@ def _shares_sold_from_tsv(*, as_of: date, since: date | None = None) -> int:
     ``nvda_sales`` rows whose month resolves into the current year.
 
     Returns 0 when the TSV is unreachable / unparseable / has no NVDA
-    sales block. Dedups on ``(month, shares)`` because the TSV
-    occasionally repeats the same row (observed in run #25's snapshot).
+    sales block. Dedups identical ``(month, shares, price)`` rows because
+    the TSV occasionally repeats the same row verbatim (observed in run
+    #25's snapshot and the May/Jun-2026 exports' double Apr row).
     """
     try:
         from argosy.api.routes.portfolio import _find_latest_tsv

@@ -76,6 +76,19 @@ def test_tsv_parser_extracts_positions_with_nvda() -> None:
     assert (nvda_pos.usd_value_k or 0) > 1_000
 
 
+def test_tsv_parser_drops_verbatim_duplicate_nvda_sale_rows() -> None:
+    """The May-2026 sheet repeats 'Apr 520 @ 199.56' verbatim — a
+    copy-paste artifact. The parser must keep ONE row and warn loudly,
+    so the duplicate can't inflate sold-YTD downstream."""
+    snap = parse_portfolio_tsv(_require_tsv())
+    keys = [(s.month, s.shares, s.price) for s in snap.nvda_sales]
+    assert len(keys) == len(set(keys)), f"duplicate sale rows survived: {keys}"
+    # The known dup in this file: exactly one Apr row remains + a warning.
+    apr = [k for k in keys if k[0] == "Apr"]
+    assert apr == [("Apr", 520, 199.56)]
+    assert any("duplicate NVDA sale row" in w for w in snap.parse_warnings)
+
+
 def test_tsv_parser_extracts_cash_balances() -> None:
     snap = parse_portfolio_tsv(_require_tsv())
     cash_total = snap.cash_balances_usd_k()

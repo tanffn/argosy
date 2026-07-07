@@ -352,7 +352,25 @@ def parse_portfolio_tsv(path: str | Path) -> PortfolioSnapshot:
         elif state == "nvda":
             entry = _parse_nvda_row(r)
             if entry is not None:
-                snap.nvda_sales.append(entry)
+                # The hand-maintained sheet occasionally repeats a sale row
+                # verbatim (observed: Apr 520 @ 199.56 twice in the May+Jun
+                # 2026 exports). An IDENTICAL (month, shares, price) repeat
+                # is a copy-paste artifact, never two real sales — drop it
+                # loudly so it can't inflate sold-YTD downstream. Same-month
+                # rows with a different price/size are kept (two genuine
+                # sales in one month are possible).
+                if any(
+                    s.month == entry.month
+                    and s.shares == entry.shares
+                    and s.price == entry.price
+                    for s in snap.nvda_sales
+                ):
+                    snap.parse_warnings.append(
+                        f"line {i + 1}: duplicate NVDA sale row dropped "
+                        f"({entry.month} {entry.shares} @ {entry.price})"
+                    )
+                else:
+                    snap.nvda_sales.append(entry)
         elif state == "pensions":
             new_person, pension_entry = _parse_pension_row(r, current_person)
             if new_person is not None:

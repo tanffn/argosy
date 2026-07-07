@@ -290,6 +290,28 @@ def test_tsv_fallback_when_fills_empty(
     assert n == 1600
 
 
+def test_sum_monthly_sales_dedups_identical_tuple_only():
+    """Dedup key is the IDENTICAL (month, shares, price) tuple: the
+    verbatim 'Apr 520 @ 199.56' repeat collapses, but two GENUINE
+    same-size sales in one month at different prices both count."""
+    from argosy.services.nvda_sales_history import _sum_monthly_sales
+
+    as_of = date(2026, 7, 7)
+    dup = [
+        {"month": "Jan", "shares": 560, "price": 191.0},
+        {"month": "Feb", "shares": 520, "price": 177.0},
+        {"month": "Apr", "shares": 520, "price": 199.56},
+        {"month": "Apr", "shares": 520, "price": 199.56},  # verbatim repeat
+    ]
+    assert _sum_monthly_sales(dup, anchor_year=2026, as_of=as_of) == 1600
+
+    distinct = [
+        {"month": "Apr", "shares": 520, "price": 199.56},
+        {"month": "Apr", "shares": 520, "price": 188.0},  # different sale
+    ]
+    assert _sum_monthly_sales(distinct, anchor_year=2026, as_of=as_of) == 1040
+
+
 def test_tsv_fallback_excludes_months_past_as_of(
     session_with_user, monkeypatch, tmp_path,
 ):

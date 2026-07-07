@@ -83,6 +83,46 @@ def _seed_snapshot_row(
     return row.id
 
 
+def test_persist_and_hydrate_dedup_verbatim_nvda_sale_repeats(client_with_db):
+    """The duplicate 'Apr 520 @ 199.56' row (copy-paste artifact carried by
+    every historical snapshot): the WRITER stores a clean block on the next
+    row, and READ hydration serves a clean block from a dup-carrying
+    historical row without rewriting it."""
+    from argosy.services.portfolio_snapshot_store import row_to_snapshot
+
+    SF = client_with_db.app.state.session_factory
+    dup_sales = [
+        {"month": "Jan", "shares": 560, "price": 191.0},
+        {"month": "Apr", "shares": 520, "price": 199.56},
+        {"month": "Apr", "shares": 520, "price": 199.56},  # verbatim repeat
+        {"month": "Apr", "shares": 520, "price": 188.0},  # genuine 2nd sale
+    ]
+    with SF() as s:
+        s.add(User(id="ariel", plan="free"))
+        s.commit()
+        # Writer path: a snapshot assembled with the dup writes it deduped.
+        snap = PortfolioSnapshot(
+            source_path="/tmp/family.tsv",
+            snapshot_date=date(2026, 7, 6),
+            nvda_sales=dup_sales,
+        )
+        row = persist_snapshot(s, user_id="ariel", snapshot=snap)
+        stored = json.loads(row.nvda_sales_json)
+        assert len(stored) == 3
+        assert sum(1 for r in stored if r["price"] == 199.56) == 1
+        assert any(r["price"] == 188.0 for r in stored)  # distinct sale kept
+
+        # Reader path: a HISTORICAL row still carrying the dup hydrates clean.
+        row_id = _seed_snapshot_row(s, source_path="/tmp/old.tsv")
+        old = s.get(PortfolioSnapshotRow, row_id)
+        old.nvda_sales_json = json.dumps(dup_sales)
+        s.commit()
+        hydrated = row_to_snapshot(old)
+        assert len(hydrated.nvda_sales) == 3
+        # Storage was NOT rewritten — history stays as ingested.
+        assert len(json.loads(old.nvda_sales_json)) == 4
+
+
 def test_portfolio_snapshot_route_serves_db_row_when_present(client_with_db):
     """When a ``portfolio_snapshots`` row exists, the route returns it
     instead of walking the filesystem."""
