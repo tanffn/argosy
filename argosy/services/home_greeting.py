@@ -550,6 +550,47 @@ def _needs_you_from_proposal(p: ActionProposal) -> dict[str, Any]:
     }
 
 
+def _needs_you_from_verified_items(
+    session: Session, user_id: str, *, now: datetime
+) -> list[dict[str, Any]]:
+    """Needs-confirm entries for plan action items Argosy verified as
+    looks-executed from the book/fills evidence.
+
+    NO auto-ack — the client confirms; each entry carries the payload
+    for the existing ``POST /api/plan/action-items/{item_id}/ack``
+    endpoint. A confirmed item stops appearing (its ack row matches)."""
+    try:
+        from argosy.services.action_item_evidence import (
+            looks_executed_unconfirmed_items,
+        )
+
+        items = looks_executed_unconfirmed_items(
+            session, user_id, today=now.date()
+        )
+    except Exception:  # noqa: BLE001 — enrichment only
+        _log.warning("home_greeting.verified_items_failed", exc_info=True)
+        return []
+    out: list[dict[str, Any]] = []
+    for it in items:
+        out.append(
+            {
+                "id": f"action_item:{it.item_id}",
+                "kind": "action_item_confirm",
+                "headline": f"Looks executed — confirm: {it.label}"[:240],
+                "why_md": it.argosy_verified_summary or "",
+                "cta": {"label": "Confirm done", "href": "/#action-items"},
+                # Everything the UI needs to hit the existing ack endpoint.
+                "ack": {
+                    "method": "POST",
+                    "endpoint": f"/api/plan/action-items/{it.item_id}/ack",
+                    "content_fingerprint": it.content_fingerprint,
+                    "user_id": user_id,
+                },
+            }
+        )
+    return out
+
+
 def _needs_you_from_flag(
     f: MonitorFlag,
     payload: dict[str, Any],
@@ -592,6 +633,12 @@ def build_greeting(
         str(i["id"]).startswith("proposal:")
         and (i["cta"]["label"] == "Send the broker export")
         for i in needs_you
+    )
+
+    # Plan action items that look ALREADY EXECUTED (book/fills evidence):
+    # a one-click needs-confirm, never an auto-ack.
+    needs_you.extend(
+        _needs_you_from_verified_items(session, user_id, now=now_dt)
     )
 
     # --- flags: classify each active flag once. Negative cash lines are

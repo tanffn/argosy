@@ -4617,6 +4617,7 @@ def _collect_action_items(
     window_days: int,
     acked: dict[str, str] | None = None,
     withholding_status: dict[str, Any] | None = None,
+    evidence_ctx: Any | None = None,
 ) -> list[ActionItem]:
     """Walk a plan version's short + medium horizon actions and emit
     surfaced ``ActionItem`` rows.
@@ -4708,6 +4709,24 @@ def _collect_action_items(
                 # confirm yet, so it leaves the plain task in place (no verdict
                 # stamp) — it'll self-resolve and drop once a payslip reconciles.
 
+            # Deterministic execution-evidence check (book/fills history):
+            # a matching item with POSITIVE evidence is stamped
+            # ``looks_executed`` so it stops nagging as overdue and the
+            # greeting surfaces a needs-confirm instead. NO auto-ack — the
+            # client confirms via the existing ack endpoint.
+            if (
+                evidence_ctx is not None
+                and argosy_verified is None
+                and not acknowledged
+            ):
+                ev = evidence_ctx.evidence_for(
+                    label=label, detail=detail, dated=dated
+                )
+                if ev is not None:
+                    argosy_verified = True
+                    argosy_verified_summary = ev.summary
+                    argosy_verified_status = ev.status
+
             items.append(
                 ActionItem(
                     item_id=item_id,
@@ -4797,17 +4816,32 @@ def get_action_items(
         withholding_status = withholding_action_status(user_id, db)
     except Exception:  # noqa: BLE001 — verdict is optional enrichment
         withholding_status = None
+    # Deterministic execution-evidence context (book + fills) — best-effort.
+    evidence_ctx = None
+    try:
+        from argosy.services.action_item_evidence import ActionEvidenceContext
+
+        evidence_ctx = ActionEvidenceContext.load(db, user_id)
+    except Exception:  # noqa: BLE001 — evidence is optional enrichment
+        evidence_ctx = None
     items = _collect_action_items(
         pv,
         today=today,
         window_days=window_days,
         acked=acked,
         withholding_status=withholding_status,
+        evidence_ctx=evidence_ctx,
     )
     if not include_acknowledged:
         items = [it for it in items if not it.acknowledged]
 
-    overdue_count = sum(1 for it in items if it.status == "OVERDUE")
+    # An item Argosy verified as looks-executed is DEMOTED from overdue
+    # nagging: it awaits the client's one-click confirm (greeting needs_you),
+    # so it doesn't count toward the OVERDUE badge.
+    overdue_count = sum(
+        1 for it in items
+        if it.status == "OVERDUE" and it.argosy_verified is not True
+    )
     today_count = sum(1 for it in items if it.status == "TODAY")
     upcoming_count = sum(
         1 for it in items if it.status in ("UPCOMING", "DUE_SOON")

@@ -23,12 +23,25 @@ class GreetingCtaDTO(BaseModel):
     href: str
 
 
+class GreetingAckDTO(BaseModel):
+    """Payload for confirming a looks-executed plan action item through the
+    EXISTING ack endpoint (kind == 'action_item_confirm' items only)."""
+
+    method: str
+    endpoint: str
+    content_fingerprint: str
+    user_id: str
+
+
 class GreetingNeedsYouItemDTO(BaseModel):
     id: str
     kind: str
     headline: str
     why_md: str
     cta: GreetingCtaDTO
+    # Present only on kind='action_item_confirm' (Argosy found execution
+    # evidence; the client confirms — never auto-acked).
+    ack: GreetingAckDTO | None = None
 
 
 class GreetingWatchingItemDTO(BaseModel):
