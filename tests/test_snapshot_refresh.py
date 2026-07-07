@@ -166,7 +166,7 @@ def test_out_of_band_quote_is_a_miss_never_fabricated(session):
     assert any(w.startswith("reprice_miss:CSPX") for w in res.warnings)
 
 
-def test_cash_pension_and_unpriceable_rows_carry_unchanged(session):
+def test_cash_pension_and_unpriceable_rows_carry_quantities(session):
     old = _seed(session)
     res = refresh_portfolio_snapshot(
         session,
@@ -177,23 +177,68 @@ def test_cash_pension_and_unpriceable_rows_carry_unchanged(session):
     )
     cash = [p for p in res.snapshot.positions if p.asset_type == "Cash"][0]
     old_cash = [p for p in old.positions if p.asset_type == "Cash"][0]
-    # Cash carries VERBATIM — value and USD conversion untouched even though
-    # FX moved (rule: cash rows carry over unchanged).
+    # Cash LOCAL value carries verbatim; the USD projection is re-derived at
+    # the FRESH FX (usd_value_k is derived, never source data).
     assert cash.current_value_local == old_cash.current_value_local
-    assert cash.usd_value_k == old_cash.usd_value_k
+    assert cash.usd_value_k == pytest.approx(6_000.0 / 3.2 / 1000.0)
 
     heb = [p for p in res.snapshot.positions if p.symbol == 'מחקה ת"א-200'][0]
     assert heb.current_price == 147.53
-    assert heb.usd_value_k == 39.34
+    assert heb.current_value_local == 118_024.0
+    assert heb.usd_value_k == pytest.approx(118_024.0 / 3.2 / 1000.0)
     # Unpriceable (no feed) is NOT a miss — no warning for it.
     assert not any('מחקה' in w for w in res.warnings)
 
+    # No local value to convert → the old projection carries.
     re_row = [p for p in res.snapshot.positions if p.asset_type == "Real estate"][0]
     assert re_row.usd_value_k == 69.0
 
     assert [pe.model_dump() for pe in res.snapshot.pensions] == [
         pe.model_dump() for pe in old.pensions
     ]
+
+
+def test_carried_row_heals_stale_usd_projection(session):
+    """Live incident (rows 11→12): an upstream writer moved a cash row's
+    LOCAL value without recomputing ``usd_value_k``; the self-refresh then
+    carried the stale projection verbatim (phantom −$16.4k cash). The
+    refresh must re-derive usd_value_k from current_value_local + FX for
+    every carried row."""
+    snap = PortfolioSnapshot(
+        source_path="fills-applied:sgov-sale",
+        snapshot_date=date(2026, 7, 6),
+        fx_usd_nis=3.0,
+        fx_usd_eur=0.85,
+        positions=[
+            PortfolioPosition(  # cash: local moved to +3,655.34, usd stale
+                location="Leumi", currency="USD", asset_type="Cash",
+                symbol="", current_value_local=3_655.34,
+                usd_value_k=-16.43466,
+            ),
+            PortfolioPosition(  # quote-missing row with stale usd projection
+                location="Leumi", currency="USD", asset_type="Defensive",
+                details="(ISH 0-3M TREAS) SGOV", symbol="SGOV",
+                shares=850.0, current_price=100.44,
+                current_value_local=85_374.0, usd_value_k=105.462,
+            ),
+        ],
+    )
+    persist_snapshot(session, user_id="ariel", snapshot=snap)
+    res = refresh_portfolio_snapshot(
+        session,
+        user_id="ariel",
+        quote_fn=lambda sym, **kw: None,  # miss → carry path
+        fx_fn=lambda: {"usd_nis": 3.0, "usd_eur": 0.85},
+        today=date(2026, 7, 7),
+    )
+    cash = [p for p in res.snapshot.positions if p.asset_type == "Cash"][0]
+    assert cash.current_value_local == pytest.approx(3_655.34)
+    assert cash.usd_value_k == pytest.approx(3.65534)
+    sgov = [p for p in res.snapshot.positions if p.symbol == "SGOV"][0]
+    assert sgov.shares == 850.0
+    assert sgov.usd_value_k == pytest.approx(85.374)
+    totals = json.loads(session.get(PortfolioSnapshotRow, res.row.id).totals_json)
+    assert totals["cash_balances_usd_k"] == pytest.approx(3.65534)
 
 
 def test_totals_are_independent_sum_over_new_positions(session):
@@ -231,6 +276,91 @@ def test_provenance_marker_and_snapshot_date(session):
     assert row.fx_usd_nis == 3.0
     assert "fx_miss:usd_nis" in res.warnings
     assert "fx_miss:usd_eur" in res.warnings
+
+
+def _persist_minimal(session, source_path: str) -> int:
+    snap = PortfolioSnapshot(
+        source_path=source_path,
+        snapshot_date=date(2026, 7, 6),
+        fx_usd_nis=3.0,
+        fx_usd_eur=0.85,
+        positions=[
+            PortfolioPosition(
+                location="Leumi", currency="USD", asset_type="Cash",
+                symbol="", current_value_local=1_000.0, usd_value_k=1.0,
+            ),
+        ],
+    )
+    return persist_snapshot(session, user_id="ariel", snapshot=snap).id
+
+
+def _force_imported_at(session, row_id: int, raw_text: str) -> None:
+    """Write imported_at as RAW TEXT — reproduces rows written outside the
+    SQLAlchemy default (which always emits microseconds)."""
+    session.execute(
+        sa.text("UPDATE portfolio_snapshots SET imported_at = :t WHERE id = :i"),
+        {"t": raw_text, "i": row_id},
+    )
+    session.commit()
+    session.expire_all()
+
+
+def test_latest_row_mixed_precision_timestamps_and_provenance(session):
+    """Live shape (rows 9-11): ingest → fills-applied (microseconds) →
+    fills-applied written by an ad-hoc path WITHOUT microseconds. The
+    freshest row by (imported_at, id) must win regardless of the
+    timestamp's sub-second precision or provenance tag."""
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    a = _persist_minimal(session, "self-refresh:reprice-of-2026-06-29")
+    b = _persist_minimal(session, "fills-applied:2026-07-06-deploy")
+    c = _persist_minimal(session, "fills-applied:2026-07-06-sgov-sale")
+    _force_imported_at(session, a, "2026-07-06 04:00:05.280869")
+    _force_imported_at(session, b, "2026-07-06 13:42:32.018224")
+    _force_imported_at(session, c, "2026-07-06 14:04:41")  # second-precision
+
+    latest = get_latest_snapshot_row(session, "ariel")
+    assert latest is not None and latest.id == c
+
+
+def test_latest_row_exact_timestamp_tie_breaks_on_id(session):
+    """Two rows sharing the exact imported_at text: the higher id (later
+    insert) wins deterministically."""
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    a = _persist_minimal(session, "fills-applied:first")
+    b = _persist_minimal(session, "fills-applied:second")
+    _force_imported_at(session, a, "2026-07-06 14:04:41")
+    _force_imported_at(session, b, "2026-07-06 14:04:41")
+
+    latest = get_latest_snapshot_row(session, "ariel")
+    assert latest is not None and latest.id == b
+
+
+def test_refresh_bases_off_freshest_row_in_a_provenance_chain(session):
+    """The self-refresh must reprice the LAST row of a deploy → sale chain,
+    never an earlier fills row."""
+    a = _persist_minimal(session, "fills-applied:deploy")
+    b = _persist_minimal(session, "fills-applied:sale")
+    _force_imported_at(session, a, "2026-07-06 13:42:32.018224")
+    _force_imported_at(session, b, "2026-07-06 14:04:41")
+    # Mark the freshest row's cash distinctly so parentage is observable.
+    row = session.get(PortfolioSnapshotRow, b)
+    positions = json.loads(row.positions_json)
+    positions[0]["current_value_local"] = 2_000.0
+    positions[0]["usd_value_k"] = 2.0
+    row.positions_json = json.dumps(positions)
+    session.commit()
+
+    res = refresh_portfolio_snapshot(
+        session,
+        user_id="ariel",
+        quote_fn=lambda sym, **kw: None,
+        fx_fn=lambda: {"usd_nis": 3.0, "usd_eur": 0.85},
+        today=date(2026, 7, 7),
+    )
+    cash = [p for p in res.snapshot.positions if p.asset_type == "Cash"][0]
+    assert cash.current_value_local == pytest.approx(2_000.0)
 
 
 def test_no_prior_snapshot_is_a_noop(session):

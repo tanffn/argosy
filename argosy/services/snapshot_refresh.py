@@ -18,9 +18,17 @@ explicit.
 Rules (fail-safe, never fabricate):
 
 * Cash rows, real-estate lines, pensions, and unpriceable rows (Israeli funds
-  without a feed — non-latin / multi-word symbols) carry over UNCHANGED.
+  without a feed — non-latin / multi-word symbols) carry their QUANTITIES and
+  local values unchanged, but ``usd_value_k`` is RE-DERIVED from
+  ``current_value_local`` at the refreshed FX whenever the currency is
+  convertible. ``usd_value_k`` is a derived projection, never source data —
+  carrying it verbatim propagated a stale ``usd_value_k`` from an upstream
+  row whose local value had moved (live incident: the post-SGOV-sale row's
+  Leumi USD cash showed local $3,655 but usd_value_k −16.4, and the
+  self-refresh row inherited a phantom-negative cash total).
 * A quote miss carries the old values and is recorded in
-  ``parse_warnings_json`` as ``reprice_miss:<symbol>``.
+  ``parse_warnings_json`` as ``reprice_miss:<symbol>`` (its ``usd_value_k``
+  is still re-derived from the carried local value at fresh FX).
 * A live quote must pass two sanity guards before it is trusted:
   currency agreement with the position (GBp/GBX pence listings are rejected,
   they would 100x the value) and a price-ratio band vs the old price
@@ -392,27 +400,47 @@ def refresh_portfolio_snapshot(
     result.fx_usd_eur = fx_usd_eur
 
     # ---- Reprice positions (quantities NEVER change) -----------------------
+    def _carry(p: PortfolioPosition) -> PortfolioPosition:
+        """Copy a carried row; re-derive its USD projection from the local value.
+
+        ``current_value_local`` (+ currency) is the canonical quantity-shaped
+        fact; ``usd_value_k`` is derived. Re-deriving at the refreshed FX
+        both applies fresh FX to NIS/EUR carries and heals a stale
+        ``usd_value_k`` left behind by an upstream writer that moved the
+        local value without recomputing the projection. Unconvertible
+        currencies (or a missing local value) keep the old projection.
+        """
+        c = p.model_copy(deep=True)
+        if c.current_value_local is not None:
+            usd = _to_usd_k(
+                c.current_value_local, c.currency,
+                fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
+            )
+            if usd is not None:
+                c.usd_value_k = usd
+        return c
+
     new_positions: list[PortfolioPosition] = []
     for p in old.positions:
         label = (p.symbol or "").strip() or (p.details or p.asset_type or "?")[:24]
         if _is_carry_only(p):
-            new_positions.append(p.model_copy(deep=True))
+            new_positions.append(_carry(p))
             result.carried.append(label)
             continue
         if not _internally_consistent(p):
-            new_positions.append(p.model_copy(deep=True))
+            new_positions.append(_carry(p))
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}:inconsistent-source-row")
             continue
 
         price = quote_fn(p.symbol, currency=p.currency, details=p.details)
         if price is None or price <= 0:
-            new_positions.append(p.model_copy(deep=True))
+            new_positions.append(_carry(p))
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}")
             continue
         if p.current_price and not _within_band(price / p.current_price, _PRICE_RATIO_BAND):
-            new_positions.append(p.model_copy(deep=True))
+            new_positions.append(_carry(p))
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}:price-out-of-band")
             continue
@@ -422,7 +450,7 @@ def refresh_portfolio_snapshot(
             new_value_local, p.currency, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
         )
         if usd_k is None:
-            new_positions.append(p.model_copy(deep=True))
+            new_positions.append(_carry(p))
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}:no-fx-for-{p.currency}")
             continue

@@ -127,11 +127,22 @@ def persist_snapshot(
 def get_latest_snapshot_row(
     session: Session, user_id: str
 ) -> PortfolioSnapshotRow | None:
-    """Return the most recently persisted snapshot for ``user_id`` or None."""
+    """Return the most recently persisted snapshot for ``user_id`` or None.
+
+    Ordering is ``(imported_at DESC, id DESC)`` — the ``id`` tiebreak makes
+    the pick deterministic when two rows share a timestamp. On SQLite the
+    DateTime column compares as TEXT, so a second-precision timestamp
+    (``14:04:41`` — written outside the SQLAlchemy default, which always
+    emits microseconds) can tie or interleave with a microsecond one; the
+    autoincrement id is the insertion order and settles it.
+    """
     return session.execute(
         select(PortfolioSnapshotRow)
         .where(PortfolioSnapshotRow.user_id == user_id)
-        .order_by(desc(PortfolioSnapshotRow.imported_at))
+        .order_by(
+            desc(PortfolioSnapshotRow.imported_at),
+            desc(PortfolioSnapshotRow.id),
+        )
         .limit(1)
     ).scalar_one_or_none()
 
