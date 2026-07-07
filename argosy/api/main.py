@@ -436,6 +436,14 @@ def create_app() -> FastAPI:
         # with the registry so the supervisor (commit #5) picks them
         # up on start_supervisors().
         try:  # pragma: no cover - exercised via FastAPI startup, not unit-tested directly
+            # Disabled by Ariel (2026-07-07): the listener reconnect-churns
+            # (~150 supervisor restarts/day, 5,707 over 37 days) and Discord
+            # blocked the API — 0 signals written since 2026-05-29. Kept
+            # behind a knob (ARGOSY_DISCORD_LISTENER_ENABLED=1 to re-enable)
+            # pending the value-review + fix (open item in docs/handovers/).
+            if not get_settings().discord_listener_enabled:
+                log.info("discord_listener.disabled_by_config")
+                raise ImportError("discord listener disabled by config")
             from argosy.services.jobs.discord_listener_job import (
                 DiscordListenerJob,
                 discord_listener_metadata,

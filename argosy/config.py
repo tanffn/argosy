@@ -203,6 +203,10 @@ class Settings(BaseSettings):
     decision_funnel_shadow: bool = Field(default=True)
     decision_funnel_stage3: bool = Field(default=True)
     decision_funnel_autoact: bool = Field(default=False)
+    # Discord signal listener. OFF (2026-07-07): reconnect bug (~150 supervisor
+    # restarts/day) + Discord blocked the API; 0 signals since 2026-05-29.
+    # Re-enable via ARGOSY_DISCORD_LISTENER_ENABLED=1 after value review + fix.
+    discord_listener_enabled: bool = Field(default=False)
     # Boot-time missed-run catch-up: a cron loop whose most recent scheduled
     # fire has no recorded tick (server was down) fires once at startup,
     # sequentially, instead of waiting for its next cron slot. The daily
