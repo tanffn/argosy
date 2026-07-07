@@ -5307,7 +5307,14 @@ export interface WealthAssumptions {
 // GET /api/portfolio/net-worth-history — mirrors
 // argosy.api.routes.wealth_dashboard.NetWorthHistoryResponseDTO.
 export interface NetWorthHistoryPointDTO {
-  date: string; // ISO date
+  // ISO date the point plots at — the row's PRICE VINTAGE (imported_at's
+  // date when it differs from the stamped snapshot_date; TSV prices are
+  // as-of export, self-refresh rows are priced at import time).
+  date: string;
+  // The stamped snapshot_date (reference) — may precede `date` when the
+  // source TSV was exported later than it was dated. The tooltip shows
+  // "prices as of <date>" when the two differ.
+  snapshot_date?: string | null;
   // POSITIONS-SUM basis (never the stored grand total) — see the
   // backend basis-rule comment in wealth_dashboard.py.
   total_usd: number | null;

@@ -43,7 +43,14 @@ def _seed_row(
     row = PortfolioSnapshotRow(
         user_id=user_id,
         snapshot_date=snapshot_date,
-        imported_at=imported_at or datetime.now(timezone.utc),
+        # Same-date import by default: points label by PRICE VINTAGE
+        # (imported_at's date when it differs from snapshot_date), so a
+        # fixture importing "now" for a months-old snapshot would relabel
+        # every point to today.
+        imported_at=imported_at
+        or datetime(
+            snapshot_date.year, snapshot_date.month, snapshot_date.day, 12, 0
+        ),
         source_path="/tmp/family.tsv",
         positions_json=json.dumps(positions),
         allocations_json="[]",
@@ -130,13 +137,17 @@ def test_history_dedupes_same_date_keeping_freshest_import(client_with_db):
         _seed_row(
             s,
             snapshot_date=snap_date,
-            imported_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            imported_at=datetime(
+                snap_date.year, snap_date.month, snap_date.day, 10, 0
+            ),
             total_usd_value_k=900.0,
         )
         _seed_row(
             s,
             snapshot_date=snap_date,
-            imported_at=datetime.now(timezone.utc),
+            imported_at=datetime(
+                snap_date.year, snap_date.month, snap_date.day, 12, 0
+            ),
             total_usd_value_k=950.0,
         )
 
@@ -192,6 +203,46 @@ def test_history_total_is_positions_sum_never_stored_totals(client_with_db):
     # NVDA 400 + SCHD 600 + cash 250 = 1250 (positions-sum), not 999.
     assert pt["total_usd"] == 1_250_000.0
     assert pt["total_nis"] == 1_250_000.0 * 3.7
+
+
+def test_history_labels_by_price_vintage_when_import_postdates_snapshot(
+    client_with_db,
+):
+    """PRICE-VINTAGE labeling: a TSV stamped Jun-29 but exported/ingested
+    Jun-30 embeds Jun-30 prices — the point must plot at the vintage
+    (imported_at's date) with the stamped snapshot_date carried for
+    reference, and the VALUES untouched. Same-date rows keep their
+    snapshot_date label with no separate vintage."""
+    SF = client_with_db.app.state.session_factory
+    today = date.today()
+    stamped = today - timedelta(days=8)
+    vintage = today - timedelta(days=7)
+    with SF() as s:
+        s.add(User(id="ariel", plan="free"))
+        s.commit()
+        _seed_row(
+            s,
+            snapshot_date=stamped,
+            imported_at=datetime(
+                vintage.year, vintage.month, vintage.day, 16, 25
+            ),
+            total_usd_value_k=1000.0,
+        )
+        _seed_row(s, snapshot_date=today - timedelta(days=2))
+
+    res = client_with_db.get("/api/portfolio/net-worth-history?user_id=ariel")
+    assert res.status_code == 200
+    pts = res.json()["points"]
+    assert [p["date"] for p in pts] == [
+        vintage.isoformat(),
+        (today - timedelta(days=2)).isoformat(),
+    ]
+    # The stamped date rides along for the tooltip's "prices as of" note.
+    assert pts[0]["snapshot_date"] == stamped.isoformat()
+    # Values are NOT adjusted — only the time label moved.
+    assert pts[0]["total_usd"] == 1_250_000.0
+    # Same-date row: label == snapshot_date, nothing to flag.
+    assert pts[1]["snapshot_date"] == pts[1]["date"]
 
 
 def test_history_empty_for_unknown_user(client_with_db):

@@ -307,6 +307,13 @@ function TrajectoryTooltip(props: {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0]?.payload;
   const delta = row?.delta;
+  // Price-vintage note: the point plots at the row's price vintage; when
+  // the stamped snapshot_date differs (TSV exported later than dated),
+  // say so explicitly instead of implying the book was marked that day.
+  const vintageNote =
+    row?.point?.snapshot_date && row.point.snapshot_date !== row.point.date
+      ? `prices as of ${new Date(`${row.point.date}T00:00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })} (snapshot dated ${new Date(`${row.point.snapshot_date}T00:00:00`).toLocaleDateString([], { month: "short", day: "numeric" })})`
+      : null;
   return (
     <div className="rounded-md border border-border/60 bg-popover text-popover-foreground text-xs shadow p-2 max-w-xs">
       <p className="font-semibold mb-1">
@@ -330,6 +337,14 @@ function TrajectoryTooltip(props: {
           </li>
         ))}
       </ul>
+      {vintageNote ? (
+        <p
+          className="mt-1 text-muted-foreground"
+          data-testid="vintage-note"
+        >
+          {vintageNote}
+        </p>
+      ) : null}
       {delta ? (
         <div
           className="mt-1.5 pt-1.5 border-t border-border/60 font-mono tabular-nums text-muted-foreground"

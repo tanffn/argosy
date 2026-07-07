@@ -204,7 +204,20 @@ def get_wealth_dashboard(
 
 
 class NetWorthHistoryPointDTO(BaseModel):
-    date: str  # ISO date (snapshot_date, falling back to imported_at's date)
+    #: ISO date the point is PLOTTED at — the row's PRICE VINTAGE. TSV
+    #: rows carry prices as-of their EXPORT time, which can postdate the
+    #: stamped snapshot_date (observed: the "Jun 29" TSV exported Jun 30
+    #: embedded the Jun-30 close and drew a fake one-day cliff into the
+    #: next point); self-refresh rows are priced at import time by
+    #: construction. So: ``imported_at``'s date when it differs from
+    #: ``snapshot_date``, else ``snapshot_date`` (fallback:
+    #: ``imported_at``). Values are NEVER adjusted — the book truly was
+    #: worth this at these prices; only the time label moves.
+    date: str
+    #: The row's stamped snapshot_date (reference; may precede ``date``
+    #: when the source TSV was exported later than it was dated). None
+    #: when the row carries no snapshot_date.
+    snapshot_date: str | None = None
     total_usd: float | None
     #: NVDA % of the TRADEABLE SECURITIES book (0-100) at that snapshot,
     #: via the canonical ``nvda_concentration_pct`` (excludes cash rows and
@@ -244,9 +257,11 @@ def get_net_worth_history(
 ) -> NetWorthHistoryResponseDTO:
     """Chronological per-snapshot net-worth points for the last ``months``.
 
-    One point per calendar date (the freshest import wins when a date was
-    re-imported). Rows whose totals can't be parsed yield ``total_usd=None``
-    rather than being dropped, so gaps are visible to the caller.
+    One point per calendar date — the row's PRICE VINTAGE (see
+    ``NetWorthHistoryPointDTO.date``) — with the freshest import winning
+    when a vintage date was re-imported. Rows whose totals can't be
+    parsed yield ``total_usd=None`` rather than being dropped, so gaps
+    are visible to the caller.
     """
     import json as _json
     from datetime import date as _date, timedelta as _timedelta
@@ -269,8 +284,16 @@ def get_net_worth_history(
 
     by_date: dict[str, NetWorthHistoryPointDTO] = {}
     for row in rows:
-        d = row.snapshot_date or row.imported_at.date()
-        if d < cutoff:
+        snap_d = row.snapshot_date
+        imp_d = row.imported_at.date() if row.imported_at is not None else None
+        # Price vintage: imported_at's date when it differs from the
+        # stamped snapshot_date (TSV export lag / late ingest), else the
+        # snapshot_date itself. Values stay untouched — only the label.
+        if snap_d is not None and imp_d is not None and imp_d != snap_d:
+            d = imp_d
+        else:
+            d = snap_d or imp_d
+        if d is None or d < cutoff:
             continue
         total_usd: float | None = None
         nvda_pct: float | None = None
@@ -338,6 +361,7 @@ def get_net_worth_history(
         # snapshot date overwrites the stale one.
         by_date[d.isoformat()] = NetWorthHistoryPointDTO(
             date=d.isoformat(),
+            snapshot_date=snap_d.isoformat() if snap_d is not None else None,
             total_usd=total_usd,
             nvda_pct=nvda_pct,
             nvda_usd=nvda_usd,
