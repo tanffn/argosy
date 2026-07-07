@@ -1884,3 +1884,108 @@ async def test_multi_message_turn_fires_no_recovery_warning(
     assert retry_events == [], (
         f"narration+JSON must not trigger a malformed-json re-roll: {recorder.warnings}"
     )
+
+
+# ----------------------------------------------------------------------
+# Windows argv-length guard (2026-07-07 — monthly_cycle run 136 root cause):
+# a >32,767-char command line makes CreateProcess raise WinError 206
+# (surfaced as FileNotFoundError), which the SDK mislabels "Claude Code not
+# found" even though the bundled exe exists. Large system prompts must move
+# off argv via --system-prompt-file.
+# ----------------------------------------------------------------------
+
+
+def test_system_prompt_option_small_stays_inline():
+    from argosy.agents.base import _system_prompt_option
+
+    assert _system_prompt_option("short system prompt") == "short system prompt"
+
+
+def test_system_prompt_option_large_goes_to_file():
+    from pathlib import Path
+
+    from argosy.agents.base import (
+        _CLAUDE_CODE_SYSTEM_PROMPT_ARGV_LIMIT,
+        _system_prompt_option,
+    )
+
+    system = "x" * (_CLAUDE_CODE_SYSTEM_PROMPT_ARGV_LIMIT + 1)
+    opt = _system_prompt_option(system)
+    assert isinstance(opt, dict) and opt["type"] == "file"
+    p = Path(opt["path"])
+    assert p.exists()
+    assert p.read_text(encoding="utf-8") == system
+    p.unlink()
+
+
+@pytest.mark.asyncio
+async def test_inner_large_system_prompt_forwarded_as_file(monkeypatch):
+    """`_call_via_claude_code_inner` hands a plan_synthesizer-scale system
+    prompt to ClaudeAgentOptions as a file reference, not an inline string."""
+    from pathlib import Path
+
+    captured: dict[str, Any] = {}
+    _install_fake_query(monkeypatch, captured=captured)
+    agent = _make_agent()
+
+    big_system = "S" * 17_000  # live plan_synthesizer size
+    await agent._call_via_claude_code_inner(system=big_system, user="hi")
+
+    sp = captured["options"].system_prompt
+    assert isinstance(sp, dict) and sp["type"] == "file"
+    assert Path(sp["path"]).read_text(encoding="utf-8") == big_system
+    Path(sp["path"]).unlink()
+
+
+@pytest.mark.asyncio
+async def test_inner_small_system_prompt_stays_inline(monkeypatch):
+    captured: dict[str, Any] = {}
+    _install_fake_query(monkeypatch, captured=captured)
+    agent = _make_agent()
+
+    await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert captured["options"].system_prompt == "sys"
+
+
+def test_plan_synthesizer_scale_command_line_under_windows_limit():
+    """END-TO-END pin of the root cause: with the file-form system prompt the
+    SDK transport's actual argv stays under the 32,767-char CreateProcess cap
+    for plan_synthesizer-scale inputs (17k system + 12.7k --json-schema),
+    while the old inline form provably exceeded it."""
+    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk._internal.transport.subprocess_cli import (
+        SubprocessCLITransport,
+    )
+
+    from argosy.agents.base import _system_prompt_option
+
+    big_system = "S" * 17_184
+    schema = {"type": "object", "properties": {
+        f"field_{i}": {"type": "string", "description": "d" * 40}
+        for i in range(160)
+    }}  # ~12.7k chars serialized
+
+    def argv_chars(system_prompt_value):
+        opts = ClaudeAgentOptions(
+            system_prompt=system_prompt_value,
+            max_turns=3,
+            permission_mode="bypassPermissions",
+            model="claude-opus-4-8",
+            setting_sources=[],
+            tools=[],
+            output_format={"type": "json_schema", "schema": schema},
+        )
+        t = SubprocessCLITransport(prompt="p", options=opts)
+        t._cli_path = "C:/x/claude.exe"
+        cmd = t._build_command()
+        return sum(len(a) for a in cmd) + len(cmd)  # args + separators
+
+    # The old inline path crossed the limit (the run-136 failure mode)…
+    assert argv_chars(big_system) > 25_000
+    # …the file path keeps a wide margin under it.
+    file_opt = _system_prompt_option(big_system)
+    assert isinstance(file_opt, dict) and file_opt["type"] == "file"
+    assert argv_chars(file_opt) < 20_000
+    from pathlib import Path
+    Path(file_opt["path"]).unlink()

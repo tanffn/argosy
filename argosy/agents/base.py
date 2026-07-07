@@ -123,6 +123,80 @@ def _probe_claude_code_sdk_thinking_field() -> str | None:
 
 _CLAUDE_CODE_SDK_THINKING_FIELD = _probe_claude_code_sdk_thinking_field()
 
+# ---------------------------------------------------------------------------
+# Windows argv-length guard (2026-07-07 root cause — monthly_cycle run 136).
+#
+# The agent-sdk passes a *string* system prompt inline on the CLI command
+# line (`--system-prompt <text>`), and Windows CreateProcess caps the whole
+# command line at 32,767 chars. Crossing it raises WinError 206 ("The
+# filename or extension is too long"), which Python surfaces as
+# FileNotFoundError — and the SDK's connect() blanket-maps FileNotFoundError
+# to "Claude Code not found at: <bundled claude.exe>" even though the exe
+# exists. That killed plan_synthesizer (17k-char system prompt + 12.7k-char
+# --json-schema + flags > 32k) while every smaller-argv agent under the SAME
+# server ran fine.
+#
+# Fix at the seam: above a conservative threshold, hand the system prompt to
+# the SDK as a FILE (`{"type": "file", "path": ...}` → `--system-prompt-file`,
+# natively supported by the bundled CLI) so the dominant unbounded argv
+# component moves off the command line. Files land in a dedicated temp
+# subdirectory and are self-pruned after 24h (a call never outlives minutes,
+# so nothing in use is ever removed) — no per-call lifetime plumbing through
+# the 400-line retry loop.
+_CLAUDE_CODE_SYSTEM_PROMPT_ARGV_LIMIT = 8_000
+_SYSTEM_PROMPT_FILE_MAX_AGE_SECONDS = 24 * 3600
+
+
+def _system_prompt_file_dir() -> "Path":
+    from pathlib import Path
+    import tempfile
+
+    d = Path(tempfile.gettempdir()) / "argosy_system_prompts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _system_prompt_option(system: str, *, log: Any = None) -> Any:
+    """Return the ClaudeAgentOptions.system_prompt value for ``system``.
+
+    Small prompts stay inline (the proven-live path). Prompts above
+    ``_CLAUDE_CODE_SYSTEM_PROMPT_ARGV_LIMIT`` chars are written to a UTF-8
+    temp file and passed as ``{"type": "file", "path": ...}`` so the CLI
+    command line stays under the Windows 32,767-char CreateProcess limit.
+    Any failure writing the file falls back to inline (never blocks a call).
+    """
+    if len(system) <= _CLAUDE_CODE_SYSTEM_PROMPT_ARGV_LIMIT:
+        return system
+    import time
+    import uuid as _uuid
+
+    try:
+        d = _system_prompt_file_dir()
+        # Best-effort prune of stale files from prior calls/runs.
+        cutoff = time.time() - _SYSTEM_PROMPT_FILE_MAX_AGE_SECONDS
+        for old in d.glob("*.md"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+        path = d / f"sysprompt-{_uuid.uuid4().hex}.md"
+        path.write_text(system, encoding="utf-8")
+        if log is not None:
+            log.debug(
+                "claude_code.system_prompt_via_file",
+                chars=len(system),
+                path=str(path),
+            )
+        return {"type": "file", "path": str(path)}
+    except OSError as exc:  # pragma: no cover — temp dir unwritable
+        if log is not None:
+            log.warning(
+                "claude_code.system_prompt_file_fallback_inline",
+                error=str(exc)[:200],
+            )
+        return system
+
 # TOKEN ACCOUNTING TRUTH (2026-07-05) — make the thinking-tokens telemetry
 # posture explicit ONCE at startup instead of silently reporting 0 forever.
 # Live finding: the probe resolves ``thinking_tokens`` (the string exists in
@@ -1757,7 +1831,7 @@ class BaseAgent(Generic[T]):
         # max_turns history above).
         allowed_tools = list(self.claude_code_allowed_tools)
         options_kwargs: dict[str, Any] = {
-            "system_prompt": system,
+            "system_prompt": _system_prompt_option(system, log=self._log),
             "max_turns": 3,
             "allowed_tools": allowed_tools,
             # Headless server context — there is no human at the terminal to
