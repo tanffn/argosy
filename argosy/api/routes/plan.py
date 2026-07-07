@@ -898,7 +898,19 @@ def get_in_flight_synthesis(
     Returns ``{in_flight_synthesis: null}`` (200) when no in-flight run
     exists — never 404. The UI consumes this on a 10 s polling loop and
     we don't want every tick to look like an error in the network panel.
+
+    Liveness: before selecting, stale 'running' plan_revision rows —
+    no decision_phases activity within the staleness window (default
+    30 min, ``ARGOSY_SYNTHESIS_STALE_MINUTES``) — are reaped to
+    'failed' (+ their stuck wrapper job_runs rows closed) via
+    ``argosy.services.synthesis_liveness``. A run whose orchestrator
+    process died is therefore never reported as in flight; the polling
+    endpoint itself is what clears zombie rows.
     """
+    from argosy.services.synthesis_liveness import reap_stale_synthesis_runs
+
+    reap_stale_synthesis_runs(db, user_id=user_id)
+
     run = db.execute(
         select(DecisionRun)
         .where(

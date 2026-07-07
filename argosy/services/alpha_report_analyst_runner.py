@@ -58,7 +58,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import func, select
@@ -115,6 +115,11 @@ _TIMEFRAME_DAYS_BY_ENUM: dict[str, int] = {
 #: sprint brief (Meet Kevin-style; structural picks are portfolio core).
 _STRUCTURAL_PICK_TIMEFRAME_DAYS: int = 180
 _STRUCTURAL_PICK_DIRECTION: Literal["long"] = "long"
+
+#: Default TTL for promoted ``alpha_report_caution`` monitor flags.
+#: Analyst-caution chatter decays with the news cycle; without a TTL a
+#: caution flag can never expire (Red-Flag Strip zombie). 14 days.
+DEFAULT_CAUTION_TTL_DAYS: int = 14
 
 #: Cautions promoted to MonitorFlags require one of these substrings
 #: (case-insensitive) in the caution text. The gate is intentionally
@@ -589,6 +594,12 @@ def _maybe_promote_cautions(
         import hashlib
         digest = hashlib.sha1(caution.encode("utf-8")).hexdigest()[:12]
         dedup_key = f"v1|alpha_report_caution|{news_signal_id}.{digest}"
+        # Default TTL: analyst-caution chatter is time-decaying market
+        # commentary, not a state flag with a lifecycle of its own. A
+        # NULL expires_at would keep it on the Red-Flag Strip forever
+        # (observed: flag id 1 sat active for 38+ days). 14 days matches
+        # the mc_regression anchor window in plan_monitor.
+        expires_at = surfaced_at + timedelta(days=DEFAULT_CAUTION_TTL_DAYS)
         payload = {
             "news_signal_id": news_signal_id,
             "alpha_report_analysis_id": analysis_id,
@@ -603,6 +614,7 @@ def _maybe_promote_cautions(
                     severity="warning",
                     payload=json.dumps(payload, default=str),
                     surfaced_at=surfaced_at,
+                    expires_at=expires_at,
                     dedup_key=dedup_key,
                 )
                 session.add(row)
