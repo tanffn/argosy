@@ -70,6 +70,11 @@ class Scheduler:
         )
         self._loops: dict[str, CadenceLoop] = {}
         self._stop = asyncio.Event()
+        # Boot-time missed-run catch-ups run SEQUENTIALLY through this
+        # gate — a server that was down across several cron fire-times
+        # must not stampede every missed job (each an LLM-heavy run) at
+        # once on restart.
+        self._catchup_gate = asyncio.Semaphore(1)
 
     # ------------------------------------------------------------------
     # Registration
@@ -372,6 +377,7 @@ class Scheduler:
         if not loop.enabled:
             _log.info("cadence.disabled", loop=loop.name)
             return
+        await self._catch_up_if_missed(loop)
         while not self._stop.is_set():
             now = self.clock()
             next_due = loop.schedule.next_due_after(now)
@@ -389,6 +395,76 @@ class Scheduler:
                 await self._record_tick(loop.name, status=TickStatus.SKIPPED, error=None, next_due=next_due)
                 continue
 
+            await self._fire_once(loop)
+
+    async def _catch_up_if_missed(self, loop: CadenceLoop) -> None:
+        """Boot-time catch-up: if this loop's most recent scheduled fire
+        was missed (no tick recorded at or after it — the server was down),
+        fire it now instead of silently waiting for the next cron slot.
+
+        A daily review that runs at 17:00 must not be lost to a 16:55-to-
+        17:05 server restart, and a server that was down all day must run
+        the day's reviews when it comes back — the daily pipeline IS the
+        product (proactive agency: the client never asks).
+
+        Scope guards:
+          * cron-driven loops only (``prev_due_before`` returns None
+            otherwise) — interval loops re-fire within one interval anyway;
+          * a loop that has NEVER ticked also catches up (a newly shipped
+            daily job's first fire must not depend on the server being up
+            at exactly its cron time);
+          * ``market_hours_only`` loops respect the market gate, same as a
+            scheduled fire;
+          * catch-ups run sequentially through ``_catchup_gate`` (no boot
+            stampede when several jobs were missed);
+          * kill switch: ``scheduler_catchup_on_boot`` (default on).
+        """
+        try:
+            from argosy.config import get_settings
+
+            if not getattr(get_settings(), "scheduler_catchup_on_boot", True):
+                return
+        except Exception:  # pragma: no cover - settings must never break boot
+            pass
+        prev_due = loop.schedule.prev_due_before(self.clock())
+        if prev_due is None:
+            return
+        last_tick_at: datetime | None = None
+        try:
+            async with db_mod.get_session() as session:
+                row = (
+                    await session.execute(
+                        select(CadenceState).where(
+                            CadenceState.loop_name == loop.name
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is not None:
+                    last_tick_at = row.last_tick_at
+        except Exception:  # pragma: no cover - a broken read must not block the loop
+            _log.exception("cadence.catchup_state_read_failed", loop=loop.name)
+            return
+        if last_tick_at is not None:
+            if last_tick_at.tzinfo is None:
+                last_tick_at = last_tick_at.replace(tzinfo=timezone.utc)
+            if last_tick_at >= prev_due:
+                return  # the scheduled fire happened (or was attempted)
+        async with self._catchup_gate:
+            if self._stop.is_set():
+                return
+            if loop.schedule.market_hours_only and not self._market_open_check():
+                _log.info(
+                    "cadence.catchup_skipped_market_closed", loop=loop.name,
+                )
+                return
+            _log.info(
+                "cadence.catchup_fire",
+                loop=loop.name,
+                missed_due=prev_due.isoformat(),
+                last_tick_at=(
+                    last_tick_at.isoformat() if last_tick_at else None
+                ),
+            )
             await self._fire_once(loop)
 
     async def fire_once(self, loop_name: str) -> None:

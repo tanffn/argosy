@@ -254,3 +254,126 @@ def test_predictions_evaluator_disabled_by_config(engine: None) -> None:
     scheduler = Scheduler(user_id="ariel", settings=settings)
     scheduler.register_default_loops()
     assert "predictions_evaluator" not in scheduler._loops  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Boot-time missed-run catch-up: a cron loop whose most recent scheduled fire
+# has no recorded tick (server was down) fires once at startup instead of
+# silently waiting for the next cron slot.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_cadence_row(loop_name: str, last_tick_at: datetime) -> None:
+    async with db_mod.get_session() as session:
+        session.add(CadenceState(
+            loop_name=loop_name, last_tick_at=last_tick_at,
+            last_status="ok", last_error=None,
+        ))
+        await session.commit()
+
+
+def test_prev_due_before_cron() -> None:
+    sch = LoopSchedule(cron="0 9 * * *", timezone="UTC")
+    ref = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
+    prev = sch.prev_due_before(ref)
+    assert prev == datetime(2026, 5, 2, 9, 0, tzinfo=timezone.utc)
+
+
+def test_prev_due_before_interval_is_none() -> None:
+    sch = LoopSchedule(interval_seconds=60)
+    ref = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
+    assert sch.prev_due_before(ref) is None
+
+
+@pytest.mark.asyncio
+async def test_catchup_fires_when_scheduled_run_was_missed(engine: None) -> None:
+    """last tick predates the previous cron due (server was down at 09:00)
+    → the loop fires at boot."""
+    await _seed_cadence_row(
+        "counting", datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc),
+    )
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+    )
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 1
+
+
+@pytest.mark.asyncio
+async def test_catchup_noop_when_scheduled_run_happened(engine: None) -> None:
+    """last tick at/after the previous cron due → nothing to catch up."""
+    await _seed_cadence_row(
+        "counting", datetime(2026, 5, 2, 9, 0, 5, tzinfo=timezone.utc),
+    )
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+    )
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_catchup_fires_for_never_ran_loop(engine: None) -> None:
+    """No cadence_state row at all (newly shipped job) → catches up."""
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+    )
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 1
+
+
+@pytest.mark.asyncio
+async def test_catchup_skips_interval_loops(engine: None) -> None:
+    """Interval loops re-fire within one interval of boot — no catch-up."""
+    loop = _CountingLoop(schedule=LoopSchedule(interval_seconds=60))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+    )
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_catchup_respects_market_hours_gate(engine: None) -> None:
+    loop = _CountingLoop(schedule=LoopSchedule(
+        cron="0 9 * * *", timezone="UTC", market_hours_only=True,
+    ))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+        market_open_check=lambda: False,
+    )
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_catchup_kill_switch(engine: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ARGOSY_SCHEDULER_CATCHUP_ON_BOOT=0 disables the boot catch-up."""
+    from argosy.config import get_settings
+
+    monkeypatch.setenv("ARGOSY_SCHEDULER_CATCHUP_ON_BOOT", "0")
+    get_settings.cache_clear()
+    try:
+        loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+        scheduler = Scheduler(
+            user_id="ariel",
+            clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+        )
+        scheduler.register_loop(loop)
+        await scheduler._catch_up_if_missed(loop)
+        assert loop.ticks == 0
+    finally:
+        get_settings.cache_clear()

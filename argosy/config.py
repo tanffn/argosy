@@ -203,6 +203,12 @@ class Settings(BaseSettings):
     decision_funnel_shadow: bool = Field(default=True)
     decision_funnel_stage3: bool = Field(default=True)
     decision_funnel_autoact: bool = Field(default=False)
+    # Boot-time missed-run catch-up: a cron loop whose most recent scheduled
+    # fire has no recorded tick (server was down) fires once at startup,
+    # sequentially, instead of waiting for its next cron slot. The daily
+    # pipeline is the product — a review lost to server downtime is a
+    # silent failure of proactive agency. Read via ARGOSY_SCHEDULER_CATCHUP_ON_BOOT.
+    scheduler_catchup_on_boot: bool = Field(default=True)
     # Research-informed deployment preflight (deterministic; Increment 1).
     #   - deployment_funnel_enabled: master switch. When False, /deploy-cash
     #     behaves exactly as before (no preflight block).

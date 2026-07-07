@@ -92,6 +92,35 @@ class LoopSchedule:
             return ref + timedelta(seconds=self.interval_seconds)
         return ref + timedelta(hours=1)
 
+    def prev_due_before(self, ref: datetime) -> datetime | None:
+        """Compute the most recent scheduled fire time at or before ``ref``.
+
+        The boot-time missed-run catch-up compares this against
+        ``cadence_state.last_tick_at``: a loop whose last tick predates its
+        previous scheduled fire missed that fire (the server was down).
+        Cron-driven loops only — interval loops re-fire within one interval
+        of boot anyway, so "catch-up" would just double-fire them. Returns
+        ``None`` for non-cron schedules or on a malformed cron string.
+        Returned value is a tz-aware UTC datetime (same convention as
+        :meth:`next_due_after`).
+        """
+        if not self.cron or _croniter is None:
+            return None
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(self.timezone)
+            if ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+            ref_local = ref.astimezone(tz)
+            ci = _croniter(self.cron, ref_local)
+            prev_local = ci.get_prev(datetime)
+            if prev_local.tzinfo is None:
+                prev_local = prev_local.replace(tzinfo=tz)
+            return prev_local.astimezone(timezone.utc)
+        except Exception:  # pragma: no cover - malformed cron string
+            return None
+
 
 class CadenceLoop(abc.ABC):
     """Abstract cadence loop.
