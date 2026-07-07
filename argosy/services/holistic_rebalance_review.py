@@ -45,6 +45,18 @@ BUY legs fund the most under-target classes from per-position ADD/BUY verdicts
 through the estate gate; a US-domiciled candidate (other than NVDA) is DROPPED
 with a recorded note rather than proposed.
 
+Concentrated-sleeve exclusion (inviolable-arithmetic floor)
+-----------------------------------------------------------
+The plan's strategic single-stock sleeve (the ``concentrated_equity`` class in
+the ``TargetAllocationDoc`` — NVDA today) is under a do-not-re-concentrate
+glide. It must NEVER appear as a BUY leg, even when its coarse class is
+under-target: a drift-fill rule buying INTO the deconcentrating position would
+undo the glide arithmetically. The exclusion is resolved from the plan doc
+(``sigma_class == 'concentrated_equity'``), falling back to the sanctioned
+US-situs constant only when no plan-derived source exists. Exclusions are
+logged and recorded in ``dropped_buy_candidates``. Trims/sells of the
+concentrated position remain allowed (that IS the glide).
+
 Conservation / sanity
 ----------------------
 * Net cash delta (sum of BUY amounts − sum of TRIM/SELL amounts) is reported on
@@ -211,6 +223,29 @@ def _flags_by_ticker(thesis_flags: Iterable[dict[str, Any]]) -> dict[str, list[d
 
 def _severity_rank(s: str) -> int:
     return {"info": 0, "warning": 1, "critical": 2}.get(s, 0)
+
+
+def _concentrated_symbols(doc: Any) -> frozenset[str]:
+    """Ticker(s) of the plan's strategic single-stock (deconcentrating) sleeve.
+
+    Plan-derived: instruments of any doc class whose ``sigma_class`` is
+    ``concentrated_equity`` (today: NVDA). Falls back to the existing
+    sanctioned-US-situs constant (``target_allocation_doc``) when the doc
+    carries no concentrated class — never a fresh hardcoded literal here.
+    """
+    symbols: set[str] = set()
+    for c in getattr(doc, "classes", []) or []:
+        if (getattr(c, "sigma_class", "") or "").strip().lower() != "concentrated_equity":
+            continue
+        for instr in getattr(c, "instruments", []) or []:
+            sym = (getattr(instr, "symbol", "") or "").strip().upper()
+            if sym:
+                symbols.add(sym)
+    if symbols:
+        return frozenset(symbols)
+    from argosy.services.target_allocation_doc import _SANCTIONED_US_SITUS_SYMBOLS
+
+    return frozenset(_SANCTIONED_US_SITUS_SYMBOLS)
 
 
 # --- Pure composition --------------------------------------------------------
@@ -419,6 +454,10 @@ def compose_rebalance_review(
         v.symbol.upper() for v in violations if v.severity == "RED"
     }
 
+    # Do-not-re-concentrate floor: the plan's strategic single-stock sleeve
+    # (concentrated_equity — NVDA today) is NEVER a buy leg. See module doc.
+    concentrated = _concentrated_symbols(doc)
+
     # Candidate buy tickers: per-position ADD / BUY verdicts whose class is
     # under-target. Sort under-target classes by magnitude of shortfall so the
     # most-under class is funded first.
@@ -453,6 +492,24 @@ def compose_rebalance_review(
         usable: list[Any] = []
         for v in candidates:
             tk = (getattr(v, "ticker", "") or "").upper()
+            if tk in concentrated:
+                logger.info(
+                    "rebalance_review.concentrated_buy_excluded: %s is the "
+                    "plan's strategic single-stock sleeve (do-not-re-"
+                    "concentrate glide) — dropped from the %s buy side",
+                    tk, cls,
+                )
+                dropped.append({
+                    "ticker": tk,
+                    "asset_class": cls,
+                    "reason": (
+                        f"{tk} is the plan's strategic single-stock sleeve under a "
+                        f"do-not-re-concentrate glide. Buying it via a drift-fill "
+                        f"rule would re-concentrate the position; excluded from "
+                        f"the buy side (trims remain the glide's instrument)."
+                    ),
+                })
+                continue
             if tk in red_symbols:
                 dropped.append({
                     "ticker": tk,
@@ -665,8 +722,18 @@ def run_holistic_rebalance_review(
     )
 
     proposal_written = False
-    if write_proposal and review.status == "ok" and review.legs:
-        proposal_written = _persist_review(session, user_id, review, now=now)
+    if write_proposal and review.status == "ok":
+        # Refresh semantics: a fresh deterministic run REPLACES any open
+        # holistic-rebalance proposal (the dedup key embeds the severity
+        # bucket, so a run whose severity changed — or that composes zero
+        # legs — would otherwise leave the stale row open forever). The
+        # stale rows are superseded first, then the new row (if any legs)
+        # is inserted through the normal tombstone-then-insert writer.
+        _supersede_stale_holistic_proposals(session, user_id, now=now)
+        if review.legs:
+            proposal_written = _persist_review(session, user_id, review, now=now)
+        else:
+            session.commit()
 
     return review, proposal_written
 
@@ -815,6 +882,59 @@ def _load_active_thesis_flags(
         else:
             out.append({**base, "ticker": ""})
     return out
+
+
+#: LIKE pattern matching every holistic-rebalance dedup key regardless of the
+#: severity bucket (``v1|rebalance|holistic_rebalance|<info|warning|critical>``).
+_HOLISTIC_DEDUP_PREFIX = "v1|rebalance|holistic_rebalance|%"
+
+
+def _supersede_stale_holistic_proposals(
+    session: Any, user_id: str, *, now: datetime
+) -> int:
+    """Mark every OPEN holistic-rebalance proposal as superseded.
+
+    Called at the start of each persisting run so the freshly-composed review
+    replaces — never coexists with — a prior run's row. Without this, a run
+    whose severity bucket changed (different dedup key) or that composed zero
+    legs (no write at all) would leave the stale proposal open and nagging.
+    Returns the number of rows superseded. Never raises past a warning log.
+    """
+    from sqlalchemy import and_, select
+
+    from argosy.state.models import ActionProposal
+
+    try:
+        rows = session.execute(
+            select(ActionProposal).where(
+                and_(
+                    ActionProposal.user_id == user_id,
+                    ActionProposal.kind == "rebalance",
+                    ActionProposal.status == "open",
+                    ActionProposal.dedup_key.like(_HOLISTIC_DEDUP_PREFIX),
+                )
+            )
+        ).scalars().all()
+        for r in rows:
+            r.status = "superseded"
+            r.decided_at = now
+            r.decided_by_user_note = (
+                "superseded: refreshed by a newer holistic rebalance run"
+            )
+        if rows:
+            session.flush()
+            logger.info(
+                "rebalance_review.superseded_stale_proposals: %d open "
+                "holistic-rebalance row(s) superseded for user=%s",
+                len(rows), user_id,
+            )
+        return len(rows)
+    except Exception:  # noqa: BLE001 — housekeeping never sinks the review
+        session.rollback()
+        logger.warning(
+            "rebalance_review: supersede of stale proposals failed", exc_info=True
+        )
+        return 0
 
 
 def _persist_review(

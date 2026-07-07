@@ -351,6 +351,253 @@ def test_fallback_legs_do_not_overtrim_the_class():
     )
 
 
+# --- (i) the concentrated sleeve is NEVER a buy leg --------------------------
+
+
+def _doc_with_concentrated(
+    *, equity_symbols: list[tuple[str, str | None]],
+    concentrated_symbol: str = "NVDA",
+    bond_symbols: list[tuple[str, str | None]] | None = None,
+) -> TargetAllocationDoc:
+    """A doc whose strategic single-stock sleeve is a real concentrated_equity
+    class (mirrors the live plan v67 shape) — the plan-derived exclusion source."""
+    def _instr(sym: str, dom: str | None) -> AllocationInstrument:
+        return AllocationInstrument(
+            symbol=sym, role="primary", weight_within_class_pct=100.0, domicile=dom,
+        )
+
+    classes = [
+        AllocationClassDoc(
+            label="Equity core",
+            snapshot_category="Core Equity",
+            sigma_class="us_equity",
+            target_pct=60.0,
+            instruments=[_instr(s, d) for s, d in equity_symbols],
+        ),
+        AllocationClassDoc(
+            label="Strategic single-stock (NVDA)",
+            snapshot_category="NVIDIA",
+            sigma_class="concentrated_equity",
+            target_pct=8.0,
+            instruments=[_instr(concentrated_symbol, "US")],
+        ),
+    ]
+    if bond_symbols:
+        classes.append(AllocationClassDoc(
+            label="Bonds",
+            snapshot_category="Defensive",
+            sigma_class="bonds",
+            target_pct=32.0,
+            instruments=[_instr(s, d) for s, d in bond_symbols],
+        ))
+    return TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18,
+        nvda_cap_pct=13.0, fi_pct=4.0, provenance="test", classes=classes, glide=[],
+    )
+
+
+def test_concentrated_sleeve_never_a_buy_leg_even_when_equity_under_target():
+    """Regression for proposal #48: TRIM IBTA -> BUY NVDA. The strategic
+    single-stock sleeve (doc concentrated_equity class) must never be funded
+    by a drift-fill buy leg, even with a BUY verdict in an under-target class."""
+    doc = _doc_with_concentrated(
+        equity_symbols=[("FUSA", "IE")],
+        bond_symbols=[("IBTA", "IE")],
+    )
+    verdicts = [
+        # bonds over-target -> IBTA trims (plan wants the weight down)
+        _thesis("IBTA", verdict="TRIM", conviction="LOW",
+                current_weight_pct=12.0, target_weight_pct=2.0,
+                current_usd_value=120_000.0),
+        # equity under-target; BOTH NVDA and FUSA carry buy-side verdicts
+        _thesis("NVDA", verdict="BUY", conviction="LOW",
+                current_weight_pct=55.0, current_usd_value=550_000.0),
+        _thesis("FUSA", verdict="ADD", conviction="MEDIUM",
+                current_weight_pct=0.3, current_usd_value=3_000.0),
+    ]
+    alerts = [
+        _alert("bonds", drift_pp=10.0, rule_fired="5pp_threshold"),
+        _alert("equity", drift_pp=-10.0, rule_fired="5pp_threshold"),
+    ]
+    review = compose_rebalance_review(
+        doc=doc, position_verdicts=verdicts, alerts=alerts,
+        thesis_flags=[], total_book_usd=1_000_000.0,
+    )
+    buys = [l for l in review.legs if l.action == "BUY"]
+    assert buys, "the under-target equity class should still be funded"
+    assert all(l.ticker != "NVDA" for l in buys), (
+        f"NVDA must never be a buy leg: {[(l.ticker, l.amount_usd) for l in buys]}"
+    )
+    # FUSA absorbs the funding instead of splitting with NVDA.
+    assert {l.ticker for l in buys} == {"FUSA"}
+    dropped = {d["ticker"]: d for d in review.dropped_buy_candidates}
+    assert "NVDA" in dropped
+    assert "do-not-re-concentrate" in dropped["NVDA"]["reason"]
+
+
+def test_concentrated_exclusion_falls_back_to_sanctioned_constant():
+    """A doc WITHOUT a concentrated_equity class still never buys NVDA —
+    the exclusion falls back to the sanctioned-US-situs constant."""
+    doc = _doc(
+        equity_symbols=[("NVDA", None), ("FUSA", "IE")],
+        bond_symbols=[("IBTA", "IE")],
+    )
+    verdicts = [
+        _thesis("IBTA", verdict="TRIM", conviction="LOW",
+                current_weight_pct=40.0, target_weight_pct=30.0,
+                current_usd_value=400_000.0),
+        _thesis("NVDA", verdict="BUY", conviction="LOW",
+                current_weight_pct=30.0, current_usd_value=300_000.0),
+        _thesis("FUSA", verdict="ADD", conviction="MEDIUM",
+                current_weight_pct=1.0, current_usd_value=10_000.0),
+    ]
+    alerts = [
+        _alert("bonds", drift_pp=10.0, rule_fired="5pp_threshold"),
+        _alert("equity", drift_pp=-10.0, rule_fired="5pp_threshold"),
+    ]
+    review = compose_rebalance_review(
+        doc=doc, position_verdicts=verdicts, alerts=alerts,
+        thesis_flags=[], total_book_usd=1_000_000.0,
+    )
+    assert all(
+        l.ticker != "NVDA" for l in review.legs if l.action == "BUY"
+    )
+
+
+# --- (j) stale holistic proposal is superseded on re-run ---------------------
+
+
+@pytest.fixture()
+def _proposal_session(tmp_path):
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import Base
+
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'proposals.db'}")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    try:
+        yield s
+    finally:
+        s.close()
+        engine.dispose()
+
+
+def _open_holistic_row(session, *, severity: str, summary: str = "stale"):
+    from datetime import datetime, timedelta, timezone
+
+    from argosy.state.models import ActionProposal
+
+    now = datetime.now(timezone.utc)
+    row = ActionProposal(
+        user_id="ariel",
+        summary=summary,
+        rationale_md="stale rationale",
+        suggested_payload="{}",
+        severity=severity,
+        surfaced_at=now,
+        expires_at=now + timedelta(days=7),
+        status="open",
+        kind="rebalance",
+        dedup_key=f"v1|rebalance|holistic_rebalance|{severity}",
+        execution_state="proposed",
+    )
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_stale_holistic_proposal_superseded_on_rerun(_proposal_session):
+    """A fresh run supersedes the old open row even when the severity bucket
+    (and therefore the dedup key) changed — the proposal-48 failure mode."""
+    from datetime import datetime, timezone
+
+    from argosy.services.holistic_rebalance_review import (
+        RebalanceLeg,
+        _persist_review,
+        _supersede_stale_holistic_proposals,
+    )
+    from argosy.state.models import ActionProposal
+
+    stale = _open_holistic_row(_proposal_session, severity="critical")
+    now = datetime.now(timezone.utc)
+
+    n = _supersede_stale_holistic_proposals(_proposal_session, "ariel", now=now)
+    assert n == 1
+
+    review = RebalanceReview(
+        status="ok", summary="fresh", rationale_md="fresh",
+        legs=[RebalanceLeg(
+            action="TRIM", ticker="IBTA", asset_class="bonds",
+            from_pct=12.0, to_pct=2.0, amount_usd=1000.0,
+            gate_reason="THESIS_OVERWEIGHT",
+        )],
+        severity="warning",
+    )
+    assert _persist_review(_proposal_session, "ariel", review, now=now)
+
+    _proposal_session.expire_all()
+    stale_row = _proposal_session.get(ActionProposal, stale.id)
+    assert stale_row.status == "superseded"
+    open_rows = [
+        r for r in _proposal_session.query(ActionProposal).all()
+        if r.status == "open"
+    ]
+    assert len(open_rows) == 1
+    assert open_rows[0].summary == "fresh"
+    assert open_rows[0].dedup_key.endswith("|warning")
+
+
+def test_supersede_leaves_non_holistic_rebalance_proposals_alone(_proposal_session):
+    from datetime import datetime, timedelta, timezone
+
+    from argosy.services.holistic_rebalance_review import (
+        _supersede_stale_holistic_proposals,
+    )
+    from argosy.state.models import ActionProposal
+
+    now = datetime.now(timezone.utc)
+    other = ActionProposal(
+        user_id="ariel", summary="flagsig", rationale_md="",
+        suggested_payload="{}", severity="warning",
+        surfaced_at=now, expires_at=now + timedelta(days=30),
+        status="open", kind="rebalance",
+        dedup_key="v1|rebalance|flagsig:state_observer_x:field|warning",
+        execution_state="proposed",
+    )
+    _proposal_session.add(other)
+    _proposal_session.commit()
+
+    n = _supersede_stale_holistic_proposals(_proposal_session, "ariel", now=now)
+    assert n == 0
+    _proposal_session.expire_all()
+    assert _proposal_session.get(ActionProposal, other.id).status == "open"
+
+
+def test_zero_leg_rerun_supersedes_without_writing(_proposal_session):
+    """A corrected run that composes NOTHING must still clear the stale row —
+    handled by run_holistic_rebalance_review calling the supersede helper
+    before deciding whether to write."""
+    from datetime import datetime, timezone
+
+    from argosy.services.holistic_rebalance_review import (
+        _supersede_stale_holistic_proposals,
+    )
+    from argosy.state.models import ActionProposal
+
+    stale = _open_holistic_row(_proposal_session, severity="critical")
+    now = datetime.now(timezone.utc)
+    assert _supersede_stale_holistic_proposals(_proposal_session, "ariel", now=now) == 1
+    _proposal_session.commit()
+    _proposal_session.expire_all()
+    assert _proposal_session.get(ActionProposal, stale.id).status == "superseded"
+    assert not [
+        r for r in _proposal_session.query(ActionProposal).all()
+        if r.status == "open"
+    ]
+
+
 # --- (h) alpha_report_caution ticker matching from caution text -------------
 def test_tickers_in_text_matches_known_whole_words_only():
     from argosy.services.holistic_rebalance_review import _tickers_in_text
