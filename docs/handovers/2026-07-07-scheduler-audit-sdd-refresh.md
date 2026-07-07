@@ -22,6 +22,9 @@ Launched 2026-07-06 ~20:57 over `229ce99`; log (`tmp/full_suite_2026-07-06.log`)
 
 ## 4. Open items
 
+0. **NOTE — refactor needed (Ariel, no schedule set): genericize the concentrated position.** NVDA is hardcoded across ~148 files (constants like `NVDA_TARGET_PCT` in `allocation_plan.py`, look-through maps, prompts, UI copy) but it is just the current tenant's instance of "concentrated employer-equity position from RSU vesting (not purchased by choice)". Target shape: the concentrated sleeve (symbol, target, cap inputs, situs exception, glide waypoints) lives in per-user plan state (DB `TargetAllocationDoc`); code reads "the concentrated sleeve", never a ticker literal; prompts get the symbol injected; the `NVDA_*` constants die. Staged: money-path → prompts → UI. Also blocks multi-tenant; root cause of the SDD user-content leak.
+0b. **NOTE — Discord listener disabled (2026-07-07):** reconnect bug + Discord blocked the API; 0 signals since 2026-05-29. Review its VALUE before fixing; re-enable via `ARGOSY_DISCORD_LISTENER_ENABLED=1` only after both.
+
 1. **Full suite:** re-run to completion; identify the 3 failures + the hang point (§3).
 2. **Backend up** → today's cycle fires (thesis monitor 09:00, news 17:00, state observer 17:00, holdings-review's FIRST EVER run 17:30, alpha 18:00, funnel 18:30 IDT) and the fixed `pending_reevaluation_daily` (04:00 IDT) finally sweeps → CELH should auto-retry with anchors + WebSearch + the parse fix. **verify-run after the first cycle.**
 3. **Bank DPYA reply** → IWDP→DPYA swap + $5k property top-up (fallback: top up IWDP as sleeve instrument).

@@ -70,6 +70,12 @@ from argosy.services.target_allocation_doc import AllocationInstrument
 # target must leave room for indirect exposure. 8.0 direct ⇒ ~11.5% plan
 # look-through < 13% with the current instruments; 12 breaches. Re-validated
 # every synthesis — this constant is a SEED, not authority.
+#
+# REFACTOR NEEDED (Ariel, 2026-07-07): "NVDA" here is the current tenant's
+# instance of a generic class — a concentrated EMPLOYER-EQUITY position
+# accumulated via RSU vesting, not purchased by choice. The sleeve (symbol,
+# target, cap inputs, situs exception, glide) belongs in per-user plan state,
+# not a ticker-named constant. See the 2026-07-07 handover open-items note.
 NVDA_TARGET_PCT = 8.0
 assert NVDA_TARGET_PCT <= DEFAULT_NVDA_CAP_PCT * 100.0 + 1e-9
 
