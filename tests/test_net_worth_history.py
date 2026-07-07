@@ -23,9 +23,18 @@ def _seed_row(
     total_usd_value_k: float = 1000.0,
     nvda_usd_value_k: float = 400.0,
 ) -> int:
+    # A cash row rides along in every fixture: nvda_pct must be computed
+    # against the TRADEABLE SECURITIES book (canonical
+    # ``nvda_concentration_pct``), so cash never dilutes the weight — the
+    # same denominator basis as the TargetAllocationDoc glide.
     positions = [
-        {"symbol": "NVDA", "usd_value_k": nvda_usd_value_k},
-        {"symbol": "SCHD", "usd_value_k": total_usd_value_k - nvda_usd_value_k},
+        {"symbol": "NVDA", "asset_type": "stock", "usd_value_k": nvda_usd_value_k},
+        {
+            "symbol": "SCHD",
+            "asset_type": "etf",
+            "usd_value_k": total_usd_value_k - nvda_usd_value_k,
+        },
+        {"symbol": "-", "asset_type": "Cash", "usd_value_k": 250.0},
     ]
     row = PortfolioSnapshotRow(
         user_id=user_id,

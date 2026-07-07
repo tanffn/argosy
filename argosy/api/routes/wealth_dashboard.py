@@ -206,10 +206,13 @@ def get_wealth_dashboard(
 class NetWorthHistoryPointDTO(BaseModel):
     date: str  # ISO date (snapshot_date, falling back to imported_at's date)
     total_usd: float | None
-    #: Direct NVDA position as a % of total book value at that snapshot
-    #: (0-100). Direct-position weight, not fund look-through — historical
-    #: snapshots carry positions only, so look-through can't be re-derived
-    #: retroactively.
+    #: NVDA % of the TRADEABLE SECURITIES book (0-100) at that snapshot,
+    #: via the canonical ``nvda_concentration_pct`` (excludes cash rows and
+    #: physical real estate) — the SAME denominator basis as the
+    #: TargetAllocationDoc glide, so the deconcentration chart's actual and
+    #: glide series join without a fake jump. Direct-position weight, not
+    #: fund look-through — historical snapshots carry positions only, so
+    #: look-through can't be re-derived retroactively.
     nvda_pct: float | None
 
 
@@ -235,6 +238,7 @@ def get_net_worth_history(
 
     from sqlalchemy import select as _select
 
+    from argosy.services.wealth_dashboard import nvda_concentration_pct
     from argosy.state.models import PortfolioSnapshotRow as _SnapRow
 
     cutoff = _date.today() - _timedelta(days=round(months * 30.44))
@@ -260,14 +264,12 @@ def get_net_worth_history(
             total_k = totals.get("total_usd_value_k")
             if isinstance(total_k, (int, float)):
                 total_usd = float(total_k) * 1000.0
-                if total_k > 0:
-                    positions = _json.loads(row.positions_json or "[]")
-                    nvda_k = sum(
-                        float(p.get("usd_value_k") or 0.0)
-                        for p in positions
-                        if str(p.get("symbol") or "").upper() == "NVDA"
-                    )
-                    nvda_pct = (nvda_k / float(total_k)) * 100.0
+            positions = _json.loads(row.positions_json or "[]")
+            if isinstance(positions, list):
+                # Canonical concentration: NVDA ÷ tradeable securities book
+                # (excl. cash + physical real estate) — one NVDA weight
+                # across surfaces, and the same basis the plan glide uses.
+                nvda_pct = nvda_concentration_pct(positions)
         except (ValueError, TypeError):
             pass  # keep the dated point; total_usd/nvda_pct stay None
         # rows iterate oldest-import first, so a later re-import of the same
