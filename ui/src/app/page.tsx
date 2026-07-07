@@ -5,10 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
+import { DeconcentrationCard } from "@/components/home/DeconcentrationCard";
 import { FMGreetingCard } from "@/components/home/FMGreetingCard";
 import { RedFlagStrip } from "@/components/home/RedFlagStrip";
-import { LiveClock } from "@/components/live-clock";
-import { WindfallBanner } from "@/components/retirement/WindfallBanner";
+import { WealthTrajectoryCard } from "@/components/home/WealthTrajectoryCard";
 import {
   Card,
   CardContent,
@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/card";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { SectionHeader } from "@/components/ui/section-header";
-import { Sparkline, type SparklineTone } from "@/components/ui/sparkline";
+import { Sparkline } from "@/components/ui/sparkline";
 import { StatusPill } from "@/components/ui/status-pill";
 import {
   api,
@@ -31,7 +31,6 @@ import {
   type FleetSelfReviewDTO,
   type InFlightSynthesisDTO,
   type PlanCurrentDTO,
-  type PortfolioSnapshotDTO,
 } from "@/lib/api";
 import Link from "next/link";
 import { useWSEvents } from "@/lib/ws";
@@ -92,7 +91,6 @@ interface AuditEventRow {
 }
 
 interface HomeData {
-  portfolio: PortfolioSnapshotDTO | null;
   plan: PlanCurrentDTO | null;
   // Used for the NVDA PACE tile's real-numbers wiring — the draft response
   // carries the latest concentration agent_report's nvda_pace block. Null
@@ -126,7 +124,6 @@ interface HomeData {
 }
 
 const initial: HomeData = {
-  portfolio: null,
   plan: null,
   planDraft: null,
   brief: null,
@@ -143,20 +140,6 @@ const initial: HomeData = {
   fleetCount: null,
   error: null,
 };
-
-/** Generate a plausible declining curve from `start` to `end` over n points. */
-function decliningCurve(start: number, end: number, n: number): number[] {
-  if (n <= 1) return [start];
-  const out: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = i / (n - 1);
-    // Linear interpolation with a tiny sinusoidal jitter for a less-flat look.
-    const base = start + (end - start) * t;
-    const jitter = Math.sin(i * 1.7) * (Math.abs(start - end) * 0.04);
-    out.push(base + jitter);
-  }
-  return out;
-}
 
 function startOfYearISO(): string {
   const y = new Date().getFullYear();
@@ -190,7 +173,6 @@ function humanBytes(bytes: number): string {
 
 export default function Home() {
   const [data, setData] = useState<HomeData>(initial);
-  const [loading, setLoading] = useState(true);
 
   // Per-section flash flags. Each is set to a monotonically increasing
   // counter when its event arrives, so a fresh `.argosy-flash-border`
@@ -219,7 +201,6 @@ export default function Home() {
       // We try a bunch of endpoints. Each is wrapped so a 404 / network
       // failure on one section doesn't cascade and leave the page blank.
       const [
-        portfolio,
         plan,
         planDraft,
         brief,
@@ -236,7 +217,6 @@ export default function Home() {
         inFlightSynth,
         configRes,
       ] = await Promise.all([
-        api.portfolioSnapshot(USER_ID).catch(() => null),
         api.planCurrent(USER_ID).catch(() => null),
         // Used by the NVDA PACE tile to read nvda_pace.shares_sold_ytd. We
         // tolerate 404 (no pending draft yet) by falling back to null; the
@@ -364,7 +344,6 @@ export default function Home() {
       }
 
       setData({
-        portfolio,
         plan,
         planDraft,
         brief,
@@ -383,8 +362,6 @@ export default function Home() {
       });
     } catch (e: unknown) {
       setData((prev) => ({ ...prev, error: String(e) }));
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -454,7 +431,6 @@ export default function Home() {
   }, [data.inFlightSynthesis]);
 
   // ----- Derived values --------------------------------------------------
-  const netWorth = data.portfolio?.total_usd_value_k ?? 0;
   const planSummary = (data.plan?.latest_critique_json as
     | { overall_summary?: string; findings?: { severity?: string }[] }
     | null
@@ -466,41 +442,6 @@ export default function Home() {
       : findings.find((f) => f.severity === "YELLOW")
         ? { tone: "warning" as const, label: "YELLOW" }
         : { tone: "success" as const, label: "GREEN" };
-
-  // Concentration scorecard: pull NVDA % from positions.
-  const totalUsdK = netWorth;
-  const nvdaPos = data.portfolio?.positions.find((p) => p.symbol === "NVDA");
-  const nvdaPct =
-    totalUsdK > 0 && nvdaPos?.usd_value_k
-      ? (nvdaPos.usd_value_k / totalUsdK) * 100
-      : null;
-  const concentrationTone: "success" | "warning" | "error" =
-    nvdaPct === null
-      ? "warning"
-      : nvdaPct > 30
-        ? "error"
-        : nvdaPct > 15
-          ? "warning"
-          : "success";
-
-  // Sparkline series (12 points each).
-  const netWorthSeries = useMemo(() => {
-    const snaps = data.argonautSnapshots;
-    if (snaps.length >= 2) {
-      // Snapshots come newest-first by convention; reverse to chronological.
-      return [...snaps]
-        .reverse()
-        .slice(-12)
-        .map((s) => s.total_value_usd);
-    }
-    return Array(12).fill(0);
-  }, [data.argonautSnapshots]);
-
-  const concentrationSeries = useMemo(() => {
-    if (nvdaPct === null) return Array(12).fill(0);
-    // Generate a plausible declining curve from current → 15% target.
-    return decliningCurve(nvdaPct, 15, 12);
-  }, [nvdaPct]);
 
   // Argonaut P&L since inception (reverse-chronologically corrected).
   const argonautSeries = useMemo(() => {
@@ -543,30 +484,20 @@ export default function Home() {
   // 20% tolerance band locally so a small lag against a linear pro-rata
   // doesn't flash a warning when the actual plan cadence is back-loaded.
   const nvdaPace = data.planDraft?.nvda_pace ?? null;
-  const inFlightSynth = data.inFlightSynthesis;
   const nvdaSold = nvdaPace?.shares_sold_ytd ?? 0;
   const nvdaTargetYtd = nvdaPace?.target_shares_ytd ?? 0;
-  // Plan-derived YTD target drives the percentage. When no pace data exists
-  // yet (target <= 0) we have no denominator, so leave the percentage null and
-  // render an "awaiting plan" state instead of dividing by a hardcode.
-  const nvdaPctSold =
-    nvdaTargetYtd > 0 ? (nvdaSold / nvdaTargetYtd) * 100 : null;
-
-  type NvdaStatus = "on_pace" | "behind_pace" | "neutral";
-  const nvdaStatus: NvdaStatus = (() => {
-    if (nvdaPace === null) return "neutral";
-    if (nvdaTargetYtd <= 0) return "neutral";
-    if (nvdaPace.on_track || nvdaSold >= nvdaTargetYtd) return "on_pace";
+  // Render only when the backend served real pace data (the endpoint now
+  // falls back to the current plan + sales history itself). Null/absent —
+  // or a zero plan target, which leaves no denominator — HIDES the tile
+  // entirely; never an empty "—" with a warning pill.
+  const showNvdaPace = nvdaPace !== null && nvdaTargetYtd > 0;
+  const nvdaPctSold = nvdaTargetYtd > 0 ? (nvdaSold / nvdaTargetYtd) * 100 : 0;
+  const nvdaOnPace = (() => {
+    if (!showNvdaPace) return false;
+    if (nvdaPace!.on_track || nvdaSold >= nvdaTargetYtd) return true;
     const underPct = ((nvdaTargetYtd - nvdaSold) / nvdaTargetYtd) * 100;
-    return underPct < 20 ? "on_pace" : "behind_pace";
+    return underPct < 20;
   })();
-  const nvdaOnPace = nvdaStatus === "on_pace";
-  const nvdaPaceTooltip =
-    nvdaPace === null
-      ? inFlightSynth !== null
-        ? `Synthesis #${inFlightSynth.decision_run_id} in flight · pace will refresh when complete`
-        : "Awaiting synthesis run"
-      : undefined;
 
   // Domain KB freshness.
   const kbStats = useMemo(() => {
@@ -605,48 +536,19 @@ export default function Home() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
-      {/* Slim brand bar — name + clock only. The internal pills (agent
-          count, cadence loops, paper mode, version) are plumbing the
-          client doesn't open the app for; they live in the Full-detail
-          region's System health block now. */}
-      <section
-        className="relative rounded-xl overflow-hidden bg-card/80 backdrop-blur-sm border border-border border-l-2 border-l-success/60"
-        data-slot="brand-hero"
-      >
-        <div className="relative px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-3 min-w-0">
-            {/* eslint-disable-next-line @next/next/no-img-element -- static brand mark */}
-            <img
-              src="/logo.png"
-              alt=""
-              className="h-8 w-8 shrink-0 rounded-md"
-              aria-hidden
-            />
-            <h1 className="font-mono font-bold text-xl leading-tight">
-              <span className="text-success">Argosy</span>
-            </h1>
-          </div>
-          <div className="shrink-0">
-            <LiveClock className="text-base" />
-          </div>
-        </div>
-      </section>
-
       {/* ============================================================
-          THE GREETING — the FM's opening word, the first and dominant
-          surface. How you stand, what I need from you, what I'm
-          watching. Everything operational (banners, strips, tiles,
-          system telemetry) is demoted BELOW it or into the collapsed
-          Full-detail region at the bottom.
+          THE GREETING — the FM's opening word, the TOP panel (the old
+          brand hero was redundant with the nav; the logo + live clock
+          live in the greeting header now). How you stand, what I need
+          from you, what I'm watching. Everything operational (banners,
+          strips, tiles, system telemetry) is demoted BELOW it or into
+          the collapsed Full-detail region at the bottom. Cash events
+          reach needs_you via the period-directive loop (the old
+          WindfallBanner is off the home page); verified/needs-confirm
+          action items land in needs_you too, so ActionItemsWidget and
+          AdvisorBriefCard live in Full detail.
           ============================================================ */}
       <FMGreetingCard userId={USER_ID} onShowFullDetail={showFullDetail} />
-
-      {/* Windfall banner — auto-detected from the user's monthly TSV
-          dropped into $ARGOSY_EXPENSE_SAMPLES_ROOT. Renders only when a
-          cash delta crossed the $25K USD / ₪75K NIS threshold; otherwise
-          the component returns null and the home page stays uncluttered.
-          Quiet-by-design, so it may stay — but BELOW the greeting. */}
-      <WindfallBanner />
 
       {/* EX2 — anomaly-detection banner. Only renders when the latest
           report carries at least one RED anomaly (e.g. Card 2923's
@@ -655,18 +557,6 @@ export default function Home() {
       {hasRedAnomaly(data.anomalyReport) ? (
         <AnomalyBanner report={data.anomalyReport!} />
       ) : null}
-
-      {/* Advisor brief — front-and-center glance card so the advisor is a
-          primary surface, not buried in nav. Composed server-side from
-          gap-tracker + daily-brief + watchlist signals (no LLM call). */}
-      <AdvisorBriefCard userId={USER_ID} />
-
-      {/* Action items — dated short/medium-horizon TODOs surfaced from
-          the user's pending draft (or current accepted plan). Sits
-          between the advisor brief and the OVERVIEW row so OVERDUE /
-          TODAY items grab attention before the user scans portfolio
-          aggregates. Read-only: accept/reject still happens on /plan. */}
-      <ActionItemsWidget userId={USER_ID} />
 
       {/* ============================================================
           YOUR MONEY — finances-first. Net worth, concentration,
@@ -677,40 +567,18 @@ export default function Home() {
           "System health" section near the bottom.
           ============================================================ */}
 
-      {/* Compact metric row — now with sparklines. The hardcoded
-          "Pending proposals 0/idle" tile was DROPPED (it contradicted
-          the DB, which had 40 open action proposals); what needs the
-          client lives in the greeting's needs-you list, and the full
-          queue lives on /inbox. */}
+      {/* FM charts — what a fund manager would actually show. Wealth
+          trajectory (12mo actual from snapshot history + ~2y projected
+          from the canonical scenario engine, dashed + shaded band) and
+          deconcentration progress (actual NVDA % of book vs the plan's
+          glide waypoints). Replaces the old sparkline tiles, whose
+          concentration curve was a GENERATED plausible decline, not
+          data. */}
       <section>
         <SectionHeader label="OVERVIEW" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <MetricTile
-            label="Net worth"
-            value={loading ? "…" : `$${netWorth.toLocaleString()}K`}
-            pillLabel="liquid"
-            pillTone="neutral"
-            sub="Δ vs prior — not yet computed"
-            sparkData={netWorthSeries}
-            sparkTone="success"
-          />
-          <MetricTile
-            label="Concentration"
-            value={nvdaPct === null ? "—" : `${nvdaPct.toFixed(1)}%`}
-            pillLabel="NVDA"
-            pillTone={concentrationTone}
-            sub={
-              nvdaPct === null
-                ? "No position data yet"
-                : nvdaPct > 30
-                  ? "Above 30% cap — trim recommended"
-                  : nvdaPct > 15
-                    ? "Above 15% target band"
-                    : "Within target band"
-            }
-            sparkData={concentrationSeries}
-            sparkTone="accent"
-          />
+          <WealthTrajectoryCard userId={USER_ID} />
+          <DeconcentrationCard userId={USER_ID} />
         </div>
       </section>
 
@@ -787,46 +655,37 @@ export default function Home() {
       ) : null}
 
       {/* NVDA PACE tile — finance-relevant (sell-down schedule), so it
-          stays in YOUR MONEY rather than the demoted System-health block. */}
-      <section>
-        <SectionHeader
-          label="NVDA PACE"
-          action={
-            nvdaStatus === "neutral" ? (
-              <StatusPill tone="warning" mono>
-                —
-              </StatusPill>
-            ) : (
+          stays in YOUR MONEY rather than the demoted System-health
+          block. Rendered ONLY when the backend served pace data (it
+          falls back to the current plan + sales history itself); when
+          null/absent the tile is hidden entirely. */}
+      {showNvdaPace ? (
+        <section>
+          <SectionHeader
+            label="NVDA PACE"
+            action={
               <StatusPill tone={nvdaOnPace ? "success" : "warning"} mono>
                 {nvdaOnPace ? "ON PACE" : "BEHIND PACE"}
               </StatusPill>
-            )
-          }
-        />
-        <div
-          className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2"
-          title={nvdaPaceTooltip}
-        >
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="font-mono text-sm tabular-nums">
-              {nvdaTargetYtd > 0
-                ? `${nvdaSold.toLocaleString()} / ${nvdaTargetYtd.toLocaleString()} shares sold YTD (plan target)`
-                : "— / awaiting plan"}
-            </div>
-            <div className="text-[11px] text-muted-foreground tabular-nums">
-              {nvdaPctSold !== null
-                ? `${nvdaPctSold.toFixed(1)}% of plan target · `
-                : ""}
-              {pctOfYearElapsed().toFixed(0)}% of year elapsed
-              {nvdaPaceTooltip ? ` · ${nvdaPaceTooltip}` : ""}
-            </div>
-          </div>
-          <ProgressBar
-            pct={nvdaPctSold === null ? 0 : Math.max(0, Math.min(100, nvdaPctSold))}
-            tone={nvdaOnPace ? "success" : "warning"}
+            }
           />
-        </div>
-      </section>
+          <div className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="font-mono text-sm tabular-nums">
+                {`${nvdaSold.toLocaleString()} / ${nvdaTargetYtd.toLocaleString()} shares sold YTD (plan target)`}
+              </div>
+              <div className="text-[11px] text-muted-foreground tabular-nums">
+                {`${nvdaPctSold.toFixed(1)}% of plan target · `}
+                {pctOfYearElapsed().toFixed(0)}% of year elapsed
+              </div>
+            </div>
+            <ProgressBar
+              pct={Math.max(0, Math.min(100, nvdaPctSold))}
+              tone={nvdaOnPace ? "success" : "warning"}
+            />
+          </div>
+        </section>
+      ) : null}
 
       {/* ARGONAUT card — paper-trading P&L. Finance-relevant side
           experiment, kept in YOUR MONEY. Chart only renders when we
@@ -900,6 +759,19 @@ export default function Home() {
           paper mode
         </StatusPill>
       </div>
+
+      {/* Advisor brief — demoted from the default view: its greeting
+          headline duplicated the FM greeting above. The card itself
+          keeps bullets the greeting lacks (gap-tracker + daily-brief +
+          watchlist stitch), so it lives on here rather than being
+          deleted. */}
+      <AdvisorBriefCard userId={USER_ID} />
+
+      {/* Action items — the FULL dated to-do list from the plan. What
+          actually needs the client now flows into the greeting's
+          needs_you list (verified / needs-confirm items); this widget
+          is the complete view, kept for drill-down. */}
+      <ActionItemsWidget userId={USER_ID} />
 
       {/* Home Red-Flag Strip — one row per active monitor_flags entry.
           The greeting already projects the flags that matter to the
@@ -1131,46 +1003,6 @@ export default function Home() {
 }
 
 // ---------- Local presentational helpers --------------------------------
-
-interface MetricTileProps {
-  label: string;
-  value: string;
-  pillLabel: string;
-  pillTone: "success" | "warning" | "error" | "neutral" | "accent";
-  sub: string;
-  sparkData: number[];
-  sparkTone: SparklineTone;
-}
-
-function MetricTile({
-  label,
-  value,
-  pillLabel,
-  pillTone,
-  sub,
-  sparkData,
-  sparkTone,
-}: MetricTileProps) {
-  return (
-    <div className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-1">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          {label}
-        </span>
-        <StatusPill tone={pillTone} mono>
-          {pillLabel}
-        </StatusPill>
-      </div>
-      <div className="font-mono text-xl font-semibold tabular-nums">
-        {value}
-      </div>
-      <Sparkline data={sparkData} tone={sparkTone} height={32} />
-      <div className="text-[11px] text-muted-foreground tabular-nums">
-        {sub}
-      </div>
-    </div>
-  );
-}
 
 interface SystemTileProps {
   label: string;

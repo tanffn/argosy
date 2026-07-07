@@ -23,6 +23,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { LiveClock } from "@/components/live-clock";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { api, type GreetingDTO, type GreetingNeedsYouItemDTO } from "@/lib/api";
@@ -31,6 +32,36 @@ interface Props {
   userId: string;
   /** Called when the client clicks [Full detail →]. */
   onShowFullDetail?: () => void;
+}
+
+/**
+ * Greeting header — the small brand mark, the salutation, and the live
+ * clock right-aligned. This IS the top of the page now (the old brand
+ * hero was redundant with the nav), so the logo + clock live here.
+ */
+function GreetingHeader({ name }: { name?: string }) {
+  const hello = salutation(new Date().getHours());
+  return (
+    <div
+      className="flex items-center justify-between gap-3"
+      data-testid="greeting-header"
+    >
+      <div className="flex items-center gap-2.5 min-w-0">
+        {/* eslint-disable-next-line @next/next/no-img-element -- static brand mark */}
+        <img
+          src="/logo.png"
+          alt=""
+          className="h-6 w-6 shrink-0 rounded-md"
+          aria-hidden
+        />
+        <p className="font-mono text-xl font-semibold">
+          {hello}
+          {name ? `, ${name}` : ""}.
+        </p>
+      </div>
+      <LiveClock className="text-base shrink-0" />
+    </div>
+  );
 }
 
 /** Local-time salutation — the FM greets like a human would. */
@@ -67,13 +98,11 @@ export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
     };
   }, [userId]);
 
-  const hello = salutation(new Date().getHours());
-
   if (failed) {
     return (
       <Card className="border-l-2 border-l-warning/60" data-slot="fm-greeting">
         <CardContent className="px-5 py-4">
-          <p className="font-mono text-lg">{hello}.</p>
+          <GreetingHeader />
           <p className="text-xs text-muted-foreground mt-1">
             The desk is unreachable right now — this card will recover on
             the next load.
@@ -87,7 +116,7 @@ export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
     return (
       <Card className="border-l-2 border-l-success/60" data-slot="fm-greeting">
         <CardContent className="px-5 py-4">
-          <p className="font-mono text-lg">{hello}.</p>
+          <GreetingHeader />
           <p className="text-xs text-muted-foreground mt-1">…</p>
         </CardContent>
       </Card>
@@ -103,11 +132,9 @@ export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
   return (
     <Card className="border-l-2 border-l-success/60" data-slot="fm-greeting">
       <CardContent className="px-5 py-4 flex flex-col gap-4">
-        {/* Salutation + the book line */}
+        {/* Salutation header (logo + clock) + the book line */}
         <div className="flex flex-col gap-1">
-          <p className="font-mono text-xl font-semibold">
-            {hello}, {greeting.greeting_name}.
-          </p>
+          <GreetingHeader name={greeting.greeting_name} />
           <p
             className="font-mono text-sm tabular-nums"
             data-testid="book-line"
@@ -213,6 +240,13 @@ export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
 
 function NeedsYouRow({ item }: { item: GreetingNeedsYouItemDTO }) {
   const [showWhy, setShowWhy] = useState(false);
+  // Generic rendering — the backend adds needs_you kinds additively
+  // (verified / needs-confirm action items), so both affordances are
+  // conditional: an item with a cta gets the [label] link, an item with
+  // a non-empty why_md gets the expandable "Show me why".
+  const hasWhy =
+    typeof item.why_md === "string" && item.why_md.trim().length > 0;
+  const cta = item.cta ?? null;
   return (
     <li className="rounded-md border border-border bg-secondary/30 px-3 py-2 flex flex-col gap-1.5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -223,25 +257,31 @@ function NeedsYouRow({ item }: { item: GreetingNeedsYouItemDTO }) {
           needs you
         </StatusPill>
       </div>
-      <div className="flex items-center gap-3 flex-wrap">
-        <Link
-          href={item.cta.href}
-          className="font-mono text-xs text-info hover:underline"
-          data-testid={`cta-${item.id}`}
-        >
-          {item.cta.label} →
-        </Link>
-        <button
-          type="button"
-          onClick={() => setShowWhy((v) => !v)}
-          aria-expanded={showWhy}
-          className="font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-          data-testid={`why-toggle-${item.id}`}
-        >
-          {showWhy ? "Hide why" : "Show me why"}
-        </button>
-      </div>
-      {showWhy ? (
+      {cta || hasWhy ? (
+        <div className="flex items-center gap-3 flex-wrap">
+          {cta ? (
+            <Link
+              href={cta.href}
+              className="font-mono text-xs text-info hover:underline"
+              data-testid={`cta-${item.id}`}
+            >
+              {cta.label} →
+            </Link>
+          ) : null}
+          {hasWhy ? (
+            <button
+              type="button"
+              onClick={() => setShowWhy((v) => !v)}
+              aria-expanded={showWhy}
+              className="font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              data-testid={`why-toggle-${item.id}`}
+            >
+              {showWhy ? "Hide why" : "Show me why"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {showWhy && hasWhy ? (
         <pre
           className="whitespace-pre-wrap text-[11px] font-mono text-muted-foreground bg-background/60 rounded-md px-3 py-2 mt-1"
           data-testid={`why-${item.id}`}
