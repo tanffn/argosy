@@ -4,9 +4,7 @@ Multi-agent financial-advisor system. Python + FastAPI + Next.js. Single user to
 
 ## Read these first (in order)
 
-1. **`docs/design/SDD.md`** — the canonical design doc. Two sections matter upfront:
-   - `## Handover note` (top of file, around line 16) — current wave state, open items, where things are. Self-stamped point-in-time; cross-check against `git log -20` if it feels stale.
-   - `## Quickstart for new agents — where to find things` (around line 305) — task → file router (20 rows), 14-item conventions/gotchas list, filesystem layout, binding preferences. **This is the section to read for code investigation.**
+1. **`docs/design/SDD.md`** — the canonical design doc. It is a USER-AGNOSTIC technical document (mechanisms + where user state lives; current state only — no history, no handover sections, no tenant plan values as facts). The section to read for code investigation: `## Quickstart for new agents — where to find things` — task → file router, conventions/gotchas list, filesystem layout. Session state lives in `docs/handovers/` (see the fresh-session pointer below), never in the SDD.
 2. **`graphify-out/GRAPH_REPORT.md`** — 30+ named architectural areas with their member files. Complements the SDD task→file table from the file→area direction. Run `graphify query "<question>"` for cross-file traces (~26× token reduction vs reading raw files).
 3. **`~/.claude/projects/D--Projects-financial-advisor/memory/MEMORY.md`** (Claude Code only) — binding user preferences. The ones below are duplicated here so non-Claude agents see them too.
 
