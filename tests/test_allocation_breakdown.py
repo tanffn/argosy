@@ -219,6 +219,103 @@ def test_exclude_nvda_does_not_zero_ex_nvda_labelled_classes():
     assert round(sum(r.target_pct or 0.0 for r in rows), 0) == 100.0
 
 
+def _doc_with_moonshot():
+    """The live plan-v67 shape: a High-growth / high-potential class whose
+    instruments are named single stocks (the x10 moonshot sleeve)."""
+    from datetime import date
+    from argosy.services.target_allocation_doc import (
+        TargetAllocationDoc, AllocationClassDoc, AllocationInstrument, GlideWaypoint,
+    )
+
+    def cls(label, syms, pct):
+        n = len(syms)
+        return AllocationClassDoc(label=label, snapshot_category=label,
+            sigma_class="x", target_pct=pct,
+            instruments=[AllocationInstrument(symbol=s, role="primary",
+                weight_within_class_pct=round(100.0 / n, 2), domicile="US")
+                for s in syms])
+
+    return TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=20.0, provenance="t",
+        classes=[cls("US broad-market core", ["CSPX"], 55.0),
+                 cls("Strategic single-stock (NVDA)", ["NVDA"], 13.0),
+                 cls("High-growth / high-potential",
+                     ["RXRX", "ACHR", "RGTI", "OKLO", "TEM", "IONQ", "ASTS", "INVZ"],
+                     5.0),
+                 cls("Cash & T-bills (incl. ILS tranche)", ["IB01"], 27.0)],
+        glide=[GlideWaypoint(quarter=0, date=date(2026, 1, 1),
+               composition_pct_by_class={})],
+    )
+
+
+def test_plan_instrument_attributes_to_its_plan_class_not_asset_type():
+    # Exposure-aware attribution: RXRX/OKLO/TEM arrive from the broker tagged
+    # "Individual Stocks", but they ARE plan v67's moonshot-sleeve instruments
+    # — they attribute to "High-growth / high-potential", never the residual
+    # redeploy bucket.
+    snap = _snap([
+        _pos("NVDA", "NVIDIA", 800.0),
+        _pos("CSPX", "Core Equity", 168.0),
+        _pos("RXRX", "Individual Stocks", 6.0),
+        _pos("OKLO", "Individual Stocks", 5.0),
+        _pos("TEM", "Individual Stocks", 5.0),
+        _pos("GOOG", "Individual Stocks", 16.0),  # true off-plan legacy single
+    ])
+    rows = build_allocation_breakdown(snap, _doc_with_moonshot())
+    by = {r.label: r for r in rows}
+    moonshot = by["High-growth / high-potential"]
+    assert {h.symbol for h in moonshot.holdings} == {"RXRX", "OKLO", "TEM"}
+    assert round(moonshot.current_value_k, 1) == 16.0
+    assert moonshot.target_pct == 5.0
+    # Only the true legacy single remains in the residual redeploy bucket.
+    singles = by[OTHER_SINGLES_LABEL]
+    assert {h.symbol for h in singles.holdings} == {"GOOG"}
+    assert round(sum(r.current_pct for r in rows), 1) == 100.0
+
+
+def test_legacy_single_stays_in_residual_redeploy_bucket():
+    # A single stock the plan does NOT name stays in the 0%-target residual —
+    # the attribution override only fires for plan-listed instruments.
+    snap = _snap([
+        _pos("SOFI", "Individual Stocks", 40.0),
+        _pos("META", "Individual Stocks", 30.0),
+        _pos("CSPX", "Core Equity", 30.0),
+    ])
+    rows = build_allocation_breakdown(snap, _doc_with_moonshot())
+    by = {r.label: r for r in rows}
+    singles = by[OTHER_SINGLES_LABEL]
+    assert {h.symbol for h in singles.holdings} == {"SOFI", "META"}
+    assert singles.target_pct == 0.0
+    assert "High-growth / high-potential" in by  # surfaced as unheld plan class
+    assert by["High-growth / high-potential"].current_pct == 0.0
+
+
+def test_live_shape_moonshot_buys_out_of_redeploy_residual_ex_nvda():
+    # Pin the live 2026-07-07 shape (greeting on_plan_note path): ex-NVDA
+    # renormalized view, moonshot buys attribute to their sleeve, the residual
+    # gap reflects legacy singles ONLY.
+    snap = _snap([
+        _pos("NVDA", "NVIDIA", 600.0),
+        _pos("CSPX", "Core Equity", 200.0),
+        _pos("RXRX", "Individual Stocks", 6.0),
+        _pos("OKLO", "Individual Stocks", 5.0),
+        _pos("TEM", "Individual Stocks", 5.0),
+        _pos("GOOG", "Individual Stocks", 64.0),
+        _pos("AMD", "Individual Stocks", 55.0),
+        _pos("-", "Cash", 65.0),
+    ])  # ex-NVDA book = 400
+    rows = build_allocation_breakdown(snap, _doc_with_moonshot(), exclude_nvda=True)
+    by = {r.label: r for r in rows}
+    moonshot = by["High-growth / high-potential"]
+    assert {h.symbol for h in moonshot.holdings} == {"RXRX", "OKLO", "TEM"}
+    assert round(moonshot.current_pct, 1) == 4.0  # 16/400
+    singles = by[OTHER_SINGLES_LABEL]
+    assert {h.symbol for h in singles.holdings} == {"GOOG", "AMD"}
+    assert round(singles.current_pct, 2) == 29.75  # 119/400 — the TRUE redeploy number
+    assert round(sum(r.current_pct for r in rows), 1) == 100.0
+
+
 def test_breakdown_unmapped_category_surfaces_with_zero_target():
     snap = _snap([_pos("NVDA", "NVIDIA", 500.0),
                   _pos("WEIRD", "Crypto-thing", 500.0)])

@@ -99,6 +99,32 @@ def _label_for(asset_type: str, symbol: str = "", details: str = "") -> str:
     return _ASSET_TYPE_TO_LABEL.get(at, asset_type.strip() or "Unclassified")
 
 
+def _plan_symbol_labels(doc) -> dict[str, str]:
+    """Symbol → canonical plan-class label, from the doc's instrument lists.
+
+    Exposure-aware attribution (binding rule): a position whose ticker the
+    plan explicitly names attributes to THAT class, regardless of the
+    snapshot's ``asset_type`` label. The moonshot-sleeve buys (RXRX / OKLO /
+    TEM, plan v67 "High-growth / high-potential") arrive from the broker
+    tagged "Individual Stocks" — without this map they'd be mis-counted in
+    the residual "Individual Stocks (non-NVDA, to redeploy)" bucket as if
+    they were off-plan legacy singles. Only positions the plan does NOT
+    name fall through to the asset_type / instrument-reference crosswalk.
+    """
+    if doc is None:
+        return {}
+    from argosy.services.allocation_plan import normalize_sleeve_label
+
+    out: dict[str, str] = {}
+    for c in getattr(doc, "classes", []) or []:
+        label = normalize_sleeve_label(c.label)
+        for inst in getattr(c, "instruments", []) or []:
+            sym = (getattr(inst, "symbol", "") or "").strip().upper()
+            if sym and sym not in out:
+                out[sym] = label
+    return out
+
+
 def _doc_targets_by_label(doc) -> dict[str, float]:
     """Targets keyed by CURRENT canonical label. A persisted doc from before a
     sleeve relabel (e.g. the v64 current plan's "US growth tilt (ex-NVDA)") is
@@ -200,14 +226,20 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
         if sym and at and sym not in effective_type:
             effective_type[sym] = at
 
+    plan_symbol_labels = _plan_symbol_labels(doc)
     grouped: dict[str, list] = {}
     for p in positions:
         v = float(getattr(p, "usd_value_k", 0.0) or 0.0)
         if v <= 0:
             continue
         sym = (getattr(p, "symbol", "") or "").strip().upper()
-        at = (getattr(p, "asset_type", "") or "").strip() or effective_type.get(sym, "")
-        label = _label_for(at, getattr(p, "symbol", ""), getattr(p, "details", ""))
+        # Plan-instrument attribution FIRST (exposure-aware rule): a ticker
+        # the plan names belongs to its plan class, whatever the snapshot's
+        # asset_type says. Only unnamed positions use the crosswalk below.
+        label = plan_symbol_labels.get(sym)
+        if label is None:
+            at = (getattr(p, "asset_type", "") or "").strip() or effective_type.get(sym, "")
+            label = _label_for(at, getattr(p, "symbol", ""), getattr(p, "details", ""))
         grouped.setdefault(label, []).append(p)
 
     rows: list[CategoryBreakdown] = []
