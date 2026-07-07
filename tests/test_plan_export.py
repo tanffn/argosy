@@ -396,6 +396,27 @@ def test_export_includes_wealth_dashboard_numbers(client_with_db):
     assert "deterministic perpetuity-basis fi_age" in body
 
 
+def test_export_labels_fx_provenance(client_with_db):
+    """The dashboard section must label WHICH FX rate its NIS/USD figures
+    use and explain that the plan body's frozen synthesis-time FX is a
+    planning input — so a blind reviewer never flags live-vs-frozen FX
+    drift as a cross-surface contradiction (plan_critiques #1 RED 2).
+    The rate value comes from the dashboard compute, never hand-typed."""
+    _seed_snapshot(client_with_db)
+    _seed_current(client_with_db)
+    r = client_with_db.get("/api/plan/export?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert "FX USD/NIS used in this section:" in body
+    # The rendered rate must be the dashboard's resolved rate (the seeded
+    # snapshot's 3.10 fallback here — no FxRate cache rows in this fixture).
+    assert "3.100" in body
+    # Frozen-vs-live semantics + the total-vs-investable scope warning.
+    assert "frozen at plan synthesis" in body
+    assert "not a plan defect" in body
+    assert "INCLUDES the primary residence" in body
+
+
 def test_export_includes_action_items(client_with_db):
     """The dated action seeded in the short-horizon JSON appears as a bullet
     under ``## Action Items``."""

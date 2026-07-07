@@ -493,6 +493,28 @@ def build_plan_export_markdown(
             nw_line += f" ({_fmt_usd(ret.net_worth_usd)})"
         push(nw_line)
 
+        # FX provenance — the dashboard converts at TODAY's canonical rate
+        # (BoI FxRate cache walkback), while plan-body figures were computed
+        # at the FX frozen when the plan was synthesized (a plan INPUT, not a
+        # display rate). Without this label, a blind reviewer reconciling the
+        # two implied rates flags a spurious cross-surface contradiction
+        # (observed: plan_critiques #1 RED "dashboard implies ≈3.00 vs plan
+        # 2.944"). Both values come from the dashboard compute — never
+        # hand-typed here.
+        assumptions = dash.assumptions
+        push(
+            f"- FX USD/NIS used in this section: {assumptions.fx_usd_nis:.3f} "
+            f"(source: {assumptions.fx_source}; as of {today_iso})."
+        )
+        push(
+            "- _Reconciliation note: plan-body NIS/USD figures use the FX "
+            "rate frozen at plan synthesis — a planning input. FX drift "
+            "between that frozen rate and this section's live rate is "
+            "expected and is not a plan defect. Also compare like-for-like: "
+            "the total above INCLUDES the primary residence; the plan's "
+            "'investable'/'liquid' figures exclude it._"
+        )
+
         surplus_pct = (
             (savings.rate_pct if savings.rate_pct is not None else None)
         )
