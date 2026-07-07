@@ -427,6 +427,7 @@ class TestGreetingEndpoint:
         assert body["book"]["total_usd"] == 3999279.0
         assert isinstance(body["book"]["on_plan"], bool)
         assert body["book"]["fi_line"].startswith("FI track")
+        assert "as_of" in body["book"]  # ISO snapshot date (None w/o date)
 
         needs_ids = {i["id"] for i in body["needs_you"]}
         assert len(body["needs_you"]) == 2
@@ -437,6 +438,9 @@ class TestGreetingEndpoint:
         assert any(i["kind"] == "allocate" for i in body["needs_you"])
         # why is one click away — the rationale rides along.
         assert all(i["why_md"] for i in body["needs_you"])
+        # decisions carry the "decision" tone (confirm is reserved for the
+        # looks-executed action-item entries).
+        assert all(i["tone"] == "decision" for i in body["needs_you"])
 
         # watching: NKE + cash drawdown; fx internal flag excluded.
         assert len(body["watching"]) == 2

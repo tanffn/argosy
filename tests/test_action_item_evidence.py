@@ -318,6 +318,7 @@ def test_confirmed_item_disappears_from_greeting(client_with_db):
     for c in confirms:
         assert c["headline"].startswith("Looks executed — confirm:")
         assert c["why_md"]
+        assert c["tone"] == "confirm"
         assert c["ack"]["method"] == "POST"
         assert c["ack"]["endpoint"].startswith("/api/plan/action-items/")
         assert c["ack"]["content_fingerprint"]

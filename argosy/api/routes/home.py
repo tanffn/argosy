@@ -37,8 +37,12 @@ class GreetingNeedsYouItemDTO(BaseModel):
     id: str
     kind: str
     headline: str
-    why_md: str
-    cta: GreetingCtaDTO
+    why_md: str | None = None
+    cta: GreetingCtaDTO | None = None
+    # Presentation tone: "decision" = the client must decide something;
+    # "confirm" = Argosy did the work / found the evidence and only needs
+    # a one-click confirmation (the action_item_confirm entries).
+    tone: str = "decision"
     # Present only on kind='action_item_confirm' (Argosy found execution
     # evidence; the client confirms — never auto-acked).
     ack: GreetingAckDTO | None = None
@@ -55,6 +59,8 @@ class GreetingBookDTO(BaseModel):
     on_plan: bool
     on_plan_note: str
     fi_line: str
+    # ISO date of the snapshot behind ``total_usd`` (None when no snapshot).
+    as_of: str | None = None
 
 
 class GreetingResponse(BaseModel):

@@ -375,17 +375,20 @@ def _flag_payload(row: MonitorFlag) -> dict[str, Any]:
 ON_PLAN_BAND_PP = 5.0
 
 
-def _book_total_usd(session: Session, user_id: str) -> float | None:
+def _book_total_usd(session: Session, user_id: str) -> tuple[float | None, str | None]:
+    """(total USD, ISO snapshot date) from the latest snapshot row."""
     from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
 
     row = get_latest_snapshot_row(session, user_id)
     if row is None:
-        return None
+        return None, None
+    as_of = getattr(row, "snapshot_date", None)
+    as_of_s = as_of.isoformat() if as_of is not None else None
     try:
         totals = json.loads(row.totals_json or "{}")
-        return float(totals.get("total_usd_value_k", 0.0)) * 1000.0
+        return float(totals.get("total_usd_value_k", 0.0)) * 1000.0, as_of_s
     except (TypeError, ValueError):
-        return None
+        return None, as_of_s
 
 
 def _on_plan(session: Session, user_id: str) -> tuple[bool, str]:
@@ -547,6 +550,7 @@ def _needs_you_from_proposal(p: ActionProposal) -> dict[str, Any]:
         "headline": (p.summary or "").strip()[:240],
         "why_md": p.rationale_md or "",
         "cta": _proposal_cta(p.kind, p.dedup_key),
+        "tone": "decision",
     }
 
 
@@ -579,6 +583,7 @@ def _needs_you_from_verified_items(
                 "headline": f"Looks executed — confirm: {it.label}"[:240],
                 "why_md": it.argosy_verified_summary or "",
                 "cta": {"label": "Confirm done", "href": "/#action-items"},
+                "tone": "confirm",
                 # Everything the UI needs to hit the existing ack endpoint.
                 "ack": {
                     "method": "POST",
@@ -605,6 +610,7 @@ def _needs_you_from_flag(
         ),
         "why_md": _rationale_text(payload),
         "cta": {"label": "Decide", "href": "/inbox"},
+        "tone": "decision",
     }
 
 
@@ -668,7 +674,7 @@ def build_greeting(
         # internal / skip: stay on the full flags surface only.
 
     on_plan, on_plan_note = _on_plan(session, user_id)
-    total_usd = _book_total_usd(session, user_id)
+    total_usd, book_as_of = _book_total_usd(session, user_id)
 
     return {
         "greeting_name": user_id.strip().capitalize() or user_id,
@@ -677,6 +683,7 @@ def build_greeting(
             "on_plan": on_plan,
             "on_plan_note": on_plan_note,
             "fi_line": _fi_line(session, user_id, now=now_dt),
+            "as_of": book_as_of,
         },
         "needs_you": needs_you,
         "watching": watching,
