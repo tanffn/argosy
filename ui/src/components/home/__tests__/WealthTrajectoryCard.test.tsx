@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import type {
+  NetWorthHistoryPointDTO,
   NetWorthHistoryResponse,
   WealthDashboardDTO,
 } from "@/lib/api";
@@ -23,6 +24,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
 import {
   bucketQuarterly,
   buildProjection,
+  deltaBreakdown,
+  formatMoneyCompact,
   formatUsdCompact,
   trendDelta,
   WealthTrajectoryCard,
@@ -34,14 +37,33 @@ function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * DAY_MS).toISOString().slice(0, 10);
 }
 
+function pt(
+  days: number,
+  totalUsd: number,
+  fx = 3.4,
+  extra: Partial<NetWorthHistoryPointDTO> = {},
+): NetWorthHistoryPointDTO {
+  return {
+    date: isoDaysAgo(days),
+    total_usd: totalUsd,
+    nvda_pct: 60.0,
+    fx_usd_nis: fx,
+    total_nis: totalUsd * fx,
+    nvda_usd: totalUsd / 2,
+    cash_usd: 100_000,
+    nis_denominated_usd: 90_000,
+    ...extra,
+  };
+}
+
 /** Three snapshots in three different quarters of the past year. */
 function history(): NetWorthHistoryResponse {
   return {
     user_id: "ariel",
     points: [
-      { date: isoDaysAgo(200), total_usd: 3_600_000, nvda_pct: 62.0 },
-      { date: isoDaysAgo(110), total_usd: 3_800_000, nvda_pct: 60.0 },
-      { date: isoDaysAgo(1), total_usd: 3_999_279, nvda_pct: 57.0 },
+      pt(200, 3_600_000),
+      pt(110, 3_800_000),
+      pt(1, 3_999_279),
     ],
   };
 }
@@ -62,6 +84,7 @@ const DASH = {
 beforeEach(() => {
   netWorthHistory.mockReset();
   wealthDashboard.mockReset();
+  window.localStorage.clear();
 });
 
 describe("WealthTrajectoryCard", () => {
@@ -222,9 +245,97 @@ describe("trendDelta", () => {
   });
 });
 
-describe("formatUsdCompact", () => {
-  it("renders clean size-proportional figures", () => {
+describe("currency toggle", () => {
+  it("defaults to USD, switches to ₪ (per-point fx series), and persists", async () => {
+    netWorthHistory.mockResolvedValue(history());
+    wealthDashboard.mockResolvedValue(DASH);
+    render(<WealthTrajectoryCard userId="ariel" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("wealth-latest")).toBeInTheDocument(),
+    );
+    // USD default.
+    expect(screen.getByTestId("wealth-latest").textContent).toBe("$4.00M");
+
+    fireEvent.click(screen.getByTestId("currency-NIS"));
+    // Latest point at its OWN snapshot fx: 3,999,279 × 3.4 = ₪13.60M.
+    await waitFor(() =>
+      expect(screen.getByTestId("wealth-latest").textContent).toBe("₪13.60M"),
+    );
+    expect(
+      window.localStorage.getItem("argosy:wealth-trajectory-currency"),
+    ).toBe("NIS");
+  });
+
+  it("restores the persisted ₪ choice on mount", async () => {
+    window.localStorage.setItem("argosy:wealth-trajectory-currency", "NIS");
+    netWorthHistory.mockResolvedValue(history());
+    wealthDashboard.mockResolvedValue(DASH);
+    render(<WealthTrajectoryCard userId="ariel" />);
+    // The restore is deferred a frame — wait for it to land.
+    await waitFor(() =>
+      expect(screen.getByTestId("wealth-latest").textContent).toBe("₪13.60M"),
+    );
+  });
+});
+
+describe("deltaBreakdown", () => {
+  // The REAL Jun-29 → Jul-7 rows (portfolio_snapshots ids 8 and 12).
+  const JUN29: NetWorthHistoryPointDTO = {
+    date: "2026-06-29",
+    total_usd: 4_059_730,
+    nvda_pct: 60.11,
+    nvda_usd: 2_296_000,
+    cash_usd: 170_980,
+    fx_usd_nis: 2.94161,
+    total_nis: 4_059_730 * 2.94161,
+    nis_denominated_usd: 95_600,
+  };
+  const JUL07: NetWorthHistoryPointDTO = {
+    date: "2026-07-07",
+    total_usd: 3_993_918,
+    nvda_pct: 57.29,
+    nvda_usd: 2_243_154,
+    cash_usd: 9_605,
+    fx_usd_nis: 2.90138,
+    total_nis: 3_993_918 * 2.90138,
+    nis_denominated_usd: 95_600,
+  };
+
+  it("decomposes the real Jun→Jul −$65.8k step (USD view) and reconciles", () => {
+    const d = deltaBreakdown(JUN29, JUL07, "USD")!;
+    expect(d.total).toBeCloseTo(-65_812, 0);
+    expect(d.nvda).toBeCloseTo(-52_846, 0); // NVDA repricing dominates
+    expect(d.cash).toBeCloseTo(-161_375, 0); // the $161k deploy
+    // NIS-denominated assets gained USD value as fx fell 2.9416→2.9014.
+    expect(d.fx).toBeCloseTo(95_600 * (2.94161 / 2.90138 - 1), 0);
+    expect(d.fx!).toBeGreaterThan(0);
+    // Exact reconciliation — nothing absorbed silently.
+    expect(d.nvda! + d.cash! + d.fx! + d.other).toBeCloseTo(d.total, 6);
+  });
+
+  it("decomposes in ₪ with an explicit negative FX translation term", () => {
+    const d = deltaBreakdown(JUN29, JUL07, "NIS")!;
+    // fx fell → the USD-denominated book is worth LESS in ₪.
+    expect(d.fx).toBeCloseTo(
+      (2.90138 - 2.94161) * (4_059_730 - 95_600),
+      0,
+    );
+    expect(d.fx!).toBeLessThan(0);
+    expect(d.nvda! + d.cash! + d.fx! + d.other).toBeCloseTo(d.total, 6);
+  });
+
+  it("returns null when a side has no total in the active currency", () => {
+    expect(
+      deltaBreakdown({ ...JUN29, total_nis: null }, JUL07, "NIS"),
+    ).toBeNull();
+  });
+});
+
+describe("formatters", () => {
+  it("renders clean size-proportional figures in both currencies", () => {
     expect(formatUsdCompact(3_999_279)).toBe("$4.00M");
     expect(formatUsdCompact(412_345)).toBe("$412K");
+    expect(formatMoneyCompact(13_597_549, "NIS")).toBe("₪13.60M");
+    expect(formatMoneyCompact(412_345, "NIS")).toBe("₪412K");
   });
 });

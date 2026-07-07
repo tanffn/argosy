@@ -5296,9 +5296,23 @@ export interface WealthAssumptions {
 // argosy.api.routes.wealth_dashboard.NetWorthHistoryResponseDTO.
 export interface NetWorthHistoryPointDTO {
   date: string; // ISO date
+  // POSITIONS-SUM basis (never the stored grand total) — see the
+  // backend basis-rule comment in wealth_dashboard.py.
   total_usd: number | null;
-  // Direct NVDA position % of book (0-100) at that snapshot.
+  // NVDA % of the tradeable securities book (0-100) at that snapshot —
+  // canonical nvda_concentration_pct basis.
   nvda_pct: number | null;
+  // Delta-tooltip decomposition inputs: the NVDA position value and the
+  // cash balances at that snapshot (USD). Consecutive-point deltas
+  // attribute a book move to NVDA repricing vs cash flow vs the rest.
+  nvda_usd?: number | null;
+  cash_usd?: number | null;
+  // Currency dimension — each point converted at ITS OWN snapshot-date
+  // fx, so the ₪ series is real NIS-perspective wealth.
+  fx_usd_nis?: number | null;
+  total_nis?: number | null;
+  // USD value of NIS-denominated positions — base of the FX term.
+  nis_denominated_usd?: number | null;
 }
 
 export interface NetWorthHistoryResponse {
