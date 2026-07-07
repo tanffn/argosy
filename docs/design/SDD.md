@@ -255,7 +255,7 @@ Argosy is two things glued together: an always-on background process and a dashb
 
 **Decision tiers** ([05-decision-tiers.png](diagrams/05-decision-tiers.png)) are the four review-depth grades. T0 is trader-only with rule-based preflight. T1 is 3 analysts plus a one-round debate plus one risk perspective. T2 runs the whole stack. T3 adds plan-critique sign-off, a 24h cooling-off, and a next-day re-check.
 
-**Execution & approval** ([10-execution-routing.png](diagrams/10-execution-routing.png)) is a routing matrix indexed by tier × account × mode. Most cells route to the human queue; a few (small trades inside the limited account, on live mode) auto-execute. `queue_only` mode disables every auto cell as a single-flag pause.
+**Execution & approval** ([10-execution-routing.png](diagrams/10-execution-routing.png)) is a routing matrix indexed by tier × account × mode. Most cells route to the human queue; a few (small trades inside the limited account, on live mode) are designed to auto-execute — but those auto cells are **Phase-5 design, not live behavior**: the router's auto-promotion path has no production caller and the execution mode defaults to `paper`, so no cell places a live order today (§10 status note). How real money actually moves now: the fleet authors an `AllocationProposal`, the client executes the fills manually at the broker, and `apply_fills_to_snapshot` reconciles them back into the book (§9.2). `queue_only` mode disables every auto cell as a single-flag pause.
 
 **The dashboard** is a Next.js app at `localhost:1337` split into a PRIMARY nav row (Home, **Advisor**, Portfolio, **Expenses**, Plan, **Retirement**, **Consult**, Proposals) and an inspection set behind a "More" dropdown (Argonaut, Agents, Decisions, **Files**, Audit, Domain KB, Settings, Notifications); a per-run replay at `/decisions/[id]` is reached via deep-link, not nav. The Advisor sits in nav slot 2 (right after Home) and exposes a persistent gap tracker + free-form chat surface; the home page also carries an `<AdvisorBriefCard>` glance widget composed from the most recent gap, daily-brief output, and investor-event signal. Expenses is the household-budget surface (§18.3–§18.6) with sub-tabs for Monthly / Transactions / Sources / Merchants / Trips / RSU / Income; Retirement is the dual-track readiness verdict (§19); Files is the provenance catalog browser (§17.3). The UI reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
 
@@ -273,7 +273,7 @@ Suppose tomorrow morning NVDA opens up 3% on a positive analyst note. Walking mi
 - **09:18:** fund manager green-lights with the conservative's condition: cut size in half, accept the wash-sale window for the smaller portion.
 - **09:18:** because the proposal is T3, it enters the 24h `COOLING` state. The auto-pause hooks watch the next 24h for any analyst delta, news event, or plan-critique flip. The proposal lands on the dashboard with full reasoning trail.
 - **You:** wake up, see the proposal, read the trail (analyst reports, debate, risk verdicts, FM note), approve.
-- **Next morning 09:20:** the re-check pass runs (analyst delta only, not the full debate). Nothing flipped overnight. Risk preflight runs (cash, concentration cap, wash-sale, trading hours). Pass. Order goes to the broker. Fill arrives. Lots updated. Audit row written. Dashboard reflects the new position.
+- **Next morning 09:20:** the re-check pass runs (analyst delta only, not the full debate). Nothing flipped overnight. Risk preflight runs (cash, concentration cap, wash-sale, trading hours). Pass. In the Phase-5 design the order then goes to the broker automatically. **Today the last hop is manual:** the approved order is what the client executes at the broker's own UI, and the executed fill is reconciled back into the book by `apply_fills_to_snapshot` (§9.2) — which also arms a closed-loop expectation the next bank ingest verifies. Either way: lots updated, audit row written, dashboard reflects the new position.
 
 The whole thing cost roughly $3 in Claude tokens, lives in `audit_log` forever, and is queryable by ticker, by tier, by date.
 
@@ -354,7 +354,7 @@ The overriding criterion is the §1.0 north star: the family's earliest *safe* r
 - **Decision flow** — the TradingAgents-style pipeline: analysts → researcher debate → trader → risk team → fund manager → execution
 - **Paper mode** — execution mode where proposed trades are logged with intended price and timestamp but no broker call is made
 - **ARGOSY_HOME** — the install root; all paths derive from it
-- **Limited account** — the IBKR Pro account opened in Phase 2 with bounded capital where T0/T1 decisions auto-execute
+- **Limited account** — the bounded-capital IBKR account of the Phase-2/5 design, where T0/T1 decisions would auto-execute; not yet opened — no auto-execution runs today (§10 status note)
 - **Plan-critique** — an analyst agent whose role is to challenge the imported plan against current data and flag RED items
 
 ### 1.6 The proactivity contract (push, not pull)
@@ -863,7 +863,7 @@ Tier × execution-mode interaction (see §10 for full routing matrix):
 |---|---|
 | `paper` (default) | All proposals logged with intended price + datetime + size; no broker call. Available at every tier. |
 | `queue_only` | All proposals enter human queue; auto-execute disabled at every tier regardless of account |
-| `live` | Real broker calls per the routing matrix in §10 |
+| `live` | Real broker calls per the routing matrix in §10 — **Phase-5 design**: the auto-execute cells have no production caller today; real money moves via the authored manual-fill path (§9.2) |
 
 ---
 
@@ -1562,7 +1562,8 @@ Accepting a candidate via the Argonaut tab routes it as a T0 proposal
 in the limited account (the "Argonaut" feature; account-class string
 `"limited"`), paper-mode by default. Per SDD §10.1 routing matrix:
 T0 + limited + live = auto-execute; T0 + main + live = single-click
-human queue.
+human queue. (The auto-execute cell is Phase-5 design — see the §10
+status note; no production caller places live orders today.)
 
 Configuration in `agent_settings.yaml`::
 
@@ -3001,17 +3002,18 @@ Items deliberately deferred — listed here so a fresh agent doesn't waste cycle
 | Term | Definition |
 |---|---|
 | **Argosy** | The system. Refers to a fleet of merchant ships sailing together on a long quest. |
-| **Argonaut** | The limited autonomous account (Phase 2). Named after the crew of the Argo. |
+| **Argonaut** | The limited autonomous account of the Phase-2/5 design (not yet opened). Named after the crew of the Argo. |
 | **Agent fleet** | The coordinated set of LLM-powered specialist agents. |
 | **Cadence loop** | A Python coroutine running on a fixed interval, polling cheaply and invoking LLM decisions only on triggers. |
 | **Decision flow** | The pipeline analysts → researcher debate → trader → risk team → fund manager → execution. |
 | **Tier (T0-T3)** | Graded review depth scaled to transaction size. |
 | **Paper mode** | Execution mode where proposed trades are logged with intended price + datetime but no broker call is made. |
 | **`ARGOSY_HOME`** | The install root; all paths derive from it. Configurable via env var or `argosy.toml`. |
-| **Limited account** | The IBKR Pro account opened in Phase 2 with bounded capital where T0/T1 decisions auto-execute. |
+| **Limited account** | The bounded-capital IBKR account of the Phase-2/5 design where T0/T1 decisions would auto-execute. Not yet opened; no auto-execution runs today (§10 status note). |
 | **Plan-critique** | An analyst agent whose role is to challenge the imported plan against current data. |
 | **Cooling-off** | T3-only: after approval, a 24h pause where new material info auto-pauses the proposal for re-review. |
-| **Routing matrix** | The tier × account × execution-mode table defining how a proposal proceeds to execution. |
+| **Routing matrix** | The tier × account × execution-mode table defining how a proposal proceeds to execution. Its auto-execute cells are Phase-5 design (§10 status note); today it governs the paper/queue lifecycle only. |
+| **Authored deployment** | The current real-money path: the fleet authors an `AllocationProposal` (buy list + funding breakdown), the client executes the fills manually at the broker, and `apply_fills_to_snapshot` reconciles them into the book and arms closed-loop expectations the next ingest verifies (§9.2, §20). |
 | **Domain KB** | The structured, dated, cited knowledge base agents RAG against for jurisdiction-specific rules. |
 | **TLH** | Tax-loss harvesting. |
 | **UCITS** | EU regulatory framework for funds; UCITS-domiciled ETFs are the estate-safe choice for non-US residents holding US-exposure funds. |
@@ -3912,7 +3914,13 @@ Every emitted target carries the explicit **`snapshot_category`** from its `Allo
 
 ### 20.3 How targets reach the surfaces
 
-The engine emits the canonical targets as the `SynthTarget`s above. Binding the surfaces to this canonical output is in progress: today `/plan`'s glidepath chart and `/retirement`'s glide render the LLM-authored horizon targets, and `/portfolio`'s target pie reads the imported TSV column — not this engine's output. The realignment work persists a structured, instrument-level target document on the plan version and rebinds `/plan`, `/portfolio`, and `/retirement` to it, so the allocation, the deconcentration optimizer, and the readiness age reconcile on one set of weights and one steady-state σ.
+The engine persists the canonical targets as the structured, instrument-level `TargetAllocationDoc` on the plan version (`target_allocation_doc.py` — classes with `target_pct` + instruments + the quarterly glide), and the surfaces **project** it rather than recomputing:
+
+- **`/portfolio` allocation-vs-target card** — `GET /api/portfolio/allocation-breakdown` loads the current plan's doc (`load_plan_target_allocation`) and joins its class targets against the live snapshot holdings (`allocation_breakdown.build_allocation_breakdown`); no plan → targets render blank, never invented.
+- **`/portfolio` composition/target pie** — the snapshot DTO's TSV-derived allocation rows are **overridden by the doc before serving** (`api/routes/portfolio.py::_project_canonical_allocations` → `_allocations_from_doc`): current % = the glide's t=0 anchor, target % = the glide endpoint — the same labels and values `/plan`'s glidepath renders, so the two surfaces reconcile by construction. The imported TSV's target column survives only as a **degraded fallback**: it is served when the current plan carries no doc or the doc read fails (the projection is best-effort/additive so a plan-read error never breaks `/portfolio`). That fallback is the one residual off-doc render path; per the one-canonical-plan doctrine it is acceptable only as absence-of-plan degradation — a TSV column that *disagrees* with a live doc is never shown when a doc exists.
+- **`/plan` glidepath + `/retirement`** — `/api/plan/current/allocation-glidepath` projects the current plan's targets (`allocation_glidepath.py`), and the retirement surfaces read the doc via `load_plan_target_allocation` (equity/bond/cash split, rebalancing) with an explicit policy-curve fallback when no doc is persisted.
+
+So the allocation card, the pie, the glidepath, the deconcentration optimizer, and the readiness age all reconcile on one set of weights and one steady-state σ — the doc.
 
 ### 20.4 Instrument classification — the holdings reference
 
