@@ -16,9 +16,17 @@ Source-trust ranks ``high`` for all macro entries (official calendars).
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from argosy.services.news_extractor import ExtractedSignal, extract
+
+logger = logging.getLogger(__name__)
+
+# When "now" is within this many days of the LAST curated event, the feed is
+# about to silently run dry — warn loudly on every call so the expiry is
+# visible in the daily job logs long before the list is exhausted.
+_STALENESS_WARN_DAYS = 30
 
 # ---------------------------------------------------------------------------
 # Curated calendar (next ~4 quarters from 2026-05-29)
@@ -104,6 +112,20 @@ def get_upcoming_macro_events(
     """
     now_dt = now if now is not None else datetime.now(UTC)
     horizon = now_dt + timedelta(days=within_days)
+
+    # Staleness guard: the curated list is hardcoded and WILL expire. A loud
+    # warning within _STALENESS_WARN_DAYS of the final entry keeps the expiry
+    # visible in the news_daily logs; the actual refresh mechanism (scraper /
+    # API binding) is a separate work item.
+    last_event = max(dt for dt, _, _ in _MACRO_EVENTS)
+    if now_dt >= last_event - timedelta(days=_STALENESS_WARN_DAYS):
+        logger.warning(
+            "macro_feed: curated calendar nearly EXHAUSTED — last curated "
+            "event is %s (now=%s). The macro source goes silent after that "
+            "date; refresh _MACRO_EVENTS in argosy/services/macro_feed.py.",
+            last_event.date().isoformat(),
+            now_dt.date().isoformat(),
+        )
 
     out: list[ExtractedSignal] = []
     for event_dt, kind, description in _MACRO_EVENTS:

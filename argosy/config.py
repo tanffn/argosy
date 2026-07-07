@@ -256,6 +256,15 @@ class Settings(BaseSettings):
     # backend is active (hard timeout + process-tree kill on claude_code).
     deployment_author_backend: str | None = Field(default=None)
 
+    # Daily-news volatility trigger (news_daily Stage-2 gate). When Stage 1
+    # ingests ZERO new items, Stage 2 (the LLM analyst) still fires if a HELD
+    # single stock moved at least this many percent (absolute, close-over-
+    # close) — a big move on a held name deserves analysis of any pending
+    # signals even when the headline feed deduped to nothing. Deterministic
+    # TRIAGE only (whether to spend LLM); the analyst does all judgment.
+    # Read via ARGOSY_NEWS_VOLATILITY_MOVE_PCT.
+    news_volatility_move_pct: float = Field(default=4.0)
+
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
     # 2024/2025 values; override per tax year via ARGOSY_SURTAX_THRESHOLD_NIS /

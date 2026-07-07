@@ -25,6 +25,8 @@ Test command::
 from __future__ import annotations
 
 import asyncio
+import logging
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,13 +34,15 @@ import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
 from argosy.services.jobs.news_daily import (
+    HoldingsTickers,
     NewsDailyJob,
     _build_summary,
     news_daily_metadata,
+    resolve_holdings_split,
 )
 from argosy.services.news_analyst_runner import AnalysisRunResult
 from argosy.services.news_ingest import NewsIngestResult
-from argosy.state.models import Base
+from argosy.state.models import Base, NewsSignal
 
 
 # ---------------------------------------------------------------------------
@@ -504,3 +508,318 @@ async def test_news_daily_through_registered_scheduler_stage2_failure(
         assert '"ingested_persisted": 3' in row.output_summary
         assert '"ingest": "ok"' in row.output_summary
         assert '"analyze": "error"' in row.output_summary
+
+
+# ---------------------------------------------------------------------------
+# Phase C1 — smart news intake: tick-time ticker resolution + Stage-2 triage
+# ---------------------------------------------------------------------------
+
+
+def _no_new_ingest_result() -> NewsIngestResult:
+    """Stage 1 fetched items but every one deduped — nothing new."""
+    return NewsIngestResult(
+        fetched=2,
+        persisted=0,
+        duplicates=2,
+        by_source={"rss": 0, "macro_feed": 2, "discord": 0},
+    )
+
+
+def _persist_fake_snapshot(session_factory) -> None:
+    """Persist a snapshot with single stocks + an ETF + cash + an unknown."""
+    from argosy.ingest.tsv import PortfolioPosition, PortfolioSnapshot
+    from argosy.services.portfolio_snapshot_store import persist_snapshot
+
+    snap = PortfolioSnapshot(
+        source_path="fake-test.tsv",
+        positions=[
+            PortfolioPosition(
+                location="Schwab", asset_type="Individual Stocks",
+                details="Stock, AI", symbol="NVDA", usd_value_k=100.0,
+            ),
+            PortfolioPosition(
+                location="Schwab", asset_type="High-potential sleeve",
+                details="Stock, quantum", symbol="RGTI", usd_value_k=10.0,
+            ),
+            PortfolioPosition(
+                location="Leumi", asset_type="Core Equity",
+                details="ETF", symbol="VOO", usd_value_k=50.0,
+            ),
+            PortfolioPosition(
+                location="Leumi", asset_type="Cash",
+                details="", symbol="-", usd_value_k=20.0,
+            ),
+            # Unknown instrument with no single-stock evidence → light
+            # (fund/macro) treatment, never a per-name fetch.
+            PortfolioPosition(
+                location="Schwab", asset_type="Other",
+                details="Mystery holding", symbol="ZZZT", usd_value_k=5.0,
+            ),
+        ],
+    )
+    session = session_factory()
+    try:
+        persist_snapshot(session, user_id="ariel", snapshot=snap)
+    finally:
+        session.close()
+
+
+def _seed_unanalyzed_signal(session_factory, *, source_ref: str = "seed-1") -> None:
+    session = session_factory()
+    try:
+        session.add(NewsSignal(
+            source="rss",
+            source_ref=source_ref,
+            received_at=datetime.now(UTC),
+            parsed_tickers='["NVDA"]',
+            event_keywords="[]",
+            sentiment="neutral",
+            source_trust="medium",
+            evidence_excerpt="seeded evidence",
+            raw_text="seeded raw",
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+
+def test_resolve_holdings_split_excludes_etfs_and_cash(session_factory) -> None:
+    """Snapshot → single stocks at full priority; ETFs/cash/unknowns light."""
+    _persist_fake_snapshot(session_factory)
+    session = session_factory()
+    try:
+        split = resolve_holdings_split(session, "ariel")
+    finally:
+        session.close()
+    assert split.single_stocks == ("NVDA", "RGTI")
+    assert "VOO" not in split.single_stocks
+    assert set(split.funds) == {"VOO", "ZZZT"}
+
+
+def test_resolve_holdings_split_empty_without_snapshot(session_factory) -> None:
+    session = session_factory()
+    try:
+        split = resolve_holdings_split(session, "ariel")
+    finally:
+        session.close()
+    assert split == HoldingsTickers()
+
+
+def test_tickers_resolved_from_snapshot_at_tick_time(session_factory) -> None:
+    """The per-name fetch list comes from the LATEST snapshot at tick time:
+    held single stocks in, ETFs/funds excluded, whitelist extended, and the
+    analyst's materiality context covers the whole book."""
+    _persist_fake_snapshot(session_factory)
+
+    ingest_kwargs: dict = {}
+    analyst_kwargs: dict = {}
+
+    def fake_ingest(session, **kwargs):
+        ingest_kwargs.update(kwargs)
+        return _ok_ingest_result()
+
+    def fake_analyst(session, **kwargs):
+        analyst_kwargs.update(kwargs)
+        return _ok_analyst_result()
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=fake_ingest,
+        analyst_fn=fake_analyst,
+        agent_factory=lambda: MagicMock(),
+        price_move_fn=lambda ts: {},
+    )
+    result = asyncio.run(job.tick())
+
+    assert ingest_kwargs["tickers"] == ["NVDA", "RGTI"]
+    # Extractor whitelist extended with the actual book (moonshots parse).
+    assert {"NVDA", "RGTI", "VOO", "ZZZT"} <= set(ingest_kwargs["known_tickers"])
+    # Analyst materiality context = the whole book (stocks + funds).
+    assert set(analyst_kwargs["user_holdings"]) == {"NVDA", "RGTI", "VOO", "ZZZT"}
+    # Summary surfaces the resolution for the owner to verify live.
+    assert result["tickers"]["single_stocks"] == ["NVDA", "RGTI"]
+    assert result["tickers"]["funds_light_treatment"] == 2
+
+
+def test_stage2_skipped_when_nothing_new(session_factory) -> None:
+    """Zero new items + no volatility → no agent construction, no analyst
+    call, quiet summary {'analyzed': 0, 'reason': 'no new signals'}."""
+    analyst_called = False
+    agent_constructed = False
+
+    def fake_analyst(session, **kwargs):
+        nonlocal analyst_called
+        analyst_called = True
+        return _ok_analyst_result()
+
+    def agent_factory():
+        nonlocal agent_constructed
+        agent_constructed = True
+        return MagicMock()
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _no_new_ingest_result(),
+        analyst_fn=fake_analyst,
+        agent_factory=agent_factory,
+        price_move_fn=lambda ts: {},
+        tickers=["NVDA"],
+    )
+    result = asyncio.run(job.tick())
+
+    assert analyst_called is False
+    assert agent_constructed is False, (
+        "quiet day must not even construct the analyst agent"
+    )
+    assert result["stages"] == {"ingest": "ok", "analyze": "skipped"}
+    assert result["analyzed"] == 0
+    assert result["reason"] == "no new signals"
+    assert result["counts"]["analyzed"] == 0
+    assert result["stage2_gate"]["fired"] is False
+
+
+def test_stage2_fires_on_new_headline(session_factory) -> None:
+    """New persisted signals → the analyst fires; the (network) price sweep
+    is never consulted — cheap-first triage."""
+    analyst_called = False
+    sweep_called = False
+
+    def fake_analyst(session, **kwargs):
+        nonlocal analyst_called
+        analyst_called = True
+        return _ok_analyst_result()
+
+    def fake_sweep(tickers):
+        nonlocal sweep_called
+        sweep_called = True
+        return {}
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _ok_ingest_result(),  # persisted=3
+        analyst_fn=fake_analyst,
+        agent_factory=lambda: MagicMock(),
+        price_move_fn=fake_sweep,
+        tickers=["NVDA"],
+    )
+    result = asyncio.run(job.tick())
+
+    assert analyst_called is True
+    assert sweep_called is False, "new signals already fire — skip the sweep"
+    assert result["stage2_gate"] == {
+        "fired": True,
+        "reasons": ["new_signals"],
+        "pending_unanalyzed": 0,
+        "volatility_moves": {},
+    }
+
+
+def test_stage2_fires_on_volatility_trigger(session_factory) -> None:
+    """No new headlines, but a held single stock moved beyond the threshold
+    while unanalyzed signals are pending → the analyst fires."""
+    _seed_unanalyzed_signal(session_factory)
+    analyst_called = False
+
+    def fake_analyst(session, **kwargs):
+        nonlocal analyst_called
+        analyst_called = True
+        return _ok_analyst_result()
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _no_new_ingest_result(),
+        analyst_fn=fake_analyst,
+        agent_factory=lambda: MagicMock(),
+        price_move_fn=lambda ts: {"NVDA": -6.5, "RGTI": 1.0},
+        volatility_move_pct=4.0,
+        tickers=["NVDA", "RGTI"],
+    )
+    result = asyncio.run(job.tick())
+
+    assert analyst_called is True
+    gate = result["stage2_gate"]
+    assert gate["fired"] is True
+    assert gate["reasons"] == ["volatility_trigger"]
+    # Only the beyond-threshold mover is reported; RGTI (+1.0%) is not.
+    assert gate["volatility_moves"] == {"NVDA": -6.5}
+    assert gate["pending_unanalyzed"] == 1
+
+
+def test_volatility_below_threshold_stays_quiet(session_factory) -> None:
+    """A sub-threshold move is NOT a trigger — quiet day."""
+    _seed_unanalyzed_signal(session_factory)
+    analyst_called = False
+
+    def fake_analyst(session, **kwargs):
+        nonlocal analyst_called
+        analyst_called = True
+        return _ok_analyst_result()
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _no_new_ingest_result(),
+        analyst_fn=fake_analyst,
+        agent_factory=lambda: MagicMock(),
+        price_move_fn=lambda ts: {"NVDA": 2.0},
+        volatility_move_pct=4.0,
+        tickers=["NVDA"],
+    )
+    result = asyncio.run(job.tick())
+
+    assert analyst_called is False
+    assert result["reason"] == "no new signals"
+    assert result["stage2_gate"]["volatility_moves"] == {}
+
+
+def test_volatility_trigger_without_pending_signals_stays_quiet(
+    session_factory,
+) -> None:
+    """A big move with ZERO unanalyzed rows gives the analyst nothing to
+    read — skip, and say why."""
+    analyst_called = False
+
+    def fake_analyst(session, **kwargs):
+        nonlocal analyst_called
+        analyst_called = True
+        return _ok_analyst_result()
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _no_new_ingest_result(),
+        analyst_fn=fake_analyst,
+        agent_factory=lambda: MagicMock(),
+        price_move_fn=lambda ts: {"NVDA": -8.0},
+        volatility_move_pct=4.0,
+        tickers=["NVDA"],
+    )
+    result = asyncio.run(job.tick())
+
+    assert analyst_called is False
+    assert result["analyzed"] == 0
+    assert "volatility trigger" in result["reason"]
+    assert result["stage2_gate"]["volatility_moves"] == {"NVDA": -8.0}
+
+
+def test_volatility_threshold_default_from_config() -> None:
+    """The trigger threshold is a config field, not a magic number."""
+    from argosy.config import get_settings
+
+    assert get_settings().news_volatility_move_pct == 4.0
+
+
+def test_macro_calendar_staleness_warning(caplog) -> None:
+    """Within 30 days of the curated list's last entry → LOUD log warning;
+    well before it → silent."""
+    from argosy.services.macro_feed import get_upcoming_macro_events
+
+    logger_name = "argosy.services.macro_feed"
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        get_upcoming_macro_events(now=datetime(2026, 12, 1, tzinfo=UTC))
+    assert any(
+        "EXHAUSTED" in r.getMessage() for r in caplog.records
+    ), "expected a staleness warning within 30 days of the last curated event"
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        get_upcoming_macro_events(now=datetime(2026, 7, 1, tzinfo=UTC))
+    assert not any("EXHAUSTED" in r.getMessage() for r in caplog.records)
