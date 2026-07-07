@@ -345,6 +345,54 @@ class JobRegistry:
             long_running=metadata.long_running,
         )
 
+    def adopt_unregistered_loops(self, scheduler: Any) -> list[str]:
+        """Co-register every scheduler loop this registry doesn't know.
+
+        :class:`RegisteredScheduler`'s ``_fire_once`` fails fast for
+        registry-unknown loops (the per-job lock / audit single-writer
+        contract), so a ``CadenceLoop`` registered only on the scheduler
+        (the orchestrator defaults: plan_watcher, backup, weekly_review,
+        discovery_funnel, fx_refresh, monthly_cycle, quarterly, annual, …)
+        crashed its cadence task at the FIRST cron fire and never
+        executed under the API server — with no ``job_runs`` row to even
+        show it happened. Adoption synthesizes minimal metadata so every
+        driven loop carries the lock, the audit row, and ``/api/jobs``
+        visibility the in-process-scheduler doctrine requires.
+
+        Idempotent per name; returns the adopted names (empty when the
+        scheduler and registry already agree).
+        """
+        adopted: list[str] = []
+        for name, job in getattr(scheduler, "_loops", {}).items():
+            if name in self._jobs or isinstance(job, LongRunningJob):
+                continue
+            sched = getattr(job, "schedule", None)
+            cron = getattr(sched, "cron", None)
+            interval = getattr(sched, "interval_seconds", None)
+            if cron:
+                human = f"cron {cron} ({getattr(sched, 'timezone', 'UTC')})"
+            elif interval:
+                human = f"every {int(interval)}s"
+            else:
+                human = "unscheduled"
+            self.register(
+                job=job,
+                metadata=JobMetadata(
+                    name=name,
+                    schedule_cron=cron,
+                    schedule_human=human,
+                    source_kind="maintenance",
+                    description=(
+                        f"Orchestrator cadence loop {type(job).__name__} "
+                        "(auto-adopted at boot so scheduled fires carry the "
+                        "registry lock + audit row)."
+                    ),
+                    long_running=False,
+                ),
+            )
+            adopted.append(name)
+        return adopted
+
     def names(self) -> list[str]:
         return list(self._jobs.keys())
 

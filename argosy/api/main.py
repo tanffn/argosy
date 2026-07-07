@@ -871,6 +871,19 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # Adopt every scheduler loop the registry doesn't know yet.
+        # RegisteredScheduler._fire_once fails fast for registry-unknown
+        # loops (the lock/audit single-writer contract), so a loop
+        # registered only via register_default_loops (plan_watcher,
+        # backup, weekly_review, discovery_funnel, fx_refresh,
+        # monthly_cycle, quarterly, annual, ...) died at its first cron
+        # fire and never executed under the API server — with no
+        # job_runs row to even show it. Adoption gives each one the
+        # lock + audit row + /api/jobs visibility.
+        _adopted = registry.adopt_unregistered_loops(scheduler)
+        if _adopted:
+            log.info("scheduler.loops_adopted", loops=_adopted)
+
         # Step 1: start_supervisors BEFORE scheduling so any
         # LongRunningJob supervisor is alive when its first connect
         # cycle opens. (No-op until commit #5 fills it in.)

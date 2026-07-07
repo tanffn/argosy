@@ -1156,3 +1156,57 @@ def test_holdings_review_registers_with_its_own_metadata() -> None:
     reg.register(job=HoldingsReviewJob(enabled=True, user_id="ariel"),
                  metadata=holdings_review_metadata())
     assert "holdings_review" in reg._jobs  # type: ignore[attr-defined]
+
+
+def test_adopt_unregistered_loops_covers_scheduler_only_loops() -> None:
+    """Regression: orchestrator-default loops (plan_watcher, backup,
+    discovery_funnel, weekly_review, ...) were registered on the scheduler but
+    never into the registry, so RegisteredScheduler._fire_once raised at their
+    FIRST cron fire and killed each cadence task — those loops never executed
+    under the API server (zero job_runs rows ever). Adoption closes the seam."""
+    from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
+
+    class _OrphanLoop(CadenceLoop):
+        name = "orphan_loop"
+
+        async def tick(self, *, now=None):
+            return None
+
+    class _FakeScheduler:
+        def __init__(self, loops):
+            self._loops = loops
+
+    reg = JobRegistry()
+    loop = _OrphanLoop(schedule=LoopSchedule(cron="0 4 * * *", timezone="UTC"))
+    adopted = reg.adopt_unregistered_loops(_FakeScheduler({"orphan_loop": loop}))
+    assert adopted == ["orphan_loop"]
+    assert "orphan_loop" in reg._jobs  # type: ignore[attr-defined]
+    md = reg.get_metadata("orphan_loop")
+    assert md.schedule_cron == "0 4 * * *"
+    assert md.long_running is False
+    # the lock RegisteredScheduler._fire_once needs now exists
+    assert reg._lock_for("orphan_loop") is not None
+    # idempotent: a second sweep adopts nothing
+    assert reg.adopt_unregistered_loops(_FakeScheduler({"orphan_loop": loop})) == []
+
+
+def test_adopt_unregistered_loops_skips_already_registered() -> None:
+    from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
+
+    class _KnownLoop(CadenceLoop):
+        name = "known_loop"
+
+        async def tick(self, *, now=None):
+            return None
+
+    class _FakeScheduler:
+        def __init__(self, loops):
+            self._loops = loops
+
+    reg = JobRegistry()
+    loop = _KnownLoop(schedule=LoopSchedule(interval_seconds=60))
+    reg.register(job=loop, metadata=JobMetadata(
+        name="known_loop", schedule_cron=None, schedule_human="every 60s",
+        source_kind="maintenance", description="explicit", long_running=False,
+    ))
+    assert reg.adopt_unregistered_loops(_FakeScheduler({"known_loop": loop})) == []

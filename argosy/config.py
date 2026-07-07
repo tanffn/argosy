@@ -213,6 +213,10 @@ class Settings(BaseSettings):
     # pipeline is the product — a review lost to server downtime is a
     # silent failure of proactive agency. Read via ARGOSY_SCHEDULER_CATCHUP_ON_BOOT.
     scheduler_catchup_on_boot: bool = Field(default=True)
+    # Only fires missed slots at most this old (days). An out-of-season slot
+    # (the annual loop's January 2nd rediscovered in July) waits for its next
+    # scheduled time instead. Read via ARGOSY_SCHEDULER_CATCHUP_MAX_AGE_DAYS.
+    scheduler_catchup_max_age_days: float = Field(default=7.0)
     # Research-informed deployment preflight (deterministic; Increment 1).
     #   - deployment_funnel_enabled: master switch. When False, /deploy-cash
     #     behaves exactly as before (no preflight block).

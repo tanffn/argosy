@@ -377,3 +377,18 @@ async def test_catchup_kill_switch(engine: None, monkeypatch: pytest.MonkeyPatch
         assert loop.ticks == 0
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_catchup_skips_out_of_season_slots(engine: None) -> None:
+    """A missed slot older than the max-age window (default 7d) does NOT
+    fire — the annual loop's January 2nd rediscovered in May waits for its
+    next scheduled slot instead of running wildly out of season."""
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 8 2 1 *", timezone="UTC"))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+    )
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 0

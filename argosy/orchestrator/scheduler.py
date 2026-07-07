@@ -429,6 +429,27 @@ class Scheduler:
         prev_due = loop.schedule.prev_due_before(self.clock())
         if prev_due is None:
             return
+        # Only catch up RECENTLY missed fires. A long-idle slot (e.g. the
+        # annual loop's January 2nd, months stale by the time a never-run
+        # loop is first adopted) firing wildly out of season is noise, not
+        # a recovered review — it waits for its next scheduled slot or a
+        # manual Run-now.
+        try:
+            from argosy.config import get_settings as _gs
+
+            _max_age_days = float(
+                getattr(_gs(), "scheduler_catchup_max_age_days", 7.0)
+            )
+        except Exception:  # pragma: no cover
+            _max_age_days = 7.0
+        if (self.clock() - prev_due).total_seconds() > _max_age_days * 86400:
+            _log.info(
+                "cadence.catchup_skipped_too_stale",
+                loop=loop.name,
+                missed_due=prev_due.isoformat(),
+                max_age_days=_max_age_days,
+            )
+            return
         last_tick_at: datetime | None = None
         try:
             async with db_mod.get_session() as session:
