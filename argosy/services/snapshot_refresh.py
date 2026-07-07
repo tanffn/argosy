@@ -316,6 +316,12 @@ def _recompute_allocations(
         if (a.category or "").strip().lower() == "grand total":
             new.usd_value_k = round(grand_total, 2)
             new.pct = 100.0
+            # A total row has no meaningful target gap — don't carry a
+            # stale delta from the prior copy.
+            new.delta_k = (
+                round(a.target_k - grand_total, 2)
+                if a.target_k is not None else None
+            )
             out.append(new)
             continue
         current = round(by_type.get((a.category or "").strip(), 0.0), 2)
