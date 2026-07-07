@@ -307,6 +307,8 @@ Everything below — every feature, every agent objection, every default — is 
 >   - When raising an objection, name BOTH sides of the FI trade-off: the cost of NOT raising it (drawdown, tax leakage, violation) AND the cost of raising it (delay, missed compounding, friction). Surface the trade-off honestly so the user can decide; do not hide either side behind boilerplate caution.
 >   - Do NOT raise objections for documentation hygiene, prose framing, or theoretical-but-non-acting concerns when the underlying action advances the goal. Process integrity matters; process theater does not.
 
+(The constant currently hardcodes the single tenant's name in its first line — a known multi-tenant item: the directive text should interpolate the client household from `user_context` rather than name a person.)
+
 The conservative risk officer also carries the `CONSERVATIVE_FI_COUNTERWEIGHT` one-liner — a reminder that needless caution itself carries a cost-in-years and is a risk to weigh, not a free default. The discipline goals named in §1.2 / §1.4 (plan adherence, concentration reduction, tax efficiency, audit trail) are the *means* by which the family reaches the earliest safe retirement, not ends that outrank it.
 
 ### 1.1 What Argosy is
@@ -516,82 +518,83 @@ The fleet borrows TradingAgents' team structure and extends it with specialists 
 
 Run in parallel; produce structured reports written to state. Reports are persistent state objects, not chat messages.
 
-| Agent | Knows | Outputs | Tools | Default model | Thinking budget | Citations |
+| Agent | Knows | Outputs | Tools | Default model | Thinking effort | Citations |
 |---|---|---|---|---|---|---|
-| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR, WebSearch (live) | Opus 4.8 | 0 | yes |
-| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Opus 4.8 | 0 | yes |
-| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR, WebSearch (live) | Opus 4.8 | 0 | yes |
-| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Opus 4.8 | 0 | yes |
-| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Opus 4.8 | 0 | yes |
-| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Opus 4.8 | 0 | yes |
-| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Opus 4.8 | 0 | yes |
-| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Opus 4.8 | 0 | yes |
-| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Opus 4.8 | 0 | yes |
-| **Plan coverage** (`PlanCoverageAnalyst`) | Distillate + portfolio snapshot; the 18 canonical section_ids | Baseline `Section` drafts for canonical sections the user's plan didn't author (e.g. healthcare, insurance, cross-border forms calendar); `unfilled_section_ids` list for sections it intentionally skipped (IPS, client goals, capital sufficiency) | `argosy/quality/canonical_sections.py` | Opus | 4000 | yes (`agent_baseline` kind) |
-| **Withdrawal sequencer** (`WithdrawalSequencerAgent`) | Portfolio snapshot + positions + household budget + plan markdown | FI-bridge waterfall (`fi_bridge: list[BridgeRung]`) + year-by-year `withdrawal_schedule: list[WithdrawalYearRow]` — encodes the IL pension stack (keren_hishtalmut → kupot_gemel → executive_insurance → portfolio_drawdown → pensia) | `argosy/agents/plan_distiller_types.py` typed fields | Opus | 4000 | yes |
-| **Equity comp** (`EquityCompAnalystAgent`) | `identity_yaml.rsu_vest_schedule` (active grants + quarterly vests) + portfolio positions + tax payload + FX + base salary USD | 3-scenario RSU projection (`known_grants_only` / `conservative_decay` at 55% of base / `optimistic_flat` at 90% of base) with per-year `YearVestRow` (gross_shares, gross_usd, gross_nis, net_nis, retention_pct, confidence, source); separates contractual vesting from discretionary refresh grants; NVDA-sell-on-vest policy (default defer with cap-band rebalance); FI-date sensitivity per scenario; advisor intake questions when RSU portal pages 2-4 missing | `argosy/agents/equity_comp_analyst_types.py` typed fields with Pydantic `field_validator` coercion of LLM structured citations/questions back to strings | Opus | 4000 | yes |
+| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR, WebSearch (live) | Opus 4.8 | medium | yes |
+| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Opus 4.8 | medium | yes |
+| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR, WebSearch (live) | Opus 4.8 | medium | yes |
+| **Sentiment** | Social chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Finnhub (news-derived social payload — no direct social-API adapter) | Opus 4.8 | medium | yes |
+| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Opus 4.8 | medium | yes |
+| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Opus 4.8 | max | yes |
+| **Concentration** | Position sizes vs caps; sector & geography exposure; concentrated-position pace vs schedule | Breach/warning report; tranche proposals | Positions table | Opus 4.8 | medium | yes |
+| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Opus 4.8 | medium | yes |
+| **FX** | USD/NIS/EUR levels and recent trend; the user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Opus 4.8 | medium | yes |
+| **Household budget** (`HouseholdBudgetAnalyst`) | Ingested expense/income state (§18): per-category spend, savings rate, recurring obligations | Spend-basis report feeding the plan's FI components | Expense tables | Opus 4.8 | medium | yes |
+| **Plan coverage** (`PlanCoverageAnalyst`) | Distillate + portfolio snapshot; the 18 canonical section_ids | Baseline `Section` drafts for canonical sections the user's plan didn't author (e.g. healthcare, insurance, cross-border forms calendar); `unfilled_section_ids` list for sections it intentionally skipped (IPS, client goals, capital sufficiency) | `argosy/quality/canonical_sections.py` | Opus | high | yes (`agent_baseline` kind) |
+| **Withdrawal sequencer** (`WithdrawalSequencerAgent`) | Portfolio snapshot + positions + household budget + plan markdown | FI-bridge waterfall (`fi_bridge: list[BridgeRung]`) + year-by-year `withdrawal_schedule: list[WithdrawalYearRow]` — encodes the IL pension stack (keren_hishtalmut → kupot_gemel → executive_insurance → portfolio_drawdown → pensia) | `argosy/agents/plan_distiller_types.py` typed fields | Opus | high | yes |
+| **Equity comp** (`EquityCompAnalystAgent`) | `identity_yaml.rsu_vest_schedule` (active grants + quarterly vests) + portfolio positions + tax payload + FX + base salary USD | 3-scenario RSU projection (`known_grants_only` / `conservative_decay` at 55% of base / `optimistic_flat` at 90% of base) with per-year `YearVestRow` (gross_shares, gross_usd, gross_nis, net_nis, retention_pct, confidence, source); separates contractual vesting from discretionary refresh grants; NVDA-sell-on-vest policy (default defer with cap-band rebalance); FI-date sensitivity per scenario; advisor intake questions when RSU portal pages 2-4 missing | `argosy/agents/equity_comp_analyst_types.py` typed fields with Pydantic `field_validator` coercion of LLM structured citations/questions back to strings | Opus | high | yes |
 
 **Live web access.** The News and Fundamentals analysts carry `claude_code_allowed_tools=("WebSearch",)` — 1–3 targeted searches for MATERIAL recent developments, with a **cite-the-URL-on-every-kept-headline** rule so live claims stay auditable. WebFetch is deliberately withheld on both: search snippets suffice for headline materiality, and full-page fetches multiply token cost + the prompt-injection surface. The Sentiment analyst gets no web tools; when true social chatter is unavailable the orchestrator maps news items into the social-item shape with the source labelled `"news-derived (…)"`, so the agent reads them as press tone, never mislabels them as retail sentiment. The Fundamentals analyst additionally receives the **fair-value anchor set end-to-end from the fetcher** — `current_price`, `eps_ttm`/`eps_forward`, `shares_outstanding`, `market_cap`, `revenue_ttm`, `net_income_ttm`, `free_cashflow` — so its fair-value estimate derives from supplied figures, never from training-data memory.
 
-Three bottom rows are gated behind `ARGOSY_PHASE5_AGENTS` (default off); when on, the Phase 1 analyst fleet has 13 members instead of 10. See `docs/plans/argosy-comprehensive-plan-integration.md` for the integration-plan context.
+Three bottom rows are gated behind `ARGOSY_PHASE5_AGENTS` (**default on** — `phase5_agents` in `argosy/config.py`); when on, the Phase 1 analyst fleet has 13 members instead of 10. See `docs/plans/argosy-comprehensive-plan-integration.md` for the integration-plan context.
 
 ### 3.2 Researcher Team
 
 Adversarial debate, n rounds, facilitated. Produces a structured debate outcome record.
 
-| Agent | Role | Default model | Thinking budget | Citations |
+| Agent | Role | Default model | Thinking effort | Citations |
 |---|---|---|---|---|
-| **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus | 4000 | yes |
-| **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus | 4000 | yes |
-| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Opus 4.8 | 0 | no |
+| **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus | high | yes |
+| **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus | high | yes |
+| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Opus 4.8 | high | no |
 
 ### 3.3 Trader
 
 Synthesizes analyst reports + researcher debate outcome into a concrete proposal.
 
-| Agent | Role | Default model | Thinking budget | Citations |
+| Agent | Role | Default model | Thinking effort | Citations |
 |---|---|---|---|---|
-| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus 4.8 | 8000 | yes |
+| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus 4.8 | high | yes |
 
 ### 3.4 Risk Team
 
 Adversarial debate over the proposed action; n rounds, facilitated.
 
-| Agent | Role | Default model | Thinking budget | Citations |
+| Agent | Role | Default model | Thinking effort | Citations |
 |---|---|---|---|---|
-| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Opus 4.8 | 0 | no |
-| **Neutral risk** | Balanced perspective | Opus 4.8 | 0 | no |
-| **Conservative risk** | Capital-preservation-first; flags worst-case path | Opus 4.8 | 0 | no |
-| **Risk facilitator** | Extracts consensus or escalates conflict | Opus 4.8 | 0 | no |
+| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Opus 4.8 | high | no |
+| **Neutral risk** | Balanced perspective | Opus 4.8 | high | no |
+| **Conservative risk** | Capital-preservation-first; flags worst-case path | Opus 4.8 | high | no |
+| **Risk facilitator** | Extracts consensus or escalates conflict | Opus 4.8 | high | no |
 
 ### 3.5 Approval Layer
 
-| Agent | Role | Default model | Thinking budget | Citations |
+| Agent | Role | Default model | Thinking effort | Citations |
 |---|---|---|---|---|
-| **Fund manager** | Final integrity check (consistency, plan conformity, guardrail compliance), green-lights or blocks | Opus | 8000 | yes |
+| **Fund manager** | Final integrity check (consistency, plan conformity, guardrail compliance), green-lights or blocks | Opus | max | yes |
 
 ### 3.6 Cross-cutting agents
 
 Run on their own cadences; not part of any decision team.
 
-| Agent | Role | Cadence | Default model | Thinking budget | Citations |
+| Agent | Role | Cadence | Default model | Thinking effort | Citations |
 |---|---|---|---|---|---|
-| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Opus 4.8 | 0 | no |
-| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Opus 4.8 | 0 | yes |
-| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True`. See §6.5. | Per-turn (user-initiated) | Opus 4.8 | 0 | no |
-| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Opus 4.8 | 0 | no |
-| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus | 4000 | yes |
-| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Opus 4.8 | 0 | yes |
-| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Opus 4.8 | 0 | yes |
-| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts plus the top-level `sections: list[Section]` (Phase 3 canonical evidence-bearing shape). See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus | 8000 | yes |
-| **Plan language rewriter** (`PlanLanguageRewriter`) | The structured `PlanSynthesisOutput` from the synthesizer. Runs between Phase 3 and the speculation-cap enforcer; translates prose fields (posture, rationale, theme/action/target labels and details) from internal agent phrasing to household-readable English while preserving every structured field (numeric values, units, dates, item_ids, `SectionEvidence` subtree, deltas, speculative candidates, `inputs` provenance) bit-for-bit. Validator at `argosy/quality/rewriter_invariants.py::validate_rewriter_invariants` enforces the preservation contract: structural drift hard-aborts; residual prose drift logs a warning and ships the mostly-scrubbed output (defense-in-depth: the `/accept` gate catches residual). | Per plan_synthesis_flow run | Opus | 4000 | no |
-| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Opus 4.8 | 0 | no |
-| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions. Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Opus 4.8 | 0 | no |
+| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Opus 4.8 | low | no |
+| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Opus 4.8 | high | yes |
+| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True`. See §6.5. | Per-turn (user-initiated) | Opus 4.8 | high | no |
+| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Opus 4.8 | high | no |
+| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus | high | yes |
+| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Opus 4.8 | max | yes |
+| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Opus 4.8 | high | yes |
+| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts plus the top-level `sections: list[Section]` (Phase 3 canonical evidence-bearing shape). See §6.11, §6.13. | Monthly + on user check-in + on amendment | Opus | high | yes |
+| **Plan language rewriter** (`PlanLanguageRewriter`) | The structured `PlanSynthesisOutput` from the synthesizer. Runs between Phase 3 and the speculation-cap enforcer; translates prose fields (posture, rationale, theme/action/target labels and details) from internal agent phrasing to household-readable English while preserving every structured field (numeric values, units, dates, item_ids, `SectionEvidence` subtree, deltas, speculative candidates, `inputs` provenance) bit-for-bit. Validator at `argosy/quality/rewriter_invariants.py::validate_rewriter_invariants` enforces the preservation contract: structural drift hard-aborts; residual prose drift logs a warning and ships the mostly-scrubbed output (defense-in-depth: the `/accept` gate catches residual). | Per plan_synthesis_flow run | Opus | high | no |
+| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Opus 4.8 | low | no |
+| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions. Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Opus 4.8 | low | no |
 
-> **Telemetry caveat.** The `Thinking budget` and `Citations` columns above describe per-role *configuration* (sourced from `DEFAULT_THINKING_BUDGET_BY_ROLE` and `DEFAULT_CITATIONS_BY_ROLE` in `argosy/agents/base.py`). On the `claude_code` backend (Argosy's default per `argosy.toml`) The system backports most of the behaviour from the `api_key` path:
+> **Thinking model + telemetry caveat.** The `Thinking effort` and `Citations` columns above describe per-role *configuration* (sourced from `DEFAULT_THINKING_EFFORT_BY_ROLE` and `DEFAULT_CITATIONS_BY_ROLE` in `argosy/agents/base.py`). Thinking is **adaptive-effort**, not fixed-budget: when a role has an effort level (`low`/`medium`/`high`/`max`; roles absent from the table default to `high` per the accuracy-over-cost preference), `BaseAgent` calls the SDK with `thinking={"type": "adaptive"}` + `effort=<level>` and lets the model pick its own internal budget. The legacy fixed-budget table (`DEFAULT_THINKING_BUDGET_BY_ROLE`) survives only as a fallback for roles that explicitly clear `thinking_effort` via a YAML override (`thinking_budget` without `thinking_effort` → `thinking={"type":"enabled","budget_tokens":…}` + `max_thinking_tokens`). On the `claude_code` backend (Argosy's default per `argosy.toml`) the system backports most of the behaviour from the `api_key` path:
 >
-> - **Caching telemetry now works on both backends.** `cache_input_tokens` and `cache_creation_tokens` are read from `ResultMessage.usage` (the agent-sdk forwards Anthropic's `cache_read_input_tokens` / `cache_creation_input_tokens` unchanged).
-> - **Thinking budgets are now passed through on both backends.** `_call_via_claude_code_inner` forwards `thinking={"type":"enabled","budget_tokens":.}` plus `max_thinking_tokens=.` on `ClaudeAgentOptions` whenever the role's `thinking_budget>0`.
+> - **Caching telemetry works on both backends.** `cache_input_tokens` and `cache_creation_tokens` are read from `ResultMessage.usage` (the agent-sdk forwards Anthropic's `cache_read_input_tokens` / `cache_creation_input_tokens` unchanged).
+> - **Thinking config is passed through on both backends.** `_call_via_claude_code_inner` forwards the adaptive `thinking` + `effort` kwargs (or the legacy budget shape) on `ClaudeAgentOptions`.
 > - **`thinking_tokens` column remains `api_key`-only.** The Claude Code CLI's usage payload does *not* expose `thinking_tokens` as a separate field (thinking tokens are folded into the CLI's reported `output_tokens`). `claude_code` runs therefore record `thinking_tokens=0` even when thinking has actually fired; switch to `api_key` to recover this telemetry.
 > - **Citations API remains `api_key`-only.** The agent-sdk has no equivalent of Anthropic document blocks, so `citations_json=NULL` on `claude_code`. The system works around the 11-agent refactor's loss-of-source-content by inlining `sources` into the user prompt as an `<sources>` XML block (see `BaseAgent._CLAUDE_CODE_SOURCES_WRAPPER`); the model can self-cite via the source IDs but without character-offset verification.
 >
@@ -631,7 +634,7 @@ against per-lot Section 102 windows.
 | Path | LLM shape | Estimated cost |
 |---|---|---|
 | Plan distillation (§6.10) | Single PlanDistillerAgent call (Opus 4.8) | ~$0.30 |
-| Full plan synthesis (§6.11; monthly_cycle / quarterly / annual / `/api/advisor/check-in`) | 9 analysts (parallel) + 3 horizon debates (parallel) + 1 synthesizer (Opus) + 3 risk perspectives + 1 fund-manager | ~$5–8 |
+| Full plan synthesis (§6.11; monthly_cycle / `/api/advisor/check-in`) | 10 analysts (13 with phase5, parallel) + 3 horizon debates (parallel) + 1 synthesizer (Opus) + 3 risk perspectives + 1 fund-manager | ~$5–8 |
 | Amendment chat — small (§6.13) | None — applies advisor-emitted Delta inline | $0 marginal (advisor turn cost already paid) |
 | Amendment chat — medium (§6.13) | 1 PlanSynthesizerAgent call (Opus) only | ~$0.50 |
 | Amendment chat — large (§6.13) | Full synthesis path | ~$5–8 |
@@ -640,15 +643,13 @@ A budget that absorbs one scheduled monthly synthesis plus 1–2 ad-hoc amendmen
 
 ### 3.8 Model assignment policy
 
-Default model per agent role is configurable; user can override at any layer.
+The per-role model is resolved in code: `BaseAgent.__init__` takes an optional `model` kwarg and otherwise reads `DEFAULT_MODEL_BY_ROLE`. The `models:` block in `agent_settings.yaml` is parsed into `ModelsBlock` but **not consumed by the agent constructor** — per-role YAML model overrides are not wired; the in-code table is the single authority.
 
 **Current defaults** (canonical source: `argosy.agents.base.DEFAULT_MODEL_BY_ROLE`):
 
 - **Opus** (`claude-opus-4-8`) — **every role.** `DEFAULT_MODEL_BY_ROLE` maps all roles (analysts, researcher/risk debate, trader, fund_manager, plan_synthesizer, audit, all cross-cutting agents, and the living-plan owner/dialogue agents) to Opus 4.8. The whole-artifact reader and the codex numeric gate run on an independent cross-model reviewer (GPT-5.5 via the codex tandem), not a Claude tier.
 
-**Why neither Haiku nor Sonnet is a default.** The original policy slotted Haiku into deterministic formatting roles (technical, sentiment, watchlist, concentration, fx) and Sonnet into most analysts. In practice, Argosy's prompts are heavily structured (multi-question batched intake, citation-required analysts, JSON-schema-constrained outputs) and the downstream consequence of a wrong figure is large (it feeds the plan, the FI date, and the concentration cap). Haiku's instruction-following ceiling could not reliably hold those structures; and under the binding "accuracy over LLM cost" policy (memory: `feedback_accuracy_over_cost.md`) the fleet was upgraded the rest of the way to Opus 4.8 — accuracy and instruction-following over per-token cost. Sonnet/Haiku overrides remain possible per-role via `agent_settings.yaml` for cost-sensitive tenants; the pricing entries are preserved in `APPROX_PRICING_USD_PER_MTOK` so historical agent_reports rows still cost-track correctly.
-
-Set `models.override: {all: opus}` in `agent_settings.yaml` for quality-first regardless of cost; or override per-role.
+**Why neither Haiku nor Sonnet is a default.** The original policy slotted Haiku into deterministic formatting roles (technical, sentiment, watchlist, concentration, fx) and Sonnet into most analysts. In practice, Argosy's prompts are heavily structured (multi-question batched intake, citation-required analysts, JSON-schema-constrained outputs) and the downstream consequence of a wrong figure is large (it feeds the plan, the FI date, and the concentration cap). Haiku's instruction-following ceiling could not reliably hold those structures; and under the binding "accuracy over LLM cost" policy (memory: `feedback_accuracy_over_cost.md`) the fleet runs Opus 4.8 across the board — accuracy and instruction-following over per-token cost. Sonnet/Haiku pricing entries are preserved in `APPROX_PRICING_USD_PER_MTOK` so historical agent_reports rows still cost-track correctly. A cost-sensitive per-role override surface would go through wiring `ModelsBlock` into `BaseAgent` (currently unwired); the supported override today is the per-instantiation `model` kwarg.
 
 ### 3.9 The advisory firm — collaboration & convergence
 
@@ -877,18 +878,18 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 
 | Loop | Tick rate | What polls / checks (cheap) | What triggers an LLM decision flow | Triggers plan synthesis |
 |---|---|---|---|---|
-| **Minute** | 60s during market hours only | Open-order status from broker; price vs limits on watchlist; volatility-band breach detection | Limit-price re-evaluation (T0); breach of stop/target (T0/T1); flash-crash detection (T2) | — |
-| **Hour** | 60min, 24/7 | News-feed delta; macro release calendar; corp-actions feed; FX move > threshold | Material news on holding (T1+); macro print surprise (T1); FX threshold breach (T1) | — |
+| **Minute** (default **disabled**) | 60s during market hours only | Open-order status from broker; price vs limits on watchlist; volatility-band breach detection | **None today** — events-only (`watchlist.breach` records); the LLM decision hooks (limit re-evaluation, stop/target breach, flash-crash) are deferred | — |
+| **Hour** (default **disabled**) | 60min, 24/7 | News-feed delta; macro release calendar; corp-actions feed; FX move > threshold | **None today** — events-only (`news.material`, `macro.surprise`, FX, corp-action records); the LLM decision hooks are deferred | — |
 | **Daily brief** | 09:00 user TZ | Always runs; ingest overnight news, EOD prices, world markets, calendar for the day | Always runs; produces a daily brief; flags candidates for action | — |
 | **Plan watcher** | Daily 07:00 user TZ | Hashes each user's baseline `source_path`; detects file change | Re-distill on diff (preserves user edits) | — |
 | **Weekly review** | Sun 18:00 | Domain-knowledge freshness check; audit-agent self-review of past week's decisions; concentration drift; plan-adherence delta | Plan-critique YELLOW or RED items (T2); concentration cap breach (T2/T3 depending on size) | — |
-| **Monthly cycle** | 1st of month | Statement reconciliation; RSU vest pulled in; gap-weighted buy template; full plan critique re-run | Buy plan execution (T1-T3 depending on size); rebalance proposals (T2/T3); tax calendar items | Yes — fires `plan_synthesis_flow` (§6.11); produces a fresh `role='draft'` for user acceptance |
-| **Quarterly** | After quarter close | Real estate P&L update; bonus event ingest; plan-drift check vs targets | Plan revision proposal (T3) | Yes — quarterly synthesis (§6.11) with extra prompt weight on the medium horizon |
+| **Monthly cycle** | 1st of month | Statement reconciliation; RSU vest pulled in; full plan critique re-run. (The loop's buy-template hook is a placeholder — `_default_buy_template` records `{"template": "flat", "items": []}` in the audit log; the design for composing buys is the deployment-author path, §20.5) | Rebalance proposals (T2/T3); tax calendar items | Yes — fires `plan_synthesis_flow` (§6.11) with `trigger='scheduled'`; produces a fresh `role='draft'` for user acceptance |
+| **Quarterly** | After quarter close | Real estate P&L update; bonus event ingest; plan-drift check vs targets (PlanCritiqueAgent) | Plan revision proposal (T3) | — (surfaces prompts + critique only; the `"quarterly"` trigger value exists in the synthesis `Trigger` type but no scheduled path fires it) |
 | **Holistic rebalance review** | Quarterly, 10:00 IDT on the 1st of Jan/Apr/Jul/Oct | Composes the deterministic whole-portfolio rebalance/sell review (§20.6) over drift + per-position verdicts + thesis/news flags + the estate gate | Writes a proposed-only `rebalance` ActionProposal (no LLM) with built-in dedup/cooldown, only when drift is material; never executes | — |
-| **Annual** | January 2nd | Tax filing prep; W-8BEN refresh prompt; insurance renewal; full domain re-verify | Plan re-formulation pass (T3); year-end TLH harvest (T2); 102-plan election deadline (T2) | Yes — annual synthesis (§6.11) with extra prompt weight on the long horizon |
+| **Annual** | January 2nd | Tax filing prep; W-8BEN refresh prompt; insurance renewal; full domain re-verify | Year-end TLH harvest (T2); 102-plan election deadline (T2) | — (prompts + domain re-verify only; the `"annual"` trigger value exists in the synthesis `Trigger` type but no scheduled path fires it — the monthly governed refresh is the synthesis cadence) |
 | **Ad-hoc** | On user signal | — | Anything user-initiated; tier auto-selected from size | On `POST /api/advisor/check-in` (full 5-phase synthesis, §6.11) and on `POST /api/advisor/turn` carrying an amendment intent (§6.13 — Small applies inline; Medium runs Phase 3 only; Large dispatches full synthesis with the user's message as `guidance`). |
 
-**Scheduler-registered jobs.** Beyond the conceptual loops above, the FastAPI server registers these concrete jobs in `argosy/api/main.py::_start_jobs_scheduler` (all manually triggerable via `POST /api/jobs/{name}/run-now`; visibility via `/api/jobs`):
+**Scheduler-registered jobs.** The concrete runtime job set is composed from two registration points: `argosy/orchestrator/scheduler.py::register_default_loops` (the core loops above plus `process_cooling` 60s, `reconcile` 30s market-hours, `backup` daily 03:00, `audit` Sun 19:00, `watchlist` daily 08:30, `speculative_monitor` daily, `discovery_funnel` daily, `fx_refresh` daily) and `argosy/api/main.py::_start_jobs_scheduler` (the jobs below). All are manually triggerable via `POST /api/jobs/{name}/run-now`; visibility via `/api/jobs`; loops registered only in the scheduler are adopted into the job registry at boot (`adopt_unregistered_loops`) so everything is auditable from one surface. **Missed-run catch-up:** on boot, when `scheduler_catchup_on_boot` (default on) is set, any cron-scheduled loop whose last scheduled fire was missed — and is no more than `scheduler_catchup_max_age_days` (default 7) old — is fired once, sequentially through a catch-up gate so LLM-heavy runs don't stampede; interval loops are exempt.
 
 | Job | Schedule | Enabled default | What it does |
 |---|---|---|---|
@@ -897,35 +898,42 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 | `payslip_ingest` | Daily 06:30 IDT | on | Payslip pickup + §102 withholding reconciliation |
 | `holdings_review` | Daily 17:30 IDT | on | Per-holding research → BUY/HOLD/SELL/TRIM verdict pass; triage to material positions, fetch fresh news/price/thesis, only actionable verdicts surface (HOLD stays silent). Actionable verdicts land in the inbox as `stock_decision` action proposals |
 | `alpha_report_analyst` | Daily 18:00 IDT | on | Macro/alpha read over the day's ingested news |
-| `decision_funnel` | Daily 18:30 IDT | on (master env `ARGOSY_DECISION_FUNNEL_ENABLED` default OFF) | The tiered per-stock "act?" funnel (§20.8), after the day's monitors |
+| `decision_funnel` | Daily 18:30 IDT | on (master env `ARGOSY_DECISION_FUNNEL_ENABLED`, default ON; shadow mode default ON — §20.8) | The tiered per-stock "act?" funnel (§20.8), after the day's monitors |
 | `period_directive_daily` | Daily 19:00 IDT | on | The proactive "your move" push (§1.6), after the review chain: deterministic triage (idle cash vs plan-target threshold + open-directive staleness ±10%) decides IF there is anything to decide; only then the deployment author (the same fleet-authors path and decision packet `/deploy-cash` uses) composes the allocation and ONE `allocate` inbox proposal is written — refreshed in place per user, auto-superseded when cash falls back under threshold. A quiet skipped day is a success state; an unavailable author writes nothing (no deterministic fallback allocation) |
 | `pending_reevaluation_daily` | Daily 04:00 IDT | on | Sweeps `pending_reevaluations` + re-fires INSUFFICIENT_DATA consults; also expires past-TTL proposals. Its `tick(now=…)` accepts the scheduler's injected clock (the scheduler calls every loop as `tick(now=self.clock)`) |
 | `predictions_evaluator` | Daily 03:30 IDT | on | Grades outstanding source predictions against outcomes |
 | `inferred_life_event_detector` | Daily 03:00 IDT | on | Detects cashflow-phase changes from expense state |
 | `holistic_rebalance_review` | Quarterly, 10:00 IDT on the 1st of Jan/Apr/Jul/Oct | on | The §20.6 whole-portfolio review |
 | `weekly_email_digest` | Fri 08:00 IDT | on | The weekly digest email |
+| `discovery_funnel` | Daily | on | The heavy discovery pass (radar → quick estimator → fleet grading) with its own failure isolation; feeds the high-potential sleeve's cached BUY picks (§20.5) |
+| `speculative_monitor` | Daily | on | Stop-loss / sell-signal sweep over speculative names (cheap yfinance; emits `speculative.monitor_signal`) |
+| `fx_refresh` | Daily | on | USD/NIS cache refresh (BoI fetch) for all consumers |
+| `job_runs_retention` | Daily 03:30 IDT | on | Reaps old `job_runs` rows + reconciles stale-`running` entries |
+| `news_daily` | Daily | on | Daily news ingest pass |
+| `discord_listener` | Long-running | **off** (`discord_listener_enabled`) | Discord channel listener (disabled: reconnect churn + API blocks) |
 | `snapshot_refresh` | manual Run-now only | **off** (`enabled=False`) | Self-refresh the portfolio snapshot: quantities carried, live reprice + fresh FX, provenance-marked insert (§20.4) |
 | `predictions_backfill_discord` | manual one-shot | off | Discord predictions backfill |
 
 ### 5.2 Loop coordination rules
 
 - Only one decision flow per ticker can be in-flight at a time (the trigger-reentry guard prevents duplicate work)
-- Lower-cadence loops can pre-empt higher-cadence proposals (e.g., monthly plan-critique can cancel a pending T1 proposal if it conflicts with a strategic decision)
+- Loop pre-emption (a lower-cadence loop cancelling a conflicting higher-cadence proposal) is a Phase-5 design item — no pre-emption logic exists in the scheduler today
 - Market-closed periods: minute loop sleeps; daily brief still runs; weekly/monthly run normally
+- Every loop checks the cost guard (`should_pause_non_routine`) before firing; routine loops (`daily_brief`, `process_cooling`) are exempt from the pause
 - Recurring intake cadences (monthly pay-stub upload reminder, annual W-8BEN, etc.) are themselves loops; they fire intake-agent invocations to refresh `user_context`
 
 ### 5.3 Cadence configuration
 
-Schedule is configurable in `agent_settings.yaml`. Each loop can be paused individually from the dashboard.
+Schedule is configurable in `agent_settings.yaml` (`cadences:` block). A loop is enabled/disabled via its `enabled` key (restart to apply); there is no per-loop runtime pause from the dashboard — the manual surface is `POST /api/jobs/{name}/run-now` plus the `/admin/jobs` visibility page.
 
 ```yaml
 cadences:
  minute:
- enabled: true
+ enabled: false # default off — events-only loop, LLM hooks deferred
  market_hours_only: true
  interval_seconds: 60
  hour:
- enabled: true
+ enabled: false # default off — events-only loop, LLM hooks deferred
  interval_minutes: 60
  daily_brief:
  enabled: true
@@ -1017,7 +1025,7 @@ Intake is not one-shot. It runs again on cadence to refresh data.
 | Cadence | What gets refreshed | Trigger |
 |---|---|---|
 | One-time at setup | Identity, jurisdiction, family, goals, broker credentials, plan import | Initial onboarding |
-| Monthly | Pay stubs, bank balance snapshot, position sync (auto where API exists) | 1st of month + reminder if not provided by 5th |
+| Monthly | Pay stubs, bank balance snapshot, position sync (auto where API exists) | 1st of month (a not-yet-provided-by-mid-month reminder is a design item, not built) |
 | Quarterly | Bonus/RSU vest events, rental P&L, plan-drift check | After each quarter end |
 | Annually | Tax filings, W-8BEN refresh, insurance renewals, plan critique re-run, full domain refresh | January |
 | Ad-hoc | Major life event (job change, sale of property, new account) | User-triggered |
@@ -1140,7 +1148,7 @@ Bullet composition (in `argosy.api.routes.advisor`):
 | Helper | Source | Fallback rule |
 |---|---|---|
 | `_gap_bullet` | `pick_gap_driven_target(GapStatus)` — top missing/stale field. Adds a one-clause "because X" from `_GAP_REASON` when the path is in the dict. Empty-user case surfaces a friendly intake invite. | Returns `None` when the catalog is fully fresh — the bullet is omitted. |
-| `_portfolio_bullet` | Latest `DailyBrief` row (`ORDER BY run_at DESC LIMIT 1`), trimmed to 140 chars. | Returns `None` when no row exists — **deliberately no TSV fallback.** `_find_latest_tsv` is a global pick, NOT user-scoped, and would leak Ariel's portfolio into Dana's bullets in a multi-tenant world. Until per-user TSV path resolution lands, omit the bullet. |
+| `_portfolio_bullet` | Latest `DailyBrief` row (`ORDER BY run_at DESC LIMIT 1`), trimmed to 140 chars. | Returns `None` when no row exists — **deliberately no TSV fallback.** `_find_latest_tsv` is a global pick, NOT user-scoped, and would leak one tenant's portfolio into another tenant's bullets in a multi-tenant world. Until per-user TSV path resolution lands, omit the bullet. |
 | `_signal_bullet` | (1) Latest `investor_events` row within 14 days; if absent → (2) latest `pension_fund_snapshots` row within 365 days. | Older rows are dropped entirely (no signal beats a stale signal). DB hiccups (missing tables on stale schemas) degrade to `None` rather than 500-ing the home page. |
 
 **Headline freshness.** `_time_of_day_greeting(now)` is computed fresh on every request — never cached. A "Good morning" generated at 7am must NOT serve back at 11pm just because the bullets are still warm. Only the bullets / cta / `generated_at` are cached; the headline is rebuilt per-call.
@@ -1239,16 +1247,18 @@ system anchors on.
 
 **Triggers.**
 
-- `monthly_cycle` on the 1st of each month (auto-scheduled per §5.1)
-- `quarterly` after each quarter close — extra prompt weight on medium
- horizon
-- `annual` (January) — extra prompt weight on long horizon
+- `monthly_cycle` on the 1st of each month (auto-scheduled per §5.1) —
+ the governed refresh cadence
 - User-initiated via `POST /api/advisor/check-in` (any time)
+- The `Trigger` type also admits `"quarterly"` / `"annual"` values
+ (extra prompt weight on the medium / long horizon), but no scheduled
+ path fires them — the quarterly/annual loops surface prompts + a
+ critique drift-check only (§5.1)
 
 **Five-phase fleet review** (a new T3-depth flow, distinct from the
 per-trade `decision_flow` of §3 / §10):
 
-1. Analyst reports (parallel, ~3-5 min) — 9 specialists run concurrently
+1. Analyst reports (parallel, ~3-5 min) — 10 specialists run concurrently (13 with `ARGOSY_PHASE5_AGENTS`, default on — §3.1)
 2. Researcher debate (per-horizon, ~5 min) — bull/bear/facilitator argue
  theses (long/medium/short) in parallel
 3. Synthesizer (Opus, ~1-2 min) — produces three `HorizonSection` drafts
@@ -1449,11 +1459,12 @@ checks composed into a single `gate_plan_output(...)` verdict, run at
    starting with `distillate.<field_name>` (proves USE, not just
    structural presence).
 
-Gate behavior is feature-flagged: `ARGOSY_PLAN_GATE_ENFORCE=true`
-returns `422` on any failure (blocks the role flip); default `false`
-surfaces violations on `AcceptResponse.gate_warning` and proceeds.
-`?override_gate=true` query param bypasses the check in enforce mode
-(audit-logged via `plan.draft.accepted.override`).
+Gate behavior is feature-flagged: `plan_gate_enforce` (default
+**`true`** — enforce mode) returns `422` on any failure and blocks the
+role flip; setting `ARGOSY_PLAN_GATE_ENFORCE=false` switches to
+warn-only (violations surface on `AcceptResponse.gate_warning` and
+accept proceeds). `?override_gate=true` query param bypasses the check
+in enforce mode (audit-logged via `plan.draft.accepted.override`).
 
 **Audit columns.** `plan_versions` carries both user-facing and
 full-fidelity audit variants of the horizon markdown (migration
@@ -1516,7 +1527,9 @@ full-fidelity audit variants of the horizon markdown (migration
    `## Deltas vs. prior current` block at the TOP of each horizon
    (no longer stripped). The Phase 0 plan-output gate's
    `history_leak` regex still flags `## Deltas vs. prior current`;
-   gate is warning-mode by default (`ARGOSY_PLAN_GATE_ENFORCE=false`).
+   the gate enforces by default (`plan_gate_enforce=true`), so
+   accepting a draft that carries the block requires the audited
+   `?override_gate=true` path or `ARGOSY_PLAN_GATE_ENFORCE=false`.
 
 **Derivation ownership (HARD rule, enforced by `plan_synthesizer`
 system prompt)**. The synthesizer is FORBIDDEN from inventing NVDA
@@ -1799,46 +1812,37 @@ The shared knowledge layer agents RAG against for jurisdiction-specific rules. C
 
 ### 7.1 Folder structure
 
+The tree as it exists on disk (17 files):
+
 ```
 domain_knowledge/
 ├── tax/
 │ ├── israel/
 │ │ ├── brackets_2026.md
 │ │ ├── national_insurance.md # Bituach Leumi rates + ceilings
-│ │ ├── health_tax.md # Mas Briut
 │ │ ├── surtax.md # tosefet mas (3% over ~750k NIS)
 │ │ ├── capital_gains.md # 25% real CGT, dividend rules
-│ │ ├── real_estate.md # Mas Shevach, Mas Rechisha
+│ │ ├── section_102.md # RSU vesting tax treatment
 │ │ ├── retirement/
 │ │ │ ├── keren_hishtalmut.md # ceiling, withdrawal rules
 │ │ │ ├── kupat_gemel.md # ceiling, employer match
-│ │ │ ├── tikun_190.md # provident fund optimization
-│ │ │ └── section_102.md # RSU vesting tax treatment
+│ │ │ ├── kupat_pensia.md # pension-fund vehicle rules
+│ │ │ └── section_102.md # §102 in the pension-stack context
 │ │ └── treaties/
 │ │ └── us_israel.md # 15% WHT on US dividends, etc.
 │ └── us/
 │ ├── nonresident_withholding.md
-│ ├── estate_tax_nonresidents.md # $60K exemption — UCITS rationale
-│ └── pfic.md # PFIC trap if Israeli funds held by US person
+│ └── estate_tax_nonresidents.md # $60K exemption — UCITS rationale
 ├── brokers/
-│ ├── interactive_brokers.md # API capabilities, Israel access
-│ ├── schwab.md # API limits, cost basis quirks
-│ └── leumi.md # no real API; TSV import workflow
-├── asset_classes/
-│ ├── ucits_etfs.md # estate-safe ETF universe + tickers
-│ ├── us_etfs.md # cheaper but estate-exposed
-│ ├── options.md # for limited account "gambles"
-│ └── leveraged_etfs.md # TQQQ/SOXL caveats
-├── market_data_sources/
-│ ├── yfinance.md
-│ ├── fred.md
-│ ├── finnhub.md
-│ └── sec_edgar.md
-└── strategy_patterns/
- ├── concentration_reduction.md # systematic single-stock divestiture
- ├── gap_weighted_buying.md # current approach
- └── tax_loss_harvesting.md
+│ └── gemelnet.md # MoF pension-portal adapter notes
+└── data_sources/
+ ├── sec_form4.md # insider-transaction adapter endpoints
+ ├── sec_13f.md
+ ├── tipranks.md
+ └── capitoltrades.md
 ```
+
+Planned-but-not-yet-authored areas (asset classes / strategy patterns / per-broker capability notes beyond gemelnet, and topics like health tax, real-estate tax, Tikun 190, PFIC) are seeded on demand via §7.6; there are no `asset_classes/` or `strategy_patterns/` directories today.
 
 ### 7.2 Frontmatter format
 
@@ -1906,7 +1910,7 @@ The first build doesn't write all 30+ docs upfront. Priority order for v1:
 5. `asset_classes/ucits_etfs.md`, `us_etfs.md`
 6. Everything else, on-demand via the domain-refresh agent's "missing knowledge" detection
 
-The intake agent contributes here: when a user is asked a question whose answer requires domain knowledge that doesn't exist yet, the system *creates a stub file* and queues it for the refresh agent to populate (with human review).
+Auto-creating a stub file when an intake question needs knowledge that doesn't exist yet (queued for the refresh agent to populate, with human review) is a design item — not built; today a missing topic is authored manually.
 
 ---
 
@@ -1977,15 +1981,14 @@ Constraint: `UniqueConstraint(user_id, source, unique_key)` named `uq_investor_e
 | **yfinance** | OHLC, fundamentals, options chains, dividends | Primary | Soft; reasonable polling OK | Free |
 | **FRED** | Macro: rates, FX, inflation, ISM, PMI | Primary | 120/min unauth | Free |
 | **Bank of Israel** | USD/NIS rep rate, BoI rate, Israeli macro | Primary | Light | Free |
-| **Finnhub** | News, earnings calendar, basic fundamentals | Primary news | 60/min free tier | Free tier sufficient |
-| **SEC EDGAR** | 10-K/10-Q/8-K filings | Primary | 10/sec | Free |
-| **Reddit (PRAW)** | Sentiment from rWallStreetBets, rInvesting | Secondary | API quotas | Free |
-| **Alpha Vantage** | Fallback prices, fundamentals | Fallback | 25/day free | Free tier |
+| **Finnhub** | News, earnings calendar, basic fundamentals, aggregated social-sentiment payloads | Primary news | 60/min free tier | Free tier sufficient |
 | **gemelnet (MoF)** | Per-fund 12m/36m/60m returns + sector benchmarks for Israeli pension vehicles | Primary | Light (public portal) | Free |
-| **SEC Form 4** (Phase 4) | Insider transactions (P/S/A/M/F/G codes) within 2 business days of trade | Primary | 10/sec (SEC EDGAR) | Free |
-| **SEC 13F-HR** (Phase 4) | Quarterly institutional long-equity holdings (45-day lag) | Primary | 10/sec | Free |
-| **TipRanks** (Phase 4) | Analyst-consensus snapshot, blogger sentiment, hedge-fund signal | Secondary | Public-page scrape; conservative throttling | Free tier |
-| **CapitolTrades** (Phase 4) | US Congress STOCK Act PTRs (politician + ticker + transaction) | Secondary | Light; aggregator of clerk-of-house + senate EFD | Free |
+| **SEC Form 4** | Insider transactions (P/S/A/M/F/G codes) within 2 business days of trade | Primary | 10/sec (SEC EDGAR) | Free |
+| **SEC 13F-HR** | Quarterly institutional long-equity holdings (45-day lag) | Primary | 10/sec | Free |
+| **TipRanks** | Analyst-consensus snapshot, blogger sentiment, hedge-fund signal | Secondary | Public-page scrape; conservative throttling | Free tier |
+| **CapitolTrades** | US Congress STOCK Act PTRs (politician + ticker + transaction) | Secondary | Light; aggregator of clerk-of-house + senate EFD | Free |
+
+These nine (`argosy/adapters/data/`: `yfinance_adapter`, `fred_adapter`, `boi_adapter`, `finnhub_adapter`, `gemelnet_adapter`, `sec_form4_adapter`, `sec_13f_adapter`, `tipranks_adapter`, `capitoltrades_adapter`) are the complete adapter set — there is no Reddit/PRAW adapter (social sentiment arrives via Finnhub or news-derived payloads, §3.1) and no Alpha Vantage fallback adapter. Raw SEC EDGAR filings beyond Form 4 / 13F reach agents via their web tools, not a dedicated adapter.
 
 All adapters share a common `fetch(ticker,.) -> CachedResponse` interface. Caching is decision-aware: a proposal in flight bumps cache to high-priority refresh; routine polling uses generous TTLs.
 
@@ -2129,7 +2132,9 @@ Adapters:
 - `SchwabReadOnlyAdapter` — read via CSV import; `place_order` returns `ManualExecutionRequired` (always)
 - `LeumiReadOnlyAdapter` — read via TSV import; `place_order` always returns `ManualExecutionRequired`
 
-**Paper mode is universal**: every adapter honors `paper=True` and writes a `PaperFill` record to the audit log instead of placing — including IBKR. This keeps the live and paper code paths symmetric.
+**Paper-fill is NOT universal.** Only the IBKR path can honor `paper=True` with a symmetric `PaperFill` record; `SchwabCSVAdapter.place_order` and `LeumiTSVAdapter.place_order` return `manual_required` in every mode — the client places the order at the broker's own UI. The engine-wide execution default is `execution.default_mode = "paper"` (`agent_settings.py::ExecutionBlock`).
+
+**How real money actually moves today.** The path that has executed real deployments is *authored, not auto-executed*: the deployment author (§20.5, the fleet-authors path behind `/deploy-cash` and the period directive) produces an `AllocationProposal` buy list with a funding breakdown; the client executes the fills manually at the broker; the executed fills are then reconciled into the book via `snapshot_refresh.apply_fills_to_snapshot` (§20.4 — a service-level function invoked by script/run-now; a fill-entry API endpoint is not yet built). The order-routing machinery below (§9.3, §10) runs the paper/queue lifecycle and is the Phase-5 auto-execution design.
 
 ### 9.3 Risk preflight (rule-based, no LLM)
 
@@ -2139,31 +2144,33 @@ Runs before *any* `place_order` call, regardless of paper/live:
 |---|---|---|
 | Cash availability | Hard fail | Account balance |
 | Position size cap | Hard fail | `agent_settings.yaml` per-position cap |
-| Concentration cap | Hard fail | NVDA ≤ target; sector ≤ 25%; etc. |
-| Wash-sale window | Warn (block in paper, prompt in live) | 30-day rule for US-domiciled lots |
+| Concentration cap | Hard fail (on a buy that worsens an over-target class) | Plan concentration targets; per-class caps |
+| Wash-sale window | **Stub — always PASS** ("lots not yet imported; deferred"). De-scoped: wash-sale rules have limited relevance to a non-US person; revisit at Phase 5 | 30-day rule for US-domiciled lots |
 | Daily loss limit (account) | Hard fail | Per-account loss circuit breaker |
-| Trading-hours check | Warn | Limit orders OK after-hours; market not |
-| Tier-mode mismatch | Hard fail | If `execution_mode == queue_only`, never auto-place |
+| Trading-hours check | **Hard fail for market orders** outside 9:30–16:00 ET; warn for limit/other order types | `check_trading_hours` |
+| Tier-mode routing | Recorded here (PASS); the enforcement — `queue_only` never auto-places — lives in `execution/router.py`, which reads `execution.default_mode` | Routing matrix (§10.1) |
 
-Hard fails return an error before the proposal becomes a real order; warnings surface in the dashboard but don't block.
+The checks live in `argosy/decisions/risk_preflight.py`. Hard fails return an error before the proposal becomes a real order; warnings surface in the dashboard but don't block.
 
 ### 9.4 Authentication / secrets
 
-- Broker credentials encrypted at rest (Fernet symmetric encryption)
-- Master key in OS keychain (Windows Credential Manager via `keyring` library)
+- The at-rest mechanism is the **OS keychain** (Windows Credential Manager via `keyring`, service `"argosy"` — `argosy/secrets.py`); Fernet symmetric encryption is used only for TOTP secrets (§14.3)
+- Known item to fix: when the keychain is unavailable, external API keys fall back to a **plaintext** `~/.argosy/external_api_keys.json` — a best-effort dev convenience that should not survive to hosted deployments
 - `.env` files exist *only* during local dev for non-secret config; secrets never enter env vars
 - Never logged; rotated annually as part of January intake refresh
-- Audit log records every credential use (no plaintext, just access timestamps)
+- Per-use credential audit rows (access timestamps in the audit log) are a Phase-5 item — the event type is reserved (`credential.used`) but nothing records it yet
 
 ### 9.5 Failure modes
 
-| Failure | Handling |
-|---|---|
-| TWS Gateway disconnects | Reconnect with backoff; queue paused until reconnect; alert if > 5 min |
-| IBKR API rate limit | Exponential backoff; max 3 retries; final fail surfaces as warning |
-| Order rejected by broker | Capture reason; mark proposal as `rejected`; alert + log for analysis |
-| Partial fill | Track filled portion; remaining stays as open order; reconcile on cadence |
-| Network outage | Engine continues with cached data tagged "stale"; agents reduce confidence; no auto-execute during outage |
+Built today: the IBKR adapter reconnects with baseline TCP backoff; a broker rejection captures the reason and marks the proposal `rejected`; partial fills are tracked with the remainder left as an open order, reconciled by the 30s market-hours `reconcile` loop. The rest of the table is the Phase-5 hard-gate prerequisite set — designed, **not built**:
+
+| Failure | Handling | Status |
+|---|---|---|
+| TWS Gateway disconnects | Reconnect with backoff; queue paused until reconnect; alert if > 5 min | Backoff reconnect built; **disconnect alerting not built (Phase-5 prerequisite)** |
+| IBKR API rate limit | Exponential backoff; max 3 retries; final fail surfaces as warning | **Not built (Phase-5 prerequisite)** — a rate-limited call currently surfaces as a rejection |
+| Order rejected by broker | Capture reason; mark proposal as `rejected`; alert + log for analysis | Built (capture + reject); alert wiring per §14.2 |
+| Partial fill | Track filled portion; remaining stays as open order; reconcile on cadence | Built (`reconcile` loop) |
+| Network outage | Engine continues with cached data tagged "stale"; agents reduce confidence; no auto-execute during outage | Cache-staleness tagging built; outage-aware execution hold is part of the Phase-5 gate |
 
 ---
 
@@ -2176,6 +2183,8 @@ Hard fails return an error before the proposal becomes a real order; warnings su
 The proposal lifecycle as a state machine is at [12-proposals-state-machine.png](diagrams/12-proposals-state-machine.png); the T3 cooling-off mechanic at [13-cooling-off-flow.png](diagrams/13-cooling-off-flow.png).
 
 Everything *after* the agent team produces an `ApprovedProposal`: external approval, queueing, broker placement, fill reconciliation, audit.
+
+**Status.** This section is the **Phase-5 auto-execution design** — it is not what moves money today. `ExecutionRouter.auto_execute_if_eligible` (`execution/router.py`) implements the matrix's auto-promotion but has **no production caller**, and the execution mode defaults to `"paper"`, so no cell of the matrix auto-places live orders. The live money path is the authored one described in §9.2: fleet-authored `AllocationProposal` → manual broker fills by the client → `apply_fills_to_snapshot`. The matrix below governs the paper/queue lifecycle now and becomes the live routing law when the Phase-5 hard gates (§13.1) are cleared.
 
 ### 10.1 Routing matrix (tier × account × mode)
 
@@ -2235,26 +2244,26 @@ flowchart TD
 
 ### 10.4 Cooling-off mechanic (T3 only)
 
-- After approval, proposal enters `cooling` state for 24h (configurable: `tiers.cooling_off_hours_t3`)
-- **Auto-pause triggers** during cooling: any analyst delta that flips a thesis, any material news on the ticker, any plan-critique change touching the affected category — proposal pauses, alerts user
-- After 24h with no auto-pause, an abbreviated re-check runs: analyst delta only (not full re-debate) + risk re-preflight
+- After approval, proposal enters `cooling` state for 24h (configurable: `tiers.cooling_off_hours_t3`); the `process_cooling` loop (60s) advances the state machine deterministically
+- **Auto-pause triggers** during cooling (any analyst delta that flips a thesis, material news on the ticker, a plan-critique change touching the affected category → pause + alert) are a **Phase-5 hard-gate prerequisite — not built**; today cooling is a pure time gate
+- After 24h, an abbreviated re-check runs: analyst delta only (not full re-debate) + risk re-preflight
 - If re-check passes, the order places; if it fails, proposal returns to queue
 
 ### 10.5 Idempotency + reconnection
 
-- Every proposal carries a UUID; broker orders use it as client-order-id
-- Network outage during placement: engine retries with same UUID; broker rejects duplicates
-- Partial fills tracked separately; remainder stays as open order; reconciled on minute loop
-- Hard kill switch: `ARGOSY_KILL=1` env var halts all new orders, leaves existing open orders alone, returns engine to read-only mode
+- Every proposal carries a UUID; the IBKR adapter stamps it as the broker client-order-id (`orderRef`)
+- Retry-on-outage with the same UUID (broker rejects duplicates) is a **Phase-5 hard-gate prerequisite — not built**; today a failed placement surfaces as a rejection, never a blind retry
+- Partial fills tracked separately; remainder stays as open order; reconciled by the `reconcile` loop (30s, market hours)
+- Hard kill switch: `ARGOSY_KILL=1` env var halts all new orders (§14.5)
 
 ### 10.6 Failure handling
 
-| Failure | Behavior |
-|---|---|
-| Broker rejects (insufficient funds, price out of range, etc.) | Proposal marked `rejected`; alert with reason; agent post-mortem next cadence |
-| Order placed but fill never arrives (timeout) | After configurable timeout, cancel + reconcile; alert if cancellation also fails |
-| Partial fill, remainder cancels at close | Record both events; engine treats partial as a real position |
-| Disconnection mid-flight | Reconnect on backoff; reconcile on resume; never double-place (UUID protects) |
+| Failure | Behavior | Status |
+|---|---|---|
+| Broker rejects (insufficient funds, price out of range, etc.) | Proposal marked `rejected`; alert with reason; agent post-mortem next cadence | Built (reject + reason) |
+| Order placed but fill never arrives (timeout) | After configurable timeout, cancel + reconcile; alert if cancellation also fails | **Not built (Phase-5 prerequisite)** — `pending_orders` rows are tracked but nothing auto-cancels on age |
+| Partial fill, remainder cancels at close | Record both events; engine treats partial as a real position | Built |
+| Disconnection mid-flight | Reconnect on backoff; reconcile on resume; never double-place (UUID protects) | Reconnect + reconcile built; the never-double-place retry contract is part of the Phase-5 gate (§10.5) |
 
 ---
 
@@ -2271,11 +2280,11 @@ The product model is four surfaces, each with a single, non-overlapping job. Thi
 3. **Portfolio** (`/portfolio`) — **current allocation vs target, and where our money is.** Current allocation against the plan's target; **free cash in BOTH USD and NIS** (the system must know how much there is and where it sits); a high-level hold / sell / buy review of what we already OWN. Net-worth context (including real estate) lives here; the FI projection does not.
 4. **Proposals** (`/proposals`) — **actions to take.** Surfaces new buy opportunities and how to deploy the free cash. Driven by a **daily agent** that reacts not only to a free-cash change but to **per-stock market-sentiment changes** — broad/long ETFs rarely move, individual stocks might, so the daily "do we need to act?" check reasons at the per-holding / per-candidate level, not just on cash deltas.
 
-**Current state.** Surfaces 1–3 are wired to their jobs (Portfolio's classification + free-cash USD/NIS surfacing are described in §11.1 and §20.4; the FI projection is not duplicated on Portfolio — Retirement owns it). Surface 4's single daily driver is the **decision funnel** (§20.8): a tiered escalation agent (market review → deterministic relevance routing → cheap triage → deep fleet) that assembles the existing pieces — `state_observer`/`action_proposer`, the sentiment analyst, the deploy-cash advisor, the watchlist — into one per-holding "act?" decision, fully traced for replay. It is a conservative escalation system gated by `ARGOSY_DECISION_FUNNEL_ENABLED` (default off); while calibrating it is **exposed as beta** (its state + data-collected shown via `/api/decisions/funnel/calibration`), never hidden — see §20.8.
+**Current state.** Surfaces 1–3 are wired to their jobs (Portfolio's classification + free-cash USD/NIS surfacing are described in §11.1 and §20.4; the FI projection is not duplicated on Portfolio — Retirement owns it). Surface 4's single daily driver is the **decision funnel** (§20.8): a tiered escalation agent (market review → deterministic relevance routing → cheap triage → deep fleet) that assembles the existing pieces — `state_observer`/`action_proposer`, the sentiment analyst, the deploy-cash advisor, the watchlist — into one per-holding "act?" decision, fully traced for replay. It is a conservative escalation system gated by `ARGOSY_DECISION_FUNNEL_ENABLED` (default on, shadow mode on); while calibrating it is **exposed as beta** (its state + data-collected shown via `/api/decisions/funnel/calibration`), never hidden — see §20.8.
 
 ### 11.1 Screen inventory
 
-Nav splits into a **PRIMARY** row (always visible — daily-to-monthly use) and an **INSPECTION** set behind a **"More"** dropdown (occasional / debugging / reference / setup), per `ui/src/components/nav.tsx`. PRIMARY follows the typical session flow: **Home** (glance) → **Advisor** (data entry) → **Portfolio** / **Expenses** (read state) → **Plan** (the draft) → **Retirement** (the readiness verdict) → **Consult** (a ticker) → **Proposals** (approve). The **Advisor** tab sits at **slot 2** so the gap-tracker / Q&A panel is one click from any page; the legacy `/intake` page redirects to `/advisor` and legacy `/api/intake/*` routes still work unchanged. The "More" dropdown carries **Argonaut, Agents, Decisions, Files, Audit, Domain KB, Settings**, and **Notifications** (the push-subscription + channel × severity × kind preference matrix, sibling of Settings); it pulses "active" when one of its routes is open.
+Nav splits into a **PRIMARY** row (always visible — daily-to-monthly use) and an **INSPECTION** set behind a **"More"** dropdown (occasional / debugging / reference / setup), per `ui/src/components/nav.tsx`. PRIMARY follows the typical session flow: **Home** (glance) → **Advisor** (data entry) → **Portfolio** (read state) → **Inbox** (act) → **Expenses** → **Plan** (the draft) → **Retirement** (the readiness verdict). **Consult** and **Proposals** remain routable pages reached by deep-link rather than nav slots. The **Advisor** tab sits at **slot 2** so the gap-tracker / Q&A panel is one click from any page; the legacy `/intake` page redirects to `/advisor` and legacy `/api/intake/*` routes still work unchanged. The "More" dropdown carries **Argonaut, Agents, Decisions, Files, Audit, Domain KB, Settings**, and **Notifications** (the push-subscription + channel × severity × kind preference matrix, sibling of Settings); it pulses "active" when one of its routes is open.
 
 | Group | Screen | What it shows | Interactions |
 |---|---|---|---|
@@ -2285,8 +2294,9 @@ Nav splits into a **PRIMARY** row (always visible — daily-to-monthly use) and 
 | PRIMARY | **Expenses** (`/expenses`) — see §18.3 | Yearly-focus dashboard: savings-rate trend, top movers YTD-vs-prior, currency mix, yearly summary, dividends/taxes, sources health. Sub-tabs: `/monthly`, `/transactions`, `/sources`, `/merchants`, `/trips`, `/rsu`, `/income` | Month picker (Monthly tab) re-scopes the page; per-row category PATCH; bulk-label / bulk-categorize; tag/untag; FX-mode toggle (per-currency ↔ NIS-converted) |
 | PRIMARY | **Plan** (`/plan`) | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions; the allocation glidepath chart (§20) | "Re-critique now"; export current plan as md |
 | PRIMARY | **Retirement** (`/retirement`) — see §19, §11.9 | A plain-language **plan story** (seven chapters: FI / liquidity / allocation / NVDA wind-down / forward RSU / life phases / dual-track) leads the page; below it, in collapsible lazy-mounted sections, the dual-track readiness verdict: the ruin hero (P(solvent) at 75/85/95), the scenario grid (base/bull/bear + μ-grid + T12 + fat-tail stress), the per-age estate frontier, the FX-stress band, and the displayed earliest-safe age — all reconciled to the one canonical basis | Click a chapter in the story rail to focus it; pick a retire age + market regime to re-run the per-tick bands |
-| PRIMARY | **Consult** (`/consult`) | Ad-hoc per-ticker second opinion: submit tickers with a conviction (buy/sell/hold/lean) + rationale; the agent fleet runs a per-ticker decision flow and returns a recommendation with a full reasoning trail. Modes: **Long hold** (no FX/technical analysts, long-horizon thesis-fit trader prompt) vs **Tactical trade** (entry-timing). Tiers T1/T2/T3 | Add/remove ticker rows; choose mode + tier; accept/execute happens on `/proposals` |
-| PRIMARY | **Proposals queue** (`/proposals`) | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
+| Deep-link | **Consult** (`/consult`) | Ad-hoc per-ticker second opinion: submit tickers with a conviction (buy/sell/hold/lean) + rationale; the agent fleet runs a per-ticker decision flow and returns a recommendation with a full reasoning trail. Modes: **Long hold** (no FX/technical analysts, long-horizon thesis-fit trader prompt) vs **Tactical trade** (entry-timing). Tiers T1/T2/T3 | Add/remove ticker rows; choose mode + tier; accept/execute happens on `/proposals` |
+| PRIMARY | **Inbox** (`/inbox`) | The client-facing action-proposal inbox (§20.9): open `action_proposals` (allocate / rebalance / stock_decision / deploy_team_flag / …) as needs-info / needs-confirm cards; the `FunnelBetaCard` calibration state (§20.8) | Accept / defer per item; resolved items auto-supersede off the checklist |
+| Deep-link | **Proposals queue** (`/proposals`) | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand; the deploy-cash flow + rebalance-review cards (§20.5–§20.6) | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
 | More | **Argonaut** (`/argonaut`, limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
 | More | **Agent activity** (`/agents`) | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
 | More | **Decision replay** (`/decisions/[id]`) — see §17.3 | Per-decision-run replay surface: metadata, inputs (`user_files` for this run), full-run Mermaid sequence diagram, per-phase collapsible cards (verdict, TLDR, participants, transcript) | Expand/collapse phase cards; "view full replay →" deep-link from Proposals detail |
@@ -2310,6 +2320,16 @@ nav-bar):
  replay" row above is the `/decisions` list, reached from the "More"
  dropdown); an individual run is navigated to via "view full replay →"
  from Proposals detail or `/files`, not from the nav-bar.
+- `/positions` — per-holding positions view (per-position thesis /
+ verdict context).
+- `/fleet-review` — the fleet self-review surface (consumes
+ `fleet_self_review.completed`).
+- `/admin/jobs` — the job registry: every scheduler-registered job
+ (§5.1) with last-run state + a Run-now trigger.
+- `/decisions/funnel` — the decision-funnel run/debug view (§20.8
+ observability: runs, stage rows, narratives).
+- `/anomalies/[id]` — anomaly detail for one `anomaly.detected`
+ record (§18.7 EX2).
 
 #### `<AdvisorBriefCard>` (Home page)
 
@@ -2351,7 +2371,6 @@ Mounted at `/ws`; canonical pub/sub at `argosy.api.events`. `publish_event` is t
 | `proposal.executed` | `execution/router.py` | `proposal_id`, `paper`, `fill_id` |
 | `agent.run.finished` | `argosy.agents.base.BaseAgent.run()` | `agent_role`, `decision_run_id`, `tokens_in`, `tokens_out`, `cache_input_tokens`, `cache_creation_tokens`, `thinking_tokens`, `citations_count`, `cost_usd`, `confidence`, `run_correlation_id`, `agent_report_id` (None at emit time), `turn_id` |
 | `agent.run.started` | `argosy.agents.base.BaseAgent.run()` | `user_id`, `agent_role`, `model`, `decision_id`, `intake_session_id`, `turn_id`, `started_at`, `run_correlation_id` |
-| `daily_brief.ready` | `loops/daily_brief.py` | `brief_id`, `user_id`, `run_at` |
 | `monthly_cycle.completed` | `loops/monthly_cycle.py` | `user_id`, `run_at`, `critique_summary` |
 | `quarterly.prompt`, `annual.prompt` | `loops/{quarterly,annual}.py` | `user_id` |
 | `weekly_review.flagged` | `loops/weekly_review.py` | `user_id`, `flags` |
@@ -2370,10 +2389,17 @@ Mounted at `/ws`; canonical pub/sub at `argosy.api.events`. `publish_event` is t
 | `plan.amendment.cancelled` | `flows/plan_amendment/dispatcher.py` (cancel + race), workers (cancel-during-run) | `user_id`, `decision_run_id`, `tier` |
 | `expense.statement.parsed` | `services/expense_ingest/orchestrator.py` | `user_id`, `statement_id`, `source_id`, `parsed_total_nis`, `status` |
 | `expense.statement.failed` | `services/expense_ingest/orchestrator.py` | `user_id`, `file_id`, `parse_error` |
+| `plan.delta.pushback.started`, `plan.delta.pushback.completed` | `orchestrator/flows/per_delta_pushback.py` | `user_id`, `decision_run_id` |
+| `plan.fm_objection.dialogue.started`, `plan.fm_objection.dialogue.completed` | `orchestrator/flows/fm_objection_dialogue.py` | `user_id`, `decision_run_id` |
+| `anomaly.detected` | `services/anomaly_runner.py` | `user_id`, anomaly payload |
+| `fleet_self_review.completed` | `services/fleet_self_review_runner.py` | `user_id`, review summary |
+| `notification.{kind}` | `services/notification_dispatcher.py` | kind-tagged notification payload |
+| `speculative.monitor_signal` | `orchestrator/loops/speculative_monitor_loop.py` | `user_id`, `ticker`, signal |
+| `portfolio.windfall.detected` | windfall detector (snapshot upload path) | `user_id`, cash-delta payload |
 
 **Documented but not yet emitted** (placeholder names in `argosy.api.events` docstring; reserved for Phase-N expansion):
 
-`agent.report.created`, `alert.created`, `alert.cleared`, `position.updated`, `account.balance.changed`, `price.updated` (throttled, visible-tickers only), `plan.critique.updated`, `cadence.tick.fired`, `expense.source.registered`, `expense.recategorized`, `expense.budget_report.refreshed`.
+`daily_brief.ready` (the docstring's headline example — the daily-brief loop does not currently publish it), `agent.report.created`, `alert.created`, `alert.cleared`, `position.updated`, `account.balance.changed`, `price.updated` (throttled, visible-tickers only), `plan.critique.updated`, `cadence.tick.fired`, `expense.source.registered`, `expense.recategorized`, `expense.budget_report.refreshed`.
 
 Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; the Advisor page subscribes to `plan.*` for amendment + draft updates; etc.
 
@@ -2450,7 +2476,7 @@ sequenceDiagram
  - On `stage_1` entry (when `current_stage IS NULL` or `= "complete"`), `intake_session_id` is rotated to a new UUID.
  - All subsequent turns within the same conversation reuse that UUID.
  - Every `agent_reports` row produced during the session is stamped with it.
- - This lets the audit log answer queries like "show me every Claude call from Ariel's third intake attempt" with one `WHERE` clause.
+ - This lets the audit log answer queries like "show me every Claude call from this user's third intake attempt" with one `WHERE` clause.
 
 4. **Why `bypassPermissions` + `allowed_tools=[]`** (see `argosy/agents/base.py`):
  - `allowed_tools=[]` prevents the model from invoking *any* tool — no file reads, no shell, no web fetches. The model must answer from the prompt alone. (Per-agent allowlists exist — the News/Fundamentals analysts carry `WebSearch`, §3.1 — and a tool-carrying agent's turn cap rises accordingly, §3.10.)
@@ -2465,14 +2491,14 @@ The same pattern applies to every other agent in the fleet — only the prompt c
 
 ### 11.7 REST API surface
 
-All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). Healthcheck is mounted twice — at `/health` (no prefix, for ops probes) and `/api/health` (so the same path works through the Next.js proxy). Internal routes live under `/api/internal` and are deliberately *not* exposed in the main UI.
+User-facing routes mount under `/api` (canonical source: `argosy.api.main.create_app` — **the authoritative, complete route registry; this table is a non-exhaustive orientation map**). Healthcheck is mounted twice — at `/health` (no prefix, for ops probes) and `/api/health` (so the same path works through the Next.js proxy). Internal routes mount at **`/internal/...`** (no `/api` prefix) and are deliberately *not* exposed in the main UI.
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health`, `/api/health` | Liveness probe; returns version + DB connectivity. |
-| GET | `/api/internal/health/full` | Internal-only deep healthcheck (engine status, cost guard, broker session, last cadence ticks). |
-| POST | `/api/internal/telemetry` | Internal telemetry sink (opt-in; off by default). |
-| GET | `/api/internal/cost-guard` | Internal cost-guard status JSON. |
+| GET | `/internal/health/full` | Internal-only deep healthcheck (engine status, cost guard, broker session, last cadence ticks). |
+| POST | `/internal/telemetry` | Internal telemetry sink (opt-in; off by default). |
+| POST | `/internal/cost-guard/override` | Lift the cost-guard pause for N minutes (audit-logged). There is no GET cost-guard status endpoint; status surfaces via `/internal/health/full`. |
 | **Intake (legacy; persistent)** | | |
 | POST | `/api/intake/turn` | Drive one intake turn. Backwards-compat shim — delegates persistence to the same `_persist_turn` helper as `/advisor/turn`. |
 | POST | `/api/intake/upload` | Upload a doc (plan markdown, statement, etc.); routes to `IntakeExtractorAgent` (or `PlanDistillerAgent` for plan markdown — see §6.10). |
@@ -2568,9 +2594,9 @@ The current cascade view replaces the flat, per-agent-report activity feed with 
 
 **Home page — `<DecisionAccordion>`** (`ui/src/components/agent/DecisionAccordion.tsx`). Replaces the former flat agent-activity firehose on `/`. Each row represents one `decision_run`; clicking it expands to reveal the ordered cascade of `<AgentRunCard>` rows for that decision. Collapsed-row content: timestamp · status · agent count · total cost · total duration · **ticker** · **tier** · **decision_kind** (the last three populated from `/api/decisions/recent`'s `DecisionRun` join when available, NULL for intake-session-keyed or Standalone groups). `useDecisionStream` consumes `/api/decisions/recent` as the preferred initial REST source, falling back to `/api/agent-activity?limit=100` on error. Empty state: "No decisions yet."
 
-**Advisor page — `<AgentCascadePanel>`** (`ui/src/components/agent-cascade-panel.tsx`). Mounted in the right column of `/advisor`, replacing the old "Thinking…" spinner. When the user submits a message, the panel subscribes to `agent.run.started` / `agent.run.finished` WS events filtered by the client-generated `turn_id` echoed back from `/api/advisor/turn`. Each arriving `agent.run.started` appends a new in-progress `<AgentRunCard>`; the matching `agent.run.finished` updates it with telemetry (tokens, cost, confidence). Once the turn completes the panel freezes; the completed cascade persists until the next turn starts.
+**Advisor page — `<AgentCascadePanel>`** (`ui/src/components/advisor/AgentCascadePanel.tsx`). Mounted in the right column of `/advisor`, replacing the old "Thinking…" spinner. When the user submits a message, the panel subscribes to `agent.run.started` / `agent.run.finished` WS events filtered by the client-generated `turn_id` echoed back from `/api/advisor/turn`. Each arriving `agent.run.started` appends a new in-progress `<AgentRunCard>`; the matching `agent.run.finished` updates it with telemetry (tokens, cost, confidence). Once the turn completes the panel freezes; the completed cascade persists until the next turn starts.
 
-**Shared primitives.** `<AgentRunCard>` (`ui/src/components/agent-run-card.tsx`) renders one agent invocation as a compact row: role badge, model tag, duration, cost, confidence bar. Clicking it opens `<AgentDetailDrawer>` (`ui/src/components/agent-detail-drawer.tsx`), a slide-over Sheet with three tabs — Summary (role + decision context + confidence), Sources (the `sources_preview` tuples from `agent_reports.sources_json`), and Telemetry (token breakdown + cache stats). Both components are used by both `<DecisionAccordion>` and `<AgentCascadePanel>`.
+**Shared primitives.** `<AgentRunCard>` (`ui/src/components/agent/AgentRunCard.tsx`) renders one agent invocation as a compact row: role badge, model tag, duration, cost, confidence bar. Clicking it opens `<AgentDetailDrawer>` (`ui/src/components/agent/AgentDetailDrawer.tsx`), a slide-over Sheet with three tabs — Summary (role + decision context + confidence), Sources (the `sources_preview` tuples from `agent_reports.sources_json`), and Telemetry (token breakdown + cache stats). Both components are used by both `<DecisionAccordion>` and `<AgentCascadePanel>`.
 
 **`useDecisionStream` hook** (`ui/src/lib/useDecisionStream.ts`). Owns the WS connection + REST merge. Subscribes to `agent.run.*` events on the shared WS; deduplicates against already-fetched `agent_reports` rows using `run_correlation_id`. WS-only rows (not yet flushed to DB) are held in local state and merged with the DB payload on the next poll cycle. The hook also applies the per-user filter that the global WS broadcast lacks (§15.4 known issue): events are accepted only when `event.user_id === currentUserId` (strict equality — missing or differing `user_id` is dropped). Other pages that consume the raw WS still inherit the original cross-user quirk.
 
@@ -2617,8 +2643,8 @@ Cost almost nothing to bake in now; make later productization a config change ra
 | **State DB** | Every table has `user_id` column; every query filters by it; Phase 1 just always passes `user_id=ariel` |
 | **Config files** | `${ARGOSY_HOME}/configs/<user_id>/.` layout supports multiple users on one instance, or one user per `ARGOSY_HOME` for hosted |
 | **Domain knowledge** | Shared across tenants (same tax law for all Israeli residents); per-tenant overrides supported via `${ARGOSY_HOME}/configs/<user_id>/domain_overrides/` |
-| **Secrets** | Per-user encryption with per-user master key; one tenant's leak never touches another's |
-| **Agent prompts** | Take `user_context` as a parameter; *no hardcoded paths anywhere*. The plan is loaded from `configs/<user_id>/plan.yaml` |
+| **Secrets** | Per-user encryption with per-user master key is a multi-tenant-gate item — today one global keychain-held master key serves the single tenant |
+| **Agent prompts** | Take `user_context` as a parameter; *no hardcoded paths anywhere*. The plan lives in the DB (`plan_versions` rows keyed by `user_id` + role lifecycle — there is no `plan.yaml` file) |
 | **Audit log** | Per-user; FilteredView constructs queries that never cross tenants |
 
 ### 12.2 License / entitlement scaffolding
@@ -2724,30 +2750,31 @@ About **6 months of focused part-time work** (~10 hrs/week) for Phases 0-5. Full
 
 ### 14.1 Logging
 
-Three log streams, all structured (JSON):
+Two surfaces:
 
 | Stream | Path | What goes here | Retention |
 |---|---|---|---|
-| `application.log` | `${ARGOSY_HOME}/logs/app/` | Engine lifecycle, cadence ticks, broker calls, errors | 90 days |
-| `agent.log` | `${ARGOSY_HOME}/logs/agent/` | Every Claude call: request, response, model, tokens, cost, agent role, decision-id | 1 year (audit need) |
-| `audit.log` | DB table only | Every decision, override, fill — single source of truth | Indefinite |
+| `application.log` | `${ARGOSY_HOME}/logs/app/application.log` | ONE structured stream for everything: engine lifecycle, cadence ticks, broker calls, agent-call events, errors | Size-rotated (`RotatingFileHandler`, 10 MB per file × 5 backups — `argosy/logging.py`) |
+| `audit_log` + `agent_reports` | DB tables only | Every decision, override, fill (`audit_log`); per-LLM-call telemetry — model, tokens, cache stats, cost, role, decision-id (`agent_reports`) | Indefinite |
 
-Logs are append-only; rotation by date; never log secrets or full position values; structured fields make logs queryable from the dashboard.
+There is no separate `logs/agent/` stream — per-call agent telemetry lives in the `agent_reports` table (queryable from the Agent Activity screen), not a log file. Never log secrets or full position values; structured fields make logs queryable from the dashboard.
 
 ### 14.2 Monitoring & alerting
 
-| Signal | Threshold | Action |
+The watchdog (`argosy/orchestrator/watchdog.py`) is **alert-only by design**: it observes and raises signals; it never restarts, pauses, or retries anything itself. The one automatic control action in the system is the CostGuard pause (§14.7). Signals:
+
+| Signal | Threshold | Alert raised |
 |---|---|---|
-| Engine heartbeat missing | > 5 min during market hours | Email user; dashboard banner |
-| Cadence loop stuck | A loop hasn't ticked in 2× expected interval | Restart + alert |
-| Broker disconnect | TWS Gateway down | Pause auto-execution; alert; engine continues read-only |
-| Claude API errors | > 5% error rate over 1 hour | Pause new decisions; alert |
-| Claude monthly spend | Approaches configured budget (e.g., 80%, 100%) | 80% = alert; 100% = pause non-routine cadences until next month or override |
+| Engine heartbeat missing | > 5 min during market hours | Alert; dashboard banner |
+| Cadence loop stuck | A loop hasn't ticked in 2× expected interval | Alert |
+| Broker disconnect | TWS Gateway down | Alert (execution-pause is the CostGuard/kill-switch's job, not the watchdog's) |
+| Claude API errors | > 5% error rate over 1 hour | Alert |
+| Claude monthly spend | 80% / 100% of configured budget | 80% = alert; 100% = the CostGuard (not the watchdog) pauses non-routine cadences until next month or override |
 | State DB grows fast | > 10 GB | Alert (likely a logging bug) |
-| Backup failed | Daily backup didn't run | Alert + retry |
+| Backup failed | Daily backup didn't run | Alert |
 | Disk space | < 20% free on `ARGOSY_HOME` drive | Alert |
 
-A small `argosy-watchdog` process runs separately from the engine, polls health, sends email on threshold breach. No external monitoring service needed for Phase 1.
+Email delivery of watchdog alerts requires wiring: `run_watchdog` accepts an optional `email_sender` callable and no caller supplies one today (SMTP env config exists for the weekly digest loop only). No external monitoring service needed for Phase 1.
 
 #### 14.2.1 Monitoring flags — the `status` lifecycle
 
@@ -2792,12 +2819,14 @@ its OWN prior stale flags `superseded`:
 
 ### 14.3 Secrets management
 
+The at-rest mechanism is the OS keychain (Windows Credential Manager via `keyring`, service `"argosy"`). Fernet encryption is used for exactly one thing: TOTP secrets, encrypted with the `argosy.totp.master_key` keychain entry before DB storage (`argosy/security/totp.py`).
+
 | Secret | Storage | Rotation |
 |---|---|---|
-| Master encryption key | OS keychain (Windows Credential Manager via `keyring`) | Manual; on rotation, all encrypted-at-rest secrets re-encrypted |
+| TOTP master key | OS keychain (`argosy.totp.master_key`); TOTP secrets Fernet-encrypted in DB | Manual; on rotation, re-encrypt |
 | IBKR session token | Memory only; re-auth via TWS Gateway each session | Per session |
-| Schwab/broker file-import passwords | If needed, encrypted in DB with master key | Annual reminder |
-| Anthropic API key | OS keychain | Per user-controlled rotation |
+| External API keys (Finnhub, FRED, …) | OS keychain; **known item to fix:** best-effort plaintext fallback at `~/.argosy/external_api_keys.json` when the keychain is unavailable | Per user-controlled rotation |
+| Anthropic API key | OS keychain (`argosy.anthropic.api_key`) — read **only** when `[anthropic] backend = "api_key"`; the governing default backend is `"claude_code"` (bundled claude.exe session auth, no API key involved) | Per user-controlled rotation |
 | WebSocket signing key (for email approval links) | Encrypted in DB | Monthly auto-rotate |
 
 Hard rules: secrets never leave the machine in logs, telemetry, or backups. Backups encrypt the secrets table separately with a different key derived from the master key.
@@ -2815,15 +2844,9 @@ Disaster recovery: machine loss = restore latest weekly off-machine backup + rel
 
 ### 14.5 Kill switch
 
-Three levels:
+**Built today: the `ARGOSY_KILL=1` env var.** It is checked at every execution seam — `ExecutionRouter.execute` rejects all new orders with a recorded reason, `auto_execute_if_eligible` refuses to promote, and `monthly_cycle.tick` returns early — so setting it halts new order flow while reads and portfolio-data updates continue. Because it is an environment variable, it applies per-process from launch; there is no persisted kill-state file, no dashboard button, and no `argosy pause` / `argosy shutdown` CLI.
 
-| Level | Trigger | Effect |
-|---|---|---|
-| **Pause** | Dashboard button or `argosy pause` CLI | New cadence ticks log but don't fire decisions; existing in-flight proposals complete |
-| **Halt** | `ARGOSY_KILL=1` env var or dashboard button (with confirmation) | All new orders stopped; in-flight cancelled if cancel-able; engine read-only; portfolio data still updates |
-| **Shutdown** | `argosy shutdown` | Halt + engine exits; dashboard still readable from cached state |
-
-Kill state persists across restart — engine boots into the kill state until explicitly cleared.
+The full three-level design — **Pause** (cadence ticks log but don't fire decisions), **Halt** (orders stopped + in-flight cancelled), **Shutdown** (halt + engine exit), with kill state persisting across restarts until explicitly cleared — is a **Phase-5 hard-gate prerequisite** (§13.1): live auto-execution does not turn on before an operator can stop it from outside the process.
 
 ### 14.6 Testing strategy
 
@@ -2831,11 +2854,10 @@ Kill state persists across restart — engine boots into the kill state until ex
 |---|---|---|
 | **Unit** | pytest | Adapters, parsers, schema migrations, math (concentration calc, tier resolution) — 80%+ |
 | **Integration** | pytest + DB fixtures | Cadence loops; full proposal lifecycle in paper mode | Critical paths |
-| **Agent evaluation** | Custom eval harness | Snapshot tests: "given this state, the technical analyst produces a report with these properties." LLM-as-judge for fuzzy outputs | Every agent has at least 5 eval cases |
+| **Live-LLM evaluation** | pytest `llm_eval` marker | Opt-in suites that make real agent calls (decision flow, plan synthesis e2e, plan-amendment e2e, distiller golden, categorizer e2e, state observer); excluded from the default run via `-m "not llm_eval"` |
 | **End-to-end (paper)** | The Phase 3.5 soak | Real cadences for 2 weeks; manual review |
-| **Property-based** | Hypothesis | Tier resolution, position-cap math, lot-selection for TLH |
 
-Each agent has a small fixture file (`tests/agent_evals/<agent>/case_*.json`) with state input + expected properties of output (not exact text — properties: "report mentions all 5 input tickers," "confidence is medium given stale data," etc.).
+(A per-agent JSON eval-case harness — `tests/agent_evals/<agent>/case_*.json` with expected output properties — and Hypothesis property-based tests are design items that were never built; the `llm_eval` suites plus the `verify-run` audit below are the actual agent-evaluation surface.)
 
 **Post-hoc live-run verification (`verify-run`).** Live runs (consult, deploy-cash, synthesis) get an audit layer no test fixture covers: the `verify-run` skill (`.claude/skills/verify-run/SKILL.md`) blind-re-derives from the raw artifacts — `db/argosy.db`, `logs/app/application.log`, and the run transcripts — and judges five dimensions: **roster completeness** (every expected agent ran, or was skipped with a recorded reason), **silent degradation** (fail-open seams: swallowed IntegrityErrors, open breakers with no retry logged), **groundedness** (2–3 load-bearing numbers re-derived from raw payloads, not agent prose), **verdict consistency** (sums conserve, the latest seq governs, severity honored), and **delivery** (actionable items landed in the inbox, or a hold is correctly silent). Output is a PASS/WARN/FAIL table; every FAIL names which agent should have caught it and the team fix (inputs / blind-review / reliability — never a per-symptom deterministic gate).
 
@@ -2849,10 +2871,9 @@ Each agent has a small fixture file (`tests/agent_evals/<agent>/case_*.json`) wi
 |---|---|---|
 | Tokens in/out by model | Agent role, decision-id, day | Daily summary in dashboard |
 | Spend by agent role | Day, week, month | Weekly trend in dashboard |
-| Spend per decision (T0/T1/T2/T3 averages) | Tier | If 2× the running average → flag for review |
-| Monthly total | Account | 80% / 100% of budget triggers alert / pause |
+| Monthly total | Account | 80% / 100% of budget triggers alert / pause (`cost.alert_at_pct` / `cost.pause_at_pct`) |
 
-This data lives in `agent_reports` with cost stamped on each invocation; dashboard surfaces it on the Agent Activity screen.
+The monthly 80/100% CostGuard (`orchestrator/cost_guard.py`) is the enforcement control: at the pause threshold `should_pause_non_routine` holds every non-routine loop (routine `daily_brief` / `process_cooling` are exempt). There is no per-decision anomaly flag (e.g. "2× the tier's running average") — per-decision costs are observable in `agent_reports` but not auto-flagged. This data lives in `agent_reports` with cost stamped on each invocation; dashboard surfaces it on the Agent Activity screen.
 
 ### 14.8 Update / upgrade strategy
 
@@ -3046,9 +3067,9 @@ flowchart LR
  at its catalog row. Existing `plan_versions.source_path` (a string
  filename) stays for back-compat.
 
-**Allowed values:**
-- `kind ∈ {text, image, plan_markdown, broker_csv, other}`.
-- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import, expense_statement}`. 
+**Allowed values** (canonical source: `argosy/services/file_catalog.py::_ALLOWED_KINDS` / `_ALLOWED_SOURCES`):
+- `kind ∈ {text, image, pdf, plan_markdown, broker_csv, tax_simulation, other}`.
+- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import, expense_statement, payslip_ingest}` — `payslip_ingest` routes each payslip PDF's raw bytes through `catalog_upload` before parsing (no ingest path may bypass the catalog). 
 
 **Filesystem layout:**
 `<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
@@ -3151,7 +3172,11 @@ async; called from each phase boundary in
  (1 coarse boundary, end-of-run),
 - `argosy/orchestrator/flows/plan_amendment/dispatcher.py` and
  `argosy/orchestrator/flows/plan_amendment/workers.py` (1 boundary
- each, post-completion).
+ each, post-completion),
+- `argosy/orchestrator/flows/per_delta_pushback.py`
+ (`delta_pushback.verdict`),
+- `argosy/orchestrator/flows/fm_objection_dialogue.py`
+ (`fm_objection_dialogue.verdict`).
 
 All call sites wrap the recorder in `try/except` and log on failure —
 provenance is a value-add that must **never** block the underlying flow.
@@ -3270,9 +3295,9 @@ How user statements flow from disk to the queryable DB and outward through the R
 flowchart TB
  subgraph Inputs["INPUTS — user-supplied statement files"]
  F1[Leumi current-account<br/>HTML-as-xls]
- F2[Isracard xlsx<br/>Ariel 1266 + Noga 0235]
- F3[Max xlsx<br/>Ariel 6225]
- F4[Discount Bank xlsx<br/>Noga 2923, 2-sheet]
+ F2[Isracard xlsx<br/>cards 1266 + 0235]
+ F3[Max xlsx<br/>card 6225]
+ F4[Discount Bank xlsx<br/>card 2923, 2-sheet]
  F5[Cal/Amex/Diners<br/>stubs only]
  end
 
@@ -3542,11 +3567,11 @@ flowchart TD
 - `tests/test_expense_pipeline_invariants.py` — LLM-mocked conservation: total spend equals raw sum; card-payment dedup holds; refund inheritance consistent.
 - `tests/test_household_categorizer_e2e.py` (`@pytest.mark.llm_eval`, opt-in) — live LLM smoke covering 6 hand-picked Israeli household merchants.
 
-**Coverage of real samples** (Ariel + Noga; 6 distinct sources, 56 statements, 2,179 transactions as of 2026-05-15):
+**Coverage of real samples** (the current tenant household's two cardholders; 6 distinct sources, 56 statements, 2,179 transactions as of 2026-05-15):
 - 2 Leumi sources — NIS current account (`44745280`) and USD brokerage (`44745200`); 4 statements / 413 transactions combined (214 NIS + 199 USD).
-- 33 Isracard files across 2 sources — Ariel's `1266` (325 tx) + Noga's `0235` (89 tx); 414 transactions total.
-- 17 Max files (Ariel's `6225`); 394 transactions.
-- 2 Discount files (Noga's `2923`, per-year period structure with 958 transactions across the two files).
+- 33 Isracard files across 2 sources — card `1266` (325 tx) + card `0235` (89 tx); 414 transactions total.
+- 17 Max files (card `6225`); 394 transactions.
+- 2 Discount files (card `2923`, per-year period structure with 958 transactions across the two files).
 
 All conservation-passing. ~$2-5 of LLM categorization spend on the one-time `argosy expenses backfill` over the full corpus.
 
@@ -3786,19 +3811,30 @@ no cache row but its transactions all share one category, the
 merchant row uses `COALESCE(cache.category_id, dominant_tx_cat)` so
 it reflects the consistent category instead of "Uncategorized".
 
-### 18.7 Still scheduled
+### 18.7 EX2 / EX3 — built and wired
 
-EX2 (`anomaly_detector` agent + `expense_review_queue` UI + advisor
-gap-driven "Spend review" group + Discount fee-waiver flag) and EX3
-(`HouseholdBudgetAnalystAgent` Opus, 10th analyst; plan synthesizer
-prompt extension §6.11; derived predictables auto-confirm flow)
-remain on the roadmap. Several inline anomaly cards already render
-on the Monthly dashboard (uncategorized count, reconciliation gap,
-merchant spike, new-high-value merchant, `Reconciled < eligible`
-data-quality flags); EX2 graduates these into a dedicated agent with
-persistent records + the recurring-missed detector that monitors the
-Card 2923 fee-waiver promo. EX2 spec memo at
-`memory/project_card_2923_fee_waiver.md`.
+**EX2 — the anomaly detector — is BUILT and wired.**
+`AnomalyDetectionAgent` (`argosy/agents/anomaly_detection.py`, high
+thinking effort) runs via `services/anomaly_runner.py` (scheduled +
+event-driven passes), persists records, emits `anomaly.detected` over
+the WS, and surfaces through `/api/anomalies` + the `/anomalies/[id]`
+detail page. Its watchlist seed (`argosy/data/watchlist_seed.yaml` +
+`services/anomaly/bucket_b_watchlist.py`) carries recurring-expectation
+watches — e.g. a card fee-charge + matching-discount pair that must
+keep netting to ₪0 — so a disappearing promo line raises an anomaly
+rather than passing silently. The older inline Monthly-dashboard
+anomaly cards (uncategorized count, reconciliation gap, merchant
+spike, new-high-value merchant, `Reconciled < eligible`) still render;
+the agent is the persistent-record layer above them.
+
+**EX3 — the household-budget analyst — is BUILT and wired.**
+`HouseholdBudgetAnalystAgent` runs as a core member of the phase-1
+analyst fleet in plan synthesis (§3.1, §6.11), feeding the spend basis
+from ingested expense data.
+
+Still scheduled from the original EX2/EX3 scope: the advisor
+gap-driven "Spend review" group and the derived-predictables
+auto-confirm flow.
 
 ---
 
@@ -3820,7 +3856,7 @@ Both tracks run on the **same** deconcentrated, reserve-netted basis (so they re
 Every number is auditable; nothing is a magic constant.
 
 - **5.0% real central return, treated as GEOMETRIC/compound.** `_run_mc` passes `mu_nominal_basis="geometric"` to `project_monte_carlo`, so the engine does **not** re-apply the `−σ²/2` variance drag to a number that is already a compound-return convention (Vanguard VCMM / BNY CMA). Treating it as an arithmetic mean understated the median path and biased the earliest-safe age too late — the anti-goal. (The `regime_switch_mc` fat-tail readout stays on the arithmetic basis, because its calm/turbulent/crisis μ are arithmetic regime means.) Bull 6.0% and the conservative 4.5% labeled case use the same convention.
-- **σ-glide from the calibrated concentrated σ down to the diversified anchor.** `_calibrated_sigma` reads today's NVDA-concentrated portfolio volatility (≈0.34) from the calibrator; `_sigma_glidepath` glides it to the post-deconcentration `SIGMA_DIVERSIFIED` (0.18) over the deconcentration taper. The MC consumes the per-tick σ path, so sequence risk falls as the concentration is sold down — not a single flat σ.
+- **σ-glide from the calibrated concentrated σ down to the diversified anchor.** `_calibrated_sigma` reads the tenant's current concentrated-portfolio volatility from the calibrator (e.g. ≈0.34 under the present single-name concentration); `_sigma_glidepath` glides it to the post-deconcentration `SIGMA_DIVERSIFIED` (0.18) over the deconcentration taper. The MC consumes the per-tick σ path, so sequence risk falls as the concentration is sold down — not a single flat σ.
 - **Reserve-PV + CGT-haircut deployable.** Deployable capital = full portfolio − reserve PV − NVDA-deconcentration CGT haircut. The finite-liability reserve (education, mortgage runoff, near-term weddings) is netted at the **PV** of its scheduled liabilities discounted at a safe real rate (`_reserve_pv`; earmarked near-term money is held conservatively, not at equity risk), not at its full nominal sum. The CGT haircut is the single deconcentration CGT model (§19.4).
 - **Late-life healthcare/LTC inside the solvency MC.** `_run_mc` passes `apply_expense_phases=True`, so the per-tick spend is shaped by the documented life-stage phases (empty-nest dip, post-65 healthcare ramp, late-life LTC tail) via `phase_expenses.phase_expense_factor_series` — applied **inside** every ruin path, not just on a display card. To avoid double-counting, the flat healthcare-ramp allowance is excluded from the MC spend basis upstream (`_mc_spend_split`); the FI perpetuity keeps the allowance until the two derivations are reconciled.
 - **FX as a stress band, not folded into σ.** A stronger shekel is surfaced as a labeled `fx_stress_band` what-if (it cuts the NIS value of the USD assets before the NIS reserve + CGT net), not blended into the volatility number — so the readiness σ stays interpretable.
@@ -3838,7 +3874,7 @@ The 3-regime Markov **fat-tail** stress (`regime_switch_mc`) is fed the same bas
 
 ### 19.4 The NVDA deconcentration sell-rate optimizer
 
-NVDA is the dominant single-name concentration; the plan sells it down to the strategic cap. `deconcentration_optimizer.py` resolves the central trade-off in *how fast* to do that: a faster sell-down glides σ (34%→18%) sooner — helping the earliest-safe age — but bunches the realized gain into fewer tax years, pushing more of it through Israel's high-income surtax zone (25% base + 3% `mas yesef` on the whole gain + 2% capital-source levy above the wage-indexed threshold; sourced from `domain_knowledge/tax/israel/`). It sweeps the sell-down horizon H ∈ {1..5} years and, for each H, runs the **same** canonical dual-track machinery on the H-specific deployable capital (full − reserve PV − CGT(H)) and H-specific σ-glide, then picks the H that **minimizes** the typical-regime drawdown age (tie-break: lower total CGT, PV-discounted over the taper — keep more capital for the same age). This is the single deconcentration CGT model (`nvda_deconcentration_cgt`) the rest of `/plan` and the canonical haircut bind to; no separate sale-haircut figure exists.
+The tenant's sanctioned concentrated single name (NVDA — the sleeve the code's `nvda_*` identifiers are named for) dominates the book, and the plan sells it down to the strategic cap. `deconcentration_optimizer.py` resolves the central trade-off in *how fast* to do that: a faster sell-down glides σ (34%→18%) sooner — helping the earliest-safe age — but bunches the realized gain into fewer tax years, pushing more of it through Israel's high-income surtax zone (25% base + 3% `mas yesef` on the whole gain + 2% capital-source levy above the wage-indexed threshold; sourced from `domain_knowledge/tax/israel/`). It sweeps the sell-down horizon H ∈ {1..5} years and, for each H, runs the **same** canonical dual-track machinery on the H-specific deployable capital (full − reserve PV − CGT(H)) and H-specific σ-glide, then picks the H that **minimizes** the typical-regime drawdown age (tie-break: lower total CGT, PV-discounted over the taper — keep more capital for the same age). This is the single deconcentration CGT model (`nvda_deconcentration_cgt`) the rest of `/plan` and the canonical haircut bind to; no separate sale-haircut figure exists.
 
 > **Forward pointer.** A dynamic-allocation owner (allocation-aware arithmetic-μ paths + a market-state cushion) is specified but not yet built; it resumes on this corrected engine. See `docs/superpowers/specs/2026-06-08-dynamic-allocation-owner-and-long-hold-fleet-design.md`.
 
@@ -3850,11 +3886,11 @@ NVDA is the dominant single-name concentration; the plan sells it down to the st
 
 ### 20.1 The weights: two handled specially, the rest renormalized
 
-Each class is an `AllocationClass` carrying its `target_pct`, its `sigma_class`, an explicit **`snapshot_category`** (the portfolio-snapshot category that anchors today's value for the glidepath), and the panel's agreement/rationale/dissent.
+Each class is an `AllocationClass` carrying its `target_pct`, its `sigma_class`, an explicit **`snapshot_category`** (the portfolio-snapshot category that anchors today's value for the glidepath), and the panel's agreement/rationale/dissent. The concrete numbers and tickers are **tenant plan state**, not architecture: `allocation_plan.py` seeds them as plan-seed constants for the current tenant (e.g. `NVDA_TARGET_PCT`, `DEFAULT_NVDA_CAP_PCT`, `CASH_FRAC_OF_FI`), each re-validated or overridden by the gates below every synthesis run — and slated to move into per-user plan state for multi-tenant. This section documents the derivation mechanisms.
 
-- **Strategic single-stock (NVDA)** is held at `NVDA_TARGET_PCT` = 8% — Argosy's cap-derived target (the anti-correlation cap gate clears at ~9.5%; 8 is held as a deliberate ~1.5pp drift buffer, re-validated each synthesis), under the hard cap `DEFAULT_NVDA_CAP_PCT` (the MIN-of-four-constraints ceiling: sequence / tail-loss / risk-contribution / tax-liquidity) so normal drift doesn't immediately breach the do-not-re-concentrate rule.
-- **Fixed-income / cash is DERIVED, not asserted.** `derive_fi_weight` finds the *minimum* FI weight at which the allocation's **covariance-blended** σ (`sigma_glidepath.covariance_sigma`, σ_p = √(wᵀΣw)) sits on a **phase-aware** anchor. The blend is covariance-aware, not linear: the linear weighted average assumes ρ=1 (no diversification credit), over-states a diversified book's volatility, and as the FI *sizer* produced a knife-edge over-reserved defensive sleeve (a 0.02 anchor nudge swung FI 13 points). The correlation tiers (equity↔equity 0.80, NVDA↔equity 0.65, equity↔alternatives 0.25, equity↔FI 0.10, bonds↔cash 0.40; unknown pairs fall back to the conservative ρ=1) live and are documented in `sigma_glidepath`; the matrix is PSD-gated and the FI solver is monotonic in the anchor (both tested). The anchor is risk-tolerance **policy**, not a fixed constant (`anchor_sigma_for_phase`): in **accumulation** (salary covers expenses, no withdrawals → no sequence risk) it is `SIGMA_DIVERSIFIED` (0.18 — the same σ the retirement MC assumes as its post-deconcentration floor), which the covariance blend sizes to a ~8% FI floor; as actual retirement nears the anchor glides **down** so FI rebuilds toward ~15% pre-retirement and ~20% in drawdown. Because the MC earliest-safe age consumes that constant 0.18 floor (not the derived FI weight), lowering accumulation FI cannot regress the readiness age. Remaining caveat carried in the rationale, not swallowed: the MC holds `mu_real` constant regardless of FI weight (sees FI's volatility benefit, not its return drag).
-- The remaining equity/alts sleeves are held at their agreed **relative** ratios and renormalized into the space left after NVDA + FI + the team-sourced alternatives sleeve: US broad-market core (CSPX), US quality (IWQU, which replaced the higher-NVDA-look-through growth sleeve on the blind reviewer's re-derivation), dividend-quality (FUSA), international developed (EXUS), an **emerging-markets** sleeve (EIMI), US low-vol (SPMV), and a real-assets toehold (DPYA). The FI sleeve is split cash / short-IG by `CASH_FRAC_OF_FI` (0.70, cash-heavy because the ILS-hedge + bridge-liquidity job dominates). NVDA's target is a **direct** ceiling; index look-through (CSPX/IWQU/FUSA each hold some NVDA) means *economic* NVDA runs above the direct target — the anti-correlation cap gate checks the LOOK-THROUGH total each run, which is why the direct target carries the drift buffer.
+- **The strategic single-stock sleeve is cap-derived, buffered, and gate-checked.** The tenant's sanctioned concentrated position (NVDA for the current tenant) gets a direct target held *below* the hard cap — the MIN-of-four-constraints ceiling the concentration analyst derives blind each run (sequence / tail-loss / risk-contribution / tax-liquidity, §3.6) — with a deliberate drift buffer of a point or two so normal market drift doesn't immediately breach the do-not-re-concentrate rule. The anti-correlation cap gate re-validates the target against the freshly-derived cap on every synthesis.
+- **Fixed-income / cash is DERIVED, not asserted.** `derive_fi_weight` finds the *minimum* FI weight at which the allocation's **covariance-blended** σ (`sigma_glidepath.covariance_sigma`, σ_p = √(wᵀΣw)) sits on a **phase-aware** anchor. The blend is covariance-aware, not linear: the linear weighted average assumes ρ=1 (no diversification credit), over-states a diversified book's volatility, and as the FI *sizer* produced a knife-edge over-reserved defensive sleeve (a 0.02 anchor nudge swung FI 13 points). The correlation tiers (equity↔equity 0.80, single-stock↔equity 0.65, equity↔alternatives 0.25, equity↔FI 0.10, bonds↔cash 0.40; unknown pairs fall back to the conservative ρ=1) live and are documented in `sigma_glidepath`; the matrix is PSD-gated and the FI solver is monotonic in the anchor (both tested). The anchor is risk-tolerance **policy**, not a fixed constant (`anchor_sigma_for_phase`): in **accumulation** (salary covers expenses, no withdrawals → no sequence risk) it is `SIGMA_DIVERSIFIED` (0.18 — the same σ the retirement MC assumes as its post-deconcentration floor), which the covariance blend sizes to a single-digit FI floor; as actual retirement nears the anchor glides **down** so FI rebuilds toward the mid-teens pre-retirement and ~20% in drawdown. Because the MC earliest-safe age consumes that constant 0.18 floor (not the derived FI weight), lowering accumulation FI cannot regress the readiness age. Remaining caveat carried in the rationale, not swallowed: the MC holds `mu_real` constant regardless of FI weight (sees FI's volatility benefit, not its return drag).
+- **The remaining equity/alts sleeves are held at their agreed *relative* ratios** and renormalized into the space left after the single-stock sleeve + FI + the team-sourced alternatives sleeve. The sleeve roster and its instruments are fleet-sourced plan state (the current tenant's plan carries e.g. a US broad-market core, a US quality tilt, dividend-quality, international developed ex-US, emerging markets, US low-vol, and a real-assets toehold — each implemented by a UCITS instrument recorded in the `TargetAllocationDoc`); the fleet re-derives instrument choices under blind review rather than freezing tickers in code. The FI sleeve is split cash / short-IG by `CASH_FRAC_OF_FI` (cash-heavy for the current tenant because the ILS-hedge + bridge-liquidity job dominates). The single-stock target is a **direct** ceiling; index look-through (broad/quality/dividend index sleeves each hold some of the same name) means *economic* exposure runs above the direct target — the anti-correlation cap gate checks the LOOK-THROUGH total each run, which is why the direct target carries the drift buffer.
 
 ### 20.2 The σ-glidepath redistribution schedule
 
@@ -3891,11 +3927,11 @@ The bank/broker snapshot's per-row `asset_type` and `symbol` columns are unrelia
 - **Codex-verified calls.** Single-stock mega-caps carry their GICS sector, not a blanket "Tech" (GOOG/GOOGL/META = Communication Services; AMZN/TSLA = Consumer Discretionary; NVDA/AMD = Tech). Factor sleeves are distinct styles: SPMO = Momentum, SPMV = Low Volatility (neither is Growth/Broad Index); QQQM/CNDX/SCHG/R1GR = Growth. SGOV / IB01 are `Cash` (0–3m / 0–1y T-bill ETFs treated as cash equivalents for the runway/composition view) but IBTA is 1–3yr Treasury *bonds* = `Fixed Income`. O is a `REIT`; IWDP and DPYA are listed-property ETFs (`Real Estate`). SCHD is its own `Dividend` style sleeve (kept distinct from plain index, as VTV is for value).
 - **Fail-loud on un-curated holdings.** A held symbol with a real latin ticker that the reference doesn't know is surfaced — not silently bucketed to "Other" with an unknown estate-safety (a US-domiciled new holding would otherwise be silently estate-unflagged, the dangerous case). `_snapshot_to_dto` collects such symbols into the snapshot's `classification_warnings`, logs a route warning, marks the row `classified=false` (rendered as a per-row "⚠ unclassified" Estate marker), and the page shows a banner. The fix is to add the curated row (or, per [[feedback_argosy_team_sources_instruments]], have the agent fleet source the classification as a reviewable draft); physical-cash and real-estate rows (no real ticker) are expected to be absent and are not flagged.
 
-The `/portfolio` composition donuts — **asset class · exposure & style · region** — and the allocation-vs-target breakdown all consume this reference, so the views agree. The **region** donut buckets by `InstrumentRef.region` (US / Global / Israel / Europe / Emerging Markets), mapping cash by currency (USD→US, NIS→Israel) so it answers "where is our money" including the cash tranches. A page-level **exclude-NVDA** toggle (default on) drives the donuts AND the allocation card together — NVDA's ~61% RSU concentration otherwise flattens every view; in the allocation card, excluding it also renormalizes the remaining targets to 100% (matching the NVDA strategic class precisely, not an "NVDA" substring, so "US growth tilt (ex-NVDA)" isn't caught). Adding a new instrument to the book = one curated row, with its plain-language identity in a comment so an adversarial reviewer can reconcile it.
+The `/portfolio` composition donuts — **asset class · exposure & style · region** — and the allocation-vs-target breakdown all consume this reference, so the views agree. The **region** donut buckets by `InstrumentRef.region` (US / Global / Israel / Europe / Emerging Markets), mapping cash by currency (USD→US, NIS→Israel) so it answers "where is our money" including the cash tranches. A page-level **exclude-NVDA** toggle (default on) drives the donuts AND the allocation card together — a dominant single-name RSU concentration otherwise flattens every view; in the allocation card, excluding it also renormalizes the remaining targets to 100% (matching the NVDA strategic class precisely, not an "NVDA" substring, so "US growth tilt (ex-NVDA)" isn't caught). Adding a new instrument to the book = one curated row, with its plain-language identity in a comment so an adversarial reviewer can reconcile it.
 
 **Allocation-vs-target conservation.** The card surfaces EVERY plan-target class — including ones with no current holding (e.g. US low-volatility equity, Short-duration IG bonds) as 0%-current rows — so the target column conserves to 100% and under-allocations are visible. A held category the plan has no target for shows 0% (redeploy), never blank. Each holding carries its account ("[Leumi]" / "[schwab 876]") and an estate marker.
 
-**Real estate (net worth, not investable).** The TSV's "Real estate details" section carries a Home row and a Loan row per property. `real_estate_equity.py` pairs them and computes net equity per the codex net-equity review: `net_local = home − |loan|` read from the reliable value column (the export's "current value" column is unreliable — it is zero for one property while the value sits in another column), FX-converted to USD (rate 1 for USD, the EUR/NIS rate otherwise), warning — never silently computing — on a missing pair, missing FX, or zero home value. The result is surfaced as the `/portfolio` **Real estate** panel and is deliberately kept OUT of the investable allocation-vs-target (a primary residence is not investable capital — Ariel's decision); the "Total liquid USD" stat sums only the non-real-estate accounts so the displayed accounts reconcile. **Net worth**, however, is true net worth — it swaps the legacy "$69K Aborad" position stub for the full per-property net equity, so the headline net-worth figure matches the Real-estate panel. Cash runway counts cash + SGOV only — physical real estate (symbol `-`) is excluded.
+**Real estate (net worth, not investable).** The TSV's "Real estate details" section carries a Home row and a Loan row per property. `real_estate_equity.py` pairs them and computes net equity per the codex net-equity review: `net_local = home − |loan|` read from the reliable value column (the export's "current value" column is unreliable — it is zero for one property while the value sits in another column), FX-converted to USD (rate 1 for USD, the EUR/NIS rate otherwise), warning — never silently computing — on a missing pair, missing FX, or zero home value. The result is surfaced as the `/portfolio` **Real estate** panel and is deliberately kept OUT of the investable allocation-vs-target (a primary residence is not investable capital — a binding client policy); the "Total liquid USD" stat sums only the non-real-estate accounts so the displayed accounts reconcile. **Net worth**, however, is true net worth — it uses the full per-property net equity rather than a single stub position, so the headline net-worth figure matches the Real-estate panel. Cash runway counts cash + SGOV only — physical real estate (symbol `-`) is excluded.
 
 **Source-of-truth ingestion + reconciliation gate.** The Leumi section auto-refreshes from the raw bank exports: `handle_xls_upload` rebuilds positions from the portfolio XLS and pairs BOTH cash currencies — NIS from the Osh statement and USD (פמ"ח) from the `leumi_usd` statement (a missing USD statement surfaces a warning, never a silent omission) — carrying the non-Leumi sections (Schwab / RSU / real estate / pensions) forward. After synthesis a **reconciliation gate** (`reconcile.py`) diffs the persisted snapshot against the raw XLS and fails LOUD on any mismatch: a holding missing, a cash currency the bank reports but the snapshot lacks, or one symbol mapped to two distinct holdings. The doctrine: validate against the RAW source, not derived artifacts — internal consistency (sums conserving) is not correctness (see [[feedback_reconcile_against_raw_source]]).
 
@@ -3976,7 +4012,7 @@ A separate `GET /api/portfolio/high-potential-sleeve` exposes the sleeve sizer s
 
 **Nothing hidden — exposed as beta, not hidden in shadow.** Per the transparency doctrine (§1.6): a built capability is never hidden behind a flag. The funnel is **exposed as a beta calibration surface** whatever its enablement state — `GET /api/decisions/funnel/calibration` (`funnel_view.calibration_summary_payload`, rendered by `FunnelBetaCard` on the inbox) reports whether it is *off* (built, not yet collecting), *collecting* (calibrating: recording graded decisions, quantifying the data volume + how many would surface), or *live*, so "more data needed" is shown as a number, never a hidden threshold. Individual decisions surface **beta-labelled** once collecting (view-first, not blind-execute) rather than staying invisible.
 
-**Conservative-rollout controls** (codex-mandated): four independent kill switches — `ARGOSY_DECISION_FUNNEL_ENABLED` (master, default OFF), `_SHADOW` (default ON: record + trace + expose as beta-calibrating, do not yet act on the client's behalf), `_STAGE3` (default OFF: no deep decision until enabled), `_AUTOACT` (default OFF: discretionary trades always propose-and-ask). Funnel proposals carry `source='decision_funnel'`, a `shadow` flag, and an `expires_at` TTL; `proposal_expiry.py` sweeps stale ones to EXPIRED daily.
+**Conservative-rollout controls** (codex-mandated): four independent kill switches (`argosy/config.py::decision_funnel_*`) — `ARGOSY_DECISION_FUNNEL_ENABLED` (master, **default ON**), `_SHADOW` (**default ON**: record + trace + expose as beta-calibrating, do not yet act on the client's behalf), `_STAGE3` (**default ON**: survivors run the deep fleet), `_AUTOACT` (default OFF: discretionary trades always propose-and-ask). **Open item:** the graduation criteria for leaving shadow mode (how much calibration data, judged how) are not yet defined — shadow currently has no automated exit. Funnel proposals carry `source='decision_funnel'`, a `shadow` flag, and an `expires_at` TTL; `proposal_expiry.py` sweeps stale ones to EXPIRED daily.
 
 **Observability** (`funnel_trace.py` + `funnel_view.py`; **migration 0075**): every run is fully replayable. `funnel_runs` (per-run totals + Stage-0 read + policy/IPS version + shadow flag), `funnel_stage_rows` (append-only per-name audit: routed/dropped/no-op/proposed with the signal/rule + model + tokens), `decision_snapshots` (IMMUTABLE per-decision frozen state: model identity + prompt hash + the exact portfolio + market snapshot + policy + frozen decision payload + why-not-act). Views off the same trace: the debug view (`GET /api/decisions/funnel/runs/{id}`), the plain-language client narrative (`/{id}/narrative`, shown in the collapsed "What Argosy did for me" section), and the beta calibration summary (`GET /api/decisions/funnel/calibration` — data collected + state). `/plan-freshness` surfaces plan age + material-change detection (advisory; never auto-regenerates).
 
@@ -4011,11 +4047,18 @@ ui_port = 1337
 api_host = "127.0.0.1"
 
 [anthropic]
-# Reads from OS keychain; keychain key name configurable
+# Governing default: the bundled claude.exe with Claude Code session
+# auth — no API key involved. Never report agent work as "blocked on
+# ANTHROPIC_API_KEY" on this backend.
+backend = "claude_code" # claude_code | api_key
+# Used ONLY when backend = "api_key": the key is read from the OS
+# keychain; keychain key name configurable.
 keychain_key_name = "argosy.anthropic.api_key"
 ```
 
 ### A.2 `agent_settings.yaml` (per-user; `configs/<user_id>/agent_settings.yaml`)
+
+The loader is `argosy/agent_settings.py::AgentSettings` — the blocks below (with their real defaults) are exactly what it parses. A `speculation:` block is additionally read from the raw dict by `argosy/config.py::load_speculation_cap` (§6.12). Any other top-level key is ignored.
 
 ```yaml
 # Execution
@@ -4028,6 +4071,7 @@ limited_account:
  account_id: "" # IBKR account ID; set after Phase 2
  execution_mode: paper # override; can differ from global default
  per_decision_max_pct: 20 # any trade > this % of acct → tier escalation
+ daily_loss_limit_pct: 5
 
 # Tier thresholds
 tiers:
@@ -4038,82 +4082,76 @@ tiers:
  account_scoped_escalation_pct: 20
  override_mode: auto # auto | pinned:T2 | all-tier | per-decision
 
-# Models per agent role; defaults sensible, override anything.
-# Canonical defaults live in argosy.agents.base.DEFAULT_MODEL_BY_ROLE
-# — this block must stay in sync. Haiku is intentionally no longer
-# a default for any role (see SDD §3.8); the override surface still
-# accepts it for cost-sensitive tenants.
-models:
- defaults:
- fundamentals: sonnet
- technical: sonnet # was haiku — bumped, see §3.8
- news: sonnet
- sentiment: sonnet # was haiku — bumped, see §3.8
- macro: sonnet
- plan_critique: sonnet # opus on RED flags
- concentration: sonnet # was haiku — bumped, see §3.8
- tax: sonnet
- fx: sonnet # was haiku — bumped, see §3.8
- bull_researcher: opus
- bear_researcher: opus
- researcher_facilitator: sonnet
- risk_officer: sonnet
- risk_facilitator: sonnet
- trader: opus # T2/T3; sonnet for T0/T1
- fund_manager: opus
- intake: sonnet
- intake_extractor: sonnet
- advisor: sonnet # subclass of intake; same default
- domain_refresh: sonnet
- audit: opus
- watchlist: sonnet # was haiku — bumped, see §3.8
- plan_distiller: sonnet
- plan_synthesizer: opus
- household_categorizer: sonnet
- override: {} # e.g. {all: opus} or {trader: sonnet}
+# models: — parsed into ModelsBlock but NOT consumed anywhere.
+# The per-role model authority is argosy.agents.base.DEFAULT_MODEL_BY_ROLE
+# (all roles → Opus 4.8, §3.8); wiring this block into BaseAgent is the
+# open path for cost-sensitive per-role overrides. Do not rely on it.
 
-# Cadences (cron strings or interval syntax)
+# Security — T3 second factor
+security:
+ t3_second_factor: delay # totp | delay
+ delay_minutes: 60
+
+# Cadences (cron strings or interval syntax). Minute/hour are
+# events-only loops and default DISABLED (§5.1).
 cadences:
- minute: { enabled: true, market_hours_only: true, interval_seconds: 60 }
- hour: { enabled: true, interval_minutes: 60 }
+ minute: { enabled: false, market_hours_only: true, interval_seconds: 60 }
+ hour: { enabled: false, interval_minutes: 60 }
  daily_brief: { enabled: true, cron: "0 9 * * *", timezone: "Asia/Jerusalem" }
+ plan_watcher: { enabled: true, cron: "0 7 * * *", timezone: "Asia/Jerusalem" }
  weekly_review: { enabled: true, cron: "0 18 * * SUN" }
  monthly_cycle: { enabled: true, cron: "0 8 1 * *" }
  quarterly: { enabled: true }
- annual: { enabled: true }
+ annual: { enabled: true, cron: "0 8 2 1 *" }
+ backup: { enabled: true, cron: "0 3 * * *" }
+ audit: { enabled: true, cron: "0 19 * * SUN" }
+ watchlist: { enabled: true, cron: "30 8 * * *" }
+ news_daily: { enabled: true, cron: "0 17 * * *", timezone: "Asia/Jerusalem" }
+ job_runs_retention: { enabled: true, cron: "30 3 * * *", timezone: "Asia/Jerusalem" }
+ state_observer: { enabled: true, cron: "0 17 * * *", timezone: "Asia/Jerusalem" }
+ predictions_evaluator: { enabled: true, cron: "30 3 * * *", timezone: "Asia/Jerusalem" }
+ inferred_life_event_detector: { enabled: true, cron: "0 3 * * *", timezone: "Asia/Jerusalem" }
+ alpha_report_analyst: { enabled: true, cron: "0 18 * * *", timezone: "Asia/Jerusalem" }
+ weekly_email_digest: { enabled: true, cron: "0 8 * * FRI", timezone: "Asia/Jerusalem" }
 
-# Cost caps
+# Backups — retention + offsite copy (§14.4)
+backups:
+ enabled: true
+ backups_dir: ""
+ offsite_path: ""
+ retention_daily: 30
+ retention_weekly: 12
+ retention_monthly: 12
+
+# Cost caps (§14.7)
 # Note: monthly_budget_usd should account for ~$15-20/month of plan-synthesis
 # LLM spend (one scheduled monthly_cycle run ~$5-8 + two ad-hoc check-ins).
 # See §6.11.
 cost:
- monthly_budget_usd: 200.00
+ monthly_budget_usd: 100.00
  alert_at_pct: 80
  pause_at_pct: 100
 
-# Alert channels
+# Alert channels (flat fields — there is no nested email:/telegram: schema)
 alerts:
- email:
- enabled: true
- address: "" # set at intake
- telegram:
- enabled: false
- bot_token_keychain: "argosy.telegram.bot"
- chat_id: ""
+ email_enabled: true
+ email_to: "" # set at intake
+ telegram_enabled: false
+ telegram_chat_id: ""
 
-# Risk caps (rule-based, not LLM)
-risk:
- position_size_max_pct: 25
- sector_concentration_max_pct: 25
- daily_loss_limit_pct_per_account: 5
- wash_sale_window_days: 30
+# job_runs retention window-tuning (schedule lives in cadences above)
+job_runs_retention:
+ retention_days_ok: 30
+ stale_running_hours: 24
 
-# Speculative candidates
+# Speculative candidates (read by load_speculation_cap, not AgentSettings)
 speculation:
  max_pct_of_net_worth: 0.001
  max_concurrent_positions: 3
  allowed_account_classes: [limited] # account-class string; the "Argonaut" feature is its user-facing name
 ```
+
+(The rule-based risk-preflight caps — position size, sector concentration, daily loss, wash-sale window — are not a `risk:` YAML block; they live in `risk_preflight.py`'s check functions plus the `tiers` / `limited_account` fields above.)
 
 ### A.3 `user_context.yaml` (per-user; `configs/<user_id>/user_context.yaml`)
 
