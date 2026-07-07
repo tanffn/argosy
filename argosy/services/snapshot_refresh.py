@@ -278,6 +278,57 @@ def _within_band(ratio: float, band: tuple[float, float]) -> bool:
     return band[0] <= ratio <= band[1]
 
 
+def _recompute_allocations(
+    positions: list[PortfolioPosition],
+    prior_allocations: list,
+) -> list:
+    """Re-derive the 'Current allocation' block from the NEW positions.
+
+    A derived table carried forward verbatim goes stale the moment
+    positions change — a fills-applied row that still showed the
+    pre-deploy Cash current/delta fed the unallocated-cash detector a
+    ~$98k excess that no longer existed, and the directive fleet authored
+    a deploy of already-deployed money. Currents must always be re-summed
+    from the row's own positions.
+
+    Contract (mirrors the TSV table's semantics): each prior category
+    keeps its ``target_pct``/``target_k`` verbatim; ``usd_value_k`` is the
+    sum of positions whose ``asset_type`` equals the category (0.0 when
+    none remain); ``pct`` is against the grand total of ALL positions
+    (the table is a partial view over the book); ``delta_k`` is
+    ``target_k - usd_value_k``. A 'Grand Total' row carries the full
+    positions sum. No prior allocations → returns [] unchanged (a
+    snapshot without the block never grows one here).
+    """
+    if not prior_allocations:
+        return []
+    by_type: dict[str, float] = {}
+    grand_total = 0.0
+    for p in positions:
+        v = float(getattr(p, "usd_value_k", 0.0) or 0.0)
+        grand_total += v
+        t = (getattr(p, "asset_type", "") or "").strip()
+        if t:
+            by_type[t] = by_type.get(t, 0.0) + v
+    out = []
+    for a in prior_allocations:
+        new = a.model_copy(deep=True)
+        if (a.category or "").strip().lower() == "grand total":
+            new.usd_value_k = round(grand_total, 2)
+            new.pct = 100.0
+            out.append(new)
+            continue
+        current = round(by_type.get((a.category or "").strip(), 0.0), 2)
+        new.usd_value_k = current
+        new.pct = (
+            round(current / grand_total * 100.0, 2) if grand_total > 0 else None
+        )
+        if a.target_k is not None:
+            new.delta_k = round(a.target_k - current, 2)
+        out.append(new)
+    return out
+
+
 def refresh_portfolio_snapshot(
     session: Session,
     *,
@@ -388,7 +439,7 @@ def refresh_portfolio_snapshot(
         fx_usd_eur=fx_usd_eur,
         positions=new_positions,
         real_estate=[r.model_copy(deep=True) for r in old.real_estate],
-        allocations=[a.model_copy(deep=True) for a in old.allocations],
+        allocations=_recompute_allocations(new_positions, old.allocations),
         nvda_sales=[s.model_copy(deep=True) for s in old.nvda_sales],
         pensions=[pe.model_copy(deep=True) for pe in old.pensions],
         parse_warnings=list(result.warnings),
@@ -651,7 +702,7 @@ def apply_fills_to_snapshot(
         fx_usd_eur=old.fx_usd_eur,
         positions=positions,
         real_estate=[r.model_copy(deep=True) for r in old.real_estate],
-        allocations=[a.model_copy(deep=True) for a in old.allocations],
+        allocations=_recompute_allocations(positions, old.allocations),
         nvda_sales=[s.model_copy(deep=True) for s in old.nvda_sales],
         pensions=[pe.model_copy(deep=True) for pe in old.pensions],
         parse_warnings=(

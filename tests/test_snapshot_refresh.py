@@ -387,3 +387,97 @@ def test_fills_persist_new_row_with_source_tag_and_extra_warnings(session):
     # totals_json is the independent sum over the persisted positions
     totals = json.loads(row.totals_json)
     assert totals["total_usd_value_k"] == pytest.approx(res.new_total_usd_k)
+
+
+# ----------------------------------------------------------------------
+# Allocation-block recompute — a derived table carried forward verbatim
+# went stale on fills (live incident: the post-deploy row still showed
+# the pre-deploy Cash 170.98k / delta -98.28k, the cash detector read it,
+# and the directive fleet authored a deploy of already-deployed money).
+# ----------------------------------------------------------------------
+
+
+def _seed_with_allocations(session) -> None:
+    from argosy.ingest.tsv import AllocationRow
+
+    snap = PortfolioSnapshot(
+        source_path="self-refresh:reprice-of-2026-06-29",
+        snapshot_date=date(2026, 7, 6),
+        fx_usd_nis=3.0,
+        fx_usd_eur=0.85,
+        positions=[
+            PortfolioPosition(
+                location="Leumi", currency="USD", asset_type="Core Equity",
+                details="(ISHR CORE S&P500) CSPX LN", symbol="CSPX",
+                shares=100.0, current_price=800.0, avg_price=700.0,
+                current_value_local=80_000.0, usd_value_k=80.0,
+                pct_change=0.1429,
+            ),
+            PortfolioPosition(
+                location="Leumi", currency="USD", asset_type="Cash",
+                symbol="", current_value_local=50_000.0, usd_value_k=50.0,
+            ),
+        ],
+        allocations=[
+            AllocationRow(category="Core Equity", pct=61.54, usd_value_k=80.0,
+                          target_pct=70.0, target_k=91.0, delta_k=11.0),
+            AllocationRow(category="Cash", pct=38.46, usd_value_k=50.0,
+                          target_pct=5.0, target_k=6.5, delta_k=-43.5),
+            AllocationRow(category="Grand Total", pct=100.0, usd_value_k=130.0),
+        ],
+    )
+    persist_snapshot(session, user_id="ariel", snapshot=snap)
+
+
+def test_fills_recompute_allocation_block(session):
+    """Buying $40k of CSPX from cash must move the allocation table's
+    Cash current DOWN and Core Equity UP — never carry the stale table."""
+    from argosy.services.snapshot_refresh import Fill, apply_fills_to_snapshot
+
+    _seed_with_allocations(session)
+    result = apply_fills_to_snapshot(
+        session, user_id="ariel", source_tag="fills-applied:test",
+        fills=[Fill(symbol="CSPX", shares=50.0, price=800.0, currency="USD",
+                    location="Leumi")],
+    )
+    snap = result.snapshot
+    alloc = {a.category: a for a in snap.allocations}
+    # Cash: 50k - 40k = 10k; Core Equity: 150sh @ 800 = 120k
+    assert alloc["Cash"].usd_value_k == 10.0
+    assert alloc["Core Equity"].usd_value_k == 120.0
+    # delta_k re-derived against carried targets
+    assert alloc["Cash"].delta_k == 6.5 - 10.0
+    assert alloc["Core Equity"].delta_k == 91.0 - 120.0
+    # Grand Total re-summed over ALL positions (130k book, conserved)
+    assert alloc["Grand Total"].usd_value_k == 130.0
+    # targets carried verbatim
+    assert alloc["Cash"].target_pct == 5.0
+    assert alloc["Core Equity"].target_k == 91.0
+
+
+def test_refresh_recomputes_allocation_block(session):
+    """Self-refresh repricing must also re-derive the table currents."""
+    from argosy.services.snapshot_refresh import refresh_portfolio_snapshot
+
+    _seed_with_allocations(session)
+    result = refresh_portfolio_snapshot(
+        session, user_id="ariel",
+        quote_fn=lambda *a, **k: 1000.0,  # CSPX reprices 800 -> 1000
+        fx_fn=lambda: {"usd_nis": 3.0, "usd_eur": 0.85},
+    )
+    alloc = {a.category: a for a in result.snapshot.allocations}
+    assert alloc["Core Equity"].usd_value_k == 100.0  # 100sh @ 1000
+    assert alloc["Cash"].usd_value_k == 50.0
+    assert alloc["Grand Total"].usd_value_k == 150.0
+
+
+def test_empty_prior_allocations_stay_empty(session):
+    from argosy.services.snapshot_refresh import Fill, apply_fills_to_snapshot
+
+    _seed_for_fills(session)  # no allocations block
+    result = apply_fills_to_snapshot(
+        session, user_id="ariel", source_tag="fills-applied:test",
+        fills=[Fill(symbol="CSPX", shares=10.0, price=800.0, currency="USD",
+                    location="Leumi")],
+    )
+    assert result.snapshot.allocations == []
