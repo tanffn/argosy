@@ -5039,18 +5039,29 @@ export interface NvdaPaceDTO {
   target_shares_ytd: number;
   delta_shares: number;
   on_track: boolean;
+  /** One-word pace verdict from the backend's generous quota band. */
+  status?: string;
   /**
-   * Window basis from the canonical derivation: "glide" = the numbers
-   * are PLAN-relative (window starts at the glide's first waypoint, not
-   * Jan 1) — the tile labels them "day N of the plan year", never
-   * "YTD"/"% of year elapsed". "horizon" (or absent, legacy payloads)
-   * keeps calendar labels.
+   * Window basis from the canonical derivation: "glide" = the sell-down
+   * is TAX-YEAR framed (the quota fields below are populated) — the
+   * tile headlines "sell ~N sh by Dec 31". "horizon" (or absent,
+   * legacy payloads) keeps the calendar pro-rata labels.
    */
   basis?: string;
   /** ISO date of the plan window start (the glide's first waypoint). */
   plan_start?: string | null;
-  /** Calendar-year sold count (deduped) — context line on glide basis. */
+  /** Calendar-year sold count (deduped) — FIRST-CLASS on glide basis. */
   sold_calendar_ytd?: number | null;
+  /** The calendar tax year the quota applies to (Israeli CGT: Jan–Dec). */
+  tax_year?: number | null;
+  /** Full tax-year quota: shares to sell by Dec 31. */
+  year_target_shares?: number | null;
+  /** Next dated glide checkpoint (secondary line). */
+  next_waypoint_date?: string | null;
+  next_waypoint_weight_pct?: number | null;
+  shares_to_sell_by_waypoint?: number | null;
+  /** Sales inside the plan window (context; not the headline). */
+  sold_since_plan_start?: number | null;
 }
 
 /**

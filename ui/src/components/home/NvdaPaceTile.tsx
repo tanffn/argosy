@@ -3,24 +3,28 @@
 /**
  * NvdaPaceTile — the home page's NVDA sell-down pace tile.
  *
- * Label discipline follows the payload's ``basis``:
+ * The sell-down is managed per CALENDAR TAX YEAR (Israeli CGT is
+ * assessed Jan–Dec), so on ``basis === "glide"`` with the tax-year
+ * quota fields present the tile headlines the year quota:
  *
- * - ``basis === "glide"`` — the numbers are PLAN-relative (the window
- *   starts at the glide's first waypoint, NOT Jan 1), so the copy is
- *   plan-relative too: "X / Y shares · day N of the plan year", with
- *   "plan started <date> · on pace" on the right. NEVER "YTD" or
- *   "% of year elapsed" — gluing calendar labels onto plan-relative
- *   numbers was the bug this component replaces. The calendar figure
- *   survives only as a muted context line ("1,600 sold in 2026
- *   pre-plan") when the payload carries ``sold_calendar_ytd``.
- * - anything else (``"horizon"`` fallback / legacy payloads) — the
- *   numbers ARE calendar-YTD pro-rated, so the calendar labels stay.
+ *   "2026 target: sell ~4,810 sh by Dec 31 · 1,600 sold"
  *
- * Status badge logic (softened for non-linear quarterly schedules):
- * prefer the backend's ``on_track`` when at/over target; below target
- * apply a 20% tolerance band locally so a small lag against a linear
- * pro-rata doesn't flash a warning when the plan cadence is
- * back-loaded.
+ * with the next dated glide waypoint as the secondary checkpoint line
+ * ("Next waypoint Oct 6: ≤47% — sell ~2,470 sh by then"). The
+ * calendar-YTD sold count is FIRST-CLASS (pre-plan sales count toward
+ * the tax-year quota); a plan revision never resets the year. The old
+ * "0 / 27 by day 2" daily pro-rata framing is exactly what this
+ * replaces.
+ *
+ * - glide payloads WITHOUT the quota fields (legacy) fall back to the
+ *   prior plan-relative copy ("X / Y shares · day N of the plan year").
+ * - anything else ("horizon" fallback / legacy payloads) — the numbers
+ *   ARE calendar-YTD pro-rated, so the calendar labels stay.
+ *
+ * Status badge: prefer the backend's one-word ``status`` (banded
+ * generously against the year quota — waypoints are quarterly
+ * commitments, not daily quotas); fall back to the old heuristic for
+ * legacy payloads.
  */
 
 import { useEffect, useState } from "react";
@@ -62,6 +66,10 @@ function PaceBar({ pct, tone }: { pct: number; tone: "success" | "warning" }) {
 }
 
 export function nvdaOnPace(pace: NvdaPaceDTO): boolean {
+  // The backend's status is banded against the tax-year quota — trust it.
+  if (pace.status === "behind") return false;
+  if (pace.status === "on" || pace.status === "ahead") return true;
+  // Legacy payloads: the old pct-of-target heuristic.
   const sold = pace.shares_sold_ytd ?? 0;
   const target = pace.target_shares_ytd ?? 0;
   if (target <= 0) return false;
@@ -99,18 +107,66 @@ export function NvdaPaceTile({
   const target = pace.target_shares_ytd ?? 0;
   if (target <= 0 || ts === null) return null;
 
-  const pctSold = (sold / target) * 100;
   const onPace = nvdaOnPace(pace);
   const tone = onPace ? "success" : "warning";
+  const pillText =
+    pace.status === "ahead"
+      ? "AHEAD OF PACE"
+      : onPace
+        ? "ON PACE"
+        : "BEHIND PACE";
 
+  // --- Tax-year quota framing (glide basis with quota fields) --------
+  const quota = pace.year_target_shares ?? 0;
+  const taxYear = pace.tax_year ?? null;
+  const quotaMode = pace.basis === "glide" && quota > 0 && taxYear !== null;
+
+  if (quotaMode) {
+    const soldCalendar = pace.sold_calendar_ytd ?? sold;
+    const pctOfQuota = (soldCalendar / quota) * 100;
+    const wpDate = pace.next_waypoint_date ?? null;
+    const wpWeight = pace.next_waypoint_weight_pct ?? null;
+    const wpShares = pace.shares_to_sell_by_waypoint ?? null;
+    return (
+      <section data-testid="nvda-pace-tile">
+        <SectionHeader
+          label="NVDA PACE"
+          action={
+            <StatusPill tone={tone} mono>
+              {pillText}
+            </StatusPill>
+          }
+        />
+        <div className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="font-mono text-sm tabular-nums">
+              {`${taxYear} target: sell ~${quota.toLocaleString()} sh by Dec 31 · ${soldCalendar.toLocaleString()} sold`}
+            </div>
+            <div className="text-[11px] text-muted-foreground tabular-nums">
+              {`${pctOfQuota.toFixed(0)}% of quota · ${pctOfYearElapsed(ts).toFixed(0)}% of year elapsed`}
+            </div>
+          </div>
+          <PaceBar pct={pctOfQuota} tone={tone} />
+          {wpDate !== null && wpWeight !== null && wpShares !== null ? (
+            <div className="text-xs text-muted-foreground tabular-nums">
+              {`Next waypoint ${shortDate(wpDate)}: ≤${wpWeight.toFixed(0)}% — sell ~${wpShares.toLocaleString()} sh by then`}
+            </div>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
+
+  // --- Legacy renderings ---------------------------------------------
+  const pctSold = (sold / target) * 100;
   const planDay =
     pace.basis === "glide" && pace.plan_start
       ? dayOfPlanYear(pace.plan_start, ts)
       : null;
   const glide = planDay !== null && pace.plan_start != null;
 
-  // Calendar context on the glide basis: sales BEFORE the plan window
-  // (the calendar figure minus the plan-window sold count).
+  // Calendar context on the legacy glide basis: sales BEFORE the plan
+  // window (the calendar figure minus the plan-window sold count).
   const prePlanSold =
     glide && typeof pace.sold_calendar_ytd === "number"
       ? Math.max(0, pace.sold_calendar_ytd - sold)
@@ -125,7 +181,7 @@ export function NvdaPaceTile({
         label="NVDA PACE"
         action={
           <StatusPill tone={tone} mono>
-            {onPace ? "ON PACE" : "BEHIND PACE"}
+            {pillText}
           </StatusPill>
         }
       />
