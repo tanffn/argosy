@@ -489,8 +489,8 @@ class NvdaPaceView(BaseModel):
     target_shares_ytd: int = 0
     delta_shares: int = 0
     on_track: bool = True
-    # One status word for the tile: ahead / on / behind (±5% tolerance
-    # around the pro-rated glide target, min 10 shares).
+    # One status word for the tile: ahead / on / behind (generous band —
+    # ±10% of the tax-year quota, min 25 shares).
     status: str = "on"
     # Where the numbers came from: "draft" = the synthesis run's
     # concentration report (pending-draft override); "plan+sales" = the
@@ -498,17 +498,28 @@ class NvdaPaceView(BaseModel):
     # sales history). The UI captions which it renders.
     source: str = "draft"
     # Labeling metadata from the ONE canonical derivation
-    # (``compute_nvda_sale_pace``): "glide" means the numbers are
-    # PLAN-relative (window starts at the glide's first waypoint, NOT
-    # Jan 1) — the UI must label them "day N of the plan year", never
-    # "YTD"/"% of year elapsed". "horizon" keeps calendar labels.
+    # (``compute_nvda_sale_pace``): "glide" means the sell-down is
+    # TAX-YEAR framed (the quota fields below are populated); "horizon"
+    # keeps the legacy calendar pro-rata labels.
     basis: str = "horizon"
     # ISO date of the plan window's start (the glide's first waypoint);
     # None on the horizon fallback.
     plan_start: str | None = None
-    # Calendar-year sold count (deduped), kept as CONTEXT next to the
-    # plan-relative window — e.g. "1,600 sold in 2026 pre-plan".
+    # Calendar-year sold count (deduped) — FIRST-CLASS on the glide
+    # basis: pre-plan sales count toward the tax-year quota.
     sold_calendar_ytd: int | None = None
+    # --- Tax-year quota framing (glide basis only) ------------------
+    # The calendar tax year the quota applies to (Israeli CGT: Jan–Dec).
+    tax_year: int | None = None
+    # Full tax-year quota: shares to sell by Dec 31 (actual Jan-1 book
+    # minus the glide's implied Dec-31 holdings).
+    year_target_shares: int | None = None
+    # Next dated glide checkpoint (secondary line on the tile).
+    next_waypoint_date: str | None = None
+    next_waypoint_weight_pct: float | None = None
+    shares_to_sell_by_waypoint: int | None = None
+    # Sales inside the plan window (context; not the headline).
+    sold_since_plan_start: int | None = None
 
 
 def _pace_status(sold: int, target: int) -> str:
@@ -673,10 +684,10 @@ def _fallback_nvda_pace(db: Session, user_id: str) -> NvdaPaceView | None:
     without one the home tile used to read "— / awaiting plan" forever even
     though a current plan (with an NVDA sale glide) and a real sales history
     both exist. Binds to the ONE canonical derivation,
-    ``compute_nvda_sale_pace``: target flow from the TargetAllocationDoc
-    GLIDE, pro-rated PLAN-relative (from the glide's start date, never
-    Jan 1), sold counted since plan start — so day 1 of a plan year reads
-    on-track, not "behind by the whole annual flow".
+    ``compute_nvda_sale_pace``: TAX-YEAR framed — the headline is the
+    calendar-year quota (glide-implied Dec-31 holdings vs the actual
+    Jan-1 book) with the next dated glide waypoint as the secondary
+    checkpoint.
 
     Returns ``None`` when no plan carries an NVDA flow target at all — the
     "awaiting plan" hint is then genuinely correct. Never raises.
@@ -692,13 +703,22 @@ def _fallback_nvda_pace(db: Session, user_id: str) -> NvdaPaceView | None:
             target_shares_ytd=pace.target_shares,
             delta_shares=pace.delta_shares,
             on_track=pace.on_track,
-            status=pace.status,  # banded vs the ANNUAL flow, not the day-N target
+            status=pace.status,  # banded vs the tax-year QUOTA, not the day-N target
             source="plan+sales",
             basis=pace.basis,
             plan_start=(
                 pace.plan_start.isoformat() if pace.plan_start else None
             ),
             sold_calendar_ytd=pace.sold_calendar_ytd,
+            tax_year=pace.tax_year,
+            year_target_shares=pace.annual_flow,
+            next_waypoint_date=(
+                pace.next_waypoint_date.isoformat()
+                if pace.next_waypoint_date else None
+            ),
+            next_waypoint_weight_pct=pace.next_waypoint_weight_pct,
+            shares_to_sell_by_waypoint=pace.shares_to_sell_by_waypoint,
+            sold_since_plan_start=pace.sold_since_plan_start,
         )
     except Exception:  # noqa: BLE001 — pace is enrichment, never a 500
         logger.warning("nvda_pace: deterministic fallback failed", exc_info=True)
@@ -761,13 +781,20 @@ def _build_nvda_pace(
     try:
         sold = int(pace.get("shares_sold_ytd") or 0)
         target = int(pace.get("target_shares_ytd") or 0)
-        # Labeling metadata comes from the canonical derivation: the
-        # agent's inputs were fed from compute_nvda_sale_pace, so when
-        # the plan carries a glide these numbers are PLAN-relative and
-        # the UI must not glue calendar-YTD labels onto them.
+        # Labeling + tax-year quota metadata come from the canonical
+        # derivation: the agent's inputs were fed from
+        # compute_nvda_sale_pace, so when the plan carries a glide the
+        # tile renders the tax-year quota framing from the canon fields.
         basis = "horizon"
         plan_start: str | None = None
         sold_calendar: int | None = None
+        tax_year: int | None = None
+        year_target: int | None = None
+        wp_date: str | None = None
+        wp_weight: float | None = None
+        wp_shares: int | None = None
+        sold_since_start: int | None = None
+        status: str | None = None
         try:
             from argosy.services.nvda_sales_history import (
                 compute_nvda_sale_pace,
@@ -780,6 +807,19 @@ def _build_nvda_pace(
                     canon.plan_start.isoformat() if canon.plan_start else None
                 )
                 sold_calendar = canon.sold_calendar_ytd
+                tax_year = canon.tax_year
+                year_target = canon.annual_flow
+                wp_date = (
+                    canon.next_waypoint_date.isoformat()
+                    if canon.next_waypoint_date else None
+                )
+                wp_weight = canon.next_waypoint_weight_pct
+                wp_shares = canon.shares_to_sell_by_waypoint
+                sold_since_start = canon.sold_since_plan_start
+                # The canon banding (±10% of the quota) is the one the
+                # tile should judge by — the agent's numbers keep their
+                # own delta/on_track for auditability.
+                status = canon.status
         except Exception:  # noqa: BLE001 — metadata is labeling enrichment
             logger.warning(
                 "nvda_pace: canonical basis lookup failed", exc_info=True
@@ -789,11 +829,17 @@ def _build_nvda_pace(
             target_shares_ytd=target,
             delta_shares=int(pace.get("delta_shares") or 0),
             on_track=bool(pace.get("on_track", True)),
-            status=_pace_status(sold, target),
+            status=status or _pace_status(sold, target),
             source="draft",
             basis=basis,
             plan_start=plan_start,
             sold_calendar_ytd=sold_calendar,
+            tax_year=tax_year,
+            year_target_shares=year_target,
+            next_waypoint_date=wp_date,
+            next_waypoint_weight_pct=wp_weight,
+            shares_to_sell_by_waypoint=wp_shares,
+            sold_since_plan_start=sold_since_start,
         )
     except (TypeError, ValueError) as exc:
         logger.warning(

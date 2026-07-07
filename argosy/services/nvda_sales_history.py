@@ -7,30 +7,34 @@ on the dataclass but never populated, so ``ConcentrationAnalystAgent``
 emitted ``NvdaPace.shares_sold_ytd=0`` in every synthesis report, and the
 home page widget read "0 / 10,000 shares sold YTD · BEHIND PACE" forever.
 
-Two real sources exist for past NVDA sales:
+Sale sources, in priority order (binding rule: the Schwab Equity Awards
+CSV is the ONLY real-sale source; everything else is derived/secondary):
 
-1. The ``fills`` table — populated by ``argosy.services.schwab_lots_ingest``
-   when the user runs ``argosy ingest schwab-lots <csv>``. Empty in dev so
-   far; this is the canonical source once Schwab CSVs land.
-2. The Family Finances Status TSV — parsed live via
-   ``argosy.ingest.tsv.parse_portfolio_tsv``, exposes a ``nvda_sales``
-   block with ``{month, shares, price}`` entries. Month-only (no exact
-   date), so the YTD filter uses the snapshot's anchor year.
+1. Schwab Equity Awards Center CSVs on disk under
+   ``$ARGOSY_EXPENSE_SAMPLES_ROOT/<year>/Schwab/*.csv`` — parsed live via
+   ``argosy.services.rsu_reconciliation.schwab_csv.parse_csv``. Per-sale
+   EXACT dates (the month-granular TSV rows can't window a tax year
+   correctly). Parsed on demand, never persisted — no new ingestion
+   framework.
+2. The ``fills`` table — broker fills reconciled by the deploy loop.
+3. The latest portfolio snapshot's ``nvda_sales_json`` (month-granular).
+4. The Family Finances Status TSV ``nvda_sales`` block (month-granular,
+   OUTPUT-only artifact — last resort).
 
-This module is a single thin helper that returns the YTD shares-sold count
-preferring ``fills`` and falling back to the TSV. Both branches degrade to
-0 with a structured log when their source is unreachable so synthesis never
-crashes on missing data.
+All branches degrade with a structured log when their source is
+unreachable so synthesis never crashes on missing data.
 
 Also exposes the ONE canonical NVDA sale-flow derivation,
-``compute_nvda_sale_pace``: the target flow comes from the plan's
-``TargetAllocationDoc`` GLIDE (the canonical, structured, cap-derived
-source — NVDA weight waypoints today → end-state), converted to shares
-via the held-at-plan-start share count, and pro-rated PLAN-RELATIVE
-(from the glide's start date, not Jan 1). ``compute_nvda_target_shares_ytd``
-is a thin back-compat wrapper over it. The legacy medium-horizon
-``shares``-unit target + calendar-YTD proration survives only as the
-fallback when a plan carries no glide doc.
+``compute_nvda_sale_pace``. The NVDA sell-down is managed per CALENDAR
+TAX YEAR (Israeli CGT is assessed Jan–Dec): the headline is the tax-year
+quota — the glide's implied NVDA weight at Dec 31, converted to shares
+via the held-at-plan-start count, anchored to the ACTUAL Jan-1 holdings
+(reconstructed as held-now + sold-this-calendar-year) so a mid-year plan
+revision never resets the year and pre-plan sales count toward the quota.
+The next dated glide waypoint is surfaced as the secondary checkpoint.
+``compute_nvda_target_shares_ytd`` is a thin back-compat wrapper over it.
+The legacy medium-horizon ``shares``-unit target + calendar-YTD proration
+survives only as the fallback when a plan carries no glide doc.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -49,6 +54,89 @@ log = get_logger(__name__)
 
 
 _NVDA_TICKER = "NVDA"
+
+
+def _schwab_csv_paths() -> list[Path]:
+    """All Schwab Equity Awards CSVs under
+    ``$ARGOSY_EXPENSE_SAMPLES_ROOT/<year>/Schwab/*.csv``.
+
+    Same walk as ``/api/expenses/rsu-reconciliation`` (any directory name
+    is accepted at the year level so ad-hoc names like ``archive`` work).
+    Empty list when the env var is unset / the root doesn't exist.
+    """
+    import os
+
+    root_str = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
+    if not root_str:
+        return []
+    root = Path(root_str)
+    if not root.exists():
+        return []
+    paths: list[Path] = []
+    try:
+        for year_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            schwab_dir = year_dir / "Schwab"
+            if not schwab_dir.is_dir():
+                continue
+            paths.extend(sorted(schwab_dir.glob("*.csv")))
+    except OSError as exc:
+        log.warning("nvda_sales_history.schwab_walk_failed", error=str(exc))
+        return []
+    return paths
+
+
+def _shares_sold_from_schwab_csv(
+    *, year_start: date, as_of: date
+) -> int | None:
+    """Sum NVDA sale shares from the on-disk Schwab CSVs (EXACT dates).
+
+    The Schwab Equity Awards CSV is the binding real-sale source — when
+    it carries at least one NVDA Sale row for this user's account, it
+    outranks every derived source (fills / snapshot / TSV). Returns
+    ``None`` when no CSVs exist or none carries an NVDA sale — the cue
+    to fall through. Dedups sales across overlapping exports on
+    ``(date, symbol, quantity, gross, fees)`` — the same key the
+    rsu-reconciliation endpoint uses.
+    """
+    paths = _schwab_csv_paths()
+    if not paths:
+        return None
+    try:
+        from argosy.services.rsu_reconciliation.schwab_csv import parse_csv
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning("nvda_sales_history.schwab_import_failed", error=str(exc))
+        return None
+
+    seen: set[tuple] = set()
+    any_nvda_sale = False
+    total = 0
+    for p in paths:
+        try:
+            report = parse_csv(p)
+        except Exception as exc:  # noqa: BLE001 — skip unreadable CSVs
+            log.warning(
+                "nvda_sales_history.schwab_parse_failed",
+                path=str(p), error=str(exc),
+            )
+            continue
+        for sale in report.sales:
+            if (sale.symbol or "").strip().upper() != _NVDA_TICKER:
+                continue
+            if sale.date is None:
+                continue
+            key = (
+                sale.date, sale.symbol, sale.quantity_shares,
+                round(sale.gross_usd, 2), round(sale.fees_usd, 2),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            any_nvda_sale = True
+            if year_start <= sale.date <= as_of:
+                total += int(sale.quantity_shares or 0)
+    if not any_nvda_sale:
+        return None
+    return total
 
 
 def _today(as_of: date | None) -> date:
@@ -279,14 +367,17 @@ def compute_nvda_shares_sold_ytd(
     """Return shares sold for NVDA in ``[since or Jan 1 .. as_of]`` inclusive.
 
     ``since=None`` keeps the historical calendar-YTD semantics; the
-    plan-relative pace (``compute_nvda_sale_pace``) passes the plan's
-    start date instead.
+    pace derivation (``compute_nvda_sale_pace``) also passes the plan's
+    start date for the plan-window count.
 
     Source priority:
-      1. ``fills`` table when it has at least one NVDA row for ``user_id``.
-      2. The latest portfolio snapshot's ``nvda_sales_json`` block —
+      1. The on-disk Schwab Equity Awards CSVs — the binding real-sale
+         source, per-sale EXACT dates. Wins whenever at least one NVDA
+         Sale row exists across the CSVs.
+      2. ``fills`` table when it has at least one NVDA row for ``user_id``.
+      3. The latest portfolio snapshot's ``nvda_sales_json`` block —
          internal state (the TSV is OUTPUT-only). Month-granular.
-      3. Fallback to the latest Family Finances Status TSV's
+      4. Fallback to the latest Family Finances Status TSV's
          ``nvda_sales`` block. (Month-granular; current-year only.)
 
     Returns 0 when no source produces data (the caller surfaces that
@@ -294,6 +385,16 @@ def compute_nvda_shares_sold_ytd(
     """
     today = _today(as_of)
     window_start = since or _start_of_year(today)
+
+    schwab_total = _shares_sold_from_schwab_csv(
+        year_start=window_start, as_of=today
+    )
+    if schwab_total is not None:
+        log.info(
+            "nvda_sales_history.shares_sold_from_schwab_csv",
+            user_id=user_id, total=schwab_total,
+        )
+        return schwab_total
 
     fills_total = _shares_sold_from_fills(
         session, user_id, year_start=window_start, as_of=today
@@ -492,29 +593,45 @@ def _nvda_shares_held_now(session: Session, user_id: str) -> float:
 
 @dataclass(frozen=True)
 class NvdaSalePace:
-    """The ONE canonical NVDA sale-flow pace.
+    """The ONE canonical NVDA sale-flow pace — TAX-YEAR framed.
 
-    ``basis="glide"``: target flow derives from the plan's
-    ``TargetAllocationDoc`` glide (NVDA weight waypoints), converted to
-    shares via the held-at-plan-start count, pro-rated from the PLAN's
-    start date (the glide's first waypoint) — being "behind" thousands
-    of shares one day into the plan year is a calendar artifact, not a
-    pace signal. ``sold_shares`` counts sales since plan start;
-    ``sold_calendar_ytd`` keeps the old calendar figure as context.
+    The sell-down is managed per CALENDAR TAX YEAR (Israeli CGT is
+    assessed Jan–Dec), so on ``basis="glide"``:
+
+      * ``annual_flow`` — the tax-year QUOTA: shares to sell between
+        Jan 1 and Dec 31 of ``tax_year``. Derived as actual-Jan-1
+        holdings (held-now + sold-this-calendar-year) minus the glide's
+        implied holdings at Dec 31 (``S0 * w(Dec31)/w(start)``). Anchoring
+        to the ACTUAL Jan-1 book means a mid-year plan revision never
+        resets the year and pre-plan sales count toward the quota.
+      * ``target_shares`` — the schedule-implied sold-by-now expectation
+        (actual-Jan-1 holdings minus the glide's implied holdings today).
+        The glide IS the schedule through the tax year; a linear daily
+        pro-rata was the "0/27 by day 2" noise this replaces.
+      * ``sold_shares`` — CALENDAR-year sales (all sources; pre-plan
+        sales included — they count toward the tax-year quota). Equals
+        ``sold_calendar_ytd`` on this basis.
+      * ``next_waypoint_*`` — the next dated glide checkpoint and the
+        shares left to sell (from current holdings) to hit its weight.
 
     ``basis="horizon"``: legacy fallback (no glide doc on the plan) —
     the medium-horizon ``shares``-unit annual target pro-rated
-    calendar-YTD, ``sold_shares`` = calendar YTD.
+    calendar-YTD; waypoint fields stay empty.
 
     ``basis="none"``: no plan / no NVDA flow target anywhere.
     """
 
     target_shares: int = 0        # shares the plan expects sold by as_of
     sold_shares: int = 0          # shares actually sold in the pace window
-    annual_flow: int = 0          # full plan-year target flow
+    annual_flow: int = 0          # tax-year quota (glide) / annual target (horizon)
     plan_start: date | None = None
     sold_calendar_ytd: int = 0
     basis: str = "none"
+    tax_year: int | None = None
+    sold_since_plan_start: int = 0
+    next_waypoint_date: date | None = None
+    next_waypoint_weight_pct: float | None = None
+    shares_to_sell_by_waypoint: int = 0
 
     @property
     def delta_shares(self) -> int:
@@ -522,12 +639,13 @@ class NvdaSalePace:
 
     @property
     def tolerance_shares(self) -> int:
-        """Pace band: ±5% of the ANNUAL flow (≈ ±18 days of pace), min 10.
+        """Pace band: ±10% of the tax-year quota, min 25 shares.
 
-        Banding against the pro-rated target instead would shrink the band
-        to nothing at plan start and flag day-1 "behind by 27 shares" noise.
+        Deliberately generous — the waypoints are quarterly commitments,
+        not daily quotas; banding against the to-date expectation would
+        shrink to nothing early in a segment and flag day-1 noise.
         """
-        return max(10, int(round(0.05 * self.annual_flow)))
+        return max(25, int(round(0.10 * self.annual_flow)))
 
     @property
     def status(self) -> str:
@@ -548,12 +666,15 @@ def compute_nvda_sale_pace(
     """The canonical NVDA sale-flow pace (see :class:`NvdaSalePace`).
 
     Glide arithmetic: with ``w(t)`` the glide's NVDA weight at date ``t``
-    and ``S0`` the shares held at plan start, the glide's implied share
-    count at ``t`` is ``S0 * w(t) / w(start)`` (weight and share count
-    move proportionally on a same-book, same-price basis — the same
-    assumption the glide's linear weight path already makes), so the
-    target flow by ``t`` is ``S0 * (1 - w(t)/w(start))``. ``S0`` is
-    reconstructed as held-now (latest snapshot) + sold-since-plan-start.
+    (clamped at the ends) and ``S0`` the shares held at plan start, the
+    glide's implied share count at ``t`` is ``S0 * w(t) / w(start)``
+    (weight and share count move proportionally on a same-book,
+    same-price basis — the same assumption the glide's linear weight
+    path already makes). ``S0`` is reconstructed as held-now (latest
+    snapshot) + sold-since-plan-start; the ACTUAL Jan-1 holdings are
+    held-now + sold-this-calendar-year. The tax-year quota is
+    ``held(Jan 1) - implied(Dec 31)``; the sold-by-now expectation is
+    ``held(Jan 1) - implied(today)``.
     """
     today = _today(as_of)
     sold_calendar = compute_nvda_shares_sold_ytd(session, user_id, as_of=today)
@@ -562,6 +683,7 @@ def compute_nvda_sale_pace(
     # history) even when no target exists.
     no_plan_pace = NvdaSalePace(
         sold_shares=sold_calendar, sold_calendar_ytd=sold_calendar,
+        tax_year=today.year, sold_since_plan_start=sold_calendar,
     )
 
     try:
@@ -586,24 +708,55 @@ def compute_nvda_sale_pace(
                 )
                 if today >= plan_start else 0
             )
-            held_start = _nvda_shares_held_now(session, user_id) + sold_since_start
-            w_now = _interp_weight(glide, today)
-            target = int(round(held_start * (1.0 - w_now / w_start)))
-            annual = int(round(held_start * (1.0 - w_end / w_start)))
+            held_now = _nvda_shares_held_now(session, user_id)
+            held_start = held_now + sold_since_start
+            held_jan1 = held_now + sold_calendar
+
+            def _implied(at: date) -> float:
+                """Glide-implied share count at ``at`` (clamped)."""
+                return held_start * _interp_weight(glide, at) / w_start
+
+            year_end = date(today.year, 12, 31)
+            # Tax-year quota: actual Jan-1 book minus the glide's implied
+            # Dec-31 holdings. Never negative; the to-date expectation is
+            # clamped inside [0, quota].
+            annual = max(0, int(round(held_jan1 - _implied(year_end))))
+            target = max(0, int(round(held_jan1 - _implied(today))))
+            target = min(target, annual)
+
+            # Next dated glide checkpoint strictly after today.
+            next_wp: tuple[date, float] | None = next(
+                ((d, w) for d, w in glide if d > today), None
+            )
+            wp_date = next_wp[0] if next_wp else None
+            wp_weight = next_wp[1] if next_wp else None
+            wp_shares = (
+                max(0, int(round(held_now - _implied(wp_date))))
+                if wp_date is not None else 0
+            )
+
             pace = NvdaSalePace(
                 target_shares=target,
-                sold_shares=sold_since_start,
+                sold_shares=sold_calendar,
                 annual_flow=annual,
                 plan_start=plan_start,
                 sold_calendar_ytd=sold_calendar,
                 basis="glide",
+                tax_year=today.year,
+                sold_since_plan_start=sold_since_start,
+                next_waypoint_date=wp_date,
+                next_waypoint_weight_pct=wp_weight,
+                shares_to_sell_by_waypoint=wp_shares,
             )
             log.info(
                 "nvda_sales_history.sale_pace_glide",
                 user_id=user_id, plan_start=plan_start.isoformat(),
-                w_start=round(w_start, 4), w_now=round(w_now, 4),
+                w_start=round(w_start, 4),
                 held_start=round(held_start, 1), target=target,
-                sold=sold_since_start, annual=annual,
+                sold_calendar=sold_calendar, annual=annual,
+                tax_year=today.year,
+                next_waypoint=(wp_date.isoformat() if wp_date else None),
+                shares_to_sell_by_waypoint=wp_shares,
             )
             return pace
 
@@ -626,6 +779,8 @@ def compute_nvda_sale_pace(
         plan_start=_start_of_year(today),
         sold_calendar_ytd=sold_calendar,
         basis="horizon",
+        tax_year=today.year,
+        sold_since_plan_start=sold_calendar,
     )
 
 

@@ -34,6 +34,14 @@ def _make_session():
     return Session()
 
 
+@pytest.fixture(autouse=True)
+def _no_real_schwab_root(monkeypatch):
+    """The Schwab-CSV branch outranks every other source — keep the dev
+    machine's real ``ARGOSY_EXPENSE_SAMPLES_ROOT`` (Google Drive) from
+    leaking real sales into these fixtures."""
+    monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
+
+
 @pytest.fixture
 def session_with_user():
     s = _make_session()
@@ -351,6 +359,137 @@ def test_tsv_fallback_excludes_months_past_as_of(
 
 
 # ----------------------------------------------------------------------
+# Schwab Equity Awards CSV — the binding real-sale source (exact dates)
+# ----------------------------------------------------------------------
+
+
+_SCHWAB_HEADER = (
+    "Date,Action,Symbol,Description,Quantity,Type,Shares,SalePrice,"
+    "FeesAndCommissions,Amount\n"
+)
+
+
+def _write_schwab_csv(root, year: str, name: str, rows: str) -> None:
+    d = root / year / "Schwab"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(_SCHWAB_HEADER + rows, encoding="utf-8")
+
+
+def test_schwab_csv_wins_over_fills_with_exact_dates(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """The on-disk Schwab CSV outranks fills AND windows on EXACT sale
+    dates — a Jul 2 sale is excluded from a May-26 as_of even though a
+    month-granular source would have no way to know."""
+    from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
+    root = tmp_path / "resources"
+    _write_schwab_csv(
+        root, "2026", "EquityAwardsCenter_Transactions.csv",
+        '04/14/2026,Sale,NVDA,Share sale,520,,,,$0.10,"$103,771.20"\n'
+        '07/02/2026,Sale,NVDA,Share sale,300,,,,$0.15,"$57,000.00"\n',
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+
+    # A decoy fill that must NOT be used once the CSV resolves.
+    session_with_user.add(
+        Fill(
+            user_id="ariel", broker="schwab", broker_order_id="d1",
+            ticker="NVDA", action="SELL", quantity=Decimal("999"),
+            price=Decimal("190"), commission=Decimal("0"),
+            filled_at=datetime(2026, 3, 1, 10, tzinfo=timezone.utc),
+            paper=False,
+        )
+    )
+    session_with_user.commit()
+
+    n = nvda_sales_history.compute_nvda_shares_sold_ytd(
+        session_with_user, "ariel", as_of=date(2026, 5, 26),
+    )
+    assert n == 520, f"CSV (exact-dated) must win over fills; got {n}"
+
+    # Same year through Jul 7 → the Jul 2 sale now counts.
+    n2 = nvda_sales_history.compute_nvda_shares_sold_ytd(
+        session_with_user, "ariel", as_of=date(2026, 7, 7),
+    )
+    assert n2 == 820
+
+
+def test_schwab_csv_dedups_across_overlapping_exports(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """Two exports carrying the same sale (overlapping export windows)
+    count it once; the ``since`` filter is exact-dated too."""
+    from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
+    root = tmp_path / "resources"
+    sale_rows = (
+        '04/14/2026,Sale,NVDA,Share sale,520,,,,$0.10,"$103,771.20"\n'
+    )
+    _write_schwab_csv(root, "2026", "export_a.csv", sale_rows)
+    _write_schwab_csv(
+        root, "2026", "export_b.csv",
+        sale_rows + '07/10/2026,Sale,NVDA,Share sale,250,,,,$0.10,"$47,500.00"\n',
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+
+    n = nvda_sales_history.compute_nvda_shares_sold_ytd(
+        session_with_user, "ariel", as_of=date(2026, 7, 12),
+    )
+    assert n == 770, f"duplicate sale must collapse; got {n}"
+
+    # Windowed from Jul 6 (plan start): only the Jul 10 sale counts.
+    n_since = nvda_sales_history.compute_nvda_shares_sold_ytd(
+        session_with_user, "ariel", as_of=date(2026, 7, 12),
+        since=date(2026, 7, 6),
+    )
+    assert n_since == 250
+
+
+def test_schwab_csv_absent_falls_back_to_fills(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """No root / no NVDA sale rows → the fills branch still works."""
+    from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
+    # Root exists but carries only a non-NVDA sale.
+    root = tmp_path / "resources"
+    _write_schwab_csv(
+        root, "2026", "other.csv",
+        '02/01/2026,Sale,AAPL,Share sale,10,,,,$0.10,"$2,000.00"\n',
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+
+    session_with_user.add(
+        Fill(
+            user_id="ariel", broker="schwab", broker_order_id="f1",
+            ticker="NVDA", action="SELL", quantity=Decimal("111"),
+            price=Decimal("190"), commission=Decimal("0"),
+            filled_at=datetime(2026, 3, 1, 10, tzinfo=timezone.utc),
+            paper=False,
+        )
+    )
+    session_with_user.commit()
+
+    n = nvda_sales_history.compute_nvda_shares_sold_ytd(
+        session_with_user, "ariel", as_of=date(2026, 5, 26),
+    )
+    assert n == 111
+
+
+# ----------------------------------------------------------------------
 # compute_nvda_target_shares_ytd
 # ----------------------------------------------------------------------
 
@@ -476,13 +615,13 @@ def _seed_pace_plan_and_snapshot(
     session.commit()
 
 
-def test_pace_glide_plan_relative_day_one(
+def test_pace_glide_tax_year_quota_day_one(
     session_with_user, monkeypatch, tmp_path,
 ):
-    """Day 1-2 of the plan year: the target is ~1 day of flow (tens of
-    shares), sold-since-plan-start is 0, and the pace reads ON TRACK —
-    never 'behind by thousands' (the calendar-YTD artifact this replaces).
-    The Apr sale counts toward the calendar context figure only."""
+    """Day 2 of a mid-year plan: the headline is the TAX-YEAR quota
+    (Israeli CGT is assessed Jan–Dec), pre-plan sales count toward it,
+    and a plan revision never resets the year. Never 'behind by
+    thousands' on day 1 (the daily pro-rata artifact this replaces)."""
     from argosy.services import nvda_sales_history
 
     _seed_pace_plan_and_snapshot(
@@ -493,15 +632,29 @@ def test_pace_glide_plan_relative_day_one(
     )
     assert pace.basis == "glide"
     assert pace.plan_start == date(2026, 7, 6)
-    # Annual flow = held_start * (1 - 8/60) ≈ 9,941 — the glide's implied
-    # plan-year sale, NOT the stale 12%-sleeve 9,270 row.
-    assert pace.annual_flow == pytest.approx(11_471 * (1 - 8.0 / 60.0), abs=1)
-    # Day-1 pro-rated target: about one day of pace, tiny vs the annual.
-    assert 0 <= pace.target_shares <= 60
-    assert pace.sold_shares == 0  # Apr sale is BEFORE the plan year
-    assert pace.sold_calendar_ytd == 520  # calendar context preserved
+    assert pace.tax_year == 2026
+    # Tax-year quota: actual Jan-1 book (11,471 held + 520 sold in Apr)
+    # minus the glide's implied Dec-31 holdings. w(Dec 31) interpolates
+    # Oct 6 (47%) → Jan 6 (34%): 47 - 13*86/92 ≈ 34.85.
+    w_dec31 = 47.0 - 13.0 * 86 / 92
+    expected_quota = (11_471 + 520) - 11_471 * w_dec31 / 60.0
+    assert pace.annual_flow == pytest.approx(expected_quota, abs=2)
+    # Sold counts the CALENDAR year — the pre-plan Apr sale is in.
+    assert pace.sold_shares == 520
+    assert pace.sold_calendar_ytd == 520
+    assert pace.sold_since_plan_start == 0
+    # Expected-by-now ≈ pre-plan actual + ~1 day of glide flow → the
+    # delta is tiny and well inside the generous band.
+    assert abs(pace.delta_shares) <= 60
     assert pace.status == "on"
     assert pace.on_track
+    # Next dated glide checkpoint: Oct 6 at ≤47%, implying ~2,485 shares
+    # to sell from current holdings (11,471 * 13/60).
+    assert pace.next_waypoint_date == date(2026, 10, 6)
+    assert pace.next_waypoint_weight_pct == pytest.approx(47.0)
+    assert pace.shares_to_sell_by_waypoint == pytest.approx(
+        11_471 * 13.0 / 60.0, abs=2,
+    )
 
 
 def test_pace_glide_midyear_proration_and_sold_window(
@@ -531,13 +684,22 @@ def test_pace_glide_midyear_proration_and_sold_window(
     )
     assert pace.basis == "glide"
     assert pace.sold_shares == 2400
-    # Q1 waypoint weight = 47.0 → target = 11,471 * (1 - 47/60) ≈ 2,485.
+    assert pace.sold_since_plan_start == 2400
+    # Q1 waypoint weight = 47.0 → expected sold by now
+    # = 11,471 * (1 - 47/60) ≈ 2,485 (glide-implied schedule).
     assert pace.target_shares == pytest.approx(
         11_471 * (1 - 47.0 / 60.0), abs=2,
     )
-    # 2,400 vs 2,485 is within the ±5%-of-annual band → on track.
+    # 2,400 vs 2,485 is within the ±10%-of-quota band → on track.
     assert pace.status == "on"
     assert pace.on_track
+    # The next checkpoint after Oct 6 is Jan 6 2027 at ≤34%: from the
+    # current 9,071 held down to 11,471*34/60 ≈ 6,500 → ~2,571 to sell.
+    assert pace.next_waypoint_date == date(2027, 1, 6)
+    assert pace.next_waypoint_weight_pct == pytest.approx(34.0)
+    assert pace.shares_to_sell_by_waypoint == pytest.approx(
+        9_071 - 11_471 * 34.0 / 60.0, abs=2,
+    )
 
 
 def test_pace_glide_wins_over_stale_horizon_row(
@@ -563,7 +725,9 @@ def test_pace_glide_wins_over_stale_horizon_row(
     n = nvda_sales_history.compute_nvda_target_shares_ytd(
         session_with_user, "ariel", as_of=date(2026, 7, 7),
     )
-    assert n <= 60, f"glide-derived plan-relative target expected, got {n}"
+    # Glide-derived expectation: pre-plan actual (520) + ~1 day of glide
+    # flow (~27) ≈ 547 — nowhere near the 9,270-row's ≈4,750 pro-rata.
+    assert 500 <= n <= 620, f"glide-derived tax-year expectation, got {n}"
 
 
 def test_pace_horizon_fallback_without_glide_doc(
