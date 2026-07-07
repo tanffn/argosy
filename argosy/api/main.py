@@ -108,6 +108,10 @@ def create_app() -> FastAPI:
 
     # Phase 2 (multi-tenant `user_id` query param on each)
     api_prefix = "/api"
+    # FM first-greeting — the home page's opening card (how you stand /
+    # what I need from you / what I'm watching). Pure projection.
+    from argosy.api.routes.home import router as home_router
+    app.include_router(home_router, prefix=api_prefix)
     app.include_router(portfolio_router, prefix=api_prefix)
     # Wealth Dashboard — top-of-/portfolio retirement projection + 6
     # visual stat cards (cash runway, concentration, savings rate, FX
