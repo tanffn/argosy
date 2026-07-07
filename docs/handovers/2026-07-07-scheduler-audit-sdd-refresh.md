@@ -1,4 +1,15 @@
-# Handover — 2026-07-07 · scheduler audit (one real bug fixed), SDD refreshed to current state, suite post-mortem
+# Handover — 2026-07-07 · scheduler audit, dead-tier fix, phases A/B/C1 shipped, SDD overhaul, FM-greeting build in flight
+
+**UPDATE (late session, HEAD ~5330c5f + in-flight):** shipped since the morning sections below —
+- **Dead loop tier fixed** (`c285673`): registry adopts scheduler-only loops at boot; discovery/weekly-review/backup/monthly-cycle etc. RAN FOR THE FIRST TIME EVER; catch-up staleness guard (7d).
+- **Discord listener disabled** (`930909b`, knob `ARGOSY_DISCORD_LISTENER_ENABLED`) — reconnect bug + API blocked; value-review TODO below.
+- **Phase A** proactive `period_directive_daily` 19:00 (`c1d27de`, triage-first, fleet authors only when there's a decision); **Phase B** closed-loop verifier (`22da8c9`, `argosy/services/closed_loop.py` — the $161k deploy's 11+1+4 armed expectations parse and verify on next ingest; 7-day sweep → one needs-info item); **Phase C1** smart news intake (`5bf407c`, tickers from the book at tick time, ETFs light, stage-2 fires only on new signals or ≥4% moves).
+- **SDD overhauled**: 41-item divergence review applied (`bb988f0` + `b588da2` + `5330c5f`) + **NEW BINDING RULE: SDD is user-AGNOSTIC** (mechanisms, never tenant plan values — memory `feedback_docs_current_state_only` rule 2). §20.3 verified: target pie DOES bind to TargetAllocationDoc (claim was stale).
+- **NOTE (Ariel): genericize concentrated-position** — NVDA hardcoded ~148 files; it's "employer equity from RSU vesting", belongs in per-user plan state. No schedule.
+- **IN FLIGHT: FM first-greeting home rebuild** (agent a2dba2c69): home audit found — 3 of the 5 red flags are internal/stale noise (never-expiring alpha chatter, fx/expense ingestion gaps); "Synthesis #136 in flight" banner is STALE (run died 08:21 UTC on `claude.exe not found at ..._bundled\claude.exe` — REAL BUG, monthly synthesis can't run under the server env, investigate!); zombie decision_runs 134/135/136 stuck 'running'; hardcoded "0 proposals" tile vs 40 open. Build = liveness+reap, flag TTLs, GET /api/home/greeting (needs-you / watching / quiet classification), FMGreetingCard replacing the banner stack.
+- **10 FIX-CODE divergence items**: #2 directive-push DONE (phase A), #1 closed-loop DONE (phase B); remaining: daily-brief scheduling+event, watchdog alert wiring, domain-refresh due-date scan, offsite backup config, pin expiry window, gap_due emission, funnel graduation counter, plaintext external_api_keys fallback.
+- **Full suite**: re-running (`tmp/full_suite_2026-07-07.log`) — slow (machine busy); yesterday's 3 unidentified failures still to name.
+- **Watch tomorrow**: 04:00 sweep (closed-loop day counter), 17:00 news (first real RSS fetch, stage2_gate reasons), 17:30 holdings review, 19:00 directive. verify-run after the first full cycle. Test runs pollute logs/app/application.log — give tests their own sink (open item).
 
 **Branch:** `master` · **HEAD:** `401682c` · tree clean.
 Read this first in a fresh session, then `git log --oneline -15`. Prior: `2026-07-06-resume-fixes-multi-turn-parse-and-detector.md` (funding UI, multi-turn parse fix, detector grounding) and `2026-07-06-fleet-live-e2e-and-plan-v67.md` (plan v67, the $161k live deploy).
