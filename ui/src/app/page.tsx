@@ -7,6 +7,7 @@ import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
 import { DeconcentrationCard } from "@/components/home/DeconcentrationCard";
 import { FMGreetingCard } from "@/components/home/FMGreetingCard";
+import { NvdaPaceTile } from "@/components/home/NvdaPaceTile";
 import { PlanAdherenceCard } from "@/components/home/PlanAdherenceCard";
 import { RedFlagStrip } from "@/components/home/RedFlagStrip";
 import { WealthTrajectoryCard } from "@/components/home/WealthTrajectoryCard";
@@ -151,13 +152,6 @@ function startOfYearISO(): string {
 function startOfMonthISO(): string {
   const now = new Date();
   return new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1)).toISOString();
-}
-
-function pctOfYearElapsed(): number {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), 0, 1).getTime();
-  const end = new Date(now.getFullYear() + 1, 0, 1).getTime();
-  return ((now.getTime() - start) / (end - start)) * 100;
 }
 
 /** Human-readable byte formatter (binary). */
@@ -461,36 +455,14 @@ export default function Home() {
 
   // NVDA pace. Sourced from the latest concentration agent_report tied to
   // the user's pending draft (see backend ``_build_nvda_pace`` in
-  // argosy/api/routes/plan.py). Falls back to 0 + an "awaiting synthesis"
-  // tooltip when no concentration report exists yet — the tile still
-  // renders so the user sees the target rather than a blank slot.
-  //
-  // Status badge logic (softened for non-linear quarterly schedules):
-  //
-  //   target_shares_ytd > 0 AND shares_sold_ytd >= target_shares_ytd → ON PACE (success)
-  //   under target by   < 20%                                        → ON PACE (success)
-  //   under target by  >= 20%                                        → BEHIND PACE (warning)
-  //   target_shares_ytd == 0                                         → neutral "—" (no badge)
-  //
-  // Prefer the agent's own ``on_track`` boolean when ahead-of-target —
-  // the agent owns the schedule semantics. Below-target we apply the
-  // 20% tolerance band locally so a small lag against a linear pro-rata
-  // doesn't flash a warning when the actual plan cadence is back-loaded.
+  // argosy/api/routes/plan.py), with a deterministic current-plan
+  // fallback. Copy + badge live in <NvdaPaceTile /> — plan-relative
+  // labels on basis="glide", calendar labels on the horizon fallback.
+  // Render only when the backend served real pace data with a non-zero
+  // target denominator; null/absent HIDES the tile entirely.
   const nvdaPace = data.planDraft?.nvda_pace ?? null;
-  const nvdaSold = nvdaPace?.shares_sold_ytd ?? 0;
-  const nvdaTargetYtd = nvdaPace?.target_shares_ytd ?? 0;
-  // Render only when the backend served real pace data (the endpoint now
-  // falls back to the current plan + sales history itself). Null/absent —
-  // or a zero plan target, which leaves no denominator — HIDES the tile
-  // entirely; never an empty "—" with a warning pill.
-  const showNvdaPace = nvdaPace !== null && nvdaTargetYtd > 0;
-  const nvdaPctSold = nvdaTargetYtd > 0 ? (nvdaSold / nvdaTargetYtd) * 100 : 0;
-  const nvdaOnPace = (() => {
-    if (!showNvdaPace) return false;
-    if (nvdaPace!.on_track || nvdaSold >= nvdaTargetYtd) return true;
-    const underPct = ((nvdaTargetYtd - nvdaSold) / nvdaTargetYtd) * 100;
-    return underPct < 20;
-  })();
+  const showNvdaPace =
+    nvdaPace !== null && (nvdaPace.target_shares_ytd ?? 0) > 0;
 
   // Domain KB freshness.
   const kbStats = useMemo(() => {
@@ -647,33 +619,7 @@ export default function Home() {
           block. Rendered ONLY when the backend served pace data (it
           falls back to the current plan + sales history itself); when
           null/absent the tile is hidden entirely. */}
-      {showNvdaPace ? (
-        <section>
-          <SectionHeader
-            label="NVDA PACE"
-            action={
-              <StatusPill tone={nvdaOnPace ? "success" : "warning"} mono>
-                {nvdaOnPace ? "ON PACE" : "BEHIND PACE"}
-              </StatusPill>
-            }
-          />
-          <div className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="font-mono text-sm tabular-nums">
-                {`${nvdaSold.toLocaleString()} / ${nvdaTargetYtd.toLocaleString()} shares sold YTD (plan target)`}
-              </div>
-              <div className="text-[11px] text-muted-foreground tabular-nums">
-                {`${nvdaPctSold.toFixed(1)}% of plan target · `}
-                {pctOfYearElapsed().toFixed(0)}% of year elapsed
-              </div>
-            </div>
-            <ProgressBar
-              pct={Math.max(0, Math.min(100, nvdaPctSold))}
-              tone={nvdaOnPace ? "success" : "warning"}
-            />
-          </div>
-        </section>
-      ) : null}
+      {showNvdaPace ? <NvdaPaceTile pace={nvdaPace!} /> : null}
 
       {/* ARGONAUT card — paper-trading P&L. Finance-relevant side
           experiment, kept in YOUR MONEY. Chart only renders when we

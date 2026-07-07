@@ -1615,6 +1615,87 @@ def test_current_structured_nvda_pace_falls_back_to_plan_and_sales(client_with_d
     assert pace["delta_shares"] == pace["shares_sold_ytd"] - pace["target_shares_ytd"]
     assert pace["status"] in ("ahead", "on", "behind")
     assert pace["on_track"] == (pace["delta_shares"] >= 0)
+    # Labeling metadata: no glide doc → calendar basis, no plan window.
+    assert pace["basis"] == "horizon"
+    assert pace["sold_calendar_ytd"] == 1600
+
+
+def test_current_structured_nvda_pace_glide_carries_plan_window_metadata(
+    client_with_db,
+):
+    """With a TargetAllocationDoc glide the pace payload must say so:
+    ``basis='glide'`` + ``plan_start`` + the calendar context figure — the
+    UI labels these numbers 'day N of the plan year', never 'YTD'."""
+    from datetime import date, datetime, timezone
+
+    from argosy.state.models import PlanVersion, User
+
+    year = date.today().year
+    doc = {
+        "schema_version": 1,
+        "classes": [
+            {
+                "label": "NVDA (deconcentrating)",
+                "instruments": [{"symbol": "NVDA"}],
+            },
+        ],
+        "glide": [
+            {
+                "date": f"{year}-01-01",
+                "composition_pct_by_class": {"NVDA (deconcentrating)": 59.0},
+            },
+            {
+                "date": f"{year + 1}-01-01",
+                "composition_pct_by_class": {"NVDA (deconcentrating)": 12.0},
+            },
+        ],
+    }
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.add(PlanVersion(
+            user_id="ariel",
+            role="current",
+            version_label="glide-doc-current",
+            raw_markdown="",
+            accepted_at=datetime.now(timezone.utc),
+            target_allocation_json=json.dumps(doc),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        sess.add(PortfolioSnapshotRow(
+            user_id="ariel",
+            snapshot_date=date.today(),
+            imported_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            positions_json=json.dumps(
+                [{"symbol": "NVDA", "shares": 10911.0, "usd_value_k": 2200.0}]
+            ),
+            nvda_sales_json=json.dumps(
+                [{"month": "Jan", "shares": 560, "price": 191.0}]
+            ),
+            totals_json="{}",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/current/structured?user_id=ariel")
+    assert r.status_code == 200, r.text
+    pace = r.json()["nvda_pace"]
+    assert pace is not None
+    assert pace["source"] == "plan+sales"
+    assert pace["basis"] == "glide"
+    assert pace["plan_start"] == f"{year}-01-01"
+    assert pace["sold_calendar_ytd"] == 560
+    # Plan window == calendar year here, so the window count matches.
+    assert pace["shares_sold_ytd"] == 560
 
 
 def test_current_structured_nvda_pace_none_without_glide_target(client_with_db):

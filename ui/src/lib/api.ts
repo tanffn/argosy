@@ -5039,6 +5039,18 @@ export interface NvdaPaceDTO {
   target_shares_ytd: number;
   delta_shares: number;
   on_track: boolean;
+  /**
+   * Window basis from the canonical derivation: "glide" = the numbers
+   * are PLAN-relative (window starts at the glide's first waypoint, not
+   * Jan 1) — the tile labels them "day N of the plan year", never
+   * "YTD"/"% of year elapsed". "horizon" (or absent, legacy payloads)
+   * keeps calendar labels.
+   */
+  basis?: string;
+  /** ISO date of the plan window start (the glide's first waypoint). */
+  plan_start?: string | null;
+  /** Calendar-year sold count (deduped) — context line on glide basis. */
+  sold_calendar_ytd?: number | null;
 }
 
 /**

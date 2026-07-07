@@ -497,6 +497,18 @@ class NvdaPaceView(BaseModel):
     # deterministic fallback (current plan's glide target + the actual
     # sales history). The UI captions which it renders.
     source: str = "draft"
+    # Labeling metadata from the ONE canonical derivation
+    # (``compute_nvda_sale_pace``): "glide" means the numbers are
+    # PLAN-relative (window starts at the glide's first waypoint, NOT
+    # Jan 1) — the UI must label them "day N of the plan year", never
+    # "YTD"/"% of year elapsed". "horizon" keeps calendar labels.
+    basis: str = "horizon"
+    # ISO date of the plan window's start (the glide's first waypoint);
+    # None on the horizon fallback.
+    plan_start: str | None = None
+    # Calendar-year sold count (deduped), kept as CONTEXT next to the
+    # plan-relative window — e.g. "1,600 sold in 2026 pre-plan".
+    sold_calendar_ytd: int | None = None
 
 
 def _pace_status(sold: int, target: int) -> str:
@@ -682,6 +694,11 @@ def _fallback_nvda_pace(db: Session, user_id: str) -> NvdaPaceView | None:
             on_track=pace.on_track,
             status=pace.status,  # banded vs the ANNUAL flow, not the day-N target
             source="plan+sales",
+            basis=pace.basis,
+            plan_start=(
+                pace.plan_start.isoformat() if pace.plan_start else None
+            ),
+            sold_calendar_ytd=pace.sold_calendar_ytd,
         )
     except Exception:  # noqa: BLE001 — pace is enrichment, never a 500
         logger.warning("nvda_pace: deterministic fallback failed", exc_info=True)
@@ -744,6 +761,29 @@ def _build_nvda_pace(
     try:
         sold = int(pace.get("shares_sold_ytd") or 0)
         target = int(pace.get("target_shares_ytd") or 0)
+        # Labeling metadata comes from the canonical derivation: the
+        # agent's inputs were fed from compute_nvda_sale_pace, so when
+        # the plan carries a glide these numbers are PLAN-relative and
+        # the UI must not glue calendar-YTD labels onto them.
+        basis = "horizon"
+        plan_start: str | None = None
+        sold_calendar: int | None = None
+        try:
+            from argosy.services.nvda_sales_history import (
+                compute_nvda_sale_pace,
+            )
+
+            canon = compute_nvda_sale_pace(db, user_id)
+            if canon.basis == "glide":
+                basis = "glide"
+                plan_start = (
+                    canon.plan_start.isoformat() if canon.plan_start else None
+                )
+                sold_calendar = canon.sold_calendar_ytd
+        except Exception:  # noqa: BLE001 — metadata is labeling enrichment
+            logger.warning(
+                "nvda_pace: canonical basis lookup failed", exc_info=True
+            )
         return NvdaPaceView(
             shares_sold_ytd=sold,
             target_shares_ytd=target,
@@ -751,6 +791,9 @@ def _build_nvda_pace(
             on_track=bool(pace.get("on_track", True)),
             status=_pace_status(sold, target),
             source="draft",
+            basis=basis,
+            plan_start=plan_start,
+            sold_calendar_ytd=sold_calendar,
         )
     except (TypeError, ValueError) as exc:
         logger.warning(
