@@ -2,17 +2,22 @@
 
 /**
  * WealthTrajectoryCard — what an FM would actually show for "how is the
- * book doing": the past 12 months ACTUAL net worth (portfolio_snapshots
- * history via GET /api/portfolio/net-worth-history) plus ~2 years
- * PROJECTED from the wealth-dashboard's canonical trajectory (the same
- * scenario engine the retirement surfaces bind to), rendered as a
- * dashed median line inside a shaded bear→typical band, clearly
- * labelled "projected".
+ * book doing", at QUARTERLY resolution: exactly 1 year of ACTUAL net
+ * worth (portfolio_snapshots history via GET
+ * /api/portfolio/net-worth-history, bucketed to the last point per
+ * quarter) plus exactly 1 year PROJECTED from the wealth-dashboard's
+ * canonical scenario trajectory (yearly points, interpolated
+ * geometrically to quarters), rendered as a dashed median line inside a
+ * shaded bear→typical band clearly labelled "projected".
  *
- * Units: USD. The wealth-dashboard trajectory is NIS, converted here
- * with the dashboard's own fx_usd_nis assumption so both halves of the
- * chart share one canonical FX source. When FX is unavailable the
- * projection is omitted rather than plotted in mixed units.
+ * The header pill answers "are we beating the trendline": a linear fit
+ * through the past year's actuals, evaluated at the latest snapshot —
+ * AHEAD OF TREND +$X / BEHIND TREND −$X.
+ *
+ * Units: USD. The wealth-dashboard trajectory is NIS, converted with the
+ * dashboard's own fx_usd_nis assumption so both halves of the chart
+ * share one canonical FX source. When FX is unavailable the projection
+ * is omitted rather than plotted in mixed units.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -27,16 +32,20 @@ import {
   YAxis,
 } from "recharts";
 
+import { StatusPill } from "@/components/ui/status-pill";
 import {
   api,
   type NetWorthHistoryResponse,
   type WealthDashboardDTO,
 } from "@/lib/api";
 
-const PROJECTION_YEARS = 2;
+const PAST_QUARTERS = 4; // exactly 1 year back
+const PROJECTION_QUARTERS = 4; // exactly 1 year forward
 
 const ACTUAL_COLOR = "#10b981"; // emerald — realized
 const PROJECTED_COLOR = "#6366f1"; // indigo — model output
+
+const QUARTER_MS = (365.25 / 4) * 24 * 3600 * 1000;
 
 interface Row {
   ts: number; // epoch ms — numeric x-axis handles irregular spacing
@@ -56,34 +65,90 @@ function monthLabel(ts: number): string {
   return d.toLocaleDateString([], { month: "short", year: "2-digit" });
 }
 
-export function buildRows(
+/**
+ * Quarterly actuals: the LAST snapshot per calendar quarter, capped to
+ * the past PAST_QUARTERS year-window ending "now". The latest snapshot
+ * always survives (it is the last point of its own quarter).
+ */
+export function bucketQuarterly(
   history: NetWorthHistoryResponse | null,
-  dash: WealthDashboardDTO | null,
-  now: number = Date.now(),
+  now: number,
 ): Row[] {
-  const rows: Row[] = [];
+  const cutoff = now - PAST_QUARTERS * QUARTER_MS;
+  const byQuarter = new Map<string, Row>();
   for (const p of history?.points ?? []) {
     if (p.total_usd === null) continue;
     const ts = new Date(p.date).getTime();
-    if (Number.isNaN(ts)) continue;
-    rows.push({ ts, actual: p.total_usd });
+    if (Number.isNaN(ts) || ts < cutoff || ts > now) continue;
+    const d = new Date(ts);
+    const key = `${d.getFullYear()}-q${Math.floor(d.getMonth() / 3)}`;
+    const prev = byQuarter.get(key);
+    if (!prev || ts > prev.ts) byQuarter.set(key, { ts, actual: p.total_usd });
   }
+  return [...byQuarter.values()].sort((a, b) => a.ts - b.ts);
+}
+
+/**
+ * Quarterly projection: the canonical trajectory's year-0 → year-1
+ * points, interpolated geometrically per band (bear/typical) at
+ * quarters 0..4, converted NIS→USD by the dashboard's own fx.
+ */
+export function buildProjection(
+  dash: WealthDashboardDTO | null,
+  now: number,
+): Row[] {
   const fx = dash?.assumptions.fx_usd_nis ?? null;
   const traj = dash?.retirement.trajectory ?? [];
-  if (fx !== null && fx > 0 && traj.length > 0) {
-    const yearMs = 365.25 * 24 * 3600 * 1000;
-    for (const t of traj) {
-      if (t.year > PROJECTION_YEARS) break;
-      const low = Math.min(t.bear, t.typical) / fx;
-      const high = Math.max(t.bear, t.typical) / fx;
-      rows.push({
-        ts: now + t.year * yearMs,
-        projMid: t.typical / fx,
-        projBand: [low, high],
-      });
-    }
+  if (fx === null || fx <= 0) return [];
+  const y0 = traj.find((t) => t.year === 0);
+  const y1 = traj.find((t) => t.year === 1);
+  if (!y0 || !y1) return [];
+  const interp = (a: number, b: number, q: number): number =>
+    a > 0 && b > 0 ? a * Math.pow(b / a, q / 4) : a + (b - a) * (q / 4);
+  const rows: Row[] = [];
+  for (let q = 0; q <= PROJECTION_QUARTERS; q++) {
+    const bear = interp(y0.bear, y1.bear, q) / fx;
+    const typical = interp(y0.typical, y1.typical, q) / fx;
+    rows.push({
+      ts: now + q * QUARTER_MS,
+      projMid: typical,
+      projBand: [Math.min(bear, typical), Math.max(bear, typical)],
+    });
   }
-  return rows.sort((a, b) => a.ts - b.ts);
+  return rows;
+}
+
+/**
+ * "Are we beating the trendline" — least-squares linear fit through the
+ * past year's quarterly actuals, evaluated at the latest actual point.
+ * Returns the residual (latest − fit); null when fewer than 3 points
+ * (a 2-point fit is exact, so the residual is vacuously 0).
+ */
+export function trendDelta(actuals: Row[]): number | null {
+  const pts = actuals.filter((r) => r.actual !== undefined);
+  if (pts.length < 3) return null;
+  const n = pts.length;
+  // Quarter-scaled, origin-shifted x for numeric stability.
+  const x0 = pts[0].ts;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  for (const p of pts) {
+    const x = (p.ts - x0) / QUARTER_MS;
+    const y = p.actual!;
+    sx += x;
+    sy += y;
+    sxx += x * x;
+    sxy += x * y;
+  }
+  const denom = n * sxx - sx * sx;
+  if (denom === 0) return null;
+  const b = (n * sxy - sx * sy) / denom;
+  const a = (sy - b * sx) / n;
+  const last = pts[n - 1];
+  const fit = a + b * ((last.ts - x0) / QUARTER_MS);
+  return last.actual! - fit;
 }
 
 function TrajectoryTooltip(props: {
@@ -145,13 +210,23 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
     };
   }, [userId]);
 
-  const rows = useMemo(
-    () => buildRows(history, dash, nowTs ?? 0),
-    [history, dash, nowTs],
+  const actuals = useMemo(
+    () => bucketQuarterly(history, nowTs ?? 0),
+    [history, nowTs],
   );
-  const hasActual = rows.some((r) => r.actual !== undefined);
-  const hasProjection = rows.some((r) => r.projMid !== undefined);
-  const latestActual = [...rows].reverse().find((r) => r.actual !== undefined);
+  const projection = useMemo(
+    () => buildProjection(dash, nowTs ?? 0),
+    [dash, nowTs],
+  );
+  const rows = useMemo(
+    () => [...actuals, ...projection].sort((a, b) => a.ts - b.ts),
+    [actuals, projection],
+  );
+  const delta = useMemo(() => trendDelta(actuals), [actuals]);
+
+  const hasActual = actuals.length > 0;
+  const hasProjection = projection.length > 0;
+  const latestActual = hasActual ? actuals[actuals.length - 1] : null;
 
   return (
     <div
@@ -162,14 +237,34 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
           Wealth trajectory
         </span>
-        {latestActual?.actual !== undefined ? (
-          <span
-            className="font-mono text-sm font-semibold tabular-nums"
-            data-testid="wealth-latest"
-          >
-            {formatUsdCompact(latestActual.actual)}
-          </span>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {latestActual?.actual !== undefined ? (
+            <span
+              className="font-mono text-sm font-semibold tabular-nums"
+              data-testid="wealth-latest"
+            >
+              {formatUsdCompact(latestActual.actual)}
+            </span>
+          ) : null}
+          {delta !== null ? (
+            Math.abs(delta) < 500 ? (
+              <StatusPill tone="success" mono data-testid="wealth-trend">
+                ON TREND
+              </StatusPill>
+            ) : (
+              <StatusPill
+                tone={delta >= 0 ? "success" : "warning"}
+                mono
+                data-testid="wealth-trend"
+                title="latest snapshot vs a linear fit through the past year's quarterly actuals"
+              >
+                {delta >= 0
+                  ? `AHEAD OF TREND +${formatUsdCompact(delta)}`
+                  : `BEHIND TREND −${formatUsdCompact(Math.abs(delta))}`}
+              </StatusPill>
+            )
+          ) : null}
+        </div>
       </div>
       {loading ? (
         <div
@@ -225,7 +320,7 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
                 name="actual"
                 stroke={ACTUAL_COLOR}
                 strokeWidth={2}
-                dot={{ r: 2 }}
+                dot={{ r: 3 }}
                 connectNulls
                 isAnimationActive={false}
               />
@@ -244,10 +339,10 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
             </ComposedChart>
           </ResponsiveContainer>
           <div className="text-[11px] text-muted-foreground tabular-nums">
-            {hasActual ? "solid: last 12 months actual" : null}
+            {hasActual ? "solid: past year actual (quarterly)" : null}
             {hasActual && hasProjection ? " · " : null}
             {hasProjection
-              ? `dashed/shaded: ~${PROJECTION_YEARS}y projected (canonical scenario engine)`
+              ? "dashed/shaded: 1y projected (canonical scenario engine)"
               : null}
           </div>
         </>
