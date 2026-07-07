@@ -210,6 +210,167 @@ def test_non_canonical_names_ignored(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Legacy pre-layout sheets ("25 Jul.csv" / "25 Aug.tsv" format)
+# ---------------------------------------------------------------------------
+
+# Jul-2025 variant: comma-separated, LEADING EMPTY COLUMN, quoted
+# thousands, ad-hoc sanity-check spill cells in trailing columns, NIS
+# rows with local Current Value + converted (K) USD Value, and a
+# physical real-estate row (excluded from the total for basis
+# consistency with the modern-era points).
+_LEGACY_CSV = """\
+,Location,Currency,Type,Details,Symbol,# Shares,Current price,Avg Price,Current Value,(K) USD Value,% Change,% Yearly,
+,schwab,USD,Growth,"Stock, AI",NVDA,12638,173.91,173.91,"2,197,875","2,198",0%,,
+,Leumi,NIS,Cash,Cash,,108000,1,1,"108,000",32,0%,,
+,Leumi,USD,Cash,Cash,,153000,1,1,"153,000",153,0%,,
+,Leumi,NIS,Foundational,ETF,MSCI World,750,247.4,231.64,"185,550",55,7%,,
+,Leumi,USD,Div\\Value,ETF,SCHD,4500,27.01,26.35,"121,545",122,3%,,Leumi Sum in NIS (sanity check)
+,Leumi,USD,Hedge,TLT Bond,TLT,500,85.1,99.61,"42,550",43,-15%,,"1,760"
+,Leumi,USD,Growth,ETF,QQQM,60,231.23,230.43,"13,874",14,0%,,
+,Leumi,USD,Growth,"Stock, IT",AMZN,100,223.84,167.38,"22,384",22,34%,,
+,Leumi,USD,Growth,"Stock, IT",GOOG,100,183.81,177.84,"18,381",18,3%,,
+,Leumi,USD,Foundational,Stock,BRK.B,50,470.08,469.38,"23,504",24,0%,,
+,Aborad,USD,Real estate,Real estate,-,3,-,-,-,167,0,,
+"""
+
+
+def _write_legacy(root, name: str, mtime: date, content: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    p = root / name
+    p.write_text(content, encoding="utf-8")
+    t = datetime(mtime.year, mtime.month, mtime.day, 12, 0).timestamp()
+    os.utime(p, (t, t))
+
+
+def test_legacy_csv_parses_evidence_grade(monkeypatch, tmp_path):
+    from argosy.services.net_worth_backfill import (
+        reconstructed_net_worth_points,
+    )
+
+    root = tmp_path / "resources"
+    _write_legacy(
+        root, "Family Finances Status - 25 Jul.csv",
+        date(2025, 7, 19), _LEGACY_CSV,
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+
+    pts = reconstructed_net_worth_points()
+    assert len(pts) == 1
+    p = pts[0]
+    assert p.date == date(2025, 7, 19)
+    # Positions sum EXCLUDING the $167K real-estate row.
+    assert p.total_usd == pytest.approx(2_681_000.0)
+    assert p.nvda_usd == pytest.approx(2_198_000.0)
+    # Tradeable book excludes the cash rows: 2198+55+122+43+14+22+18+24.
+    assert p.nvda_pct == pytest.approx(2198 / 2496 * 100, abs=0.1)
+    assert p.cash_usd == pytest.approx(185_000.0)
+    assert p.nis_denominated_usd == pytest.approx(87_000.0)
+    # FX from the NIS rows' aggregate ratio: 293,550 / 87,000.
+    assert p.fx_usd_nis == pytest.approx(293_550 / 87_000, abs=1e-4)
+    assert p.total_nis == pytest.approx(p.total_usd * p.fx_usd_nis)
+    assert p.provenance.startswith(
+        "legacy-tsv:Family Finances Status - 25 Jul.csv"
+    )
+    assert "fx derived from NIS-row ratios" in p.provenance
+
+
+def test_legacy_tab_variant_without_leading_column(monkeypatch, tmp_path):
+    """The Aug-2025 shape: tab-separated, no leading empty column, CRLF."""
+    import csv as _csv
+    import io as _io
+
+    from argosy.services.net_worth_backfill import (
+        reconstructed_net_worth_points,
+    )
+
+    rows = list(_csv.reader(_io.StringIO(_LEGACY_CSV)))
+    tsv = "\r\n".join("\t".join(r[1:]) for r in rows) + "\r\n"
+
+    root = tmp_path / "resources"
+    _write_legacy(
+        root, "Family Finances Status - 25 Aug.tsv",
+        date(2025, 8, 22), tsv,
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+
+    pts = reconstructed_net_worth_points()
+    assert len(pts) == 1
+    assert pts[0].date == date(2025, 8, 22)
+    assert pts[0].total_usd == pytest.approx(2_681_000.0)
+    assert pts[0].provenance.startswith("legacy-tsv:")
+
+
+def test_legacy_rejects_misaligned_usd_column(monkeypatch, tmp_path):
+    """Shifted values (the mis-parse failure class the gate exists for):
+    Current Value ≉ (K) USD Value × 1000 on the USD rows → no point."""
+    import csv as _csv
+    import io as _io
+
+    from argosy.services.net_worth_backfill import (
+        reconstructed_net_worth_points,
+    )
+
+    rows = list(_csv.reader(_io.StringIO(_LEGACY_CSV)))
+    # Corrupt every data row's (K) USD Value (index 10 with the leading
+    # empty column) to a figure unrelated to Current Value.
+    for r in rows[1:]:
+        if len(r) > 10 and r[10].strip():
+            r[10] = "7"
+    out = _io.StringIO()
+    _csv.writer(out, lineterminator="\n").writerows(rows)
+
+    root = tmp_path / "resources"
+    _write_legacy(
+        root, "Family Finances Status - 25 Jul.csv",
+        date(2025, 7, 19), out.getvalue(),
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+    assert reconstructed_net_worth_points() == []
+
+
+def test_legacy_declines_fx_when_nis_ratios_disagree(monkeypatch, tmp_path):
+    """NIS rows implying rates >3% apart → the ₪ fields are declined
+    (fx/total_nis None) but the USD point still ships."""
+    from argosy.services.net_worth_backfill import (
+        reconstructed_net_worth_points,
+    )
+
+    # Make the MSCI World NIS row imply fx ≈ 4.6 vs cash's 3.375.
+    bad = _LEGACY_CSV.replace(
+        ',Leumi,NIS,Foundational,ETF,MSCI World,750,247.4,231.64,"185,550",55,7%,,',
+        ',Leumi,NIS,Foundational,ETF,MSCI World,750,247.4,231.64,"253,000",55,7%,,',
+    )
+    assert bad != _LEGACY_CSV
+    root = tmp_path / "resources"
+    _write_legacy(
+        root, "Family Finances Status - 25 Jul.csv", date(2025, 7, 19), bad,
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+
+    pts = reconstructed_net_worth_points()
+    assert len(pts) == 1
+    assert pts[0].fx_usd_nis is None
+    assert pts[0].total_nis is None
+    assert pts[0].total_usd == pytest.approx(2_681_000.0)
+    assert "fx undetermined" in pts[0].provenance
+
+
+def test_legacy_rejects_without_nvda_row(monkeypatch, tmp_path):
+    from argosy.services.net_worth_backfill import (
+        reconstructed_net_worth_points,
+    )
+
+    no_nvda = _LEGACY_CSV.replace("NVDA", "AAPL")
+    root = tmp_path / "resources"
+    _write_legacy(
+        root, "Family Finances Status - 25 Jul.csv",
+        date(2025, 7, 19), no_nvda,
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(root))
+    assert reconstructed_net_worth_points() == []
+
+
+# ---------------------------------------------------------------------------
 # Endpoint merge — /api/portfolio/net-worth-history
 # ---------------------------------------------------------------------------
 
