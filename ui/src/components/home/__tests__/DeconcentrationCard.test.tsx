@@ -169,6 +169,74 @@ describe("helpers", () => {
     expect(findNvdaClass(null)).toBeNull();
   });
 
+  it("REGRESSION: never matches sleeves that merely reference NVDA (ex-/non-NVDA)", () => {
+    // Live plan v67 ordering: 'Global quality growth (ex-NVDA-dense)'
+    // sorts BEFORE 'Strategic single-stock (NVDA)'. The naive substring
+    // match picked it, drawing its 4.7→11% RAMP as the NVDA glide
+    // ("60% → ~5% → UP to 11%").
+    const live = glidepath({
+      asset_classes: [
+        "Global quality growth (ex-NVDA-dense)",
+        "Individual Stocks (non-NVDA, to redeploy)",
+        NVDA_CLASS,
+      ],
+      points: [
+        {
+          date: "2026-07-06",
+          months_out: 0,
+          composition_pct_by_class: {
+            "Global quality growth (ex-NVDA-dense)": 4.7,
+            "Individual Stocks (non-NVDA, to redeploy)": 8.0,
+            [NVDA_CLASS]: 59.5,
+          },
+        },
+        {
+          date: "2027-07-06",
+          months_out: 12,
+          composition_pct_by_class: {
+            "Global quality growth (ex-NVDA-dense)": 11.0,
+            "Individual Stocks (non-NVDA, to redeploy)": 0.0,
+            [NVDA_CLASS]: 8.0,
+          },
+        },
+      ] as AllocationGlidepathResponse["points"],
+    });
+    expect(findNvdaClass(live)).toBe(NVDA_CLASS);
+    // The waypoint series is the true glide (59.5→8), not the 4.7→11 ramp.
+    expect(extractWaypoints(live).map((w) => w.target_pct)).toEqual([
+      59.5, 8.0,
+    ]);
+    // Even without the strategic sleeve, exclusion-qualified names and
+    // the non-NVDA individual-stocks sleeve never qualify.
+    expect(
+      findNvdaClass(
+        glidepath({
+          asset_classes: [
+            "Global quality growth (ex-NVDA-dense)",
+            "Individual Stocks (non-NVDA, to redeploy)",
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("buildRows windows actuals to 1 year past; the glide runs to its end", () => {
+    const now = new Date("2026-07-07").getTime();
+    const wps = extractWaypoints(glidepath());
+    const withOld: NetWorthHistoryResponse = {
+      user_id: "ariel",
+      points: [
+        { date: "2025-05-01", total_usd: 3_000_000, nvda_pct: 70.0 }, // >1y old
+        ...HISTORY.points,
+      ],
+    };
+    const rows = buildRows(withOld, wps, now);
+    expect(rows.some((r) => r.actual === 70.0)).toBe(false);
+    expect(rows.some((r) => r.actual === 64.9)).toBe(true);
+    // Glide end (2027-07-06) survives untrimmed.
+    expect(rows.some((r) => r.glide === 8.0)).toBe(true);
+  });
+
   it("extractWaypoints returns the NVDA band's dated waypoints in order", () => {
     const wps = extractWaypoints(glidepath());
     expect(wps.map((w) => w.date)).toEqual([

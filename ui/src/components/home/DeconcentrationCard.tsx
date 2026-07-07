@@ -57,15 +57,37 @@ export interface Waypoint {
   target_pct: number;
 }
 
-/** Pick the glidepath band that is the concentrated NVDA position. */
+/**
+ * Pick the glidepath band that IS the concentrated NVDA position.
+ *
+ * Careful: several sleeves merely REFERENCE NVDA in their names —
+ * "Global quality growth (ex-NVDA-dense)", "Individual Stocks
+ * (non-NVDA, to redeploy)". A naive substring match grabbed the
+ * alphabetically-first of those, so the chart drew the ex-NVDA-dense
+ * sleeve's 4.7%→11% RAMP as "the NVDA glide dips to 5% then rises".
+ * Exclusion-qualified names (ex-/non-NVDA) never qualify; among real
+ * mentions the strategic single-stock sleeve wins.
+ */
 export function findNvdaClass(
   glidepath: AllocationGlidepathResponse | null,
 ): string | null {
   if (!glidepath) return null;
-  const classes = glidepath.asset_classes;
+  const isExcluded = (lc: string) =>
+    lc.includes("ex-nvda") || lc.includes("non-nvda") || lc.includes("ex nvda");
+  const mentions = glidepath.asset_classes.filter((c) => {
+    const lc = c.toLowerCase();
+    return lc.includes("nvda") && !isExcluded(lc);
+  });
   return (
-    classes.find((c) => c.toLowerCase().includes("nvda")) ??
-    classes.find((c) => c.toLowerCase().includes("individual stocks")) ??
+    mentions.find((c) => {
+      const lc = c.toLowerCase();
+      return lc.includes("single-stock") || lc.includes("strategic");
+    }) ??
+    mentions[0] ??
+    glidepath.asset_classes.find((c) => {
+      const lc = c.toLowerCase();
+      return lc.includes("individual stocks") && !isExcluded(lc);
+    }) ??
     null
   );
 }
@@ -92,15 +114,24 @@ export function extractWaypoints(
   return out.sort((a, b) => a.ts - b.ts);
 }
 
+const YEAR_MS = 365.25 * 24 * 3600 * 1000;
+
+/**
+ * Window: exactly 1 year of past actuals + the plan glide to its end
+ * (the doc glide spans the plan's transition horizon — currently one
+ * year — so the future edge is the glide's own last waypoint).
+ */
 export function buildRows(
   history: NetWorthHistoryResponse | null,
   waypoints: Waypoint[],
+  now: number = Date.now(),
 ): Row[] {
+  const cutoff = now - YEAR_MS;
   const rows: Row[] = [];
   for (const p of history?.points ?? []) {
     if (p.nvda_pct === null) continue;
     const ts = new Date(p.date).getTime();
-    if (Number.isNaN(ts)) continue;
+    if (Number.isNaN(ts) || ts < cutoff) continue;
     rows.push({ ts, actual: p.nvda_pct });
   }
   for (const w of waypoints) {
@@ -212,8 +243,10 @@ export function DeconcentrationCard({ userId }: { userId: string }) {
 
   const waypoints = useMemo(() => extractWaypoints(glidepath), [glidepath]);
   const rows = useMemo(
-    () => buildRows(history, waypoints),
-    [history, waypoints],
+    // todayTs is stamped in the same effect that sets history, so rows
+    // recompute with the real clock as soon as data exists (0 = no data).
+    () => buildRows(history, waypoints, todayTs ?? 0),
+    [history, waypoints, todayTs],
   );
   const due = useMemo(() => dueWaypoint(rows, waypoints), [rows, waypoints]);
   const verdict = useMemo(
