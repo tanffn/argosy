@@ -666,6 +666,28 @@ def build_plan_export_markdown(
     return "\n".join(lines)
 
 
+def plan_markdown_for_review(db: Session, *, user_id: str, plan: Any) -> str:
+    """The plan text a critique/review agent should read for ``plan``.
+
+    Graph-authored plan versions (post living-plan cutover) carry an EMPTY
+    ``raw_markdown`` — the plan lives in the derivation graph + the canonical
+    TargetAllocationDoc, not a prose blob. Feeding ``raw_markdown`` directly
+    to the critique agent therefore silently reviewed nothing (weekly_review
+    no-op'd with ``weekly_review.no_plan``; ``plan_critiques`` stayed empty
+    since the cutover). When the prose is present use it; otherwise render
+    the canonical one-pager export — the same document the user downloads —
+    so the critique reviews the REAL current plan.
+    """
+    md = (getattr(plan, "raw_markdown", "") or "").strip()
+    if md:
+        return md
+    # Reader-facing artifact: exclude the stale internal FM-objection
+    # scratchpad (see build_plan_export_markdown docstring).
+    return build_plan_export_markdown(
+        db, user_id=user_id, include_fm_objections=False,
+    )
+
+
 def export_filename(today: date | None = None) -> str:
     """Filename for the downloaded markdown — ``argosy-plan-YYYY-MM-DD.md``."""
     d = today or date.today()
@@ -675,6 +697,7 @@ def export_filename(today: date | None = None) -> str:
 __all__ = [
     "build_plan_export_markdown",
     "export_filename",
+    "plan_markdown_for_review",
     "render_coherence_deliberation_appendix",
     "render_fm_dialogue_appendix",
 ]

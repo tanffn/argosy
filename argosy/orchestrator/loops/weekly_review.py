@@ -153,7 +153,14 @@ async def _default_gather_inputs(user_id: str) -> WeeklyReviewInputs:
         ).scalar_one_or_none()
         if plan is not None:
             plan_label = plan.version_label or f"plan_version_id={plan.id}"
-            plan_markdown = plan.raw_markdown
+            # Graph-authored plans carry no raw_markdown — render the
+            # canonical export so the critique reviews the real plan
+            # instead of silently no-op'ing (`weekly_review.no_plan`).
+            from argosy.services.plan_export import plan_markdown_for_review
+
+            plan_markdown = await session.run_sync(
+                lambda s: plan_markdown_for_review(s, user_id=user_id, plan=plan)
+            )
             plan_version_id = plan.id
 
     return WeeklyReviewInputs(

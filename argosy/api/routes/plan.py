@@ -225,6 +225,14 @@ async def queue_critique(req: CritiqueRequestDTO) -> CritiqueQueuedDTO:
                 select(UserContext).where(UserContext.user_id == req.user_id)
             )
         ).scalar_one_or_none()
+        # Graph-authored plans carry no raw_markdown — render the canonical
+        # export so the critique reviews the real plan (same seam as
+        # weekly_review's gather).
+        from argosy.services.plan_export import plan_markdown_for_review
+
+        plan_markdown = await session.run_sync(
+            lambda s: plan_markdown_for_review(s, user_id=req.user_id, plan=plan)
+        )
 
     user_context_yaml = ""
     if ctx is not None:
@@ -237,7 +245,7 @@ async def queue_critique(req: CritiqueRequestDTO) -> CritiqueQueuedDTO:
     try:
         report = await agent.run(
             plan_label=plan.version_label or f"plan_version_id={plan.id}",
-            plan_markdown=plan.raw_markdown,
+            plan_markdown=plan_markdown,
             snapshot_label="(re-critique requested via API)",
             snapshot_summary="(no snapshot supplied with this critique run)",
             user_context_yaml=user_context_yaml,

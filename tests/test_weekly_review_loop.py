@@ -135,3 +135,52 @@ async def test_weekly_review_skips_when_plan_missing(engine: None) -> None:
 
     await loop.tick()
     # No exception is success here.
+
+@pytest.mark.asyncio
+async def test_default_gather_renders_export_for_graph_authored_plan(engine: None) -> None:
+    """Graph-authored plans have raw_markdown='' (living-plan cutover). The
+    default gather must fall back to the canonical export render so the
+    weekly critique reviews the REAL plan instead of no-op'ing with
+    weekly_review.no_plan (live finding: plan_critiques was EMPTY)."""
+    from argosy.orchestrator.loops.weekly_review import _default_gather_inputs
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(
+            PlanVersion(
+                id=1,
+                user_id="ariel",
+                version_label="x10-sleeve-draft",
+                source_path="(graph)",
+                raw_markdown="",  # graph-authored: no prose blob
+            )
+        )
+        await session.commit()
+
+    inputs = await _default_gather_inputs("ariel")
+    assert inputs.plan_version_id == 1
+    # The rendered export, not the empty raw_markdown — tick() would
+    # otherwise return before calling the critique agent.
+    assert inputs.plan_markdown.strip()
+    assert "Argosy Plan Snapshot" in inputs.plan_markdown
+
+
+@pytest.mark.asyncio
+async def test_default_gather_prefers_authored_raw_markdown(engine: None) -> None:
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(
+            PlanVersion(
+                id=1,
+                user_id="ariel",
+                version_label="baseline",
+                source_path="(test)",
+                raw_markdown="# My authored plan\n\nProse.\n",
+            )
+        )
+        await session.commit()
+
+    from argosy.orchestrator.loops.weekly_review import _default_gather_inputs
+
+    inputs = await _default_gather_inputs("ariel")
+    assert inputs.plan_markdown.strip() == "# My authored plan\n\nProse."
