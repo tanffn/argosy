@@ -396,6 +396,66 @@ def test_export_includes_wealth_dashboard_numbers(client_with_db):
     assert "deterministic perpetuity-basis fi_age" in body
 
 
+def test_export_renders_canonical_allocation_table(client_with_db):
+    """When the current plan carries a structured TargetAllocationDoc, the
+    export leads with it as the GOVERNING allocation (authority-ordered
+    over prose, which can lag scoped refinement edits — plan_critiques #1
+    RED 1). Sleeve targets + the single-name cap render straight from the
+    structured object."""
+    _seed_snapshot(client_with_db)
+    pv_id = _seed_current(client_with_db)
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, pv_id)
+        pv.target_allocation_json = json.dumps({
+            "schema_version": 1,
+            "basis": "full tradeable book",
+            "anchor_sigma": 0.14,
+            "blended_sigma": 0.16,
+            "nvda_cap_pct": 13.0,
+            "fi_pct": 9.0,
+            "provenance": "test",
+            "classes": [
+                {
+                    "label": "Strategic single-stock (NVDA)",
+                    "snapshot_category": "Individual stocks",
+                    "sigma_class": "single_name",
+                    "target_pct": 8.0,
+                    "instruments": [],
+                },
+                {
+                    "label": "US broad-market core",
+                    "snapshot_category": "Core Equity",
+                    "sigma_class": "equity_core",
+                    "target_pct": 28.5,
+                    "instruments": [],
+                },
+            ],
+            "glide": [],
+        })
+        sess.commit()
+    finally:
+        sess.close()
+    r = client_with_db.get("/api/plan/export?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert "### Canonical target allocation (structured — governs)" in body
+    assert "| Strategic single-stock (NVDA) | 8.0% |" in body
+    assert "| US broad-market core | 28.5% |" in body
+    assert "Single-name hard cap (NVDA): 13.0%" in body
+    assert "THIS TABLE governs" in body
+
+
+def test_export_omits_canonical_allocation_when_absent(client_with_db):
+    """Plans without a structured doc (legacy imports) don't render an
+    empty governing table."""
+    _seed_snapshot(client_with_db)
+    _seed_current(client_with_db)
+    r = client_with_db.get("/api/plan/export?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert "Canonical target allocation" not in r.text
+
+
 def test_export_labels_fx_provenance(client_with_db):
     """The dashboard section must label WHICH FX rate its NIS/USD figures
     use and explain that the plan body's frozen synthesis-time FX is a

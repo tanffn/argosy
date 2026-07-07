@@ -462,6 +462,55 @@ def build_plan_export_markdown(
         push(f"Active: {plan.version_label or f'plan_version_id={plan.id}'}")
         push(f"Status: {status_label}")
     push("")
+
+    # Canonical target allocation — rendered STRAIGHT from the plan's
+    # structured TargetAllocationDoc (which already folds in durable
+    # authored overrides). Scoped refinement edits (POST /api/plan/refine)
+    # update the structured doc but copy prose forward verbatim, so prose
+    # allocation numbers can lag until the next synthesis re-render —
+    # observed live as plan_critiques #1 RED 1 (IPS prose "NVDA 12%" vs
+    # the doc's 8%). Leading with the governing object + an explicit
+    # authority ordering turns that lag from a silent cross-surface
+    # contradiction into a labeled, reconcilable state. Numbers here come
+    # from the structured plan object only — never hand-typed.
+    if plan is not None:
+        try:
+            from argosy.services.target_allocation_doc import (
+                load_plan_target_allocation,
+            )
+
+            alloc_doc = load_plan_target_allocation(plan)
+        except Exception:  # noqa: BLE001 — defensive; never crash the export
+            alloc_doc = None
+        if alloc_doc is not None and getattr(alloc_doc, "classes", None):
+            push("### Canonical target allocation (structured — governs)")
+            push(
+                "_Rendered directly from the plan's structured "
+                "TargetAllocationDoc (durable authored overrides included). "
+                "This is the plan's authoritative allocation. Prose sections "
+                "are re-rendered only at synthesis and can lag scoped "
+                "refinement edits; where a prose allocation number disagrees "
+                "with this table, THIS TABLE governs._"
+            )
+            push("")
+            push("| Sleeve | Target % |")
+            push("|---|---|")
+            for cls in alloc_doc.classes:
+                label = getattr(cls, "label", None)
+                pct = getattr(cls, "target_pct", None)
+                if label is None or pct is None:
+                    continue
+                push(f"| {label} | {float(pct):.1f}% |")
+            cap = getattr(alloc_doc, "nvda_cap_pct", None)
+            if cap is not None:
+                push("")
+                push(
+                    f"- Single-name hard cap (NVDA): {float(cap):.1f}% — the "
+                    "NVDA sleeve target above is the steering target inside "
+                    "this cap."
+                )
+            push("")
+
     push("### Quick Reference")
     qref: str | None = None
     if plan is not None:
