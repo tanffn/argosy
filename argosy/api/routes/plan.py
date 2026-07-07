@@ -481,6 +481,25 @@ class NvdaPaceView(BaseModel):
     target_shares_ytd: int = 0
     delta_shares: int = 0
     on_track: bool = True
+    # One status word for the tile: ahead / on / behind (±5% tolerance
+    # around the pro-rated glide target, min 10 shares).
+    status: str = "on"
+    # Where the numbers came from: "draft" = the synthesis run's
+    # concentration report (pending-draft override); "plan+sales" = the
+    # deterministic fallback (current plan's glide target + the actual
+    # sales history). The UI captions which it renders.
+    source: str = "draft"
+
+
+def _pace_status(sold: int, target: int) -> str:
+    """ahead / on / behind with a ±5% (min 10 shares) tolerance band."""
+    tol = max(10, round(0.05 * target))
+    delta = sold - target
+    if delta > tol:
+        return "ahead"
+    if delta < -tol:
+        return "behind"
+    return "on"
 
 
 class DraftResponse(BaseModel):
@@ -627,16 +646,56 @@ def _horizon_view(json_str: str | None) -> HorizonSectionView | None:
     return HorizonSectionView(**payload)
 
 
+def _fallback_nvda_pace(db: Session, user_id: str) -> NvdaPaceView | None:
+    """Deterministic pace from the CURRENT plan's glide + actual sales.
+
+    The concentration-report path only exists for a synthesis-backed draft;
+    without one the home tile used to read "— / awaiting plan" forever even
+    though a current plan (with an NVDA sale glide) and a real sales history
+    both exist. This fallback binds pace to those canonical sources:
+
+      * target ← ``compute_nvda_target_shares_ytd`` (the plan's annual NVDA
+        sale flow, pro-rated to today);
+      * sold   ← ``compute_nvda_shares_sold_ytd`` (fills ledger, else the
+        snapshot's nvda_sales block, else the TSV fallback).
+
+    Returns ``None`` when the plan carries no NVDA share-flow target — the
+    "awaiting plan" hint is then genuinely correct. Never raises.
+    """
+    try:
+        from argosy.services.nvda_sales_history import (
+            compute_nvda_shares_sold_ytd,
+            compute_nvda_target_shares_ytd,
+        )
+
+        # Target first: no NVDA glide in the plan -> no pace to report
+        # (and we skip the sold-side lookups entirely).
+        target = compute_nvda_target_shares_ytd(db, user_id)
+        if target <= 0:
+            return None
+        sold = compute_nvda_shares_sold_ytd(db, user_id)
+        return NvdaPaceView(
+            shares_sold_ytd=sold,
+            target_shares_ytd=target,
+            delta_shares=sold - target,
+            on_track=sold >= target,
+            status=_pace_status(sold, target),
+            source="plan+sales",
+        )
+    except Exception:  # noqa: BLE001 — pace is enrichment, never a 500
+        logger.warning("nvda_pace: deterministic fallback failed", exc_info=True)
+        return None
+
+
 def _build_nvda_pace(
     db: Session, user_id: str, decision_run_id: int | None
 ) -> NvdaPaceView | None:
-    """Lift NvdaPace from the latest concentration agent_report for this run.
+    """NVDA pace: the synthesis concentration report when one backs this
+    plan version (``source='draft'``), else the deterministic current-plan
+    fallback (``source='plan+sales'``, see :func:`_fallback_nvda_pace`).
 
-    Returns ``None`` when the draft has no backing ``decision_run_id``, when
-    no ``concentration`` agent_report row exists for ``plan-synth-<run_id>``,
-    or when the row's ``response_text`` is malformed past a best-effort parse.
-    The route returns these as a null field rather than raising — the UI
-    falls back to a "Awaiting synthesis run" hint.
+    Returns ``None`` only when NEITHER source resolves (no synthesis report
+    AND no plan NVDA glide) — the UI then renders the "awaiting plan" hint.
 
     The agent's ``response_text`` is typically wrapped in ```` ```json ... ```
     fences, so we use the same lenient ``JSONDecoder(strict=False).raw_decode``
@@ -644,7 +703,7 @@ def _build_nvda_pace(
     first ``{`` and parse from there.
     """
     if decision_run_id is None:
-        return None
+        return _fallback_nvda_pace(db, user_id)
 
     decision_id_str = f"plan-synth-{decision_run_id}"
     row = db.execute(
@@ -658,12 +717,12 @@ def _build_nvda_pace(
         .limit(1)
     ).scalar_one_or_none()
     if row is None or not row.response_text:
-        return None
+        return _fallback_nvda_pace(db, user_id)
 
     text = row.response_text
     brace = text.find("{")
     if brace < 0:
-        return None
+        return _fallback_nvda_pace(db, user_id)
     import json as _json
 
     decoder = _json.JSONDecoder(strict=False)
@@ -675,18 +734,22 @@ def _build_nvda_pace(
             "decision_id=%s",
             decision_id_str,
         )
-        return None
+        return _fallback_nvda_pace(db, user_id)
     if not isinstance(payload, dict):
-        return None
+        return _fallback_nvda_pace(db, user_id)
     pace = payload.get("nvda_pace")
     if not isinstance(pace, dict):
-        return None
+        return _fallback_nvda_pace(db, user_id)
     try:
+        sold = int(pace.get("shares_sold_ytd") or 0)
+        target = int(pace.get("target_shares_ytd") or 0)
         return NvdaPaceView(
-            shares_sold_ytd=int(pace.get("shares_sold_ytd") or 0),
-            target_shares_ytd=int(pace.get("target_shares_ytd") or 0),
+            shares_sold_ytd=sold,
+            target_shares_ytd=target,
             delta_shares=int(pace.get("delta_shares") or 0),
             on_track=bool(pace.get("on_track", True)),
+            status=_pace_status(sold, target),
+            source="draft",
         )
     except (TypeError, ValueError) as exc:
         logger.warning(
@@ -695,7 +758,7 @@ def _build_nvda_pace(
             decision_id_str,
             exc,
         )
-        return None
+        return _fallback_nvda_pace(db, user_id)
 
 
 def _build_synthesis_health(

@@ -1498,6 +1498,152 @@ def test_get_draft_nvda_pace_null_when_response_text_malformed(app_with_draft):
     assert r.json()["nvda_pace"] is None
 
 
+def test_get_draft_nvda_pace_report_carries_draft_source_and_status(app_with_draft):
+    """The synthesis-report path (the pending-draft override) stamps
+    source='draft' and derives the one-word status."""
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = 43
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="concentration",
+            decision_id="plan-synth-43",
+            response_text=json.dumps({
+                "nvda_pace": {
+                    "shares_sold_ytd": 2000,
+                    "target_shares_ytd": 4000,
+                    "delta_shares": -2000,
+                    "on_track": False,
+                },
+            }),
+            model="claude-sonnet-4-6",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    pace = app_with_draft.get("/api/plan/draft?user_id=ariel").json()["nvda_pace"]
+    assert pace["source"] == "draft"
+    assert pace["status"] == "behind"
+
+
+def _seed_current_plan_with_nvda_glide(client_with_db, *, annual_shares: int) -> None:
+    """A role='current' plan (NO decision_run_id) whose medium horizon carries
+    the NVDA sale-flow target the deterministic pace fallback binds to."""
+    from datetime import datetime, timezone
+
+    from argosy.state.models import PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.add(PlanVersion(
+            user_id="ariel",
+            role="current",
+            version_label="glide-current",
+            raw_markdown="",
+            accepted_at=datetime.now(timezone.utc),
+            horizon_medium_json=json.dumps({
+                "horizon": "medium",
+                "freshness_expected": "quarterly",
+                "status": "minor_revision",
+                "posture": "test",
+                "themes": [],
+                "deltas_from_prior": [],
+                "rationale": "",
+                "cited_sources": [],
+                "targets": [
+                    {
+                        "label": "NVDA shares to sell to reach the 12% IPS sleeve",
+                        "value": annual_shares,
+                        "unit": "shares",
+                    },
+                ],
+                "actions": [],
+            }),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+
+def _seed_snapshot_with_nvda_sales(client_with_db, sales: list[dict]) -> None:
+    from datetime import date, datetime, timezone
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        sess.add(PortfolioSnapshotRow(
+            user_id="ariel",
+            snapshot_date=date.today(),
+            imported_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            positions_json="[]",
+            nvda_sales_json=json.dumps(sales),
+            totals_json="{}",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+
+def test_current_structured_nvda_pace_falls_back_to_plan_and_sales(client_with_db):
+    """No pending draft + a current plan WITHOUT a synthesis run: pace binds
+    to the plan's glide target + the snapshot's actual sales history instead
+    of rendering '— / awaiting plan'. Dev-DB dup rows (double Apr) dedup."""
+    _seed_current_plan_with_nvda_glide(client_with_db, annual_shares=9270)
+    _seed_snapshot_with_nvda_sales(client_with_db, [
+        {"month": "Jan", "shares": 560, "price": 191.0},
+        {"month": "Feb", "shares": 520, "price": 177.0},
+        {"month": "Apr", "shares": 520, "price": 199.56},
+        {"month": "Apr", "shares": 520, "price": 199.56},  # dup — dedups
+    ])
+
+    r = client_with_db.get("/api/plan/current/structured?user_id=ariel")
+    assert r.status_code == 200, r.text
+    pace = r.json()["nvda_pace"]
+    assert pace is not None
+    assert pace["source"] == "plan+sales"
+    assert pace["shares_sold_ytd"] == 1600  # 560 + 520 + 520 (Apr dedup)
+    assert pace["target_shares_ytd"] > 0  # pro-rated glide flow
+    assert pace["delta_shares"] == pace["shares_sold_ytd"] - pace["target_shares_ytd"]
+    assert pace["status"] in ("ahead", "on", "behind")
+    assert pace["on_track"] == (pace["delta_shares"] >= 0)
+
+
+def test_current_structured_nvda_pace_none_without_glide_target(client_with_db):
+    """A current plan with NO NVDA share-flow target keeps nvda_pace=None —
+    'awaiting plan' is then genuinely correct."""
+    from datetime import datetime, timezone
+
+    from argosy.state.models import PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.add(PlanVersion(
+            user_id="ariel",
+            role="current",
+            version_label="no-glide",
+            raw_markdown="",
+            accepted_at=datetime.now(timezone.utc),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/current/structured?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json()["nvda_pace"] is None
+
+
 # ---------------------------------------------------------------------------
 # /api/plan/in-flight-synthesis — surfaces an in-flight plan_revision
 # decision_run so the /plan page can render a "Synthesis #N · phase X of 5"

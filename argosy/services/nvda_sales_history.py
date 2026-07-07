@@ -133,6 +133,80 @@ def _month_index(name: str) -> int | None:
     return _MONTH_MAP.get((name or "").strip().lower())
 
 
+def _sum_monthly_sales(
+    sales: list[Any], *, anchor_year: int, as_of: date
+) -> int:
+    """Sum month-granular sale rows for ``as_of``'s YTD window.
+
+    Shared by the snapshot- and TSV-sourced branches. Rows may be dicts
+    (snapshot ``nvda_sales_json``) or objects (parsed TSV). Dedups on
+    ``(month, shares)`` — the source occasionally repeats a row (observed
+    in run #25's snapshot and again in dev snapshot 12's double Apr row).
+    """
+    def _get(s: Any, key: str) -> Any:
+        if isinstance(s, dict):
+            return s.get(key)
+        return getattr(s, key, None)
+
+    seen: set[tuple[str, int]] = set()
+    total = 0
+    for s in sales:
+        month = _get(s, "month")
+        shares = _get(s, "shares")
+        if not month or not shares:
+            continue
+        m_idx = _month_index(month)
+        if m_idx is None:
+            continue
+        try:
+            shares_int = int(shares)
+        except (TypeError, ValueError):
+            continue
+        if shares_int <= 0:
+            continue
+        if anchor_year != as_of.year:
+            continue
+        if m_idx > as_of.month:
+            continue
+        key = (str(month).strip().lower(), shares_int)
+        if key in seen:
+            continue
+        seen.add(key)
+        total += shares_int
+    return total
+
+
+def _shares_sold_from_snapshot(
+    session: Session, user_id: str, *, as_of: date
+) -> int | None:
+    """YTD NVDA sales from the latest portfolio snapshot's ``nvda_sales_json``.
+
+    The snapshot is internal state (the TSV is OUTPUT-only), so it outranks
+    the on-disk TSV fallback. Returns ``None`` when there is no snapshot or
+    the snapshot carries no sales block — the cue to fall through to the TSV.
+    """
+    try:
+        from argosy.services.portfolio_snapshot_store import (
+            get_latest_snapshot_row,
+        )
+
+        row = get_latest_snapshot_row(session, user_id)
+        if row is None or not getattr(row, "nvda_sales_json", None):
+            return None
+        sales = json.loads(row.nvda_sales_json)
+        if not isinstance(sales, list) or not sales:
+            return None
+        snap_date = getattr(row, "snapshot_date", None)
+        anchor_year = snap_date.year if snap_date is not None else as_of.year
+        return _sum_monthly_sales(sales, anchor_year=anchor_year, as_of=as_of)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "nvda_sales_history.snapshot_fallback_failed",
+            user_id=user_id, error=str(exc),
+        )
+        return None
+
+
 def _shares_sold_from_tsv(*, as_of: date) -> int:
     """Fallback: parse the latest Family Finances Status TSV, sum YTD
     ``nvda_sales`` rows whose month resolves into the current year.
@@ -163,37 +237,7 @@ def _shares_sold_from_tsv(*, as_of: date) -> int:
     # Anchor year: the snapshot_date when available, else as_of.year.
     snap_date = getattr(snap, "snapshot_date", None)
     anchor_year = snap_date.year if snap_date is not None else as_of.year
-
-    seen: set[tuple[str, int]] = set()
-    total = 0
-    for s in sales:
-        month = getattr(s, "month", None)
-        shares = getattr(s, "shares", None)
-        if not month or not shares:
-            continue
-        m_idx = _month_index(month)
-        if m_idx is None:
-            continue
-        try:
-            shares_int = int(shares)
-        except (TypeError, ValueError):
-            continue
-        if shares_int <= 0:
-            continue
-        # Stay within the YTD window for as_of's year. If the TSV was
-        # captured in the current year, every entry up to and including
-        # the as_of month counts. If the TSV is from a prior year, this
-        # branch shouldn't fire — fall through to 0.
-        if anchor_year != as_of.year:
-            continue
-        if m_idx > as_of.month:
-            continue
-        key = (month.strip().lower(), shares_int)
-        if key in seen:
-            continue
-        seen.add(key)
-        total += shares_int
-    return total
+    return _sum_monthly_sales(sales, anchor_year=anchor_year, as_of=as_of)
 
 
 def compute_nvda_shares_sold_ytd(
@@ -203,10 +247,12 @@ def compute_nvda_shares_sold_ytd(
 
     Source priority:
       1. ``fills`` table when it has at least one NVDA row for ``user_id``.
-      2. Fallback to the latest Family Finances Status TSV's
+      2. The latest portfolio snapshot's ``nvda_sales_json`` block —
+         internal state (the TSV is OUTPUT-only). Month-granular.
+      3. Fallback to the latest Family Finances Status TSV's
          ``nvda_sales`` block. (Month-granular; current-year only.)
 
-    Returns 0 when neither source produces data (the caller surfaces that
+    Returns 0 when no source produces data (the caller surfaces that
     as "no fills found" rather than crashing synthesis).
     """
     today = _today(as_of)
@@ -221,6 +267,14 @@ def compute_nvda_shares_sold_ytd(
             user_id=user_id, total=fills_total,
         )
         return fills_total
+
+    snap_total = _shares_sold_from_snapshot(session, user_id, as_of=today)
+    if snap_total is not None:
+        log.info(
+            "nvda_sales_history.shares_sold_ytd_from_snapshot",
+            user_id=user_id, total=snap_total,
+        )
+        return snap_total
 
     tsv_total = _shares_sold_from_tsv(as_of=today)
     log.info(
