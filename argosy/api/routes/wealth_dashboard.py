@@ -194,4 +194,90 @@ def get_wealth_dashboard(
     )
 
 
+# ---------------------------------------------------------------------------
+# GET /api/portfolio/net-worth-history — the ACTUAL net-worth series from
+# portfolio_snapshots history. Read-only; powers the home page's wealth-
+# trajectory + deconcentration charts (past-N-months actuals; the projected
+# band comes from the wealth-dashboard trajectory above, and the plan glide
+# comes from /api/plan/current/allocation-glidepath).
+# ---------------------------------------------------------------------------
+
+
+class NetWorthHistoryPointDTO(BaseModel):
+    date: str  # ISO date (snapshot_date, falling back to imported_at's date)
+    total_usd: float | None
+    #: Direct NVDA position as a % of total book value at that snapshot
+    #: (0-100). Direct-position weight, not fund look-through — historical
+    #: snapshots carry positions only, so look-through can't be re-derived
+    #: retroactively.
+    nvda_pct: float | None
+
+
+class NetWorthHistoryResponseDTO(BaseModel):
+    user_id: str
+    points: list[NetWorthHistoryPointDTO]
+
+
+@router.get("/net-worth-history", response_model=NetWorthHistoryResponseDTO)
+def get_net_worth_history(
+    user_id: str = Query("ariel"),
+    months: int = Query(12, ge=1, le=120),
+    db: Session = Depends(get_db),
+) -> NetWorthHistoryResponseDTO:
+    """Chronological per-snapshot net-worth points for the last ``months``.
+
+    One point per calendar date (the freshest import wins when a date was
+    re-imported). Rows whose totals can't be parsed yield ``total_usd=None``
+    rather than being dropped, so gaps are visible to the caller.
+    """
+    import json as _json
+    from datetime import date as _date, timedelta as _timedelta
+
+    from sqlalchemy import select as _select
+
+    from argosy.state.models import PortfolioSnapshotRow as _SnapRow
+
+    cutoff = _date.today() - _timedelta(days=round(months * 30.44))
+    rows = (
+        db.execute(
+            _select(_SnapRow)
+            .where(_SnapRow.user_id == user_id)
+            .order_by(_SnapRow.imported_at.asc())
+        )
+        .scalars()
+        .all()
+    )
+
+    by_date: dict[str, NetWorthHistoryPointDTO] = {}
+    for row in rows:
+        d = row.snapshot_date or row.imported_at.date()
+        if d < cutoff:
+            continue
+        total_usd: float | None = None
+        nvda_pct: float | None = None
+        try:
+            totals = _json.loads(row.totals_json or "{}")
+            total_k = totals.get("total_usd_value_k")
+            if isinstance(total_k, (int, float)):
+                total_usd = float(total_k) * 1000.0
+                if total_k > 0:
+                    positions = _json.loads(row.positions_json or "[]")
+                    nvda_k = sum(
+                        float(p.get("usd_value_k") or 0.0)
+                        for p in positions
+                        if str(p.get("symbol") or "").upper() == "NVDA"
+                    )
+                    nvda_pct = (nvda_k / float(total_k)) * 100.0
+        except (ValueError, TypeError):
+            pass  # keep the dated point; total_usd/nvda_pct stay None
+        # rows iterate oldest-import first, so a later re-import of the same
+        # snapshot date overwrites the stale one.
+        by_date[d.isoformat()] = NetWorthHistoryPointDTO(
+            date=d.isoformat(), total_usd=total_usd, nvda_pct=nvda_pct
+        )
+
+    points = [by_date[k] for k in sorted(by_date)]
+    return NetWorthHistoryResponseDTO(user_id=user_id, points=points)
+
+
 __all__ = ["router"]
