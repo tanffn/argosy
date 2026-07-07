@@ -1137,3 +1137,22 @@ async def test_supervisor_backoff_capped_at_60s(engine: None) -> None:
     assert delays[-3] == pytest.approx(60.0)
     # Nothing in the sequence ever exceeds the cap.
     assert all(d <= 60.0 + 1e-9 for d in delays)
+
+
+def test_holdings_review_registers_with_its_own_metadata() -> None:
+    """Regression: holdings_review_metadata() declared long_running=True while
+    HoldingsReviewJob is a CadenceLoop, so JobRegistry.register raised at every
+    server boot — the loop stayed on the scheduler but was unrunnable
+    (RegisteredScheduler._fire_once fails fast for unregistered loops) and the
+    daily per-holding verdict pass NEVER executed. Pin the real registration
+    pair main.py uses."""
+    from argosy.services.jobs.holdings_review import (
+        HoldingsReviewJob,
+        holdings_review_metadata,
+    )
+
+    reg = JobRegistry()
+    # The regression IS that this pair raised ValueError at register time.
+    reg.register(job=HoldingsReviewJob(enabled=True, user_id="ariel"),
+                 metadata=holdings_review_metadata())
+    assert "holdings_review" in reg._jobs  # type: ignore[attr-defined]

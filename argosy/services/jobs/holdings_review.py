@@ -7,9 +7,14 @@ and surface ONLY actionable verdicts to the inbox (HOLD stays silent). This is t
 evidence-backed verdict instead of a passive note.
 
 Same-code-path contract: the 17:30 IDT cadence and the manual ``Run now`` both go
-through :meth:`tick`. The decision work makes a live LLM call per material holding,
-so it is ``long_running`` and executed via ``asyncio.to_thread`` (``decide_stock``
-/ the fetchers use ``asyncio.run`` internally and cannot nest in the loop).
+through :meth:`tick`. The decision work makes a live LLM call per material holding
+and is executed via ``asyncio.to_thread`` (``decide_stock`` / the fetchers use
+``asyncio.run`` internally and cannot nest in the loop). NOTE: it is still a
+``CadenceLoop``, so ``JobMetadata.long_running`` must be False — that flag is the
+registry's LongRunningJob-vs-CadenceLoop discriminator (a mismatch makes
+``JobRegistry.register`` raise, leaving the loop on the scheduler but unrunnable:
+``RegisteredScheduler._fire_once`` fails fast for unregistered loops), NOT a
+"takes a long time" hint.
 """
 from __future__ import annotations
 
@@ -63,7 +68,7 @@ def holdings_review_metadata() -> JobMetadata:
             "BUY/HOLD/SELL/TRIM. Only actionable verdicts surface to the inbox; "
             "HOLD (thesis intact) stays silent. Manual Run now uses the same tick."
         ),
-        long_running=True,
+        long_running=False,
     )
 
 

@@ -465,7 +465,15 @@ class Scheduler:
                     last_tick_at.isoformat() if last_tick_at else None
                 ),
             )
-            await self._fire_once(loop)
+            try:
+                await self._fire_once(loop)
+            except Exception:  # noqa: BLE001
+                # `Scheduler._fire_once` already absorbs tick exceptions,
+                # but subclass overrides can raise BEFORE the tick (e.g.
+                # RegisteredScheduler fails fast on a loop the registry
+                # rejected). A failed catch-up must never kill this loop's
+                # cadence task — the regular schedule continues.
+                _log.exception("cadence.catchup_fire_failed", loop=loop.name)
 
     async def fire_once(self, loop_name: str) -> None:
         """One-shot: fire a registered loop now, regardless of schedule.
