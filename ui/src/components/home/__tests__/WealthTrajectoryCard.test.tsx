@@ -84,7 +84,7 @@ describe("WealthTrajectoryCard", () => {
     );
   });
 
-  it("renders latest figure, quarterly legend, and the trend pill", async () => {
+  it("renders latest figure, book label, legends, trend pill, and history-begins note", async () => {
     netWorthHistory.mockResolvedValue(history());
     wealthDashboard.mockResolvedValue(DASH);
     render(<WealthTrajectoryCard userId="ariel" />);
@@ -92,12 +92,19 @@ describe("WealthTrajectoryCard", () => {
       expect(screen.getByTestId("wealth-latest")).toBeInTheDocument(),
     );
     expect(screen.getByTestId("wealth-latest").textContent).toBe("$4.00M");
+    // One universe, labelled.
+    expect(
+      screen.getByText(/Wealth trajectory — portfolio \(book\)/),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/past year actual \(quarterly\)/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/1y projected \(canonical scenario engine\)/),
+      screen.getByText(/1y projected \(canonical growth rates, anchored/),
     ).toBeInTheDocument();
+    // History starts ~200d ago → explicit note instead of an implied
+    // missing year.
+    expect(screen.getByText(/history begins/)).toBeInTheDocument();
     // 3.6M → 3.8M → ~4.0M is almost exactly linear → ON TREND or a small
     // AHEAD/BEHIND — the pill must exist either way.
     expect(screen.getByTestId("wealth-trend")).toBeInTheDocument();
@@ -140,26 +147,43 @@ describe("bucketQuarterly", () => {
 });
 
 describe("buildProjection", () => {
-  it("interpolates year0→year1 to 5 quarterly points in USD", () => {
+  it("anchors at the latest actual and applies the trajectory's growth RATES", () => {
     const now = Date.now();
-    const rows = buildProjection(DASH, now);
+    const anchor = 4_000_000; // the book — NOT the ₪14M total-net-worth level
+    const rows = buildProjection(DASH, now, anchor);
     expect(rows).toHaveLength(5);
-    // q0 = year-0 value / fx; q4 = year-1 value / fx.
-    expect(rows[0].projMid).toBeCloseTo(14_000_000 / 3.4, 3);
-    expect(rows[4].projMid).toBeCloseTo(14_700_000 / 3.4, 3);
-    expect(rows[0].projBand).toEqual([13_600_000 / 3.4, 14_000_000 / 3.4]);
-    // Geometric interpolation is monotone between endpoints.
-    for (let i = 1; i < rows.length; i++) {
-      expect(rows[i].projMid!).toBeGreaterThan(rows[i - 1].projMid!);
-    }
-  });
-
-  it("omits the projection when fx is unavailable (never mixed units)", () => {
+    // q0 = the anchor exactly (no jump at today); q4 = anchor × y1/y0.
+    expect(rows[0].projMid).toBeCloseTo(anchor, 6);
+    expect(rows[0].projBand).toEqual([anchor, anchor]);
+    expect(rows[4].projMid).toBeCloseTo(
+      anchor * (14_700_000 / 14_000_000),
+      3,
+    );
+    expect(rows[4].projBand![0]).toBeCloseTo(
+      anchor * (13_700_000 / 13_600_000),
+      3,
+    );
+    // Growth rates are unitless — anchored mode needs no fx.
     const dashNoFx = {
       ...DASH,
       assumptions: { fx_usd_nis: null },
     } as unknown as WealthDashboardDTO;
-    expect(buildProjection(dashNoFx, Date.now())).toHaveLength(0);
+    expect(buildProjection(dashNoFx, now, anchor)).toHaveLength(5);
+  });
+
+  it("falls back to absolute levels ÷ fx only when there is no anchor", () => {
+    const rows = buildProjection(DASH, Date.now(), null);
+    expect(rows).toHaveLength(5);
+    expect(rows[0].projMid).toBeCloseTo(14_000_000 / 3.4, 3);
+    expect(rows[4].projMid).toBeCloseTo(14_700_000 / 3.4, 3);
+  });
+
+  it("omits the un-anchored projection when fx is unavailable (never mixed units)", () => {
+    const dashNoFx = {
+      ...DASH,
+      assumptions: { fx_usd_nis: null },
+    } as unknown as WealthDashboardDTO;
+    expect(buildProjection(dashNoFx, Date.now(), null)).toHaveLength(0);
   });
 });
 

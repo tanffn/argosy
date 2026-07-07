@@ -14,10 +14,10 @@
  * through the past year's actuals, evaluated at the latest snapshot —
  * AHEAD OF TREND +$X / BEHIND TREND −$X.
  *
- * Units: USD. The wealth-dashboard trajectory is NIS, converted with the
- * dashboard's own fx_usd_nis assumption so both halves of the chart
- * share one canonical FX source. When FX is unavailable the projection
- * is omitted rather than plotted in mixed units.
+ * Universe: the PORTFOLIO BOOK (labelled so). The projection applies
+ * the trajectory's growth RATES anchored at the latest actual — its
+ * absolute levels are total net worth (pensions + real estate) and
+ * would jump ~$0.7M at today if plotted directly. See buildProjection.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -89,23 +89,51 @@ export function bucketQuarterly(
 }
 
 /**
- * Quarterly projection: the canonical trajectory's year-0 → year-1
- * points, interpolated geometrically per band (bear/typical) at
- * quarters 0..4, converted NIS→USD by the dashboard's own fx.
+ * Quarterly projection ANCHORED at the latest actual: the canonical
+ * trajectory's year-0 → year-1 GROWTH RATES (per band, geometric
+ * quarterly interpolation) applied forward from ``anchor`` — the latest
+ * snapshot's book value. This keeps the whole chart in ONE universe
+ * (the portfolio book): the trajectory's absolute levels are TOTAL net
+ * worth (pensions + real estate included — live ~$4.7M vs the ~$4.0M
+ * book), so plotting them directly made the projection "jump" at
+ * today. Growth rates are unitless, so anchored mode needs no FX.
+ *
+ * Fallback (no actuals to anchor on): absolute levels converted
+ * NIS→USD by the dashboard's own fx — still a single-universe chart,
+ * since without actuals there is nothing to disagree with. Omitted
+ * when fx is missing (never mixed units).
  */
 export function buildProjection(
   dash: WealthDashboardDTO | null,
   now: number,
+  anchor: number | null,
 ): Row[] {
-  const fx = dash?.assumptions.fx_usd_nis ?? null;
   const traj = dash?.retirement.trajectory ?? [];
-  if (fx === null || fx <= 0) return [];
   const y0 = traj.find((t) => t.year === 0);
   const y1 = traj.find((t) => t.year === 1);
   if (!y0 || !y1) return [];
+  const rows: Row[] = [];
+
+  if (anchor !== null && anchor > 0 && y0.typical > 0 && y0.bear > 0) {
+    // Geometric quarterly growth ratio between year-0 and year-1 levels.
+    const ratio = (a: number, b: number, q: number): number =>
+      b > 0 ? Math.pow(b / a, q / 4) : 1;
+    for (let q = 0; q <= PROJECTION_QUARTERS; q++) {
+      const typical = anchor * ratio(y0.typical, y1.typical, q);
+      const bear = anchor * ratio(y0.bear, y1.bear, q);
+      rows.push({
+        ts: now + q * QUARTER_MS,
+        projMid: typical,
+        projBand: [Math.min(bear, typical), Math.max(bear, typical)],
+      });
+    }
+    return rows;
+  }
+
+  const fx = dash?.assumptions.fx_usd_nis ?? null;
+  if (fx === null || fx <= 0) return [];
   const interp = (a: number, b: number, q: number): number =>
     a > 0 && b > 0 ? a * Math.pow(b / a, q / 4) : a + (b - a) * (q / 4);
-  const rows: Row[] = [];
   for (let q = 0; q <= PROJECTION_QUARTERS; q++) {
     const bear = interp(y0.bear, y1.bear, q) / fx;
     const typical = interp(y0.typical, y1.typical, q) / fx;
@@ -214,9 +242,17 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
     () => bucketQuarterly(history, nowTs ?? 0),
     [history, nowTs],
   );
+  // Anchor the projection at the latest ACTUAL book value — the whole
+  // chart lives in one universe (the portfolio book), and the projected
+  // line starts where the actual line ends instead of jumping to the
+  // trajectory's total-net-worth level.
+  const anchor = useMemo(() => {
+    const last = actuals.length > 0 ? actuals[actuals.length - 1] : null;
+    return last?.actual ?? null;
+  }, [actuals]);
   const projection = useMemo(
-    () => buildProjection(dash, nowTs ?? 0),
-    [dash, nowTs],
+    () => buildProjection(dash, nowTs ?? 0, anchor),
+    [dash, nowTs, anchor],
   );
   const rows = useMemo(
     () => [...actuals, ...projection].sort((a, b) => a.ts - b.ts),
@@ -228,6 +264,21 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
   const hasProjection = projection.length > 0;
   const latestActual = hasActual ? actuals[actuals.length - 1] : null;
 
+  // Ingestion only started recently — say so instead of implying a
+  // silently missing year of history (~2 months of slack on the window).
+  const historyBeginsNote = useMemo(() => {
+    if (actuals.length === 0 || nowTs === null) return null;
+    const first = actuals[0];
+    if (first.ts > nowTs - (PAST_QUARTERS - 0.7) * QUARTER_MS) {
+      const label = new Date(first.ts).toLocaleDateString([], {
+        month: "short",
+        year: "numeric",
+      });
+      return `history begins ${label}`;
+    }
+    return null;
+  }, [actuals, nowTs]);
+
   return (
     <div
       className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-1"
@@ -235,7 +286,7 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Wealth trajectory
+          Wealth trajectory — portfolio (book)
         </span>
         <div className="flex items-center gap-2">
           {latestActual?.actual !== undefined ? (
@@ -342,8 +393,9 @@ export function WealthTrajectoryCard({ userId }: { userId: string }) {
             {hasActual ? "solid: past year actual (quarterly)" : null}
             {hasActual && hasProjection ? " · " : null}
             {hasProjection
-              ? "dashed/shaded: 1y projected (canonical scenario engine)"
+              ? "dashed/shaded: 1y projected (canonical growth rates, anchored at the latest actual)"
               : null}
+            {historyBeginsNote ? ` · ${historyBeginsNote}` : null}
           </div>
         </>
       )}
