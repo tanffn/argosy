@@ -1736,100 +1736,19 @@ def get_deploy_cash(
     # are the labelled fallback. Fully additive — never breaks the fast GET path.
     if doc is not None and amount and amount > 0 and get_settings().deployment_author_enabled:
         try:
-            from argosy.services.allocation_author.packet import build_decision_packet
+            from argosy.services.allocation_author.packet_assembly import (
+                assemble_author_packet,
+            )
             from argosy.services.allocation_author.reliable import authored_allocation
             from argosy.services.contracts import authored_outcome_to_dto
 
-            # Feed REAL NVDA look-through (CSPX/R1GR/FWRA re-buying NVDA is invisible
-            # to raw holdings["NVDA"]) so the author reasons over TRUE concentration —
-            # a core reason the deterministic engine lost. Best-effort.
-            _nvda_ltv = None
-            _book = None
-            try:
-                from argosy.services.deployment_funnel.from_plan import build_gate_inputs
-                _gi = build_gate_inputs(doc=doc, holdings_usd=holdings, cash_usd=snap_cash)
-                _nvda_ltv = _gi.current_effective_nvda_usd
-                _book = _gi.book_usd
-            except Exception as exc:  # noqa: BLE001 — fall back to raw holdings NVDA
-                _log.warning("deploy_cash.lookthrough_failed", error=str(exc)[:120])
-            # Canonical current-vs-target attribution (look-through aware) so the
-            # author fills the real under-target sleeves — plan-fit from within.
-            _cur_by_sleeve: dict[str, float] = {}
-            try:
-                from argosy.services.allocation_breakdown import build_allocation_breakdown
-                _snap_row = get_latest_snapshot_row(db, user_id)
-                if _snap_row is not None:
-                    for _cb in build_allocation_breakdown(row_to_snapshot(_snap_row), doc):
-                        _cur_by_sleeve[_cb.label] = float(_cb.current_pct)
-            except Exception as exc:  # noqa: BLE001 — gaps are best-effort
-                _log.warning("deploy_cash.breakdown_failed", error=str(exc)[:120])
-            # Live market/macro regime so the author reasons about the current
-            # environment (equity-vs-bond, US-vs-exUS) instead of deploying blind.
-            # Best-effort; the author still runs if this is unavailable.
-            _market_signals: dict = {}
-            try:
-                from argosy.services.deployment_market_context import (
-                    assemble_deployment_market_context,
-                )
-                _mc = assemble_deployment_market_context(db)
-                _market_signals = {
-                    "as_of": _mc.overall_age_label,
-                    "is_stale": _mc.is_any_stale,
-                    "snapshot": {k: float(v) for k, v in _mc.snapshot.items()},
-                }
-                if _mc.nvda is not None:
-                    _market_signals["nvda_quote"] = {
-                        "price": _mc.nvda.price, "consistent": _mc.nvda.consistent,
-                    }
-            except Exception as exc:  # noqa: BLE001 — market ctx is best-effort
-                _log.warning("deploy_cash.market_context_failed", error=str(exc)[:120])
-            # Fetch-before-buy: fresh per-candidate research (live news + price) on
-            # the INDIVIDUAL-STOCK candidates (the moonshot / single-name sleeves),
-            # where fresh diligence matters most — broad diversified ETFs don't need
-            # per-name news. Best-effort + bounded; author reasons over CURRENT data
-            # instead of a static menu. Absent research leaves the packet unchanged.
-            _candidate_research: dict[str, str] = {}
-            try:
-                from argosy.services.stock_decision.fetchers import (
-                    news_fetcher, price_fetcher,
-                )
-                _single_name_syms: list[str] = []
-                for _c in getattr(doc, "classes", []) or []:
-                    if (getattr(_c, "snapshot_category", "") or "") != "Individual Stocks":
-                        continue  # only single-name sleeves (high-growth + NVDA)
-                    for _i in getattr(_c, "instruments", []) or []:
-                        _s = (getattr(_i, "symbol", "") or "").strip()
-                        if _s and _s.upper() != "NVDA":  # NVDA won't be bought (over cap)
-                            _single_name_syms.append(_s)
-                for _s in dict.fromkeys(_single_name_syms):  # dedup, preserve order
-                    _parts = []
-                    _p = price_fetcher(_s)
-                    _n = news_fetcher(_s)
-                    if _p:
-                        _parts.append(_p)
-                    if _n:
-                        _parts.append("news: " + _n[:200])
-                    if _parts:
-                        _candidate_research[_s] = " | ".join(_parts)
-            except Exception as exc:  # noqa: BLE001 — research is additive/best-effort
-                _log.warning("deploy_cash.candidate_research_failed", error=str(exc)[:120])
-            packet = build_decision_packet(
-                doc=doc, holdings_usd=holdings, deployable_usd=amount,
-                cash_usd=snap_cash,
-                nvda_cap_pct=float(getattr(doc, "nvda_cap_pct", 0.0) or 0.0),
-                nvda_lookthrough_usd=_nvda_ltv, book_usd=_book,
-                current_pct_by_sleeve=_cur_by_sleeve,
-                policy_signals=_market_signals,
-                candidate_research=_candidate_research,
-                user_constraints=(
-                    "Earliest safe retirement is the prime directive. NVDA single-name "
-                    "over-concentration is handled by the plan's SCHEDULED SELLS, not by "
-                    "refusing equity buys — so fill the plan's under-target sleeves by "
-                    "gap, INCLUDING its US-equity sleeves; a broad fund's incidental "
-                    "few-percent NVDA look-through is not a reason to decline it. Only "
-                    "avoid instruments that are themselves NVDA-heavy / single-name "
-                    "concentrated. Prefer Irish UCITS / estate-safe instruments."
-                ),
+            # The ONE packet wiring (NVDA look-through, sleeve gaps, market regime,
+            # per-candidate research) — shared with the daily period-directive job
+            # so the proactive push and the on-demand pull feed the author the
+            # same holistic view. See allocation_author/packet_assembly.py.
+            packet = assemble_author_packet(
+                db, user_id=user_id, doc=doc, holdings_usd=holdings,
+                cash_usd=snap_cash, deployable_usd=amount,
             )
             outcome = authored_allocation(packet, user_id=user_id)
             dto.authored = authored_outcome_to_dto(

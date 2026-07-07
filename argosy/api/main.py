@@ -614,6 +614,30 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # PeriodDirectiveDailyJob — the proactive "your move" push (SDD §1.6):
+        # cheap deterministic triage (idle cash vs plan-target, open-directive
+        # staleness) fires the deployment-author fleet ONLY when there is a real
+        # decision to make; one 'allocate' inbox proposal, refreshed in place /
+        # auto-superseded. Runs after the review chain. source_kind='monitor'.
+        try:
+            from argosy.services.jobs.period_directive_daily import (  # noqa: PLC0415
+                PeriodDirectiveDailyJob,
+                period_directive_daily_metadata,
+            )
+
+            period_directive_loop = PeriodDirectiveDailyJob(enabled=True, user_id="ariel")
+            scheduler.register_loop(period_directive_loop)
+            registry.register(
+                job=period_directive_loop,
+                metadata=period_directive_daily_metadata(),
+            )
+            log.info("scheduler.period_directive_daily_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.period_directive_daily_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # SnapshotRefreshJob — self-refresh the portfolio snapshot (quantities
         # carried, live reprice + fresh FX, provenance-marked insert). The TSV
         # is an OUTPUT, never an input dependency. Registered enabled=False:
