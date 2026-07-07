@@ -19,15 +19,31 @@ _RESOLVED = {
 }
 
 
+def test_ips_target_is_the_cap_derived_engine_constant():
+    """The 12%-sleeve ghost regression: this module's IPS weight must BE the
+    engine's cap-derived NVDA target, never a hand-typed duplicate. A drift
+    here re-stamps stale share counts into the synthesizer guidance."""
+    from argosy.services.allocation_plan import NVDA_TARGET_PCT
+
+    assert df.IPS_NVDA_TARGET_W == NVDA_TARGET_PCT / 100.0
+
+
 def test_build_derives_locked_numbers(monkeypatch):
+    import math
+
     monkeypatch.setattr(
         "argosy.services.plan_numeric_resolver.resolve_plan_numbers",
         lambda *a, **k: _FakeResolved(_RESOLVED),
     )
     monkeypatch.setattr(df, "_latest_nvda", lambda session, user_id: (11471.0, 200.14))
     facts = df.build_derived_facts(object(), user_id="ariel", decision_run_id=1)
-    assert facts["nvda_target_sh"] == 2201
-    assert facts["nvda_sell_sh"] == 9270
+    # Expected counts derive from the SAME formula at the ENGINE's target
+    # weight (8% today: target 1,467 / sell 10,004 — NOT the old 12%-ghost
+    # 2,201 / 9,270).
+    expected_target = math.floor(df.IPS_NVDA_TARGET_W * (11471.0 / 0.6251889))
+    assert facts["nvda_target_w"] == df.IPS_NVDA_TARGET_W
+    assert facts["nvda_target_sh"] == expected_target
+    assert facts["nvda_sell_sh"] == 11471 - expected_target
     assert facts["nvda_cap_breach_x"] == 4.81
     assert round(facts["fi_margin_liquid_nis"]) == -148208
 

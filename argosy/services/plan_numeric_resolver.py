@@ -1568,7 +1568,10 @@ def _apply_nvda_deconcentration(
                      ("concentration.nvda_sell_sh", "nvda_sell_sh")):
         values[k] = ResolvedValue(
             key=k, value=dec[field].value, unit="shares", status="resolved",
-            source_locator="derive_nvda_deconcentration (12% IPS target)",
+            source_locator=(
+                f"derive_nvda_deconcentration ({_NVDA_TARGET_PCT:g}% "
+                "cap-derived IPS target)"
+            ),
             agent_report_id=None, confidence="HIGH", formula=dec[field].formula,
         )
     elig = None
@@ -1724,8 +1727,12 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.fi_margin_signed_nis", "FI sufficiency margin (LIQUID net worth − total target; >0 => reached; if <0, FI is NOT reached — do not claim funded)"),
-    ("concentration.nvda_target_sh", "NVDA target shares (≤12% IPS sleeve — the DERIVED deconcentration target; replaces any inherited cadence)"),
-    ("concentration.nvda_sell_sh", "NVDA shares to SELL to reach the 12% target (derived; capital-track-eligible count below gates the pace)"),
+    # The sleeve pct is interpolated from the engine constant so these labels
+    # can never drift from the cap-derived target (the "12% sleeve ghost").
+    # NOTE: keep the word "cap" OUT of these labels — the pace fallback's
+    # stock-target skip list treats cap-labelled rows as ceilings, not flows.
+    ("concentration.nvda_target_sh", f"NVDA target shares (≤{_NVDA_TARGET_PCT:g}% IPS sleeve — the DERIVED deconcentration target; replaces any inherited cadence)"),
+    ("concentration.nvda_sell_sh", f"NVDA shares to SELL to reach the {_NVDA_TARGET_PCT:g}% target (derived; capital-track-eligible count below gates the pace)"),
     ("concentration.nvda_eligible_now_sh", "NVDA shares already Section-102 capital-track eligible NOW (~25%; from the tax-sim report)"),
     ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
     ("retirement.fire_bridge_nis", "FIRE bridge (retirement→60 liquid drawdown, permanent-equivalent)"),

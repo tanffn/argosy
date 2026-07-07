@@ -14,11 +14,18 @@ import json
 
 import sqlalchemy as sa
 
+from argosy.services.allocation_plan import NVDA_TARGET_PCT as _NVDA_TARGET_PCT
 from argosy.services.plan_derivation import (
     derive_fi_margin_liquid, derive_nvda_deconcentration,
 )
 
-IPS_NVDA_TARGET_W = 0.12  # IPS sleeve target (a stated policy constraint, not inherited)
+# IPS sleeve target — bound to the canonical CAP-DERIVED engine constant
+# (allocation_plan.NVDA_TARGET_PCT), never a hand-typed duplicate. The old
+# hand-typed 0.12 here survived the engine's move to 8% and kept stamping
+# 12%-derived share counts (2,201 target / 9,270 to-sell) into the
+# synthesizer guidance — the "12% sleeve ghost" that contradicted the plan's
+# own TargetAllocationDoc.
+IPS_NVDA_TARGET_W = _NVDA_TARGET_PCT / 100.0
 
 
 def _resolved_value(resolved, key):
