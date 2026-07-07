@@ -240,7 +240,15 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "intake": "claude-opus-4-8",
     "advisor": "claude-opus-4-8",
     "intake_extractor": "claude-opus-4-8",
-    "plan_critique": "claude-opus-4-8",
+    # plan_critique — Claude Fable 5 (owner-approved 2026-07-07, binding
+    # "accuracy over LLM cost"). The critique is the adversarial READER
+    # class (re-derives blind against the whole artifact), which is exactly
+    # the workload Fable 5 is strongest at. Scope: reader/critique-class
+    # roles ONLY for now — authoring/closing roles stay on Opus 4.8.
+    # Served via the claude_code CLI session backend on this subscription;
+    # if the CLI ever rejects the id the run fails LOUDLY (AgentRunError),
+    # never silently falls back.
+    "plan_critique": "claude-fable-5",
     "plan_distiller": "claude-opus-4-8",
     # Phase 2 analyst team:
     "news": "claude-opus-4-8",
@@ -335,6 +343,12 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # whole pivot exists to make smart (a plain LLM prompt beat the old
     # deterministic water-fill). One call, not a debate fleet.
     "deployment_author": "claude-opus-4-8",
+    # Critique-reconcile closer (2026-07-07) — routes each weekly-critique
+    # RED/notable-YELLOW finding to its closer path (prose edit vs
+    # requires-re-synthesis vs data refresh vs needs-user vs dispute).
+    # Opus 4.8 (closing/authoring class, not the reader class — the reader
+    # class runs Fable 5, see plan_critique above).
+    "critique_closer": "claude-opus-4-8",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -699,6 +713,9 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-opus-4-8": (5.00, 25.00),
+    # Fable 5 (plan_critique role, 2026-07-07). Rates per Anthropic's
+    # published pricing at the switch date.
+    "claude-fable-5": (10.00, 50.00),
 }
 # Back-compat alias for any external callers / docs referencing the prior name.
 APPROX_PRICING_USD_PER_MTOK = _PRICE_BY_MODEL

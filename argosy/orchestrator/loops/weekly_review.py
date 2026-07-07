@@ -58,6 +58,7 @@ class WeeklyReviewLoop(CadenceLoop):
         user_id: str = "ariel",
         plan_critique_factory: Callable[[], PlanCritiqueAgent] | None = None,
         gather_inputs: Callable[[str], "WeeklyReviewInputs | Any"] | None = None,
+        reconcile_fn: Callable[..., Any] | None = None,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
@@ -65,6 +66,11 @@ class WeeklyReviewLoop(CadenceLoop):
             lambda: PlanCritiqueAgent(user_id=user_id)
         )
         self._gather = gather_inputs or _default_gather_inputs
+        # Critique reconcile loop (FIND -> CORRECT -> RE-VERIFY). Injectable
+        # for tests; None resolves to the module-level ``_default_reconcile``
+        # at TICK time (late-bound so the conftest live-LLM guard can patch
+        # it). Gated at tick time by ARGOSY_CRITIQUE_RECONCILE (default ON).
+        self._reconcile = reconcile_fn
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
         run_at = (now or _utcnow)()
@@ -90,6 +96,7 @@ class WeeklyReviewLoop(CadenceLoop):
         out: PlanCritiqueReport = report.output  # type: ignore[assignment]
 
         # Persist the critique
+        critique_id: int | None = None
         if inputs.plan_version_id is not None:
             async with db_mod.get_session() as session:
                 row = PlanCritique(
@@ -100,6 +107,7 @@ class WeeklyReviewLoop(CadenceLoop):
                 )
                 session.add(row)
                 await session.commit()
+                critique_id = row.id
 
         red = [f for f in out.findings if f.severity == "RED"]
         try:
@@ -123,6 +131,28 @@ class WeeklyReviewLoop(CadenceLoop):
         except Exception:  # pragma: no cover - defensive
             _log.exception("weekly_review.publish_failed")
 
+        # Critique reconcile loop — feed the findings back into the fleet
+        # (FIND -> CORRECT -> RE-VERIFY). Runs AFTER the flagged event so the
+        # dashboard sees the fresh critique immediately (the reconcile makes
+        # two more LLM calls and can take minutes). Cost-bounded inside the
+        # service (max 1 closer + 1 re-verify per critique). Fail-soft: a
+        # reconcile error never loses the critique row that already landed.
+        if inputs.plan_version_id is not None and _reconcile_enabled():
+            try:
+                _reconcile = self._reconcile or _default_reconcile
+                await _reconcile(
+                    user_id=self.user_id,
+                    plan_version_id=inputs.plan_version_id,
+                    plan_label=inputs.plan_label,
+                    plan_markdown=inputs.plan_markdown,
+                    report=out,
+                    source_critique_id=critique_id,
+                )
+            except Exception:  # noqa: BLE001 — loud log, critique row survives
+                _log.exception(
+                    "weekly_review.reconcile_failed", user_id=self.user_id
+                )
+
     @staticmethod
     async def _maybe_async(value: Any) -> Any:
         if hasattr(value, "__await__"):
@@ -132,6 +162,22 @@ class WeeklyReviewLoop(CadenceLoop):
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _reconcile_enabled() -> bool:
+    """ARGOSY_CRITIQUE_RECONCILE knob (default ON — nothing hidden)."""
+    try:
+        from argosy.config import get_settings
+
+        return bool(getattr(get_settings(), "critique_reconcile", True))
+    except Exception:  # noqa: BLE001 — settings load must never kill the loop
+        return True
+
+
+async def _default_reconcile(**kwargs: Any) -> Any:
+    from argosy.services.critique_reconcile import reconcile_critique
+
+    return await reconcile_critique(**kwargs)
 
 
 async def _default_gather_inputs(user_id: str) -> WeeklyReviewInputs:

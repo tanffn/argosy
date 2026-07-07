@@ -256,6 +256,17 @@ class Settings(BaseSettings):
     # backend is active (hard timeout + process-tree kill on claude_code).
     deployment_author_backend: str | None = Field(default=None)
 
+    # Critique reconcile loop (2026-07-07) — after a weekly / on-demand plan
+    # critique lands, RED findings (and notable YELLOWs) trigger ONE closer
+    # pass + ONE re-verify critique (FIND -> CORRECT -> RE-VERIFY), routing
+    # each finding to prose-edit / requires-re-synthesis / snapshot-refresh /
+    # needs-info / dispute-ZigZag. Default ON per the nothing-hidden
+    # preference; the loop itself is hard cost-bounded (1 reconcile + 1
+    # re-verify per critique, never unbounded). Flip off via
+    # ARGOSY_CRITIQUE_RECONCILE=false. The on-demand /api/plan/critique route
+    # additionally requires reconcile=true (the button stays a fast read).
+    critique_reconcile: bool = Field(default=True)
+
     # Daily-news volatility trigger (news_daily Stage-2 gate). When Stage 1
     # ingests ZERO new items, Stage 2 (the LLM analyst) still fires if a HELD
     # single stock moved at least this many percent (absolute, close-over-

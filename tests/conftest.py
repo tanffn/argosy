@@ -77,6 +77,28 @@ def _guard_alternatives_phase(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _guard_critique_reconcile(monkeypatch):
+    """Never let the weekly loop's DEFAULT critique-reconcile fire live agents.
+
+    ``WeeklyReviewLoop.tick`` runs the critique reconcile loop by default
+    (ARGOSY_CRITIQUE_RECONCILE, default ON) — two REAL claude.exe calls
+    (closer + re-verify). Tests that exercise the reconcile itself inject
+    stub ``closer_factory``/``critique_factory`` or a ``reconcile_fn`` spy
+    and are unaffected; every other test gets a no-op default.
+    """
+    try:
+        from argosy.orchestrator.loops import weekly_review as _wr
+
+        async def _noop_reconcile(**_kwargs):
+            return None
+
+        monkeypatch.setattr(_wr, "_default_reconcile", _noop_reconcile)
+    except Exception:  # noqa: BLE001 — module shape changed; don't block tests
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _guard_deployment_author(monkeypatch):
     """Keep the fleet-authored deploy path OFF by default in tests.
 

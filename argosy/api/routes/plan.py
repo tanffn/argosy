@@ -200,14 +200,24 @@ class CritiqueQueuedDTO(BaseModel):
     plan_version_id: int | None
     critique_id: int | None = None
     detail: str = ""
+    # Present only when the caller asked for reconcile=true and the loop
+    # triggered — the ReconcileOutcome payload (fixed / escalated /
+    # disputed-withdrawn counts + the re-verify critique id).
+    reconcile: dict | None = None
 
 
 @router.post("/critique", response_model=CritiqueQueuedDTO)
-async def queue_critique(req: CritiqueRequestDTO) -> CritiqueQueuedDTO:
+async def queue_critique(
+    req: CritiqueRequestDTO, reconcile: bool = False
+) -> CritiqueQueuedDTO:
     """Run plan-critique on the latest plan synchronously.
 
     Phase 2 has no job queue, so this runs inline. The frontend should
-    show a spinner and tolerate longer responses (Sonnet call).
+    show a spinner and tolerate longer responses (Opus call).
+
+    ``?reconcile=true`` additionally runs the critique reconcile loop
+    (FIND -> CORRECT -> RE-VERIFY; max 1 closer + 1 re-verify) after the
+    critique lands. Default false — the button stays a fast read.
     """
     async with db_mod.get_session() as session:
         plan = (
@@ -275,11 +285,34 @@ async def queue_critique(req: CritiqueRequestDTO) -> CritiqueQueuedDTO:
     except Exception:  # pragma: no cover - defensive
         pass
 
+    reconcile_payload: dict | None = None
+    detail = "Critique completed."
+    from argosy.config import get_settings
+
+    if reconcile and get_settings().critique_reconcile:
+        from argosy.services.critique_reconcile import reconcile_critique
+
+        try:
+            outcome = await reconcile_critique(
+                user_id=req.user_id,
+                plan_version_id=plan.id,
+                plan_label=plan.version_label or f"plan_version_id={plan.id}",
+                plan_markdown=plan_markdown,
+                report=report.output,
+                source_critique_id=critique_id,
+            )
+            reconcile_payload = outcome.to_payload()
+            if outcome.triggered:
+                detail = f"Critique completed. {outcome.summary_line}."
+        except Exception as exc:  # noqa: BLE001 — critique row already landed
+            detail = f"Critique completed; reconcile failed: {exc}"
+
     return CritiqueQueuedDTO(
         status="ok",
         plan_version_id=plan.id,
         critique_id=critique_id,
-        detail="Critique completed.",
+        detail=detail,
+        reconcile=reconcile_payload,
     )
 
 
