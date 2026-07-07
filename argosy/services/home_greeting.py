@@ -164,6 +164,144 @@ def watching_note(
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s")
 
+#: "~83%" style percentages inside a rationale — used to carry the concrete
+#: drawdown fact into the cash headline.
+_PCT_RE = re.compile(r"~?\s?(\d{1,3})\s?%")
+
+#: Cause keywords the state observer writes for a negative-cash signature.
+_OVERDEPLOY_RE = re.compile(r"over-?deploy|overdraft", re.IGNORECASE)
+
+
+def _fmt_usd(v: float) -> str:
+    """Clean, size-proportional money display (never cent precision)."""
+    sign = "-" if v < 0 else ""
+    a = abs(float(v))
+    if a >= 1_000_000:
+        s = f"{a / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}${s}M"
+    if a >= 1_000:
+        s = f"{a / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}${s}k"
+    return f"{sign}${a:,.0f}"
+
+
+def _cash_flag_headline(
+    payload: dict[str, Any], negative_cash_lines: list[dict[str, Any]]
+) -> str | None:
+    """Fact-carrying headline for a negative-cash observer flag.
+
+    Leads with WHICH account and the amount (resolved from the book's
+    negative cash line(s)), then the concrete drawdown fact and the
+    likely cause extracted from the flag rationale. Returns ``None``
+    when no negative cash line exists in the book (already resolved /
+    unresolvable) so the caller falls back to the generic first-sentence
+    line."""
+    if not negative_cash_lines:
+        return None
+    worst = min(
+        negative_cash_lines, key=lambda l: float(l.get("usd") or 0.0)
+    )
+    account = str(worst.get("location") or "").strip() or "A"
+    currency = str(worst.get("currency") or "").strip()
+    amt = _fmt_usd(float(worst.get("usd") or 0.0))
+    as_of = worst.get("snapshot_date")
+    as_of_s = f" (as of {as_of})" if as_of else ""
+
+    rationale = _rationale_text(payload)
+    m = _PCT_RE.search(rationale)
+    drawdown = f" while total cash drew down ~{m.group(1)}%" if m else ""
+    cause = (
+        "likely over-deployment/overdraft, not a routine drawdown"
+        if _OVERDEPLOY_RE.search(rationale)
+        else "cause not yet confirmed"
+    )
+    line = (
+        f"{account} {currency} cash is {amt}{as_of_s} — flipped "
+        f"negative{drawdown}; {cause}."
+    )
+    return line[:240]
+
+
+def _thesis_flag_headline(payload: dict[str, Any]) -> str | None:
+    """Fact-carrying headline for a thesis_monitor_* flag: ticker, status,
+    and the top concrete signals from the payload."""
+    ticker = str(payload.get("ticker", "")).strip()
+    if not ticker:
+        return None
+    status = str(payload.get("thesis_status", "")).strip() or "flagged"
+    signals = [
+        str(s).strip() for s in (payload.get("signals") or []) if str(s).strip()
+    ]
+    if not signals:
+        return None
+    line = f"{ticker} thesis {status} — {'; '.join(signals[:2])}."
+    return line[:240]
+
+
+def headline_for_flag(
+    kind: str,
+    payload: dict[str, Any],
+    *,
+    negative_cash_lines: list[dict[str, Any]] | None = None,
+) -> str:
+    """Greeting headline for a flag — leads with the concrete facts.
+
+    Per-kind formatters pull WHICH account / amount / signals / likely
+    cause out of the flag payload (plus the book for cash lines); any
+    kind without a formatter — or a formatter that can't resolve its
+    facts — falls back to the flag summary's first sentence
+    (:func:`_one_line`)."""
+    try:
+        if kind.startswith("thesis_monitor_"):
+            line = _thesis_flag_headline(payload)
+            if line:
+                return line
+        elif kind in (
+            "state_observer_position_observation",
+            "state_observer_cash_observation",
+        ) and _fields_mention_cash(payload):
+            line = _cash_flag_headline(payload, negative_cash_lines or [])
+            if line:
+                return line
+    except Exception:  # noqa: BLE001 — a formatter bug must never sink the greeting
+        _log.warning("home_greeting.headline_formatter_failed", exc_info=True)
+    return _one_line(payload, kind)
+
+
+def _negative_cash_lines(session: Session, user_id: str) -> list[dict[str, Any]]:
+    """Negative cash balances from the latest snapshot's positions —
+    ``[{location, currency, usd, snapshot_date}]``. Empty on any gap."""
+    try:
+        from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+        row = get_latest_snapshot_row(session, user_id)
+        if row is None or not row.positions_json:
+            return []
+        positions = json.loads(row.positions_json)
+        if not isinstance(positions, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for p in positions:
+            if not isinstance(p, dict):
+                continue
+            if str(p.get("asset_type", "")).strip().lower() != "cash":
+                continue
+            v_k = p.get("usd_value_k")
+            if not isinstance(v_k, (int, float)) or v_k >= 0:
+                continue
+            out.append(
+                {
+                    "location": p.get("location"),
+                    "currency": p.get("currency"),
+                    "usd": float(v_k) * 1000.0,
+                    "snapshot_date": getattr(row, "snapshot_date", None),
+                }
+            )
+        return out
+    except Exception:  # noqa: BLE001 — enrichment only
+        _log.warning("home_greeting.negative_cash_lookup_failed", exc_info=True)
+        return []
+
 
 def _one_line(payload: dict[str, Any], kind: str) -> str:
     """A single greeting-grade line for a flag: ticker-prefixed first
@@ -412,11 +550,18 @@ def _needs_you_from_proposal(p: ActionProposal) -> dict[str, Any]:
     }
 
 
-def _needs_you_from_flag(f: MonitorFlag, payload: dict[str, Any]) -> dict[str, Any]:
+def _needs_you_from_flag(
+    f: MonitorFlag,
+    payload: dict[str, Any],
+    *,
+    negative_cash_lines: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "id": f"flag:{f.id}",
         "kind": f.kind,
-        "headline": _one_line(payload, f.kind),
+        "headline": headline_for_flag(
+            f.kind, payload, negative_cash_lines=negative_cash_lines
+        ),
         "why_md": _rationale_text(payload),
         "cta": {"label": "Decide", "href": "/inbox"},
     }
@@ -449,18 +594,25 @@ def build_greeting(
         for i in needs_you
     )
 
-    # --- flags: classify each active flag once.
+    # --- flags: classify each active flag once. Negative cash lines are
+    # resolved once from the book so per-kind headlines can name the
+    # account + amount instead of a vague "a USD cash account flipped".
+    neg_cash = _negative_cash_lines(session, user_id)
     watching: list[dict[str, Any]] = []
     for f in select_active_flags(session, user_id, now=now_dt):
         payload = _flag_payload(f)
         bucket = classify_flag(f.kind, f.severity, payload)
         if bucket == BUCKET_NEEDS_YOU:
-            needs_you.append(_needs_you_from_flag(f, payload))
+            needs_you.append(
+                _needs_you_from_flag(f, payload, negative_cash_lines=neg_cash)
+            )
         elif bucket == BUCKET_WATCHING:
             watching.append(
                 {
                     "id": f"flag:{f.id}",
-                    "headline": _one_line(payload, f.kind),
+                    "headline": headline_for_flag(
+                        f.kind, payload, negative_cash_lines=neg_cash
+                    ),
                     "note": watching_note(
                         f.kind, payload, has_closed_loop_needs_you=has_closed_loop
                     ),
@@ -494,6 +646,7 @@ __all__ = [
     "ON_PLAN_BAND_PP",
     "build_greeting",
     "classify_flag",
+    "headline_for_flag",
     "classify_proposal",
     "is_internal_flag",
     "select_active_flags",

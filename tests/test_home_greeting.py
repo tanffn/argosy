@@ -79,6 +79,13 @@ FLAG_85_NKE = {
             "**sustained fundamental deterioration**: persistent multi-year "
             "earnings deceleration. Worth a watch given the redeployment context."
         ),
+        # verbatim from dev-DB flag id 85 (2026-07-07)
+        "signals": [
+            "multi-year earnings deceleration",
+            "-44% off 52w high",
+            "turnaround delayed; dividend not cut",
+            "non-plan, being redeployed",
+        ],
     },
 }
 
@@ -98,7 +105,22 @@ FLAG_86_CASH_DRAWDOWN = {
             "~83%, which points to an overdraft or over-deployment rather "
             "than a routine drawdown."
         ),
+        # verbatim from dev-DB flag id 86 (2026-07-07)
+        "mitigation_hint": (
+            "Review /portfolio cash reconciliation; confirm the negative USD "
+            "line is intended (settlement float) vs an accidental overdraft."
+        ),
+        "deviation_bucket": "extreme",
     },
+}
+
+#: The dev-DB book's negative cash line (snapshot 12, Leumi USD −$16.43k) in
+#: the resolved shape ``_negative_cash_lines`` emits.
+NEG_CASH_LEUMI = {
+    "location": "Leumi",
+    "currency": "USD",
+    "usd": -16434.66,
+    "snapshot_date": "2026-07-07",
 }
 
 
@@ -202,6 +224,63 @@ class TestClassifyProposal:
         )
 
 
+class TestHeadlineForFlag:
+    """The greeting headline must CARRY the facts (which account, amount,
+    signals, likely cause) — not a vague 'a USD cash account flipped'."""
+
+    def test_cash_flag_headline_names_account_amount_and_cause(self):
+        from argosy.services.home_greeting import headline_for_flag
+
+        f = FLAG_86_CASH_DRAWDOWN
+        line = headline_for_flag(
+            f["kind"], f["payload"], negative_cash_lines=[NEG_CASH_LEUMI]
+        )
+        assert "Leumi" in line
+        assert "USD" in line
+        assert "-$16.4k" in line
+        assert "~83%" in line
+        assert "over-deployment" in line
+
+    def test_cash_flag_falls_back_when_no_negative_line_in_book(self):
+        from argosy.services.home_greeting import headline_for_flag
+
+        f = FLAG_86_CASH_DRAWDOWN
+        line = headline_for_flag(f["kind"], f["payload"], negative_cash_lines=[])
+        # already resolved in the book -> generic first-sentence fallback
+        assert line.startswith("A USD cash account flipped")
+
+    def test_thesis_flag_headline_leads_with_signals(self):
+        from argosy.services.home_greeting import headline_for_flag
+
+        f = FLAG_85_NKE
+        line = headline_for_flag(f["kind"], f["payload"])
+        assert line.startswith("NKE thesis weakened")
+        assert "multi-year earnings deceleration" in line
+        assert "-44% off 52w high" in line
+
+    def test_thesis_flag_without_signals_falls_back_to_first_sentence(self):
+        from argosy.services.home_greeting import headline_for_flag
+
+        payload = {k: v for k, v in FLAG_85_NKE["payload"].items() if k != "signals"}
+        line = headline_for_flag(FLAG_85_NKE["kind"], payload)
+        assert line.startswith("NKE thesis weakened:")
+
+    def test_unknown_kind_uses_generic_line(self):
+        from argosy.services.home_greeting import headline_for_flag
+
+        f = FLAG_73_FX
+        line = headline_for_flag(f["kind"], f["payload"])
+        assert line.startswith("The plan is denominated")
+
+    def test_fmt_usd_clean_rounding(self):
+        from argosy.services.home_greeting import _fmt_usd
+
+        assert _fmt_usd(-16434.66) == "-$16.4k"
+        assert _fmt_usd(9605.34) == "$9.6k"
+        assert _fmt_usd(2_243_154.0) == "$2.2M"
+        assert _fmt_usd(500.0) == "$500"
+
+
 # --- DB-backed: selection + assembly ---------------------------------------
 
 
@@ -281,7 +360,17 @@ class TestGreetingEndpoint:
                 PortfolioSnapshotRow(
                     user_id="ariel",
                     imported_at=NOW.replace(tzinfo=None),
-                    positions_json="[]",
+                    positions_json=json.dumps(
+                        [
+                            {
+                                "location": "Leumi",
+                                "currency": "USD",
+                                "asset_type": "Cash",
+                                "symbol": "",
+                                "usd_value_k": -16.43466,
+                            },
+                        ]
+                    ),
                     totals_json=json.dumps(
                         {"total_usd_value_k": 3999.279, "cash_balances_usd_k": 29.7}
                     ),
@@ -355,8 +444,13 @@ class TestGreetingEndpoint:
             w for w in body["watching"] if "cash" in w["headline"].lower()
         )
         assert "broker export" in cash_line["note"]
+        # The headline carries the FACTS: which account, the amount, the cause.
+        assert "Leumi" in cash_line["headline"]
+        assert "-$16.4k" in cash_line["headline"]
+        assert "over-deployment" in cash_line["headline"]
         nke_line = next(w for w in body["watching"] if "NKE" in w["headline"])
         assert "No action needed" in nke_line["note"]
+        assert "-44% off 52w high" in nke_line["headline"]
 
         assert body["quiet"] is False
         assert "next_review_local" in body
