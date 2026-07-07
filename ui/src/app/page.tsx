@@ -7,6 +7,7 @@ import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
 import { DeconcentrationCard } from "@/components/home/DeconcentrationCard";
 import { FMGreetingCard } from "@/components/home/FMGreetingCard";
+import { PlanAdherenceCard } from "@/components/home/PlanAdherenceCard";
 import { RedFlagStrip } from "@/components/home/RedFlagStrip";
 import { WealthTrajectoryCard } from "@/components/home/WealthTrajectoryCard";
 import {
@@ -29,6 +30,7 @@ import {
   type DomainKbTreeNode,
   type DraftResponse,
   type FleetSelfReviewDTO,
+  type GreetingDTO,
   type InFlightSynthesisDTO,
   type PlanCurrentDTO,
 } from "@/lib/api";
@@ -183,6 +185,10 @@ export default function Home() {
   // banners, legacy cards, system health). Collapsed by default; the
   // greeting card's [Full detail →] button opens + scrolls to it.
   const [fullDetailOpen, setFullDetailOpen] = useState(false);
+  // The canonical greeting payload, shared by FMGreetingCard via
+  // onLoaded so the Plan-adherence panel reuses the server-side
+  // on_plan computation without a second /api/home/greeting fetch.
+  const [greeting, setGreeting] = useState<GreetingDTO | null>(null);
   const showFullDetail = useCallback(() => {
     setFullDetailOpen(true);
     // Scroll after the region mounts.
@@ -430,19 +436,6 @@ export default function Home() {
     return () => window.clearInterval(handle);
   }, [data.inFlightSynthesis]);
 
-  // ----- Derived values --------------------------------------------------
-  const planSummary = (data.plan?.latest_critique_json as
-    | { overall_summary?: string; findings?: { severity?: string }[] }
-    | null
-    | undefined) || null;
-  const findings = planSummary?.findings ?? [];
-  const planStatus =
-    findings.find((f) => f.severity === "RED")
-      ? { tone: "error" as const, label: "RED" }
-      : findings.find((f) => f.severity === "YELLOW")
-        ? { tone: "warning" as const, label: "YELLOW" }
-        : { tone: "success" as const, label: "GREEN" };
-
   // Argonaut P&L since inception (reverse-chronologically corrected).
   const argonautSeries = useMemo(() => {
     const snaps = data.argonautSnapshots;
@@ -548,7 +541,11 @@ export default function Home() {
           action items land in needs_you too, so ActionItemsWidget and
           AdvisorBriefCard live in Full detail.
           ============================================================ */}
-      <FMGreetingCard userId={USER_ID} onShowFullDetail={showFullDetail} />
+      <FMGreetingCard
+        userId={USER_ID}
+        onShowFullDetail={showFullDetail}
+        onLoaded={setGreeting}
+      />
 
       {/* EX2 — anomaly-detection banner. Only renders when the latest
           report carries at least one RED anomaly (e.g. Card 2923's
@@ -582,29 +579,20 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Plan adherence — the Phase 2 legacy brief card that used to sit
-          beside it (permanently empty) is demoted to Full detail. */}
+      {/* Plan adherence — status-led: the greeting's canonical on_plan
+          computation (shared via onLoaded — no second fetch), the
+          critique verdict WITH ITS AGE + the weekly_review loop's next
+          fire from /api/jobs, an honest "refresh overdue" pill when the
+          critique is older than the weekly cadence, and a material-
+          change line when the state observer flagged an allocation /
+          concentration move since the last critique. */}
       <section>
         <SectionHeader label="PLAN" count={1} />
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="font-mono">Plan adherence</CardTitle>
-              <StatusPill tone={planStatus.tone} mono>
-                {planStatus.label}
-              </StatusPill>
-            </div>
-            <CardDescription>
-              {data.plan?.version_label
-                ? `Latest: ${data.plan.version_label}`
-                : "No plan imported yet."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            {planSummary?.overall_summary ||
-              "Run `argosy ingest plan <path>` then `argosy critique`."}
-          </CardContent>
-        </Card>
+        <PlanAdherenceCard
+          userId={USER_ID}
+          plan={data.plan}
+          greeting={greeting}
+        />
       </section>
 
       {/* T4.5 — Daily brief. Rendered ONLY when a brief exists; the old

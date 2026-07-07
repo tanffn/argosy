@@ -32,6 +32,12 @@ interface Props {
   userId: string;
   /** Called when the client clicks [Full detail →]. */
   onShowFullDetail?: () => void;
+  /**
+   * Called once the greeting payload arrives — lets the page share the
+   * canonical greeting (e.g. book.on_plan for the Plan-adherence panel)
+   * without a second /api/home/greeting fetch.
+   */
+  onLoaded?: (greeting: GreetingDTO) => void;
 }
 
 /**
@@ -79,7 +85,7 @@ export function formatBookUsd(totalUsd: number | null): string {
   return `$${Math.round(totalUsd / 1_000).toLocaleString()}K`;
 }
 
-export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
+export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
   const [greeting, setGreeting] = useState<GreetingDTO | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -88,7 +94,9 @@ export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
     api
       .homeGreeting(userId)
       .then((g) => {
-        if (!cancelled) setGreeting(g);
+        if (cancelled) return;
+        setGreeting(g);
+        onLoaded?.(g);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -96,6 +104,9 @@ export function FMGreetingCard({ userId, onShowFullDetail }: Props) {
     return () => {
       cancelled = true;
     };
+    // onLoaded is intentionally not a dependency: parents pass inline
+    // callbacks and the fetch must run once per user, not per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   if (failed) {
