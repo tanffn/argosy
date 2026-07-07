@@ -595,36 +595,23 @@ def assemble_phase1_inputs(
     # plan-vs-snapshot delta.
     inputs.snapshot_summary = inputs.positions_summary
 
-    # NVDA YTD sales accounting — ConcentrationAnalystAgent reads these as
+    # NVDA sale-pace accounting — ConcentrationAnalystAgent reads these as
     # ``nvda_shares_sold_ytd`` + ``nvda_target_shares_ytd``. Sourced from
-    # ``argosy.services.nvda_sales_history`` (fills table preferred, TSV
-    # ``nvda_sales`` block as fallback; target pro-rated from the active
-    # draft's annual NVDA-sale plan). Best-effort: missing data logs a
-    # WARNING and leaves the fields at 0 so synthesis doesn't crash.
+    # the ONE canonical derivation ``compute_nvda_sale_pace``: target flow
+    # from the plan's TargetAllocationDoc GLIDE pro-rated PLAN-relative,
+    # sold counted over the SAME window (since plan start) so the pair is
+    # coherent; the legacy horizon/calendar figures survive only as its
+    # fallback basis. Best-effort: missing data logs a WARNING and leaves
+    # the fields at 0 so synthesis doesn't crash.
     try:
-        from argosy.services.nvda_sales_history import (
-            compute_nvda_shares_sold_ytd,
-        )
+        from argosy.services.nvda_sales_history import compute_nvda_sale_pace
 
-        inputs.nvda_shares_sold_ytd = compute_nvda_shares_sold_ytd(
-            session, user_id
-        )
+        pace = compute_nvda_sale_pace(session, user_id)
+        inputs.nvda_shares_sold_ytd = pace.sold_shares
+        inputs.nvda_target_shares_ytd = pace.target_shares
     except Exception as exc:  # noqa: BLE001 - defensive
         log.warning(
-            "plan_synthesis.inputs.nvda_shares_sold_ytd_failed",
-            user_id=user_id, error=str(exc),
-        )
-    try:
-        from argosy.services.nvda_sales_history import (
-            compute_nvda_target_shares_ytd,
-        )
-
-        inputs.nvda_target_shares_ytd = compute_nvda_target_shares_ytd(
-            session, user_id
-        )
-    except Exception as exc:  # noqa: BLE001 - defensive
-        log.warning(
-            "plan_synthesis.inputs.nvda_target_shares_ytd_failed",
+            "plan_synthesis.inputs.nvda_sale_pace_failed",
             user_id=user_id, error=str(exc),
         )
 

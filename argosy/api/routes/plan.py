@@ -660,34 +660,27 @@ def _fallback_nvda_pace(db: Session, user_id: str) -> NvdaPaceView | None:
     The concentration-report path only exists for a synthesis-backed draft;
     without one the home tile used to read "— / awaiting plan" forever even
     though a current plan (with an NVDA sale glide) and a real sales history
-    both exist. This fallback binds pace to those canonical sources:
+    both exist. Binds to the ONE canonical derivation,
+    ``compute_nvda_sale_pace``: target flow from the TargetAllocationDoc
+    GLIDE, pro-rated PLAN-relative (from the glide's start date, never
+    Jan 1), sold counted since plan start — so day 1 of a plan year reads
+    on-track, not "behind by the whole annual flow".
 
-      * target ← ``compute_nvda_target_shares_ytd`` (the plan's annual NVDA
-        sale flow, pro-rated to today);
-      * sold   ← ``compute_nvda_shares_sold_ytd`` (fills ledger, else the
-        snapshot's nvda_sales block, else the TSV fallback).
-
-    Returns ``None`` when the plan carries no NVDA share-flow target — the
+    Returns ``None`` when no plan carries an NVDA flow target at all — the
     "awaiting plan" hint is then genuinely correct. Never raises.
     """
     try:
-        from argosy.services.nvda_sales_history import (
-            compute_nvda_shares_sold_ytd,
-            compute_nvda_target_shares_ytd,
-        )
+        from argosy.services.nvda_sales_history import compute_nvda_sale_pace
 
-        # Target first: no NVDA glide in the plan -> no pace to report
-        # (and we skip the sold-side lookups entirely).
-        target = compute_nvda_target_shares_ytd(db, user_id)
-        if target <= 0:
+        pace = compute_nvda_sale_pace(db, user_id)
+        if pace.basis == "none" or pace.annual_flow <= 0:
             return None
-        sold = compute_nvda_shares_sold_ytd(db, user_id)
         return NvdaPaceView(
-            shares_sold_ytd=sold,
-            target_shares_ytd=target,
-            delta_shares=sold - target,
-            on_track=sold >= target,
-            status=_pace_status(sold, target),
+            shares_sold_ytd=pace.sold_shares,
+            target_shares_ytd=pace.target_shares,
+            delta_shares=pace.delta_shares,
+            on_track=pace.on_track,
+            status=pace.status,  # banded vs the ANNUAL flow, not the day-N target
             source="plan+sales",
         )
     except Exception:  # noqa: BLE001 — pace is enrichment, never a 500

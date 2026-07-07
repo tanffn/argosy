@@ -333,9 +333,14 @@ def test_tsv_fallback_excludes_months_past_as_of(
 # ----------------------------------------------------------------------
 
 
-def test_target_zero_when_no_plan(session_with_user):
+def test_target_zero_when_no_plan(session_with_user, monkeypatch, tmp_path):
     """No draft + no current plan → 0 (UI renders neutral badge)."""
     from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
 
     n = nvda_sales_history.compute_nvda_target_shares_ytd(
         session_with_user, "ariel", as_of=date(2026, 5, 26),
@@ -343,11 +348,247 @@ def test_target_zero_when_no_plan(session_with_user):
     assert n == 0
 
 
-def test_target_prorates_annual_from_horizon_medium(session_with_user):
+# ----------------------------------------------------------------------
+# compute_nvda_sale_pace — the ONE canonical glide-derived derivation
+# ----------------------------------------------------------------------
+
+
+def _glide_doc_json(*, w_start: float = 60.0, w_end: float = 8.0) -> str:
+    """Minimal TargetAllocationDoc with an NVDA class + 4-quarter glide.
+
+    Includes a DECOY class whose label also mentions NVDA
+    ("...ex-NVDA-dense") — the pace must identify the NVDA class by its
+    INSTRUMENTS, never by label substring.
+    """
+    import json
+
+    steps = 4
+    glide = []
+    dates = ["2026-07-06", "2026-10-06", "2027-01-06", "2027-04-06", "2027-07-06"]
+    for q, d in enumerate(dates):
+        w = w_start + (w_end - w_start) * (q / steps)
+        glide.append({
+            "quarter": q,
+            "date": d,
+            "composition_pct_by_class": {
+                "Strategic single-stock (NVDA)": round(w, 4),
+                "Global quality growth (ex-NVDA-dense)": round(11.0 - w / 60.0, 4),
+            },
+        })
+    return json.dumps({
+        "schema_version": 1,
+        "basis": "full tradeable book",
+        "anchor_sigma": 0.2,
+        "blended_sigma": 0.2,
+        "nvda_cap_pct": 13.0,
+        "fi_pct": 8.0,
+        "provenance": "test",
+        "classes": [
+            {
+                "label": "Strategic single-stock (NVDA)",
+                "snapshot_category": "Individual Stocks",
+                "sigma_class": "nvda_single",
+                "target_pct": 8.0,
+                "instruments": [
+                    {"symbol": "NVDA", "role": "hold",
+                     "weight_within_class_pct": 100.0},
+                ],
+            },
+            {
+                "label": "Global quality growth (ex-NVDA-dense)",
+                "snapshot_category": "Growth",
+                "sigma_class": "growth",
+                "target_pct": 11.0,
+                "instruments": [
+                    {"symbol": "IWQU", "role": "primary",
+                     "weight_within_class_pct": 100.0},
+                ],
+            },
+        ],
+        "glide": glide,
+    })
+
+
+def _seed_pace_plan_and_snapshot(
+    session, monkeypatch, tmp_path, *, nvda_shares_now: float,
+    horizon_medium_json: str | None = None,
+) -> None:
+    """Draft plan with a glide doc + latest snapshot holding NVDA + a
+    month-granular sales block (Apr sale — BEFORE the July plan start)."""
+    from argosy.ingest.tsv import NVDASale, PortfolioPosition, PortfolioSnapshot
+    from argosy.services.portfolio_snapshot_store import persist_snapshot
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
+    session.add(
+        PlanVersion(
+            user_id="ariel",
+            role="draft",
+            version_label="glide-draft",
+            horizon_medium_json=horizon_medium_json,
+            target_allocation_json=_glide_doc_json(),
+        )
+    )
+    persist_snapshot(
+        session,
+        user_id="ariel",
+        snapshot=PortfolioSnapshot(
+            source_path="test",
+            snapshot_date=date(2026, 7, 6),
+            fx_usd_nis=3.0,
+            fx_usd_eur=0.85,
+            positions=[
+                PortfolioPosition(
+                    location="schwab", currency="USD", asset_type="NVIDIA",
+                    details="RSU", symbol="NVDA", shares=nvda_shares_now,
+                    current_price=193.0,
+                    current_value_local=nvda_shares_now * 193.0,
+                    usd_value_k=nvda_shares_now * 0.193,
+                ),
+            ],
+            nvda_sales=[NVDASale(month="Apr", shares=520, price=199.56)],
+        ),
+    )
+    session.commit()
+
+
+def test_pace_glide_plan_relative_day_one(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """Day 1-2 of the plan year: the target is ~1 day of flow (tens of
+    shares), sold-since-plan-start is 0, and the pace reads ON TRACK —
+    never 'behind by thousands' (the calendar-YTD artifact this replaces).
+    The Apr sale counts toward the calendar context figure only."""
+    from argosy.services import nvda_sales_history
+
+    _seed_pace_plan_and_snapshot(
+        session_with_user, monkeypatch, tmp_path, nvda_shares_now=11_471.0,
+    )
+    pace = nvda_sales_history.compute_nvda_sale_pace(
+        session_with_user, "ariel", as_of=date(2026, 7, 7),
+    )
+    assert pace.basis == "glide"
+    assert pace.plan_start == date(2026, 7, 6)
+    # Annual flow = held_start * (1 - 8/60) ≈ 9,941 — the glide's implied
+    # plan-year sale, NOT the stale 12%-sleeve 9,270 row.
+    assert pace.annual_flow == pytest.approx(11_471 * (1 - 8.0 / 60.0), abs=1)
+    # Day-1 pro-rated target: about one day of pace, tiny vs the annual.
+    assert 0 <= pace.target_shares <= 60
+    assert pace.sold_shares == 0  # Apr sale is BEFORE the plan year
+    assert pace.sold_calendar_ytd == 520  # calendar context preserved
+    assert pace.status == "on"
+    assert pace.on_track
+
+
+def test_pace_glide_midyear_proration_and_sold_window(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """At the Q1 waypoint the target equals the waypoint's implied share
+    delta; sales inside the plan year count via the fills ledger."""
+    from argosy.services import nvda_sales_history
+
+    # 2,400 sold since plan start → held now 9,071; held_at_start = 11,471.
+    _seed_pace_plan_and_snapshot(
+        session_with_user, monkeypatch, tmp_path, nvda_shares_now=9_071.0,
+    )
+    session_with_user.add(
+        Fill(
+            user_id="ariel", broker="schwab", broker_order_id="g1",
+            ticker="NVDA", action="SELL", quantity=Decimal("2400"),
+            price=Decimal("190"), commission=Decimal("0"),
+            filled_at=datetime(2026, 8, 15, 10, tzinfo=timezone.utc),
+            paper=False,
+        )
+    )
+    session_with_user.commit()
+
+    pace = nvda_sales_history.compute_nvda_sale_pace(
+        session_with_user, "ariel", as_of=date(2026, 10, 6),
+    )
+    assert pace.basis == "glide"
+    assert pace.sold_shares == 2400
+    # Q1 waypoint weight = 47.0 → target = 11,471 * (1 - 47/60) ≈ 2,485.
+    assert pace.target_shares == pytest.approx(
+        11_471 * (1 - 47.0 / 60.0), abs=2,
+    )
+    # 2,400 vs 2,485 is within the ±5%-of-annual band → on track.
+    assert pace.status == "on"
+    assert pace.on_track
+
+
+def test_pace_glide_wins_over_stale_horizon_row(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """The live shape: the medium horizon still carries the old 12%-sleeve
+    9,270-share row, but the glide doc is canonical — the wrapper must NOT
+    pro-rate 9,270 over the CALENDAR year (≈4,750 by July)."""
+    import json
+
+    from argosy.services import nvda_sales_history
+
+    horizon = json.dumps({
+        "targets": [
+            {"label": "NVDA shares to sell to reach the 12% IPS sleeve",
+             "value": 9270.0, "unit": "shares"},
+        ],
+    })
+    _seed_pace_plan_and_snapshot(
+        session_with_user, monkeypatch, tmp_path,
+        nvda_shares_now=11_471.0, horizon_medium_json=horizon,
+    )
+    n = nvda_sales_history.compute_nvda_target_shares_ytd(
+        session_with_user, "ariel", as_of=date(2026, 7, 7),
+    )
+    assert n <= 60, f"glide-derived plan-relative target expected, got {n}"
+
+
+def test_pace_horizon_fallback_without_glide_doc(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """No target_allocation_json → the legacy medium-horizon calendar
+    proration still works (basis='horizon')."""
+    import json
+
+    from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
+    horizon = json.dumps({
+        "targets": [
+            {"label": "NVDA deconcentration shares to sell (next 12 months)",
+             "value": 1440.0, "unit": "shares"},
+        ],
+    })
+    session_with_user.add(
+        PlanVersion(
+            user_id="ariel", role="draft", version_label="no-glide",
+            horizon_medium_json=horizon,
+        )
+    )
+    session_with_user.commit()
+    pace = nvda_sales_history.compute_nvda_sale_pace(
+        session_with_user, "ariel", as_of=date(2026, 5, 26),
+    )
+    assert pace.basis == "horizon"
+    assert 560 <= pace.target_shares <= 600
+
+
+def test_target_prorates_annual_from_horizon_medium(
+    session_with_user, monkeypatch, tmp_path,
+):
     """Annual NVDA-sale target from horizon_medium_json prorates by days."""
     import json
 
     from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
 
     # 1,440 shares/12 months — matches run #9's actual draft.
     horizon = json.dumps({
@@ -381,12 +622,17 @@ def test_target_prorates_annual_from_horizon_medium(session_with_user):
     assert 560 <= n <= 600, f"expected ~575, got {n}"
 
 
-def test_target_unit_must_be_shares(session_with_user):
+def test_target_unit_must_be_shares(session_with_user, monkeypatch, tmp_path):
     """A NVDA target with unit='pct_of_portfolio' must NOT be treated as
     a share-count target (avoids reading the 45% cap as 45 shares)."""
     import json
 
     from argosy.services import nvda_sales_history
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._find_latest_tsv", lambda: None,
+    )
 
     horizon = json.dumps({
         "targets": [
