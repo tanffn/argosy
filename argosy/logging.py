@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
 from pathlib import Path
 
@@ -36,7 +37,12 @@ def configure_logging(level: int | str = logging.INFO) -> None:
         return
 
     settings = get_settings()
-    log_file: Path = settings.app_log_file
+    # ARGOSY_APP_LOG_FILE overrides the sink path. Set by tests/conftest.py so
+    # the pytest process never writes into the PRODUCTION
+    # logs/app/application.log (test noise — scheduler.disabled spam,
+    # testserver HTTP lines — was muddying live-run verification).
+    _override = os.environ.get("ARGOSY_APP_LOG_FILE")
+    log_file: Path = Path(_override) if _override else settings.app_log_file
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)

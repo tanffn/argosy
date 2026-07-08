@@ -3,7 +3,19 @@
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from collections.abc import AsyncIterator
+
+# Route the test process's file log sink AWAY from the production
+# logs/app/application.log — test noise (scheduler.disabled spam, testserver
+# HTTP lines) was muddying live-run verification. Must be set BEFORE any
+# argosy import triggers argosy.logging.configure_logging() (module-level
+# get_logger calls). setdefault: an explicit operator override wins.
+os.environ.setdefault(
+    "ARGOSY_APP_LOG_FILE",
+    os.path.join(tempfile.gettempdir(), "argosy-tests", "application.log"),
+)
 
 import pytest
 import pytest_asyncio
