@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -49,7 +49,7 @@ from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
 from argosy.services.critique_reconcile import findings_match
-from argosy.state.models import ActionProposal, PlanCritique
+from argosy.state.models import ActionProposal, PlanCritique, PortfolioSnapshotRow
 from argosy.state.queries import get_current_plan
 
 _log = get_logger("argosy.services.corrective_context")
@@ -152,7 +152,9 @@ class CorrectiveContext:
     base_plan_id: int | None = None
     base_plan_label: str = ""
     # True when a correction class implicates phase-1 inputs (e.g. a
-    # refresh_snapshot-routed finding) — the run must NOT reuse phases 1-2.
+    # refresh_snapshot-routed finding) AND the demanded refresh has not
+    # happened since the critique (latest portfolio snapshot not newer than
+    # the critique row) — the run must NOT reuse phases 1-2.
     forces_full_tier: bool = False
     rendered: str = ""
 
@@ -250,6 +252,59 @@ def match_fact_to_finding(fact_key: str, finding: dict[str, Any]) -> bool:
     if len(tokens) == 1:
         return hits == 1
     return hits / len(tokens) > 0.5
+
+
+def _as_utc_naive(dt: datetime | None) -> datetime | None:
+    """Normalize to naive-UTC for comparison (SQLite drops tzinfo; the
+    project convention is naive == UTC)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _snapshot_refresh_postdates_critique(
+    session: Session, *, user_id: str, critique_created_at: datetime | None
+) -> bool:
+    """True when the user's LATEST portfolio snapshot is strictly newer than
+    the source critique row — i.e. the refresh a snapshot-class finding
+    demanded has already happened since the critique was taken, so forcing
+    the full tier for staleness would pay ~25 min for a problem that no
+    longer exists.
+
+    Deterministic and conservative by design: ANY doubt (no critique
+    timestamp, no snapshot row, unusable timestamps, query error) returns
+    False — the caller keeps forcing the expensive-but-correct full run.
+    """
+    try:
+        crit = _as_utc_naive(critique_created_at)
+        if crit is None:
+            return False
+        latest = session.execute(
+            select(PortfolioSnapshotRow.imported_at)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.imported_at.desc())
+            .limit(1)
+        ).scalars().first()
+        snap = _as_utc_naive(latest)
+        if snap is None:
+            return False
+        if snap > crit:
+            _log.info(
+                "corrective_context.snapshot_force_waived",
+                user_id=user_id,
+                snapshot_imported_at=snap.isoformat(),
+                critique_created_at=crit.isoformat(),
+            )
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001 — fail-safe toward forcing
+        _log.warning(
+            "corrective_context.snapshot_force_freshness_check_failed",
+            user_id=user_id, error=str(exc)[:200],
+        )
+        return False
 
 
 def _load_latest_critique(
@@ -391,11 +446,13 @@ def build_corrective_context(
     # ---- Source 1: latest critique + embedded reconcile ------------------
     critique_findings: list[dict[str, Any]] = []
     reconcile: dict[str, Any] = {}
+    critique_created_at: datetime | None = None
     if current is not None:
         row = _load_latest_critique(
             session, user_id=user_id, plan_version_id=current.id
         )
         if row is not None:
+            critique_created_at = row.created_at
             try:
                 payload = json.loads(row.critique_json or "{}")
             except (TypeError, ValueError):
@@ -512,11 +569,24 @@ def build_corrective_context(
 
     # Snapshot-class corrections implicate phase-1 inputs → full tier. The
     # reconcile loop tags refresh_snapshot-routed findings status='routed'.
+    # Freshness-aware: when the user's latest portfolio snapshot POSTDATES
+    # the source critique row, the demanded refresh has already happened —
+    # forcing is waived (logged as corrective_context.snapshot_force_waived).
+    # Any doubt keeps forcing (fail-safe toward the expensive-but-correct
+    # run); the phase-1/2 reuse freshness validation in
+    # _select_corrective_reuse_run still applies on top.
     per_finding = reconcile.get("per_finding")
     if isinstance(per_finding, list):
-        ctx.forces_full_tier = any(
+        snapshot_routed = any(
             isinstance(pf, dict) and pf.get("status") == "routed"
             for pf in per_finding
+        )
+        ctx.forces_full_tier = snapshot_routed and not (
+            _snapshot_refresh_postdates_critique(
+                session,
+                user_id=user_id,
+                critique_created_at=critique_created_at,
+            )
         )
 
     ctx.rendered = _render_block(ctx)

@@ -13,7 +13,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from argosy.state.models import ActionProposal, PlanCritique, PlanVersion, User
+from argosy.state.models import (
+    ActionProposal,
+    PlanCritique,
+    PlanVersion,
+    PortfolioSnapshotRow,
+    User,
+)
 
 
 @pytest.fixture
@@ -300,7 +306,8 @@ def test_rendering_is_deterministic(session):
 
 def test_forces_full_tier_on_snapshot_routed_finding(session):
     """A refresh_snapshot-routed finding implicates phase-1 inputs — the
-    corrective run must NOT reuse phases 1-2."""
+    corrective run must NOT reuse phases 1-2. No snapshot row exists here,
+    so the freshness waiver must fail-safe toward forcing."""
     from argosy.services.corrective_context import build_corrective_context
 
     _add_critique(
@@ -312,6 +319,124 @@ def test_forces_full_tier_on_snapshot_routed_finding(session):
     ctx = build_corrective_context(session, user_id="ariel")
     assert ctx is not None
     assert ctx.forces_full_tier is True
+
+
+def _add_snapshot(session, *, user_id="ariel", imported_at):
+    row = PortfolioSnapshotRow(user_id=user_id, imported_at=imported_at)
+    session.add(row)
+    session.commit()
+    return row
+
+
+def _add_routed_critique(session):
+    return _add_critique(
+        session,
+        [_finding("stale-snap", "portfolio.snapshot", "snapshot stale")],
+        finding_status=["escalated"],
+        per_finding=[{"finding_index": 0, "status": "routed"}],
+    )
+
+
+def test_snapshot_force_kept_when_snapshot_older_than_critique(session):
+    """A snapshot that PREDATES the critique is exactly the staleness the
+    finding flagged — the full tier stays forced."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _add_snapshot(
+        session,
+        imported_at=datetime.now(timezone.utc).replace(tzinfo=None)
+        - timedelta(days=1),
+    )
+    _add_routed_critique(session)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert ctx.forces_full_tier is True
+
+
+def test_snapshot_force_waived_when_snapshot_newer_than_critique(
+    session, monkeypatch
+):
+    """Live bug (runs 141/143/144): the snapshot WAS refreshed after the
+    critique, yet every corrective pass kept paying the full tier. A fresh
+    snapshot that postdates the critique waives the forcing, loudly (the
+    waiver event carries BOTH timestamps for audit)."""
+    from argosy.services import corrective_context as cc
+
+    critique = _add_routed_critique(session)
+    # Backdate the critique, then land a fresh snapshot after it.
+    critique.created_at = datetime.now(timezone.utc) - timedelta(hours=6)
+    session.commit()
+    _add_snapshot(
+        session,
+        imported_at=datetime.now(timezone.utc).replace(tzinfo=None)
+        - timedelta(hours=1),
+    )
+
+    events: list[tuple[str, dict]] = []
+
+    class _LogSpy:
+        def info(self, event, **kw):
+            events.append((event, kw))
+
+        def warning(self, event, **kw):
+            events.append((event, kw))
+
+    monkeypatch.setattr(cc, "_log", _LogSpy())
+    ctx = cc.build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert ctx.forces_full_tier is False
+    waived = [kw for ev, kw in events
+              if ev == "corrective_context.snapshot_force_waived"]
+    assert len(waived) == 1
+    # Both timestamps are in the event for auditability.
+    assert "snapshot_imported_at" in waived[0]
+    assert "critique_created_at" in waived[0]
+
+
+def test_snapshot_force_kept_when_fresh_snapshot_belongs_to_other_user(session):
+    """Fail-safe: another user's fresh snapshot proves nothing about THIS
+    user's inputs — keep forcing."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    critique = _add_routed_critique(session)
+    critique.created_at = datetime.now(timezone.utc) - timedelta(hours=6)
+    session.commit()
+    session.add(User(id="other", plan="free"))
+    session.commit()
+    _add_snapshot(
+        session, user_id="other",
+        imported_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert ctx.forces_full_tier is True
+
+
+def test_snapshot_force_waiver_handles_naive_vs_aware_timestamps(session):
+    """SQLite drops tzinfo (convention: naive == UTC). A naive snapshot
+    timestamp vs an aware critique timestamp must compare, not raise —
+    and still waive when the snapshot is genuinely newer."""
+    from argosy.services.corrective_context import (
+        _snapshot_refresh_postdates_critique,
+    )
+
+    now_aware = datetime.now(timezone.utc)
+    _add_snapshot(
+        session,
+        imported_at=now_aware.replace(tzinfo=None) + timedelta(hours=1),
+    )
+    assert _snapshot_refresh_postdates_critique(
+        session, user_id="ariel", critique_created_at=now_aware
+    ) is True
+    # Aware critique NEWER than the snapshot → no waiver.
+    assert _snapshot_refresh_postdates_critique(
+        session, user_id="ariel",
+        critique_created_at=now_aware + timedelta(days=1),
+    ) is False
+    # Missing critique timestamp → fail-safe, no waiver.
+    assert _snapshot_refresh_postdates_critique(
+        session, user_id="ariel", critique_created_at=None
+    ) is False
 
 
 def test_reader_directive_lists_corrections_and_directives(session):
