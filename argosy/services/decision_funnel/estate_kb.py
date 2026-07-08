@@ -31,14 +31,21 @@ ESTATE_KB_RELPATHS: tuple[str, ...] = ("tax/us/estate_tax_nonresidents.md",)
 # silently rule-free. Mirrors the standing prose used across the deploy /
 # allocation paths (see services/allocation_plan.py, agents/alternatives_sourcer.py).
 _ESTATE_RULE_SUMMARY = (
-    "ESTATE / US-SITUS RULE (binding, from "
+    "ESTATE / US-SITUS RULE (binding, HORIZON-SCOPED, from "
     "domain_knowledge/tax/us/estate_tax_nonresidents.md): the client is a "
     "NON-US person; US-domiciled (US-situs) securities carry a US estate-tax "
-    "tail (no meaningful exemption, up to 40%). Prefer Irish/London UCITS or "
-    "otherwise non-US-situs instruments for any NEW buy. NVDA is the ONE "
-    "sanctioned US-situs sleeve. A BUY of any other US-domiciled instrument "
-    "must be justified against this rule explicitly — do not route the "
-    "question forward; block or justify."
+    "tail (no meaningful exemption, up to 40%). The rule binds the "
+    "LONG-HORIZON CORE — the 30+ year buy-and-hold ETF allocation: prefer "
+    "Irish/London UCITS or otherwise non-US-situs instruments for any core "
+    "buy; NVDA is the ONE sanctioned US-situs core sleeve. BOUNDED "
+    "tactical/discovery sleeve positions (the high-potential / moonshot "
+    "sleeves and similar short-horizon, size-capped single names) MAY be "
+    "US-domiciled: the estate tail is a death-timing tail risk that matters "
+    "for what is held for decades, not for a bounded sleeve position — but "
+    "the US-situs exposure MUST be stated explicitly in the rationale, never "
+    "hidden. A CORE buy of any other US-domiciled instrument must be blocked "
+    "or justified against this rule explicitly — do not route the question "
+    "forward."
 )
 
 
