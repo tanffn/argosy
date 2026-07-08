@@ -262,19 +262,43 @@ class NetWorthHistoryResponseDTO(BaseModel):
     points: list[NetWorthHistoryPointDTO]
 
 
-@router.get("/net-worth-history", response_model=NetWorthHistoryResponseDTO)
-def get_net_worth_history(
-    user_id: str = Query("ariel"),
-    months: int = Query(12, ge=1, le=120),
-    db: Session = Depends(get_db),
-) -> NetWorthHistoryResponseDTO:
-    """Chronological per-snapshot net-worth points for the last ``months``.
+def _snapshots_stamp(db: Session, user_id: str) -> tuple | None:
+    """Staleness stamp over ALL of ``user_id``'s snapshot rows, or None.
 
-    One point per calendar date — the row's PRICE VINTAGE (see
-    ``NetWorthHistoryPointDTO.date``) — with the freshest import winning
-    when a vintage date was re-imported. Rows whose totals can't be
-    parsed yield ``total_usd=None`` rather than being dropped, so gaps
-    are visible to the caller.
+    ``version_tuple`` only carries the LATEST snapshot (by snapshot_date), but
+    this endpoint renders EVERY row — a backdated re-import (new row with an
+    older snapshot_date) changes the series without changing the latest row.
+    ``(count, max imported_at)`` bumps on any insert. ``None`` on any DB error
+    -> the caller treats the key as uncacheable (always compute).
+    """
+    try:
+        from sqlalchemy import func as _func
+        from sqlalchemy import select as _select
+
+        from argosy.state.models import PortfolioSnapshotRow as _SnapRow
+
+        n, max_imported = db.execute(
+            _select(
+                _func.count(_SnapRow.id), _func.max(_SnapRow.imported_at)
+            ).where(_SnapRow.user_id == user_id)
+        ).one()
+        return (
+            int(n or 0),
+            max_imported.isoformat()
+            if hasattr(max_imported, "isoformat")
+            else (str(max_imported) if max_imported is not None else None),
+        )
+    except Exception:  # noqa: BLE001 — uncacheable beats a stale series
+        return None
+
+
+def _compute_net_worth_history(
+    db: Session, user_id: str, months: int
+) -> NetWorthHistoryResponseDTO:
+    """Build the net-worth-history series (see :func:`get_net_worth_history`).
+
+    Module-level (not a route closure) so the derived-cache warmer can run
+    the SAME compute under the SAME key the route reads.
     """
     import json as _json
     from datetime import date as _date, timedelta as _timedelta
@@ -426,6 +450,62 @@ def get_net_worth_history(
 
     points = [by_date[k] for k in sorted(by_date)]
     return NetWorthHistoryResponseDTO(user_id=user_id, points=points)
+
+
+@router.get("/net-worth-history", response_model=NetWorthHistoryResponseDTO)
+def get_net_worth_history(
+    user_id: str = Query("ariel"),
+    months: int = Query(12, ge=1, le=120),
+    db: Session = Depends(get_db),
+) -> NetWorthHistoryResponseDTO:
+    """Chronological per-snapshot net-worth points for the last ``months``.
+
+    One point per calendar date — the row's PRICE VINTAGE (see
+    ``NetWorthHistoryPointDTO.date``) — with the freshest import winning
+    when a vintage date was re-imported. Rows whose totals can't be
+    parsed yield ``total_usd=None`` rather than being dropped, so gaps
+    are visible to the caller.
+
+    Memoized in the derived cache (same version-keyed pattern as the
+    wealth-dashboard above). The output is a pure function of the user's
+    ``portfolio_snapshots`` rows + the archived-TSV backfill files +
+    ``date.today()`` (the window cutoff), so the key folds in:
+
+      * ``version_tuple`` — bumps on a new ingested snapshot (id +
+        imported_at) and on plan changes (harmless over-invalidation;
+        keeps ONE shared staleness anchor across surfaces);
+      * ``_snapshots_stamp`` — (count, max imported_at) over ALL the
+        user's snapshot rows, because this series reads every row, not
+        just the latest (a backdated re-import must bust);
+      * ``months`` — distinct windows are distinct entries;
+      * today's ISO date — a day rollover moves the cutoff;
+      * :func:`backfill_files_fingerprint` — an added/edited archive
+        export busts the cached series (file-driven inputs the DB
+        version can't see).
+    """
+    from datetime import date as _date
+
+    from argosy.services import derived_cache
+    from argosy.services.net_worth_backfill import backfill_files_fingerprint
+
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        stamp = _snapshots_stamp(db, user_id)
+        if stamp is None:
+            version = None  # can't stamp the full row set -> don't cache
+        else:
+            version = version + (
+                "net-worth-history",
+                months,
+                stamp,
+                _date.today().isoformat(),
+                backfill_files_fingerprint(),
+            )
+    return derived_cache.get_or_compute(
+        "portfolio.net-worth-history",
+        version,
+        lambda: _compute_net_worth_history(db, user_id, months),
+    )
 
 
 __all__ = ["router"]

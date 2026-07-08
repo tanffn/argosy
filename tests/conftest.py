@@ -237,6 +237,13 @@ def client_with_db(tmp_path, monkeypatch):
     from argosy.api.routes.plan import get_db
 
     monkeypatch.setenv("ARGOSY_RUN_SCHEDULER", "0")
+    # Startup cache-warming opens its OWN session from get_settings().database_url
+    # — the REAL dev DB, NOT this fixture's tmp DB — and runs MC computes through
+    # module-level functions a test may have monkeypatched (observed: the warm
+    # thread racing a resolver spy once effective_decision_run_id made the live
+    # plan cacheable again). API-endpoint tests never need warming; off, like the
+    # scheduler above.
+    monkeypatch.setenv("ARGOSY_DERIVED_CACHE_WARM", "0")
 
     # File-backed SQLite in tmp_path; shared by sync + async connections.
     db_path = tmp_path / "test_plan.db"

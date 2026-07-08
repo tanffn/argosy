@@ -413,6 +413,30 @@ def _build_legacy_point(path: Path) -> ReconstructedPoint | None:
     return point
 
 
+def backfill_files_fingerprint() -> tuple:
+    """Cheap structural staleness probe over the archived exports.
+
+    A tuple of ``(name, mtime, size)`` per candidate file, oldest-name-first
+    (the :func:`_candidate_paths` sort). Folded into the net-worth-history
+    derived-cache key so an added / edited / removed archive file busts the
+    cached series. Empty tuple when no root is configured (no backfill
+    inputs). Never raises — a per-file stat error degrades to ``None`` fields
+    (still a distinct key), a walk error to a sentinel tuple (uncacheable-ish:
+    distinct from every healthy fingerprint).
+    """
+    fp: list[tuple] = []
+    try:
+        for path in _candidate_paths():
+            try:
+                st = path.stat()
+                fp.append((path.name, st.st_mtime, st.st_size))
+            except OSError:
+                fp.append((path.name, None, None))
+    except Exception:  # noqa: BLE001 — never raise from a cache-key probe
+        return ("fingerprint-error",)
+    return tuple(fp)
+
+
 def reconstructed_net_worth_points(
     *, before: date | None = None
 ) -> list[ReconstructedPoint]:
@@ -447,4 +471,8 @@ def reconstructed_net_worth_points(
     return points
 
 
-__all__ = ["ReconstructedPoint", "reconstructed_net_worth_points"]
+__all__ = [
+    "ReconstructedPoint",
+    "backfill_files_fingerprint",
+    "reconstructed_net_worth_points",
+]

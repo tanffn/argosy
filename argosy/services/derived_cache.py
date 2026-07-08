@@ -61,23 +61,31 @@ def version_tuple(session, user_id: str) -> Optional[tuple]:
     """Cheap staleness key for ``user_id``'s derived data, or ``None``.
 
     Returns a hashable tuple capturing the current plan version id + its
-    decision_run_id + the latest portfolio snapshot id + its imported_at
-    timestamp. Returns ``None`` (treat as UNCACHEABLE — always compute) when
-    there is no current plan or the plan has no decision run, since without a
-    decision_run_id the derived numbers cannot be resolved and we must not
-    risk a stale or cross-plan cache hit.
+    EFFECTIVE decision_run_id (own, else the nearest synthesis ancestor's —
+    refinement plans set their own to None by design) + the latest portfolio
+    snapshot id + its imported_at timestamp. Returns ``None`` (treat as
+    UNCACHEABLE — always compute) when there is no current plan or no decision
+    run anywhere in its lineage, since without a run the derived numbers cannot
+    be resolved and we must not risk a stale or cross-plan cache hit.
 
     Any DB error degrades to ``None`` (uncacheable) — never raises, and never
     returns a partial key that could collide across distinct states.
     """
     try:
-        from argosy.state.queries import get_current_plan
+        from argosy.state.queries import effective_decision_run_id, get_current_plan
 
         plan = get_current_plan(session, user_id)
-        if plan is None or plan.decision_run_id is None:
+        if plan is None:
+            return None
+        # Refinement/amendment plans carry decision_run_id=None by design; their
+        # numeric authority is the nearest synthesis ancestor's run (the same
+        # run the overview/resolver consumers use). Only a plan with NO run
+        # anywhere in its lineage is uncacheable.
+        run_id = effective_decision_run_id(session, plan)
+        if run_id is None:
             return None
         plan_id = int(plan.id)
-        decision_run_id = int(plan.decision_run_id)
+        decision_run_id = int(run_id)
 
         snap_id = None
         snap_stamp = None
@@ -390,6 +398,10 @@ def warm(user_id: str) -> None:
         ``("scenarios", retirement_age, n_paths, seed)``.
       * ``"portfolio.wealth-dashboard"`` -> ``compute_wealth_dashboard`` (default
         exclude_nvda=False), key ``("wealth-dashboard", exclude_nvda, today_iso)``.
+      * ``"portfolio.net-worth-history"`` -> ``_compute_net_worth_history`` at
+        the home cards' request (months=12), key ``("net-worth-history",
+        months, _snapshots_stamp(...), today_iso,
+        backfill_files_fingerprint())``.
       * ``"portfolio.allocation-breakdown"`` -> ``get_allocation_breakdown``
         (default exclude_nvda=False), key ``("allocation-breakdown", exclude_nvda)``.
       * ``"portfolio.real-estate"`` -> ``_compute_real_estate``, key ``("real-estate",)``.
@@ -636,6 +648,43 @@ def warm(user_id: str) -> None:
             get_or_compute(
                 "portfolio.wealth-dashboard", wd_version, _warm_wealth_dashboard
             )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- portfolio.net-worth-history (home cards' request params) -----
+        # Route: GET /portfolio/net-worth-history
+        #   Both home cards (WealthTrajectoryCard + DeconcentrationCard)
+        #   request months=12. Key: version + ("net-worth-history", months,
+        #   _snapshots_stamp(...), today_iso, backfill_files_fingerprint())
+        #   — MUST match the route.
+        try:
+            import datetime as _dt_nw
+
+            from argosy.api.routes.wealth_dashboard import (
+                _compute_net_worth_history,
+                _snapshots_stamp,
+            )
+            from argosy.services.net_worth_backfill import (
+                backfill_files_fingerprint,
+            )
+
+            nw_months = 12
+            nw_stamp = _snapshots_stamp(session, user_id)
+            if nw_stamp is not None:
+                nw_version = version + (
+                    "net-worth-history",
+                    nw_months,
+                    nw_stamp,
+                    _dt_nw.date.today().isoformat(),
+                    backfill_files_fingerprint(),
+                )
+                get_or_compute(
+                    "portfolio.net-worth-history",
+                    nw_version,
+                    lambda: _compute_net_worth_history(
+                        session, user_id, nw_months
+                    ),
+                )
         except Exception:  # noqa: BLE001
             pass
 

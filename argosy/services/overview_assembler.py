@@ -859,12 +859,17 @@ def _open_actions_count(session, user_id: str) -> int:
 def build_overview(session, *, user_id: str) -> OverviewModel:
     """Assemble the Overview model for ``user_id``. Pure-ish (reads DB, no writes),
     never throws on missing/pending data — degrades each chapter instead."""
-    from argosy.state.queries import get_current_plan
+    from argosy.state.queries import effective_decision_run_id, get_current_plan
 
     plan = get_current_plan(session, user_id)
     if plan is None:
         return _unavailable("No current plan — accept a plan to see the Overview.")
-    if plan.decision_run_id is None:
+    # Refinement/amendment plans carry decision_run_id=None by design (scoped
+    # edit, no agent run) — the nearest synthesis ANCESTOR's resolver manifest
+    # is their numeric authority. Only a plan with NO synthesis anywhere in its
+    # lineage is genuinely unresolvable.
+    decision_run_id = effective_decision_run_id(session, plan)
+    if decision_run_id is None:
         return _unavailable(
             "Current plan has no decision run — numbers can't be resolved yet.",
             plan_version_id=plan.id,
@@ -875,7 +880,7 @@ def build_overview(session, *, user_id: str) -> OverviewModel:
     resolved = resolve_plan_numbers(
         session,
         user_id=user_id,
-        decision_run_id=plan.decision_run_id,
+        decision_run_id=decision_run_id,
         include_canonical_ages=True,
     )
 
@@ -932,7 +937,7 @@ def build_overview(session, *, user_id: str) -> OverviewModel:
         available=True,
         reason=None,
         plan_version_id=plan.id,
-        decision_run_id=plan.decision_run_id,
+        decision_run_id=decision_run_id,
         as_of=as_of,
         chapters=chapters,
         actions_banner=OverviewActionsBannerData(open_count=open_count, href="/proposals"),

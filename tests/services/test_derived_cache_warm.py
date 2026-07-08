@@ -71,6 +71,7 @@ def _patch_heavy_computes(monkeypatch):
         "build_retirement_plan": 0,
         "run_retirement_scenarios": 0,
         "compute_wealth_dashboard": 0,
+        "_compute_net_worth_history": 0,
         "get_allocation_breakdown": 0,
         "_compute_real_estate": 0,
         "compute_allocation_glidepath": 0,
@@ -109,6 +110,10 @@ def _patch_heavy_computes(monkeypatch):
     def _wealth(session, *, user_id, exclude_nvda):
         calls["compute_wealth_dashboard"] += 1
         return SimpleNamespace(kind="wealth")
+
+    def _net_worth_history(db, user_id, months):
+        calls["_compute_net_worth_history"] += 1
+        return SimpleNamespace(kind="net-worth-history", months=months)
 
     def _alloc_breakdown(*, user_id, exclude_nvda, db):
         calls["get_allocation_breakdown"] += 1
@@ -153,6 +158,21 @@ def _patch_heavy_computes(monkeypatch):
         lambda **kw: SimpleNamespace(kind="wealth-dto"),
     )
     monkeypatch.setattr(
+        "argosy.api.routes.wealth_dashboard._compute_net_worth_history",
+        _net_worth_history,
+    )
+    # The stamp query needs a real DB; stub it stable for the fake session.
+    monkeypatch.setattr(
+        "argosy.api.routes.wealth_dashboard._snapshots_stamp",
+        lambda db, user_id: (2, "2026-07-01T00:00:00"),
+    )
+    # Deterministic backfill fingerprint regardless of the dev machine's
+    # ARGOSY_EXPENSE_SAMPLES_ROOT (real archived TSVs must not leak in).
+    monkeypatch.setattr(
+        "argosy.services.net_worth_backfill.backfill_files_fingerprint",
+        lambda: (),
+    )
+    monkeypatch.setattr(
         "argosy.api.routes.portfolio.get_allocation_breakdown", _alloc_breakdown
     )
     monkeypatch.setattr(
@@ -188,6 +208,7 @@ def test_warm_populates_cache_and_read_is_a_hit(monkeypatch):
     assert calls["build_retirement_plan"] == 2
     assert calls["run_retirement_scenarios"] == 1  # default age only (tracks=[])
     assert calls["compute_wealth_dashboard"] == 1
+    assert calls["_compute_net_worth_history"] == 1
     assert calls["get_allocation_breakdown"] == 1
     assert calls["_compute_real_estate"] == 1
     assert calls["compute_allocation_glidepath"] == 1
@@ -195,10 +216,11 @@ def test_warm_populates_cache_and_read_is_a_hit(monkeypatch):
     # The session was opened and closed.
     assert sess.closed is True
 
-    # All nine hot entries are now cached: overview, derived-inputs,
+    # All ten hot entries are now cached: overview, derived-inputs,
     # feasible-age, dual-track-plan, scenarios, wealth-dashboard,
-    # allocation-breakdown, real-estate, allocation-glidepath.
-    assert derived_cache.cache_size() == 9
+    # net-worth-history, allocation-breakdown, real-estate,
+    # allocation-glidepath.
+    assert derived_cache.cache_size() == 10
 
     # A subsequent get_or_compute for overview's (tag, version) is a HIT:
     # the compute fn is NOT called again.
@@ -384,7 +406,7 @@ def test_warm_async_spawns_thread_and_populates(monkeypatch):
     assert done.wait(timeout=5.0), "warm_async must run warm on a thread"
 
     assert calls["build_overview"] == 1
-    assert derived_cache.cache_size() == 9
+    assert derived_cache.cache_size() == 10
 
 
 def test_warm_scenarios_key_matches_route_suffix(monkeypatch):
@@ -422,6 +444,10 @@ def test_warm_portfolio_keys_match_route_suffixes(monkeypatch):
     today = _dt.date.today().isoformat()
     for tag, suffix in (
         ("portfolio.wealth-dashboard", ("wealth-dashboard", False, today)),
+        (
+            "portfolio.net-worth-history",
+            ("net-worth-history", 12, (2, "2026-07-01T00:00:00"), today, ()),
+        ),
         ("portfolio.allocation-breakdown", ("allocation-breakdown", False)),
         ("portfolio.real-estate", ("real-estate",)),
         ("plan.allocation-glidepath", ("allocation-glidepath", today)),

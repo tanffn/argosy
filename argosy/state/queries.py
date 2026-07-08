@@ -578,6 +578,50 @@ def get_current_plan(session, user_id: str):
     ).scalar_one_or_none()
 
 
+def nearest_ancestor_decision_run_id(session, plan_version, *, max_hops: int = 10):
+    """Walk ``plan_version``'s ``derived_from_id`` chain to the nearest ANCESTOR
+    that carries a ``decision_run_id`` (a real synthesis product) and return that
+    run id, or ``None``.
+
+    Refinement/amendment drafts copy content verbatim from the plan they edit
+    and set ``decision_run_id=None`` by design (scoped edit, no agent run), so
+    the ancestor's resolver manifest IS the numeric derivation authority for
+    them. Cycle-safe and hop-bounded (defense-in-depth on corrupt lineage).
+    """
+    from argosy.state.models import PlanVersion
+
+    seen: set[int] = {plan_version.id}
+    current = plan_version
+    for _ in range(max_hops):
+        parent_id = getattr(current, "derived_from_id", None)
+        if not parent_id or parent_id in seen:
+            return None
+        seen.add(parent_id)
+        parent = session.get(PlanVersion, parent_id)
+        if parent is None:
+            return None
+        if parent.decision_run_id is not None:
+            return parent.decision_run_id
+        current = parent
+    return None
+
+
+def effective_decision_run_id(session, plan_version, *, max_hops: int = 10):
+    """Return the decision run that is the numeric derivation authority for
+    ``plan_version``: its own ``decision_run_id`` when set, else the nearest
+    synthesis ancestor's (via :func:`nearest_ancestor_decision_run_id`), else
+    ``None``.
+
+    Consumers that resolve plan numbers (overview assembler, derived-cache
+    version key, gates) must use THIS rather than ``plan.decision_run_id``
+    directly, or every accepted refinement plan looks like it has no numbers.
+    """
+    own = getattr(plan_version, "decision_run_id", None)
+    if own is not None:
+        return own
+    return nearest_ancestor_decision_run_id(session, plan_version, max_hops=max_hops)
+
+
 def get_pending_draft(session, user_id: str):
     """Return the user's in-flight draft plan, or None.
 
@@ -595,10 +639,12 @@ def get_pending_draft(session, user_id: str):
 
 
 __all__ = [
+    "effective_decision_run_id",
     "get_active_baseline",
     "get_current_plan",
     "get_latest_investor_event",
     "get_pending_draft",
     "get_user_pension_snapshots",
+    "nearest_ancestor_decision_run_id",
     "record_investor_events",
 ]

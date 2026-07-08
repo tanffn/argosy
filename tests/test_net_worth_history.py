@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from argosy.state.models import PortfolioSnapshotRow, User
+from argosy.state.models import PlanVersion, PortfolioSnapshotRow, User
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +21,17 @@ def _no_backfill_root(monkeypatch):
     """Keep the dev machine's real archived TSVs (Google Drive) from
     leaking reconstructed points into these fixtures."""
     monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clean_derived_cache():
+    """The route memoizes in the process-local derived cache; start and end
+    each test empty so entries never leak across tests/files."""
+    from argosy.services import derived_cache
+
+    derived_cache.clear()
+    yield
+    derived_cache.clear()
 
 
 def _seed_row(
@@ -258,3 +269,62 @@ def test_history_empty_for_unknown_user(client_with_db):
     res = client_with_db.get("/api/portfolio/net-worth-history?user_id=nobody")
     assert res.status_code == 200
     assert res.json()["points"] == []
+
+
+def test_history_cached_and_invalidated_by_new_snapshot_row(client_with_db):
+    """Derived-cache contract for the route (output-trust doctrine):
+
+    * with a current plan the response is MEMOIZED — a repeat request under
+      the same state is a cache HIT (the compute must not run again);
+    * a NEW ``portfolio_snapshots`` row changes ``version_tuple`` (latest
+      snapshot id + imported_at) -> automatic MISS -> the fresh point is
+      served, never a stale series.
+    """
+    from unittest.mock import patch
+
+    from argosy.services import derived_cache
+
+    SF = client_with_db.app.state.session_factory
+    today = date.today()
+    url = "/api/portfolio/net-worth-history?user_id=ariel&months=12"
+    with SF() as s:
+        s.add(User(id="ariel", plan="free"))
+        s.commit()
+        # A current plan (with a decision run) makes version_tuple non-None
+        # -> the route is cacheable.
+        s.add(
+            PlanVersion(
+                user_id="ariel",
+                role="current",
+                raw_markdown="# plan",
+                decision_run_id=123,
+            )
+        )
+        s.commit()
+        _seed_row(s, snapshot_date=today - timedelta(days=30))
+
+    r1 = client_with_db.get(url)
+    assert r1.status_code == 200
+    assert len(r1.json()["points"]) == 1
+    assert derived_cache.cache_size() >= 1, "route must be cacheable"
+
+    # Same state -> HIT: the compute is NOT called again (a bomb proves it).
+    def _boom(db, user_id, months):
+        raise AssertionError("cache HIT expected — compute must not run")
+
+    with patch(
+        "argosy.api.routes.wealth_dashboard._compute_net_worth_history", _boom
+    ):
+        r2 = client_with_db.get(url)
+    assert r2.status_code == 200
+    assert r2.json() == r1.json()
+
+    # New snapshot row -> version busts -> recompute serves the new point.
+    with SF() as s:
+        _seed_row(s, snapshot_date=today - timedelta(days=5))
+    r3 = client_with_db.get(url)
+    assert r3.status_code == 200
+    assert [p["date"] for p in r3.json()["points"]] == [
+        (today - timedelta(days=30)).isoformat(),
+        (today - timedelta(days=5)).isoformat(),
+    ]
