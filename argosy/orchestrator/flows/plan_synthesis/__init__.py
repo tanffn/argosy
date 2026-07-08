@@ -79,6 +79,12 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     # the shipped full path.
     _run_phase_3_patch,
     _load_patch_base_output,
+    # FIX 3 (delta-scoped verification, Ariel 2026-07-08): deterministic
+    # proof-chain check + DELTA REVIEW framing renderer for phases 4/5 and
+    # the whole-artifact reader. Resolved via ``_pkg.`` so tests can
+    # monkeypatch the precondition / renderer independently.
+    _delta_scoped_review_basis,
+    _render_delta_review_framing,
     # Phase 2 — prose rewriter wired between phase-3 and the
     # speculation-cap enforcer. Exposed on the package namespace so
     # tests can monkeypatch via ``flow._run_plan_language_rewriter``.
@@ -239,6 +245,8 @@ __all__ = [
     "_run_phase_3_synthesizer",
     "_run_phase_3_patch",
     "_load_patch_base_output",
+    "_delta_scoped_review_basis",
+    "_render_delta_review_framing",
     "PlanHorizonPatchSynthesizerAgent",
     "PlanSectionPatchSynthesizerAgent",
     "_enforce_speculation_cap",

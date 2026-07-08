@@ -27,9 +27,12 @@ the shipped full path; no mixed mode):
 
 1. Unaddressable surface — ``plan_item_ref`` resolves to no item/section in
    the prior draft (lenient token match, ``findings_match`` spirit).
-2. No concrete edit — neither canonical values nor wrong values nor a
-   verbatim directive detail. Substance-only findings are cross-cutting
-   judgment work; regeneration is the right tool.
+2. No concrete edit — neither canonical values nor wrong values nor an
+   explicit REQUIRED-statement instruction (``required_statement``, FIX 2:
+   an FM/reader "restate as X" clause IS a concrete edit even without
+   numeric pairs) nor a verbatim directive detail. Substance-only findings
+   ("X is too fragile") are cross-cutting judgment work; regeneration is
+   the right tool.
 3. Cross-cutting occurrence spread — the deterministic occurrence pre-scan
    (``corrections_check.value_variants`` + ``_present``) finds the
    wrong/canonical values in MORE than 2 of the 4 coarse slices, or the
@@ -508,7 +511,8 @@ def _scope_one(
             kind=kind, index=index, scope="FULL",
             reason=(
                 "no concrete edit: neither canonical values nor wrong values "
-                "nor a verbatim directive detail — substance-only corrections "
+                "nor an explicit required-statement instruction nor a "
+                "verbatim directive detail — substance-only corrections "
                 "are cross-cutting judgment work"
             ),
             implicated_groups=tuple(sorted(groups)),
@@ -589,13 +593,19 @@ def classify_patch_reachability(
 
     for c in corrections:
         canonical, wrong = _extract_values(c)
+        # FIX 2 (Ariel 2026-07-08): an explicit REQUIRED-statement
+        # instruction ("restate as X" — harvested by
+        # ``corrective_context.extract_required_statement``) is a concrete
+        # edit even without numeric canonical/wrong pairs. Pure
+        # observations carry no required_statement and still route FULL.
+        required_stmt = str(c.get("required_statement") or "").strip()
         decisions.append(_scope_one(
             kind="correction",
             index=int(c.get("index") or 0),
             refs=[str(c.get("plan_item_ref") or "")],
             canonical=canonical,
             wrong=wrong,
-            has_concrete_edit=bool(canonical or wrong),
+            has_concrete_edit=bool(canonical or wrong or required_stmt),
             idx=idx,
             rendered_surfaces=rendered_surfaces,
             global_surfaces=global_surfaces,

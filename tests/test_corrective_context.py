@@ -909,6 +909,307 @@ def test_run_144_verdict_feedback_classifies_patch(session):
     assert decision.implicated_groups == ("medium",)
 
 
+# ---------------------------------------------------------------------------
+# FIX 1 — suppress verified-landed corrections (Ariel 2026-07-08)
+# ---------------------------------------------------------------------------
+
+
+def _backdated_critique(session, findings, finding_status, hours=6):
+    critique = _add_critique(session, findings, finding_status=finding_status)
+    critique.created_at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    session.commit()
+    return critique
+
+
+def _two_open_findings(session):
+    return _backdated_critique(
+        session,
+        [
+            _finding("glide", "glide.schedule", "glide contradicts pace"),
+            _finding("fx-rate", "assumptions.fx", "FX 3.00 vs plan 2.944"),
+        ],
+        finding_status=["escalated", "escalated"],
+    )
+
+
+def test_landed_corrections_fully_suppressed(session):
+    """The run-150 live bug: the critique row never refreshes, so findings
+    the corrections-landed floor verified LANDED (corrective_unresolved=[])
+    re-attached every pass. With every open finding landed and nothing else
+    open, the builder now returns None — the next run is NOT corrective."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+    )
+    assert build_corrective_context(session, user_id="ariel") is None
+
+
+def test_landed_corrections_partial_suppression_with_provenance(session):
+    """Only the landed subject is suppressed; the still-open one feeds, and
+    the suppression is recorded on the context + payload."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run = _add_run(session, fund_manager_decision="approved")
+    draft = _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [c.topic for c in ctx.corrections] == ["glide"]
+    assert [s["topic"] for s in ctx.landed_suppressed] == ["fx-rate"]
+    assert ctx.landed_source_draft_id == draft.id
+    payload = ctx.to_payload()
+    assert payload["landed_suppressed"] == [
+        {"topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+    ]
+    assert payload["landed_source_draft_id"] == draft.id
+    assert "FX 3.00" not in ctx.rendered
+
+
+def test_landed_correction_reflagged_by_verdict_still_feeds(session):
+    """The re-flag exception: a landed correction whose subject a NEWER
+    verdict-feedback finding re-flags (findings_match) must re-feed — the
+    landing was cosmetic or regressed. The verdict finding itself dedupes
+    against the kept critique correction."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run = _add_run(session)  # rejected — verdict feedback harvests
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+    )
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection(["glide", RUN_144_FM_REASON]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    topics = [c.topic for c in ctx.corrections]
+    # glide: landed but RE-FLAGGED → kept (as the critique correction, not
+    # duplicated by the verdict). fx-rate: landed, not re-flagged → gone.
+    assert topics.count("glide") == 1
+    assert "fx-rate" not in topics
+    assert [c.source for c in ctx.corrections] == [
+        "critique", "verdict_feedback",
+    ]
+    assert [s["topic"] for s in ctx.landed_suppressed] == ["fx-rate"]
+
+
+def test_landed_suppression_requires_floor_ran(session):
+    """No corrective_unresolved key on the draft = the deterministic floor
+    never ran — nothing was VERIFIED landed; everything re-feeds."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run = _add_run(session, fund_manager_decision="approved")
+    pv = _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+    )
+    si = json.loads(pv.synthesis_inputs_json)
+    si.pop("corrective_unresolved")
+    pv.synthesis_inputs_json = json.dumps(si)
+    session.commit()
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [c.topic for c in ctx.corrections] == ["glide", "fx-rate"]
+    assert ctx.landed_suppressed == []
+
+
+def test_landed_suppression_ignores_failclosed_crash_marker(session):
+    """An index-0 fail-closed entry means the floor CRASHED — verification
+    did not run, so nothing may be treated as landed."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[{
+            "index": 0, "topic": "corrective_check",
+            "reason": "corrections-landed check crashed; fail-closed",
+        }],
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [c.topic for c in ctx.corrections] == ["glide", "fx-rate"]
+
+
+def test_landed_suppression_keeps_floor_unresolved_subjects(session):
+    """A correction the floor reported UNRESOLVED is not landed — it must
+    keep re-feeding."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[{"index": 2, "topic": "fx-rate", "reason": "missing"}],
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [c.topic for c in ctx.corrections] == ["fx-rate"]
+    assert [s["topic"] for s in ctx.landed_suppressed] == ["glide"]
+
+
+def test_landed_suppression_stale_draft_does_not_suppress(session):
+    """A corrective draft OLDER than the latest critique row cannot settle
+    that critique's findings — fresh judgments re-feed."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+        ],
+        unresolved=[],
+        imported_at=datetime.now(timezone.utc) - timedelta(hours=12),
+    )
+    # Critique newer than the draft (backdated less).
+    _backdated_critique(
+        session,
+        [_finding("glide", "glide.schedule", "glide contradicts pace")],
+        finding_status=["escalated"],
+        hours=6,
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [c.topic for c in ctx.corrections] == ["glide"]
+    assert ctx.landed_suppressed == []
+
+
+def test_landed_suppression_logs_what_was_suppressed(session, monkeypatch):
+    from argosy.services import corrective_context as cc
+
+    events = []
+
+    class _LogSpy:
+        def info(self, event, **kw):
+            events.append((event, kw))
+
+        def warning(self, event, **kw):
+            events.append((event, kw))
+
+    monkeypatch.setattr(cc, "_log", _LogSpy())
+    _two_open_findings(session)
+    run = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+    )
+    cc.build_corrective_context(session, user_id="ariel")
+    suppressed = [kw for e, kw in events
+                  if e == "corrective_context.landed_corrections_suppressed"]
+    assert len(suppressed) == 1
+    assert suppressed[0]["topics"] == ["fx-rate"]
+    assert suppressed[0]["suppressed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — required-statement extraction (instruction-concrete corrections)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_required_statement_quoted_restate_as():
+    from argosy.services.corrective_context import extract_required_statement
+
+    stmt = extract_required_statement(
+        "Restate the medium endpoint as 'hold 9,822 shares through 2027 "
+        "and glide to 1,649 by end-2028'."
+    )
+    assert stmt == (
+        "hold 9,822 shares through 2027 and glide to 1,649 by end-2028"
+    )
+
+
+def test_extract_required_statement_should_read_unquoted():
+    from argosy.services.corrective_context import extract_required_statement
+
+    stmt = extract_required_statement(
+        "The vest-sale paragraph should read: NVDA vests are sold at vest "
+        "under the fast-on-eligible-core schedule."
+    )
+    assert stmt.startswith("NVDA vests are sold at vest")
+
+
+def test_extract_required_statement_observation_returns_empty():
+    from argosy.services.corrective_context import extract_required_statement
+
+    assert extract_required_statement(
+        "The FI margin claim is too fragile."
+    ) == ""
+    assert extract_required_statement(
+        "The narrative conflates the pace with the waypoint."
+    ) == ""
+    assert extract_required_statement("") == ""
+
+
+def test_extract_required_statement_short_unquoted_tail_rejected():
+    from argosy.services.corrective_context import extract_required_statement
+
+    # Unquoted target wording under three words is not concrete enough.
+    assert extract_required_statement("It should read better.") == ""
+
+
+def test_verdict_finding_carries_required_statement(session):
+    """An FM 'restate as X' rejection without numeric pairs still yields a
+    concrete correction: required_statement populated, rendered, and on the
+    payload the patch classifier consumes."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([
+            "Restate the medium.targets endpoint as 'hold the adjudicated "
+            "glide anchor through the eligible-core window'.",
+        ]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    c = ctx.corrections[0]
+    assert c.required_statement == (
+        "hold the adjudicated glide anchor through the eligible-core window"
+    )
+    assert c.wrong_values == [] and c.canonical_facts == []
+    assert c.to_payload()["required_statement"] == c.required_statement
+    assert "required wording (apply this restatement)" in ctx.rendered
+
+
 def test_migration_admits_executed_status(session):
     """Migration 0078: the CHECK enum admits status='executed' at head."""
     row = _add_proposal(

@@ -161,6 +161,47 @@ def test_cross_cutting_spread_forces_full():
     assert "cross-cutting spread" in r.reason
 
 
+def test_required_statement_is_a_concrete_edit():
+    """FIX 2 (Ariel 2026-07-08): a correction with NO canonical/wrong values
+    but an explicit REQUIRED-statement instruction (FM 'restate as X') is a
+    concrete edit — rule 2 admits it; scope comes from the resolvable ref."""
+    c = _corr(canonical=[], wrong=[])
+    c["required_statement"] = (
+        "hold the adjudicated glide anchor through the eligible-core window"
+    )
+    r = classify_patch_reachability(
+        corrections=[c], directives=[], prior=_prior(),
+    )
+    assert r.verdict == "PATCH"
+    assert r.implicated_groups == ("medium",)
+    assert "medium.targets.nvda_target_weight" in r.implicated_item_ids
+
+
+def test_required_statement_blank_still_substance_only():
+    """Whitespace-only required_statement is NOT a concrete edit — pure
+    observations keep routing FULL (FULL-first precedence unchanged)."""
+    c = _corr(canonical=[], wrong=[])
+    c["required_statement"] = "   "
+    r = classify_patch_reachability(
+        corrections=[c], directives=[], prior=_prior(),
+    )
+    assert r.verdict == "FULL_RESYNTH"
+    assert "no concrete edit" in r.reason
+
+
+def test_required_statement_still_needs_addressable_surface():
+    """FULL-first precedence holds: an instruction-concrete correction whose
+    ref resolves to nothing (and carries no values to locate by occurrence)
+    is still unaddressable → FULL."""
+    c = _corr(ref="estate.us_situs.widget", canonical=[], wrong=[])
+    c["required_statement"] = "state the widget exposure explicitly"
+    r = classify_patch_reachability(
+        corrections=[c], directives=[], prior=_prior(),
+    )
+    assert r.verdict == "FULL_RESYNTH"
+    assert "unaddressable" in r.reason
+
+
 def test_status_flip_forces_full():
     r = classify_patch_reachability(
         corrections=[_corr(wrong=["no_change"])],

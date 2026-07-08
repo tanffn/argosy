@@ -111,6 +111,14 @@ class Correction:
     # explicitly (``extract_verdict_figures``); tests / future structured
     # findings populate it too.
     wrong_values: list[Any] = field(default_factory=list)
+    # Explicit REQUIRED-statement instruction (FIX 2, Ariel 2026-07-08): the
+    # verbatim replacement wording the verdict stated ("restate as X" /
+    # "should read X"). Populated by ``extract_required_statement`` for
+    # verdict-feedback corrections (or a structured finding's own
+    # ``required_statement`` key). A non-empty value IS a concrete edit —
+    # the patch-reachability classifier admits it under rule 2 even without
+    # numeric canonical/wrong pairs. Pure observations stay "" → FULL.
+    required_statement: str = ""
     # Provenance (source 5, verdict feedback): 'critique' for reconcile-loop
     # findings; 'verdict_feedback' for corrections harvested from a prior
     # corrective draft's FM rejection / reader block. Verdict-feedback
@@ -152,6 +160,7 @@ class Correction:
             "reconcile_status": self.reconcile_status,
             "canonical_facts": [[k, v] for k, v in self.canonical_facts],
             "wrong_values": list(self.wrong_values),
+            "required_statement": self.required_statement,
             "source": self.source,
             "verdict_agent": self.verdict_agent,
             "source_run_id": self.source_run_id,
@@ -244,6 +253,12 @@ class CorrectiveContext:
     # [{"topic", "plan_item_ref"}, ...] — corrections the prior corrective
     # draft resolved that the FM/reader did NOT re-flag.
     verdict_confirmed_resolved: list[dict[str, Any]] = field(default_factory=list)
+    # FIX 1 provenance: critique findings the builder SUPPRESSED because the
+    # most recent corrective draft's corrections-landed floor verified them
+    # landed (and no newer verdict re-flagged them), + the draft that landed
+    # them. Empty when nothing was suppressed.
+    landed_suppressed: list[dict[str, Any]] = field(default_factory=list)
+    landed_source_draft_id: int | None = None
     rendered: str = ""
 
     def to_payload(
@@ -262,6 +277,8 @@ class CorrectiveContext:
             "forces_full_tier": self.forces_full_tier,
             "reused_from_run_id": reused_from_run_id,
             "reused_phases": list(reused_phases or []),
+            "landed_suppressed": [dict(i) for i in self.landed_suppressed],
+            "landed_source_draft_id": self.landed_source_draft_id,
             "verdict_feedback": (
                 {
                     "draft_id": self.verdict_feedback_draft_id,
@@ -396,6 +413,22 @@ _VS_RE = re.compile(
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;!?])\s+")
 
+# FIX 2 (Ariel 2026-07-08) — explicit restatement clauses. Deliberately
+# conservative: only imperative "restate/replace/state it as/should read"
+# forms where the text AFTER the clause is the target wording. Anything
+# less explicit returns "" and the classifier honestly routes FULL.
+_REQUIRED_STMT_RE = re.compile(
+    r"(?:\brestate(?:\s+(?:it|this|that|them))?(?:\s+[\w§%.-]+){0,6}?\s+as\b"
+    r"|\breplace\b.{0,160}?\bwith\b"
+    r"|\bstate\s+(?:it|this|that)\s+as\b"
+    r"|\b(?:should|must)\s+(?:read|state)\b)"
+    r"\s*[:—-]?\s*(.+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Quoted target wording — straight or curly quotes.
+_QUOTED_RE = re.compile(r"[\"“‘'](.+?)[\"”’']", re.DOTALL)
+
 
 def _figures_in(text: str) -> list[Any]:
     """Numeric figures in ``text`` — comma-stripped, int-normalized, with
@@ -437,6 +470,37 @@ def extract_verdict_figures(text: str) -> tuple[list[Any], list[Any]]:
             continue  # figure soup — not an explicit pair statement
         return wrong, canonical
     return [], []
+
+
+def extract_required_statement(text: str) -> str:
+    """The explicit replacement wording a verdict states, or ``""``.
+
+    FIX 2 (Ariel 2026-07-08): a verdict often carries a REQUIRED-statement
+    instruction without numeric pairs — 'restate the endpoint as "hold 9,822
+    sh through 2027"'. That IS a concrete edit; the patch-reachability
+    classifier admits it under rule 2. Detection is conservative: an
+    imperative restate/replace-with/state-it-as/should-read clause followed
+    by concrete target wording (quoted preferred; unquoted accepted only
+    when it is at least three words). Pure observations ("X is too
+    fragile") return ``""`` and honestly route FULL.
+    """
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        m = _REQUIRED_STMT_RE.search(sentence)
+        if not m:
+            continue
+        tail = (m.group(1) or "").strip()
+        if not tail:
+            continue
+        qm = _QUOTED_RE.search(tail)
+        if qm:
+            stmt = qm.group(1).strip()
+            if len(stmt) >= 3:
+                return stmt
+            continue
+        stmt = tail.rstrip(".;:!?").strip()
+        if len(stmt.split()) >= 3:
+            return stmt
+    return ""
 
 
 def _verdict_topic(text: str) -> str:
@@ -485,6 +549,7 @@ def _verdict_finding(
         "evidence": list(evidence or []),
         "wrong_values": wrong,
         "canonical_values": canonical,
+        "required_statement": extract_required_statement(text),
         "verdict_agent": agent,
     }
 
@@ -536,6 +601,84 @@ def _load_rejected_corrective_draft(
             return None
         return pv, si, run
     return None
+
+
+def _landed_corrections_from_latest_draft(
+    session: Session,
+    *,
+    user_id: str,
+    current_plan_id: int,
+    critique_created_at: datetime | None,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """FIX 1 (Ariel 2026-07-08, suppress verified-landed corrections):
+    ``(landed, draft_id)`` — the corrections the user's MOST RECENT
+    corrective draft carried that its deterministic corrections-landed
+    floor verified LANDED (``synthesis_inputs_json.corrective.corrections``
+    minus the ``corrective_unresolved`` indices).
+
+    Live bug this closes: run 150 re-attached 17 corrections although the
+    floor had verified all 9 critique corrections landed (run 141
+    ``corrective_unresolved=[]``) — the critique row never refreshes, so
+    landed findings re-fed every pass.
+
+    Fail-safe toward RE-FEEDING (returning ``([], None)``) on any doubt:
+    - decides on the most recent corrective draft ONLY (older drafts are
+      superseded history);
+    - the draft must belong to the current-plan lineage;
+    - the draft must be NEWER than the latest critique row (a fresh
+      critique's findings are fresh judgments an older draft can't settle);
+    - ``corrective_unresolved`` must EXIST (the floor actually ran) and
+      carry no index-0 fail-closed crash marker (verification didn't run).
+    """
+    rows = session.execute(
+        select(PlanVersion)
+        .where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role.in_(("draft", "superseded")),
+            PlanVersion.decision_run_id.is_not(None),
+            PlanVersion.synthesis_inputs_json.is_not(None),
+        )
+        .order_by(PlanVersion.id.desc())
+        .limit(25)
+    ).scalars().all()
+    for pv in rows:
+        try:
+            si = json.loads(pv.synthesis_inputs_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        corrective = si.get("corrective") if isinstance(si, dict) else None
+        if not isinstance(corrective, dict):
+            continue
+        # Most recent corrective draft found — decide on THIS one only.
+        if corrective.get("base_plan_id") != current_plan_id:
+            return [], None
+        crit = _as_utc_naive(critique_created_at)
+        draft_ts = _as_utc_naive(pv.imported_at)
+        if crit is not None and (draft_ts is None or draft_ts <= crit):
+            return [], None  # fresh critique supersedes the old landing
+        unresolved = si.get("corrective_unresolved")
+        if not isinstance(unresolved, list):
+            return [], None  # floor never ran — nothing VERIFIED landed
+        unresolved_idx: set[int] = set()
+        for u in unresolved:
+            if not isinstance(u, dict):
+                return [], None
+            idx = int(u.get("index") or 0)
+            if idx == 0:
+                return [], None  # fail-closed crash marker — trust nothing
+            unresolved_idx.add(idx)
+        landed: list[dict[str, Any]] = []
+        for pc in corrective.get("corrections") or []:
+            if not isinstance(pc, dict):
+                continue
+            if int(pc.get("index") or 0) in unresolved_idx:
+                continue
+            landed.append({
+                "topic": str(pc.get("topic") or ""),
+                "plan_item_ref": str(pc.get("plan_item_ref") or ""),
+            })
+        return landed, pv.id
+    return [], None
 
 
 def _load_latest_verdict_report(
@@ -880,6 +1023,11 @@ def _render_block(ctx: CorrectiveContext) -> str:
                     "\n    canonical: (the verdict stated no explicit figure "
                     "— resolve the finding in substance)"
                 )
+            if c.required_statement:
+                entry += (
+                    "\n    required wording (apply this restatement): "
+                    + c.required_statement
+                )
             lines.append(entry)
         if ctx.verdict_confirmed_resolved:
             lines.append(
@@ -1012,6 +1160,70 @@ def build_corrective_context(
                 "corrective_context.verdict_feedback_failed",
                 user_id=user_id, error=str(exc)[:200],
             )
+
+    # FIX 1 (Ariel 2026-07-08) — suppress verified-landed corrections. The
+    # critique row never refreshes after a corrective draft lands its
+    # corrections, so the same findings re-attach every pass (live: run 150
+    # re-fed 17 although run 141's floor verified all 9 critique corrections
+    # landed, corrective_unresolved=[]). Drop any critique-sourced correction
+    # the MOST RECENT corrective draft's persisted payload shows as landed —
+    # UNLESS a newer verdict-feedback finding re-flags the same subject
+    # (findings_match): a re-flag means the landing was cosmetic/regressed
+    # and the correction must re-feed. Best-effort; a loader crash keeps
+    # today's re-attach behavior (fail-safe toward re-feeding).
+    if selected and current is not None:
+        landed: list[dict[str, Any]] = []
+        landed_draft_id: int | None = None
+        try:
+            landed, landed_draft_id = _landed_corrections_from_latest_draft(
+                session,
+                user_id=user_id,
+                current_plan_id=current.id,
+                critique_created_at=critique_created_at,
+            )
+        except Exception as exc:  # noqa: BLE001 — suppression is best-effort
+            landed, landed_draft_id = [], None
+            _log.warning(
+                "corrective_context.landed_suppression_failed",
+                user_id=user_id, error=str(exc)[:200],
+            )
+        if landed:
+            harvest_findings = (
+                verdict_harvest["findings"] if verdict_harvest else []
+            )
+            kept: list[tuple[dict[str, Any], str]] = []
+            suppressed: list[dict[str, Any]] = []
+            for f, status in selected:
+                is_landed = any(findings_match(f, lf) for lf in landed)
+                reflagged = is_landed and any(
+                    findings_match(f, hf) for hf in harvest_findings
+                )
+                if is_landed and not reflagged:
+                    suppressed.append({
+                        "topic": str(f.get("topic") or ""),
+                        "plan_item_ref": str(f.get("plan_item_ref") or ""),
+                    })
+                    continue
+                if reflagged:
+                    _log.info(
+                        "corrective_context.landed_correction_reflagged",
+                        user_id=user_id,
+                        landed_draft_id=landed_draft_id,
+                        topic=f.get("topic"),
+                    )
+                kept.append((f, status))
+            if suppressed:
+                _log.info(
+                    "corrective_context.landed_corrections_suppressed",
+                    user_id=user_id,
+                    landed_draft_id=landed_draft_id,
+                    suppressed=len(suppressed),
+                    topics=[s["topic"] for s in suppressed],
+                )
+                ctx.landed_suppressed = suppressed
+                ctx.landed_source_draft_id = landed_draft_id
+            selected = kept
+
     if verdict_harvest is not None:
         for f in verdict_harvest["findings"]:
             if any(findings_match(f, sf) for sf, _ in selected):
@@ -1109,6 +1321,7 @@ def build_corrective_context(
                 evidence=[str(e) for e in evidence],
                 reconcile_status=status,
                 canonical_facts=canonical,
+                required_statement=str(f.get("required_statement") or ""),
             )
         )
 
@@ -1131,6 +1344,7 @@ def build_corrective_context(
                     ("verdict_stated", v) for v in f["canonical_values"]
                 ],
                 wrong_values=list(f["wrong_values"]),
+                required_statement=str(f.get("required_statement") or ""),
                 source="verdict_feedback",
                 verdict_agent=str(f["verdict_agent"]),
                 source_run_id=ctx.verdict_feedback_run_id,
@@ -1232,6 +1446,7 @@ __all__ = [
     "DIRECTIVE_PROPOSAL_KINDS",
     "OPEN_RECONCILE_STATUSES",
     "build_corrective_context",
+    "extract_required_statement",
     "extract_verdict_figures",
     "match_fact_to_finding",
     "upsert_open_proposal_sync",

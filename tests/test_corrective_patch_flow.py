@@ -491,6 +491,256 @@ def test_escalation_is_bounded_when_still_dirty(session, monkeypatch):
     assert len(rows) == 1
 
 
+# ----------------------------------------------------------------------
+# FIX 3 — delta-scoped verification (DELTA REVIEW framing for phases 4/5 +
+# the whole-artifact reader; Ariel 2026-07-08 "review only that delta").
+# ----------------------------------------------------------------------
+
+
+def _add_reviewed_current_plan(session, *, with_fm=True, with_reader=True):
+    """A CURRENT plan whose producing run has FM + reader reports on file —
+    the reviewed base draft the delta proof chain anchors to."""
+    from argosy.state.models import AgentReport, DecisionRun
+
+    run = DecisionRun(
+        user_id="ariel", ticker="(plan)", tier=None,
+        decision_kind="plan_revision", status="completed",
+        fund_manager_decision="approved",
+    )
+    session.add(run)
+    session.commit()
+    pv = PlanVersion(
+        user_id="ariel", role="current", version_label="v67",
+        raw_markdown="# Current plan", decision_run_id=run.id,
+    )
+    session.add(pv)
+    if with_fm:
+        session.add(AgentReport(
+            user_id="ariel", agent_role="fund_manager",
+            decision_id=f"plan-synth-{run.id}",
+            response_text=json.dumps({"approved": True}),
+        ))
+    if with_reader:
+        session.add(AgentReport(
+            user_id="ariel", agent_role="whole_artifact_reader",
+            decision_id=f"plan-synth-{run.id}",
+            response_text=json.dumps({"overall_assessment": "APPROVE"}),
+        ))
+    session.commit()
+    return pv, run
+
+
+def _wire_patch_run(flow, pr, monkeypatch, *, provenance=None,
+                    patch_output=None):
+    """Common patch-mode wiring: corrective ctx + PATCH verdict + stub
+    patch runner returning a clean draft."""
+    monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
+    monkeypatch.setenv("ARGOSY_CORRECTIVE_PATCH", "1")
+    ctx = _make_ctx(corrections=[_fx_correction(wrong="9.99")])
+    monkeypatch.setattr(flow, "build_corrective_context", lambda *a, **k: ctx)
+    monkeypatch.setattr(
+        flow, "_load_patch_base_output",
+        lambda prior_current: _stub_synthesis_output(),
+    )
+    monkeypatch.setattr(
+        pr, "classify_patch_reachability", lambda **kw: _patch_reach(),
+    )
+    monkeypatch.setattr(
+        flow, "_run_phase_3_patch",
+        lambda **kw: (
+            patch_output if patch_output is not None
+            else _stub_synthesis_output(medium_posture="FX now 2.944"),
+            [],
+            provenance if provenance is not None else _stub_provenance(),
+        ),
+    )
+
+
+def _capture_verifiers(flow, monkeypatch):
+    """Capture the guidance seen by phases 4/5 and the reader's external
+    context (the three surfaces the DELTA REVIEW framing targets)."""
+    p4_guidance: list[str] = []
+    p5_guidance: list[str] = []
+    reader_ctx: list[str] = []
+
+    def _p4(**kw):
+        p4_guidance.append(kw.get("guidance") or "")
+        return "(risk)"
+
+    def _p5(**kw):
+        p5_guidance.append(kw.get("guidance") or "")
+        return True
+
+    async def _reader(**kw):
+        reader_ctx.append(kw.get("external_context") or "")
+        return (None, None)
+
+    monkeypatch.setattr(flow, "_run_phase_4_risk", _p4)
+    monkeypatch.setattr(flow, "_run_phase_5_fund_manager", _p5)
+    monkeypatch.setattr(flow, "run_whole_artifact_review", _reader)
+    return p4_guidance, p5_guidance, reader_ctx
+
+
+def test_delta_framing_present_with_full_proof_chain(session, monkeypatch):
+    """PATCH run + FM/reader reports on the base draft + all-matching
+    unpatched hashes → phases 4/5 and the reader get the DELTA REVIEW block;
+    the payload records delta_scoped_review + the basis."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.quality import patch_reachability as pr
+
+    _pv, base_run = _add_reviewed_current_plan(session)
+    _wire_patch_run(flow, pr, monkeypatch)
+    ran, _rw = _stub_phases(flow, monkeypatch)
+    p4, p5, reader = _capture_verifiers(flow, monkeypatch)
+
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+    assert out.draft_id is not None
+    assert len(p4) == 1 and "DELTA REVIEW" in p4[0]
+    assert len(p5) == 1 and "DELTA REVIEW" in p5[0]
+    assert reader and "DELTA REVIEW" in reader[0]
+    # The framing names the reviewed base + the changed surface, and states
+    # authority stays whole-artifact.
+    assert f"decision run #{base_run.id}" in p5[0]
+    assert "slice medium" in p5[0]
+    assert "binding on the WHOLE" in p5[0]
+    # The base corrective guidance still precedes the framing (never replaced).
+    assert "CORRECTIVE RE-SYNTHESIS" in p5[0]
+
+    corrective = _corrective(session.get(PlanVersion, out.draft_id))
+    assert corrective["delta_scoped_review"] is True
+    basis = corrective["delta_scoped_basis"]
+    assert basis["base_decision_run_id"] == base_run.id
+    assert basis["fm_report_id"] and basis["reader_report_id"]
+    assert basis["changed_surfaces"][0]["slice"] == "medium"
+    assert basis["unpatched_slices_verified"] == 2
+
+
+@pytest.mark.parametrize("missing", ["fund_manager", "whole_artifact_reader"])
+def test_delta_framing_absent_without_prior_reports(
+    session, monkeypatch, missing,
+):
+    """No prior FM (or reader) report for the base draft = proof chain
+    incomplete → no framing anywhere; payload records False, no basis."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.quality import patch_reachability as pr
+
+    _add_reviewed_current_plan(
+        session,
+        with_fm=(missing != "fund_manager"),
+        with_reader=(missing != "whole_artifact_reader"),
+    )
+    _wire_patch_run(flow, pr, monkeypatch)
+    _stub_phases(flow, monkeypatch)
+    p4, p5, reader = _capture_verifiers(flow, monkeypatch)
+
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+    assert "DELTA REVIEW" not in p4[0]
+    assert "DELTA REVIEW" not in p5[0]
+    assert all("DELTA REVIEW" not in c for c in reader)
+    corrective = _corrective(session.get(PlanVersion, out.draft_id))
+    assert corrective["delta_scoped_review"] is False
+    assert "delta_scoped_basis" not in corrective
+
+
+def test_delta_framing_absent_on_hash_mismatch(session, monkeypatch):
+    """A provenance row with matches_prior=False breaks the byte-identity
+    proof → no framing, even with prior reports on file."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.quality import patch_reachability as pr
+
+    _add_reviewed_current_plan(session)
+    prov = _stub_provenance()
+    prov["unpatched_slice_hashes"][1]["matches_prior"] = False
+    _wire_patch_run(flow, pr, monkeypatch, provenance=prov)
+    _stub_phases(flow, monkeypatch)
+    p4, p5, reader = _capture_verifiers(flow, monkeypatch)
+
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+    assert "DELTA REVIEW" not in p4[0]
+    assert "DELTA REVIEW" not in p5[0]
+    assert all("DELTA REVIEW" not in c for c in reader)
+    corrective = _corrective(session.get(PlanVersion, out.draft_id))
+    assert corrective["delta_scoped_review"] is False
+
+
+def test_delta_framing_absent_on_non_patch_run(session, monkeypatch):
+    """A corrective run that took the FULL path (flag off) never frames —
+    even with a fully reviewed base on file."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    _add_reviewed_current_plan(session)
+    monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
+    monkeypatch.delenv("ARGOSY_CORRECTIVE_PATCH", raising=False)
+    ctx = _make_ctx(corrections=[_fx_correction(wrong="9.99")])
+    monkeypatch.setattr(flow, "build_corrective_context", lambda *a, **k: ctx)
+    _stub_phases(flow, monkeypatch)
+    p4, p5, reader = _capture_verifiers(flow, monkeypatch)
+
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+    assert "DELTA REVIEW" not in p4[0]
+    assert "DELTA REVIEW" not in p5[0]
+    assert all("DELTA REVIEW" not in c for c in reader)
+    corrective = _corrective(session.get(PlanVersion, out.draft_id))
+    assert "delta_scoped_review" not in corrective
+
+
+def test_delta_framing_voided_by_floor_escalation(session, monkeypatch):
+    """The bounded escalation REGENERATES the artifact — the byte-identity
+    proof is void: the escalation's blind re-read must NOT carry the frame,
+    and the persisted payload records delta_scoped_review=False (the basis
+    stays for provenance)."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.quality import patch_reachability as pr
+
+    _add_reviewed_current_plan(session)
+    # The patch leaves the wrong value 3.00 alive in the (unimplicated)
+    # short slice → the floor fails → ONE escalation to full regen.
+    ctx_wrong = "3.00"
+    dirty = _stub_synthesis_output(medium_posture="FX now 2.944")
+    dirty = dirty.model_copy(update={
+        "short": dirty.short.model_copy(
+            update={"posture": f"convert at {ctx_wrong} this month"}),
+    })
+    monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
+    monkeypatch.setenv("ARGOSY_CORRECTIVE_PATCH", "1")
+    ctx = _make_ctx(corrections=[_fx_correction(wrong=ctx_wrong)])
+    monkeypatch.setattr(flow, "build_corrective_context", lambda *a, **k: ctx)
+    monkeypatch.setattr(
+        flow, "_load_patch_base_output",
+        lambda prior_current: _stub_synthesis_output(),
+    )
+    monkeypatch.setattr(
+        pr, "classify_patch_reachability", lambda **kw: _patch_reach(),
+    )
+    monkeypatch.setattr(
+        flow, "_run_phase_3_patch",
+        lambda **kw: (dirty, [], _stub_provenance()),
+    )
+    _stub_phases(
+        flow, monkeypatch,
+        p3_output=lambda: _stub_synthesis_output(medium_posture="FX 2.944"),
+    )
+    p4, p5, reader = _capture_verifiers(flow, monkeypatch)
+
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+    assert out.draft_id is not None
+    # Pre-escalation verdicts were legitimately delta-framed (the artifact
+    # WAS patch-authored with a valid proof at that point).
+    assert "DELTA REVIEW" in p4[0]
+    assert "DELTA REVIEW" in p5[0]
+    # Reader ran twice: first read framed; the post-escalation blind re-read
+    # of the REGENERATED artifact must not be.
+    assert len(reader) == 2
+    assert "DELTA REVIEW" in reader[0]
+    assert "DELTA REVIEW" not in reader[1]
+    inputs = json.loads(
+        session.get(PlanVersion, out.draft_id).synthesis_inputs_json
+    )
+    assert inputs["corrective"]["patch_escalated"] is True
+    assert inputs["corrective"]["delta_scoped_review"] is False
+    assert "delta_scoped_basis" in inputs["corrective"]
+
+
 def test_no_escalation_when_full_path_was_used(session, monkeypatch):
     """A non-patch corrective run that fails the floor must NOT trigger the
     patch escalation (unchanged shipped behavior: unresolved + inbox row)."""

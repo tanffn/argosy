@@ -855,6 +855,69 @@ def run_synthesis(
         user_id=user_id,
     )
 
+    # DELTA-SCOPED VERIFICATION (FIX 3, Ariel 2026-07-08: "change the number
+    # and ask the relevant agents to review only that delta"). When phase 3
+    # ran in PATCH mode AND the base draft was already FM/reader-reviewed AND
+    # the patch provenance proves (sha256) every other surface byte-identical
+    # to that reviewed draft, phases 4 (risk), 5 (FM) and the whole-artifact
+    # reader receive an additional DELTA REVIEW framing block. They still see
+    # the FULL artifact (never blinded); the framing scopes effort, not
+    # authority — blind-re-derive holds because the delta's smallness is
+    # PROVEN, not asserted. Absent full proof: no framing (today's behavior).
+    # The frame is dropped the moment a full regeneration replaces the
+    # patched artifact (codex reconcile / reader reconcile / floor
+    # escalation) — the hash proof no longer describes the draft.
+    _delta_scoped_basis: dict | None = None
+    _delta_scoped_stale = False
+    if _patch_used and _patch_provenance is not None:
+        try:
+            _delta_scoped_basis = _pkg._delta_scoped_review_basis(
+                session, user_id=user_id, prior_current=prior_current,
+                patch_provenance=_patch_provenance,
+            )
+        except Exception as exc:  # noqa: BLE001 — framing is best-effort
+            _delta_scoped_basis = None
+            log.warning(
+                "plan_synthesis.delta_scoped_basis_failed",
+                user_id=user_id, decision_run_id=decision_run_id,
+                error=str(exc),
+            )
+        if _delta_scoped_basis is not None:
+            log.info(
+                "plan_synthesis.delta_scoped_review_armed",
+                user_id=user_id, decision_run_id=decision_run_id,
+                base_decision_run_id=_delta_scoped_basis["base_decision_run_id"],
+                changed_surfaces=len(_delta_scoped_basis["changed_surfaces"]),
+            )
+        else:
+            log.info(
+                "plan_synthesis.delta_scoped_review_unavailable",
+                user_id=user_id, decision_run_id=decision_run_id,
+                reason=(
+                    "proof chain incomplete: prior FM/reader reports or "
+                    "byte-identity hash proof missing"
+                ),
+            )
+
+    def _delta_review_block() -> str:
+        """Current DELTA REVIEW framing, or '' once a full regeneration
+        replaced the patch-authored artifact (proof no longer holds)."""
+        if (
+            _delta_scoped_basis is None
+            or _delta_scoped_stale
+            or _patch_superseded_by_full
+        ):
+            return ""
+        try:
+            return _pkg._render_delta_review_framing(_delta_scoped_basis)
+        except Exception as exc:  # noqa: BLE001 — framing is best-effort
+            log.warning(
+                "plan_synthesis.delta_scoped_render_failed",
+                user_id=user_id, decision_run_id=decision_run_id,
+                error=str(exc),
+            )
+            return ""
+
     # Phase 2 of docs/plans/argosy-comprehensive-plan-integration.md:
     # rewrite jargon-heavy prose to household English BEFORE the
     # speculation-cap post-filter mutates structure. The invariant
@@ -891,11 +954,17 @@ def run_synthesis(
         )
     else:
         _phase_4_started_at = datetime.now(timezone.utc)
+        # FIX 3: delta-scoped framing rides the guidance channel for phase 4
+        # only (codex 4.5 deliberately excluded — it stays fully independent).
+        _p4_delta = _delta_review_block()
         _phase_4_result = _pkg._run_phase_4_risk(
             session=session, user_id=user_id, draft_output=output,
             analyst_reports_text=analyst_reports_text,
             decision_run_id=decision_audit_token,
-            guidance=guidance,
+            guidance=(
+                (guidance + "\n\n" + _p4_delta).strip()
+                if _p4_delta else guidance
+            ),
         )
         if isinstance(_phase_4_result, tuple) and len(_phase_4_result) == 2:
             risk_verdict, _phase_4_reports = _phase_4_result
@@ -1186,10 +1255,17 @@ def run_synthesis(
         )
     else:
         _phase_5_started_at = datetime.now(timezone.utc)
+        # FIX 3: re-evaluated HERE (not reused from phase 4) — the codex
+        # numeric reconcile between phases 4.5 and 5 may have replaced the
+        # patched artifact with a full regeneration, voiding the hash proof.
+        _p5_delta = _delta_review_block()
         _phase_5_result = _pkg._run_phase_5_fund_manager(
             session=session, user_id=user_id, draft_output=output,
             risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
-            guidance=guidance,
+            guidance=(
+                (guidance + "\n\n" + _p5_delta).strip()
+                if _p5_delta else guidance
+            ),
             codex_second_opinion=codex_opinion,
         )
         if isinstance(_phase_5_result, tuple) and len(_phase_5_result) == 2:
@@ -1544,6 +1620,14 @@ def run_synthesis(
                     user_id=user_id, decision_run_id=decision_run_id,
                     error=str(exc),
                 )
+
+        # FIX 3: DELTA REVIEW framing for the reader — same external-context
+        # channel as the corrective directive. Evaluated at CALL time so a
+        # full regeneration between reads (reconcile loop / floor
+        # escalation) automatically drops the frame.
+        _reader_delta = _delta_review_block()
+        if _reader_delta:
+            _external_context = _external_context + "\n\n" + _reader_delta
 
         return _asyncio.run(
             _pkg.run_whole_artifact_review(
@@ -2143,6 +2227,10 @@ def run_synthesis(
                     draft.sections_json = _esc_bodies["sections_json"]
                     session.commit()
                     _patch_escalated = True
+                    # FIX 3: the escalation REGENERATED the artifact — the
+                    # byte-identity proof is void; the re-read below (and
+                    # anything after) must not carry the DELTA REVIEW frame.
+                    _delta_scoped_stale = True
                     # Blind re-read of the regenerated artifact (fail-soft):
                     # the reader must judge what will actually be promoted.
                     _esc_reader_ran = False
@@ -2257,6 +2345,17 @@ def run_synthesis(
                 _si["corrective"]["patched_surfaces_stale"] = bool(
                     _patch_escalated or _patch_superseded_by_full
                 )
+                # FIX 3 provenance: True iff the DELTA REVIEW framing was in
+                # force for the PERSISTED artifact's verdicts (issued and
+                # never voided by a full regeneration). The basis records
+                # what the proof chain was, even when later voided.
+                _si["corrective"]["delta_scoped_review"] = bool(
+                    _delta_scoped_basis is not None
+                    and not _delta_scoped_stale
+                    and not _patch_superseded_by_full
+                )
+                if _delta_scoped_basis is not None:
+                    _si["corrective"]["delta_scoped_basis"] = _delta_scoped_basis
             _si["corrective_unresolved"] = _corr_result.unresolved_payload()
             draft.synthesis_inputs_json = json.dumps(_si)
             session.commit()
@@ -5140,6 +5239,137 @@ def _patch_provenance(
     }
 
 
+def _delta_scoped_review_basis(
+    session, *, user_id: str, prior_current, patch_provenance: dict,
+) -> dict | None:
+    """Deterministic precondition check for the DELTA REVIEW framing (FIX 3,
+    Ariel 2026-07-08: "change the number and ask the relevant agents to
+    review only that delta").
+
+    Returns the basis payload IFF the full proof chain holds:
+
+    1. phase 3 ran in PATCH mode against the prior CURRENT plan (the caller
+       guards ``_patch_used``; here: ``prior_current`` exists and carries a
+       ``decision_run_id``);
+    2. that base draft was already FM- AND reader-reviewed — an
+       ``agent_reports`` row exists for BOTH ``fund_manager`` and
+       ``whole_artifact_reader`` under ``plan-synth-<base run>``;
+    3. the patch provenance PROVES every other surface byte-identical to the
+       reviewed draft: non-empty ``patched_surfaces`` + non-empty
+       ``unpatched_slice_hashes`` with every ``matches_prior`` True
+       (re-checked here even though ``_patch_provenance`` raises on
+       mismatch — the proof must be verified where it is consumed).
+
+    Absent ANY link, returns None and the run keeps today's behavior (no
+    framing). The framing scopes reviewer EFFORT, never authority — the
+    blind-re-derive doctrine holds because the delta's smallness is proven
+    (sha256), not asserted.
+    """
+    if prior_current is None:
+        return None
+    base_run_id = getattr(prior_current, "decision_run_id", None)
+    if base_run_id is None:
+        return None
+    if not isinstance(patch_provenance, dict):
+        return None
+    patched = [
+        r for r in (patch_provenance.get("patched_surfaces") or [])
+        if isinstance(r, dict)
+    ]
+    unpatched = [
+        r for r in (patch_provenance.get("unpatched_slice_hashes") or [])
+        if isinstance(r, dict)
+    ]
+    if not patched or not unpatched:
+        return None
+    if not all(bool(r.get("matches_prior")) for r in unpatched):
+        return None
+
+    from sqlalchemy import select as _select
+
+    # ORM row, not the agents.base dataclass the module-level name binds.
+    from argosy.state.models import AgentReport as _AgentReportRow
+
+    report_ids: dict[str, int] = {}
+    for role in ("fund_manager", "whole_artifact_reader"):
+        row_id = session.execute(
+            _select(_AgentReportRow.id)
+            .where(
+                _AgentReportRow.user_id == user_id,
+                _AgentReportRow.decision_id == f"plan-synth-{base_run_id}",
+                _AgentReportRow.agent_role == role,
+            )
+            .order_by(_AgentReportRow.id.desc())
+            .limit(1)
+        ).scalars().first()
+        if row_id is None:
+            return None
+        report_ids[role] = row_id
+
+    changed_surfaces = [
+        {
+            "slice": r.get("slice"),
+            "item_id": r.get("item_id"),
+            "section_id": r.get("section_id"),
+            "surface": r.get("surface"),
+            "correction_indices": list(r.get("correction_indices") or []),
+            "directive_indices": list(r.get("directive_indices") or []),
+        }
+        for r in patched
+    ]
+    return {
+        "base_plan_id": prior_current.id,
+        "base_plan_label": prior_current.version_label or "",
+        "base_decision_run_id": base_run_id,
+        "fm_report_id": report_ids["fund_manager"],
+        "reader_report_id": report_ids["whole_artifact_reader"],
+        "changed_surfaces": changed_surfaces,
+        "unpatched_slices_verified": len(unpatched),
+    }
+
+
+def _render_delta_review_framing(basis: dict) -> str:
+    """The DELTA REVIEW framing block for phases 4/5 + the reader (FIX 3).
+
+    The reviewer still receives the FULL artifact (never blinded to
+    context); this block scopes effort, not authority."""
+    surface_lines: list[str] = []
+    for row in basis.get("changed_surfaces") or []:
+        unit = (
+            row.get("item_id")
+            or row.get("section_id")
+            or row.get("surface")
+            or "prose"
+        )
+        refs = ", ".join(
+            [f"correction {i}" for i in row.get("correction_indices") or []]
+            + [f"directive {i}" for i in row.get("directive_indices") or []]
+        )
+        surface_lines.append(
+            f"- slice {row.get('slice')} · {unit}"
+            + (f" (from {refs})" if refs else "")
+        )
+    return (
+        "DELTA REVIEW (scoped effort, FULL authority) — the base draft "
+        f"(plan #{basis.get('base_plan_id')}"
+        + (
+            f", {basis['base_plan_label']}"
+            if basis.get("base_plan_label") else ""
+        )
+        + f", decision run #{basis.get('base_decision_run_id')}) was "
+        "previously reviewed by this review chain (fund-manager and "
+        "whole-artifact-reader verdicts are on file for that run). The ONLY "
+        "changes in the draft you are reviewing are the surfaces listed "
+        "below; every other surface is cryptographically byte-identical "
+        "(sha256-verified) to the draft you already reviewed. Focus your "
+        "re-derivation on the changed surfaces and their integration with "
+        "the unchanged plan; your verdict remains binding on the WHOLE "
+        "artifact.\n"
+        "CHANGED SURFACES:\n"
+        + "\n".join(surface_lines)
+    )
+
+
 def _render_patch_corrections_block(
     decisions, corrective_ctx,
 ) -> str:
@@ -5167,7 +5397,7 @@ def _render_patch_corrections_block(
                 "; ".join(_fmt_value(v) for v in c.wrong_values)
                 or "(none listed)"
             )
-            lines.append(
+            entry = (
                 f"[{c.index}] {c.severity} · {c.topic} · surface: "
                 f"{c.plan_item_ref}\n"
                 f"    wrong: {c.summary}\n"
@@ -5176,6 +5406,14 @@ def _render_patch_corrections_block(
                 f"    implicated items in this slice: "
                 f"{', '.join(dec.implicated_item_ids) or '(slice prose)'}"
             )
+            # FIX 2: the verdict's explicit restatement instruction is the
+            # concrete edit — hand the patch agent the target wording.
+            if getattr(c, "required_statement", ""):
+                entry += (
+                    "\n    required wording (apply this restatement): "
+                    f"{c.required_statement}"
+                )
+            lines.append(entry)
         else:
             d = dir_by_index.get(dec.index)
             if d is None:
