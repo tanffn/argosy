@@ -11,9 +11,11 @@ Public API
 * ``collect_state_snapshot(session, user_id, *, as_of=None)`` -- pure
   read; assembles the six-section dict.
 * ``persist_state_snapshot(session, user_id, snapshot_date, state,
-  source_versions)`` -- INSERT into ``state_snapshots``. Raises
-  ``IntegrityError`` on ``(user_id, snapshot_date)`` collision so the
-  caller decides whether to skip or update.
+  source_versions)`` -- UPSERT into ``state_snapshots``. On a
+  ``(user_id, snapshot_date)`` collision (e.g. the loop catch-up run
+  plus the regular scheduled run both fire on one day) the existing
+  row is UPDATED in place -- the later run collected fresher state,
+  so it wins. Deterministic + idempotent.
 * ``get_latest_state_snapshot(session, user_id)`` -- newest row for the
   user (or ``None``).
 * ``get_state_snapshot_by_date(session, user_id, snapshot_date)`` --
@@ -1070,20 +1072,27 @@ def persist_state_snapshot(
     state: dict[str, Any],
     source_versions: dict[str, Any],
 ) -> StateSnapshot:
-    """INSERT a row into ``state_snapshots`` and return the persisted
-    ORM object.
+    """UPSERT the ``(user_id, snapshot_date)`` row in ``state_snapshots``
+    and return the persisted ORM object.
 
-    Raises ``sqlalchemy.exc.IntegrityError`` when the
-    ``(user_id, snapshot_date)`` UNIQUE constraint fires (caller
-    decides: skip / update via a separate SQL).
+    One row per user per day is the table invariant (UNIQUE
+    constraint). When a row already exists for the pair -- the observer
+    legitimately runs more than once per day (loop catch-up run + the
+    regular scheduled run, on-demand triggers past the cool-off) -- the
+    existing row is UPDATED in place: the later run collected fresher
+    state, so it wins. The row id is stable across same-day re-runs,
+    which keeps downstream FKs / prior-snapshot lookups deterministic.
+    Idempotent: re-running with identical inputs leaves one identical
+    row.
 
     JSON serialisation: ``state`` and ``source_versions`` are
-    round-tripped through ``json.dumps`` with ``default=str``. Any
-    non-serialisable value surfaces here as ``TypeError`` -- callers
-    should NOT pass Decimals / datetimes directly; use
-    ``collect_state_snapshot``'s return shape (already
-    JSON-cleaned).
+    round-tripped through ``json.dumps``. Any non-serialisable value
+    surfaces here as ``TypeError`` -- callers should NOT pass Decimals
+    / datetimes directly; use ``collect_state_snapshot``'s return
+    shape (already JSON-cleaned).
     """
+    from sqlalchemy.exc import IntegrityError
+
     # Codex IMPORTANT integration: fail-fast on non-serialisable
     # leaks. _json_safe is the WHITELIST-only converter; json.dumps
     # here has NO ``default=`` fallback so anything that survives
@@ -1091,16 +1100,38 @@ def persist_state_snapshot(
     # rather than silently being stringified.
     safe_state = _json_safe(state)
     safe_versions = _json_safe(source_versions)
+    state_json = json.dumps(safe_state, separators=(",", ":"))
+    source_versions_json = json.dumps(safe_versions, separators=(",", ":"))
+
+    def _update(row: StateSnapshot) -> StateSnapshot:
+        row.state_json = state_json
+        row.source_versions_json = source_versions_json
+        session.commit()
+        session.refresh(row)
+        return row
+
+    existing = get_state_snapshot_by_date(session, user_id, snapshot_date)
+    if existing is not None:
+        return _update(existing)
+
     row = StateSnapshot(
         user_id=user_id,
         snapshot_date=snapshot_date,
-        state_json=json.dumps(safe_state, separators=(",", ":")),
-        source_versions_json=json.dumps(
-            safe_versions, separators=(",", ":"),
-        ),
+        state_json=state_json,
+        source_versions_json=source_versions_json,
     )
     session.add(row)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # Lost an insert race (another writer landed the day's row
+        # between our lookup and the commit). Fall back to the update
+        # path; re-raise anything that isn't the same-day collision.
+        session.rollback()
+        existing = get_state_snapshot_by_date(session, user_id, snapshot_date)
+        if existing is None:
+            raise
+        return _update(existing)
     session.refresh(row)
     return row
 

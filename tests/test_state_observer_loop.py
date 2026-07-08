@@ -494,6 +494,54 @@ def test_force_bypasses_cool_off(sync_session_factory) -> None:
     assert len(agent.calls) == 2
 
 
+def test_same_day_double_run_upserts_snapshot(sync_session_factory) -> None:
+    """Regression for the 2026-07-07 14:00 crash: the loop catch-up run
+    and the regular scheduled run both fired on the SAME day, and the
+    second persist died on ``UNIQUE constraint failed:
+    state_snapshots.user_id, snapshot_date``.
+
+    Same-day re-run must now UPSERT the day's row (later run wins) —
+    the pipeline completes, one snapshot row exists, and its id is
+    stable across the two runs."""
+    first_call_at = datetime(2026, 5, 29, 10, 0, 0, tzinfo=timezone.utc)
+    # 7h later — OUTSIDE the 6h cool-off, same calendar day: the exact
+    # catch-up + scheduled-run shape that crashed in production.
+    second_call_at = first_call_at + timedelta(hours=7)
+    times = iter([first_call_at, second_call_at])
+
+    def _stepping_now() -> datetime:
+        return next(times)
+
+    agent = _FakeAgent(candidates=[
+        _make_candidate(primary_field="macro.fx_usd_nis_spot"),
+    ])
+    loop = _make_loop(
+        session_factory=sync_session_factory,
+        agent=agent,
+        now_fn=_stepping_now,
+    )
+
+    first = asyncio.run(loop.tick(trigger_reason="daily_cron"))
+    # Must NOT raise IntegrityError. force=True gets past the cool-off
+    # the same way the production catch-up run did (the snapshot row's
+    # ``created_at`` is DB wall-clock, so the pinned now_fn can't
+    # elapse it inside a test).
+    second = asyncio.run(loop.tick(trigger_reason="daily_cron", force=True))
+
+    assert first["skipped_reason"] is None
+    assert second["skipped_reason"] is None
+    # The day's row was updated in place — stable id.
+    assert second["snapshot_id"] == first["snapshot_id"]
+
+    db = sync_session_factory()
+    try:
+        snapshots = db.execute(sa.select(StateSnapshot)).scalars().all()
+        assert len(snapshots) == 1
+    finally:
+        db.close()
+    assert len(agent.calls) == 2
+
+
 # ---------------------------------------------------------------------------
 # On-demand trigger entry point
 # ---------------------------------------------------------------------------

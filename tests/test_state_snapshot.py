@@ -12,8 +12,9 @@ Coverage:
     for ``macro.fx_usd_nis_spot``.
   - ``persist_state_snapshot`` + ``get_latest_state_snapshot`` round-trip.
   - ``get_state_snapshot_by_date`` returns a match / None.
-  - Inserting two snapshots for the same (user, date) raises
-    ``IntegrityError`` (UNIQUE constraint).
+  - Persisting two snapshots for the same (user, date) UPSERTS: the
+    later run updates the row in place (regression for the 2026-07-07
+    catch-up + scheduled double-run UNIQUE-constraint crash).
   - ``state_snapshot_to_dict`` parses both JSON columns.
   - Historical replay raises ``StateReplayError`` when no
     plan_version exists on/before ``as_of``.
@@ -32,7 +33,6 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from argosy.services.state_snapshot import (
@@ -431,20 +431,47 @@ def test_get_state_snapshot_by_date_match_and_miss(sync_session):
     assert miss is None
 
 
-def test_duplicate_user_date_raises_integrity_error(sync_session):
-    """UNIQUE(user_id, snapshot_date) → second insert raises."""
+def test_duplicate_user_date_upserts_later_run_wins(sync_session):
+    """Regression: the 2026-07-07 14:00 state_observer_daily run errored
+    with ``UNIQUE constraint failed: state_snapshots.user_id,
+    snapshot_date`` when the loop's catch-up run and the scheduled run
+    both fired in one day. Same-day persist must UPSERT: the later run
+    has fresher data, so it UPDATES the row in place (stable id, one
+    row per day)."""
+    from argosy.state.models import StateSnapshot
+
     out = collect_state_snapshot(sync_session, USER)
-    persist_state_snapshot(
+    first = persist_state_snapshot(
         sync_session, user_id=USER,
         snapshot_date=date(2026, 5, 29),
         state=out["state"], source_versions=out["source_versions"],
     )
-    with pytest.raises(IntegrityError):
-        persist_state_snapshot(
-            sync_session, user_id=USER,
-            snapshot_date=date(2026, 5, 29),
-            state=out["state"], source_versions=out["source_versions"],
-        )
+
+    # Second run, same day, fresher data — must NOT raise.
+    fresher = collect_state_snapshot(sync_session, USER)
+    fresher["source_versions"]["trigger_reason"] = "daily_cron_second_run"
+    second = persist_state_snapshot(
+        sync_session, user_id=USER,
+        snapshot_date=date(2026, 5, 29),
+        state=fresher["state"], source_versions=fresher["source_versions"],
+    )
+
+    # Later run wins, in place: same row id, updated content, one row.
+    assert second.id == first.id
+    assert "daily_cron_second_run" in second.source_versions_json
+    n_rows = sync_session.execute(
+        sa.select(sa.func.count()).select_from(StateSnapshot)
+    ).scalar_one()
+    assert n_rows == 1
+
+    # Idempotent: a third identical persist changes nothing.
+    third = persist_state_snapshot(
+        sync_session, user_id=USER,
+        snapshot_date=date(2026, 5, 29),
+        state=fresher["state"], source_versions=fresher["source_versions"],
+    )
+    assert third.id == first.id
+    assert third.source_versions_json == second.source_versions_json
 
 
 def test_state_snapshot_to_dict_parses_json_columns(sync_session):
