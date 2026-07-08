@@ -594,6 +594,12 @@ class DraftResponse(BaseModel):
     # render a "this draft is no longer pending" banner and to gate the
     # accept/reject CTAs.
     effective_role: str = "draft"
+    # Corrective patch-synthesis provenance (display-only — the decisions
+    # dev pane reads ``synthesis_inputs_json.corrective.patched_surfaces``
+    # + the classifier verdict + unpatched-slice hashes from here; see
+    # docs/design/corrective_patch_synthesis.md §2.C). ``None`` for
+    # non-corrective drafts and legacy rows.
+    corrective: dict | None = None
 
 
 class AcceptResponse(BaseModel):
@@ -923,6 +929,24 @@ def _build_synthesis_health(
     )
 
 
+def _read_corrective_provenance(pv: PlanVersion) -> dict | None:
+    """Display-only read of ``synthesis_inputs_json.corrective`` (the
+    corrective run's structured provenance, including patch-synthesis
+    ``patched_surfaces`` / classifier verdict / unpatched-slice hashes —
+    docs/design/corrective_patch_synthesis.md §2.C). Never raises; ``None``
+    for non-corrective drafts, legacy rows, and malformed JSON."""
+    try:
+        if not pv.synthesis_inputs_json:
+            return None
+        parsed = json.loads(pv.synthesis_inputs_json)
+        if not isinstance(parsed, dict):
+            return None
+        corrective = parsed.get("corrective")
+        return corrective if isinstance(corrective, dict) else None
+    except Exception:  # noqa: BLE001 — display-only, never break the route
+        return None
+
+
 @router.get("/draft", response_model=DraftResponse)
 def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
     """Return the user's pending draft, OR the most recent superseded
@@ -993,6 +1017,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         synthesis_health=_build_synthesis_health(db, pv.decision_run_id),
         nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
         effective_role=effective_role,
+        corrective=_read_corrective_provenance(pv),
     )
 
 

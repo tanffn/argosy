@@ -648,6 +648,22 @@ def run_synthesis(
         cap = SpeculationCap()  # conservative default — never disable the cap.
 
     # Phase 3: synthesize.
+    # CORRECTIVE PATCH MODE (docs/design/corrective_patch_synthesis.md):
+    # when corrective mode is active AND ARGOSY_CORRECTIVE_PATCH=1 (default
+    # OFF for one release) AND the pure patch-reachability classifier says
+    # PATCH, phase 3 EDITS the prior draft's structured artifact per-slice
+    # instead of regenerating it. Fail-soft: ANY exception in the patch
+    # path (classifier, slice agents, merge, patched-slice rewriter) logs
+    # and degrades to the shipped full corrective regeneration — never a
+    # worse outcome than today. Gates/phases 4-4.5-5/reader/corrections-
+    # check are UNCHANGED and full-artifact (blindness preserved).
+    _patch_used = False
+    _patch_provenance: dict | None = None
+    _patch_classifier_payload: dict | None = None
+    # Set True when the reader-reconcile loop's full re-synth replaced the
+    # patched artifact — that full regeneration subsumes the ONE bounded
+    # patch escalation (design §2.D), so the floor must not escalate again.
+    _patch_superseded_by_full = False
     if 3 in resumed_outputs:
         # Synthesizer output is the structured PlanSynthesisOutput. Round-
         # trip via JSON; pydantic re-validates on parse.
@@ -659,30 +675,112 @@ def run_synthesis(
         )
     else:
         _phase_3_started_at = datetime.now(timezone.utc)
-        _phase_3_result = _pkg._run_phase_3_synthesizer(
-            session=session, user_id=user_id,
-            baseline=baseline, prior_current=prior_current,
-            analyst_reports_text=analyst_reports_text,
-            debate_outcomes_text=debate_outcomes_text,
-            portfolio_summary=portfolio_summary,
-            fills_summary=fills_summary,
-            decision_run_id=decision_audit_token,
-            speculation_cap_pct=cap.max_pct_of_net_worth,
-            speculation_cap_concurrent=cap.max_concurrent_positions,
-            guidance=guidance,
-        )
-        # T0.1 — new return shape is (PlanSynthesisOutput, list[AgentReport]);
-        # legacy stubs (``lambda **kw: _stub_synthesis_output()``) return
-        # the bare ``PlanSynthesisOutput`` so detect via isinstance of the
-        # expected output type.
         if (
-            isinstance(_phase_3_result, tuple)
-            and len(_phase_3_result) == 2
-            and not isinstance(_phase_3_result, PlanSynthesisOutput)
+            _corrective_ctx is not None
+            and _os.environ.get("ARGOSY_CORRECTIVE_PATCH", "0") == "1"
         ):
-            output, _phase_3_reports = _phase_3_result
-        else:
-            output, _phase_3_reports = _phase_3_result, []
+            try:
+                from argosy.quality import patch_reachability as _pr
+
+                _patch_base = _pkg._load_patch_base_output(prior_current)
+                if _patch_base is None:
+                    raise RuntimeError(
+                        "prior current plan has no structured horizon JSON "
+                        "— patch base unavailable"
+                    )
+                _reach = _pr.classify_patch_reachability(
+                    corrections=[
+                        c.to_payload() for c in _corrective_ctx.corrections
+                    ],
+                    directives=[
+                        d.to_payload() for d in _corrective_ctx.directives
+                    ],
+                    prior=_patch_base,
+                    forces_full_tier=_corrective_ctx.forces_full_tier,
+                    # Codex patch-review blocker #3: rendered surfaces can
+                    # restate values the structured artifact doesn't carry
+                    # verbatim (appendices, prose-loop edits) — widen the
+                    # implication scan to them; a wrong value in the
+                    # render-only allocation doc forces FULL.
+                    rendered_surfaces=(
+                        {
+                            "long": prior_current.horizon_long_md or "",
+                            "medium": prior_current.horizon_medium_md or "",
+                            "short": prior_current.horizon_short_md or "",
+                        }
+                        if prior_current is not None else None
+                    ),
+                    global_surfaces=(
+                        {
+                            "target_allocation_json": (
+                                prior_current.target_allocation_json or ""
+                            ),
+                        }
+                        if prior_current is not None else None
+                    ),
+                )
+                _patch_classifier_payload = _reach.to_payload()
+                if _reach.verdict == "PATCH":
+                    output, _phase_3_reports, _patch_provenance = (
+                        _pkg._run_phase_3_patch(
+                            session=session, user_id=user_id,
+                            prior_current=prior_current,
+                            prior_output=_patch_base,
+                            corrective_ctx=_corrective_ctx,
+                            reachability=_reach,
+                            portfolio_summary=portfolio_summary,
+                            decision_run_id=decision_audit_token,
+                            speculation_cap_pct=cap.max_pct_of_net_worth,
+                            speculation_cap_concurrent=(
+                                cap.max_concurrent_positions
+                            ),
+                        )
+                    )
+                    _patch_used = True
+                    log.info(
+                        "plan_synthesis.corrective_patch_used",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        reason=_reach.reason,
+                    )
+                else:
+                    log.info(
+                        "plan_synthesis.corrective_patch_full_verdict",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        reason=_reach.reason,
+                    )
+            except Exception as exc:  # noqa: BLE001 — fail-soft to full regen
+                _patch_used = False
+                _patch_provenance = None
+                log.warning(
+                    "plan_synthesis.corrective_patch_degraded_to_full",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(exc),
+                )
+        if not _patch_used:
+            _phase_3_result = _pkg._run_phase_3_synthesizer(
+                session=session, user_id=user_id,
+                baseline=baseline, prior_current=prior_current,
+                analyst_reports_text=analyst_reports_text,
+                debate_outcomes_text=debate_outcomes_text,
+                portfolio_summary=portfolio_summary,
+                fills_summary=fills_summary,
+                decision_run_id=decision_audit_token,
+                speculation_cap_pct=cap.max_pct_of_net_worth,
+                speculation_cap_concurrent=cap.max_concurrent_positions,
+                guidance=guidance,
+            )
+            # T0.1 — new return shape is (PlanSynthesisOutput, list[AgentReport]);
+            # legacy stubs (``lambda **kw: _stub_synthesis_output()``) return
+            # the bare ``PlanSynthesisOutput`` so detect via isinstance of the
+            # expected output type.
+            if (
+                isinstance(_phase_3_result, tuple)
+                and len(_phase_3_result) == 2
+                and not isinstance(_phase_3_result, PlanSynthesisOutput)
+            ):
+                output, _phase_3_reports = _phase_3_result
+            else:
+                output, _phase_3_reports = _phase_3_result, []
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=3, started_at=_phase_3_started_at,
@@ -703,11 +801,16 @@ def run_synthesis(
     # validator enforces bit-equality on every structured field; any
     # drift raises and aborts the synthesis cycle. Resolved through
     # the package namespace so tests can monkeypatch the rewriter.
-    output = _pkg._run_plan_language_rewriter(
-        output=output,
-        user_id=user_id,
-        decision_run_id=decision_run_id,
-    )
+    # PATCH MODE: the patched-slices-only rewrite already ran inside
+    # ``_run_phase_3_patch`` (design §2.C — unpatched slices must stay
+    # byte-identical, so a full-artifact rewrite here would violate the
+    # merge invariant).
+    if not _patch_used:
+        output = _pkg._run_plan_language_rewriter(
+            output=output,
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+        )
 
     # Defense-in-depth: post-filter speculative candidates that breach
     # the cap or lack ``risk_ceiling_check``.  Resolved via the package
@@ -945,6 +1048,11 @@ def run_synthesis(
                     phase_output=output.model_dump_json(),
                     agent_report_rows=_recon_reports,
                 )
+                # The codex-driven re-synth is a FULL regeneration — the
+                # draft is no longer patch-authored, and that regeneration
+                # subsumes the patch path's one bounded escalation.
+                if _patch_used:
+                    _patch_superseded_by_full = True
                 # Refresh the manifest (the reconciled synth report is now the
                 # latest for its role) + re-review.
                 _numbers_block = _build_numbers_block()
@@ -1768,6 +1876,11 @@ def run_synthesis(
                 draft.target_allocation_json = _recon_bodies["target_allocation_json"]
                 draft.sections_json = _recon_bodies["sections_json"]
                 session.commit()
+                # The reader-driven re-synth is a FULL regeneration — the
+                # draft is no longer patch-authored; it subsumes the patch
+                # path's one bounded escalation (design §2.D).
+                if _patch_used:
+                    _patch_superseded_by_full = True
                 _reader_verdict, _reader_row = _assemble_and_read()
             except Exception as exc:  # noqa: BLE001 — reconcile is best-effort
                 log.warning(
@@ -1845,25 +1958,181 @@ def run_synthesis(
             from argosy.quality.corrections_check import check_corrections_landed
 
             _corr_started = datetime.now(timezone.utc)
-            _corr_result = check_corrections_landed(
-                corrections=[
-                    c.check_payload() for c in _corrective_ctx.corrections
-                ],
-                surfaces={
-                    "horizon_long_md": draft.horizon_long_md or "",
-                    "horizon_medium_md": draft.horizon_medium_md or "",
-                    "horizon_short_md": draft.horizon_short_md or "",
-                    "target_allocation_json": draft.target_allocation_json or "",
-                    "horizon_long_json": draft.horizon_long_json or "",
-                    "horizon_medium_json": draft.horizon_medium_json or "",
-                    "horizon_short_json": draft.horizon_short_json or "",
-                },
-            )
+
+            def _run_corrections_floor():
+                # Directives join the floor (codex patch-review blocker #2):
+                # their SUPERSEDED figures must be absent exactly like a
+                # correction's wrong values. sections_json joins the swept
+                # surfaces (blocker #4) so a wrong value surviving only in
+                # an evidence section fails deterministically.
+                return check_corrections_landed(
+                    corrections=[
+                        c.check_payload() for c in _corrective_ctx.corrections
+                    ] + [
+                        d.check_payload() for d in _corrective_ctx.directives
+                    ],
+                    surfaces={
+                        "horizon_long_md": draft.horizon_long_md or "",
+                        "horizon_medium_md": draft.horizon_medium_md or "",
+                        "horizon_short_md": draft.horizon_short_md or "",
+                        "target_allocation_json": draft.target_allocation_json or "",
+                        "horizon_long_json": draft.horizon_long_json or "",
+                        "horizon_medium_json": draft.horizon_medium_json or "",
+                        "horizon_short_json": draft.horizon_short_json or "",
+                        "sections_json": draft.sections_json or "",
+                    },
+                )
+
+            _corr_result = _run_corrections_floor()
+
+            # BOUNDED PATCH ESCALATION (patch-synthesis design §2.D): when
+            # the PATCH-authored draft fails the deterministic floor —
+            # including a wrong value surviving in a slice the classifier
+            # didn't implicate — escalate exactly ONCE to the shipped full
+            # corrective regeneration (the same machinery as the reader-
+            # block re-synth fallback), re-render, blind-re-read, and re-run
+            # the floor. Never fires when a reader/codex full re-synth
+            # already replaced the patched artifact (that regeneration
+            # subsumes the one escalation). Fail-soft: an escalation crash
+            # keeps the original floor result (unresolved persists below).
+            _patch_escalated = False
+            if (
+                _patch_used
+                and not _patch_superseded_by_full
+                and not _corr_result.passes
+            ):
+                log.warning(
+                    "plan_synthesis.corrective_patch_escalation",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    unresolved=_corr_result.unresolved_payload(),
+                    classifier=(_patch_classifier_payload or {}).get("reason"),
+                )
+                try:
+                    _esc_started = datetime.now(timezone.utc)
+                    _esc_result = _pkg._run_phase_3_synthesizer(
+                        session=session, user_id=user_id,
+                        baseline=baseline, prior_current=prior_current,
+                        analyst_reports_text=analyst_reports_text,
+                        debate_outcomes_text=debate_outcomes_text,
+                        portfolio_summary=portfolio_summary,
+                        fills_summary=fills_summary,
+                        decision_run_id=decision_audit_token,
+                        speculation_cap_pct=cap.max_pct_of_net_worth,
+                        speculation_cap_concurrent=cap.max_concurrent_positions,
+                        guidance=guidance,  # already carries the corrections
+                    )
+                    if (
+                        isinstance(_esc_result, tuple) and len(_esc_result) == 2
+                        and not isinstance(_esc_result, PlanSynthesisOutput)
+                    ):
+                        output, _esc_reports = _esc_result
+                    else:
+                        output, _esc_reports = _esc_result, []
+                    output = _pkg._run_plan_language_rewriter(
+                        output=output, user_id=user_id,
+                        decision_run_id=decision_run_id,
+                    )
+                    output = _pkg._enforce_speculation_cap(
+                        output,
+                        max_pct_of_net_worth=cap.max_pct_of_net_worth,
+                        max_concurrent_positions=cap.max_concurrent_positions,
+                    )
+                    _pkg._record_phase_completion(
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        phase_n=3, started_at=_esc_started,
+                        phase_output=output.model_dump_json(),
+                        agent_report_rows=_esc_reports,
+                    )
+                    _esc_bodies = _assemble_draft_bodies(
+                        session, output=output, user_id=user_id,
+                        decision_run_id=decision_run_id,
+                        alternatives_sleeve=_alternatives_sleeve,
+                        authored_overrides=_authored_overrides,
+                    )
+                    draft.horizon_long_json = output.long.model_dump_json()
+                    draft.horizon_medium_json = output.medium.model_dump_json()
+                    draft.horizon_short_json = output.short.model_dump_json()
+                    draft.horizon_long_md = _esc_bodies["horizon_long_md"]
+                    draft.horizon_medium_md = _esc_bodies["horizon_medium_md"]
+                    draft.horizon_short_md = _esc_bodies["horizon_short_md"]
+                    draft.horizon_long_md_audit = _esc_bodies["horizon_long_md_audit"]
+                    draft.horizon_medium_md_audit = _esc_bodies["horizon_medium_md_audit"]
+                    draft.horizon_short_md_audit = _esc_bodies["horizon_short_md_audit"]
+                    draft.target_allocation_json = _esc_bodies["target_allocation_json"]
+                    draft.sections_json = _esc_bodies["sections_json"]
+                    session.commit()
+                    _patch_escalated = True
+                    # Blind re-read of the regenerated artifact (fail-soft):
+                    # the reader must judge what will actually be promoted.
+                    _esc_reader_ran = False
+                    try:
+                        _reader_verdict, _esc_reader_row = _assemble_and_read()
+                        if _esc_reader_row is not None:
+                            _pkg._record_phase_completion(
+                                user_id=user_id, decision_run_id=decision_run_id,
+                                phase_n=55,
+                                started_at=datetime.now(timezone.utc),
+                                phase_output=(
+                                    _reader_verdict.model_dump_json()
+                                    if _reader_verdict else ""
+                                ),
+                                agent_report_rows=[_esc_reader_row],
+                            )
+                        _esc_reader_ran = _reader_verdict is not None
+                        if (
+                            _reader_verdict is not None
+                            and _reader_verdict.overall_assessment == "BLOCK"
+                            and decision_run.fund_manager_decision != "rejected"
+                        ):
+                            decision_run.fund_manager_decision = "rejected"
+                            session.commit()
+                    except Exception as exc:  # noqa: BLE001 — read is best-effort
+                        log.warning(
+                            "plan_synthesis.corrective_patch_escalation_reread_failed",
+                            user_id=user_id, decision_run_id=decision_run_id,
+                            error=str(exc),
+                        )
+                    # FAIL CLOSED on an UNREVIEWED regenerated artifact
+                    # (codex patch-review r2, blocker #1 middle ground):
+                    # phases 4/4.5/5 judged the PRE-escalation draft; when
+                    # the blind reader could not re-review the regenerated
+                    # artifact either (skipped / kill switch / crash), an
+                    # earlier FM approval must not carry over to content no
+                    # gate has seen. Tighten via the same field the FM/reader
+                    # use — the user can still promote with the explicit,
+                    # audit-logged override.
+                    if (
+                        not _esc_reader_ran
+                        and decision_run.fund_manager_decision != "rejected"
+                    ):
+                        decision_run.fund_manager_decision = "rejected"
+                        session.commit()
+                        log.warning(
+                            "plan_synthesis.corrective_patch_escalation_unreviewed_failclosed",
+                            user_id=user_id, decision_run_id=decision_run_id,
+                        )
+                    _corr_result = _run_corrections_floor()
+                    log.warning(
+                        "plan_synthesis.corrective_patch_escalation_done",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        passes=_corr_result.passes,
+                    )
+                except Exception as exc:  # noqa: BLE001 — keep original result
+                    log.warning(
+                        "plan_synthesis.corrective_patch_escalation_failed",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        error=str(exc),
+                    )
+
             _pkg._record_phase_completion(
                 user_id=user_id, decision_run_id=decision_run_id,
                 phase_n=58,  # corrective corrections-landed check
                 started_at=_corr_started,
-                phase_output=_corr_result.summary(),
+                phase_output=(
+                    _corr_result.summary()
+                    + (" [after ONE patch escalation to full regeneration]"
+                       if _patch_escalated else "")
+                ),
                 agent_report_rows=[],
             )
             # Fold the final corrective provenance into the persisted draft's
@@ -1881,6 +2150,32 @@ def run_synthesis(
             _si["corrective"]["resume_truncated_phases"] = (
                 _corrective_resume_truncated
             )
+            # Patch-mode provenance (patch-synthesis design §2.C): per-
+            # surface before/after hashes + unpatched-slice hashes + the
+            # classifier verdict/reasons + the escalation outcome. The
+            # classifier payload is recorded even on a FULL verdict so
+            # under-scoping/degradation stays diagnosable.
+            if _patch_classifier_payload is not None:
+                _si["corrective"]["patch_classifier"] = _patch_classifier_payload
+            if _patch_used and _patch_provenance is not None:
+                _si["corrective"]["patched_surfaces"] = (
+                    _patch_provenance["patched_surfaces"]
+                )
+                _si["corrective"]["patch_unpatched_slice_hashes"] = (
+                    _patch_provenance["unpatched_slice_hashes"]
+                )
+                _si["corrective"]["patch_escalated"] = _patch_escalated
+                _si["corrective"]["patch_superseded_by_full_resynth"] = (
+                    _patch_superseded_by_full
+                )
+                # When ANY full regeneration replaced the patched artifact
+                # (floor escalation / reader / codex re-synth), the
+                # patched_surfaces rows describe the PRE-regeneration
+                # attempt, not the persisted draft (codex patch-review
+                # minor #1).
+                _si["corrective"]["patched_surfaces_stale"] = bool(
+                    _patch_escalated or _patch_superseded_by_full
+                )
             _si["corrective_unresolved"] = _corr_result.unresolved_payload()
             draft.synthesis_inputs_json = json.dumps(_si)
             session.commit()
@@ -4309,25 +4604,9 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
     # decision_id by now, so the resolver can derive the manifest. Best-
     # effort: a resolver failure leaves the block empty and the synth falls
     # back to its DERIVATION-OWNERSHIP prose rule + the post-synth scrub gate.
-    resolved_numbers_block = ""
-    try:
-        from argosy.services.plan_numeric_resolver import (
-            render_numbers_for_synth,
-            resolve_plan_numbers,
-        )
-
-        _drun_int = _decision_run_int(decision_run_id)
-        if _drun_int is not None:
-            _resolved = resolve_plan_numbers(
-                session, user_id=user_id, decision_run_id=_drun_int,
-                include_canonical_ages=True,
-            )
-            resolved_numbers_block = render_numbers_for_synth(_resolved)
-    except Exception as exc:  # noqa: BLE001 — synth must not break on this
-        log.warning(
-            "plan_synthesis.resolved_numbers_block_failed",
-            user_id=user_id, error=str(exc),
-        )
+    resolved_numbers_block = _build_resolved_numbers_block(
+        session, user_id=user_id, decision_run_id=decision_run_id,
+    )
 
     result = agent.run_sync(
         baseline_distillate_md=baseline_md,
@@ -4358,6 +4637,583 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
     # T0.1 — return the collected report so the orchestrator can persist
     # it + thread the id into the recorder.
     return result.output, collected  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Corrective PATCH-mode phase 3 (docs/design/corrective_patch_synthesis.md)
+# ---------------------------------------------------------------------------
+
+
+def _build_resolved_numbers_block(
+    session, *, user_id: str, decision_run_id,
+) -> str:
+    """Best-effort DERIVED HEADLINE NUMBERS block for the synth/patch prompt.
+
+    A resolver failure returns "" — the synth falls back to its
+    DERIVATION-OWNERSHIP prose rule + the post-synth scrub gate.
+    """
+    try:
+        from argosy.services.plan_numeric_resolver import (
+            render_numbers_for_synth,
+            resolve_plan_numbers,
+        )
+
+        _drun_int = _decision_run_int(decision_run_id)
+        if _drun_int is None:
+            return ""
+        _resolved = resolve_plan_numbers(
+            session, user_id=user_id, decision_run_id=_drun_int,
+            include_canonical_ages=True,
+        )
+        return render_numbers_for_synth(_resolved)
+    except Exception as exc:  # noqa: BLE001 — synth must not break on this
+        log.warning(
+            "plan_synthesis.resolved_numbers_block_failed",
+            user_id=user_id, error=str(exc),
+        )
+        return ""
+
+
+def _load_patch_base_output(prior_current) -> PlanSynthesisOutput | None:
+    """Rebuild the prior CURRENT plan's structured artifact — the base
+    document a patch edits. ``None`` when the plan has no structured horizon
+    JSON (e.g. an imported/graph plan) — the patch path then degrades to the
+    shipped full corrective regeneration."""
+    if prior_current is None:
+        return None
+    if not (
+        prior_current.horizon_long_json
+        and prior_current.horizon_medium_json
+        and prior_current.horizon_short_json
+    ):
+        return None
+    from argosy.agents.plan_synthesizer_types import (
+        HorizonSection,
+        Section,
+        SynthesisInputs,
+    )
+
+    try:
+        sections: list[Section] = []
+        if getattr(prior_current, "sections_json", None):
+            sections = [
+                Section.model_validate(d)
+                for d in json.loads(prior_current.sections_json)
+            ]
+        try:
+            inputs = SynthesisInputs.model_validate_json(
+                prior_current.synthesis_inputs_json or "{}"
+            )
+        except Exception:  # noqa: BLE001 — provenance is replaced on persist
+            inputs = SynthesisInputs()
+        return PlanSynthesisOutput(
+            long=HorizonSection.model_validate_json(prior_current.horizon_long_json),
+            medium=HorizonSection.model_validate_json(prior_current.horizon_medium_json),
+            short=HorizonSection.model_validate_json(prior_current.horizon_short_json),
+            inputs=inputs,
+            sections=sections,
+        )
+    except Exception as exc:  # noqa: BLE001 — malformed base → no patch
+        log.warning(
+            "plan_synthesis.patch_base_load_failed",
+            plan_version_id=getattr(prior_current, "id", None), error=str(exc),
+        )
+        return None
+
+
+def _patch_item_id(horizon: str, kind: str, item) -> str:
+    from argosy.quality.patch_reachability import synthetic_item_id
+
+    label = getattr(item, "label", None) or getattr(item, "ticker", "") or ""
+    return synthetic_item_id(horizon, kind, label)
+
+
+def _merge_patched_output(
+    *,
+    prior: PlanSynthesisOutput,
+    horizon_patches: dict[str, "object"],
+    section_patches: dict[tuple[str, str], "object"],
+    implicated_item_ids: set[str],
+    allow_positional_fallback: bool = False,
+) -> PlanSynthesisOutput:
+    """Deterministic merge (design §2.C): start from the PRIOR artifact;
+    splice in the model's versions of implicated items + slice prose;
+    byte-restore every unimplicated item, every untouched section, and
+    ``inputs``. A patch call physically cannot perturb an unimplicated
+    item — the merge throws its version away.
+
+    ``horizon_patches``: {horizon_name: HorizonSection} for patched slices.
+    ``section_patches``: {(section_id, horizon): Section} for patched
+    sections. Model-invented items/sections are dropped; model-omitted
+    implicated items fall back to the prior version (the corrections-landed
+    floor then reports the correction un-landed — never a silent hole).
+    """
+    from argosy.quality.patch_reachability import ITEM_KINDS
+
+    horizon_updates: dict = {}
+    for name in ("long", "medium", "short"):
+        base = getattr(prior, name)
+        model = horizon_patches.get(name)
+        if model is None:
+            horizon_updates[name] = base
+            continue
+        updates: dict = {
+            # Slice prose accepts model output; every other slice-level
+            # field (horizon, status, freshness_expected, cited_sources)
+            # is byte-restored from the base (a status flip is a FULL
+            # trigger by construction).
+            "posture": model.posture,
+            "rationale": model.rationale,
+        }
+        for kind in ITEM_KINDS:
+            base_items = list(getattr(base, kind))
+            model_items = list(getattr(model, kind))
+            model_by_id = {
+                _patch_item_id(name, kind, mi): mi for mi in model_items
+            }
+            merged_items = []
+            for pos, bi in enumerate(base_items):
+                iid = _patch_item_id(name, kind, bi)
+                if iid in implicated_item_ids:
+                    mi = model_by_id.get(iid)
+                    if (
+                        mi is None
+                        and allow_positional_fallback
+                        and len(model_items) == len(base_items)
+                    ):
+                        # Positional fallback — POST-REWRITE merge only
+                        # (codex patch-review major #3): the prose rewriter
+                        # may rephrase a label, changing the synthetic id,
+                        # but its invariants enforce count+order stability.
+                        # The MODEL merge never gets this fallback: an
+                        # id-mismatched model item is dropped and the prior
+                        # kept (the corrections floor then fails loud).
+                        mi = model_items[pos]
+                    merged_items.append(mi if mi is not None else bi)
+                else:
+                    merged_items.append(bi)
+            updates[kind] = merged_items
+        # Delta entries FOR implicated items accept model output (including
+        # a fresh 'modified' delta); every other delta is byte-restored.
+        updates["deltas_from_prior"] = [
+            d for d in base.deltas_from_prior
+            if d.item_id not in implicated_item_ids
+        ] + [
+            d for d in model.deltas_from_prior
+            if d.item_id in implicated_item_ids
+        ]
+        horizon_updates[name] = base.model_copy(update=updates)
+
+    merged_sections = []
+    for s in prior.sections:
+        key = (s.section_id, s.horizon)
+        m = section_patches.get(key)
+        if m is None:
+            merged_sections.append(s)
+        else:
+            # The patched Section is the item — title/body_md/evidence come
+            # from the model; identity fields are pinned to the key.
+            merged_sections.append(m.model_copy(update={
+                "section_id": s.section_id, "horizon": s.horizon,
+            }))
+
+    merged = prior.model_copy(update={
+        **horizon_updates,
+        "sections": merged_sections,
+        "inputs": prior.inputs,
+    })
+    # Whole-artifact pydantic re-validation (round-trip, as the resume path
+    # does) — a merge bug must fail loud here, not downstream.
+    return PlanSynthesisOutput.model_validate(json.loads(merged.model_dump_json()))
+
+
+def _sha256_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _patch_provenance(
+    *,
+    prior: PlanSynthesisOutput,
+    final: PlanSynthesisOutput,
+    reachability,
+    patched_horizons: list[str],
+    patched_sections: list[tuple[str, str]],
+) -> dict:
+    """Provenance payload (design §2.C): one row per edited surface with
+    before/after sha256 + the implicating correction/directive indices,
+    plus the hashes of every UNPATCHED slice — proving non-perturbation
+    affirmatively. Raises if an unpatched slice was perturbed (the caller's
+    fail-soft then degrades the run to full regeneration)."""
+    from argosy.quality.patch_reachability import ITEM_KINDS
+
+    rows: list[dict] = []
+
+    def _indices(decisions, item_id=None, section_key=None):
+        c_idx, d_idx = [], []
+        for dec in decisions:
+            if item_id is not None and item_id not in dec.implicated_item_ids:
+                continue
+            if section_key is not None and section_key not in dec.implicated_sections:
+                continue
+            (c_idx if dec.kind == "correction" else d_idx).append(dec.index)
+        return sorted(set(c_idx)), sorted(set(d_idx))
+
+    for h in patched_horizons:
+        b = getattr(prior, h)
+        a = getattr(final, h)
+        decs = reachability.corrections_for_horizon(h)
+        c_idx, d_idx = _indices(decs)
+        rows.append({
+            "slice": h,
+            "surface": "prose",
+            "correction_indices": c_idx,
+            "directive_indices": d_idx,
+            "before_sha256": _sha256_text(json.dumps(
+                {"posture": b.posture, "rationale": b.rationale}, sort_keys=True,
+            )),
+            "after_sha256": _sha256_text(json.dumps(
+                {"posture": a.posture, "rationale": a.rationale}, sort_keys=True,
+            )),
+        })
+        implicated = set(reachability.implicated_item_ids)
+        for kind in ITEM_KINDS + ("deltas_from_prior",):
+            b_by_id = {
+                (_patch_item_id(h, kind, it) if kind != "deltas_from_prior"
+                 else it.item_id): it
+                for it in getattr(b, kind)
+            }
+            a_by_id = {
+                (_patch_item_id(h, kind, it) if kind != "deltas_from_prior"
+                 else it.item_id): it
+                for it in getattr(a, kind)
+            }
+            for iid in sorted(set(b_by_id) | set(a_by_id)):
+                if iid not in implicated:
+                    continue
+                c_idx, d_idx = _indices(decs, item_id=iid)
+                b_it, a_it = b_by_id.get(iid), a_by_id.get(iid)
+                rows.append({
+                    "slice": h,
+                    "item_id": iid,
+                    "correction_indices": c_idx,
+                    "directive_indices": d_idx,
+                    "before_sha256": (
+                        _sha256_text(b_it.model_dump_json()) if b_it else None
+                    ),
+                    "after_sha256": (
+                        _sha256_text(a_it.model_dump_json()) if a_it else None
+                    ),
+                })
+
+    final_sections = {(s.section_id, s.horizon): s for s in final.sections}
+    prior_sections = {(s.section_id, s.horizon): s for s in prior.sections}
+    for key in patched_sections:
+        b_s, a_s = prior_sections.get(key), final_sections.get(key)
+        c_idx, d_idx = _indices(
+            reachability.corrections_for_section(key), section_key=key,
+        )
+        rows.append({
+            "slice": "sections",
+            "section_id": key[0],
+            "horizon": key[1],
+            "correction_indices": c_idx,
+            "directive_indices": d_idx,
+            "before_sha256": _sha256_text(b_s.model_dump_json()) if b_s else None,
+            "after_sha256": _sha256_text(a_s.model_dump_json()) if a_s else None,
+        })
+
+    unpatched: list[dict] = []
+    for h in ("long", "medium", "short"):
+        if h in patched_horizons:
+            continue
+        before = getattr(prior, h).model_dump_json()
+        after = getattr(final, h).model_dump_json()
+        matches = _sha256_text(before) == _sha256_text(after)
+        unpatched.append({
+            "slice": h, "sha256": _sha256_text(after), "matches_prior": matches,
+        })
+        if not matches:
+            raise RuntimeError(
+                f"corrective patch perturbed the unpatched {h!r} slice — "
+                "merge invariant violated"
+            )
+    for key, b_s in prior_sections.items():
+        if key in patched_sections:
+            continue
+        a_s = final_sections.get(key)
+        matches = (
+            a_s is not None
+            and _sha256_text(b_s.model_dump_json())
+            == _sha256_text(a_s.model_dump_json())
+        )
+        unpatched.append({
+            "slice": "sections",
+            "section_id": key[0],
+            "horizon": key[1],
+            "sha256": _sha256_text(a_s.model_dump_json()) if a_s else None,
+            "matches_prior": matches,
+        })
+        if not matches:
+            raise RuntimeError(
+                f"corrective patch perturbed the unpatched section {key!r} — "
+                "merge invariant violated"
+            )
+
+    return {
+        "patched_surfaces": rows,
+        "unpatched_slice_hashes": unpatched,
+        "classifier": reachability.to_payload(),
+    }
+
+
+def _render_patch_corrections_block(
+    decisions, corrective_ctx,
+) -> str:
+    """Per-slice corrections block — ONLY the corrections/directives
+    implicating this slice, each with canonical values + derivation and the
+    wrong values that must be absent."""
+    from argosy.services.corrective_context import _fmt_value
+
+    corr_by_index = {c.index: c for c in corrective_ctx.corrections}
+    dir_by_index = {d.index: d for d in corrective_ctx.directives}
+    lines: list[str] = []
+    for dec in decisions:
+        if dec.kind == "correction":
+            c = corr_by_index.get(dec.index)
+            if c is None:
+                continue
+            canon = (
+                "; ".join(
+                    f"{k} = {_fmt_value(v)} (derived-fact)"
+                    for k, v in c.canonical_facts
+                )
+                or "(no canonical derived value on file)"
+            )
+            wrong = (
+                "; ".join(_fmt_value(v) for v in c.wrong_values)
+                or "(none listed)"
+            )
+            lines.append(
+                f"[{c.index}] {c.severity} · {c.topic} · surface: "
+                f"{c.plan_item_ref}\n"
+                f"    wrong: {c.summary}\n"
+                f"    canonical (state these): {canon}\n"
+                f"    MUST BE ABSENT from your output: {wrong}\n"
+                f"    implicated items in this slice: "
+                f"{', '.join(dec.implicated_item_ids) or '(slice prose)'}"
+            )
+        else:
+            d = dir_by_index.get(dec.index)
+            if d is None:
+                continue
+            entry = (
+                f"[D{d.index}] proposal #{d.proposal_id} — {d.summary} "
+                "(adjudicated verdict — apply verbatim, do not re-decide)"
+            )
+            if d.detail:
+                entry += f"\n     {d.detail}"
+            if d.superseded_values:
+                entry += (
+                    "\n     MUST BE ABSENT (superseded figures): "
+                    + "; ".join(_fmt_value(v) for v in d.superseded_values)
+                )
+            lines.append(entry)
+    return "\n".join(lines)
+
+
+def _run_phase_3_patch(
+    *,
+    session,
+    user_id: str,
+    prior_current,
+    prior_output: PlanSynthesisOutput,
+    corrective_ctx,
+    reachability,
+    portfolio_summary: str,
+    decision_run_id,
+    speculation_cap_pct: float | None = None,
+    speculation_cap_concurrent: int | None = None,
+) -> tuple[PlanSynthesisOutput, list[AgentReport], dict]:
+    """Patch-mode phase 3 (design §2.C): per-slice Opus calls in parallel,
+    deterministic merge with item-level force-preserve, patched-slices-only
+    prose rewrite, provenance with before/after hashes.
+
+    Raises on ANY failure — the caller's fail-soft wrapper degrades the run
+    to the shipped full corrective regeneration (never a worse outcome than
+    today).
+    """
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+    from argosy.quality.patch_reachability import HORIZONS
+
+    patched_horizons = [h for h in HORIZONS if h in reachability.implicated_groups]
+    patched_sections = list(reachability.implicated_sections)
+    if not patched_horizons and not patched_sections:
+        raise RuntimeError("patch verdict with no implicated slices")
+
+    resolved_numbers_block = _build_resolved_numbers_block(
+        session, user_id=user_id, decision_run_id=decision_run_id,
+    )
+    prior_items_index = _pkg_build_prior_items_index(
+        session, user_id=user_id, prior_current=prior_current,
+    )
+    # Short excerpt budget of HARD FACTS — the patch integrates supplied
+    # canonical values, it does not re-derive (design §2.C).
+    hard_facts_excerpt = (portfolio_summary or "")[:4000]
+
+    def _items_block(horizon: str | None) -> str:
+        rows = [
+            it for it in prior_items_index
+            if horizon is None or (it.get("horizon") or "") == horizon
+        ]
+        return "\n".join(
+            f"  - {it.get('item_id','?')}  ({it.get('item_kind','?')})  "
+            f"label={it.get('label','')!r}  value={it.get('value','')} "
+            f"{it.get('unit','')}"
+            for it in rows
+        ) or "  (none)"
+
+    prior_section_by_key = {
+        (s.section_id, s.horizon): s for s in prior_output.sections
+    }
+
+    def _call_horizon(h: str):
+        agent = _pkg.PlanHorizonPatchSynthesizerAgent(user_id=user_id)
+        return agent.run_sync(
+            slice_label=f"horizon:{h}",
+            base_slice_json=getattr(prior_output, h).model_dump_json(),
+            corrections_block=_render_patch_corrections_block(
+                reachability.corrections_for_horizon(h), corrective_ctx,
+            ),
+            resolved_numbers_block=resolved_numbers_block,
+            prior_items_block=_items_block(h),
+            hard_facts_excerpt=hard_facts_excerpt,
+            decision_id=decision_run_id,
+        )
+
+    def _call_section(key: tuple[str, str]):
+        base = prior_section_by_key.get(key)
+        if base is None:
+            raise RuntimeError(f"implicated section {key!r} not in prior draft")
+        agent = _pkg.PlanSectionPatchSynthesizerAgent(user_id=user_id)
+        return agent.run_sync(
+            slice_label=f"section:{key[0]}:{key[1]}",
+            base_slice_json=base.model_dump_json(),
+            corrections_block=_render_patch_corrections_block(
+                reachability.corrections_for_section(key), corrective_ctx,
+            ),
+            resolved_numbers_block=resolved_numbers_block,
+            prior_items_block=_items_block(None),
+            hard_facts_excerpt=hard_facts_excerpt,
+            decision_id=decision_run_id,
+        )
+
+    log.info(
+        "plan_synthesis.patch_phase_3_start",
+        user_id=user_id, decision_run_id=decision_run_id,
+        horizons=patched_horizons,
+        sections=[list(k) for k in patched_sections],
+    )
+
+    results: dict = {}
+    collected: list[AgentReport] = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {}
+        for h in patched_horizons:
+            futures[ex.submit(_call_horizon, h)] = ("horizon", h)
+        for key in patched_sections:
+            futures[ex.submit(_call_section, key)] = ("section", key)
+        for fut in as_completed(futures):
+            unit = futures[fut]
+            report = fut.result()  # re-raises on slice failure (fail-soft above)
+            results[unit] = report.output
+            if isinstance(report, AgentReport):
+                collected.append(report)
+    if collected:
+        _pkg._persist_agent_reports(session, collected)
+
+    implicated_item_ids = set(reachability.implicated_item_ids)
+    merged = _merge_patched_output(
+        prior=prior_output,
+        horizon_patches={
+            h: results[("horizon", h)] for h in patched_horizons
+        },
+        section_patches={
+            key: results[("section", key)] for key in patched_sections
+        },
+        implicated_item_ids=implicated_item_ids,
+    )
+
+    # Prose rewrite on the PATCHED slices only (design §2.C): build a
+    # restricted output carrying the patched slices (stub horizons + only
+    # the patched sections elsewhere), run the standard rewriter (invariant
+    # validation + force-preserve included), then re-merge against the
+    # prior so unimplicated items stay byte-restored even if the rewriter
+    # rephrased their labels.
+    restricted = PlanSynthesisOutput(
+        long=(merged.long if "long" in patched_horizons
+              else _rewriter_stub_horizon("long")),
+        medium=(merged.medium if "medium" in patched_horizons
+                else _rewriter_stub_horizon("medium")),
+        short=(merged.short if "short" in patched_horizons
+               else _rewriter_stub_horizon("short")),
+        inputs=merged.inputs,
+        sections=[
+            s for s in merged.sections
+            if (s.section_id, s.horizon) in set(patched_sections)
+        ],
+    )
+    rewritten = _pkg._run_plan_language_rewriter(
+        output=restricted, user_id=user_id,
+        decision_run_id=_decision_run_int(decision_run_id),
+    )
+    rewritten_sections = {
+        (s.section_id, s.horizon): s for s in rewritten.sections
+    }
+    final = _merge_patched_output(
+        prior=prior_output,
+        horizon_patches={
+            h: getattr(rewritten, h) for h in patched_horizons
+        },
+        section_patches={
+            key: rewritten_sections.get(key, results[("section", key)])
+            for key in patched_sections
+        },
+        implicated_item_ids=implicated_item_ids,
+        # The rewriter may rephrase labels (changing synthetic ids) but its
+        # invariants enforce count/order stability — positional pairing is
+        # sound HERE and only here.
+        allow_positional_fallback=True,
+    )
+
+    # Apply the speculation cap BEFORE provenance (codex patch-review major
+    # #2) so the persisted hashes describe the artifact that actually ships.
+    # The orchestrator-level cap re-runs after return — deterministic and
+    # idempotent, so the second pass is a no-op. If the cap mutates an
+    # UNPATCHED slice (config tightened since the prior plan), the
+    # unpatched-hash guard below raises and the run degrades to full
+    # regeneration — a patch cannot honestly preserve byte-identity then.
+    if speculation_cap_pct is not None and speculation_cap_concurrent is not None:
+        final = _pkg._enforce_speculation_cap(
+            final,
+            max_pct_of_net_worth=speculation_cap_pct,
+            max_concurrent_positions=speculation_cap_concurrent,
+        )
+
+    provenance = _patch_provenance(
+        prior=prior_output,
+        final=final,
+        reachability=reachability,
+        patched_horizons=patched_horizons,
+        patched_sections=patched_sections,
+    )
+    log.info(
+        "plan_synthesis.patch_phase_3_merged",
+        user_id=user_id, decision_run_id=decision_run_id,
+        patched_surfaces=len(provenance["patched_surfaces"]),
+    )
+    return final, collected, provenance
 
 
 def _enforce_speculation_cap(

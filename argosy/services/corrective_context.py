@@ -89,6 +89,16 @@ class Correction:
     # populate it.
     wrong_values: list[Any] = field(default_factory=list)
 
+    @property
+    def parsed_ref(self) -> dict[str, Any]:
+        """Parsed slice/item addressing of ``plan_item_ref`` (corrective
+        patch-synthesis, docs/design/corrective_patch_synthesis.md §2.B).
+        Deterministic; the patch-reachability classifier re-resolves against
+        the prior draft — this is the carried addressing form."""
+        from argosy.quality.patch_reachability import parse_plan_item_ref
+
+        return parse_plan_item_ref(self.plan_item_ref).to_payload()
+
     def check_payload(self) -> dict[str, Any]:
         """Plain-dict form consumed by ``corrections_check`` (pure module)."""
         return {
@@ -100,7 +110,7 @@ class Correction:
         }
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "index": self.index,
             "severity": self.severity,
             "topic": self.topic,
@@ -111,6 +121,13 @@ class Correction:
             "canonical_facts": [[k, v] for k, v in self.canonical_facts],
             "wrong_values": list(self.wrong_values),
         }
+        # Parsed addressing carried alongside (patch-synthesis design §4);
+        # best-effort — an unparseable ref degrades to nulls, never raises.
+        try:
+            payload["parsed_ref"] = self.parsed_ref
+        except Exception:  # noqa: BLE001 — addressing is advisory
+            payload["parsed_ref"] = None
+        return payload
 
 
 @dataclass
@@ -122,6 +139,29 @@ class Directive:
     kind: str
     summary: str
     detail: str = ""
+    # Patch-synthesis addressing (docs/design/corrective_patch_synthesis.md):
+    # plan-item refs the directive's verbatim application targets, plus the
+    # superseded figures that must be ABSENT post-application (e.g. the old
+    # glide-schedule legs proposal 49 replaces). The live builder leaves both
+    # empty today (adjudication proposals are prose); structured proposals /
+    # tests populate them. Empty ⇒ the patch-reachability classifier honestly
+    # routes the directive to FULL (unaddressable for a scoped patch).
+    target_refs: list[str] = field(default_factory=list)
+    superseded_values: list[Any] = field(default_factory=list)
+
+    def check_payload(self) -> dict[str, Any]:
+        """Deterministic-floor form (codex patch-review blocker #2): a
+        directive's SUPERSEDED figures must be absent from the corrected
+        draft exactly like a correction's wrong values. No canonical-value
+        presence check — a directive's application shape is prose; the
+        reader's judgment pass owns 'applied verbatim'."""
+        return {
+            "index": self.index,
+            "topic": f"directive #{self.proposal_id}: {self.summary[:60]}",
+            "plan_item_ref": "; ".join(self.target_refs),
+            "canonical_values": [],
+            "wrong_values": list(self.superseded_values),
+        }
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -130,6 +170,8 @@ class Directive:
             "kind": self.kind,
             "summary": self.summary,
             "detail": self.detail,
+            "target_refs": list(self.target_refs),
+            "superseded_values": list(self.superseded_values),
         }
 
 
@@ -201,10 +243,23 @@ class CorrectiveContext:
                 f"    canonical: {canon}"
             )
         for d in self.directives:
-            lines.append(
+            entry = (
                 f"[D{d.index}] proposal #{d.proposal_id} ({d.kind}) — "
                 f"{d.summary} — verify it was applied verbatim."
             )
+            # Codex patch-review blocker #2: the reader needs the verbatim
+            # detail + the superseded figures to judge "applied verbatim"
+            # in substance, not just by the summary line.
+            if d.detail:
+                detail = d.detail if len(d.detail) <= 500 else d.detail[:500] + " …"
+                lines_detail = detail.replace("\n", "\n    ")
+                entry += f"\n    detail: {lines_detail}"
+            if d.superseded_values:
+                entry += (
+                    "\n    superseded figures that must NOT survive: "
+                    + "; ".join(_fmt_value(v) for v in d.superseded_values)
+                )
+            lines.append(entry)
         return "\n".join(lines)
 
 
@@ -517,6 +572,33 @@ def build_corrective_context(
         detail = (p.rationale_md or "").strip()
         if len(detail) > 2000:
             detail = detail[:2000] + " …"
+        # Structured patch addressing (codex patch-review r2, blocker #2
+        # residual): a proposal whose payload carries explicit
+        # target_refs / superseded_values gets them onto the directive so
+        # the patch classifier can scope it and the deterministic floor
+        # can verify the superseded figures are gone. Best-effort + strict
+        # (only the explicit keys; never inferred from prose) — absent
+        # keys leave both empty, which the classifier honestly routes to
+        # the full tier.
+        target_refs: list[str] = []
+        superseded_values: list[Any] = []
+        try:
+            p_payload = json.loads(p.suggested_payload or "{}")
+            if isinstance(p_payload, dict):
+                raw_refs = (
+                    p_payload.get("target_refs")
+                    or p_payload.get("plan_item_refs")
+                )
+                if isinstance(raw_refs, list):
+                    target_refs = [str(r) for r in raw_refs if r]
+                raw_super = (
+                    p_payload.get("superseded_values")
+                    or p_payload.get("wrong_values")
+                )
+                if isinstance(raw_super, list):
+                    superseded_values = [v for v in raw_super if v is not None]
+        except (TypeError, ValueError):
+            pass
         ctx.directives.append(
             Directive(
                 index=i,
@@ -524,6 +606,8 @@ def build_corrective_context(
                 kind=p.kind,
                 summary=(p.summary or "").strip(),
                 detail=detail,
+                target_refs=target_refs,
+                superseded_values=superseded_values,
             )
         )
         ctx.proposal_ids.append(p.id)

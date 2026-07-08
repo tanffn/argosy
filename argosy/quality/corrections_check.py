@@ -32,6 +32,12 @@ class CorrectionCheck:
     topic: str
     landed: bool
     reason: str
+    # Per-slice attribution (corrective patch-synthesis §2.D): the surface
+    # keys where a surviving wrong value was found. Empty for landed checks
+    # and for canonical-absent failures (absent from EVERY surface). Feeds
+    # the patch escalation decision — a hit in a slice the classifier didn't
+    # implicate is exactly the under-scoping signal.
+    hit_surfaces: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -46,7 +52,12 @@ class CorrectionsCheckResult:
         """The ``corrective_unresolved`` entries persisted to
         ``synthesis_inputs_json`` (and read by the accept-route gate)."""
         return [
-            {"index": c.index, "topic": c.topic, "reason": c.reason}
+            {
+                "index": c.index,
+                "topic": c.topic,
+                "reason": c.reason,
+                "hit_surfaces": list(c.hit_surfaces),
+            }
             for c in self.checks
             if not c.landed
         ]
@@ -136,17 +147,30 @@ def check_corrections_landed(
         canonical = [v for v in (c.get("canonical_values") or []) if v is not None]
 
         wrong_hit: str | None = None
+        hit_surfaces: list[str] = []
         for wv in wrong:
             for variant in value_variants(wv):
-                if _present(variant, haystack):
+                # Per-surface sweep (patch-synthesis §2.D: per-slice
+                # attribution feeds the escalation decision) — every
+                # surface is checked, not just the first hit.
+                found_in = [
+                    name for name, text in surfaces.items()
+                    if _present(variant, text or "")
+                ]
+                if found_in:
                     wrong_hit = variant
+                    hit_surfaces = found_in
                     break
             if wrong_hit:
                 break
         if wrong_hit:
             result.checks.append(CorrectionCheck(
                 index=idx, topic=topic, landed=False,
-                reason=f"wrong value {wrong_hit!r} still present in the draft",
+                reason=(
+                    f"wrong value {wrong_hit!r} still present in "
+                    f"{', '.join(hit_surfaces)}"
+                ),
+                hit_surfaces=hit_surfaces,
             ))
             continue
 

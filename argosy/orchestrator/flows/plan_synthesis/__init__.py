@@ -73,6 +73,12 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     _run_phase_2_debates,
     _run_one_horizon_debate,
     _run_phase_3_synthesizer,
+    # Corrective PATCH-mode phase 3 (docs/design/corrective_patch_synthesis.md).
+    # Exposed on the package namespace so run_synthesis resolves them via
+    # ``_pkg.`` and tests can monkeypatch the patch branch without touching
+    # the shipped full path.
+    _run_phase_3_patch,
+    _load_patch_base_output,
     # Phase 2 — prose rewriter wired between phase-3 and the
     # speculation-cap enforcer. Exposed on the package namespace so
     # tests can monkeypatch via ``flow._run_plan_language_rewriter``.
@@ -139,6 +145,13 @@ from argosy.quality.instage_gate import run_deterministic_gate_instage  # noqa: 
 # docs/design/corrective_resynthesis.md.
 from argosy.services.corrective_context import build_corrective_context  # noqa: F401
 
+# Corrective PATCH-mode per-slice synthesizer agents — resolved via ``_pkg.``
+# inside ``_run_phase_3_patch`` so tests can stub the slice calls.
+from argosy.agents.plan_patch_synthesizer import (  # noqa: F401
+    PlanHorizonPatchSynthesizerAgent,
+    PlanSectionPatchSynthesizerAgent,
+)
+
 # Whole-artifact adversarial reader — the holistic final pre-promotion stage.
 # Exposed on the package namespace so the orchestrator resolves it via
 # ``_pkg.run_whole_artifact_review`` (and tests can monkeypatch the
@@ -193,6 +206,10 @@ __all__ = [
     "_run_phase_2_debates",
     "_run_one_horizon_debate",
     "_run_phase_3_synthesizer",
+    "_run_phase_3_patch",
+    "_load_patch_base_output",
+    "PlanHorizonPatchSynthesizerAgent",
+    "PlanSectionPatchSynthesizerAgent",
     "_enforce_speculation_cap",
     "_run_plan_language_rewriter",
     "RewriterInvariantError",
