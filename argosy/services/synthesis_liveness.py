@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -71,8 +71,8 @@ def configured_stale_minutes() -> int:
 def _as_utc(dt: datetime) -> datetime:
     """SQLite drops tzinfo on read; the convention is naive == UTC."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _merged_reap_note(existing_json: str | None, note: dict) -> str:
@@ -103,7 +103,7 @@ def reap_stale_synthesis_runs(
     Deterministic + idempotent: a second call finds no stale rows and is
     a no-op. Commits only when something was reaped.
     """
-    now_dt = _as_utc(now or datetime.now(timezone.utc))
+    now_dt = _as_utc(now or datetime.now(UTC))
     window_min = stale_minutes if stale_minutes is not None else configured_stale_minutes()
     cutoff = now_dt - timedelta(minutes=window_min)
 
