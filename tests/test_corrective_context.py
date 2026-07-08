@@ -204,6 +204,25 @@ def test_adjudication_selection(session):
     assert [d.proposal_id for d in ctx.directives] == [good.id]
     assert good.id in ctx.proposal_ids
     assert "apply verbatim" in ctx.rendered
+
+
+def test_adjudication_selection_real_accept_execution_state(session):
+    """The accept service sets execution_state='accepted_pending_user_action'
+    (action_proposals.py) — the selector must treat it as accepted-but-
+    unapplied. Regression: live run 140 attached 0 directives after Ariel's
+    real accept of proposal 49 because the selector matched 'proposed' only."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    accepted = _add_proposal(
+        session, kind="update_plan_assumption",
+        dedup_key="plan_glide_schedule_verdict:ariel:nvda",
+        status="accepted", execution_state="accepted_pending_user_action",
+        summary="NVDA glide schedule 2026/2027/2028",
+        rationale="4,136 / 5,094 / 592 sh — fast-on-eligible-core",
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [d.proposal_id for d in ctx.directives] == [accepted.id]
     assert "NVDA glide schedule" in ctx.rendered
 
 

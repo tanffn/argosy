@@ -23,9 +23,10 @@ Sources (all already persisted; no new state):
    escalated findings verbatim; used to cross-check (1) and to know which
    proposal to close on promote. Tolerates ``status='accepted'`` too (Ariel
    may confirm the proposal before the run fires).
-3. Accepted-but-unapplied adjudication proposals (``status='accepted'`` +
-   ``execution_state='proposed'`` + kind in a small allowlist) — these become
-   DIRECTIVES: apply verbatim, never re-decide.
+3. Accepted-but-unapplied adjudication proposals (``status='accepted'``,
+   execution_state ``proposed`` or ``accepted_pending_user_action`` — the
+   value the real accept service sets — + kind in a small allowlist) —
+   these become DIRECTIVES: apply verbatim, never re-decide.
 4. Derived facts (``derived_facts.build_derived_facts``) — each correction is
    joined to the derived fact(s) covering its surface (lenient token match,
    same spirit as ``critique_reconcile.findings_match``) so it carries its
@@ -299,7 +300,14 @@ def _load_directive_proposals(
         .where(
             ActionProposal.user_id == user_id,
             ActionProposal.status == "accepted",
-            ActionProposal.execution_state == "proposed",
+            # The accept service flips execution_state to
+            # 'accepted_pending_user_action' (action_proposals.py); rows
+            # accepted out-of-band may still read 'proposed'. Both mean
+            # accepted-but-unapplied — applied rows leave this selector
+            # via status='executed' at promote, never via execution_state.
+            ActionProposal.execution_state.in_(
+                ("proposed", "accepted_pending_user_action")
+            ),
             ActionProposal.kind.in_(DIRECTIVE_PROPOSAL_KINDS),
         )
         .order_by(ActionProposal.id.asc())
