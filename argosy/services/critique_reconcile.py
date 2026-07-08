@@ -221,12 +221,33 @@ def _findings_block(selected: list[tuple[int, dict[str, Any]]]) -> str:
 
 
 async def _default_snapshot_refresher(user_id: str) -> None:
+    """Run the snapshot self-refresh on a WORKER THREAD, never the event loop.
+
+    ``refresh_portfolio_snapshot``'s default quote/FX fns call
+    ``asyncio.run(...)`` internally (yfinance/BoI adapters are async), so
+    invoking the service on the event-loop thread — the previous
+    ``session.run_sync`` shape — made EVERY quote fail with
+    "asyncio.run() cannot be called from a running event loop" and inserted
+    an all-miss carry row (live incident: 2026-07-07 18:00, rows 14/15,
+    49 carried / 0 repriced). Same-thread contract as
+    ``SnapshotRefreshJob.tick`` (``asyncio.to_thread`` + its own sync
+    Session).
+    """
+    import asyncio
+
+    from argosy.services.jobs.snapshot_refresh_job import (
+        _build_default_session_factory,
+    )
     from argosy.services.snapshot_refresh import refresh_portfolio_snapshot
 
-    async with db_mod.get_session() as session:
-        await session.run_sync(
-            lambda s: refresh_portfolio_snapshot(s, user_id=user_id)
-        )
+    def _work() -> None:
+        session = _build_default_session_factory()()
+        try:
+            refresh_portfolio_snapshot(session, user_id=user_id)
+        finally:
+            session.close()
+
+    await asyncio.to_thread(_work)
 
 
 async def reconcile_critique(
