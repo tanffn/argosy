@@ -151,6 +151,7 @@ def run_synthesis(
     guidance: str = "",
     existing_decision_run_id: int | None = None,
     resume_from_phase: int = 1,
+    reuse_phases_from_run_id: int | None = None,
 ):
     """Execute the 5-phase synthesis. Writes a role='draft' row.
 
@@ -168,6 +169,15 @@ def run_synthesis(
             phase_output_json) instead of re-running them. Requires
             ``existing_decision_run_id`` so we know which prior run's
             phases to load. Default 1 = run all phases from scratch.
+        reuse_phases_from_run_id: corrective re-synthesis tier
+            (docs/design/corrective_resynthesis.md §2.B.3). When set, load
+            ANOTHER completed run's persisted phase 1-2 outputs (analysts +
+            debates) and reuse them; phases 3-5 ALWAYS run fresh (the
+            synthesizer must re-derive, and risk/FM/reader are the blind
+            gates — never reused). Missing/partial outputs degrade to a
+            full run, loudly logged — never a silent degradation. In
+            corrective mode the orchestrator auto-selects this from the
+            most recent fresh completed run when the caller leaves it None.
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
@@ -272,12 +282,49 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
             )
 
+    # CORRECTIVE RE-SYNTHESIS (docs/design/corrective_resynthesis.md §2.B.1)
+    # — auto-attach, never opt-in. Turn the open critique findings (post-
+    # reconcile) + accepted adjudication proposals into a structured
+    # corrections block prepended to guidance; every phase receives
+    # ``guidance`` as ``user_directive``, so the whole team sees the
+    # corrections with zero new plumbing. A from-zero re-synthesis while
+    # findings are open becomes impossible by construction. Flag-gated
+    # (ARGOSY_CORRECTIVE_SYNTHESIS, default ON) + fail-soft like derived
+    # facts: a builder crash logs and degrades to today's behavior (the
+    # part-C corrections-landed gate below is the backstop).
+    _corrective_ctx = None
+    if _os.environ.get("ARGOSY_CORRECTIVE_SYNTHESIS", "1") == "1":
+        try:
+            _corrective_ctx = _pkg.build_corrective_context(
+                session, user_id=user_id, decision_run_id=decision_run_id,
+            )
+            if _corrective_ctx is not None and _corrective_ctx.rendered:
+                guidance = (
+                    _corrective_ctx.rendered + "\n\n" + (guidance or "")
+                ).strip()
+                log.info(
+                    "plan_synthesis.corrective_context_attached",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    corrections=len(_corrective_ctx.corrections),
+                    directives=len(_corrective_ctx.directives),
+                    forces_full_tier=_corrective_ctx.forces_full_tier,
+                )
+        except Exception as exc:  # noqa: BLE001 — fail-soft; never abort synthesis
+            _corrective_ctx = None
+            log.warning(
+                "plan_synthesis.corrective_context_failed",
+                user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+            )
+
     # T2.3 — resume support. When `resume_from_phase` > 1, look up any
     # decision_phases rows already persisted for this decision_run (from
     # a prior crashed/orphaned run) and surface their phase_output_json
     # as a dict the per-phase code below can short-circuit against.
     # Default-empty when nothing is loaded; safe to read freely.
     resumed_outputs: dict[int, str] = {}
+    # Audit trail for the corrective same-run-resume truncation (codex r2 #2):
+    # persisted into synthesis_inputs_json.corrective.resume_truncated_phases.
+    _corrective_resume_truncated: list[int] = []
     if resume_from_phase > 1:
         resumed_outputs = _pkg._load_completed_phase_outputs(
             session, decision_run_id=decision_run_id
@@ -295,6 +342,23 @@ def run_synthesis(
         resumed_outputs = {
             k: v for k, v in resumed_outputs.items() if k < resume_from_phase
         }
+        # Corrective mode (codex blocker #2): phases 3-5 must ALWAYS run
+        # fresh — the synthesizer has to re-derive WITH the corrections and
+        # risk/FM are the blind gates. A same-run resume from phase 4/5
+        # would otherwise reuse a phase-3 output produced WITHOUT the
+        # corrections. Truncate the resume boundary to phase 3.
+        if _corrective_ctx is not None:
+            _dropped = sorted(k for k in resumed_outputs if k >= 3)
+            if _dropped:
+                resumed_outputs = {
+                    k: v for k, v in resumed_outputs.items() if k < 3
+                }
+                _corrective_resume_truncated = _dropped
+                log.warning(
+                    "plan_synthesis.corrective_resume_truncated_to_phase_3",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    dropped_phases=_dropped,
+                )
         log.info(
             "plan_synthesis.resume_loaded",
             user_id=user_id,
@@ -302,6 +366,117 @@ def run_synthesis(
             resume_from_phase=resume_from_phase,
             loaded_phases=sorted(resumed_outputs.keys()),
         )
+
+    # Corrective tier select (design §2.B.3): in corrective mode, reuse the
+    # most recent completed run's phase 1-2 outputs (analysts + debates) when
+    # they are fresh. Phases 3-5 ALWAYS run fresh — the synthesizer must
+    # re-derive with the corrections, and risk/FM/reader are the blind gates
+    # (adversarial-review-must-re-derive-blind). Correction classes that
+    # implicate phase-1 inputs (refresh_snapshot-routed findings) force the
+    # full tier. Stale/missing outputs degrade to a full run LOUDLY — the run
+    # never silently degrades (logged + synthesis_inputs_json.corrective.
+    # reused_phases records what was actually reused).
+    _corrective_reused_from: int | None = None
+    _corrective_reused_phases: list[int] = []
+    if (
+        reuse_phases_from_run_id is None
+        and _corrective_ctx is not None
+        and resume_from_phase == 1
+    ):
+        if _corrective_ctx.forces_full_tier:
+            log.info(
+                "plan_synthesis.corrective_full_tier_forced",
+                user_id=user_id, decision_run_id=decision_run_id,
+                reason="snapshot-class correction implicates phase-1 inputs",
+            )
+        else:
+            try:
+                reuse_phases_from_run_id = _pkg._select_corrective_reuse_run(
+                    session, user_id=user_id,
+                    exclude_decision_run_id=decision_run_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — degrade to full tier
+                reuse_phases_from_run_id = None
+                log.warning(
+                    "plan_synthesis.corrective_reuse_select_failed",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(exc),
+                )
+            if reuse_phases_from_run_id is None:
+                log.info(
+                    "plan_synthesis.corrective_degraded_to_full_run",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    reason="no fresh completed run with persisted phase 1-2 outputs",
+                )
+    # Explicit-caller validation (codex blocker #3): an explicitly passed
+    # reuse run is held to the same bar as auto-selection — same user, a
+    # completed plan_revision run, and never when a snapshot-class
+    # correction forces the full tier. Failing validation degrades to a
+    # full run, loudly.
+    if reuse_phases_from_run_id is not None:
+        if _corrective_ctx is not None and _corrective_ctx.forces_full_tier:
+            log.warning(
+                "plan_synthesis.corrective_reuse_refused_full_tier_forced",
+                user_id=user_id, decision_run_id=decision_run_id,
+                reuse_phases_from_run_id=reuse_phases_from_run_id,
+            )
+            reuse_phases_from_run_id = None
+        else:
+            _reuse_run = session.get(DecisionRun, reuse_phases_from_run_id)
+            _reuse_fresh = False
+            if _reuse_run is not None:
+                try:
+                    _win_days = int(_os.environ.get(
+                        "ARGOSY_CORRECTIVE_PHASE_REUSE_DAYS", "14"))
+                except (TypeError, ValueError):
+                    _win_days = 14
+                from datetime import timedelta as _td
+                _fin = _reuse_run.finished_at or _reuse_run.started_at
+                if _fin is not None:
+                    if _fin.tzinfo is None:
+                        _fin = _fin.replace(tzinfo=timezone.utc)
+                    _reuse_fresh = _fin >= (
+                        datetime.now(timezone.utc) - _td(days=_win_days)
+                    )
+            if (
+                _reuse_run is None
+                or _reuse_run.user_id != user_id
+                or _reuse_run.status != "completed"
+                or _reuse_run.decision_kind != "plan_revision"
+                or not _reuse_fresh  # codex r2 #3: same freshness bar as auto
+            ):
+                log.warning(
+                    "plan_synthesis.reuse_run_invalid",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    reuse_phases_from_run_id=reuse_phases_from_run_id,
+                    found=_reuse_run is not None,
+                )
+                reuse_phases_from_run_id = None
+    if reuse_phases_from_run_id is not None:
+        _reuse_outputs = _pkg._load_completed_phase_outputs(
+            session, decision_run_id=reuse_phases_from_run_id
+        )
+        _missing = [p for p in (1, 2) if p not in _reuse_outputs]
+        if _missing:
+            log.warning(
+                "plan_synthesis.corrective_reuse_degraded_to_full",
+                user_id=user_id, decision_run_id=decision_run_id,
+                reuse_phases_from_run_id=reuse_phases_from_run_id,
+                missing_phases=_missing,
+            )
+        else:
+            # Only phases 1-2 are EVER reused across runs; the explicit
+            # same-run resume path (resumed_outputs already populated) wins.
+            for _p in (1, 2):
+                resumed_outputs.setdefault(_p, _reuse_outputs[_p])
+            _corrective_reused_from = reuse_phases_from_run_id
+            _corrective_reused_phases = [1, 2]
+            log.info(
+                "plan_synthesis.corrective_phases_reused",
+                user_id=user_id, decision_run_id=decision_run_id,
+                reused_from_run_id=reuse_phases_from_run_id,
+                reused_phases=_corrective_reused_phases,
+            )
 
     # Phase 1: analyst reports.
     # Phases 1-5 receive the string audit token (used for log annotations and
@@ -888,6 +1063,11 @@ def run_synthesis(
         "prior_current_id": prior_current.id if prior_current else None,
         "decision_run_id": decision_run_id,  # int
     })
+    # Corrective provenance (structured form — corrections, directives,
+    # proposal_ids the promote hook flips) is appended to the persisted
+    # synthesis_inputs_json as RAW keys by the corrections-landed block
+    # below, once the draft surfaces are final. Kept out of SynthesisInputs
+    # so non-corrective runs' dumps stay byte-identical.
 
     # Demote any prior draft at the same commit as the new draft so a
     # synthesis failure earlier in this function never leaves the user
@@ -1156,6 +1336,25 @@ def run_synthesis(
         _external_context = (
             f"Today's date (ISO): {datetime.now(timezone.utc).date().isoformat()}"
         )
+
+        # Corrective judgment pass (design §2.C.2): give the reader the
+        # corrections list as its directive so it verifies each one is
+        # genuinely resolved IN SUBSTANCE, not cosmetically absorbed. Threaded
+        # through the external-context packet — the same channel the settled-
+        # rulings contract uses (the reader has no separate directive param).
+        if _corrective_ctx is not None:
+            try:
+                _corr_directive = _corrective_ctx.reader_directive
+                if _corr_directive:
+                    _external_context = (
+                        _external_context + "\n\n" + _corr_directive
+                    )
+            except Exception as exc:  # noqa: BLE001 — directive is best-effort
+                log.warning(
+                    "plan_synthesis.corrective_reader_directive_failed",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(exc),
+                )
 
         return _asyncio.run(
             _pkg.run_whole_artifact_review(
@@ -1628,6 +1827,156 @@ def run_synthesis(
             user_id=user_id, decision_run_id=decision_run_id,
             findings=len(_reader_verdict.findings),
         )
+
+    # CORRECTIONS-LANDED VERIFICATION (design §2.C.1 — the deterministic
+    # floor). Runs on the FINAL draft surfaces (after every reconcile round
+    # re-persisted them): for each correction with a canonical VALUE, check
+    # the value appears in (and any known-wrong value is absent from) the
+    # rendered markdown + target_allocation_json + structured horizon JSON.
+    # Pure lookup — never a judgment gate (the reader directive above owns
+    # substance). Outcome: the draft ALWAYS persists (never discard paid
+    # work); any correction NOT landed is written to
+    # ``synthesis_inputs_json.corrective_unresolved`` — the accept route
+    # 422s on it exactly like an FM rejection (explicit override possible) —
+    # and ONE aggregated inbox row surfaces what didn't land. Bounded: no
+    # auto re-run loop (same cost discipline as critique_reconcile).
+    if _corrective_ctx is not None:
+        try:
+            from argosy.quality.corrections_check import check_corrections_landed
+
+            _corr_started = datetime.now(timezone.utc)
+            _corr_result = check_corrections_landed(
+                corrections=[
+                    c.check_payload() for c in _corrective_ctx.corrections
+                ],
+                surfaces={
+                    "horizon_long_md": draft.horizon_long_md or "",
+                    "horizon_medium_md": draft.horizon_medium_md or "",
+                    "horizon_short_md": draft.horizon_short_md or "",
+                    "target_allocation_json": draft.target_allocation_json or "",
+                    "horizon_long_json": draft.horizon_long_json or "",
+                    "horizon_medium_json": draft.horizon_medium_json or "",
+                    "horizon_short_json": draft.horizon_short_json or "",
+                },
+            )
+            _pkg._record_phase_completion(
+                user_id=user_id, decision_run_id=decision_run_id,
+                phase_n=58,  # corrective corrections-landed check
+                started_at=_corr_started,
+                phase_output=_corr_result.summary(),
+                agent_report_rows=[],
+            )
+            # Fold the final corrective provenance into the persisted draft's
+            # synthesis_inputs_json (raw JSON update — same precedent as the
+            # reject route's forensics stash) so the accept-route gate and
+            # promote hook read ONE structured source, never re-parse prose.
+            try:
+                _si = json.loads(draft.synthesis_inputs_json or "{}")
+            except (TypeError, ValueError):
+                _si = {}
+            _si["corrective"] = _corrective_ctx.to_payload(
+                reused_from_run_id=_corrective_reused_from,
+                reused_phases=_corrective_reused_phases,
+            )
+            _si["corrective"]["resume_truncated_phases"] = (
+                _corrective_resume_truncated
+            )
+            _si["corrective_unresolved"] = _corr_result.unresolved_payload()
+            draft.synthesis_inputs_json = json.dumps(_si)
+            session.commit()
+            if not _corr_result.passes:
+                log.warning(
+                    "plan_synthesis.corrective_unresolved",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    draft_id=draft.id,
+                    unresolved=_corr_result.unresolved_payload(),
+                )
+                # ONE aggregated inbox row (never N checklist rows).
+                from argosy.services.corrective_context import (
+                    upsert_open_proposal_sync,
+                )
+                _unresolved = _corr_result.unresolved_payload()
+                upsert_open_proposal_sync(
+                    session,
+                    user_id=user_id,
+                    kind="note_only",
+                    dedup_key=f"corrective_unresolved:{user_id}",
+                    summary=(
+                        f"Corrective re-synthesis left {len(_unresolved)} "
+                        f"correction(s) unresolved in draft #{draft.id}"
+                    ),
+                    rationale_md=(
+                        "The corrective run was fed the open critique "
+                        "corrections but the deterministic corrections-landed "
+                        "check found these still unresolved in the draft "
+                        "(the draft is kept but blocked from promotion until "
+                        "resolved or explicitly overridden):\n\n"
+                        + "\n".join(
+                            f"- [{u['index']}] **{u['topic'] or '?'}** — "
+                            f"{u['reason']}"
+                            for u in _unresolved
+                        )
+                    ),
+                    payload={
+                        "draft_id": draft.id,
+                        "decision_run_id": decision_run_id,
+                        "unresolved": _unresolved,
+                    },
+                    severity="warning",
+                    now=datetime.now(timezone.utc),
+                )
+        except Exception as exc:  # noqa: BLE001 — the GATE fails CLOSED
+            # (codex blocker #4): a crash in the corrections-landed check
+            # must not read as "all corrections landed". Persist a synthetic
+            # blocking entry so /accept 422s until the check re-runs clean
+            # or the user explicitly overrides. Best-effort — if even this
+            # persist fails, the reader/FM gates remain the backstop.
+            log.warning(
+                "plan_synthesis.corrective_check_failed",
+                user_id=user_id, decision_run_id=decision_run_id,
+                error=str(exc),
+            )
+            try:
+                session.rollback()
+                _si = {}
+                try:
+                    _si = json.loads(draft.synthesis_inputs_json or "{}")
+                    if not isinstance(_si, dict):
+                        _si = {}
+                except (TypeError, ValueError):
+                    _si = {}
+                # Guard the payload build separately (codex r2 #4): if the
+                # ORIGINAL crash was a non-serializable payload, re-raising
+                # here would drop the fail-closed marker too. The marker is
+                # the load-bearing write; the payload is provenance.
+                try:
+                    _corr_payload = _corrective_ctx.to_payload(
+                        reused_from_run_id=_corrective_reused_from,
+                        reused_phases=_corrective_reused_phases,
+                    )
+                    json.dumps(_corr_payload)  # prove serializable
+                    _si["corrective"] = _corr_payload
+                except Exception:  # noqa: BLE001
+                    _si["corrective"] = {
+                        "error": "corrective_payload_unserializable",
+                        "proposal_ids": [],
+                    }
+                _si["corrective_unresolved"] = [{
+                    "index": 0,
+                    "topic": "corrective_check",
+                    "reason": (
+                        "corrections-landed check crashed — verification did "
+                        f"not run ({str(exc)[:200]}); fail-closed"
+                    ),
+                }]
+                draft.synthesis_inputs_json = json.dumps(_si)
+                session.commit()
+            except Exception as persist_exc:  # noqa: BLE001
+                log.warning(
+                    "plan_synthesis.corrective_check_failclosed_persist_failed",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(persist_exc),
+                )
 
     # W1.C-v4: ingest the agent_reports forensic trail now that the
     # orchestrator's session has finished its own writes and the writer
@@ -2776,6 +3125,81 @@ def _load_completed_phase_outputs(
         # Later rows (higher seq) for the same phase override earlier ones.
         out[phase_n] = r.phase_output_json
     return out
+
+
+def _select_corrective_reuse_run(
+    session: Session,
+    *,
+    user_id: str,
+    exclude_decision_run_id: int | None = None,
+    max_age_days: int | None = None,
+) -> int | None:
+    """Pick the run whose phase 1-2 outputs a corrective synthesis may reuse.
+
+    Corrective tier (docs/design/corrective_resynthesis.md §2.B.3): the most
+    recent COMPLETED ``plan_revision`` DecisionRun for this user that
+    (a) finished within ``max_age_days`` (env ARGOSY_CORRECTIVE_PHASE_REUSE_DAYS,
+    default 14), and (b) has BOTH ``synthesis.phase_1`` and ``synthesis.phase_2``
+    outputs persisted in ``decision_phases``. Returns its id, or None when no
+    candidate qualifies (caller degrades to a full 5-phase run, loudly).
+    Phases 3-5 are never considered — they always run fresh.
+    """
+    import os as _os
+
+    if max_age_days is None:
+        try:
+            max_age_days = int(
+                _os.environ.get("ARGOSY_CORRECTIVE_PHASE_REUSE_DAYS", "14")
+            )
+        except (TypeError, ValueError):
+            max_age_days = 14
+
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    q = (
+        select(DecisionRun)
+        .where(
+            DecisionRun.user_id == user_id,
+            DecisionRun.decision_kind == "plan_revision",
+            DecisionRun.status == "completed",
+        )
+        .order_by(DecisionRun.id.desc())
+        # Wide id-window (codex r2 #7): "most recent" is decided by FINISH
+        # time below, so the id scan only needs to be wide enough that a
+        # late-finishing older-id run is still inside it. 50 plan_revision
+        # runs is months of history for this system; anything older than
+        # the freshness window is rejected regardless.
+        .limit(50)
+    )
+
+    def _finished_utc(run) -> datetime | None:
+        finished = run.finished_at or run.started_at
+        if finished is None:
+            return None
+        # SQLite returns naive datetimes; compare in UTC either way.
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+        return finished
+
+    # "Most recent" by COMPLETION TIME, not row id — long-running or
+    # out-of-order jobs can finish out of id order (codex finding #7).
+    candidates = [
+        (f, run)
+        for run in session.execute(q).scalars()
+        if run.id != exclude_decision_run_id
+        and (f := _finished_utc(run)) is not None
+    ]
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    for finished, run in candidates:
+        if finished < cutoff:
+            return None  # sorted desc — everything after is older
+        outputs = _load_completed_phase_outputs(session, decision_run_id=run.id)
+        if 1 in outputs and 2 in outputs:
+            return run.id
+    return None
 
 
 def _read_synthesis_trail_costs(decision_audit_token: str) -> float:

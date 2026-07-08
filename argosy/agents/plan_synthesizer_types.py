@@ -415,6 +415,15 @@ class SynthesisInputs(BaseModel):
     agent_report_ids: list[int] = Field(default_factory=list)
     debate_outcome_ids: list[int] = Field(default_factory=list)
     decision_run_id: int | None = None
+    # NOTE (corrective re-synthesis, docs/design/corrective_resynthesis.md):
+    # a corrective run appends two RAW keys to the persisted
+    # ``synthesis_inputs_json`` AFTER the draft lands — ``corrective``
+    # (CorrectiveContext.to_payload(): corrections, directives, proposal_ids
+    # to flip on promote, reused phases) and ``corrective_unresolved`` (the
+    # deterministic corrections-landed gate's failure list; the accept route
+    # 422s while non-empty). They are deliberately NOT model fields: readers
+    # use raw ``json.loads`` (nothing re-serializes through this model), and
+    # keeping them out keeps non-corrective dumps byte-identical.
 
 
 class PlanSynthesisOutput(BaseModel):

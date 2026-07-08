@@ -3388,6 +3388,17 @@ def post_draft_accept(
             "plan.draft.accepted.leakage_override."
         ),
     ),
+    override_corrective: bool = Query(
+        False,
+        description=(
+            "Corrective re-synthesis override: when true, promote a draft whose "
+            "corrections-landed check left corrections unresolved "
+            "(synthesis_inputs_json.corrective_unresolved non-empty — see "
+            "docs/design/corrective_resynthesis.md §2.C). The default is "
+            "fail-closed, exactly like an FM rejection. Audit-logged via "
+            "plan.draft.accepted.corrective_override."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> AcceptResponse:
     from argosy.state.queries import get_current_plan
@@ -3422,6 +3433,48 @@ def post_draft_accept(
                     ),
                 },
             )
+
+    # Corrective re-synthesis gate (docs/design/corrective_resynthesis.md
+    # §2.C.3) — a corrective draft whose corrections-landed check left
+    # corrections UNRESOLVED must never silently become 'current'. The
+    # orchestrator persisted the deterministic-floor failures to
+    # synthesis_inputs_json.corrective_unresolved; a plain /accept returns
+    # 422 with the unresolved list, mirroring the FM-rejection gate.
+    # Promotion requires an explicit ?override_corrective=true (audit-logged).
+    _corrective_inputs: dict = {}
+    if pv.synthesis_inputs_json:
+        try:
+            _parsed_inputs = json.loads(pv.synthesis_inputs_json)
+            if isinstance(_parsed_inputs, dict):
+                _corrective_inputs = _parsed_inputs
+        except (TypeError, ValueError):
+            _corrective_inputs = {}
+    _corrective_unresolved = _corrective_inputs.get("corrective_unresolved") or []
+    if _corrective_unresolved and not override_corrective:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "corrective_unresolved",
+                "draft_id": draft_id,
+                "unresolved": _corrective_unresolved,
+                "hint": (
+                    "This corrective re-synthesis did not clear every fed "
+                    "correction (the deterministic corrections-landed check "
+                    "failed). Re-run synthesis, or pass "
+                    "?override_corrective=true to promote anyway "
+                    "(audit-logged)."
+                ),
+            },
+        )
+    if _corrective_unresolved and override_corrective:
+        _publish(
+            "plan.draft.accepted.corrective_override",
+            {
+                "user_id": user_id,
+                "draft_id": draft_id,
+                "unresolved": _corrective_unresolved,
+            },
+        )
 
     # Artifact-integrity (leakage) gate — assemble the bytes the client would read
     # and fail-closed if any unrendered placeholder / leaked emission scaffolding
@@ -3696,8 +3749,107 @@ def post_draft_accept(
     pv.role = "current"
     pv.accepted_at = now
     pv.accepted_by_user_id = user_id
+
+    # Corrective promote hook (docs/design/corrective_resynthesis.md §2.C.3):
+    # the proposals this corrective run FED (the aggregated critique_resynth
+    # replan_full row + the accepted adjudication directives) flip to
+    # status='executed' — cleared by this draft — and the source critique row
+    # is annotated so the panel can render "cleared by draft #N". The flip
+    # rides the SAME commit as the promotion (codex finding #9: a
+    # post-commit flip could be lost, leaving a satisfied proposal open to
+    # re-feed a later run), but inside a SAVEPOINT so a flip failure rolls
+    # back only itself and NEVER blocks the promotion.
+    _corrective_meta = _corrective_inputs.get("corrective")
+    _corrective_flipped: list[int] = []
+    _corrective_crit_id = None
+    if isinstance(_corrective_meta, dict):
+        try:
+            from argosy.state.models import ActionProposal, PlanCritique
+
+            with db.begin_nested():
+                for _pid in _corrective_meta.get("proposal_ids") or []:
+                    _prop = db.get(ActionProposal, _pid)
+                    if (
+                        _prop is not None
+                        and _prop.user_id == user_id
+                        and _prop.status in ("open", "accepted")
+                    ):
+                        _prop.status = "executed"
+                        _prop.decided_at = now
+                        _prop.decided_by_user_note = (
+                            f"cleared by corrective re-synthesis draft #{pv.id}"
+                        )
+                        _corrective_flipped.append(_pid)
+                _corrective_crit_id = _corrective_meta.get("source_critique_id")
+                if _corrective_crit_id is not None:
+                    _crit = db.get(PlanCritique, _corrective_crit_id)
+                    if _crit is not None and _crit.user_id == user_id:
+                        try:
+                            _crit_payload = json.loads(_crit.critique_json or "{}")
+                        except (TypeError, ValueError):
+                            _crit_payload = {}
+                        if isinstance(_crit_payload, dict):
+                            _reconcile = _crit_payload.get("reconcile")
+                            if not isinstance(_reconcile, dict):
+                                _reconcile = {}
+                            _reconcile["cleared_by_draft_id"] = pv.id
+                            _crit_payload["reconcile"] = _reconcile
+                            _crit.critique_json = json.dumps(_crit_payload)
+        except Exception as exc:  # noqa: BLE001 — savepoint rolled back;
+            # the promotion commit below still proceeds untouched.
+            _corrective_flipped = []
+            logger.warning(
+                "plan.accept.corrective_flip_failed draft=%s err=%s", pv.id, exc,
+            )
+            # Durable fallback (codex r2 #9): a satisfied proposal must not
+            # stay OPEN to re-feed a later corrective run just because the
+            # 'executed' flip failed (e.g. a DB whose CHECK predates
+            # migration 0078). 'superseded' is in the ORIGINAL status enum —
+            # always writable — and closes the row; the note preserves what
+            # really happened. Own savepoint; a failure here only logs.
+            try:
+                from argosy.state.models import ActionProposal
+
+                with db.begin_nested():
+                    for _pid in _corrective_meta.get("proposal_ids") or []:
+                        _prop = db.get(ActionProposal, _pid)
+                        if (
+                            _prop is not None
+                            and _prop.user_id == user_id
+                            and _prop.status in ("open", "accepted")
+                        ):
+                            _prop.status = "superseded"
+                            _prop.decided_at = now
+                            _prop.decided_by_user_note = (
+                                f"cleared by corrective re-synthesis draft "
+                                f"#{pv.id} (fallback close — 'executed' flip "
+                                f"failed: {str(exc)[:120]})"
+                            )
+                            _corrective_flipped.append(_pid)
+            except Exception as fb_exc:  # noqa: BLE001
+                _corrective_flipped = []
+                logger.warning(
+                    "plan.accept.corrective_flip_fallback_failed draft=%s err=%s",
+                    pv.id, fb_exc,
+                )
+
     db.commit()
     invalidate_home_brief(user_id)
+
+    if _corrective_flipped:
+        logger.info(
+            "plan.accept.corrective_proposals_executed draft=%s proposals=%s",
+            pv.id, _corrective_flipped,
+        )
+        _publish(
+            "plan.corrective.cleared",
+            {
+                "user_id": user_id,
+                "draft_id": pv.id,
+                "proposal_ids": _corrective_flipped,
+                "source_critique_id": _corrective_crit_id,
+            },
+        )
 
     # Promotion makes any active plan-assumption observation stale — it was
     # about the prior baseline (e.g. an fm-rejected draft). Supersede those

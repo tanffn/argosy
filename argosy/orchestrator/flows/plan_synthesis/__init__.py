@@ -101,6 +101,9 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     _read_synthesis_trail_costs,
     _record_phase_completion,
     _load_completed_phase_outputs,
+    # Corrective re-synthesis — reuse-run selector (design §2.B.3). Exposed
+    # so the orchestrator's ``_pkg.`` resolution honours test monkeypatches.
+    _select_corrective_reuse_run,
     # Fire-and-forget cache warmer for FM objection translations —
     # eliminates the 100+ second first-load latency on /plan by warming
     # ``fm_objection_translations`` at synthesis completion. Exposed on
@@ -129,6 +132,12 @@ from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
 # suite on the just-persisted draft BEFORE the LLM reader. Exposed on the package
 # namespace so the orchestrator resolves it via ``_pkg.`` and tests can patch it.
 from argosy.quality.instage_gate import run_deterministic_gate_instage  # noqa: F401
+
+# Corrective (critique-fed) re-synthesis context builder — exposed on the
+# package namespace so run_synthesis resolves it via ``_pkg.`` (tests
+# monkeypatch ``flow.build_corrective_context``). See
+# docs/design/corrective_resynthesis.md.
+from argosy.services.corrective_context import build_corrective_context  # noqa: F401
 
 # Whole-artifact adversarial reader — the holistic final pre-promotion stage.
 # Exposed on the package namespace so the orchestrator resolves it via
@@ -199,6 +208,8 @@ __all__ = [
     "_read_synthesis_trail_costs",
     "_record_phase_completion",
     "_load_completed_phase_outputs",
+    "_select_corrective_reuse_run",
+    "build_corrective_context",
     "_schedule_fm_objection_translation_precompute",
     "_precompute_fm_objection_translations",
     "_surgical_reconcile_prepass",

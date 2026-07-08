@@ -3352,7 +3352,9 @@ class ActionProposal(Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    # CHECK enum: open / accepted / deferred / rejected / superseded.
+    # CHECK enum: open / accepted / deferred / rejected / superseded /
+    # executed (0078 — corrective re-synthesis promote hook flips the fed
+    # proposals to 'executed': "cleared by draft #N").
     # Default 'open' via server_default.  Declared in migration.
     status: Mapped[str] = mapped_column(
         Text,
