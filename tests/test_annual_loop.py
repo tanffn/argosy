@@ -55,7 +55,9 @@ def _mock_refresh_factory():
 
 
 @pytest.mark.asyncio
-async def test_annual_emits_prompts_and_runs_refresh(engine: None) -> None:
+async def test_annual_emits_prompts_and_runs_refresh(
+    engine: None, tmp_path
+) -> None:
     events._reset_for_tests()
     reset_cost_guard()
 
@@ -77,6 +79,8 @@ async def test_annual_emits_prompts_and_runs_refresh(engine: None) -> None:
                 "content": "Capital gains 25%.",
             }
         ],
+        # Isolate write-back from the real domain_knowledge/ tree.
+        domain_knowledge_root=tmp_path / "domain_knowledge",
     )
     await loop.tick()
 
@@ -229,7 +233,9 @@ async def test_annual_domain_refresh_failure_lands_error_job_run(engine: None) -
 
 
 @pytest.mark.asyncio
-async def test_annual_success_records_step_summary(engine: None) -> None:
+async def test_annual_success_records_step_summary(
+    engine: None, tmp_path
+) -> None:
     """Green path: tick returns the per-step summary dict (persisted as
     job_runs.output_summary by the registry seam)."""
     events._reset_for_tests()
@@ -244,6 +250,7 @@ async def test_annual_success_records_step_summary(engine: None) -> None:
         user_id="ariel",
         domain_refresh_factory=_mock_refresh_factory,
         domain_files_provider=lambda: _ONE_FILE,
+        domain_knowledge_root=tmp_path / "domain_knowledge",
     )
     summary = await loop.tick()
     assert summary is not None

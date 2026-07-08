@@ -11,12 +11,17 @@ file regardless of `next_refresh_due`).
 
 from __future__ import annotations
 
+import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from argosy.agents.domain_refresh import DomainRefreshAgent
+from argosy.agents.domain_refresh import (
+    DomainRefreshAgent,
+    DomainRefreshReport,
+    write_back_refresh_results,
+)
 from argosy.api.events import publish_event
 from argosy.config import get_settings
 from argosy.execution.audit import record_audit_event
@@ -45,6 +50,7 @@ class AnnualLoop(CadenceLoop):
         domain_refresh_factory: Callable[[], DomainRefreshAgent] | None = None,
         domain_files_provider: Callable[[], Iterable[dict[str, str]]] | None = None,
         pension_refresh_callable: Callable[[str], Any] | None = None,
+        domain_knowledge_root: Path | None = None,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
@@ -52,6 +58,10 @@ class AnnualLoop(CadenceLoop):
             lambda: DomainRefreshAgent(user_id=user_id)
         )
         self._files_provider = domain_files_provider or _default_files_provider
+        # 2026-07-08 write-back fix: where the frontmatter verification
+        # stamps land. Injectable so tests never touch the real
+        # `domain_knowledge/` tree; defaults to settings at tick time.
+        self._domain_knowledge_root = domain_knowledge_root
         # Phase 3: pluggable pension snapshot job (gemelnet adapter).
         # Defaults to None — when omitted the loop attempts the job
         # lazily and silently no-ops if the user has no `pensions`
@@ -112,6 +122,9 @@ class AnnualLoop(CadenceLoop):
             refresh_error = f"files_provider failed — {type(exc).__name__}: {exc}"
 
         refresh_summary: str | None = None
+        writeback: dict[str, Any] | None = None
+        agent_report_id: int | None = None
+        discrepancy_count = 0
         if files:
             try:
                 agent = self._refresh_factory()
@@ -120,6 +133,42 @@ class AnnualLoop(CadenceLoop):
             except Exception as exc:  # noqa: BLE001 — captured, re-raised at end
                 _log.exception("annual.domain_refresh_failed")
                 refresh_error = f"{type(exc).__name__}: {exc}"
+            else:
+                # 2026-07-08 systemic-gap fix: verdicts must land somewhere
+                # durable. (1) Stamp `last_verified` / matched `retrieved`
+                # dates into the files' frontmatter (never content — a
+                # parameter change is a user decision, see (3)); (2) persist
+                # the report to agent_reports for auditability; (3) surface
+                # changed/outdated parameters as ONE aggregated note_only
+                # ActionProposal. Failures here fail the tick LOUD — a
+                # silently-dropped verdict is exactly the gap being fixed.
+                try:
+                    root = (
+                        self._domain_knowledge_root
+                        or get_settings().domain_knowledge_dir
+                    )
+                    writeback = write_back_refresh_results(
+                        report.output, root=root
+                    )
+                except Exception as exc:  # noqa: BLE001 — captured, re-raised at end
+                    _log.exception("annual.domain_refresh_writeback_failed")
+                    refresh_error = f"writeback: {type(exc).__name__}: {exc}"
+                try:
+                    agent_report_id = await _persist_refresh_report(report)
+                except Exception as exc:  # noqa: BLE001 — captured, re-raised at end
+                    _log.exception("annual.domain_refresh_persist_failed")
+                    refresh_error = f"persist: {type(exc).__name__}: {exc}"
+                try:
+                    discrepancy_count = await _surface_refresh_discrepancies(
+                        user_id=self.user_id,
+                        output=report.output,
+                        now=moment,
+                    )
+                except Exception as exc:  # noqa: BLE001 — captured, re-raised at end
+                    _log.exception("annual.domain_refresh_discrepancies_failed")
+                    refresh_error = (
+                        f"discrepancy proposal: {type(exc).__name__}: {exc}"
+                    )
 
         # Phase 3: opportunistic gemelnet pension snapshot.
         # We do NOT bubble exceptions — pensions data is auxiliary; an
@@ -170,6 +219,9 @@ class AnnualLoop(CadenceLoop):
             },
             "refresh_summary": refresh_summary,
             "domain_refresh_error": refresh_error,
+            "domain_refresh_writeback": writeback,
+            "domain_refresh_report_id": agent_report_id,
+            "domain_refresh_discrepancies": discrepancy_count,
             "pension_refresh_error": pension_error,
             "pensions_refreshed": pensions_refreshed,
         }
@@ -183,6 +235,124 @@ class AnnualLoop(CadenceLoop):
                 f"annual: domain_refresh sub-step failed — {refresh_error}"
             )
         return self.last_output_summary
+
+
+async def _persist_refresh_report(report: Any) -> int | None:
+    """Write the refresh run to `agent_reports` (+ output blob).
+
+    Standard cross-cutting-agent persistence pattern (same shape as the
+    intake CLI's `_persist_agent_report`): BaseAgent.run() does NOT persist
+    for standalone callers, so before this the annual loop's refresh run
+    left no auditable row at all.
+    """
+    from argosy.state import db as db_mod
+    from argosy.state.models import AgentReport as AgentReportRow
+    from argosy.state.models import AgentReportBlob
+
+    async with db_mod.get_session() as session:
+        row = AgentReportRow(
+            user_id=report.user_id,
+            agent_role=report.agent_role,
+            decision_id=report.decision_id,
+            prompt_hash=report.prompt_hash,
+            response_text=report.response_text,
+            tokens_in=report.tokens_in,
+            tokens_out=report.tokens_out,
+            cost_usd=report.cost_usd,
+            model=report.model,
+            confidence=report.confidence.value if report.confidence else None,
+            cache_input_tokens=report.cache_input_tokens,
+            cache_creation_tokens=report.cache_creation_tokens,
+            thinking_tokens=report.thinking_tokens,
+            citations_json=report.citations_json,
+        )
+        session.add(row)
+        await session.flush()
+        try:
+            output_json = report.output.model_dump_json()
+        except Exception:  # noqa: BLE001 - defensive serialization fallback
+            output_json = json.dumps({"error": "could not serialize output"})
+        session.add(
+            AgentReportBlob(report_id=row.id, key="output_json", value=output_json)
+        )
+        await session.commit()
+        return row.id
+
+
+async def _surface_refresh_discrepancies(
+    *, user_id: str, output: DomainRefreshReport, now: datetime
+) -> int:
+    """One aggregated note_only ActionProposal for changed/outdated params.
+
+    The refresh agent NEVER auto-edits file content; any `change_proposed`
+    verdict is a decision for the user. Aggregated into ONE open proposal
+    (idempotent per dedup_key, refreshed in place) — same pattern as the
+    critique-reconcile escalation aggregation. Returns the number of
+    discrepancies surfaced (0 → no proposal touched).
+    """
+    from sqlalchemy import select
+
+    from argosy.state import db as db_mod
+    from argosy.state.models import ActionProposal
+
+    discrepancies = [r for r in output.per_file if r.status != "no_change"]
+    if not discrepancies:
+        return 0
+
+    lines: list[str] = []
+    for r in discrepancies:
+        detail = (r.note or "").strip() or "(no note)"
+        lines.append(f"- **{r.path}** — {detail}")
+        if r.diff:
+            lines.append(f"  ```diff\n{r.diff.strip()}\n  ```")
+    summary = (
+        f"Domain-knowledge refresh found {len(discrepancies)} file"
+        f"{'s' if len(discrepancies) != 1 else ''} with changed/outdated "
+        "parameters"
+    )
+    rationale_md = (
+        "The domain-refresh agent re-verified `domain_knowledge/` against "
+        "live sources and reports these parameter discrepancies. Files were "
+        "NOT auto-edited — approve the updates (or dismiss) here:\n\n"
+        + "\n".join(lines)
+    )
+    payload = {"discrepancies": [r.model_dump(mode="json") for r in discrepancies]}
+    dedup_key = f"domain_refresh_discrepancies:{user_id}"
+
+    async with db_mod.get_session() as session:
+        existing = (
+            await session.execute(
+                select(ActionProposal).where(
+                    ActionProposal.dedup_key == dedup_key,
+                    ActionProposal.status == "open",
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            existing.summary = summary
+            existing.rationale_md = rationale_md
+            existing.suggested_payload = json.dumps(payload)
+            existing.severity = "warning"
+            existing.surfaced_at = now
+            existing.expires_at = now + timedelta(days=30)
+        else:
+            session.add(
+                ActionProposal(
+                    user_id=user_id,
+                    summary=summary,
+                    rationale_md=rationale_md,
+                    suggested_payload=json.dumps(payload),
+                    severity="warning",
+                    surfaced_at=now,
+                    expires_at=now + timedelta(days=30),
+                    status="open",
+                    kind="note_only",
+                    dedup_key=dedup_key,
+                    execution_state="proposed",
+                )
+            )
+        await session.commit()
+    return len(discrepancies)
 
 
 def _default_files_provider() -> list[dict[str, str]]:

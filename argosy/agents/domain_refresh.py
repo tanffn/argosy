@@ -19,7 +19,11 @@ Design notes:
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -147,9 +151,175 @@ class DomainRefreshAgent(BaseAgent[DomainRefreshReport]):
         return system, user
 
 
+# ---------------------------------------------------------------------------
+# Write-back (2026-07-08 systemic-gap fix)
+#
+# The agent verifies files but its verdicts previously went NOWHERE durable:
+# frontmatter kept `last_verified: 1900-01-01` sentinels forever, so every
+# plan critique/reader re-flagged the tax/estate files as stale no matter how
+# often the refresh ran. These pure helpers stamp verification dates into the
+# frontmatter ONLY — file content (the claims themselves) is NEVER auto-edited;
+# a `change_proposed` verdict is surfaced as a decision for the user instead
+# (see AnnualLoop).
+# ---------------------------------------------------------------------------
+
+_LAST_VERIFIED_RE = re.compile(r"^(last_verified:\s*)(\S+)(\s*)$")
+_SOURCE_URL_RE = re.compile(r"^(\s*)-\s+url:\s*(\S+)\s*$")
+_RETRIEVED_RE = re.compile(r"^(\s+retrieved:\s*)(\S+)(\s*)$")
+_TOP_LEVEL_KEY_RE = re.compile(r"^\S")
+
+
+def _normalize_url(url: str) -> str:
+    """Loose URL equality for matching agent evidence to frontmatter sources."""
+    return url.strip().rstrip("/").lower()
+
+
+def apply_refresh_to_frontmatter(
+    content: str,
+    *,
+    verified_on: date,
+    consulted_urls: Iterable[str] = (),
+) -> str:
+    """Stamp verification dates into a domain-knowledge file's frontmatter.
+
+    Pure + deterministic + idempotent. Updates ONLY:
+      - the top-level ``last_verified:`` value → ``verified_on``;
+      - each ``retrieved:`` value under a ``- url: <u>`` source item whose URL
+        matches one of ``consulted_urls`` (loose match: trailing-slash and
+        case insensitive). Unmatched sources keep their existing date.
+
+    Everything else — body, key order, unrelated frontmatter keys, line
+    endings (LF/CRLF), an optional UTF-8 BOM — is preserved byte-for-byte.
+    A file without a frontmatter block (or without the keys) is returned
+    unchanged.
+    """
+    bom = ""
+    text = content
+    # NB: the string literal below is U+FEFF (UTF-8 BOM), not empty.
+    if text.startswith("﻿"):
+        bom, text = "﻿", text[1:]
+
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        return content
+
+    # Locate the closing delimiter (exclusive of the opening line).
+    close_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].rstrip("\r\n") == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        return content
+
+    consulted = {_normalize_url(u) for u in consulted_urls if u and u.strip()}
+    stamp = verified_on.isoformat()
+
+    current_url_matches = False
+    for i in range(1, close_idx):
+        raw = lines[i]
+        # Split off the line ending so regexes see the bare line.
+        body = raw.rstrip("\r\n")
+        ending = raw[len(body):]
+
+        m = _LAST_VERIFIED_RE.match(body)
+        if m:
+            lines[i] = f"{m.group(1)}{stamp}{m.group(3)}{ending}"
+            current_url_matches = False
+            continue
+
+        m = _SOURCE_URL_RE.match(body)
+        if m:
+            current_url_matches = _normalize_url(m.group(2)) in consulted
+            continue
+
+        if current_url_matches:
+            m = _RETRIEVED_RE.match(body)
+            if m:
+                lines[i] = f"{m.group(1)}{stamp}{m.group(3)}{ending}"
+                continue
+
+        if _TOP_LEVEL_KEY_RE.match(body):
+            # New top-level key ends any in-progress source item.
+            current_url_matches = False
+
+    return bom + "".join(lines)
+
+
+def write_back_refresh_results(
+    report: DomainRefreshReport,
+    *,
+    root: Path,
+    verified_on: date | None = None,
+) -> dict[str, Any]:
+    """Apply per-file verification stamps to files under ``root``.
+
+    ``root`` is the ``domain_knowledge/`` directory. Report paths are as the
+    files provider emitted them (relative to ``root.parent``, e.g.
+    ``domain_knowledge/tax/us/estate_tax_nonresidents.md``); forward or back
+    slashes both accepted. Files that don't resolve under ``root`` are
+    recorded as ``missing`` — never written. Content bodies are NEVER
+    rewritten here (a ``change_proposed`` verdict is a user decision).
+
+    Returns a summary dict: ``updated`` / ``unchanged`` / ``missing`` path
+    lists plus ``changes_proposed`` (paths whose verdict was not
+    ``no_change``).
+    """
+    today = verified_on or date.today()
+    root = root.resolve()
+    updated: list[str] = []
+    unchanged: list[str] = []
+    missing: list[str] = []
+    changes_proposed: list[str] = []
+
+    for result in report.per_file:
+        rel = (result.path or "").replace("\\", "/").strip().lstrip("/")
+        if result.status != "no_change":
+            changes_proposed.append(rel)
+
+        # Provider paths are relative to root.parent and start with the
+        # root dir name; tolerate paths already relative to root too.
+        candidates = [root.parent / rel, root / rel]
+        target: Path | None = None
+        for c in candidates:
+            try:
+                resolved = c.resolve()
+            except OSError:  # pragma: no cover - defensive
+                continue
+            if resolved.is_file() and resolved.is_relative_to(root):
+                target = resolved
+                break
+        if target is None:
+            missing.append(rel)
+            continue
+
+        raw = target.read_bytes()
+        content = raw.decode("utf-8")
+        new_content = apply_refresh_to_frontmatter(
+            content,
+            verified_on=today,
+            consulted_urls=[e.url for e in result.evidence],
+        )
+        if new_content == content:
+            unchanged.append(rel)
+            continue
+        target.write_bytes(new_content.encode("utf-8"))
+        updated.append(rel)
+
+    return {
+        "verified_on": today.isoformat(),
+        "updated": updated,
+        "unchanged": unchanged,
+        "missing": missing,
+        "changes_proposed": changes_proposed,
+    }
+
+
 __all__ = [
     "CitedSource",
     "DomainRefreshAgent",
     "DomainRefreshReport",
     "FileRefreshResult",
+    "apply_refresh_to_frontmatter",
+    "write_back_refresh_results",
 ]
