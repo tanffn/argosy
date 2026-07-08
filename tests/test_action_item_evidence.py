@@ -419,6 +419,93 @@ def test_sgov_without_sale_stays_overdue_but_ucits_verifies(client_with_db):
     assert body["overdue_count"] == 1  # only the SGOV item still nags
 
 
+def test_overdue_unexecuted_item_reaches_greeting_needs_you(client_with_db):
+    """Regression: the greeting's needs_you only surfaced "looks executed
+    — confirm?" items; a genuinely OVERDUE item (June-17 vest sale,
+    unsold per the Schwab ledger) never appeared and the client saw
+    nothing. The overdue class must surface it as needs-action.
+
+    Book shape of the live defect: SGOV predates the vest, the sales
+    history ends in April (no June sale), the Jul-6 deploy covers the
+    UCITS tranche — so SGOV item = overdue-unexecuted, UCITS item =
+    looks-executed needs-confirm. One decision = one row."""
+    from argosy.services.action_item_evidence import overdue_unexecuted_items
+
+    pv_id = _seed_current_plan_with_items(client_with_db)
+    _seed_ucits_plan_doc(client_with_db, pv_id)
+    positions = [
+        _pos("SGOV", 85.37),
+        _pos("SGOV", 20.09, "schwab 876"),
+        _pos("CSPX", 194.6),
+        _pos("EXUS", 36.4),
+        _pos("FUSA", 13.0),
+    ]
+    sess = client_with_db.app.state.session_factory()
+    try:
+        sess.add(
+            PortfolioSnapshotRow(
+                user_id="ariel",
+                snapshot_date=date(2026, 7, 6),
+                imported_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                source_path="fills-applied:2026-07-06-deploy",
+                positions_json=json.dumps(positions),
+                nvda_sales_json=json.dumps(
+                    [
+                        {"month": "Jan", "shares": 560, "price": 191.0},
+                        {"month": "Feb", "shares": 520, "price": 177.0},
+                        {"month": "Apr", "shares": 520, "price": 199.56},
+                    ]
+                ),
+                totals_json=json.dumps({"total_usd_value_k": 3993.9}),
+            )
+        )
+        sess.commit()
+    finally:
+        sess.close()
+
+    # Service-level: exactly the SGOV item is overdue-unexecuted.
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        overdue_items = overdue_unexecuted_items(s, "ariel")
+    assert [it.label for it in overdue_items] == [SGOV_LABEL]
+
+    r = client_with_db.get("/api/home/greeting?user_id=ariel")
+    assert r.status_code == 200
+    needs = r.json()["needs_you"]
+
+    overdue = [i for i in needs if i["kind"] == "action_item_overdue"]
+    assert len(overdue) == 1  # ONE row for the one overdue decision
+    o = overdue[0]
+    assert o["headline"].startswith("You need to sell the June 17")
+    assert "overdue since Jun 17" in o["headline"]
+    assert "no execution evidence" in o["why_md"]
+    assert o["cta"]["label"] and o["cta"]["href"]
+    assert o["tone"] == "decision"
+
+    # Mutually exclusive: the UCITS item (positive evidence) surfaces as
+    # needs-confirm, never doubled into the overdue class.
+    confirms = [i for i in needs if i["kind"] == "action_item_confirm"]
+    assert len(confirms) == 1
+    assert UCITS_LABEL[:30] in confirms[0]["headline"]
+    assert {i["id"] for i in overdue}.isdisjoint({i["id"] for i in confirms})
+
+    # Client marks the item done through the existing ack endpoint —
+    # the overdue row disappears (stored for audit, not re-nagged).
+    sgov_item = overdue_items[0]
+    ack = client_with_db.post(
+        f"/api/plan/action-items/{sgov_item.item_id}/ack",
+        json={
+            "user_id": "ariel",
+            "content_fingerprint": sgov_item.content_fingerprint,
+        },
+    )
+    assert ack.status_code == 200
+    r2 = client_with_db.get("/api/home/greeting?user_id=ariel")
+    assert [
+        i for i in r2.json()["needs_you"] if i["kind"] == "action_item_overdue"
+    ] == []
+
+
 def test_confirmed_item_disappears_from_greeting(client_with_db):
     pv_id = _seed_current_plan_with_items(client_with_db)
     _seed_ucits_plan_doc(client_with_db, pv_id)

@@ -596,6 +596,68 @@ def _needs_you_from_verified_items(
     return out
 
 
+def _fmt_since(d: Any) -> str:
+    """"Jun 17" — short, day-precision overdue anchor."""
+    try:
+        return f"{d.strftime('%b')} {d.day}"
+    except Exception:  # noqa: BLE001 — display only
+        return str(d)
+
+
+def _needs_you_from_overdue_items(
+    session: Session, user_id: str, *, now: datetime
+) -> list[dict[str, Any]]:
+    """Needs-ACTION entries for plan action items past their due date
+    with NO execution evidence in the book/fills.
+
+    The other half of the closed loop: looks-executed items get a
+    needs-confirm above; a genuinely unexecuted overdue item (e.g. the
+    June-17 vest sale with no NVDA sale on the Schwab ledger) must
+    reach the client too — "you need to do this, it's overdue".
+
+    One decision = one row: each entry is keyed by the item's stable
+    ``item_id``, so the SAME item stays ONE row across days (the
+    headline carries "overdue since <due date>" — no per-day spam).
+    """
+    try:
+        from argosy.services.action_item_evidence import overdue_unexecuted_items
+
+        items = overdue_unexecuted_items(session, user_id, today=now.date())
+    except Exception:  # noqa: BLE001 — enrichment only
+        _log.warning("home_greeting.overdue_items_failed", exc_info=True)
+        return []
+    out: list[dict[str, Any]] = []
+    for it in items:
+        label = (it.label or "").strip()
+        # "You need to sell the June vest — overdue since Jun 17".
+        verb_phrase = (label[0].lower() + label[1:]) if label else "act on this item"
+        since = f" — overdue since {_fmt_since(it.dated)}" if it.dated else " — overdue"
+        headline = f"You need to {verb_phrase}"[: 240 - len(since)] + since
+        why_parts: list[str] = []
+        if (it.detail or "").strip():
+            why_parts.append(it.detail.strip())
+        due_s = it.dated.isoformat() if it.dated else "its due date"
+        why_parts.append(
+            f"This was due {due_s} and I found no execution evidence in "
+            "the book or fills — it still needs you."
+        )
+        if (it.how_to or "").strip():
+            why_parts.append(f"**How:** {it.how_to.strip()}")
+        if (it.done_when or "").strip():
+            why_parts.append(f"**Done when:** {it.done_when.strip()}")
+        out.append(
+            {
+                "id": f"action_item:{it.item_id}",
+                "kind": "action_item_overdue",
+                "headline": headline,
+                "why_md": "\n\n".join(why_parts),
+                "cta": {"label": "Open the checklist", "href": "/#action-items"},
+                "tone": "decision",
+            }
+        )
+    return out
+
+
 def _needs_you_from_flag(
     f: MonitorFlag,
     payload: dict[str, Any],
@@ -645,6 +707,14 @@ def build_greeting(
     # a one-click needs-confirm, never an auto-ack.
     needs_you.extend(
         _needs_you_from_verified_items(session, user_id, now=now_dt)
+    )
+
+    # Plan action items past due with NO execution evidence: genuinely
+    # OVERDUE — the client must act ("you need to sell the June vest —
+    # overdue since Jun 17"). Mutually exclusive with the looks-executed
+    # entries above (positive evidence demotes an item from overdue).
+    needs_you.extend(
+        _needs_you_from_overdue_items(session, user_id, now=now_dt)
     )
 
     # --- flags: classify each active flag once. Negative cash lines are

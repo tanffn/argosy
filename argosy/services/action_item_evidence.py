@@ -426,8 +426,52 @@ def looks_executed_unconfirmed_items(
         return []
 
 
+def overdue_unexecuted_items(
+    session: Any, user_id: str, *, today: date | None = None
+) -> list[Any]:
+    """Open action items PAST their due date with NO execution evidence
+    — the greeting's needs-action source.
+
+    The complement of :func:`looks_executed_unconfirmed_items`:
+    ``status == "OVERDUE"`` and ``argosy_verified is not True`` (same
+    demotion rule as the action-items route's ``overdue_count``) and
+    not acknowledged. An item Argosy can verify as looks-executed is
+    NEVER also overdue here — it surfaces as a needs-confirm instead.
+    Best-effort: any failure returns an empty list.
+    """
+    try:
+        from argosy.api.routes.plan import _collect_action_items, _load_action_acks
+        from argosy.state.queries import get_current_plan, get_pending_draft
+
+        pv = get_pending_draft(session, user_id) or get_current_plan(
+            session, user_id
+        )
+        if pv is None:
+            return []
+        today_d = today or datetime.now(timezone.utc).date()
+        items = _collect_action_items(
+            pv,
+            today=today_d,
+            window_days=14,
+            acked=_load_action_acks(session, user_id),
+            evidence_ctx=ActionEvidenceContext.load(session, user_id),
+        )
+        return [
+            it for it in items
+            if it.status == "OVERDUE"
+            and it.argosy_verified is not True
+            and not it.acknowledged
+        ]
+    except Exception:  # noqa: BLE001 — greeting enrichment only
+        log.warning(
+            "action_item_evidence.overdue_lookup_failed", exc_info=True
+        )
+        return []
+
+
 __all__ = [
     "ActionEvidence",
     "ActionEvidenceContext",
     "looks_executed_unconfirmed_items",
+    "overdue_unexecuted_items",
 ]
