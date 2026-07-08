@@ -660,6 +660,13 @@ def run_synthesis(
     _patch_used = False
     _patch_provenance: dict | None = None
     _patch_classifier_payload: dict | None = None
+    # SLICED FULL SYNTHESIS (docs/design/sliced_full_synthesis.md): stage-A
+    # skeleton + gate + 6-way expansion provenance, persisted to
+    # ``synthesis_inputs_json.sliced`` after the draft lands. None when the
+    # flag is off / patch mode won / phase 3 was resumed — the flag-OFF
+    # path stays byte-identical to today.
+    _sliced_used = False
+    _sliced_provenance: dict | None = None
     # Set True when the reader-reconcile loop's full re-synth replaced the
     # patched artifact — that full regeneration subsumes the ONE bounded
     # patch escalation (design §2.D), so the floor must not escalate again.
@@ -756,7 +763,60 @@ def run_synthesis(
                     user_id=user_id, decision_run_id=decision_run_id,
                     error=str(exc),
                 )
-        if not _patch_used:
+        # SLICED FULL phase 3 (docs/design/sliced_full_synthesis.md).
+        # Precedence: corrective PATCH (above, strictly cheaper) >
+        # sliced FULL > monolith. Flag ARGOSY_SLICED_SYNTH default OFF —
+        # OFF is byte-identical to today. Fail-soft: any stage-A
+        # (skeleton/gate) or assembly exception degrades to the monolith
+        # (logged + provenance note) — never a worse outcome than today.
+        # A dead SLICE after its retry envelope is the ONE exception that
+        # propagates: phase 3 fails as today, but the completed siblings'
+        # sub-checkpoints are already persisted, so a resume re-runs only
+        # the dead slices.
+        if (
+            not _patch_used
+            and _os.environ.get("ARGOSY_SLICED_SYNTH", "0") == "1"
+        ):
+            try:
+                output, _phase_3_reports, _sliced_provenance = (
+                    _pkg._run_phase_3_sliced(
+                        session=session, user_id=user_id,
+                        baseline=baseline, prior_current=prior_current,
+                        analyst_reports_text=analyst_reports_text,
+                        debate_outcomes_text=debate_outcomes_text,
+                        portfolio_summary=portfolio_summary,
+                        fills_summary=fills_summary,
+                        decision_run_id=decision_audit_token,
+                        decision_run_int=decision_run_id,
+                        speculation_cap_pct=cap.max_pct_of_net_worth,
+                        speculation_cap_concurrent=(
+                            cap.max_concurrent_positions
+                        ),
+                        guidance=guidance,
+                        corrective_ctx=_corrective_ctx,
+                    )
+                )
+                _sliced_used = True
+                log.info(
+                    "plan_synthesis.sliced_phase_3_used",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                )
+            except _pkg.SliceExpansionError:
+                # Dead slice(s) after retries — fail phase 3 as today,
+                # sub-checkpoints intact for resume (design §2.C).
+                raise
+            except Exception as exc:  # noqa: BLE001 — fail-soft to monolith
+                _sliced_used = False
+                _sliced_provenance = {
+                    "degraded_to_monolith": True,
+                    "error": str(exc)[:500],
+                }
+                log.warning(
+                    "plan_synthesis.sliced_degraded_to_monolith",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(exc),
+                )
+        if not _patch_used and not _sliced_used:
             _phase_3_result = _pkg._run_phase_3_synthesizer(
                 session=session, user_id=user_id,
                 baseline=baseline, prior_current=prior_current,
@@ -1303,6 +1363,27 @@ def run_synthesis(
     session.add(draft)
     session.commit()
     session.refresh(draft)
+
+    # Sliced-full-synthesis provenance (design §2.C): skeleton hash,
+    # per-slice hashes, retry counts, lock-restoration counts — or the
+    # degrade-to-monolith note. Raw JSON update on the persisted draft
+    # (same precedent as the corrective stash below, which json.loads the
+    # current value first, so this key survives). Best-effort; absent when
+    # the flag is off (byte-identical today).
+    if _sliced_provenance is not None:
+        try:
+            _si_sliced = json.loads(draft.synthesis_inputs_json or "{}")
+            if not isinstance(_si_sliced, dict):
+                _si_sliced = {}
+            _si_sliced["sliced"] = _sliced_provenance
+            draft.synthesis_inputs_json = json.dumps(_si_sliced)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001 — provenance only
+            log.warning(
+                "plan_synthesis.sliced_provenance_persist_failed",
+                user_id=user_id, decision_run_id=decision_run_id,
+                error=str(exc),
+            )
 
     # Stamp the DecisionRun row as finished — provides the audit lineage
     # SDD §6.11 promises: you can reconstruct the full synthesis by joining
@@ -3419,6 +3500,97 @@ def _load_completed_phase_outputs(
             continue
         # Later rows (higher seq) for the same phase override earlier ones.
         out[phase_n] = r.phase_output_json
+    return out
+
+
+def _record_phase3_sub_checkpoint(
+    *,
+    user_id: str,
+    decision_run_id: int,
+    suffix: str,
+    payload: dict,
+) -> None:
+    """Persist a sliced-phase-3 sub-checkpoint row (sliced full synthesis,
+    docs/design/sliced_full_synthesis.md §2.B).
+
+    ``kind='synthesis.phase_3.<suffix>'`` — ``skeleton`` or
+    ``slice.<name>``. ``payload`` carries the skeleton sha256 so a resume
+    invalidates slice checkpoints whose skeleton no longer matches.
+    Backward-inert by construction: ``_load_completed_phase_outputs``
+    skips these rows because ``int('3.skeleton')`` raises. Best-effort,
+    mirroring ``_record_phase_completion`` — a forensic/persist gap must
+    never break synthesis (the slice output still lives in memory for
+    this attempt; only RESUME granularity is lost).
+    """
+    try:
+        import asyncio
+        from argosy.services.negotiation_recorder import (
+            record_negotiation_phase,
+        )
+
+        async def _run() -> None:
+            await record_negotiation_phase(
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                kind=f"synthesis.phase_3.{suffix}",
+                started_at=datetime.now(timezone.utc),
+                agent_report_ids=[],
+                verdict=None,
+                phase_output=json.dumps(payload),
+            )
+
+        asyncio.run(_run())
+        log.info(
+            "plan_synthesis.sub_checkpoint_recorded",
+            user_id=user_id, decision_run_id=decision_run_id,
+            suffix=suffix,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "plan_synthesis.sub_checkpoint_record_failed",
+            user_id=user_id, decision_run_id=decision_run_id,
+            suffix=suffix, error=str(exc),
+        )
+
+
+def _load_phase3_sub_checkpoints(
+    session: Session, *, decision_run_id: int
+) -> dict[str, dict]:
+    """Read sliced-phase-3 sub-checkpoints for a synthesis run.
+
+    Returns ``{suffix: payload_dict}`` for ``decision_phases`` rows whose
+    ``kind`` is ``synthesis.phase_3.<suffix>`` (skeleton / slice.<name>).
+    The integer-kind loader (``_load_completed_phase_outputs``) ignores
+    these rows, and this loader ignores the integer-kind rows — the two
+    checkpoint families never collide. Defensive: corrupt payloads are
+    skipped; later rows (higher seq) win.
+    """
+    from argosy.state.models import DecisionPhase
+    from sqlalchemy import select
+
+    prefix = "synthesis.phase_3."
+    rows = session.execute(
+        select(DecisionPhase)
+        .where(DecisionPhase.decision_run_id == decision_run_id)
+        .order_by(DecisionPhase.seq.asc())
+    ).scalars().all()
+
+    out: dict[str, dict] = {}
+    for r in rows:
+        if not r.kind or not r.kind.startswith(prefix):
+            continue
+        suffix = r.kind[len(prefix):]
+        if not suffix:
+            continue
+        if r.phase_output_json is None:
+            continue
+        try:
+            payload = json.loads(r.phase_output_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        out[suffix] = payload
     return out
 
 

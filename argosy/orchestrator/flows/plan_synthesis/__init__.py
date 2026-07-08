@@ -121,6 +121,37 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     # canonical fact + render sites before the full-resynth fallback). Default
     # OFF in the loop; exposed for _pkg. resolution + test monkeypatching.
     _surgical_reconcile_prepass,
+    # Sliced full synthesis — sub-checkpoint writer/loader siblings
+    # (docs/design/sliced_full_synthesis.md §2.B). Exposed so
+    # _run_phase_3_sliced resolves them via ``_pkg.`` and tests can
+    # capture/monkeypatch checkpoint writes.
+    _record_phase3_sub_checkpoint,
+    _load_phase3_sub_checkpoints,
+)
+
+# Sliced FULL phase 3 (docs/design/sliced_full_synthesis.md): two-stage
+# skeleton + parallel expansion behind ARGOSY_SLICED_SYNTH. Exposed on the
+# package namespace so run_synthesis resolves ``_pkg._run_phase_3_sliced``
+# / ``_pkg.SliceExpansionError`` and tests can monkeypatch the runner.
+from argosy.orchestrator.flows.plan_synthesis.sliced_phase3 import (
+    SkeletonGateError,
+    SliceExpansionError,
+    SlicedAssemblyError,
+    _assemble_sliced_output,
+    _run_phase_3_sliced,
+)
+
+# Sliced-synthesis agents — resolved via ``_pkg.`` inside
+# ``_run_phase_3_sliced`` so tests can stub the skeleton / slice calls.
+from argosy.agents.plan_skeleton_synthesizer import (  # noqa: F401
+    PlanSkeleton,
+    PlanSkeletonSynthesizerAgent,
+)
+from argosy.agents.plan_slice_synthesizer import (  # noqa: F401
+    PlanHorizonSliceSynthesizerAgent,
+    PlanSectionBatchSliceSynthesizerAgent,
+    SectionBatch,
+    build_slice_shared_prefix,
 )
 
 # Argosy ZigZag — Phase 4.5 codex (gpt-5) second-opinion reviewer.
@@ -225,6 +256,20 @@ __all__ = [
     "_read_synthesis_trail_costs",
     "_record_phase_completion",
     "_load_completed_phase_outputs",
+    "_record_phase3_sub_checkpoint",
+    "_load_phase3_sub_checkpoints",
+    # Sliced full synthesis (ARGOSY_SLICED_SYNTH)
+    "_run_phase_3_sliced",
+    "_assemble_sliced_output",
+    "SkeletonGateError",
+    "SliceExpansionError",
+    "SlicedAssemblyError",
+    "PlanSkeleton",
+    "PlanSkeletonSynthesizerAgent",
+    "PlanHorizonSliceSynthesizerAgent",
+    "PlanSectionBatchSliceSynthesizerAgent",
+    "SectionBatch",
+    "build_slice_shared_prefix",
     "_select_corrective_reuse_run",
     "build_corrective_context",
     "_schedule_fm_objection_translation_precompute",
