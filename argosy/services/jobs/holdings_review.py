@@ -117,6 +117,11 @@ class HoldingsReviewJob(CadenceLoop):
             "reviewed": summary.get("reviewed", 0),
             "actionable": summary.get("actionable", 0),
             "written": summary.get("written", 0),
+            # An actionable verdict that FAILED the blind re-derivation gate —
+            # previously vanished from the job summary entirely (only a log
+            # line), so the honest "we saw a trade signal but couldn't confirm
+            # it" count was invisible. Surfaced per FIX 3b (2026-07-08 audit).
+            "held_unverified": summary.get("held_unverified", 0),
             "elevated": summary.get("elevated", []),
         }
         self.last_output_summary = out

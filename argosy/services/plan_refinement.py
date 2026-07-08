@@ -60,6 +60,12 @@ def _fixed_sleeves_from_current(current) -> tuple[float, tuple]:
                     weight_within_class_pct=float(i.get("weight_within_class_pct") or 0.0),
                     rationale=i.get("rationale", "") or "",
                     domicile=i.get("domicile"),
+                    # Durable per-instrument monitoring metadata must survive a
+                    # refinement draft too — dropping it here would silently
+                    # strip the recorded invalidation conditions off the
+                    # moonshot names (the sleeve most in need of them).
+                    exit_triggers=list(i.get("exit_triggers") or []),
+                    review_on=i.get("review_on"),
                 )
                 for i in (c.get("instruments") or [])
                 if i.get("symbol")
@@ -147,9 +153,18 @@ def create_refinement_draft(
     # stored override row and (b) the persisted merged JSON is label-migrated
     # rather than carrying both the legacy and current key for one sleeve.
     from argosy.services.allocation_plan import normalize_override_labels
+    from argosy.services.target_allocation_doc import (
+        INSTRUMENT_META_OVERRIDE_KEY,
+        split_instrument_meta,
+    )
 
+    # Per-instrument metadata (exit triggers / review anchors) rides the same
+    # overrides JSON under a reserved key; it is NOT a sleeve label, so split it
+    # out before label normalization/validation and re-attach it to the merged
+    # persist so a refinement never drops it.
+    existing_sleeves, instrument_meta = split_instrument_meta(existing)
     merged: dict[str, float] = {
-        **normalize_override_labels(existing),
+        **normalize_override_labels(existing_sleeves or {}),
         **normalize_override_labels(sleeve_overrides),
     }
 
@@ -190,7 +205,10 @@ def create_refinement_draft(
             today=today,
             today_composition=comp,
             quarters=quarters,
-            authored_overrides=merged,
+            authored_overrides=(
+                {**merged, INSTRUMENT_META_OVERRIDE_KEY: instrument_meta}
+                if instrument_meta else merged
+            ),
             alternatives_sleeve=alternatives_sleeve,
             high_growth_pct=hg_pct,
             high_growth_instruments=hg_instruments,
@@ -199,7 +217,10 @@ def create_refinement_draft(
         resolved_doc_json = doc.model_dump_json()
 
     # ---- 5. Create the draft PlanVersion ------------------------------------
-    merged_json = json.dumps(merged)
+    merged_json = json.dumps(
+        {**merged, INSTRUMENT_META_OVERRIDE_KEY: instrument_meta}
+        if instrument_meta else merged
+    )
     version_label = version_label or (
         f"refinement-draft-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')}"
     )

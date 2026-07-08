@@ -50,10 +50,62 @@ def price_fetcher(ticker: str) -> str | None:
         return None
 
 
+def render_instrument_monitoring_meta(inst: Any) -> str:
+    """Render an instrument's recorded exit triggers / review anchor as a prompt
+    suffix (empty string when none). The monitor agent's weakened/broken judgment
+    must evaluate against the RECORDED invalidation conditions, not vibes."""
+    parts: list[str] = []
+    triggers = list(getattr(inst, "exit_triggers", None) or [])
+    if triggers:
+        parts.append("EXIT TRIGGERS (recorded invalidation conditions): "
+                     + "; ".join(str(t) for t in triggers))
+    review_on = getattr(inst, "review_on", None)
+    if review_on:
+        parts.append(f"Review on: {review_on}")
+    return (" " + " | ".join(parts)) if parts else ""
+
+
+def _class_labels_by_symbol(db: Any, user_id: str, doc: Any) -> dict[str, str]:
+    """Symbol -> canonical plan-class label for the LIVE book, via the SAME
+    exposure-aware attribution the allocation surfaces use
+    (``build_allocation_breakdown``: plan-named instruments first, then the
+    snapshot asset_type / instrument-reference crosswalk). Best-effort: any
+    failure returns ``{}`` and the thesis fetcher degrades to symbol-only."""
+    try:
+        from argosy.services.allocation_breakdown import build_allocation_breakdown
+        from argosy.services.portfolio_snapshot_store import (
+            get_latest_snapshot_row,
+            row_to_snapshot,
+        )
+
+        row = get_latest_snapshot_row(db, user_id)
+        if row is None:
+            return {}
+        rows = build_allocation_breakdown(row_to_snapshot(row), doc)
+        out: dict[str, str] = {}
+        for cat in rows:
+            for h in cat.holdings:
+                sym = (h.symbol or "").strip().upper()
+                if sym and sym not in out:
+                    out[sym] = cat.label
+        return out
+    except Exception as exc:  # noqa: BLE001 — attribution is additive, never fatal
+        log.info("stock_decision.class_attribution_miss", err=str(exc)[:120])
+        return {}
+
+
 def make_thesis_fetcher(db: Any, user_id: str) -> Callable[[str], "str | None"]:
-    """A fetcher that returns the current plan's stance on ``ticker`` — which sleeve
-    it belongs to and its rationale, or that the plan wants it EXITED (a redeploy /
-    0%-target position). Best-effort; captures the plan doc once."""
+    """A fetcher that returns the current plan's stance on ``ticker``:
+
+    - a plan-named instrument gets its sleeve + rationale + recorded exit
+      triggers / review anchor (or that the plan wants it EXITED);
+    - a holding the plan does NOT name but whose exposure covers a plan class
+      (SCHD/FWRA/CNDX/O-style substitutes) gets the CLASS rationale, honestly
+      labelled as substitute coverage — attributed via the same
+      snapshot-category mapping the allocation surfaces use;
+    - a true off-plan single keeps the honest placeholder.
+
+    Best-effort; captures the plan doc + attribution map once."""
     doc = None
     try:
         from argosy.services.target_allocation_doc import load_plan_target_allocation
@@ -65,6 +117,24 @@ def make_thesis_fetcher(db: Any, user_id: str) -> Callable[[str], "str | None"]:
         log.info("stock_decision.thesis_load_miss", err=str(exc)[:120])
         doc = None
 
+    # Exposure-aware attribution for NON-plan symbols (fix for the "$265k SCHD
+    # is 'not a plan-target instrument'" hole). Keyed by the NORMALIZED class
+    # label so a sleeve relabel never breaks the join.
+    class_by_label: dict[str, Any] = {}
+    label_by_symbol: dict[str, str] = {}
+    if doc is not None:
+        try:
+            from argosy.services.allocation_plan import normalize_sleeve_label
+
+            class_by_label = {
+                normalize_sleeve_label(getattr(c, "label", "") or ""): c
+                for c in getattr(doc, "classes", []) or []
+            }
+        except Exception as exc:  # noqa: BLE001
+            log.info("stock_decision.class_index_miss", err=str(exc)[:120])
+        if db is not None:
+            label_by_symbol = _class_labels_by_symbol(db, user_id, doc)
+
     def _fetch(ticker: str) -> str | None:
         if doc is None:
             return None
@@ -75,7 +145,27 @@ def make_thesis_fetcher(db: Any, user_id: str) -> Callable[[str], "str | None"]:
                     target = getattr(c, "target_pct", None)
                     stance = "plan wants to EXIT (0% target)" if (target == 0) else f"sleeve target {target}%"
                     rat = (getattr(inst, "rationale", "") or getattr(c, "rationale", "") or "")[:200]
-                    return f"in sleeve '{getattr(c, 'label', '')}' ({stance}). {rat}".strip()
+                    meta = render_instrument_monitoring_meta(inst)
+                    return f"in sleeve '{getattr(c, 'label', '')}' ({stance}). {rat}{meta}".strip()
+        # Not plan-named: attribute by exposure (the class the holding covers).
+        label = label_by_symbol.get(t)
+        if label:
+            c = class_by_label.get(label)
+            if c is not None:
+                primary = next(
+                    (i for i in (getattr(c, "instruments", []) or [])
+                     if getattr(i, "role", "") == "primary"),
+                    None,
+                ) or next(iter(getattr(c, "instruments", []) or []), None)
+                primary_sym = getattr(primary, "symbol", "") if primary is not None else ""
+                target = getattr(c, "target_pct", None)
+                rat = (getattr(c, "rationale", "") or "")[:200]
+                return (
+                    f"covers the '{getattr(c, 'label', '')}' sleeve "
+                    f"(target {target}%) as a substitute"
+                    + (f" for {primary_sym}" if primary_sym else "")
+                    + f"; not plan-named. Class thesis: {rat}"
+                ).strip()
         return "not a plan-target instrument (candidate or legacy holding)"
 
     return _fetch
@@ -90,4 +180,7 @@ def default_fetchers(db: Any, user_id: str) -> dict[str, Callable[[str], "str | 
     }
 
 
-__all__ = ["news_fetcher", "price_fetcher", "make_thesis_fetcher", "default_fetchers"]
+__all__ = [
+    "news_fetcher", "price_fetcher", "make_thesis_fetcher", "default_fetchers",
+    "render_instrument_monitoring_meta",
+]

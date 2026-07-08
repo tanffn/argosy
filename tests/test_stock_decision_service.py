@@ -279,3 +279,203 @@ def test_write_stock_decision_proposal_builds_actionproposal():
     assert row.dedup_key == "stock_decision:ariel:RKT"
     assert "Trim RKT" in row.summary
     assert "-27% YTD" in row.rationale_md and "fundamentals" in row.rationale_md
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-08 tracking-state audit FIX 3 — every verdict is a queryable row,
+# held_unverified is honest, and the x10 sleeve is the triage FLOOR.
+# ---------------------------------------------------------------------------
+
+def _sqlite_session(tmp_path, name="reviews.db"):
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import Base, User
+
+    engine = sa.create_engine(
+        f"sqlite:///{tmp_path / name}", connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    db.add(User(id="ariel", plan="free"))
+    db.commit()
+    return db
+
+
+def test_every_verdict_records_an_audit_row_with_outcome():
+    """HOLD, proposed, held_unverified and dedup_skipped ALL leave a row —
+    'nothing hidden: reviewed means a queryable row'."""
+    verdicts_by_ticker = {
+        "HOLDCO": StockDecisionOutput(ticker="HOLDCO", verdict="HOLD", confidence="HIGH", reason="intact"),
+        "SELLCO": StockDecisionOutput(ticker="SELLCO", verdict="SELL", confidence="HIGH", reason="broken"),
+        "UNVER": StockDecisionOutput(ticker="UNVER", verdict="TRIM", confidence="MED", reason="weak"),
+        "DUPCO": StockDecisionOutput(ticker="DUPCO", verdict="SELL", confidence="HIGH", reason="broken"),
+    }
+    recorded: list[tuple[str, str, dict]] = []
+
+    summary = run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"HOLDCO": 10_000.0, "SELLCO": 20_000.0, "UNVER": 30_000.0, "DUPCO": 40_000.0},
+        fetchers={},
+        decide=lambda t, *, context, bundle, user_id="ariel": verdicts_by_ticker[t],
+        # DUPCO's sink returns None (open peer holds the dedup slot).
+        sink=lambda v: None if v.ticker == "DUPCO" else object(),
+        verify=lambda v, bundle: v.ticker != "UNVER",
+        record=lambda v, **kw: recorded.append((v.ticker, kw["outcome"], kw)),
+    )
+    outcomes = {t: o for t, o, _ in recorded}
+    assert outcomes == {
+        "HOLDCO": "hold",
+        "SELLCO": "proposed",
+        "UNVER": "held_unverified",
+        "DUPCO": "dedup_skipped",
+    }
+    # Audit context rides along.
+    kw = next(kw for t, _, kw in recorded if t == "SELLCO")
+    assert kw["position_usd"] == 20_000.0
+    assert kw["elevated_by_flag"] is False
+    assert summary["held_unverified"] == 1
+    assert summary["written"] == 1
+
+
+def test_elevated_flag_is_stamped_on_the_audit_row():
+    recorded = []
+    run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"TINY": 200.0},
+        fetchers={},
+        decide=lambda t, *, context, bundle, user_id="ariel": StockDecisionOutput(
+            ticker=t, verdict="HOLD", confidence="LOW", reason="x"),
+        elevated_flags={"TINY": {
+            "kind": "thesis_monitor_weakened", "status": "weakened", "summary": "s",
+        }},
+        record=lambda v, **kw: recorded.append(kw),
+    )
+    assert recorded[0]["elevated_by_flag"] is True
+
+
+def test_x10_sleeve_member_is_reviewed_regardless_of_size():
+    """A $4.8k moonshot position (below the $5k gate) is the triage FLOOR —
+    reviewed every pass; other small names stay skipped."""
+    researched, contexts = [], {}
+    run_holdings_review(
+        db=None, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"TEM": 4_800.0, "TINY": 4_800.0, "BIG": 50_000.0},
+        fetchers={},
+        decide=_decide_recorder(researched, contexts),
+        elevated_flags={},
+        always_review={"TEM"},
+        record=False,
+    )
+    assert sorted(researched) == ["BIG", "TEM"]      # TINY still size-skipped
+    assert "plan x10-sleeve member (size-floor exempt)" in contexts["TEM"]
+    assert "x10-sleeve" not in contexts["BIG"]       # material names unmarked
+
+
+def test_record_holding_review_writes_queryable_row(tmp_path):
+    import json
+
+    from argosy.services.stock_decision import record_holding_review
+    from argosy.state.models import HoldingReview
+
+    db = _sqlite_session(tmp_path)
+    v = StockDecisionOutput(
+        ticker="TEM", verdict="TRIM", confidence="MED",
+        reason="read-out risk", evidence=["trial delayed"], data_gaps=["fundamentals"],
+    )
+    record_holding_review(
+        db, "ariel", v, position_usd=4_800.0, elevated_by_flag=True,
+        outcome="held_unverified",
+    )
+    row = db.query(HoldingReview).one()
+    assert row.symbol == "TEM"
+    assert row.verdict == "TRIM"
+    assert row.outcome == "held_unverified"
+    assert row.position_usd == 4_800.0
+    assert row.elevated_by_flag is True
+    ev = json.loads(row.evidence_json)
+    assert ev["evidence"] == ["trial delayed"]
+    assert ev["data_gaps"] == ["fundamentals"]
+    db.close()
+
+
+def test_default_record_seam_writes_rows_through_db(tmp_path):
+    from argosy.state.models import HoldingReview
+
+    db = _sqlite_session(tmp_path, "seam.db")
+    run_holdings_review(
+        db=db, user_id="ariel", min_position_usd=5_000.0,
+        holdings={"BIG": 50_000.0},
+        fetchers={},
+        decide=lambda t, *, context, bundle, user_id="ariel": StockDecisionOutput(
+            ticker=t, verdict="HOLD", confidence="HIGH", reason="intact"),
+        elevated_flags={}, always_review=frozenset(),
+    )
+    rows = db.query(HoldingReview).all()
+    assert [(r.symbol, r.outcome) for r in rows] == [("BIG", "hold")]
+    db.close()
+
+
+def test_load_x10_sleeve_symbols_reads_current_plan(tmp_path):
+    from argosy.services.stock_decision import load_x10_sleeve_symbols
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc,
+        AllocationInstrument,
+        TargetAllocationDoc,
+    )
+    from argosy.state.models import PlanVersion
+
+    db = _sqlite_session(tmp_path, "x10.db")
+    doc = TargetAllocationDoc(
+        anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0, fi_pct=10.0,
+        provenance="test",
+        classes=[
+            AllocationClassDoc(
+                label="High-growth / high-potential",
+                snapshot_category="Individual Stocks",
+                sigma_class="high_growth_basket",
+                target_pct=5.0,
+                instruments=[
+                    AllocationInstrument(symbol="TEM", role="primary", weight_within_class_pct=50.0),
+                    AllocationInstrument(symbol="OKLO", role="primary", weight_within_class_pct=50.0),
+                ],
+            ),
+            AllocationClassDoc(
+                label="Dividend-quality income",
+                snapshot_category="Dividend",
+                sigma_class="dividend_quality",
+                target_pct=12.0,
+                instruments=[
+                    AllocationInstrument(symbol="FUSA", role="primary", weight_within_class_pct=100.0),
+                ],
+            ),
+        ],
+        glide=[],
+    )
+    db.add(PlanVersion(
+        user_id="ariel", role="current", version_label="v-test",
+        target_allocation_json=doc.model_dump_json(),
+    ))
+    db.commit()
+    assert load_x10_sleeve_symbols(db, "ariel") == frozenset({"TEM", "OKLO"})
+    db.close()
+
+
+def test_job_output_summary_surfaces_held_unverified():
+    """FIX 3b: the job tick must carry held_unverified into last_output_summary —
+    an actionable-but-unconfirmed verdict previously vanished from /api/jobs."""
+    import asyncio
+
+    from argosy.services.jobs.holdings_review import HoldingsReviewJob
+
+    job = HoldingsReviewJob(
+        user_id="ariel",
+        session_factory=lambda: type("S", (), {"close": lambda self: None})(),
+        review_fn=lambda session, user_id, min_position_usd: {
+            "reviewed": 3, "actionable": 2, "written": 1,
+            "held_unverified": 1, "elevated": ["TEM"], "verdicts": [],
+        },
+    )
+    out = asyncio.run(job.tick())
+    assert out["held_unverified"] == 1
+    assert job.last_output_summary["held_unverified"] == 1

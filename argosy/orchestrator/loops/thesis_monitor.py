@@ -72,6 +72,28 @@ def _utcnow() -> datetime:
 # Default seams (real, best-effort). Tests inject fakes instead.
 # ---------------------------------------------------------------------------
 
+def plan_thesis_map(doc: Any) -> dict[str, str]:
+    """Symbol -> the plan's stated thesis text for the monitoring prompt:
+    class label + instrument (or class) rationale + the RECORDED exit triggers /
+    review anchor — the monitor's weakened/broken judgment must evaluate
+    against the plan's stated invalidation conditions, not vibes."""
+    from argosy.services.stock_decision.fetchers import (
+        render_instrument_monitoring_meta,
+    )
+
+    out: dict[str, str] = {}
+    if doc is None:
+        return out
+    for c in getattr(doc, "classes", []) or []:
+        for inst in getattr(c, "instruments", []) or []:
+            if getattr(inst, "symbol", None):
+                rat = (getattr(inst, "rationale", "") or c.rationale or "")[:400]
+                out[inst.symbol.upper()] = (
+                    f"{c.label}: {rat}{render_instrument_monitoring_meta(inst)}"
+                )
+    return out
+
+
 def default_individual_holdings(session: Session, user_id: str) -> list[dict[str, Any]]:
     """Individual-stock holdings (structure == Stock; ETFs/bonds/cash excluded),
     each with its book weight and the plan's stated thesis/role for the name."""
@@ -95,16 +117,9 @@ def default_individual_holdings(session: Session, user_id: str) -> list[dict[str
 
     # Plan thesis per symbol: NVDA carries the strategic-single-stock rationale;
     # other singles are the non-plan redeploy band.
-    plan_thesis_by_symbol: dict[str, str] = {}
     pv = get_current_plan(session, user_id)
     doc = load_plan_target_allocation(pv) if pv is not None else None
-    if doc is not None:
-        for c in doc.classes:
-            for inst in c.instruments:
-                if getattr(inst, "symbol", None):
-                    plan_thesis_by_symbol[inst.symbol.upper()] = (
-                        f"{c.label}: {(c.rationale or '')[:400]}"
-                    )
+    plan_thesis_by_symbol = plan_thesis_map(doc)
 
     out: list[dict[str, Any]] = []
     for sym, usd in holdings.items():
@@ -183,6 +198,114 @@ def default_gather_feeds(holding: dict[str, Any], *, now: datetime) -> dict[str,
     except Exception as exc:  # noqa: BLE001
         log.warning("thesis_monitor.feed.gather_failed", ticker=ticker, error=str(exc))
     return bundle
+
+
+# ---------------------------------------------------------------------------
+# Watchlist consumer — open set_watchlist proposals feed the monitoring prompt.
+# ---------------------------------------------------------------------------
+
+def load_open_watchlist_notes(session: Session, user_id: str) -> dict[str, str]:
+    """OPEN ``set_watchlist`` ActionProposals keyed by TICKER (uppercased).
+
+    The action_proposer writes set_watchlist rows (payload: ticker, watch_kind,
+    plus tolerated extras like catalyst / review_on / trigger text) but nothing
+    ever CONSUMED them — 11 open rows sat inert. The daily thesis monitor is
+    their consumer: each note is appended to the holding's monitoring prompt so
+    the agent judges whether the recorded catalyst fired. Best-effort: any
+    failure returns ``{}`` and the run degrades to plain monitoring."""
+    out: dict[str, str] = {}
+    try:
+        from sqlalchemy import and_, select
+
+        from argosy.state.models import ActionProposal
+
+        rows = session.execute(
+            select(ActionProposal).where(
+                and_(
+                    ActionProposal.user_id == user_id,
+                    ActionProposal.kind == "set_watchlist",
+                    ActionProposal.status == "open",
+                )
+            )
+        ).scalars().all()
+    except Exception as exc:  # noqa: BLE001 — watchlist input is additive
+        log.warning("thesis_monitor.watchlist_load_failed", error=str(exc)[:160])
+        return out
+    for r in rows:
+        try:
+            payload = json.loads(r.suggested_payload or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        ticker = str(payload.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        bits: list[str] = []
+        watch_kind = payload.get("watch_kind")
+        if watch_kind:
+            bits.append(f"watch_kind={watch_kind}")
+        # Tolerated extra payload fields the proposer may have emitted — the
+        # catalyst / review anchor text is exactly what the agent must judge.
+        for key in ("catalyst", "review_on", "trigger", "note", "reason"):
+            val = payload.get(key)
+            if val:
+                bits.append(f"{key}: {str(val)[:300]}")
+        note = (
+            f"OPEN WATCHLIST item (proposal #{r.id}, surfaced "
+            f"{getattr(r, 'surfaced_at', None)}): " + "; ".join(bits)
+            + f". Summary: {(r.summary or '')[:240]}"
+            + " — judge whether the recorded catalyst has fired."
+        )
+        prior = out.get(ticker)
+        out[ticker] = f"{prior}\n{note}" if prior else note
+    return out
+
+
+def refresh_watchlist_rows_for_ticker(
+    session: Session, user_id: str, ticker: str, *, now: datetime
+) -> int:
+    """Refresh ``surfaced_at`` (and keep ``expires_at`` ahead) on OPEN
+    set_watchlist rows whose payload names ``ticker`` — a warning+ thesis flag
+    on a watched name must keep the watchlist row alive instead of letting it
+    expire unseen. Returns the number of refreshed rows; best-effort."""
+    refreshed = 0
+    try:
+        from sqlalchemy import and_, select
+
+        from argosy.state.models import ActionProposal
+
+        rows = session.execute(
+            select(ActionProposal).where(
+                and_(
+                    ActionProposal.user_id == user_id,
+                    ActionProposal.kind == "set_watchlist",
+                    ActionProposal.status == "open",
+                )
+            )
+        ).scalars().all()
+        for r in rows:
+            try:
+                payload = json.loads(r.suggested_payload or "{}")
+            except (TypeError, ValueError):
+                continue
+            if str(payload.get("ticker") or "").strip().upper() != ticker.upper():
+                continue
+            r.surfaced_at = now
+            exp = getattr(r, "expires_at", None)
+            floor = now + timedelta(days=_FLAG_TTL_DAYS)
+            if exp is not None and exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp is None or exp < floor:
+                r.expires_at = floor
+            refreshed += 1
+        if refreshed:
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 — refresh must never block the flag
+        session.rollback()
+        log.warning(
+            "thesis_monitor.watchlist_refresh_failed",
+            ticker=ticker, error=str(exc)[:160],
+        )
+    return refreshed
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +394,12 @@ def write_thesis_flag(
     session.add(row)
     session.commit()
 
+    # A warning+ thesis flag on a WATCHED name refreshes its open set_watchlist
+    # rows (surfaced_at + expiry floor) so the watch item stays alive while the
+    # thesis is deteriorating instead of expiring unseen. write_thesis_flag only
+    # runs for actionable (warning/critical) assessments, so no extra gate.
+    refresh_watchlist_rows_for_ticker(session, user_id, ticker, now=now)
+
     _maybe_run_action_proposer_safe(
         session, observer_flag_row=row, severity=severity, now=now
     )
@@ -338,6 +467,20 @@ class ThesisMonitorLoop(CadenceLoop):
             if not holdings:
                 summary["skipped_reason"] = "no_individual_holdings"
                 return summary
+            # Open set_watchlist proposals feed the monitoring prompt for their
+            # symbols — the agent judges whether the recorded catalyst fired.
+            try:
+                watchlist_notes = load_open_watchlist_notes(session, self.user_id)
+            except Exception:  # noqa: BLE001 — additive input only
+                watchlist_notes = {}
+            if watchlist_notes:
+                for h in holdings:
+                    note = watchlist_notes.get(str(h.get("ticker") or "").upper())
+                    if note:
+                        h["watchlist"] = note
+                summary["watchlist_notes"] = sum(
+                    1 for h in holdings if h.get("watchlist")
+                )
             bundles = [self._gather_fn(h, now=run_at) for h in holdings]
             agent = self._agent_factory() if self._agent_factory else _default_agent(self.user_id)
             report = asyncio.run(agent.run(bundles=bundles))
@@ -379,5 +522,8 @@ __all__ = [
     "write_thesis_flag",
     "default_individual_holdings",
     "default_gather_feeds",
+    "plan_thesis_map",
+    "load_open_watchlist_notes",
+    "refresh_watchlist_rows_for_ticker",
     "run_thesis_monitor_now",
 ]

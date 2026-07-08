@@ -4268,3 +4268,59 @@ class FunnelStageRow(Base):
     __table_args__ = (
         Index("ix_funnel_stage_rows_run_stage", "run_id", "stage"),
     )
+
+
+class HoldingReview(Base):
+    """One queryable audit row per holdings-review VERDICT (incl. HOLD).
+
+    "Nothing hidden — reviewed means a queryable row": the daily
+    ``holdings_review`` job decides BUY/HOLD/SELL/TRIM per material holding, but
+    until this table only the actionable, blind-verified survivors left a trace
+    (an open ActionProposal). A HOLD, a dedup-skipped write, and above all a
+    ``held_unverified`` verdict (actionable but failed the blind re-derivation)
+    vanished into logs. Every verdict now lands here; the inbox stays clean
+    (this is audit, not a client surface — see
+    feedback_client_in_loop_only_when_needed).
+
+    ``outcome`` values:
+      * ``proposed``        — actionable, blind-verified, ActionProposal written
+      * ``held_unverified`` — actionable but the blind re-derivation diverged
+      * ``hold``            — HOLD verdict (thesis intact, silent by design)
+      * ``dedup_skipped``   — actionable + verified, but an open peer proposal
+                              already holds the dedup slot (or the sink failed)
+
+    Migration: alembic 0079.
+    """
+
+    __tablename__ = "holding_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    # BUY | HOLD | SELL | TRIM (the agent's verdict enum).
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    # JSON list of the evidence strings the agent cited (+ data gaps).
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # True when a weakened/broken thesis_monitor flag elevated the name past the
+    # size triage (auditable escalation lineage).
+    elevated_by_flag: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=_sa_text("0")
+    )
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = (
+        Index("ix_holding_reviews_user_symbol", "user_id", "symbol", "reviewed_at"),
+    )

@@ -752,3 +752,50 @@ def test_apply_target_allocation_json_reflects_override(client_with_db, monkeypa
     assert matched[0]["target_pct"] == override_pct, (
         f"expected target_pct={override_pct}, got {matched[0]['target_pct']}"
     )
+
+
+def test_create_refinement_draft_preserves_instrument_meta(client_with_db):
+    """FIX 1 (2026-07-08): per-instrument exit triggers ride the overrides JSON
+    under __instrument_meta__; a refinement must (a) not choke label validation
+    on the reserved key and (b) re-attach the meta to the merged persist so the
+    recorded invalidation conditions survive the edit."""
+    from argosy.services.allocation_plan import build_target_allocation
+    from argosy.services.plan_refinement import create_refinement_draft
+    from argosy.services.target_allocation_doc import INSTRUMENT_META_OVERRIDE_KEY
+    from argosy.state.models import PlanVersion
+
+    alloc = build_target_allocation()
+    labels = [c.label for c in alloc.classes]
+    label_a, label_b = labels[0], labels[1]
+    meta = {"TEM": {"exit_triggers": ["oncology read-out fails"],
+                    "review_on": "2026-09-30"}}
+    existing = {label_a: 15.0, INSTRUMENT_META_OVERRIDE_KEY: meta}
+
+    SF = client_with_db.app.state.session_factory
+    with SF() as session:
+        pv = PlanVersion(
+            user_id="ariel", role="current", version_label="meta-preserve-test",
+            source_path="", raw_markdown="",
+            target_allocation_overrides_json=json.dumps(existing),
+        )
+        session.add(pv); session.commit(); session.refresh(pv)
+
+    import unittest.mock as mock
+
+    with mock.patch(
+        "argosy.services.target_allocation_doc.load_full_book_today_composition",
+        return_value=None,
+    ), mock.patch(
+        "argosy.services.target_allocation_doc._prior_glide_q0",
+        return_value=None,
+    ):
+        with SF() as session:
+            draft = create_refinement_draft(session, "ariel", {label_b: 8.0})
+
+    merged = json.loads(draft.target_allocation_overrides_json)
+    assert merged[label_a] == 15.0
+    assert merged[label_b] == 8.0
+    assert merged[INSTRUMENT_META_OVERRIDE_KEY] == meta, (
+        "instrument meta (exit triggers / review anchors) must survive a "
+        "refinement draft"
+    )

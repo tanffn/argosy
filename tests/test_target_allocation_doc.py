@@ -544,3 +544,93 @@ def test_resolve_returns_none_when_no_fresh_and_no_prior(monkeypatch) -> None:
     # Prior exists but has no doc → still None (nothing to carry forward).
     _patch_resolve(monkeypatch, build_result=None, prior_plan=_PriorPlan(None))
     assert resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12)) is None
+
+
+# ---------------------------------------------------------------------------
+# Durable per-instrument exit triggers / review anchors (2026-07-08 FIX 1).
+# ---------------------------------------------------------------------------
+
+def test_instrument_exit_trigger_fields_default_and_roundtrip() -> None:
+    """Legacy docs (no fields) parse with empty defaults; populated fields
+    survive the JSON round-trip (they are plan-versioned)."""
+    legacy = AllocationInstrument(
+        symbol="CSPX", role="primary", weight_within_class_pct=100.0
+    )
+    assert legacy.exit_triggers == []
+    assert legacy.review_on is None
+
+    inst = AllocationInstrument(
+        symbol="TEM", role="primary", weight_within_class_pct=25.0,
+        exit_triggers=["oncology read-out fails", "loses data-moat vs Epic"],
+        review_on="2026-09-30",
+    )
+    again = AllocationInstrument.model_validate_json(inst.model_dump_json())
+    assert again.exit_triggers == [
+        "oncology read-out fails", "loses data-moat vs Epic",
+    ]
+    assert again.review_on == "2026-09-30"
+
+
+def test_split_instrument_meta_separates_reserved_key() -> None:
+    from argosy.services.target_allocation_doc import (
+        INSTRUMENT_META_OVERRIDE_KEY,
+        split_instrument_meta,
+    )
+
+    sleeves, meta = split_instrument_meta({
+        "Dividend-quality income": 12.0,
+        INSTRUMENT_META_OVERRIDE_KEY: {
+            "tem": {"exit_triggers": ["read-out fails"], "review_on": "2026-09-30"},
+            "oklo": {"exit_triggers": ["loses NRC pathway"]},
+            "bad": "not-a-dict",                       # malformed → dropped
+            "empty": {},                               # nothing usable → dropped
+        },
+    })
+    assert sleeves == {"Dividend-quality income": 12.0}
+    assert meta == {
+        "TEM": {"exit_triggers": ["read-out fails"], "review_on": "2026-09-30"},
+        "OKLO": {"exit_triggers": ["loses NRC pathway"]},
+    }
+    # Falsy / meta-less inputs.
+    assert split_instrument_meta(None) == (None, {})
+    assert split_instrument_meta({}) == (None, {})
+    assert split_instrument_meta({"A": 1.0}) == ({"A": 1.0}, {})
+
+
+def test_builder_applies_instrument_meta_without_engine_leak() -> None:
+    """Instrument meta in authored_overrides lands on the doc's instruments;
+    a subsequent build WITHOUT meta is clean (no shared-object mutation leak),
+    and the reserved key never reaches the engine's label validation."""
+    from argosy.services.target_allocation_doc import INSTRUMENT_META_OVERRIDE_KEY
+
+    base = build_target_allocation_doc(
+        today=date(2026, 7, 8), today_composition=_TODAY_FULL_BOOK, quarters=8,
+    )
+    target_sym = base.classes[0].instruments[0].symbol
+
+    with_meta = build_target_allocation_doc(
+        today=date(2026, 7, 8), today_composition=_TODAY_FULL_BOOK, quarters=8,
+        authored_overrides={
+            INSTRUMENT_META_OVERRIDE_KEY: {
+                target_sym: {
+                    "exit_triggers": ["thesis invalidation X"],
+                    "review_on": "2026-12-31",
+                },
+            },
+        },
+    )
+    stamped = with_meta.classes[0].instruments[0]
+    assert stamped.symbol == target_sym
+    assert stamped.exit_triggers == ["thesis invalidation X"]
+    assert stamped.review_on == "2026-12-31"
+    # Round-trips through the persisted JSON (plan-versioned durability).
+    again = TargetAllocationDoc.model_validate_json(with_meta.model_dump_json())
+    assert again.classes[0].instruments[0].exit_triggers == ["thesis invalidation X"]
+
+    # A fresh build without meta must NOT carry the triggers (the engine hands
+    # out shared instrument objects — mutation would leak across builds).
+    clean = build_target_allocation_doc(
+        today=date(2026, 7, 8), today_composition=_TODAY_FULL_BOOK, quarters=8,
+    )
+    assert clean.classes[0].instruments[0].exit_triggers == []
+    assert clean.classes[0].instruments[0].review_on is None

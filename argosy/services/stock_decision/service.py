@@ -237,6 +237,85 @@ def write_stock_decision_proposal(db: Any, user_id: str, v: StockDecisionOutput)
         return None
 
 
+def record_holding_review(
+    db: Any,
+    user_id: str,
+    v: StockDecisionOutput,
+    *,
+    position_usd: float | None,
+    elevated_by_flag: bool,
+    outcome: str,
+    reviewed_at: "Any | None" = None,
+) -> None:
+    """Persist one queryable ``holding_reviews`` audit row for a verdict
+    ("nothing hidden — reviewed means a queryable row"). Best-effort: an audit
+    write failure must never abort the review; no-op when ``db`` is None."""
+    if db is None:
+        return
+    import json
+    from datetime import datetime, timezone
+
+    try:
+        from argosy.state.models import HoldingReview
+
+        db.add(HoldingReview(
+            user_id=user_id,
+            symbol=(v.ticker or "").upper(),
+            reviewed_at=reviewed_at or datetime.now(timezone.utc),
+            verdict=(v.verdict or "").upper(),
+            confidence=str(v.confidence or "") or None,
+            reason=(v.reason or ""),
+            evidence_json=json.dumps({
+                "evidence": list(v.evidence or []),
+                "data_gaps": list(v.data_gaps or []),
+            }),
+            position_usd=position_usd,
+            elevated_by_flag=bool(elevated_by_flag),
+            outcome=outcome,
+        ))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — audit is additive, never fatal
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning(
+            "holdings_review.audit_write_failed",
+            ticker=v.ticker, outcome=outcome, err=str(exc)[:160],
+        )
+
+
+def load_x10_sleeve_symbols(db: Any, user_id: str) -> "frozenset[str]":
+    """Symbols of the current plan's high-growth / x10 (moonshot) sleeve.
+
+    These positions are deliberately SMALL (TEM/OKLO at ~$4.8k) — the exact
+    profile the $5k size triage makes review-invisible — yet they are the
+    highest-variance theses in the book. They form the triage FLOOR: reviewed
+    every pass regardless of size. Best-effort: any failure returns an empty
+    set (review degrades to plain size triage)."""
+    try:
+        from argosy.services.allocation_plan import HIGH_GROWTH_SIGMA_CLASS
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+        from argosy.state.queries import get_current_plan
+
+        pv = get_current_plan(db, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+        if doc is None:
+            return frozenset()
+        out: set[str] = set()
+        for c in doc.classes:
+            if getattr(c, "sigma_class", "") != HIGH_GROWTH_SIGMA_CLASS:
+                continue
+            for inst in getattr(c, "instruments", []) or []:
+                sym = (getattr(inst, "symbol", "") or "").strip().upper()
+                if sym:
+                    out.add(sym)
+        return frozenset(out)
+    except Exception as exc:  # noqa: BLE001 — floor is additive, never fatal
+        log.warning("holdings_review.x10_symbols_load_failed", err=str(exc)[:120])
+        return frozenset()
+
+
 def run_holdings_review(
     db: Any,
     user_id: str,
@@ -248,6 +327,8 @@ def run_holdings_review(
     sink: Callable[[StockDecisionOutput], Any] | None = None,
     verify: "Callable[[StockDecisionOutput, dict], bool] | None | bool" = None,
     elevated_flags: dict[str, dict[str, str]] | None = None,
+    always_review: "frozenset[str] | set[str] | None" = None,
+    record: "Callable[..., None] | None | bool" = None,
 ) -> dict[str, Any]:
     """Review the book per-name and act: triage to material positions, fetch fresh
     data, decide, blind-verify actionable verdicts, and write ONLY the confirmed
@@ -263,6 +344,15 @@ def run_holdings_review(
     ``verify`` gates each actionable verdict (fail-closed on divergence): ``None``
     uses the default blind re-derivation, a callable overrides it, and ``False``
     disables the gate. All collaborators are injectable for tests.
+
+    ``always_review`` is the triage FLOOR: symbols reviewed regardless of size
+    (default: the plan's high-growth / x10 sleeve members — small by design,
+    highest-variance theses; the $5k gate made them review-invisible).
+
+    ``record`` writes one queryable ``holding_reviews`` audit row per verdict
+    (incl. HOLD — "nothing hidden"): ``None`` uses the default DB writer (no-op
+    when ``db`` is None), a callable overrides it, ``False`` disables it.
+    Outcomes: proposed / held_unverified / hold / dedup_skipped.
     """
     if holdings is None:
         from argosy.api.routes.portfolio import _load_current_doc_and_holdings
@@ -282,6 +372,16 @@ def run_holdings_review(
         elevated_flags = (
             load_elevated_thesis_flags(db, user_id) if db is not None else {}
         )
+    if always_review is None:
+        always_review = (
+            load_x10_sleeve_symbols(db, user_id) if db is not None else frozenset()
+        )
+    if record is None:
+        def record(v: StockDecisionOutput, **kw: Any) -> None:
+            record_holding_review(db, user_id, v, **kw)
+    elif record is False:
+        def record(v: StockDecisionOutput, **kw: Any) -> None:
+            return None
 
     verdicts: list[StockDecisionOutput] = []
     written = 0
@@ -290,9 +390,14 @@ def run_holdings_review(
     elevated: list[str] = []
     for ticker, usd in (holdings or {}).items():
         flag = elevated_flags.get(ticker.upper())
-        if flag is None and float(usd) < min_position_usd:
+        floored = ticker.upper() in (always_review or frozenset())
+        if flag is None and not floored and float(usd) < min_position_usd:
             continue  # tiering: skip immaterial positions (no expensive research)
         context = f"held ${float(usd):,.0f}"
+        if flag is None and floored and float(usd) < min_position_usd:
+            # Plan x10-sleeve member: small by design, reviewed regardless of
+            # size — the position IS the thesis bet, not noise.
+            context += "; plan x10-sleeve member (size-floor exempt)"
         if flag is not None:
             # A weakened/broken thesis elevates the name past the size gate —
             # a small position can still go to zero. Auditable escalation.
@@ -308,20 +413,26 @@ def run_holdings_review(
         bundle = research_bundle(ticker, fetchers=fetchers)
         v = decide(ticker, context=context, bundle=bundle, user_id=user_id)
         verdicts.append(v)
+        _audit = dict(position_usd=float(usd), elevated_by_flag=flag is not None)
         if not is_actionable(v.verdict):
             log.info("stock_decision.hold", ticker=v.ticker, reason=(v.reason or "")[:120])
+            record(v, outcome="hold", **_audit)
             continue
         actionable += 1
         # Fail-closed: a consequential trade must survive a blind re-derivation.
         if verify is not False and not verify(v, bundle):
             held_unverified += 1
             log.info("stock_decision.held_unverified", ticker=v.ticker, verdict=v.verdict)
+            record(v, outcome="held_unverified", **_audit)
             continue
+        outcome = "dedup_skipped"
         try:
             if sink(v) is not None:
                 written += 1
+                outcome = "proposed"
         except Exception as exc:  # noqa: BLE001 — one bad write must not abort the review
             log.warning("stock_decision.sink_failed", ticker=v.ticker, err=str(exc)[:120])
+        record(v, outcome=outcome, **_audit)
     return {
         "reviewed": len(verdicts),
         "actionable": actionable,
@@ -335,5 +446,6 @@ def run_holdings_review(
 __all__ = [
     "research_bundle", "decide_holdings", "actionable_verdicts", "Fetcher",
     "run_holdings_review", "write_stock_decision_proposal",
-    "load_elevated_thesis_flags",
+    "load_elevated_thesis_flags", "record_holding_review",
+    "load_x10_sleeve_symbols",
 ]

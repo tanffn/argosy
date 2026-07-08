@@ -48,6 +48,17 @@ class AllocationInstrument(BaseModel):
     domicile: (
         Literal["US", "IE", "LU", "UK", "IL", "DE", "CH", "JE", "unknown"] | None
     ) = None
+    # Durable per-instrument EXIT TRIGGERS — the concrete, recorded invalidation
+    # conditions for holding this name (e.g. "oncology read-out fails", "loses
+    # HBM leadership"). The thesis monitor / holdings review evaluate
+    # weakened/broken judgments against THESE, not vibes. Optional; empty means
+    # "no recorded triggers" (legacy docs parse unchanged). Plan-versioned:
+    # they live in the persisted doc and survive re-synthesis via the
+    # instrument-meta authored override (see ``INSTRUMENT_META_OVERRIDE_KEY``).
+    exit_triggers: list[str] = []
+    # Optional review anchor — an ISO date ("2026-09-30") or event text
+    # ("Q3 oncology read-out") after/at which the position must be re-reviewed.
+    review_on: str | None = None
 
     @property
     def is_us_situs(self) -> bool:
@@ -278,6 +289,80 @@ def derive_full_book_today_composition(
     return comp
 
 
+# --- Durable per-instrument metadata (exit triggers / review anchors) --------
+# The authored-overrides JSON (``plan_versions.target_allocation_overrides_json``)
+# is the ONE mechanism that already survives re-synthesis verbatim
+# (``inherit_overrides_from_parent`` copies the raw string onto every new draft,
+# and both synthesis + amendment json.loads it into ``authored_overrides``).
+# Sleeve-target overrides are ``{label: pct}`` floats; per-instrument metadata
+# rides the SAME JSON under this reserved key so it inherits the exact same
+# durability without new columns or orchestrator changes:
+#
+#   {"Dividend-quality income": 12.0,
+#    "__instrument_meta__": {"TEM": {"exit_triggers": ["oncology read-out fails"],
+#                                    "review_on": "2026-09-30"}}}
+#
+# ``split_instrument_meta`` separates the two BEFORE the floats reach the
+# deterministic engine (whose label validation would reject the reserved key);
+# ``build_target_allocation_doc`` re-applies the meta onto the freshly built
+# classes so the persisted canonical doc carries the triggers on its instruments.
+INSTRUMENT_META_OVERRIDE_KEY = "__instrument_meta__"
+
+
+def split_instrument_meta(
+    overrides: "dict | None",
+) -> "tuple[dict[str, float] | None, dict[str, dict]]":
+    """Split a merged overrides dict into (sleeve-target floats, instrument meta).
+
+    Returns ``(None, {})`` for a falsy input; the floats part is ``None`` when
+    empty so callers can pass it straight to the engine (``{}`` and ``None`` are
+    byte-identical there, but ``None`` reads honestly as "no overrides").
+    Instrument-meta keys are upper-cased symbols; malformed entries are dropped
+    rather than raising (the overrides column is user/fleet-authored JSON)."""
+    if not overrides:
+        return None, {}
+    sleeves: dict[str, float] = {}
+    meta: dict[str, dict] = {}
+    raw_meta = overrides.get(INSTRUMENT_META_OVERRIDE_KEY)
+    if isinstance(raw_meta, dict):
+        for sym, m in raw_meta.items():
+            if not isinstance(sym, str) or not isinstance(m, dict):
+                continue
+            triggers = m.get("exit_triggers")
+            review_on = m.get("review_on")
+            clean: dict = {}
+            if isinstance(triggers, (list, tuple)):
+                clean["exit_triggers"] = [str(t) for t in triggers if t]
+            if isinstance(review_on, str) and review_on.strip():
+                clean["review_on"] = review_on.strip()
+            if clean:
+                meta[sym.strip().upper()] = clean
+    for k, v in overrides.items():
+        if k == INSTRUMENT_META_OVERRIDE_KEY:
+            continue
+        sleeves[k] = v
+    return (sleeves or None), meta
+
+
+def _apply_instrument_meta(
+    classes: "list[AllocationClassDoc]", meta: "dict[str, dict]"
+) -> None:
+    """Stamp exit_triggers / review_on onto matching instruments, in place on the
+    class list. Instruments are REPLACED via ``model_copy`` (never mutated) —
+    the engine hands out shared/module-level instrument objects, and mutating
+    them would leak authored metadata across unrelated builds."""
+    if not meta:
+        return
+    for c in classes:
+        new_instruments = []
+        for inst in c.instruments:
+            m = meta.get((inst.symbol or "").strip().upper())
+            if m:
+                inst = inst.model_copy(update=dict(m))
+            new_instruments.append(inst)
+        c.instruments = new_instruments
+
+
 def build_target_allocation_doc(
     *,
     today: date,
@@ -314,10 +399,14 @@ def build_target_allocation_doc(
     )
 
     anchor = SIGMA_DIVERSIFIED if anchor_sigma is None else anchor_sigma
+    # Separate per-instrument metadata (exit triggers / review anchors) from the
+    # sleeve-target floats BEFORE the engine sees them — the engine's label
+    # validation would reject the reserved __instrument_meta__ key.
+    sleeve_overrides, instrument_meta = split_instrument_meta(authored_overrides)
     alloc = build_target_allocation(
         anchor_sigma=anchor,
         alternatives_sleeve=alternatives_sleeve,
-        authored_overrides=authored_overrides or None,
+        authored_overrides=sleeve_overrides,
         high_growth_pct=float(high_growth_pct or 0.0),
         high_growth_sigma=HIGH_GROWTH_DEFAULT_SIGMA,
         high_growth_instruments=tuple(high_growth_instruments or ()),
@@ -336,6 +425,9 @@ def build_target_allocation_doc(
         )
         for c in alloc.classes
     ]
+    # Re-apply the durable per-instrument exit triggers / review anchors onto the
+    # freshly built classes so the persisted canonical doc carries them.
+    _apply_instrument_meta(classes, instrument_meta)
 
     schedule = build_redistribution_schedule(
         today_composition=today_composition,

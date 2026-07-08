@@ -169,6 +169,13 @@ def _render_feed_body(bundle: dict[str, Any]) -> str:
     price = bundle.get("price") or {}
     parts: list[str] = [
         f"PLAN THESIS / ROLE: {plan_thesis}",
+    ]
+    # Open watchlist items (set_watchlist proposals) carry a recorded catalyst /
+    # review anchor — surfaced so the agent judges whether the catalyst fired.
+    watchlist = _scrub(bundle.get("watchlist")).strip()
+    if watchlist:
+        parts.append(f"WATCHLIST: {watchlist}")
+    parts += [
         (
             "PRICE: last={last} 1m={ret_1m_pct}% 3m={ret_3m_pct}% "
             "off_52w_high={off_52w_high_pct}%".format(
