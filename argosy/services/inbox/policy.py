@@ -83,7 +83,9 @@ def assign_bucket(item: InboxItem, policy: InboxPolicy = DEFAULT_POLICY) -> Prio
       * plan_task : ``status`` ∈ {OVERDUE, TODAY, DUE_SOON, UPCOMING}
       * trade     : ``action``, ``speculative`` (bool), ``expiring_in_days`` (int|None)
       * cash_deploy: ``excess_usd`` (float)
-      * note      : ``severity`` ∈ {info, warning, critical}, ``risk_kind`` (bool)
+      * note      : ``severity`` ∈ {info, warning, critical}, ``risk_kind`` (bool),
+                    ``decision_required`` (bool — the proposal's acceptance
+                    changes plan/execution state, so it needs the user)
     """
     sig = item.signals
     kind = item.kind
@@ -114,8 +116,16 @@ def assign_bucket(item: InboxItem, policy: InboxPolicy = DEFAULT_POLICY) -> Prio
 
     if kind == "note":
         severity = str(sig.get("severity", "info")).lower()
+        if sig.get("decision_required"):
+            # A decision-kind proposal (accepting it changes plan/execution
+            # state) is a real user decision — it can NEVER be audit-only,
+            # whatever its severity. Client-in-the-loop convention: when
+            # Argosy needs a decision, it surfaces as exactly one row.
+            if sig.get("risk_kind"):
+                return PriorityBucket.RISK_REDUCTION
+            return PriorityBucket.OPPORTUNITY
         if severity not in policy.note_surface_severities:
-            return None  # info-level notes are audit, not action
+            return None  # info-level INFORMATIONAL notes are audit, not action
         # A critical risk-shaped note (drift / concentration / cash) is a
         # risk-reduction decision; otherwise it's an observation.
         if severity == "critical" and sig.get("risk_kind"):
@@ -207,6 +217,8 @@ def rank_reason(item: InboxItem, bucket: PriorityBucket) -> str:
         return "Idle cash above your plan target."
 
     if bucket == PriorityBucket.OPPORTUNITY:
+        if item.kind == "note" and sig.get("decision_required"):
+            return f"Waiting on your decision — accepting changes your plan{amount_clause}."
         conviction = str(sig.get("conviction", "")).upper()
         if conviction == "HIGH":
             return f"High-conviction idea{amount_clause}."

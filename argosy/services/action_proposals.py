@@ -104,6 +104,25 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset({
 })
 
 
+#: Proposal kinds whose ACCEPTANCE is a real user decision — accepting the
+#: row changes plan/execution state. The client-in-the-loop convention:
+#: when Argosy needs a decision it must surface as exactly ONE needs-you
+#: row, so an OPEN proposal of one of these kinds can NEVER be audit-only,
+#: whatever its severity. ``set_watchlist`` / ``note_only`` are observer
+#: chatter (severity-gated as before). This is the single source of truth
+#: — the home greeting (``home_greeting.classify_proposal``) and the inbox
+#: (``inbox/service._adapt_notes`` → ``decision_required`` signal) both
+#: read it; do not fork a parallel list.
+DECISION_PROPOSAL_KINDS: frozenset[str] = frozenset({
+    "allocate",
+    "repatriate_currency",
+    "rebalance",
+    "replan_full",
+    "add_life_event_phase",
+    "update_plan_assumption",
+})
+
+
 # ---------------------------------------------------------------------------
 # Read helpers
 # ---------------------------------------------------------------------------
@@ -439,6 +458,7 @@ def to_view(row: ActionProposal) -> ActionProposalView:
 
 __all__ = [
     "ActionProposalView",
+    "DECISION_PROPOSAL_KINDS",
     "InvalidProposalStateError",
     "ProposalNotFoundError",
     "accept_action_proposal",

@@ -148,6 +148,78 @@ def test_info_note_suppressed_warning_surfaces(db):
     assert any(d["reason"] == "below_materiality" for d in feed.dropped)
 
 
+def test_decision_kind_info_proposal_surfaces_as_decision_row(db):
+    """The live-incident class: an OPEN decision-kind proposal (its acceptance
+    changes plan/execution state) must surface whatever its severity. The
+    glide-schedule verdict (kind=update_plan_assumption, severity=info) was
+    audit-only and Ariel could not find where to accept it."""
+    _note(
+        db,
+        summary="NVDA deconcentration pace adjudicated — confirm the schedule",
+        severity="info",
+        kind="update_plan_assumption",
+        dedup_key="plan_glide_schedule_verdict:ariel:nvda",
+    )
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    rows = [i for i in feed.items if "adjudicated" in i.title]
+    assert rows, "a decision-kind proposal can never be audit-only"
+    it = rows[0]
+    assert it.bucket is not None
+    assert it.primary_action.intent == "accept"
+    assert "decision" in it.rank_reason.lower()
+
+
+def test_note_only_info_stays_audit_only(db):
+    _note(db, summary="observer chatter", severity="info", kind="note_only")
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not [i for i in feed.items if "observer chatter" in i.title]
+    assert any(d["reason"] == "below_materiality" for d in feed.dropped)
+
+
+def test_flagsig_decision_kind_chatter_stays_severity_gated(db):
+    """Auto-derived flag-signature proposals are observer commentary, not a
+    directive — the decision-kind bypass must not promote them (mirrors the
+    home greeting's flagsig exclusion)."""
+    _note(
+        db,
+        summary="flagsig rebalance chatter",
+        severity="info",
+        kind="rebalance",
+        dedup_key="flagsig:abc123",
+    )
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not [i for i in feed.items if "flagsig rebalance chatter" in i.title]
+
+
+def test_one_decision_one_row_per_dedup_key(db):
+    """One decision = one row: a single OPEN row per dedup_key (the writer
+    updates in place) yields exactly one inbox item; a superseded sibling of
+    the same dedup_key never adds a second row."""
+    _note(
+        db,
+        summary="old verdict",
+        severity="info",
+        kind="update_plan_assumption",
+        dedup_key="plan_glide_schedule_verdict:ariel:nvda",
+        status="superseded",
+    )
+    _note(
+        db,
+        summary="current verdict — confirm",
+        severity="info",
+        kind="update_plan_assumption",
+        dedup_key="plan_glide_schedule_verdict:ariel:nvda",
+    )
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    verdict_rows = [
+        i for i in feed.items
+        if any(r.source == "action_proposal" for r in i.source_refs)
+        and "verdict" in i.title
+    ]
+    assert len(verdict_rows) == 1
+    assert verdict_rows[0].title == "current verdict — confirm"
+
+
 def test_critical_risk_note_is_risk_reduction(db):
     _note(db, summary="concentration risk", severity="critical", kind="rebalance")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)

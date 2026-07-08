@@ -39,6 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
+from argosy.services.action_proposals import DECISION_PROPOSAL_KINDS
 from argosy.state.models import ActionProposal, MonitorFlag
 
 _log = get_logger("argosy.services.home_greeting")
@@ -74,11 +75,11 @@ _CLIENT_ACTIONS = frozenset(
     {"needs_info", "needs_confirm", "confirm", "client_decision", "decide"}
 )
 
-#: Proposal kinds that represent an executable directive the client must
-#: confirm (vs. note_only / set_watchlist observer chatter).
-_EXECUTABLE_PROPOSAL_KINDS = frozenset(
-    {"allocate", "rebalance", "repatriate_currency", "replan_full"}
-)
+#: Proposal kinds whose acceptance is a real client decision (vs. note_only /
+#: set_watchlist observer chatter). Single-sourced from
+#: ``action_proposals.DECISION_PROPOSAL_KINDS`` so the greeting and the inbox
+#: can never disagree about which kinds need the client.
+_EXECUTABLE_PROPOSAL_KINDS = DECISION_PROPOSAL_KINDS
 
 
 def _rationale_text(payload: dict[str, Any]) -> str:

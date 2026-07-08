@@ -147,7 +147,11 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
 
 
 def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
-    from argosy.services.action_proposals import list_open_action_proposals, to_view
+    from argosy.services.action_proposals import (
+        DECISION_PROPOSAL_KINDS,
+        list_open_action_proposals,
+        to_view,
+    )
 
     rows = list_open_action_proposals(db, user_id)
     items: list[InboxItem] = []
@@ -155,6 +159,15 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
         v = to_view(row)
         kind_lc = (v.kind or "").lower()
         risk_kind = any(h in kind_lc for h in _RISK_NOTE_HINTS)
+        # An OPEN proposal whose acceptance changes plan/execution state is a
+        # real user decision — the policy must surface it whatever its
+        # severity (client-in-the-loop: a needed decision can never be
+        # audit-only). Auto-derived flag-signature chatter (``flagsig:``
+        # dedup keys) is observer commentary, not a directive — same
+        # exclusion the home greeting applies.
+        decision_required = kind_lc in DECISION_PROPOSAL_KINDS and (
+            "flagsig:" not in (getattr(row, "dedup_key", None) or "")
+        )
         items.append(
             InboxItem(
                 id=f"note:{v.id}",
@@ -174,6 +187,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                     "note_kind": v.kind,
                     "risk_kind": risk_kind,
                     "is_cash_note": _CASH_NOTE_HINT in kind_lc,
+                    "decision_required": decision_required,
                 },
             )
         )

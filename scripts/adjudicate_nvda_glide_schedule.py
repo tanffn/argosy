@@ -515,6 +515,12 @@ def sink_proposal(session, facts: dict, team: dict) -> int:
         "apply_path": "governed re-synthesis with verdict as guidance (never a direct plan mutation)",
     }
 
+    # Severity must be honest: a verdict that CHANGES the current glide is a
+    # material plan change awaiting the user (warning); a keep-as-is
+    # confirmation is informational. (Surfacing does NOT depend on this —
+    # any open decision-kind proposal reaches the inbox regardless of
+    # severity — severity only drives urgency ordering.)
+    severity = "warning" if final.changes_current_glide else "info"
     dedup = f"plan_glide_schedule_verdict:{USER_ID}:nvda"
     existing = session.execute(
         sa.select(ActionProposal).filter_by(
@@ -530,7 +536,7 @@ def sink_proposal(session, facts: dict, team: dict) -> int:
         existing.summary = summary
         existing.rationale_md = rationale
         existing.suggested_payload = json.dumps(payload, default=str)
-        existing.severity = "info"
+        existing.severity = severity
         existing.surfaced_at = now
         existing.expires_at = now + timedelta(days=30)
         session.commit()
@@ -540,7 +546,7 @@ def sink_proposal(session, facts: dict, team: dict) -> int:
         summary=summary,
         rationale_md=rationale,
         suggested_payload=json.dumps(payload, default=str),
-        severity="info",
+        severity=severity,
         surfaced_at=now,
         expires_at=now + timedelta(days=30),
         status="open",

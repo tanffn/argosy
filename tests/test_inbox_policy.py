@@ -93,6 +93,48 @@ def test_critical_nonrisk_note_is_observation():
     assert assign_bucket(it) == PriorityBucket.OBSERVATION
 
 
+def test_decision_required_note_surfaces_regardless_of_severity():
+    """An OPEN decision-kind proposal (accepting it changes plan/execution
+    state) can NEVER be audit-only — the live incident: the glide verdict
+    (kind=update_plan_assumption, severity=info) was invisible."""
+    it = _item(
+        "note",
+        signals={
+            "severity": "info",
+            "note_kind": "update_plan_assumption",
+            "risk_kind": False,
+            "decision_required": True,
+        },
+    )
+    assert assign_bucket(it) == PriorityBucket.OPPORTUNITY
+
+
+def test_decision_required_risk_note_is_risk_reduction_even_at_info():
+    it = _item(
+        "note",
+        signals={"severity": "info", "risk_kind": True, "decision_required": True},
+    )
+    assert assign_bucket(it) == PriorityBucket.RISK_REDUCTION
+
+
+def test_info_informational_note_stays_audit_only():
+    # note_only / observer chatter: severity gate unchanged.
+    it = _item(
+        "note",
+        signals={"severity": "info", "note_kind": "note_only", "decision_required": False},
+    )
+    assert assign_bucket(it) is None
+
+
+def test_decision_required_note_rank_reason_says_decision():
+    it = _item(
+        "note",
+        signals={"severity": "info", "decision_required": True},
+    )
+    msg = rank_reason(it, PriorityBucket.OPPORTUNITY)
+    assert "decision" in msg.lower()
+
+
 # --- ordering --------------------------------------------------------------
 
 
