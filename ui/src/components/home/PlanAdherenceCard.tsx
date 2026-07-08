@@ -181,7 +181,12 @@ export function nextReviewLabel(job: JobView | null): string | null {
       });
     }
   }
-  const cron = job.metadata.schedule_cron;
+  // The live /api/jobs payload is FLAT (name/schedule_* at top level);
+  // the JobView DTO wrongly claims nested metadata. Tolerate both shapes
+  // until the DTO cleanup (see handover open item).
+  const meta = (job as unknown as { metadata?: Record<string, unknown> }).metadata
+    ?? (job as unknown as Record<string, unknown>);
+  const cron = meta.schedule_cron as string | null;
   if (cron) {
     const m = cron.trim().match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+(\w{3})$/i);
     if (m) {
@@ -190,7 +195,7 @@ export function nextReviewLabel(job: JobView | null): string | null {
       return `${day} ${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
     }
   }
-  return job.metadata.schedule_human || null;
+  return (meta.schedule_human as string) || null;
 }
 
 /**
@@ -268,7 +273,11 @@ export function PlanAdherenceCard({ userId, plan: planProp, greeting }: Props) {
         if (jobsRes.status === "fulfilled") {
           setWeeklyReview(
             jobsRes.value.jobs.find(
-              (j) => j.metadata.name === "weekly_review",
+              (j) => {
+                const meta = (j as unknown as { metadata?: { name?: string } }).metadata
+                  ?? (j as unknown as { name?: string });
+                return meta.name === "weekly_review";
+              },
             ) ?? null,
           );
         }
