@@ -26,6 +26,7 @@ from argosy.decisions.per_ticker_analysts import (
 )
 from argosy.decisions.tiers import Tier
 from argosy.logging import get_logger
+from argosy.services.decision_funnel.estate_kb import estate_constraints_block
 
 _log = get_logger("argosy.services.decision_funnel.deep_decision")
 
@@ -59,6 +60,15 @@ async def run_deep_decision(
     the flow so the proposal is born with its funnel lifecycle fields set
     ATOMICALLY — a shadow proposal is never briefly client-visible.
     """
+    # INPUTS fix (verify-run 2026-07-08, SOFI): the stage-3 fleet must see
+    # the estate/us-situs domain_knowledge — the FM previously noted "no
+    # domain_knowledge file authorizing a US-estate rule was supplied" and
+    # routed a US-domiciled BUY forward. Best-effort: a load failure never
+    # kills the funnel (the deterministic floor below still guards).
+    try:
+        user_constraints = estate_constraints_block(user_constraints)
+    except Exception:  # noqa: BLE001 — inputs enrichment must not crash stage 3
+        _log.exception("decision_funnel.estate_kb_block_failed", ticker=ticker)
     try:
         pre_opened = await open_decision_run_for_consult(
             user_id=user_id, ticker=ticker, tier_value=tier.value
@@ -115,6 +125,9 @@ async def run_deep_decision(
         )
 
     if isinstance(outcome, ApprovedProposal):
+        floor_outcome = await _apply_us_situs_floor(outcome)
+        if floor_outcome is not None:
+            return floor_outcome
         return DeepDecisionOutcome(
             ticker=ticker, status="approved",
             decision_run_id=outcome.decision_run_id,
@@ -127,6 +140,99 @@ async def run_deep_decision(
         decision_run_id=outcome.decision_run_id,
         blocked_reason=outcome.reason, blocked_by=outcome.blocked_by,
     )
+
+
+async def _apply_us_situs_floor(outcome: ApprovedProposal) -> DeepDecisionOutcome | None:
+    """The deterministic estate/us-situs FLOOR over funnel-originated buys.
+
+    Extends the SAME rule module that guards deploy/plan
+    (``argosy.quality.plan_risk_kernel.evaluate_us_situs`` — NVDA is the one
+    sanctioned US-situs name; unknown symbols fail CLOSED) with one more call
+    site: a fleet-approved funnel BUY of a US-domiciled non-NVDA instrument.
+    This is inviolable-arithmetic-floor territory (estate rule), NOT a
+    judgment gate — it never evaluates whether the buy is a good idea.
+
+    Returns ``None`` when the floor passes (or is not applicable — sells /
+    holds are out of scope: we cannot unwind history, only gate new flows).
+    On a violation the persisted proposal is flipped to ``blocked`` (with a
+    ProposalHistory row recording the reason) and a blocked outcome is
+    returned so the funnel trace records ``blocked_by='us_situs_floor'``.
+    """
+    prop = outcome.proposal
+    if (prop.action or "").lower() != "buy":
+        return None
+
+    from argosy.quality.plan_risk_kernel import evaluate_us_situs
+
+    amount = float(prop.size_shares_or_currency or 0.0) or 1.0
+    result = evaluate_us_situs({}, proposed_buys={prop.ticker: amount})
+    if result.ok:
+        return None
+
+    reason = "; ".join(v.detail for v in result.violations)
+    _log.warning(
+        "decision_funnel.us_situs_floor_blocked",
+        ticker=prop.ticker, proposal_id=prop.id, reason=reason[:300],
+    )
+    try:
+        await _mark_proposal_blocked_by_floor(
+            proposal_id=prop.id,
+            decision_run_id=outcome.decision_run_id,
+            reason=reason,
+        )
+    except Exception:  # noqa: BLE001 — must not crash the funnel; log LOUD
+        _log.exception(
+            "decision_funnel.us_situs_floor_persist_failed",
+            ticker=prop.ticker, proposal_id=prop.id,
+        )
+        return DeepDecisionOutcome(
+            ticker=prop.ticker, status="error",
+            decision_run_id=outcome.decision_run_id, proposal_id=prop.id,
+            blocked_reason=(
+                "us_situs floor violation could NOT be persisted to the "
+                f"proposal row — manual review required: {reason}"
+            ),
+            blocked_by="us_situs_floor",
+        )
+    return DeepDecisionOutcome(
+        ticker=prop.ticker, status="blocked",
+        decision_run_id=outcome.decision_run_id, proposal_id=prop.id,
+        action=prop.action, blocked_reason=reason, blocked_by="us_situs_floor",
+    )
+
+
+async def _mark_proposal_blocked_by_floor(
+    *, proposal_id: int | None, decision_run_id: int | None, reason: str
+) -> None:
+    """Flip the already-persisted proposal (and its decision run) to
+    ``blocked`` and append the audit-trail history row. No-op when the flow
+    ran with persistence skipped (``proposal_id`` falsy)."""
+    if not proposal_id:
+        return
+    from argosy.state import db as db_mod
+    from argosy.state.models import (
+        DecisionRun,
+        Proposal as ProposalRow,
+        ProposalHistory,
+    )
+
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, proposal_id)
+        if row is not None:
+            row.status = "blocked"
+            session.add(
+                ProposalHistory(
+                    proposal_id=proposal_id,
+                    status="blocked",
+                    transitioned_by="us_situs_floor",
+                    note=reason[:2000],
+                )
+            )
+        if decision_run_id:
+            run = await session.get(DecisionRun, decision_run_id)
+            if run is not None:
+                run.status = "blocked"
+        await session.commit()
 
 
 __all__ = ["DeepDecisionOutcome", "run_deep_decision"]
