@@ -22,6 +22,7 @@ Multi-agent financial-advisor system. Python + FastAPI + Next.js. Single user to
 - **Working dir:** `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`).
 - **Python venv:** `.venv/`. Interpreter: `D:/Projects/financial-advisor/.venv/Scripts/python.exe`. Use `uv sync` / `uv run`.
 - **Shell:** PowerShell on Windows. `&&` doesn't chain — use `;`, or the Bash tool for POSIX scripts.
+- **Console is cp1252** — any script printing agent/plan output (₪, →, Hebrew) MUST set `PYTHONIOENCODING=utf-8`, and do durable side-effects BEFORE printing (a print crash silently killed three domain-refresh runs on 2026-07-08).
 - **Dev DB:** `db/argosy.db` (6 sources, ~2,180 transactions ingested).
 - **Tests:** `.venv/Scripts/python.exe -m pytest -m "not llm_eval" <path>`
 - **UI:** `cd ui ; npm run lint ; npm run typecheck ; npm run dev` (port 1337). Subdir guidance: `ui/AGENTS.md`.
