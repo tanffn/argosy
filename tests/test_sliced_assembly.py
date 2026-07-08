@@ -643,3 +643,88 @@ def test_skeleton_gate_retry_then_abort(session, monkeypatch):
     assert len(skeleton_calls) == 2
     assert skeleton_calls[0] == ""
     assert "coverage" in skeleton_calls[1]
+
+
+# ---------------------------------------------------------------------------
+# Skeleton prompt vocabulary — SCHEMA-DERIVED (run-155 fix)
+# ---------------------------------------------------------------------------
+# Run 155 died twice on vocabulary the hand-written prompt never showed:
+# attempt 1 emitted item_kind='section' (sections are NOT delta items),
+# attempt 2 emitted section_id='governance' (not canonical). The prompt now
+# renders every Literal field's allowed values FROM the pydantic models and
+# the canonical section ids FROM CANONICAL_SECTION_IDS — literals can never
+# drift from the prompt again.
+
+
+def _skeleton_system_prompt() -> str:
+    from argosy.agents.plan_skeleton_synthesizer import (
+        PlanSkeletonSynthesizerAgent,
+    )
+
+    agent = PlanSkeletonSynthesizerAgent(user_id="test-user")
+    system, _user = agent.build_prompt(
+        baseline_distillate_md="",
+        analyst_reports_text="(none)",
+        debate_outcomes_text="(none)",
+        portfolio_snapshot_summary="(none)",
+        recent_fills_summary="(none)",
+    )
+    return system
+
+
+def test_literal_values_reads_the_schema():
+    from argosy.agents.plan_skeleton_synthesizer import literal_values
+
+    assert literal_values(SkeletonDelta, "item_kind") == (
+        "target", "theme", "action", "speculative_candidate",
+    )
+    assert literal_values(SkeletonDelta, "change_kind") == (
+        "added", "removed", "modified",
+    )
+    assert literal_values(SkeletonTheme, "direction") == (
+        "lean_into", "lean_away_from", "monitor",
+    )
+    assert literal_values(SkeletonAction, "horizon_kind") == (
+        "directional", "parameterized", "dated",
+    )
+    assert literal_values(SkeletonHorizon, "status") == (
+        "no_change", "minor_revision", "major_revision",
+    )
+    assert literal_values(SkeletonHorizon, "freshness_expected") == (
+        "annual", "quarterly", "monthly",
+    )
+    with pytest.raises(TypeError):
+        literal_values(SkeletonSectionEntry, "section_id")  # plain str
+
+
+def test_skeleton_prompt_carries_every_literal_vocabulary():
+    from argosy.agents.plan_skeleton_synthesizer import literal_values
+
+    system = _skeleton_system_prompt()
+    for model, fields in (
+        (SkeletonTheme, ("direction",)),
+        (SkeletonAction, ("horizon_kind",)),
+        (SkeletonDelta, ("item_kind", "change_kind")),
+        (SkeletonHorizon, ("status", "freshness_expected")),
+    ):
+        for f in fields:
+            for v in literal_values(model, f):
+                assert f"'{v}'" in system, (
+                    f"{model.__name__}.{f} value {v!r} missing from prompt"
+                )
+
+
+def test_skeleton_prompt_renders_canonical_section_ids():
+    from argosy.quality.canonical_sections import CANONICAL_SECTION_IDS
+
+    system = _skeleton_system_prompt()
+    for sid in CANONICAL_SECTION_IDS:
+        assert f"'{sid}'" in system, f"canonical id {sid!r} missing"
+    # run-155 attempt-2 failure value must NOT read as a valid id
+    assert "'governance'" not in system
+
+
+def test_skeleton_prompt_says_sections_are_not_delta_items():
+    system = _skeleton_system_prompt()
+    assert "SECTIONS ARE NOT DELTA ITEMS" in system
+    assert "NEVER 'section'" in system

@@ -834,6 +834,86 @@ def test_extract_verdict_figures_filters_years_and_overlap():
     assert canonical == [5094, 12]
 
 
+# Run-155 live text (reader BLOCKER 3): a fragility OBSERVATION that
+# legitimately compares numbers with bare 'versus' — NONE of them are
+# wrong values.
+RUN_155_BLOCKER_3 = (
+    "Capital-sufficiency is too fragile to carry the plan's confidence: "
+    "the stated margin is ₪31,805, break-even FX is 2.998 versus "
+    "current 3.006, and every 0.10 FX move swings the margin materially."
+)
+
+
+def test_extract_verdict_figures_fragility_observation_extracts_nothing():
+    """Run-155 live bug: bare 'versus' in an observation extracted
+    wrong_values [3, 2.998]; the skeleton gate then demanded those context
+    numbers be ABSENT — an impossible requirement that degraded the run
+    to monolith. Comparisons without replacement semantics extract
+    NOTHING (empty ⇒ classifier routes FULL ⇒ reader judges substance)."""
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    assert extract_verdict_figures(RUN_155_BLOCKER_3) == ([], [])
+
+
+def test_extract_verdict_figures_bare_vs_is_not_a_separator():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    # bare 'vs' / 'versus' without an adjudication word = comparison only
+    assert extract_verdict_figures(
+        "NVDA weight is 12.1 vs target 8.0 and drifting."
+    ) == ([], [])
+    assert extract_verdict_figures(
+        "Break-even FX is 2.998 versus current 3.006."
+    ) == ([], [])
+
+
+def test_extract_verdict_figures_run144_d1_text_still_extracts():
+    """The exact run-144 D1 phrasing ('vs adjudicated') carries replacement
+    semantics and must keep extracting after the run-155 narrowing."""
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The medium.targets endpoint pair states 1,591/9,880 vs "
+        "adjudicated 9,822/1,649 for the 2028 endpoint."
+    )
+    assert wrong == [1591, 9880]
+    assert canonical == [9822, 1649]
+
+
+def test_extract_verdict_figures_correct_is_phrasing():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The coverage ratio states 8.93x, correct is 4.81x."
+    )
+    assert wrong == [8.93]
+    assert canonical == [4.81]
+
+
+def test_extract_verdict_figures_must_read_phrasing():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The endpoint states 1,591 shares, must read 9,822."
+    )
+    assert wrong == [1591]
+    assert canonical == [9822]
+
+
+def test_extract_verdict_figures_not_but_phrasing():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The FX planning rate is not 3.00 but 2.944."
+    )
+    assert wrong == [3]
+    assert canonical == [2.944]
+    # rhetorical not/but without figures on both sides extracts nothing
+    assert extract_verdict_figures(
+        "The margin must not merely survive but thrive at 31,805."
+    ) == ([], [])
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: the run-144 case classifies PATCH
 # ---------------------------------------------------------------------------

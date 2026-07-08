@@ -29,7 +29,7 @@ call. Gate: ``argosy/quality/skeleton_gate.py`` runs BEFORE fan-out.
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -40,6 +40,27 @@ from argosy.agents.plan_synthesizer_types import (
     SynthTarget,
 )
 from argosy.quality.canonical_sections import CANONICAL_SECTION_IDS
+
+
+def literal_values(model: type[BaseModel], field_name: str) -> tuple[str, ...]:
+    """Allowed values of a ``Literal``-typed pydantic field, read from the
+    model itself — the prompt's vocabulary is SCHEMA-DERIVED, so it can
+    never drift from what the validator accepts (run-155 live bug: the
+    hand-written prompt lists lacked vocabulary the model needed and the
+    validator rejected values the prompt never showed)."""
+    ann = model.model_fields[field_name].annotation
+    if get_origin(ann) is not Literal:
+        raise TypeError(
+            f"{model.__name__}.{field_name} is not Literal-typed "
+            f"(got {ann!r}) — literal_values only renders closed vocabularies"
+        )
+    return tuple(str(v) for v in get_args(ann))
+
+
+def _allowed(model: type[BaseModel], field_name: str) -> str:
+    """Render a Literal field's allowed values for the prompt:
+    ``'a' | 'b' | 'c'``."""
+    return " | ".join(f"'{v}'" for v in literal_values(model, field_name))
 
 
 class SkeletonTheme(BaseModel):
@@ -178,7 +199,11 @@ class PlanSkeletonSynthesizerAgent(BaseAgent[PlanSkeleton]):
             "one-line summary. NO rationale here — expansion fills prose. "
             "The roster IS the change contract: an item changed without a "
             "roster entry, or a roster entry without a real change, both "
-            "break the draft.\n\n"
+            "break the draft. SECTIONS ARE NOT DELTA ITEMS: the delta "
+            "roster covers targets/themes/actions/speculative_candidates "
+            "ONLY — a section whose content changed is expressed through "
+            "the section_roster (its one_line_thesis/key_facts), never as "
+            "a delta entry.\n\n"
             "ID STABILITY (structural contract):\n"
             "  - The PRIOR ITEMS INDEX block lists item_ids from earlier "
             "plan drafts. When an item you decide matches a prior item "
@@ -218,7 +243,14 @@ class PlanSkeletonSynthesizerAgent(BaseAgent[PlanSkeleton]):
             f"stated_at is {today}; set an honest revisit_after per horizon.\n\n"
             "SECTION ROSTER: list every canonical section the plan will "
             "carry — (section_id, horizon, one_line_thesis, key_facts). "
-            "Aim for >=12 of the 18 canonical section_ids (gate-enforced "
+            "section_id MUST be EXACTLY one of the "
+            f"{len(CANONICAL_SECTION_IDS)} canonical ids (no other id "
+            "exists — never invent one; e.g. governance content belongs "
+            "under 'ips'):\n  "
+            + ", ".join(f"'{s}'" for s in sorted(CANONICAL_SECTION_IDS))
+            + "\n"
+            f"Aim for >=12 of the {len(CANONICAL_SECTION_IDS)} canonical "
+            "section_ids (gate-enforced "
             "floor); the same section_id may appear in multiple horizons. "
             "key_facts are the 1-3 facts (WITH values, taken from the "
             "DERIVED HEADLINE NUMBERS / analyst outputs) that section must "
@@ -231,16 +263,19 @@ class PlanSkeletonSynthesizerAgent(BaseAgent[PlanSkeleton]):
             "    section_roster: SkeletonSectionEntry[]\n"
             "  }\n"
             "  SkeletonHorizon = {horizon, freshness_expected: "
-            "'annual'|'quarterly'|'monthly', status, posture_summary "
+            f"{_allowed(SkeletonHorizon, 'freshness_expected')}, "
+            "status, posture_summary "
             "(2-4 sentences — the stance, not the essay), targets: "
             "SynthTarget[], theme_roster: {label, direction}[] where "
-            "direction is EXACTLY one of 'lean_into' | 'lean_away_from' | "
-            "'monitor' (NEVER 'maintain'/'reduce'/'hold' — map: keep-as-is "
+            "direction is EXACTLY one of "
+            f"{_allowed(SkeletonTheme, 'direction')} "
+            "(NEVER 'maintain'/'reduce'/'hold' — map: keep-as-is "
             "-> 'monitor', trim/exit -> 'lean_away_from', add -> "
             "'lean_into'), "
             "action_roster: {label, horizon_kind, trigger_or_date?}[] "
-            "where horizon_kind is EXACTLY one of 'directional' | "
-            "'parameterized' | 'dated' (the KIND of action, NEVER the "
+            "where horizon_kind is EXACTLY one of "
+            f"{_allowed(SkeletonAction, 'horizon_kind')} "
+            "(the KIND of action, NEVER the "
             "horizon name 'long'/'medium'/'short': no-numbers stance -> "
             "'directional', carries a number/threshold -> 'parameterized', "
             "tied to a calendar date -> 'dated'), "
@@ -249,13 +284,16 @@ class PlanSkeletonSynthesizerAgent(BaseAgent[PlanSkeleton]):
             "'YYYY-MM-DD', revisit_after: 'YYYY-MM-DD', rationale: '' "
             "(LEAVE EMPTY — expansion writes it), source_section?, "
             "snapshot_category?}\n"
-            "  SkeletonDelta = {item_kind: EXACTLY one of 'target' | "
-            "'theme' | 'action' | 'speculative_candidate', item_id, "
-            "horizon, change_kind: EXACTLY one of 'added' | 'removed' | "
-            "'modified' (NEVER 'revised'/'updated'/'changed' — any edit "
+            "  SkeletonDelta = {item_kind: EXACTLY one of "
+            f"{_allowed(SkeletonDelta, 'item_kind')} "
+            "(NEVER 'section' — section changes go through the "
+            "section_roster, not the delta roster), item_id, "
+            "horizon, change_kind: EXACTLY one of "
+            f"{_allowed(SkeletonDelta, 'change_kind')} "
+            "(NEVER 'revised'/'updated'/'changed' — any edit "
             "to an existing item is 'modified'), summary}\n"
-            "  (horizon status is EXACTLY one of 'no_change' | "
-            "'minor_revision' | 'major_revision'.)\n"
+            "  (horizon status is EXACTLY one of "
+            f"{_allowed(SkeletonHorizon, 'status')}.)\n"
             "  SkeletonSectionEntry = {section_id, horizon, "
             "one_line_thesis, key_facts: string[]}\n"
         )
@@ -369,4 +407,5 @@ __all__ = [
     "SkeletonHorizon",
     "SkeletonSectionEntry",
     "SkeletonTheme",
+    "literal_values",
 ]

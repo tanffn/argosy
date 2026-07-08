@@ -404,11 +404,29 @@ _VERDICT_REF_RE = re.compile(
 _FIGURE_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d+")
 
 # Explicit wrong-vs-canonical separators. Deliberately narrow: only phrasings
-# where the LEFT side is unambiguously the draft's (wrong) figure and the
-# RIGHT side the canonical one. Anything else leaves values empty and the
-# classifier honestly routes the correction FULL.
+# that carry REPLACEMENT semantics — the LEFT side is unambiguously the
+# draft's (wrong) figure and the RIGHT side the canonical one. Bare
+# 'vs'/'versus' is NOT enough (run-155 live bug: a fragility OBSERVATION —
+# "break-even FX 2.998 versus current 3.006" — legitimately compares numbers
+# without either being wrong; extracting them poisoned the skeleton gate
+# with an impossible absence requirement). 'vs'/'versus' therefore only
+# counts when followed by an adjudication word. Anything else leaves values
+# empty and the classifier honestly routes the correction FULL — always safe.
 _VS_RE = re.compile(
-    r"\bvs\.?\b|\bversus\b|\bshould\s+(?:be|read|state)\b", re.IGNORECASE
+    r"\b(?:vs\.?|versus)\s+(?:the\s+)?"
+    r"(?:adjudicated|canonical|correct(?:ed)?|derived|required)\b"
+    r"|\b(?:should|must)\s+(?:be|read|state)\b"
+    r"|\bcorrect\s+(?:(?:value|figure|number)\s+)?is\b"
+    r"|\brestate\s+as\b",
+    re.IGNORECASE,
+)
+
+# 'not X but Y' replacement form — wrong figure(s) after 'not', canonical
+# after 'but'. Bounded lazy spans so it never eats across clauses; the
+# figure requirement on BOTH sides (``_validated_pair``) rejects rhetorical
+# not/but prose.
+_NOT_BUT_RE = re.compile(
+    r"\bnot\s+([^;]{1,60}?)\s+but\s+([^;]{1,80})", re.IGNORECASE
 )
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;!?])\s+")
@@ -451,25 +469,45 @@ def _figures_in(text: str) -> list[Any]:
 
 def extract_verdict_figures(text: str) -> tuple[list[Any], list[Any]]:
     """``(wrong_values, canonical_values)`` — ONLY when the verdict states
-    them explicitly as a wrong-vs-canonical figure pair in one sentence
-    (e.g. ``states 1,591/9,880 vs adjudicated 9,822/1,649``). Anything less
-    explicit returns ``([], [])`` — the patch classifier then honestly
-    routes the correction FULL rather than guessing at figures.
+    them explicitly as a wrong-vs-canonical figure pair with REPLACEMENT
+    semantics in one sentence (e.g. ``states 1,591/9,880 vs adjudicated
+    9,822/1,649``, ``8.93x, correct is 4.81x``, ``not 3.00 but 2.944``).
+    A bare comparison ('X versus Y' in a fragility observation) extracts
+    NOTHING — those are context numbers, not wrong values (run-155 live
+    bug). Anything less explicit returns ``([], [])`` — the patch
+    classifier then honestly routes the correction FULL rather than
+    guessing at figures.
     """
     for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
         parts = _VS_RE.split(sentence)
-        if len(parts) != 2:
-            continue  # zero or ambiguous (multiple) separators
-        wrong = _figures_in(parts[0])
-        canonical = _figures_in(parts[1])
-        # A figure on BOTH sides is context, not a wrong value.
-        wrong = [v for v in wrong if v not in canonical]
-        if not wrong or not canonical:
-            continue
-        if len(wrong) > 6 or len(canonical) > 6:
-            continue  # figure soup — not an explicit pair statement
-        return wrong, canonical
+        if len(parts) == 2:
+            pair = _validated_pair(_figures_in(parts[0]), _figures_in(parts[1]))
+            if pair is not None:
+                return pair
+            continue  # separator present but no clean pair — extract nothing
+        if len(parts) != 1:
+            continue  # ambiguous (multiple separators)
+        m = _NOT_BUT_RE.search(sentence)
+        if m:
+            pair = _validated_pair(
+                _figures_in(m.group(1)), _figures_in(m.group(2))
+            )
+            if pair is not None:
+                return pair
     return [], []
+
+
+def _validated_pair(
+    wrong: list[Any], canonical: list[Any]
+) -> tuple[list[Any], list[Any]] | None:
+    """Pair-statement sanity checks; None when the clause isn't a pair."""
+    # A figure on BOTH sides is context, not a wrong value.
+    wrong = [v for v in wrong if v not in canonical]
+    if not wrong or not canonical:
+        return None
+    if len(wrong) > 6 or len(canonical) > 6:
+        return None  # figure soup — not an explicit pair statement
+    return wrong, canonical
 
 
 def extract_required_statement(text: str) -> str:
