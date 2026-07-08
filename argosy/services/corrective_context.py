@@ -31,6 +31,20 @@ Sources (all already persisted; no new state):
    joined to the derived fact(s) covering its surface (lenient token match,
    same spirit as ``critique_reconcile.findings_match``) so it carries its
    canonical value, not just "this is wrong".
+5. VERDICT FEEDBACK — the user's most recent superseded-or-pending corrective
+   draft (a ``PlanVersion`` with ``synthesis_inputs_json.corrective`` present)
+   whose run ended FM-rejected or reader-blocked. The FM's rejection
+   ``reasons`` and the whole-artifact reader's blocking findings become
+   STRUCTURED corrections (``source='verdict_feedback'``) instead of the
+   free-text paste-back a human had to do before. Explicit wrong/canonical
+   figure pairs stated by the verdict (e.g. ``1,591/9,880 vs adjudicated
+   9,822/1,649``) are extracted deterministically so the patch-reachability
+   classifier can route the next pass PATCH; verdicts without explicit
+   figures honestly route FULL. Scope-guarded (same current-plan lineage,
+   newer than the latest critique row) and deduped against the critique
+   corrections via ``findings_match``. Items the prior corrective run
+   resolved that the verdicts did NOT re-flag render as a do-not-reopen
+   list.
 
 Fail-soft by contract: the orchestrator wraps the call; any exception here
 degrades the run to today's behavior (the part-C gate is the backstop).
@@ -49,7 +63,14 @@ from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
 from argosy.services.critique_reconcile import findings_match
-from argosy.state.models import ActionProposal, PlanCritique, PortfolioSnapshotRow
+from argosy.state.models import (
+    ActionProposal,
+    AgentReport,
+    DecisionRun,
+    PlanCritique,
+    PlanVersion,
+    PortfolioSnapshotRow,
+)
 from argosy.state.queries import get_current_plan
 
 _log = get_logger("argosy.services.corrective_context")
@@ -83,11 +104,22 @@ class Correction:
     # Joined derived facts: [(fact_key, value), ...] — canonical values the
     # deterministic corrections-landed floor checks for.
     canonical_facts: list[tuple[str, Any]] = field(default_factory=list)
-    # Known-wrong values that must be ABSENT from the corrected draft. The
-    # live builder leaves this empty (extracting figures from finding prose is
-    # not deterministic enough for a gate); tests / future structured findings
-    # populate it.
+    # Known-wrong values that must be ABSENT from the corrected draft.
+    # Critique-sourced corrections leave this empty (extracting figures from
+    # finding prose is not deterministic enough for a gate); VERDICT-FEEDBACK
+    # corrections populate it when the FM/reader stated the wrong figures
+    # explicitly (``extract_verdict_figures``); tests / future structured
+    # findings populate it too.
     wrong_values: list[Any] = field(default_factory=list)
+    # Provenance (source 5, verdict feedback): 'critique' for reconcile-loop
+    # findings; 'verdict_feedback' for corrections harvested from a prior
+    # corrective draft's FM rejection / reader block. Verdict-feedback
+    # corrections also carry which agent produced the verdict and the
+    # source run/draft ids so payloads + rendering can distinguish them.
+    source: str = "critique"
+    verdict_agent: str = ""  # 'fund_manager' | 'whole_artifact_reader'
+    source_run_id: int | None = None
+    source_draft_id: int | None = None
 
     @property
     def parsed_ref(self) -> dict[str, Any]:
@@ -120,6 +152,10 @@ class Correction:
             "reconcile_status": self.reconcile_status,
             "canonical_facts": [[k, v] for k, v in self.canonical_facts],
             "wrong_values": list(self.wrong_values),
+            "source": self.source,
+            "verdict_agent": self.verdict_agent,
+            "source_run_id": self.source_run_id,
+            "source_draft_id": self.source_draft_id,
         }
         # Parsed addressing carried alongside (patch-synthesis design §4);
         # best-effort — an unparseable ref degrades to nulls, never raises.
@@ -198,6 +234,16 @@ class CorrectiveContext:
     # happened since the critique (latest portfolio snapshot not newer than
     # the critique row) — the run must NOT reuse phases 1-2.
     forces_full_tier: bool = False
+    # Verdict-feedback provenance (source 5): the rejected prior corrective
+    # draft + run the feedback was harvested from, which verdicts fired, and
+    # the items those verdicts confirmed resolved (do-not-reopen list).
+    verdict_feedback_draft_id: int | None = None
+    verdict_feedback_run_id: int | None = None
+    verdict_fm_rejected: bool = False
+    verdict_reader_blocked: bool = False
+    # [{"topic", "plan_item_ref"}, ...] — corrections the prior corrective
+    # draft resolved that the FM/reader did NOT re-flag.
+    verdict_confirmed_resolved: list[dict[str, Any]] = field(default_factory=list)
     rendered: str = ""
 
     def to_payload(
@@ -216,6 +262,19 @@ class CorrectiveContext:
             "forces_full_tier": self.forces_full_tier,
             "reused_from_run_id": reused_from_run_id,
             "reused_phases": list(reused_phases or []),
+            "verdict_feedback": (
+                {
+                    "draft_id": self.verdict_feedback_draft_id,
+                    "run_id": self.verdict_feedback_run_id,
+                    "fm_rejected": self.verdict_fm_rejected,
+                    "reader_blocked": self.verdict_reader_blocked,
+                    "confirmed_resolved": [
+                        dict(item) for item in self.verdict_confirmed_resolved
+                    ],
+                }
+                if self.verdict_feedback_draft_id is not None
+                else None
+            ),
         }
 
     @property
@@ -307,6 +366,315 @@ def match_fact_to_finding(fact_key: str, finding: dict[str, Any]) -> bool:
     if len(tokens) == 1:
         return hits == 1
     return hits / len(tokens) > 0.5
+
+
+# ---------------------------------------------------------------------------
+# Source 5 — verdict feedback (FM rejection / reader block on a prior
+# corrective draft). Deterministic harvest; no LLM, no re-judgment.
+# ---------------------------------------------------------------------------
+
+# Plan-item refs the FM/reader cite verbatim in verdict prose
+# (``medium.targets.nvda`` / ``medium.targets`` / ``section:ips`` /
+# ``long.status`` …) — the same addressing scheme the patch-reachability
+# classifier resolves.
+_VERDICT_REF_RE = re.compile(
+    r"\b(?:(?:long|medium|short)\.(?:targets?|themes?|actions?|"
+    r"speculative_candidates?|posture|rationale|status)(?:\.[A-Za-z0-9_]+)*"
+    r"|sections?[.:][A-Za-z0-9_]+)\b"
+)
+
+# Figures as verdicts state them: comma-grouped ints, decimals, plain ints.
+_FIGURE_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d+")
+
+# Explicit wrong-vs-canonical separators. Deliberately narrow: only phrasings
+# where the LEFT side is unambiguously the draft's (wrong) figure and the
+# RIGHT side the canonical one. Anything else leaves values empty and the
+# classifier honestly routes the correction FULL.
+_VS_RE = re.compile(
+    r"\bvs\.?\b|\bversus\b|\bshould\s+(?:be|read|state)\b", re.IGNORECASE
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;!?])\s+")
+
+
+def _figures_in(text: str) -> list[Any]:
+    """Numeric figures in ``text`` — comma-stripped, int-normalized, with
+    plain 4-digit calendar-year tokens (1900-2100, no comma/decimal)
+    filtered out so '2026/2027' glide years are never mistaken for values."""
+    out: list[Any] = []
+    for token in _FIGURE_RE.findall(text or ""):
+        raw = token.replace(",", "")
+        try:
+            v = float(raw)
+        except ValueError:  # pragma: no cover — regex guarantees numeric
+            continue
+        if "," not in token and "." not in token and 1900 <= v <= 2100:
+            continue  # calendar year, not a figure
+        norm: Any = int(v) if v == int(v) else v
+        if norm not in out:
+            out.append(norm)
+    return out
+
+
+def extract_verdict_figures(text: str) -> tuple[list[Any], list[Any]]:
+    """``(wrong_values, canonical_values)`` — ONLY when the verdict states
+    them explicitly as a wrong-vs-canonical figure pair in one sentence
+    (e.g. ``states 1,591/9,880 vs adjudicated 9,822/1,649``). Anything less
+    explicit returns ``([], [])`` — the patch classifier then honestly
+    routes the correction FULL rather than guessing at figures.
+    """
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        parts = _VS_RE.split(sentence)
+        if len(parts) != 2:
+            continue  # zero or ambiguous (multiple) separators
+        wrong = _figures_in(parts[0])
+        canonical = _figures_in(parts[1])
+        # A figure on BOTH sides is context, not a wrong value.
+        wrong = [v for v in wrong if v not in canonical]
+        if not wrong or not canonical:
+            continue
+        if len(wrong) > 6 or len(canonical) > 6:
+            continue  # figure soup — not an explicit pair statement
+        return wrong, canonical
+    return [], []
+
+
+def _verdict_topic(text: str) -> str:
+    """Deterministic short topic from verdict prose (first 8 words)."""
+    words = (text or "").strip().split()
+    return " ".join(words[:8])[:80]
+
+
+def _verdict_ref(text: str) -> str:
+    """First plan-item ref the verdict text cites, or ''."""
+    m = _VERDICT_REF_RE.search(text or "")
+    return m.group(0).lower() if m else ""
+
+
+def _loads_lenient(text: str | None) -> dict[str, Any] | None:
+    """Parse a persisted agent ``response_text`` as JSON — strict first,
+    then ``raw_decode`` from the first ``{`` (model chatter tolerated)."""
+    if not text:
+        return None
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except (TypeError, ValueError):
+        pass
+    first = text.find("{")
+    if first >= 0:
+        try:
+            obj, _ = json.JSONDecoder(strict=False).raw_decode(text[first:])
+            if isinstance(obj, dict):
+                return obj
+        except ValueError:
+            pass
+    return None
+
+
+def _verdict_finding(
+    text: str, *, severity: str, agent: str, evidence: list[str] | None = None
+) -> dict[str, Any]:
+    wrong, canonical = extract_verdict_figures(text)
+    return {
+        "severity": severity,
+        "topic": _verdict_topic(text),
+        "plan_item_ref": _verdict_ref(text),
+        "summary": text,
+        "evidence": list(evidence or []),
+        "wrong_values": wrong,
+        "canonical_values": canonical,
+        "verdict_agent": agent,
+    }
+
+
+def _load_rejected_corrective_draft(
+    session: Session, *, user_id: str, current_plan_id: int
+) -> tuple[PlanVersion, dict[str, Any], DecisionRun] | None:
+    """The user's MOST RECENT corrective draft (superseded or pending), iff
+    its run ended rejected and it belongs to the current-plan lineage.
+
+    Decides on the most recent corrective draft ONLY: if that draft's run
+    was NOT rejected (promoted / approved), older rejected verdicts are
+    superseded history and must not resurrect — return None.
+    """
+    rows = session.execute(
+        select(PlanVersion)
+        .where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role.in_(("draft", "superseded")),
+            PlanVersion.decision_run_id.is_not(None),
+            PlanVersion.synthesis_inputs_json.is_not(None),
+        )
+        .order_by(PlanVersion.id.desc())
+        .limit(25)
+    ).scalars().all()
+    for pv in rows:
+        try:
+            si = json.loads(pv.synthesis_inputs_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        corrective = si.get("corrective") if isinstance(si, dict) else None
+        if not isinstance(corrective, dict):
+            continue
+        # Most recent corrective draft found — decide on THIS one only.
+        run = session.get(DecisionRun, pv.decision_run_id)
+        if (
+            run is None
+            or run.user_id != user_id
+            or run.fund_manager_decision != "rejected"
+        ):
+            return None
+        if corrective.get("base_plan_id") != current_plan_id:
+            _log.info(
+                "corrective_context.verdict_feedback_lineage_mismatch",
+                user_id=user_id, draft_id=pv.id,
+                draft_base_plan_id=corrective.get("base_plan_id"),
+                current_plan_id=current_plan_id,
+            )
+            return None
+        return pv, si, run
+    return None
+
+
+def _load_latest_verdict_report(
+    session: Session, *, user_id: str, decision_run_id: int, agent_role: str
+) -> AgentReport | None:
+    return session.execute(
+        select(AgentReport)
+        .where(
+            AgentReport.user_id == user_id,
+            AgentReport.decision_id == f"plan-synth-{decision_run_id}",
+            AgentReport.agent_role == agent_role,
+        )
+        .order_by(AgentReport.id.desc())
+        .limit(1)
+    ).scalars().first()
+
+
+def _harvest_verdict_feedback(
+    session: Session,
+    *,
+    user_id: str,
+    current_plan_id: int,
+    critique_created_at: datetime | None,
+) -> dict[str, Any] | None:
+    """Source 5: structured verdict findings from the most recent rejected
+    corrective draft, or None when there is nothing (fresh) to harvest.
+
+    Returns ``{"draft_id", "run_id", "fm_rejected", "reader_blocked",
+    "findings", "confirmed_resolved"}``.
+    """
+    loaded = _load_rejected_corrective_draft(
+        session, user_id=user_id, current_plan_id=current_plan_id
+    )
+    if loaded is None:
+        return None
+    pv, si, run = loaded
+
+    # Staleness guard: the rejected draft must be NEWER than the latest
+    # critique row — a fresh critique (with its reconcile) supersedes old
+    # verdicts about a long-superseded draft. Missing draft timestamp is
+    # treated as stale (fail-safe toward not resurrecting).
+    crit = _as_utc_naive(critique_created_at)
+    draft_ts = _as_utc_naive(pv.imported_at)
+    if crit is not None and (draft_ts is None or draft_ts <= crit):
+        _log.info(
+            "corrective_context.verdict_feedback_stale_skipped",
+            user_id=user_id, draft_id=pv.id,
+            draft_imported_at=draft_ts.isoformat() if draft_ts else None,
+            critique_created_at=crit.isoformat(),
+        )
+        return None
+
+    findings: list[dict[str, Any]] = []
+    fm_rejected = False
+    reader_blocked = False
+
+    fm_row = _load_latest_verdict_report(
+        session, user_id=user_id, decision_run_id=run.id,
+        agent_role="fund_manager",
+    )
+    if fm_row is not None:
+        fm = _loads_lenient(fm_row.response_text)
+        if fm is not None and fm.get("approved") is False:
+            fm_rejected = True
+            for reason in fm.get("reasons") or []:
+                text = str(reason).strip()
+                if text:
+                    findings.append(_verdict_finding(
+                        text, severity="RED", agent="fund_manager",
+                    ))
+
+    reader_row = _load_latest_verdict_report(
+        session, user_id=user_id, decision_run_id=run.id,
+        agent_role="whole_artifact_reader",
+    )
+    if reader_row is not None:
+        rd = _loads_lenient(reader_row.response_text)
+        if rd is not None and rd.get("overall_assessment") == "BLOCK":
+            reader_blocked = True
+            for f in rd.get("findings") or []:
+                if not isinstance(f, dict):
+                    continue
+                sev = f.get("severity")
+                if sev not in ("BLOCKER", "AMBER"):
+                    continue  # YELLOW = polish, not a blocking finding
+                detail = str(f.get("detail") or "").strip()
+                if not detail:
+                    continue
+                surfaces = f.get("surfaces_cited")
+                evidence = (
+                    [str(s) for s in surfaces[:4]]
+                    if isinstance(surfaces, list) else []
+                )
+                findings.append(_verdict_finding(
+                    detail,
+                    severity="RED" if sev == "BLOCKER" else "YELLOW",
+                    agent="whole_artifact_reader",
+                    evidence=evidence,
+                ))
+
+    if not findings:
+        return None
+
+    # Confirmed-resolved (do-not-reopen): corrections the prior corrective
+    # run carried that the verdicts did NOT re-flag AND the deterministic
+    # floor did not report unresolved — the verdicts' scope notes.
+    unresolved_idx = {
+        int(u.get("index") or 0)
+        for u in (si.get("corrective_unresolved") or [])
+        if isinstance(u, dict)
+    }
+    confirmed_resolved: list[dict[str, Any]] = []
+    corrective = si.get("corrective") or {}
+    for pc in corrective.get("corrections") or []:
+        if not isinstance(pc, dict):
+            continue
+        if int(pc.get("index") or 0) in unresolved_idx:
+            continue
+        if any(findings_match(pc, f) for f in findings):
+            continue
+        confirmed_resolved.append({
+            "topic": str(pc.get("topic") or ""),
+            "plan_item_ref": str(pc.get("plan_item_ref") or ""),
+        })
+
+    _log.info(
+        "corrective_context.verdict_feedback_harvested",
+        user_id=user_id, draft_id=pv.id, run_id=run.id,
+        fm_rejected=fm_rejected, reader_blocked=reader_blocked,
+        findings=len(findings), confirmed_resolved=len(confirmed_resolved),
+    )
+    return {
+        "draft_id": pv.id,
+        "run_id": run.id,
+        "fm_rejected": fm_rejected,
+        "reader_blocked": reader_blocked,
+        "findings": findings,
+        "confirmed_resolved": confirmed_resolved,
+    }
 
 
 def _as_utc_naive(dt: datetime | None) -> datetime | None:
@@ -442,12 +810,18 @@ def _render_block(ctx: CorrectiveContext) -> str:
         f"Preserve every plan element NOT implicated by a correction; {base_ref} "
         "is the base document.",
     ]
-    if ctx.corrections:
+    critique_corrections = [
+        c for c in ctx.corrections if c.source != "verdict_feedback"
+    ]
+    verdict_corrections = [
+        c for c in ctx.corrections if c.source == "verdict_feedback"
+    ]
+    if critique_corrections:
         lines.append(
             "\nCORRECTIONS (each must be resolved; the post-run verifier "
             "checks each one):"
         )
-        for c in ctx.corrections:
+        for c in critique_corrections:
             evidence = "; ".join(c.evidence) if c.evidence else "(none)"
             canon = (
                 "; ".join(
@@ -465,6 +839,57 @@ def _render_block(ctx: CorrectiveContext) -> str:
                 f"    required: the corrected surface must state the canonical "
                 f"value/position and must no longer assert the flagged claim."
             )
+    if verdict_corrections:
+        modes = []
+        if ctx.verdict_fm_rejected:
+            modes.append("FM-rejected")
+        if ctx.verdict_reader_blocked:
+            modes.append("reader-blocked")
+        mode = " / ".join(modes) if modes else "rejected"
+        draft_ref = (
+            f"#{ctx.verdict_feedback_draft_id}"
+            if ctx.verdict_feedback_draft_id is not None else "(prior)"
+        )
+        lines.append(
+            f"\nVERDICT FEEDBACK (prior corrective draft {draft_ref} was "
+            f"{mode} on these — fix surgically, do not re-open what those "
+            "verdicts confirmed resolved):"
+        )
+        for c in verdict_corrections:
+            entry = (
+                f"[{c.index}] {c.severity} · {c.topic} · surface: "
+                f"{c.plan_item_ref or '(unspecified)'} · verdict: "
+                f"{c.verdict_agent}\n"
+                f"    finding: {c.summary}"
+            )
+            if c.evidence:
+                entry += "\n    evidence: " + "; ".join(c.evidence)
+            if c.wrong_values:
+                entry += (
+                    "\n    wrong (must be absent): "
+                    + "; ".join(_fmt_value(v) for v in c.wrong_values)
+                )
+            canon_vals = [v for _, v in c.canonical_facts]
+            if canon_vals:
+                entry += (
+                    "\n    canonical (must appear verbatim): "
+                    + "; ".join(_fmt_value(v) for v in canon_vals)
+                )
+            else:
+                entry += (
+                    "\n    canonical: (the verdict stated no explicit figure "
+                    "— resolve the finding in substance)"
+                )
+            lines.append(entry)
+        if ctx.verdict_confirmed_resolved:
+            lines.append(
+                f"\nCONFIRMED RESOLVED in draft {draft_ref} by those verdicts "
+                "— reuse that resolution; do NOT re-open or re-decide:"
+            )
+            for item in ctx.verdict_confirmed_resolved:
+                topic = item.get("topic") or "?"
+                ref = item.get("plan_item_ref") or ""
+                lines.append(f"- {topic}" + (f" ({ref})" if ref else ""))
     if ctx.directives:
         lines.append(
             "\nDIRECTIVES (adjudicated verdicts — apply verbatim, do not "
@@ -567,6 +992,42 @@ def build_corrective_context(
                     continue  # settled since the proposal was written
                 selected.append((f, "escalated"))
 
+    # ---- Source 5: verdict feedback from a rejected corrective draft ------
+    # Harvested BEFORE the emptiness check (verdict feedback alone is enough
+    # to make a run corrective) and deduped against the critique corrections
+    # via findings_match — the critique row already owns those subjects.
+    verdict_findings: list[dict[str, Any]] = []
+    verdict_harvest: dict[str, Any] | None = None
+    if current is not None:
+        try:
+            verdict_harvest = _harvest_verdict_feedback(
+                session,
+                user_id=user_id,
+                current_plan_id=current.id,
+                critique_created_at=critique_created_at,
+            )
+        except Exception as exc:  # noqa: BLE001 — source 5 is best-effort
+            verdict_harvest = None
+            _log.warning(
+                "corrective_context.verdict_feedback_failed",
+                user_id=user_id, error=str(exc)[:200],
+            )
+    if verdict_harvest is not None:
+        for f in verdict_harvest["findings"]:
+            if any(findings_match(f, sf) for sf, _ in selected):
+                continue  # the critique correction already covers it
+            if any(findings_match(f, vf) for vf in verdict_findings):
+                continue  # FM and reader flagged the same subject
+            verdict_findings.append(f)
+        if verdict_findings:
+            ctx.verdict_feedback_draft_id = verdict_harvest["draft_id"]
+            ctx.verdict_feedback_run_id = verdict_harvest["run_id"]
+            ctx.verdict_fm_rejected = verdict_harvest["fm_rejected"]
+            ctx.verdict_reader_blocked = verdict_harvest["reader_blocked"]
+            ctx.verdict_confirmed_resolved = list(
+                verdict_harvest["confirmed_resolved"]
+            )
+
     # ---- Source 3: accepted adjudication proposals → directives ----------
     for i, p in enumerate(_load_directive_proposals(session, user_id=user_id), 1):
         detail = (p.rationale_md or "").strip()
@@ -612,7 +1073,7 @@ def build_corrective_context(
         )
         ctx.proposal_ids.append(p.id)
 
-    if not selected and not ctx.directives:
+    if not selected and not verdict_findings and not ctx.directives:
         return None
 
     # ---- Source 4: derived-fact join --------------------------------------
@@ -651,6 +1112,32 @@ def build_corrective_context(
             )
         )
 
+    # Verdict-feedback corrections (source 5) — appended AFTER the critique
+    # corrections with continuing indices. No derived-fact join: canonical
+    # values come ONLY from figures the verdict stated explicitly
+    # (``extract_verdict_figures``); a verdict without explicit figures
+    # carries none and the patch classifier honestly routes it FULL.
+    for j, f in enumerate(verdict_findings, len(ctx.corrections) + 1):
+        ctx.corrections.append(
+            Correction(
+                index=j,
+                severity=str(f["severity"]),
+                topic=str(f["topic"]),
+                plan_item_ref=str(f["plan_item_ref"]),
+                summary=str(f["summary"]),
+                evidence=[str(e) for e in f["evidence"]],
+                reconcile_status="verdict_feedback",
+                canonical_facts=[
+                    ("verdict_stated", v) for v in f["canonical_values"]
+                ],
+                wrong_values=list(f["wrong_values"]),
+                source="verdict_feedback",
+                verdict_agent=str(f["verdict_agent"]),
+                source_run_id=ctx.verdict_feedback_run_id,
+                source_draft_id=ctx.verdict_feedback_draft_id,
+            )
+        )
+
     # Snapshot-class corrections implicate phase-1 inputs → full tier. The
     # reconcile loop tags refresh_snapshot-routed findings status='routed'.
     # Freshness-aware: when the user's latest portfolio snapshot POSTDATES
@@ -682,6 +1169,8 @@ def build_corrective_context(
         proposal_ids=ctx.proposal_ids,
         forces_full_tier=ctx.forces_full_tier,
         source_critique_id=ctx.source_critique_id,
+        verdict_feedback_draft_id=ctx.verdict_feedback_draft_id,
+        verdict_feedback_run_id=ctx.verdict_feedback_run_id,
     )
     return ctx
 
@@ -743,6 +1232,7 @@ __all__ = [
     "DIRECTIVE_PROPOSAL_KINDS",
     "OPEN_RECONCILE_STATUSES",
     "build_corrective_context",
+    "extract_verdict_figures",
     "match_fact_to_finding",
     "upsert_open_proposal_sync",
 ]

@@ -15,6 +15,8 @@ from sqlalchemy.orm import sessionmaker
 
 from argosy.state.models import (
     ActionProposal,
+    AgentReport,
+    DecisionRun,
     PlanCritique,
     PlanVersion,
     PortfolioSnapshotRow,
@@ -455,6 +457,456 @@ def test_reader_directive_lists_corrections_and_directives(session):
     d = ctx.reader_directive
     assert "CORRECTIVE-RUN VERIFICATION" in d
     assert "glide" in d and "[D1]" in d
+
+
+# ---------------------------------------------------------------------------
+# Source 5 — verdict feedback (FM rejection / reader block on a prior
+# corrective draft becomes STRUCTURED corrections, not free-text paste-back)
+# ---------------------------------------------------------------------------
+
+RUN_144_FM_REASON = (
+    "The medium.targets endpoint pair states 1,591/9,880 vs adjudicated "
+    "9,822/1,649 for the 2028 endpoint."
+)
+
+
+def _current_plan_id(session):
+    return session.query(PlanVersion).filter_by(
+        user_id="ariel", role="current"
+    ).one().id
+
+
+def _add_run(session, *, fund_manager_decision="rejected", user_id="ariel"):
+    run = DecisionRun(
+        user_id=user_id, ticker="(plan)", tier=None,
+        decision_kind="plan_revision", status="completed",
+        fund_manager_decision=fund_manager_decision,
+    )
+    session.add(run)
+    session.commit()
+    return run
+
+
+def _add_corrective_draft(session, run, *, base_plan_id=None, corrections=None,
+                          unresolved=None, role="superseded",
+                          imported_at=None):
+    if base_plan_id is None:
+        base_plan_id = _current_plan_id(session)
+    si = {
+        "corrective": {
+            "base_plan_id": base_plan_id,
+            "corrections": corrections or [],
+            "directives": [],
+        },
+        "corrective_unresolved": unresolved or [],
+    }
+    pv = PlanVersion(
+        user_id="ariel", role=role, version_label="rejected-corrective",
+        raw_markdown="", decision_run_id=run.id,
+        synthesis_inputs_json=json.dumps(si),
+    )
+    if imported_at is not None:
+        pv.imported_at = imported_at
+    session.add(pv)
+    session.commit()
+    return pv
+
+
+def _add_verdict_report(session, run, *, role, payload):
+    row = AgentReport(
+        user_id="ariel", agent_role=role,
+        decision_id=f"plan-synth-{run.id}",
+        response_text=json.dumps(payload),
+    )
+    session.add(row)
+    session.commit()
+    return row
+
+
+def _fm_rejection(reasons):
+    return {"approved": False, "reasons": reasons, "cited_sources": []}
+
+
+def _reader_block(findings):
+    return {"overall_assessment": "BLOCK", "findings": findings}
+
+
+def test_verdict_feedback_harvest_fm_rejected(session):
+    """FM rejection reasons become source='verdict_feedback' corrections with
+    the explicit wrong/canonical figure pair extracted and the cited ref
+    parsed out — the run-144 shape."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    draft = _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert len(ctx.corrections) == 1
+    c = ctx.corrections[0]
+    assert c.source == "verdict_feedback"
+    assert c.verdict_agent == "fund_manager"
+    assert c.severity == "RED"
+    assert c.plan_item_ref == "medium.targets"
+    assert c.wrong_values == [1591, 9880]
+    assert [v for _, v in c.canonical_facts] == [9822, 1649]
+    assert c.source_run_id == run.id and c.source_draft_id == draft.id
+    # Flows into every existing corrections channel.
+    assert c.check_payload()["canonical_values"] == [9822, 1649]
+    assert c.check_payload()["wrong_values"] == [1591, 9880]
+    payload = c.to_payload()
+    assert payload["source"] == "verdict_feedback"
+    assert payload["verdict_agent"] == "fund_manager"
+    ctx_payload = ctx.to_payload()
+    assert ctx_payload["verdict_feedback"]["fm_rejected"] is True
+    assert ctx_payload["verdict_feedback"]["draft_id"] == draft.id
+    # Rendered in its own subsection + reader directive.
+    assert "VERDICT FEEDBACK" in ctx.rendered
+    assert f"draft #{draft.id}" in ctx.rendered
+    assert "FM-rejected" in ctx.rendered
+    assert "wrong (must be absent): 1,591; 9,880" in ctx.rendered
+    assert "canonical (must appear verbatim): 9,822; 1,649" in ctx.rendered
+    assert "1,591" in ctx.reader_directive
+
+
+def test_verdict_feedback_harvest_reader_blocked(session):
+    """Reader BLOCK findings: BLOCKER→RED, AMBER→YELLOW, YELLOW skipped;
+    surfaces_cited become evidence."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="whole_artifact_reader",
+        payload=_reader_block([
+            {"kind": "contradiction", "severity": "BLOCKER",
+             "detail": "short.posture cash figure states 161,000 vs "
+                       "adjudicated 98,000.",
+             "surfaces_cited": ["deploy the $161,000", "cash on hand 98,000"]},
+            {"kind": "cross_surface", "severity": "AMBER",
+             "detail": "the appendix restates a stale pace claim",
+             "surfaces_cited": []},
+            {"kind": "other", "severity": "YELLOW",
+             "detail": "minor polish nit", "surfaces_cited": []},
+        ]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert [c.severity for c in ctx.corrections] == ["RED", "YELLOW"]
+    assert all(c.verdict_agent == "whole_artifact_reader"
+               for c in ctx.corrections)
+    blocker = ctx.corrections[0]
+    assert blocker.wrong_values == [161000]
+    assert [v for _, v in blocker.canonical_facts] == [98000]
+    assert blocker.evidence == ["deploy the $161,000", "cash on hand 98,000"]
+    assert "minor polish nit" not in ctx.rendered
+    assert ctx.verdict_reader_blocked is True
+    assert ctx.verdict_fm_rejected is False
+    assert "reader-blocked" in ctx.rendered
+
+
+def test_verdict_feedback_both_sources_and_mode_header(session):
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    _add_verdict_report(
+        session, run, role="whole_artifact_reader",
+        payload=_reader_block([
+            {"kind": "fragile_claim", "severity": "BLOCKER",
+             "detail": "the FI headline is undercut by the thin margin note",
+             "surfaces_cited": []},
+        ]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert ctx.verdict_fm_rejected and ctx.verdict_reader_blocked
+    assert "FM-rejected / reader-blocked" in ctx.rendered
+    agents = {c.verdict_agent for c in ctx.corrections}
+    assert agents == {"fund_manager", "whole_artifact_reader"}
+
+
+def test_verdict_feedback_figures_only_when_explicit(session):
+    """A verdict finding without an explicit wrong-vs-canonical figure pair
+    carries NO values — the classifier will honestly route it FULL."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([
+            "The narrative conflates the 2026 pace with the 2027 waypoint "
+            "and the glide rationale is internally inconsistent.",
+        ]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    c = ctx.corrections[0]
+    assert c.wrong_values == [] and c.canonical_facts == []
+    assert "resolve the finding in substance" in ctx.rendered
+
+
+def test_verdict_feedback_lineage_guard(session):
+    """A rejected draft based on a DIFFERENT plan lineage must not feed."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(
+        session, run, base_plan_id=_current_plan_id(session) + 999,
+    )
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    assert build_corrective_context(session, user_id="ariel") is None
+
+
+def test_verdict_feedback_staleness_guard(session):
+    """A critique row NEWER than the rejected draft supersedes its verdicts
+    — stale verdicts must not resurrect."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(
+        session, run,
+        imported_at=datetime.now(timezone.utc) - timedelta(hours=6),
+    )
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    # Newer critique (created now, after the draft).
+    _add_critique(
+        session, [_finding("glide", "glide.schedule", "stale glide")],
+        finding_status=["escalated"],
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert all(c.source != "verdict_feedback" for c in ctx.corrections)
+    assert "VERDICT FEEDBACK" not in ctx.rendered
+
+
+def test_verdict_feedback_not_harvested_when_run_approved(session):
+    """The MOST RECENT corrective draft decides: if its run was approved,
+    older rejected verdicts are superseded history."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    old_run = _add_run(session)
+    _add_corrective_draft(session, old_run)
+    _add_verdict_report(
+        session, old_run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    new_run = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(session, new_run)
+    assert build_corrective_context(session, user_id="ariel") is None
+
+
+def test_verdict_feedback_dedup_vs_critique_corrections(session):
+    """A verdict finding on the SAME subject as an open critique correction
+    is deduped via findings_match — never double-fed."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    critique = _add_critique(
+        session, [_finding("glide", "glide.schedule", "stale glide")],
+        finding_status=["escalated"],
+    )
+    critique.created_at = datetime.now(timezone.utc) - timedelta(hours=6)
+    session.commit()
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection(["glide", RUN_144_FM_REASON]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    topics = [c.topic for c in ctx.corrections]
+    assert topics.count("glide") == 1  # critique correction only
+    sources = [c.source for c in ctx.corrections]
+    assert sources == ["critique", "verdict_feedback"]
+    # Indices continue after the critique corrections.
+    assert [c.index for c in ctx.corrections] == [1, 2]
+
+
+def test_verdict_feedback_confirmed_resolved_do_not_reopen(session):
+    """Prior-run corrections the verdicts did NOT re-flag (and the floor did
+    not report unresolved) render as the do-not-reopen list."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(
+        session, run,
+        corrections=[
+            {"index": 1, "topic": "fx-rate",
+             "plan_item_ref": "assumptions.fx"},
+            {"index": 2, "topic": "endpoint pair",
+             "plan_item_ref": "medium.targets"},
+            {"index": 3, "topic": "cash-drag",
+             "plan_item_ref": "short.posture"},
+        ],
+        unresolved=[{"index": 3, "topic": "cash-drag", "reason": "missing"}],
+    )
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),  # re-flags medium.targets
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    resolved_topics = [i["topic"] for i in ctx.verdict_confirmed_resolved]
+    # fx-rate: untouched by the verdicts and floor-clean → confirmed.
+    # endpoint pair: re-flagged → NOT confirmed. cash-drag: unresolved → NOT.
+    assert resolved_topics == ["fx-rate"]
+    assert "do NOT re-open" in ctx.rendered
+    assert "fx-rate" in ctx.rendered
+    payload = ctx.to_payload()
+    assert payload["verdict_feedback"]["confirmed_resolved"] == [
+        {"topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+    ]
+
+
+def test_verdict_feedback_alone_makes_run_corrective(session):
+    """No open critique findings, no directives — verdict feedback alone
+    still produces a corrective context (else the next pass forgets why the
+    prior draft was rejected)."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert len(ctx.corrections) == 1
+    assert ctx.corrections[0].source == "verdict_feedback"
+
+
+# ---------------------------------------------------------------------------
+# Figure extraction — explicit-only, deterministic
+# ---------------------------------------------------------------------------
+
+
+def test_extract_verdict_figures_explicit_pair():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(RUN_144_FM_REASON)
+    assert wrong == [1591, 9880]
+    assert canonical == [9822, 1649]  # 2028 filtered as a calendar year
+
+
+def test_extract_verdict_figures_should_be_phrasing():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The FX planning rate states 3.00, should be 2.944."
+    )
+    assert wrong == [3]
+    assert canonical == [2.944]
+
+
+def test_extract_verdict_figures_requires_separator():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    assert extract_verdict_figures(
+        "The glide schedule 4,136 / 5,094 / 592 is stale."
+    ) == ([], [])
+    assert extract_verdict_figures("") == ([], [])
+
+
+def test_extract_verdict_figures_filters_years_and_overlap():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The 2026/2027 glide legs state 4,136 and 12 vs adjudicated 5,094 "
+        "and 12 for 2027."
+    )
+    assert wrong == [4136]        # 12 appears on both sides → context
+    assert canonical == [5094, 12]
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the run-144 case classifies PATCH
+# ---------------------------------------------------------------------------
+
+
+def _run_144_prior_output():
+    """Minimal prior artifact where the wrong endpoint pair lives ONLY in
+    the medium slice — the exact run-144 shape."""
+    from datetime import date
+
+    from argosy.agents.plan_synthesizer_types import (
+        HorizonSection,
+        PlanSynthesisOutput,
+        SynthesisInputs,
+        SynthTarget,
+    )
+
+    return PlanSynthesisOutput(
+        long=HorizonSection(
+            horizon="long", freshness_expected="annual", status="no_change",
+            posture="Stay the course.", rationale="Diversified core holds.",
+        ),
+        medium=HorizonSection(
+            horizon="medium", freshness_expected="quarterly",
+            status="minor_revision",
+            posture="Continue the NVDA glide.",
+            rationale=(
+                "The glide endpoint pair is 1,591/9,880 shares at the "
+                "2028 endpoint."
+            ),
+            targets=[SynthTarget(
+                label="NVDA endpoint shares", value=1591.0, unit="shares",
+                stated_at=date(2026, 7, 1), revisit_after=date(2026, 10, 1),
+                rationale="endpoint anchor",
+            )],
+        ),
+        short=HorizonSection(
+            horizon="short", freshness_expected="monthly", status="no_change",
+            posture="No near-term change.", rationale="Cash is deployed.",
+        ),
+        inputs=SynthesisInputs(),
+        sections=[],
+    )
+
+
+def test_run_144_verdict_feedback_classifies_patch(session):
+    """THE gap this feature closes: run 144's one-finding FM rejection
+    (explicit wrong pair 1,591/9,880, explicit canonical 9,822/1,649, ref
+    medium.targets) must classify PATCH with a single implicated slice —
+    not pay another full 70k-char phase-3 rewrite."""
+    from argosy.quality.patch_reachability import classify_patch_reachability
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_144_FM_REASON]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+
+    reach = classify_patch_reachability(
+        corrections=[c.to_payload() for c in ctx.corrections],
+        directives=[d.to_payload() for d in ctx.directives],
+        prior=_run_144_prior_output(),
+        forces_full_tier=ctx.forces_full_tier,
+    )
+    assert reach.verdict == "PATCH"
+    assert reach.implicated_groups == ("medium",)
+    decision = reach.decisions[0]
+    assert decision.scope == "PATCH"
+    assert decision.implicated_groups == ("medium",)
 
 
 def test_migration_admits_executed_status(session):

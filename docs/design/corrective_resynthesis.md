@@ -46,6 +46,22 @@ Sources (all already persisted; no new state):
    DERIVED FACTS; the builder joins each finding to the derived fact covering its surface
    (by `plan_item_ref` token match, same lenient matcher as `findings_match`) so every
    correction carries its canonical value + derivation, not just "this is wrong".
+5. **Verdict feedback** — the user's most recent superseded-or-pending corrective draft
+   (`synthesis_inputs_json.corrective` present) whose run ended FM-rejected or
+   reader-blocked. The FM's rejection `reasons` and the reader's blocking findings
+   (BLOCKER→RED, AMBER→YELLOW) become structured corrections tagged
+   `source='verdict_feedback'` + source run/draft id — never free-text paste-back.
+   Wrong/canonical figures are extracted ONLY when the verdict states them explicitly
+   as a pair (e.g. "1,591/9,880 vs adjudicated 9,822/1,649"); otherwise values stay
+   empty and the patch-reachability classifier honestly routes the correction FULL.
+   Cited refs (`medium.targets.x`, `section:ips`) are parsed onto `plan_item_ref`, so an
+   explicit-figure + resolvable-ref verdict classifies PATCH — the fix cycle stops paying
+   a full phase-3 rewrite for a one-sentence delta. Scope guards: same current-plan
+   lineage (`corrective.base_plan_id` = current plan) and newer than the latest critique
+   row (a fresh critique supersedes old verdicts); deduped against critique corrections
+   via `findings_match`. Rendered in their own `VERDICT FEEDBACK` subsection, with the
+   prior run's corrections the verdicts did NOT re-flag (and the deterministic floor did
+   not report unresolved) as a "confirmed resolved — do NOT re-open" list.
 
 Rendered shape (one block, deterministic order, numbered):
 
