@@ -1,7 +1,7 @@
 ---
 topic: us_estate_tax_nonresidents
 jurisdiction: us
-last_verified: 1900-01-01
+last_verified: 2026-07-08
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.irs.gov/individuals/international-taxpayers/some-nonresidents-with-us-assets-must-file-estate-tax-returns

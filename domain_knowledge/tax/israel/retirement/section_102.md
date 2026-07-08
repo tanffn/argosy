@@ -1,7 +1,7 @@
 ---
 topic: israel_section_102_rsu_taxation
 jurisdiction: israel
-last_verified: 2026-06-02
+last_verified: 2026-07-08
 next_refresh_due: 2027-01-31
 canonical_location: domain_knowledge/tax/israel/section_102.md
 note: This file is superseded by the canonical refreshed version at the path above. Retained for backwards-compatibility with any agent that imports the `retirement/` path. See the canonical file for 2026 rates, sources, and the precise 24-month-from-end-of-tax-year holding-period rule.
@@ -13,7 +13,7 @@ sources:
     retrieved: 2026-06-02
     tier: 2
   - url: https://taxsummaries.pwc.com/israel/individual/income-determination
-    retrieved: 2026-06-02
+    retrieved: 2026-07-08
     tier: 1
 ---
 

@@ -4,7 +4,7 @@ topic: israel_capital_gains_and_investment_income
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual
-last_verified: 2026-06-02
+last_verified: 2026-07-08
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
@@ -13,7 +13,7 @@ source_urls:
   - https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
 sources:
   - url: https://taxsummaries.pwc.com/israel/individual/income-determination
-    retrieved: 2026-06-02
+    retrieved: 2026-07-08
     tier: 1
   - url: https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
     retrieved: 2026-06-02
