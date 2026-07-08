@@ -573,9 +573,11 @@ def _glide_doc_json(*, w_start: float = 60.0, w_end: float = 8.0) -> str:
 def _seed_pace_plan_and_snapshot(
     session, monkeypatch, tmp_path, *, nvda_shares_now: float,
     horizon_medium_json: str | None = None,
+    role: str = "draft",
 ) -> None:
-    """Draft plan with a glide doc + latest snapshot holding NVDA + a
-    month-granular sales block (Apr sale — BEFORE the July plan start)."""
+    """Plan (draft by default) with a glide doc + latest snapshot holding
+    NVDA + a month-granular sales block (Apr sale — BEFORE the July plan
+    start)."""
     from argosy.ingest.tsv import NVDASale, PortfolioPosition, PortfolioSnapshot
     from argosy.services.portfolio_snapshot_store import persist_snapshot
 
@@ -586,7 +588,7 @@ def _seed_pace_plan_and_snapshot(
     session.add(
         PlanVersion(
             user_id="ariel",
-            role="draft",
+            role=role,
             version_label="glide-draft",
             horizon_medium_json=horizon_medium_json,
             target_allocation_json=_glide_doc_json(),
@@ -806,6 +808,118 @@ def test_target_prorates_annual_from_horizon_medium(
         session_with_user, "ariel", as_of=date(2026, 5, 26),
     )
     assert 560 <= n <= 600, f"expected ~575, got {n}"
+
+
+# ----------------------------------------------------------------------
+# Cross-surface consistency: the home Deconcentration card and the /plan
+# NVDA share-trajectory chart must render the ONE canonical doc glide —
+# same waypoints in two denominators (weight-% vs shares).
+# ----------------------------------------------------------------------
+
+
+def test_glide_share_path_matches_pace_arithmetic(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """compute_nvda_glide_share_path is the pace derivation in share units:
+    shares(waypoint) = held_start * w / w_start, held_start = held_now +
+    sold-since-plan-start."""
+    from argosy.services import nvda_sales_history
+
+    _seed_pace_plan_and_snapshot(
+        session_with_user, monkeypatch, tmp_path, nvda_shares_now=11_471.0,
+    )
+    path = nvda_sales_history.compute_nvda_glide_share_path(
+        session_with_user, "ariel", as_of=date(2026, 7, 7),
+    )
+    assert path is not None
+    assert path.plan_start == date(2026, 7, 6)
+    assert path.held_now == 11_471
+    assert path.held_start == 11_471  # Apr sale is pre-plan-start
+    # Waypoints: 60 → 47 → 34 → 21 → 8 (%), shares = 11,471 * w/60.
+    assert [w.weight_pct for w in path.waypoints] == pytest.approx(
+        [60.0, 47.0, 34.0, 21.0, 8.0],
+    )
+    for w in path.waypoints:
+        assert w.shares == int(round(11_471 * w.weight_pct / 60.0))
+    assert path.target_shares == int(round(11_471 * 8.0 / 60.0))
+
+    # Ties to the pace: the next-waypoint sell amount is the same glide
+    # arithmetic (held_now minus the waypoint's implied shares).
+    pace = nvda_sales_history.compute_nvda_sale_pace(
+        session_with_user, "ariel", as_of=date(2026, 7, 7),
+    )
+    wp = next(
+        w for w in path.waypoints
+        if w.waypoint_date == pace.next_waypoint_date
+    )
+    assert pace.next_waypoint_weight_pct == pytest.approx(wp.weight_pct)
+    assert pace.shares_to_sell_by_waypoint == pytest.approx(
+        path.held_now - wp.shares, abs=1,
+    )
+
+
+def test_deconcentration_and_trajectory_render_one_canonical_glide(
+    session_with_user, monkeypatch, tmp_path,
+):
+    """The home Deconcentration card (allocation-glidepath NVDA waypoints)
+    and the /plan NVDA trajectory (projected_path + ceiling) must agree on
+    every waypoint — same dates, same weights, shares tied by held_start *
+    w/w_start. Regression: the trajectory used to bind to
+    compute_nvda_projection, which (a) returned None whenever the promoted
+    plan had no decision_run_id — the live v67 case, chart lost its plan
+    line while the home card kept rendering — and (b) drew a linear
+    cap/current ramp instead of the doc glide when it did resolve."""
+    from datetime import date as _date
+
+    from argosy.api.routes.plan import _compute_nvda_trajectory
+    from argosy.services import nvda_sales_history
+    from argosy.services.allocation_glidepath import (
+        compute_allocation_glidepath,
+    )
+
+    _seed_pace_plan_and_snapshot(
+        session_with_user, monkeypatch, tmp_path,
+        nvda_shares_now=11_471.0, role="current",
+    )
+
+    # Surface 1 — home Deconcentration card: the glidepath endpoint's NVDA
+    # class waypoints (the card extracts them client-side by class name).
+    gp = compute_allocation_glidepath(
+        session_with_user, "ariel", _date(2026, 7, 7),
+    )
+    assert gp is not None
+    decon_wps = [
+        (p.point_date.isoformat(),
+         p.composition_pct_by_class["Strategic single-stock (NVDA)"])
+        for p in gp.points
+    ]
+
+    # Surface 2 — /plan trajectory chart: projected_path + ceiling.
+    traj = _compute_nvda_trajectory(user_id="ariel", db=session_with_user)
+    traj_wps = [
+        (p.date, p.tradeable_weight_pct) for p in traj.projected_path
+    ]
+
+    # The canonical derivation both must equal.
+    path = nvda_sales_history.compute_nvda_glide_share_path(
+        session_with_user, "ariel", as_of=_date(2026, 7, 7),
+    )
+    assert path is not None
+    canon = [
+        (w.waypoint_date.isoformat(), round(w.weight_pct, 2))
+        for w in path.waypoints
+    ]
+
+    assert [(d, round(w, 2)) for d, w in decon_wps] == canon
+    assert [(d, round(w, 2)) for d, w in traj_wps] == canon
+    # Share axis: every projected point carries the glide-implied count.
+    assert [p.shares for p in traj.projected_path] == [
+        w.shares for w in path.waypoints
+    ]
+    assert traj.ceiling_target_shares == float(path.target_shares)
+    # today_shares comes from the same snapshot the pace/glide path read
+    # (no TSV in this fixture).
+    assert traj.today_shares == path.held_now
 
 
 def test_target_unit_must_be_shares(session_with_user, monkeypatch, tmp_path):

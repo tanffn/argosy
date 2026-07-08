@@ -784,6 +784,99 @@ def compute_nvda_sale_pace(
     )
 
 
+@dataclass(frozen=True)
+class NvdaGlideWaypointShares:
+    """One dated plan-glide waypoint expressed in SHARES (glide-implied)."""
+
+    waypoint_date: date
+    weight_pct: float  # NVDA % of the tradeable book at this waypoint
+    shares: int        # implied share count: held_start * w / w_start
+
+
+@dataclass(frozen=True)
+class NvdaGlideSharePath:
+    """The canonical glide expressed as a share-count path.
+
+    The EXACT same arithmetic :func:`compute_nvda_sale_pace` uses —
+    ``shares(t) = held_start * w(t) / w_start`` with ``held_start``
+    reconstructed as held-now (latest snapshot) + sold-since-plan-start —
+    exposed per-waypoint so share-denominated surfaces (the /plan NVDA
+    trajectory chart) render the SAME schedule the weight-denominated
+    deconcentration chart shows, instead of re-deriving their own path.
+    """
+
+    plan_start: date
+    held_now: int
+    held_start: int
+    waypoints: list[NvdaGlideWaypointShares]
+
+    @property
+    def target_shares(self) -> int:
+        """The glide's end-state share count (the last waypoint)."""
+        return self.waypoints[-1].shares
+
+    @property
+    def target_weight_pct(self) -> float:
+        return self.waypoints[-1].weight_pct
+
+
+def compute_nvda_glide_share_path(
+    session: Session, user_id: str, *, as_of: date | None = None
+) -> NvdaGlideSharePath | None:
+    """The canonical TargetAllocationDoc glide as dated SHARE waypoints.
+
+    Same plan selection (pending draft, else current plan) and same
+    share arithmetic as :func:`compute_nvda_sale_pace` — this is a
+    projection of the one canonical derivation into share units, not a
+    second derivation. Returns ``None`` when the plan carries no glide
+    doc / no NVDA class / no NVDA holdings (surfaces degrade, never
+    guess).
+    """
+    today = _today(as_of)
+    try:
+        from argosy.state.queries import get_current_plan, get_pending_draft
+
+        pv = get_pending_draft(session, user_id) or get_current_plan(session, user_id)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "nvda_sales_history.plan_lookup_failed",
+            user_id=user_id, error=str(exc),
+        )
+        return None
+
+    glide = _nvda_glide_weights(pv)
+    if not glide:
+        return None
+    plan_start, w_start = glide[0]
+    if w_start <= 0:
+        return None
+
+    held_now = _nvda_shares_held_now(session, user_id)
+    if held_now <= 0:
+        return None
+    sold_since_start = (
+        compute_nvda_shares_sold_ytd(
+            session, user_id, as_of=today, since=plan_start,
+        )
+        if today >= plan_start else 0
+    )
+    held_start = held_now + sold_since_start
+
+    return NvdaGlideSharePath(
+        plan_start=plan_start,
+        held_now=int(round(held_now)),
+        held_start=int(round(held_start)),
+        waypoints=[
+            NvdaGlideWaypointShares(
+                waypoint_date=d,
+                weight_pct=w,
+                shares=int(round(held_start * w / w_start)),
+            )
+            for d, w in glide
+        ],
+    )
+
+
 def compute_nvda_target_shares_ytd(
     session: Session, user_id: str, *, as_of: date | None = None
 ) -> int:
@@ -798,7 +891,10 @@ def compute_nvda_target_shares_ytd(
 
 
 __all__ = [
+    "NvdaGlideSharePath",
+    "NvdaGlideWaypointShares",
     "NvdaSalePace",
+    "compute_nvda_glide_share_path",
     "compute_nvda_sale_pace",
     "compute_nvda_shares_sold_ytd",
     "compute_nvda_target_shares_ytd",

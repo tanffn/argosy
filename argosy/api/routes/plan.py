@@ -1981,9 +1981,11 @@ class NvdaTrajectoryResponse(BaseModel):
     reduction_program: dict
     ceiling_target_shares: float | None
     ceiling_target_label: str | None
-    # The canonical forward sell glide (today_shares → target_shares at the
-    # 13% cap) from compute_nvda_projection — the planned reduction path the
-    # chart draws as the "sell points". Empty when the projection is unavailable.
+    # The canonical forward sell schedule: the plan's TargetAllocationDoc
+    # glide waypoints in SHARE units (compute_nvda_glide_share_path — the same
+    # derivation the pace + home Deconcentration card use), falling back to
+    # compute_nvda_projection for plans without a glide doc. Empty when
+    # neither is available.
     projected_path: list[NvdaProjectionPathPoint] = []
 
 
@@ -2197,34 +2199,68 @@ def _compute_nvda_trajectory(
             _authoritative.sort(key=lambda x: x.date)
             past_sales_raw = _authoritative
 
-    # T2.4 — the canonical NVDA target comes from the single projection
-    # (codex-verified share math: 11,471 -> floor(cap/current x shares) = 2,299
-    # at the 13% cap), wiring the previously-orphaned compute_nvda_projection so
-    # the trajectory reconciles to the plan instead of an identity_yaml ceiling.
+    # ONE canonical schedule: the plan's TargetAllocationDoc glide, expressed
+    # in shares via compute_nvda_glide_share_path — the SAME derivation
+    # (shares(t) = held_start * w(t)/w_start) compute_nvda_sale_pace and the
+    # home Deconcentration card bind to. The chart's target/waypoints and the
+    # deconcentration waypoints are then the one glide in two denominators.
+    # Consistency audit 2026-07-08: the prior primary (compute_nvda_projection)
+    # required plan.decision_run_id (None on the live promoted plan v67 — the
+    # graph-publish path doesn't stamp it), so the /plan chart silently lost
+    # its plan line while the home card kept rendering the glide; and even
+    # when it resolved it drew a DIFFERENT schedule (linear cap/current ramp
+    # over annual_reduction years) than the doc glide. It survives below only
+    # as the fallback for plans without a glide doc.
     ceiling_value: float | None = None
     ceiling_label: str | None = None
     projected_path: list[NvdaProjectionPathPoint] = []
     try:
-        from argosy.services.nvda_projection import compute_nvda_projection
-
-        _proj = compute_nvda_projection(
-            db, user_id, datetime.now(timezone.utc).date()
+        from argosy.services.nvda_sales_history import (
+            compute_nvda_glide_share_path,
         )
-        if _proj is not None:
-            ceiling_value = float(_proj.target_shares)
-            ceiling_label = f"Canonical NVDA target ({_proj.cap_pct:.0f}% cap)"
-            if today_shares is None:
-                today_shares = _proj.today_shares
-            projected_path = [
-                NvdaProjectionPathPoint(
-                    date=p.point_date.isoformat(),
-                    shares=int(p.shares),
-                    tradeable_weight_pct=round(float(p.tradeable_weight_pct), 2),
-                )
-                for p in _proj.points
-            ]
-    except Exception:  # noqa: BLE001 — best-effort; fall back to the draft ceiling
-        pass
+
+        _glide_path = compute_nvda_glide_share_path(db, user_id)
+    except Exception:  # noqa: BLE001 — best-effort; fall through
+        _glide_path = None
+    if _glide_path is not None and _glide_path.waypoints:
+        ceiling_value = float(_glide_path.target_shares)
+        ceiling_label = (
+            f"Plan glide target (NVDA "
+            f"{_glide_path.target_weight_pct:.0f}% of tradeable book)"
+        )
+        if today_shares is None:
+            today_shares = _glide_path.held_now
+        projected_path = [
+            NvdaProjectionPathPoint(
+                date=w.waypoint_date.isoformat(),
+                shares=int(w.shares),
+                tradeable_weight_pct=round(float(w.weight_pct), 2),
+            )
+            for w in _glide_path.waypoints
+        ]
+
+    if ceiling_value is None:
+        try:
+            from argosy.services.nvda_projection import compute_nvda_projection
+
+            _proj = compute_nvda_projection(
+                db, user_id, datetime.now(timezone.utc).date()
+            )
+            if _proj is not None:
+                ceiling_value = float(_proj.target_shares)
+                ceiling_label = f"Canonical NVDA target ({_proj.cap_pct:.0f}% cap)"
+                if today_shares is None:
+                    today_shares = _proj.today_shares
+                projected_path = [
+                    NvdaProjectionPathPoint(
+                        date=p.point_date.isoformat(),
+                        shares=int(p.shares),
+                        tradeable_weight_pct=round(float(p.tradeable_weight_pct), 2),
+                    )
+                    for p in _proj.points
+                ]
+        except Exception:  # noqa: BLE001 — fall back to the draft ceiling
+            pass
 
     # Fallback: the draft's long-horizon share-ceiling target.
     if ceiling_value is None:
@@ -3845,21 +3881,13 @@ def _nearest_ancestor_decision_run_id(
     the plan they refine and set ``decision_run_id=None`` by design, so the
     ancestor's resolver manifest IS the derivation authority for their headline
     numbers. Cycle-safe and hop-bounded (defense-in-depth on corrupt lineage).
+
+    Thin wrapper over the shared walker in ``argosy.state.queries`` (also used
+    by the overview assembler + the derived-cache version key).
     """
-    seen: set[int] = {pv.id}
-    current = pv
-    for _ in range(max_hops):
-        parent_id = getattr(current, "derived_from_id", None)
-        if not parent_id or parent_id in seen:
-            return None
-        seen.add(parent_id)
-        parent = db.get(PlanVersion, parent_id)
-        if parent is None:
-            return None
-        if parent.decision_run_id is not None:
-            return parent.decision_run_id
-        current = parent
-    return None
+    from argosy.state.queries import nearest_ancestor_decision_run_id
+
+    return nearest_ancestor_decision_run_id(db, pv, max_hops=max_hops)
 
 
 def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
