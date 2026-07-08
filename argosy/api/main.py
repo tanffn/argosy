@@ -644,15 +644,16 @@ def create_app() -> FastAPI:
 
         # SnapshotRefreshJob — self-refresh the portfolio snapshot (quantities
         # carried, live reprice + fresh FX, provenance-marked insert). The TSV
-        # is an OUTPUT, never an input dependency. Registered enabled=False:
-        # manual 'Run now' works today; flip enabled to schedule it.
+        # is an OUTPUT, never an input dependency. enabled=True per Ariel's
+        # 2026-07-08 go (verified live: 42/49 repriced, 0 misses, carry
+        # contract + independent-total re-derivation confirmed).
         try:
             from argosy.services.jobs.snapshot_refresh_job import (  # noqa: PLC0415
                 SnapshotRefreshJob,
                 snapshot_refresh_metadata,
             )
 
-            snapshot_refresh_loop = SnapshotRefreshJob(enabled=False, user_id="ariel")
+            snapshot_refresh_loop = SnapshotRefreshJob(enabled=True, user_id="ariel")
             scheduler.register_loop(snapshot_refresh_loop)
             registry.register(
                 job=snapshot_refresh_loop,

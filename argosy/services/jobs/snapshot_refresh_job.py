@@ -2,8 +2,8 @@
 
 The TSV is an Argosy OUTPUT, never an input dependency: when holdings have not
 changed, a fresh portfolio picture is the old snapshot's quantities re-priced
-(see :mod:`argosy.services.snapshot_refresh`). Registered ``enabled=False`` —
-manual ``Run now`` (``fire_now``) works today; flip ``enabled`` to schedule it.
+(see :mod:`argosy.services.snapshot_refresh`). Registered ``enabled=True``
+(Ariel's 2026-07-08 go); manual ``Run now`` (``fire_now``) uses the same tick.
 
 Same-code-path contract: the cron cadence and the manual trigger both go
 through :meth:`tick`. Quote/FX fetches are blocking network calls that use
@@ -55,7 +55,7 @@ def snapshot_refresh_metadata() -> JobMetadata:
     return JobMetadata(
         name="snapshot_refresh",
         schedule_cron=_DEFAULT_CRON,
-        schedule_human="Daily 08:00 IDT (manual-only until enabled)",
+        schedule_human="Daily 08:00 Asia/Jerusalem",
         source_kind="ingest",
         description=(
             "Self-refresh the portfolio snapshot: carry quantities from the "
