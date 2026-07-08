@@ -57,16 +57,24 @@ class AnnualLoop(CadenceLoop):
         # lazily and silently no-ops if the user has no `pensions`
         # block. Tests can inject a fake to avoid network access.
         self._pension_refresh: Callable[[str], Any] | None = pension_refresh_callable
+        # Per-step outcome side-channel read by RegisteredScheduler
+        # (`_safe_output_summary`) so `job_runs.output_summary` records
+        # which sub-step failed even when tick() raises. Same contract
+        # as NewsDailyJob's multi-stage summary.
+        self.last_output_summary: dict[str, Any] | None = None
 
-    async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
+    async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
+        # Reset the side-channel BEFORE any work so a raise never leaves the
+        # adapter reading a PRIOR tick's summary (news_daily precedent).
+        self.last_output_summary = None
         if os.environ.get("ARGOSY_KILL") == "1":
             _log.info("annual.kill_switch_skip")
-            return
+            return None
 
         guard = get_cost_guard(user_id=self.user_id)
         if await guard.should_pause_non_routine(loop_name=self.name):
             _log.info("annual.cost_guard_paused")
-            return
+            return None
 
         moment = (now or _utcnow)()
 
@@ -87,12 +95,21 @@ class AnnualLoop(CadenceLoop):
             except Exception:  # pragma: no cover - defensive
                 _log.exception("annual.publish_failed")
 
-        # Full domain re-verify
+        # Full domain re-verify. A sub-step failure here is captured (never
+        # swallowed into a green job run) and re-raised at the END of the
+        # tick, after the remaining independent steps + the audit event have
+        # completed — so RegisteredScheduler closes the `job_runs` row with
+        # status='error' (→ /api/jobs health red) while `last_output_summary`
+        # still records the partial progress. Previously the exception was
+        # logged and dropped, leaving the domain_refresh agent silently dead
+        # for days while the annual job reported ok.
+        refresh_error: str | None = None
         try:
             files = list(self._files_provider())
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # noqa: BLE001 — captured, re-raised at end
             _log.exception("annual.files_provider_failed")
             files = []
+            refresh_error = f"files_provider failed — {type(exc).__name__}: {exc}"
 
         refresh_summary: str | None = None
         if files:
@@ -100,13 +117,16 @@ class AnnualLoop(CadenceLoop):
                 agent = self._refresh_factory()
                 report = await agent.run(files_due=files)
                 refresh_summary = report.output.summary
-            except Exception:  # pragma: no cover - defensive
+            except Exception as exc:  # noqa: BLE001 — captured, re-raised at end
                 _log.exception("annual.domain_refresh_failed")
+                refresh_error = f"{type(exc).__name__}: {exc}"
 
         # Phase 3: opportunistic gemelnet pension snapshot.
         # We do NOT bubble exceptions — pensions data is auxiliary; an
-        # unreachable MoF site shouldn't fail the annual loop.
+        # unreachable MoF site shouldn't fail the annual loop. The outcome
+        # is still recorded in the output summary so it is observable.
         pensions_refreshed: int | None = None
+        pension_error: str | None = None
         try:
             if self._pension_refresh is not None:
                 outcome = self._pension_refresh(self.user_id)
@@ -116,8 +136,9 @@ class AnnualLoop(CadenceLoop):
                     pensions_refreshed = outcome
                 elif isinstance(outcome, dict):
                     pensions_refreshed = int(outcome.get("refreshed", 0))
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # noqa: BLE001 — auxiliary; recorded, not raised
             _log.exception("annual.pension_refresh_failed")
+            pension_error = f"{type(exc).__name__}: {exc}"
 
         await record_audit_event(
             user_id=self.user_id,
@@ -132,6 +153,36 @@ class AnnualLoop(CadenceLoop):
                 "pensions_refreshed": pensions_refreshed,
             },
         )
+
+        self.last_output_summary = {
+            "prompts_count": len(prompts),
+            "files_reviewed": len(files),
+            "steps": {
+                "prompts": "ok",
+                "domain_refresh": (
+                    "error" if refresh_error else ("ok" if files else "skipped_no_files")
+                ),
+                "pension_refresh": (
+                    "error"
+                    if pension_error
+                    else ("ok" if self._pension_refresh is not None else "skipped")
+                ),
+            },
+            "refresh_summary": refresh_summary,
+            "domain_refresh_error": refresh_error,
+            "pension_refresh_error": pension_error,
+            "pensions_refreshed": pensions_refreshed,
+        }
+
+        if refresh_error:
+            # Fail LOUD so the job run lands not-ok and the existing
+            # /api/jobs health derivation surfaces red — no bespoke
+            # detector. Partial progress remains readable via
+            # `last_output_summary` (RegisteredScheduler exception path).
+            raise RuntimeError(
+                f"annual: domain_refresh sub-step failed — {refresh_error}"
+            )
+        return self.last_output_summary
 
 
 def _default_files_provider() -> list[dict[str, str]]:

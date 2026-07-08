@@ -100,6 +100,158 @@ async def test_annual_emits_prompts_and_runs_refresh(engine: None) -> None:
     assert "files_reviewed" in audits[0].payload_json
 
 
+# ----------------------------------------------------------------------
+# Silent-death fix (verify-run 2026-07-08): a domain_refresh sub-step
+# failure must fail the tick LOUD — job run not-ok, health not-green —
+# never land a green `annual` run over a dead agent.
+# ----------------------------------------------------------------------
+
+
+def _failing_refresh_factory():
+    class _F(DomainRefreshAgent):
+        async def run(self, **_kwargs: Any):  # type: ignore[override]
+            from argosy.agents.errors import AgentRunError
+
+            raise AgentRunError(
+                "domain_refresh: output is missing required citations "
+                "(`cited_sources` is empty or absent)"
+            )
+
+    return _F(user_id="ariel")
+
+
+_ONE_FILE = [
+    {
+        "path": "domain_knowledge/tax/israel/capital_gains.md",
+        "frontmatter": "next_refresh_due: 2026-04-01",
+        "content": "Capital gains 25%.",
+    }
+]
+
+
+@pytest.mark.asyncio
+async def test_annual_domain_refresh_failure_fails_tick_loud(engine: None) -> None:
+    """AgentRunError in the domain-refresh sub-step → tick raises (so the
+    scheduler records error), with the failure summarized in
+    last_output_summary and the audit event still written (partial progress)."""
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    loop = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="ariel",
+        domain_refresh_factory=_failing_refresh_factory,
+        domain_files_provider=lambda: _ONE_FILE,
+    )
+    with pytest.raises(RuntimeError, match="domain_refresh sub-step failed"):
+        await loop.tick()
+
+    summary = loop.last_output_summary
+    assert summary is not None
+    assert summary["steps"]["domain_refresh"] == "error"
+    assert "missing required citations" in summary["domain_refresh_error"]
+
+    # The independent steps still completed — audit event landed.
+    async with db_mod.get_session() as session:
+        audits = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.event_type == "annual.completed")
+            )
+        ).scalars().all()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_annual_domain_refresh_failure_lands_error_job_run(engine: None) -> None:
+    """Through the registry seam: the `annual` job run must record
+    status='error' with the sub-step failure in output_summary, and the
+    /api/jobs health derivation must surface red (not green)."""
+    from argosy.services.jobs import JobMetadata, JobRegistry, RegisteredScheduler
+    from argosy.state.models import JobRun
+
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    loop = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="ariel",
+        domain_refresh_factory=_failing_refresh_factory,
+        domain_files_provider=lambda: _ONE_FILE,
+    )
+
+    class _DummySettings:
+        pass
+
+    registry = JobRegistry()
+    scheduler = RegisteredScheduler(
+        user_id="ariel", settings=_DummySettings(), registry=registry
+    )
+    registry.bind_scheduler(scheduler)
+    scheduler.register_loop(loop)
+    registry.register(
+        job=loop,
+        metadata=JobMetadata(
+            name="annual",
+            schedule_cron="0 8 2 1 *",
+            schedule_human="cron 0 8 2 1 *",
+            source_kind="maintenance",
+            description="test annual",
+            long_running=False,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="domain_refresh sub-step failed"):
+        await registry.fire_now("annual", triggered_by="test")
+
+    async with db_mod.get_session() as session:
+        row = (
+            await session.execute(
+                select(JobRun).where(JobRun.job_name == "annual")
+            )
+        ).scalar_one()
+    assert row.status == "error"
+    assert "domain_refresh sub-step failed" in (row.error_message or "")
+    # Partial progress captured on the exception path.
+    assert row.output_summary is not None
+    assert "missing required citations" in row.output_summary
+
+    view = await registry.get("annual")
+    assert view.last_run_status == "error"
+    assert view.health == "red"
+
+
+@pytest.mark.asyncio
+async def test_annual_success_records_step_summary(engine: None) -> None:
+    """Green path: tick returns the per-step summary dict (persisted as
+    job_runs.output_summary by the registry seam)."""
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    loop = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="ariel",
+        domain_refresh_factory=_mock_refresh_factory,
+        domain_files_provider=lambda: _ONE_FILE,
+    )
+    summary = await loop.tick()
+    assert summary is not None
+    assert summary["steps"]["domain_refresh"] == "ok"
+    assert summary["domain_refresh_error"] is None
+    assert summary["refresh_summary"] == "1 file checked."
+
+
 @pytest.mark.asyncio
 async def test_annual_with_no_files_still_records_audit(engine: None) -> None:
     events._reset_for_tests()

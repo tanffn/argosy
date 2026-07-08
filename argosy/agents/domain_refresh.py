@@ -72,6 +72,13 @@ class DomainRefreshAgent(BaseAgent[DomainRefreshReport]):
     agent_role = "domain_refresh"
     output_model = DomainRefreshReport
     require_citations = True
+    # The prompt requires live re-fetches, so the claude_code backend must
+    # actually GRANT the web tools. Without this the agent ran tool-less and
+    # (correctly) refused to fabricate verification — observed live 2026-07-07:
+    # "I cannot fabricate verification I did not perform. I have no live
+    # web-tool results" → empty `cited_sources` → the citation gate raised
+    # AgentRunError on every annual tick.
+    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch", "WebFetch")
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8192).
 
     def build_prompt(
@@ -104,6 +111,15 @@ class DomainRefreshAgent(BaseAgent[DomainRefreshReport]):
             "     - Set `status='no_change'`.\n"
             "     - Bump `next_refresh_due` per the file's "
             "`refresh_policy` (default: 90 days from today).\n\n"
+            "  5. CITATIONS ARE MANDATORY. Every per_file entry must carry "
+            "at least one `evidence` item with the URL you actually "
+            "consulted — a `no_change` verdict still cites the source you "
+            "verified the claims against (with today's `retrieved_at`). "
+            "Copy every distinct evidence URL into the top-level "
+            "`cited_sources` list. An output with an empty `cited_sources` "
+            "fails validation and the whole run is discarded. Never invent "
+            "a URL you did not fetch — if a source is unreachable, say so "
+            "in the file's `note` and cite the sources you DID reach.\n\n"
             "  Tier-1 sources REQUIRED for material change proposals "
             "(primary regulator / issuer publication). Never propose a "
             "change based solely on Tier-3+ commentary sources.\n\n"
