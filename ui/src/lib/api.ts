@@ -4030,17 +4030,33 @@ export type JobRunStatus =
   | "stopped"
   | (string & {});
 
+/**
+ * Static job metadata — served ONLY by GET /api/jobs/{name} under the
+ * `metadata` key (JobMetadataDTO in argosy/api/routes/jobs.py).
+ */
 export interface JobMetadata {
   name: string;
   schedule_cron: string | null;
   schedule_human: string;
-  source_kind: JobSourceKind;
+  source_kind: JobSourceKind | (string & {});
   description: string;
   long_running: boolean;
+  lock_acquire_timeout_s: number;
 }
 
+/**
+ * The FLAT computed view (JobViewDTO in argosy/api/routes/jobs.py) —
+ * metadata fields are inlined at the top level, NOT nested. Served as
+ * each element of GET /api/jobs `jobs[]` and as GET /api/jobs/{name}
+ * `view`.
+ */
 export interface JobView {
-  metadata: JobMetadata;
+  name: string;
+  schedule_cron: string | null;
+  schedule_human: string;
+  source_kind: JobSourceKind | (string & {});
+  description: string;
+  long_running: boolean;
   last_run_at: string | null;
   last_run_status: JobRunStatus | null;
   last_run_error: string | null;
@@ -4049,19 +4065,24 @@ export interface JobView {
   health: JobHealth;
 }
 
+/** One job_runs row (JobRunDTO in argosy/api/routes/jobs.py). */
 export interface JobRunRow {
   id: number;
   job_name: string;
   started_at: string;
   finished_at: string | null;
   status: JobRunStatus;
-  duration_ms: number | null;
+  skip_reason: string | null;
   error_message: string | null;
-  output_summary: Record<string, unknown> | null;
+  manual_trigger: boolean;
   triggered_by: string | null;
+  /** JSON-encoded object serialized as a STRING by the backend. */
+  output_summary: string | null;
+  duration_ms: number | null;
 }
 
 export interface JobListResponse {
+  scheduler_running: boolean;
   jobs: JobView[];
 }
 
@@ -4090,7 +4111,8 @@ export interface JobStopResponse {
 
 export interface JobReconnectResponse {
   name: string;
-  new_job_run_id: number;
+  /** Null when the fresh supervisor hasn't opened its job_runs row yet. */
+  new_job_run_id: number | null;
 }
 
 /** 409 already-running body per §1.4. */

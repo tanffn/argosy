@@ -181,21 +181,17 @@ export function nextReviewLabel(job: JobView | null): string | null {
       });
     }
   }
-  // The live /api/jobs payload is FLAT (name/schedule_* at top level);
-  // the JobView DTO wrongly claims nested metadata. Tolerate both shapes
-  // until the DTO cleanup (see handover open item).
-  const meta = (job as unknown as { metadata?: Record<string, unknown> }).metadata
-    ?? (job as unknown as Record<string, unknown>);
-  const cron = meta.schedule_cron as string | null;
-  if (cron) {
-    const m = cron.trim().match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+(\w{3})$/i);
+  if (job.schedule_cron) {
+    const m = job.schedule_cron
+      .trim()
+      .match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+(\w{3})$/i);
     if (m) {
       const [, min, hour, dow] = m;
       const day = dow.charAt(0).toUpperCase() + dow.slice(1).toLowerCase();
       return `${day} ${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
     }
   }
-  return (meta.schedule_human as string) || null;
+  return job.schedule_human || null;
 }
 
 /**
@@ -272,13 +268,7 @@ export function PlanAdherenceCard({ userId, plan: planProp, greeting }: Props) {
         if (cancelled) return;
         if (jobsRes.status === "fulfilled") {
           setWeeklyReview(
-            jobsRes.value.jobs.find(
-              (j) => {
-                const meta = (j as unknown as { metadata?: { name?: string } }).metadata
-                  ?? (j as unknown as { name?: string });
-                return meta.name === "weekly_review";
-              },
-            ) ?? null,
+            jobsRes.value.jobs.find((j) => j.name === "weekly_review") ?? null,
           );
         }
         if (flagsRes.status === "fulfilled") setFlags(flagsRes.value);

@@ -66,9 +66,9 @@ export function RunNowButton({ job, onChanged }: Props) {
     setConflict(null);
     setPending(true);
     try {
-      await api.jobs.runNow(job.metadata.name);
+      await api.jobs.runNow(job.name);
       onChanged(); // optimistic refresh; the row should now show 'running'
-      pollUntilDone(job.metadata.name, POLL_MAX_TICKS);
+      pollUntilDone(job.name, POLL_MAX_TICKS);
     } catch (e) {
       setPending(false);
       if (e instanceof JobApiError) {
@@ -89,7 +89,7 @@ export function RunNowButton({ job, onChanged }: Props) {
     setError(null);
     setPending(true);
     try {
-      await api.jobs.stop(job.metadata.name);
+      await api.jobs.stop(job.name);
       onChanged();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -104,9 +104,9 @@ export function RunNowButton({ job, onChanged }: Props) {
     setConflict(null);
     setPending(true);
     try {
-      await api.jobs.reconnect(job.metadata.name);
+      await api.jobs.reconnect(job.name);
       onChanged();
-      pollUntilDone(job.metadata.name, POLL_MAX_TICKS);
+      pollUntilDone(job.name, POLL_MAX_TICKS);
     } catch (e) {
       setPending(false);
       if (e instanceof JobApiError && e.status === 401) {
@@ -120,7 +120,7 @@ export function RunNowButton({ job, onChanged }: Props) {
   return (
     <div className="flex flex-col gap-1 items-end">
       <div className="flex items-center gap-1.5">
-        {job.metadata.long_running ? (
+        {job.long_running ? (
           <>
             <Button
               size="sm"

@@ -52,6 +52,28 @@ function formatStartedAt(iso: string): string {
   }
 }
 
+/**
+ * output_summary arrives as a JSON-encoded STRING (the backend
+ * json.dumps the dict before storing). Pretty-print when it parses;
+ * fall back to the raw text; null when there is nothing to show.
+ */
+function formatOutputSummary(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      Object.keys(parsed).length === 0
+    ) {
+      return null;
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 export function JobRunHistory({ jobName }: { jobName: string }) {
   const [runs, setRuns] = useState<JobRunRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +151,9 @@ export function JobRunHistory({ jobName }: { jobName: string }) {
           </tr>
         </thead>
         <tbody>
-          {visible.map((r) => (
+          {visible.map((r) => {
+            const summary = formatOutputSummary(r.output_summary);
+            return (
             <tr
               key={r.id}
               className={cn(
@@ -154,14 +178,13 @@ export function JobRunHistory({ jobName }: { jobName: string }) {
               <td className="py-1.5 pl-2">
                 {r.error_message ? (
                   <span className="text-error">{r.error_message}</span>
-                ) : r.output_summary &&
-                  Object.keys(r.output_summary).length > 0 ? (
+                ) : summary ? (
                   <details className="cursor-pointer">
                     <summary className="text-muted-foreground select-none">
                       summary
                     </summary>
                     <pre className="text-[10px] font-mono whitespace-pre-wrap text-muted-foreground mt-1">
-                      {JSON.stringify(r.output_summary, null, 2)}
+                      {summary}
                     </pre>
                   </details>
                 ) : (
@@ -169,7 +192,8 @@ export function JobRunHistory({ jobName }: { jobName: string }) {
                 )}
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

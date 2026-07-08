@@ -74,22 +74,20 @@ const GREETING = {
 
 function weeklyReviewJob(overrides: Partial<JobView> = {}): JobView {
   return {
-    metadata: {
-      name: "weekly_review",
-      schedule_cron: "0 18 * * SUN",
-      schedule_human: "cron 0 18 * * SUN (Asia/Jerusalem)",
-      source_kind: "maintenance",
-      description: "",
-      long_running: false,
-    },
+    name: "weekly_review",
+    schedule_cron: "0 18 * * SUN",
+    schedule_human: "cron 0 18 * * SUN (Asia/Jerusalem)",
+    source_kind: "maintenance",
+    description: "",
+    long_running: false,
     last_run_at: new Date(NOW - 1 * DAY_MS).toISOString(),
     last_run_status: "ok",
     last_run_error: null,
     next_run_at: null,
     currently_running_run_id: null,
-    health: "healthy",
+    health: "green",
     ...overrides,
-  } as JobView;
+  };
 }
 
 function flag(overrides: Partial<MonitorFlagDTO> = {}): MonitorFlagDTO {
@@ -110,7 +108,10 @@ beforeEach(() => {
   monitorFlags.mockReset();
   recritique.mockReset();
   planCurrent.mockReset();
-  jobsList.mockResolvedValue({ jobs: [weeklyReviewJob()] });
+  jobsList.mockResolvedValue({
+    scheduler_running: true,
+    jobs: [weeklyReviewJob()],
+  });
   monitorFlags.mockResolvedValue([]);
 });
 

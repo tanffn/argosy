@@ -148,7 +148,7 @@ export function JobsTable() {
     return [...jobs].sort((a, b) => {
       const r = rank[a.health] - rank[b.health];
       if (r !== 0) return r;
-      return a.metadata.name.localeCompare(b.metadata.name);
+      return a.name.localeCompare(b.name);
     });
   }, [jobs]);
 
@@ -191,13 +191,13 @@ export function JobsTable() {
             </thead>
             <tbody>
               {sorted.map((job) => {
-                const open = !!expanded[job.metadata.name];
+                const open = !!expanded[job.name];
                 return (
                   <JobRowFragment
-                    key={job.metadata.name}
+                    key={job.name}
                     job={job}
                     open={open}
-                    onToggle={() => toggle(job.metadata.name)}
+                    onToggle={() => toggle(job.name)}
                     onChanged={refresh}
                   />
                 );
@@ -246,17 +246,17 @@ function JobRowFragment({
         </td>
         <td className="py-2 px-2">
           <div className="flex flex-col">
-            <span className="font-medium">{job.metadata.name}</span>
+            <span className="font-medium">{job.name}</span>
             <span className="text-xs text-muted-foreground line-clamp-1">
-              {job.metadata.description}
+              {job.description}
             </span>
           </div>
         </td>
         <td className="py-2 px-2">
-          <Badge variant={KIND_VARIANT[job.metadata.source_kind] ?? "default"}>
-            {job.metadata.source_kind}
+          <Badge variant={KIND_VARIANT[job.source_kind] ?? "default"}>
+            {job.source_kind}
           </Badge>
-          {job.metadata.long_running && (
+          {job.long_running && (
             <Badge variant="outline" className="ml-1">
               long-running
             </Badge>
@@ -264,10 +264,10 @@ function JobRowFragment({
         </td>
         <td className="py-2 px-2">
           <div className="flex flex-col">
-            <span>{job.metadata.schedule_human}</span>
-            {job.metadata.schedule_cron && (
+            <span>{job.schedule_human}</span>
+            {job.schedule_cron && (
               <code className="text-[10px] text-muted-foreground">
-                {job.metadata.schedule_cron}
+                {job.schedule_cron}
               </code>
             )}
           </div>
@@ -297,7 +297,7 @@ function JobRowFragment({
           )}
         </td>
         <td className="py-2 px-2 text-muted-foreground tabular-nums">
-          {job.metadata.long_running ? (
+          {job.long_running ? (
             <span className="text-xs italic">n/a</span>
           ) : (
             relativeTime(job.next_run_at)
@@ -313,7 +313,7 @@ function JobRowFragment({
       {open && (
         <tr>
           <td colSpan={9} className="p-0">
-            <JobRunHistory jobName={job.metadata.name} />
+            <JobRunHistory jobName={job.name} />
           </td>
         </tr>
       )}
