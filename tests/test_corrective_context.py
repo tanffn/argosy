@@ -1290,6 +1290,330 @@ def test_verdict_finding_carries_required_statement(session):
     assert "required wording (apply this restatement)" in ctx.rendered
 
 
+# ---------------------------------------------------------------------------
+# Landed-set UNION across the corrective-draft chain (2026-07-08 night bug:
+# draft 72's verdict-only landed set shadowed draft 71's critique landed set)
+# ---------------------------------------------------------------------------
+
+# Run-155 live FM reconcile reason (verbatim shape): renders X ... but
+# directive/confirmed-resolved ... Y — no replacement keyword, but the
+# adjudication words on the right carry replacement semantics.
+RUN_155_FM_RECONCILE = (
+    "RECONCILE — single-name ceiling figure diverges from the directive "
+    "and the confirmed-resolved lock. The draft renders 13.0% across IPS / "
+    "medium.target / medium.theme, but directive [3] and the "
+    "CONFIRMED-RESOLVED Allocation-Coherence item (draft #71) both "
+    "reference a 12% cap; the facilitator and neutral officer both made "
+    "'pick ONE ceiling figure across ALL surfaces, keep it provisional' "
+    "an explicit condition."
+)
+
+
+def _now_minus(hours):
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+def test_landed_union_across_corrective_chain(session):
+    """The exact tonight shape: draft A lands the critique corrections,
+    draft B (newer, same lineage) lands only verdict-feedback corrections.
+    Reading only the most recent draft shadowed A's landed set and re-fed
+    all critique corrections; the union keeps them suppressed."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run_a = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run_a,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+        imported_at=_now_minus(3),
+    )
+    run_b = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run_b,
+        corrections=[
+            {"index": 1, "topic": "verdict-only ceiling item",
+             "plan_item_ref": "medium.target"},
+        ],
+        unresolved=[],
+        imported_at=_now_minus(1),
+    )
+    # Both critique corrections stay suppressed (landed by draft A) even
+    # though the most recent corrective draft B never carried them.
+    assert build_corrective_context(session, user_id="ariel") is None
+
+
+def test_landed_union_tonight_shape_with_rejected_verdict_draft(session):
+    """Full tonight shape: draft B is FM-rejected, so verdict feedback
+    harvests from it — but the critique corrections draft A landed must
+    STAY suppressed instead of re-attaching alongside the verdict items."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run_a = _add_run(session)  # rejected — like live run 149
+    _add_corrective_draft(
+        session, run_a,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+        imported_at=_now_minus(3),
+    )
+    run_b = _add_run(session)  # rejected — like live run 155
+    draft_b = _add_corrective_draft(
+        session, run_b,
+        corrections=[
+            {"index": 1, "topic": "verdict-only ceiling item",
+             "plan_item_ref": "medium.target"},
+        ],
+        unresolved=[],
+        imported_at=_now_minus(1),
+    )
+    _add_verdict_report(
+        session, run_b, role="fund_manager",
+        payload=_fm_rejection([RUN_155_FM_RECONCILE]),
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    # Only the fresh verdict correction feeds; glide/fx stay landed.
+    assert [c.source for c in ctx.corrections] == ["verdict_feedback"]
+    topics = {s["topic"] for s in ctx.landed_suppressed}
+    assert topics == {"glide", "fx-rate"}
+    assert ctx.landed_source_draft_id == draft_b.id
+
+
+def test_landed_union_per_draft_fail_safe_keeps_older_landings(session):
+    """A draft whose floor CRASHED contributes nothing — but it must not
+    block an OLDER draft's verified landings (per-draft fail-safety)."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _two_open_findings(session)
+    run_a = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run_a,
+        corrections=[
+            {"index": 1, "topic": "glide", "plan_item_ref": "glide.schedule"},
+            {"index": 2, "topic": "fx-rate", "plan_item_ref": "assumptions.fx"},
+        ],
+        unresolved=[],
+        imported_at=_now_minus(3),
+    )
+    run_b = _add_run(session, fund_manager_decision="approved")
+    _add_corrective_draft(
+        session, run_b,
+        corrections=[
+            {"index": 1, "topic": "verdict-only ceiling item",
+             "plan_item_ref": "medium.target"},
+        ],
+        unresolved=[{
+            "index": 0, "topic": "corrective_check",
+            "reason": "corrections-landed check crashed; fail-closed",
+        }],
+        imported_at=_now_minus(1),
+    )
+    assert build_corrective_context(session, user_id="ariel") is None
+
+
+# ---------------------------------------------------------------------------
+# Figure extraction — FM reconcile 'renders X ... but <adjudication> ... Y'
+# ---------------------------------------------------------------------------
+
+
+def test_extract_verdict_figures_renders_but_directive_phrasing():
+    """The run-155 live gap: FM reconcile phrasing extracted nothing
+    (wrong=[] canon=[]) because there was no replacement keyword. The
+    render-verb + contrast + adjudication-word triple now extracts the
+    pair, with index refs ('directive [3]', 'draft #71') stripped so they
+    never pollute the figures."""
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(RUN_155_FM_RECONCILE)
+    assert wrong == [13]
+    assert canonical == [12]  # NOT [3, 71, 12]
+
+
+def test_extract_verdict_figures_shows_whereas_canonical():
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    wrong, canonical = extract_verdict_figures(
+        "The dashboard shows 3.00 whereas the canonical planning rate "
+        "carries 2.944."
+    )
+    assert wrong == [3]
+    assert canonical == [2.944]
+
+
+def test_extract_verdict_figures_renders_but_needs_adjudication_word():
+    """'renders X but <other surface> shows Y' is a cross-surface
+    OBSERVATION (either side could be wrong) — extracts nothing."""
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    assert extract_verdict_figures(
+        "The draft renders 13.0% in the IPS, but the medium table "
+        "shows 12%."
+    ) == ([], [])
+
+
+def test_extract_verdict_figures_fragility_still_safe_after_renders_rule():
+    """Observation-safety must survive the new rule (run-155 regression
+    guard): bare comparisons keep extracting NOTHING."""
+    from argosy.services.corrective_context import extract_verdict_figures
+
+    assert extract_verdict_figures(RUN_155_BLOCKER_3) == ([], [])
+    assert extract_verdict_figures(
+        "Break-even FX is 2.998 versus current 3.006."
+    ) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# Zigzag-settled values (Ariel doctrine 2026-07-08: argue both sides from
+# raw sources, converge, RECORD — the builder carries the settled figure)
+# ---------------------------------------------------------------------------
+
+
+NVDA_CAP_SETTLEMENT = {
+    "zigzag": "nvda_cap",
+    "settled_value": "13.0",
+    "unit": "pct",
+    "superseded_values": [12, "12.0"],
+    "statement": (
+        "The canonical NVDA single-name (look-through) cap is 13.0% — the "
+        "governed TargetAllocationDoc value; 12.0% was a stale echo."
+    ),
+    "match": [
+        {"topic": "Allocation Coherence"},
+        {"topic": "Concentration Math"},
+    ],
+    "match_tokens": ["nvda", "cap", "ceiling"],
+}
+
+
+def _add_settlement(session, payload=None):
+    return _add_proposal(
+        session, kind="note_only",
+        dedup_key="zigzag_settled:nvda_cap:ariel",
+        payload=payload or NVDA_CAP_SETTLEMENT,
+        summary="ZIGZAG SETTLED: NVDA cap = 13.0%",
+        rationale="derivation-first verdict",
+    )
+
+
+def test_zigzag_settlement_attaches_canonical_to_matching_correction(session):
+    """The settled figure lands as a canonical fact on the matching
+    critique correction (topic match), is rendered as a SETTLED VALUES
+    note, and leaves non-matching corrections untouched."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _add_critique(
+        session,
+        [
+            _finding(
+                "Concentration Math",
+                "Concentration § / Medium-horizon target",
+                "62.5% ÷ the canonical 13.0% cap = 4.81×, not 8.93×",
+            ),
+            _finding("fx-rate", "assumptions.fx", "FX 3.00 vs plan 2.944"),
+        ],
+        finding_status=["escalated", "escalated"],
+    )
+    prop = _add_settlement(session)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    cap = next(c for c in ctx.corrections if c.topic == "Concentration Math")
+    assert ("zigzag_settled:nvda_cap", "13.0") in cap.canonical_facts
+    assert cap.check_payload()["canonical_values"] == ["13.0"]
+    fx = next(c for c in ctx.corrections if c.topic == "fx-rate")
+    assert all(k != "zigzag_settled:nvda_cap" for k, _ in fx.canonical_facts)
+    assert ctx.settled_values == [{
+        "proposal_id": prop.id,
+        "zigzag": "nvda_cap",
+        "settled_value": "13.0",
+        "statement": NVDA_CAP_SETTLEMENT["statement"],
+    }]
+    assert "SETTLED VALUES" in ctx.rendered
+    assert "nvda_cap = 13.0" in ctx.rendered
+    assert "do NOT re-litigate" in ctx.rendered
+    assert ctx.to_payload()["settled_values"] == ctx.settled_values
+    # The note_only settlement row is NEVER a directive and is not slated
+    # to flip on promote.
+    assert ctx.directives == []
+    assert prop.id not in ctx.proposal_ids
+
+
+def test_zigzag_settlement_cleans_contradicting_verdict_figures(session):
+    """Tonight's exact conflict: the FM reconcile verdict mechanically
+    extracts wrong=13 / canonical=12, while the zigzag settled 13.0 as
+    canonical (12 = stale echo). The settlement must strip the settled
+    value from wrong_values, drop the superseded 12 from canonical facts,
+    and attach 13.0 — so the floor demands the SETTLED figure, not its
+    inversion."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session, run, role="fund_manager",
+        payload=_fm_rejection([RUN_155_FM_RECONCILE]),
+    )
+    _add_settlement(session)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    c = ctx.corrections[0]
+    assert c.source == "verdict_feedback"
+    assert c.wrong_values == []  # 13 removed — settled value never "wrong"
+    values = [v for _, v in c.canonical_facts]
+    assert values == ["13.0"]  # superseded 12 dropped, settled attached
+    assert "wrong (must be absent): 13" not in ctx.rendered
+    assert "SETTLED VALUES" in ctx.rendered
+
+
+def test_zigzag_settlement_without_match_is_inert(session):
+    """A settlement matching no correction records nothing and renders no
+    note — settlements only carry onto their subject."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _add_critique(
+        session,
+        [_finding("bridge", "withdrawal.bridge", "bridge carry undiscounted")],
+        finding_status=["escalated"],
+    )
+    _add_settlement(session)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert ctx.settled_values == []
+    assert "SETTLED VALUES" not in ctx.rendered
+    assert all(
+        k != "zigzag_settled:nvda_cap"
+        for c in ctx.corrections for k, _ in c.canonical_facts
+    )
+
+
+def test_zigzag_settlement_loader_failure_is_fail_soft(session, monkeypatch):
+    """A settlement loader crash degrades to today's behavior — the run
+    still builds."""
+    from argosy.services import corrective_context as cc
+
+    _add_critique(
+        session,
+        [_finding("glide", "glide.schedule", "stale glide")],
+        finding_status=["escalated"],
+    )
+    _add_settlement(session)
+
+    def _boom(*a, **k):
+        raise RuntimeError("loader crashed")
+
+    monkeypatch.setattr(cc, "_load_settled_zigzag_proposals", _boom)
+    ctx = cc.build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert ctx.settled_values == []
+    assert len(ctx.corrections) == 1
+
+
 def test_migration_admits_executed_status(session):
     """Migration 0078: the CHECK enum admits status='executed' at head."""
     row = _add_proposal(

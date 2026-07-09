@@ -259,6 +259,13 @@ class CorrectiveContext:
     # them. Empty when nothing was suppressed.
     landed_suppressed: list[dict[str, Any]] = field(default_factory=list)
     landed_source_draft_id: int | None = None
+    # Zigzag-settled values (Ariel doctrine 2026-07-08: same-path number
+    # disagreements get zigzagged — argue both sides from raw sources,
+    # converge, RECORD; never escalate). Each entry:
+    # {"proposal_id", "zigzag", "settled_value", "statement"} — the settled
+    # figure was also attached as a canonical fact to every matching
+    # correction and any contradicting extracted figures were cleaned.
+    settled_values: list[dict[str, Any]] = field(default_factory=list)
     rendered: str = ""
 
     def to_payload(
@@ -279,6 +286,7 @@ class CorrectiveContext:
             "reused_phases": list(reused_phases or []),
             "landed_suppressed": [dict(i) for i in self.landed_suppressed],
             "landed_source_draft_id": self.landed_source_draft_id,
+            "settled_values": [dict(s) for s in self.settled_values],
             "verdict_feedback": (
                 {
                     "draft_id": self.verdict_feedback_draft_id,
@@ -386,6 +394,145 @@ def match_fact_to_finding(fact_key: str, finding: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Zigzag-settled values (Ariel doctrine 2026-07-08): a same-path number
+# disagreement (e.g. NVDA cap 12.0% vs 13.0%) is settled ONCE by a zigzag —
+# both sides argued from raw derivations, converged, verdict RECORDED as a
+# ``note_only`` ActionProposal (``dedup_key = zigzag_settled:<topic>:<user>``,
+# payload below). The builder reads open/accepted settlements and carries the
+# settled figure as a canonical fact on every MATCHING correction, so the
+# corrective run (and the deterministic floor + reader) hold the settled
+# value instead of re-litigating whichever echo the latest verdict repeated.
+#
+# Payload contract (all optional except ``settled_value``):
+#   {"zigzag": "nvda_cap", "settled_value": "13.0", "unit": "pct",
+#    "superseded_values": [12, "12.0"], "statement": "<one-line canon>",
+#    "match": [{"topic": ...}, ...],           # findings_match entries
+#    "match_tokens": ["nvda", "cap", ...]}     # majority-token fallback
+# ---------------------------------------------------------------------------
+
+
+def _value_num(v: Any) -> float | None:
+    try:
+        return float(str(v).replace(",", "").replace("%", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_value(a: Any, b: Any) -> bool:
+    """Numeric-first equality ('13.0' == 13 == 13.0); string fallback."""
+    na, nb = _value_num(a), _value_num(b)
+    if na is not None and nb is not None:
+        return abs(na - nb) < 1e-9
+    return str(a).strip() == str(b).strip()
+
+
+def settlement_matches(payload: dict[str, Any], finding: dict[str, Any]) -> bool:
+    """Does a settled-zigzag payload cover this correction's subject?
+
+    Two deterministic channels, either suffices:
+    - any ``match`` entry same-subject per ``findings_match`` (topic
+      equality / ref-token overlap — pins the known critique topics);
+    - STRICT majority of ``match_tokens`` present in the correction's
+      topic/ref/summary words (covers verdict-feedback findings whose
+      topic is derived prose, same spirit as ``match_fact_to_finding``).
+    """
+    for m in payload.get("match") or []:
+        if isinstance(m, dict) and findings_match(m, finding):
+            return True
+    tokens = [str(t).lower() for t in (payload.get("match_tokens") or []) if t]
+    if tokens:
+        words = _finding_words(finding)
+        hits = sum(1 for t in tokens if t in words)
+        if len(tokens) == 1:
+            return hits == 1
+        return hits / len(tokens) > 0.5
+    return False
+
+
+def _load_settled_zigzag_proposals(
+    session: Session, *, user_id: str
+) -> list[tuple[int, dict[str, Any]]]:
+    """Open/accepted ``zigzag_settled:*`` note_only proposals, oldest first.
+
+    ``accepted`` tolerated for the same reason as the resynth proposal —
+    Ariel may confirm the note; the settlement stays binding either way.
+    Rows without a usable ``settled_value`` payload are skipped.
+    """
+    rows = session.execute(
+        select(ActionProposal)
+        .where(
+            ActionProposal.user_id == user_id,
+            ActionProposal.kind == "note_only",
+            ActionProposal.status.in_(("open", "accepted")),
+            ActionProposal.dedup_key.like("zigzag_settled:%"),
+        )
+        .order_by(ActionProposal.id.asc())
+    ).scalars().all()
+    out: list[tuple[int, dict[str, Any]]] = []
+    for r in rows:
+        try:
+            payload = json.loads(r.suggested_payload or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("settled_value") is not None:
+            out.append((r.id, payload))
+    return out
+
+
+def _apply_zigzag_settlements(
+    ctx: CorrectiveContext,
+    settlements: list[tuple[int, dict[str, Any]]],
+) -> None:
+    """Carry each settled value onto its matching corrections.
+
+    Per matching correction:
+    - drop the settled value from ``wrong_values`` (a stale verdict echo
+      must never demand the SETTLED figure be absent);
+    - drop canonical facts whose value is one of the settlement's
+      superseded figures (the echo the zigzag retired);
+    - append the settled figure as a canonical fact
+      (``zigzag_settled:<topic>``) so the deterministic floor requires it
+      to land verbatim.
+    Settlements that match no correction are inert (nothing recorded).
+    """
+    for pid, payload in settlements:
+        sv = payload.get("settled_value")
+        name = str(payload.get("zigzag") or "value")
+        key = f"zigzag_settled:{name}"
+        superseded = payload.get("superseded_values") or []
+        matched = False
+        for c in ctx.corrections:
+            finding = {
+                "topic": c.topic,
+                "plan_item_ref": c.plan_item_ref,
+                "summary": c.summary,
+            }
+            if not settlement_matches(payload, finding):
+                continue
+            matched = True
+            c.wrong_values = [
+                v for v in c.wrong_values if not _same_value(v, sv)
+            ]
+            c.canonical_facts = [
+                (k, v) for k, v in c.canonical_facts
+                if not any(_same_value(v, s) for s in superseded)
+            ]
+            if not any(k == key for k, _ in c.canonical_facts):
+                c.canonical_facts.append((key, sv))
+        if matched:
+            ctx.settled_values.append({
+                "proposal_id": pid,
+                "zigzag": name,
+                "settled_value": sv,
+                "statement": str(payload.get("statement") or ""),
+            })
+            _log.info(
+                "corrective_context.zigzag_settlement_applied",
+                proposal_id=pid, zigzag=name, settled_value=sv,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Source 5 — verdict feedback (FM rejection / reader block on a prior
 # corrective draft). Deterministic harvest; no LLM, no re-judgment.
 # ---------------------------------------------------------------------------
@@ -427,6 +574,33 @@ _VS_RE = re.compile(
 # not/but prose.
 _NOT_BUT_RE = re.compile(
     r"\bnot\s+([^;]{1,60}?)\s+but\s+([^;]{1,80})", re.IGNORECASE
+)
+
+# FM reconcile phrasing (zigzag 2026-07-09, run-155 live gap): 'the draft
+# renders X ... but the directive/adjudicated/canonical/lock references Y'.
+# There is no replacement keyword between the figures, but the ADJUDICATION
+# word on the RIGHT side carries the same semantics: LEFT = what the draft
+# shows (wrong), RIGHT = what the adjudicated source states (canonical).
+# Deliberately conservative — requires all three of: a render-verb, a
+# contrast conjunction, and an adjudication word on the right. A bare
+# comparison ('is X versus current Y') has none of the three and still
+# extracts NOTHING (the 2.998-versus-3.006 fragility observation stays
+# safe).
+_RENDERS_CONTRAST_RE = re.compile(
+    r"\b(?:renders?|shows?|states?|displays?)\b(?P<wrong>.{1,160}?)"
+    r"\b(?:but|while|whereas)\b"
+    r"(?P<canon>.{0,240}?\b(?:directive|adjudicat\w+|canonical|"
+    r"lock(?:ed)?|confirmed[- ]resolved)\b.{0,200})",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Index/id references FM prose cites verbatim ('directive [3]', 'draft #71',
+# 'run 155') — never figures; stripped before extraction on the
+# renders-contrast path so they cannot pollute the pair.
+_REF_NOISE_RE = re.compile(
+    r"\[\d+\]|#\d+|\b(?:draft|drafts|run|runs|proposal|proposals|item|items)"
+    r"\s+#?\d+\b",
+    re.IGNORECASE,
 )
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;!?])\s+")
@@ -491,6 +665,14 @@ def extract_verdict_figures(text: str) -> tuple[list[Any], list[Any]]:
         if m:
             pair = _validated_pair(
                 _figures_in(m.group(1)), _figures_in(m.group(2))
+            )
+            if pair is not None:
+                return pair
+        m = _RENDERS_CONTRAST_RE.search(sentence)
+        if m:
+            pair = _validated_pair(
+                _figures_in(_REF_NOISE_RE.sub(" ", m.group("wrong"))),
+                _figures_in(_REF_NOISE_RE.sub(" ", m.group("canon"))),
             )
             if pair is not None:
                 return pair
@@ -641,7 +823,7 @@ def _load_rejected_corrective_draft(
     return None
 
 
-def _landed_corrections_from_latest_draft(
+def _landed_corrections_from_recent_drafts(
     session: Session,
     *,
     user_id: str,
@@ -649,19 +831,27 @@ def _landed_corrections_from_latest_draft(
     critique_created_at: datetime | None,
 ) -> tuple[list[dict[str, Any]], int | None]:
     """FIX 1 (Ariel 2026-07-08, suppress verified-landed corrections):
-    ``(landed, draft_id)`` — the corrections the user's MOST RECENT
-    corrective draft carried that its deterministic corrections-landed
-    floor verified LANDED (``synthesis_inputs_json.corrective.corrections``
-    minus the ``corrective_unresolved`` indices).
+    ``(landed, draft_id)`` — the UNION of the corrections that the user's
+    recent corrective drafts carried and whose deterministic
+    corrections-landed floors verified LANDED
+    (``synthesis_inputs_json.corrective.corrections`` minus the
+    ``corrective_unresolved`` indices). ``draft_id`` is the NEWEST
+    contributing draft.
 
-    Live bug this closes: run 150 re-attached 17 corrections although the
-    floor had verified all 9 critique corrections landed (run 141
-    ``corrective_unresolved=[]``) — the critique row never refreshes, so
-    landed findings re-fed every pass.
+    Live bugs this closes:
+    - run 150 re-attached 17 corrections although the floor had verified
+      all 9 critique corrections landed (run 141
+      ``corrective_unresolved=[]``) — the critique row never refreshes, so
+      landed findings re-fed every pass;
+    - landed-set SHADOWING (2026-07-08 night): reading only the MOST
+      RECENT corrective draft let draft 72 (whose corrections were all
+      verdict-feedback items) shadow draft 71's landed set (the 9 critique
+      corrections), re-attaching all 9 on the next build. The union across
+      the same-lineage chain keeps every verified landing visible.
 
-    Fail-safe toward RE-FEEDING (returning ``([], None)``) on any doubt:
-    - decides on the most recent corrective draft ONLY (older drafts are
-      superseded history);
+    Fail-safe stays PER DRAFT — a draft that fails ANY check contributes
+    NOTHING (never blocks other drafts' verified landings, and any doubt
+    still degrades toward re-feeding):
     - the draft must belong to the current-plan lineage;
     - the draft must be NEWER than the latest critique row (a fresh
       critique's findings are fresh judgments an older draft can't settle);
@@ -679,6 +869,10 @@ def _landed_corrections_from_latest_draft(
         .order_by(PlanVersion.id.desc())
         .limit(25)
     ).scalars().all()
+    crit = _as_utc_naive(critique_created_at)
+    landed: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    source_draft_id: int | None = None
     for pv in rows:
         try:
             si = json.loads(pv.synthesis_inputs_json or "{}")
@@ -687,36 +881,45 @@ def _landed_corrections_from_latest_draft(
         corrective = si.get("corrective") if isinstance(si, dict) else None
         if not isinstance(corrective, dict):
             continue
-        # Most recent corrective draft found — decide on THIS one only.
         if corrective.get("base_plan_id") != current_plan_id:
-            return [], None
-        crit = _as_utc_naive(critique_created_at)
+            continue  # other lineage — contributes nothing
         draft_ts = _as_utc_naive(pv.imported_at)
         if crit is not None and (draft_ts is None or draft_ts <= crit):
-            return [], None  # fresh critique supersedes the old landing
+            continue  # fresh critique supersedes this draft's landing
         unresolved = si.get("corrective_unresolved")
         if not isinstance(unresolved, list):
-            return [], None  # floor never ran — nothing VERIFIED landed
+            continue  # floor never ran — nothing VERIFIED landed here
         unresolved_idx: set[int] = set()
+        crashed = False
         for u in unresolved:
             if not isinstance(u, dict):
-                return [], None
+                crashed = True
+                break
             idx = int(u.get("index") or 0)
             if idx == 0:
-                return [], None  # fail-closed crash marker — trust nothing
+                crashed = True  # fail-closed crash marker — trust nothing
+                break
             unresolved_idx.add(idx)
-        landed: list[dict[str, Any]] = []
+        if crashed:
+            continue
+        contributed = False
         for pc in corrective.get("corrections") or []:
             if not isinstance(pc, dict):
                 continue
             if int(pc.get("index") or 0) in unresolved_idx:
                 continue
-            landed.append({
-                "topic": str(pc.get("topic") or ""),
-                "plan_item_ref": str(pc.get("plan_item_ref") or ""),
-            })
-        return landed, pv.id
-    return [], None
+            key = (
+                str(pc.get("topic") or ""),
+                str(pc.get("plan_item_ref") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            landed.append({"topic": key[0], "plan_item_ref": key[1]})
+            contributed = True
+        if contributed and source_draft_id is None:
+            source_draft_id = pv.id  # newest contributing draft
+    return landed, source_draft_id
 
 
 def _load_latest_verdict_report(
@@ -991,6 +1194,17 @@ def _render_block(ctx: CorrectiveContext) -> str:
         f"Preserve every plan element NOT implicated by a correction; {base_ref} "
         "is the base document.",
     ]
+    if ctx.settled_values:
+        lines.append(
+            "\nSETTLED VALUES (zigzag-adjudicated: both sides argued from "
+            "raw derivations and converged; recorded verdict — apply as "
+            "canonical on EVERY surface, do NOT re-litigate):"
+        )
+        for s in ctx.settled_values:
+            entry = f"- {s['zigzag']} = {_fmt_value(s['settled_value'])}"
+            if s.get("statement"):
+                entry += f" — {s['statement']}"
+            lines.append(entry)
     critique_corrections = [
         c for c in ctx.corrections if c.source != "verdict_feedback"
     ]
@@ -1204,7 +1418,8 @@ def build_corrective_context(
     # corrections, so the same findings re-attach every pass (live: run 150
     # re-fed 17 although run 141's floor verified all 9 critique corrections
     # landed, corrective_unresolved=[]). Drop any critique-sourced correction
-    # the MOST RECENT corrective draft's persisted payload shows as landed —
+    # the recent corrective-draft CHAIN's persisted payloads show as landed
+    # (union across the same-lineage drafts newer than the critique) —
     # UNLESS a newer verdict-feedback finding re-flags the same subject
     # (findings_match): a re-flag means the landing was cosmetic/regressed
     # and the correction must re-feed. Best-effort; a loader crash keeps
@@ -1213,7 +1428,7 @@ def build_corrective_context(
         landed: list[dict[str, Any]] = []
         landed_draft_id: int | None = None
         try:
-            landed, landed_draft_id = _landed_corrections_from_latest_draft(
+            landed, landed_draft_id = _landed_corrections_from_recent_drafts(
                 session,
                 user_id=user_id,
                 current_plan_id=current.id,
@@ -1390,6 +1605,20 @@ def build_corrective_context(
             )
         )
 
+    # Zigzag-settled values — applied AFTER every correction (critique +
+    # verdict feedback) is assembled so the settled figure overrides any
+    # stale echo either source carried. Best-effort: a settlement loader
+    # crash degrades to today's behavior, never blocks the run.
+    try:
+        settlements = _load_settled_zigzag_proposals(session, user_id=user_id)
+        if settlements:
+            _apply_zigzag_settlements(ctx, settlements)
+    except Exception as exc:  # noqa: BLE001 — settlements are best-effort
+        _log.warning(
+            "corrective_context.zigzag_settlements_failed",
+            user_id=user_id, error=str(exc)[:200],
+        )
+
     # Snapshot-class corrections implicate phase-1 inputs → full tier. The
     # reconcile loop tags refresh_snapshot-routed findings status='routed'.
     # Freshness-aware: when the user's latest portfolio snapshot POSTDATES
@@ -1487,5 +1716,6 @@ __all__ = [
     "extract_required_statement",
     "extract_verdict_figures",
     "match_fact_to_finding",
+    "settlement_matches",
     "upsert_open_proposal_sync",
 ]
