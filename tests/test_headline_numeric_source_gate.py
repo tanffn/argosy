@@ -631,3 +631,57 @@ class TestScrubTokenBoundaries:
         scrubbed, log = scrub_headline_numeric_source(md, resolved)
         assert PENDING_LABEL in scrubbed["long"]
         assert "₪21.00M" not in scrubbed["long"]
+
+
+# --------------------------------------------------------------------------
+# Signed-value MAGNITUDE matching (draft-73): a markdown token is unsigned by
+# construction; shortfall phrasing states |margin| with the sign carried by
+# the words ("short by ₪69,324" for a resolved −69,323.77). The canonical FI
+# verdict itself renders `short ₪{abs(m):,.0f}`, so the tracer must accept
+# the magnitude of a NEGATIVE resolved value — under the same strict
+# tolerance (no masking of genuinely fabricated numbers).
+# --------------------------------------------------------------------------
+
+class TestSignedMagnitudeMatching:
+    def _resolved(self) -> ResolvedPlanNumbers:
+        return _resolved(**{
+            "retirement.fi_margin_signed_nis": -69_323.77,
+            "portfolio.liquid_net_worth_nis": 11_766_810.0,
+        })
+
+    def test_shortfall_magnitude_of_negative_resolved_traces(self):
+        # The draft-73 live 422: five headline lines phrased "net worth ...
+        # short by ₪69,324" were flagged because the tracer compared the
+        # unsigned token against the SIGNED resolved value only.
+        md = {"long": (
+            "Liquid net worth comes up ₪69,324 short of the total capital "
+            "target on the corrected book."
+        )}
+        violations = check_headline_numeric_source(md, self._resolved())
+        assert violations == [], [v.detail for v in violations]
+
+    def test_fabricated_shortfall_magnitude_still_flagged(self):
+        # Masking guard: a number near NO resolved magnitude still fails —
+        # |−69,323.77| sanctions 69,324, not 96,324 (digit transposition) or
+        # a round 100,000.
+        for bad in ("₪96,324", "₪100,000"):
+            md = {"long": (
+                f"Liquid net worth comes up {bad} short of the total capital "
+                "target on the corrected book."
+            )}
+            violations = check_headline_numeric_source(md, self._resolved())
+            assert len(violations) == 1, (bad, [v.detail for v in violations])
+            assert violations[0].check is GateCheck.HEADLINE_NUMERIC_SOURCE
+
+    def test_scrub_never_destroys_legit_shortfall_magnitude(self):
+        # _token_ok_nis shares the rule: a large legitimate magnitude of a
+        # negative resolved value must not be scrubbed to [derivation pending].
+        resolved = _resolved(**{
+            "retirement.fi_margin_signed_nis": -3_427_424.0,
+        })
+        md = {"long": (
+            "Net worth is ₪3,427,424 short of the FI capital target today."
+        )}
+        scrubbed, log = scrub_headline_numeric_source(md, resolved)
+        assert scrubbed["long"] == md["long"]
+        assert log == []

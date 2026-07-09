@@ -49,6 +49,13 @@ FACT_DISPLAY: dict[str, str] = {
     "retirement.liquidity_reserve_nis": "nis_millions",
     # Signed margins / flows — shown in full so the sign + exact gap are legible.
     "retirement.fi_margin_signed_nis": "nis",
+    # Magnitude (abs) form of the SAME signed margin, for shortfall phrasing
+    # ("short by ₪X" — the canonical FI verdict itself renders `short ₪{abs(m)}`,
+    # see plan_numeric_resolver / surface_rendering.render_fi_verdict_text). A
+    # display-layer alias: the VALUE is sourced from the signed resolver key via
+    # FACT_SOURCE_ALIAS; only the rendering differs. Never use it where the sign
+    # itself is the message (use the signed key there).
+    "retirement.fi_margin_abs_nis": "nis_abs",
     "savings.annual_net_nis": "nis",
     "spend.fi_basis_nis": "nis",
     "spend.annual_t12_nis": "nis",
@@ -89,6 +96,15 @@ FACT_DISPLAY: dict[str, str] = {
     "fx.usd_nis": "fx",
 }
 
+# Display-layer VALUE aliases: a registered fact key whose value is read from a
+# DIFFERENT resolver key. Exists so one resolved value can carry two display
+# forms (e.g. the signed FI margin and its magnitude for "short by ₪X" prose)
+# without the resolver growing a duplicate derived fact. The resolver stays the
+# single source of the value; the alias only changes rendering.
+FACT_SOURCE_ALIAS: dict[str, str] = {
+    "retirement.fi_margin_abs_nis": "retirement.fi_margin_signed_nis",
+}
+
 
 def format_fact(value: float, unit: str, *, display: str) -> str:
     """Render ``value`` in its display policy. Matches the existing renderer's
@@ -97,6 +113,11 @@ def format_fact(value: float, unit: str, *, display: str) -> str:
     v = float(value)
     if display == "nis":
         return f"₪{v:,.0f}"
+    if display == "nis_abs":
+        # Magnitude form for shortfall/surplus phrasing ("short by ₪69,324")
+        # where the sign is carried by the words, not the digits. Mirrors the
+        # canonical FI verdict's `₪{abs(m):,.0f}` rendering.
+        return f"₪{abs(v):,.0f}"
     if display == "nis_millions":
         return f"₪{v / 1e6:.2f}M"
     if display == "pct":
@@ -130,7 +151,9 @@ def render_fact(key: str, resolved, *, registry: dict[str, str] = FACT_DISPLAY) 
     display = registry.get(key)
     if display is None:
         raise PlaceholderError(f"fact key not in registry: {key!r}")
-    rv = resolved.get(key)
+    # Display-layer alias: read the value from the aliased resolver key (e.g.
+    # the abs-margin form reads the signed margin). See FACT_SOURCE_ALIAS.
+    rv = resolved.get(FACT_SOURCE_ALIAS.get(key, key))
     if rv is None or getattr(rv, "status", None) != "resolved" or getattr(rv, "value", None) is None:
         raise PlaceholderError(
             f"fact {key!r} is not resolved (status="

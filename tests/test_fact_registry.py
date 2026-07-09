@@ -192,3 +192,34 @@ def test_ban_gate_ignores_pending_literal_and_non_financial_ints():
     # financial magnitudes and must NOT be flagged.
     text = "Target is [derivation pending]. See section 3. The 2026-07-01 tranche has 2 lots."
     assert find_unauthorized_numbers(text) == []
+
+
+# --- draft-73: magnitude (abs) display alias of the signed FI margin ---------
+def test_fi_margin_abs_alias_renders_magnitude_from_signed_key():
+    """`retirement.fi_margin_abs_nis` is a display-layer ALIAS: the value is
+    read from the signed resolver key (FACT_SOURCE_ALIAS) and rendered as its
+    magnitude, for shortfall phrasing ("short by ₪69,324") where the sign is
+    carried by the words. Mirrors the canonical FI verdict's abs rendering."""
+    from argosy.quality.fact_registry import FACT_SOURCE_ALIAS
+
+    assert FACT_DISPLAY.get("retirement.fi_margin_abs_nis") == "nis_abs"
+    assert FACT_SOURCE_ALIAS["retirement.fi_margin_abs_nis"] == (
+        "retirement.fi_margin_signed_nis"
+    )
+    resolved = _Resolved({
+        "retirement.fi_margin_signed_nis": _RV(-69323.77, "nis"),
+    })
+    assert render_fact("retirement.fi_margin_abs_nis", resolved) == "₪69,324"
+    # The signed form is untouched.
+    assert render_fact("retirement.fi_margin_signed_nis", resolved) == "₪-69,324"
+    # Placeholder path renders through the alias too.
+    out = render_placeholders(
+        "short by {{fact:retirement.fi_margin_abs_nis}} on the liquid basis",
+        resolved,
+    )
+    assert out == "short by ₪69,324 on the liquid basis"
+
+
+def test_format_fact_nis_abs_is_magnitude():
+    assert format_fact(-69323.77, "nis", display="nis_abs") == "₪69,324"
+    assert format_fact(69323.77, "nis", display="nis_abs") == "₪69,324"

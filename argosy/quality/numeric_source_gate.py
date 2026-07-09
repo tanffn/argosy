@@ -383,12 +383,31 @@ def _token_in(
 def _traces(unit: str, candidates: list[float], resolved: list[tuple[str, float]]) -> bool:
     # Resolver pct values are FRACTIONS (0.13) while the markdown shows points
     # (13%); compare a pct token against both rv*100 and rv.
+    #
+    # Signed-value MAGNITUDE matching (draft-73 fix): a markdown token is
+    # unsigned BY CONSTRUCTION (the ₪/%-token regexes start at the symbol and
+    # cannot carry a minus), while resolved values are signed. Shortfall
+    # phrasing states the magnitude with the sign carried by the words —
+    # "short by ₪69,324" for a resolved margin of −69,323.77 — and that is the
+    # CANONICAL form: the resolver's own FI verdict renders `short
+    # ₪{abs(m):,.0f}` (render_numbers_for_synth / render_fi_verdict_text).
+    # Without |·| matching, NO prose can ever trace a negative resolved value.
+    # So a candidate also traces to |rv| when rv < 0. This cannot sanction a
+    # fabricated number that strict matching would have caught: it only adds
+    # the exact magnitudes of genuinely-resolved negative values to the
+    # approved set, under the SAME tolerance (which already uses |resolved|).
     for c in candidates:
         for _, rv in resolved:
             if unit == "pct":
                 if _matches(c, rv * 100.0, "pct") or _matches(c, rv, "pct"):
                     return True
+                if rv < 0 and (
+                    _matches(c, -rv * 100.0, "pct") or _matches(c, -rv, "pct")
+                ):
+                    return True
             elif _matches(c, rv, unit):
+                return True
+            elif rv < 0 and _matches(c, -rv, unit):
                 return True
     return False
 
@@ -493,8 +512,15 @@ def _resolved_by_unit(
 
 
 def _token_ok_nis(num: float, suffix: str | None, resolved: list[tuple[str, float]]) -> bool:
+    # Same signed-value magnitude rule as _traces: an unsigned ₪-token also
+    # traces to |rv| of a NEGATIVE resolved value (shortfall phrasing), so the
+    # scrub never destroys a legitimate "short by ₪X" figure.
     cands = _nis_candidates(num, suffix)
-    return any(_matches(c, rv, "nis") for c in cands for _, rv in resolved)
+    return any(
+        _matches(c, rv, "nis") or (rv < 0 and _matches(c, -rv, "nis"))
+        for c in cands
+        for _, rv in resolved
+    )
 
 
 # The mutating scrub is deliberately SURGICAL — far narrower than the
