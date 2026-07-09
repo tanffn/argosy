@@ -115,10 +115,11 @@ def test_appendix_shows_derived_figures(session):
     assert "₪10.68M" in md
     # FI target now comes from the deterministic fi_methodology, not the
     # agent's fi_base: permanent-equivalent spend (T12 276,996 + life-event
-    # params 70,000 = 346,996) ÷ 3.0% SWR = ₪11.57M. FI age 52 (51.7) still
-    # from the withdrawal_sequencer.
+    # params 70,000 = 346,996) ÷ 3.0% SWR = ₪11.57M. FI age 51.7 still
+    # from the withdrawal_sequencer — fractional ages keep their precision
+    # (a floored "age 52" broke bridge-arithmetic coherence; drun-156 reader).
     assert "₪11.57M" in md
-    assert "age 52" in md
+    assert "age 51.7" in md
     # Resolver source keys are surfaced for traceability.
     assert "retirement.fi_target_nis" in md
     assert "savings.annual_net_nis" in md
@@ -229,9 +230,10 @@ def test_pending_savings_blocks_trajectory_rows(session):
         session=session, user_id="ariel", decision_run_id=DRUN
     )
     # FI target now from fi_methodology (household_budget seeded) = ₪11.57M;
-    # FI age 52 still from the withdrawal_sequencer.
+    # FI age 51.7 still from the withdrawal_sequencer (fractional ages keep
+    # their precision — no flooring to "age 52").
     assert "₪11.57M" in md
-    assert "age 52" in md
+    assert "age 51.7" in md
     # But the savings line + forward trajectory are pending.
     assert "[derivation pending]" in md
     assert "Trajectory rows are `[derivation pending]`" in md

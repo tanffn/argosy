@@ -82,6 +82,25 @@ def test_format_fact_age():
     assert format_fact(46.0, "age", display="age") == "age 46"
 
 
+def test_format_fact_age_keeps_half_year_precision():
+    """A half-year fi_age must NOT round to the integer — 'age 46' for a 46.5
+    fi_age broke the FIRE-bridge arithmetic coherence ((60 − 46) vs a bridge
+    figure sized over 13.5 yrs; drun-156 reader BLOCK findings). Load-bearing
+    age precision is exempt from the clean-round-money display doctrine."""
+    assert format_fact(46.5, "age", display="age") == "age 46.5"
+    # integral ages stay clean — no spurious ".0"
+    assert format_fact(60.0, "age", display="age") == "age 60"
+    assert format_fact(95.0, "age", display="age") == "age 95"
+
+
+def test_render_placeholders_half_year_age_and_doubling_collapse():
+    resolved = _Resolved({"retirement.fi_age": _RV(46.5, "age")})
+    out = render_placeholders(
+        "bridge runs from age {{fact:retirement.fi_age}} to 60", resolved
+    )
+    assert out == "bridge runs from age 46.5 to 60"
+
+
 def test_render_fact_reads_value_from_resolver():
     resolved = _Resolved({"portfolio.liquid_net_worth_nis": _RV(11749568.0, "nis")})
     # the registry knows this key's display policy

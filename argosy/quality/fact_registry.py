@@ -103,7 +103,12 @@ def format_fact(value: float, unit: str, *, display: str) -> str:
         # resolver stores fractions; show percent-points
         return f"{v * 100:.1f}%"
     if display == "age":
-        return f"age {v:.0f}"
+        # Load-bearing precision: a half-year age must NOT round to the integer
+        # ("age 46" for fi_age 46.5 broke bridge-arithmetic coherence — the
+        # drun-156 reader BLOCK findings). Integral ages stay clean ("age 60");
+        # fractional ages keep one decimal ("age 46.5"). The clean-round display
+        # doctrine applies to MONEY, not to a load-bearing age.
+        return f"age {v:.0f}" if v == int(v) else f"age {v:.1f}"
     if display == "sh":
         return f"{v:,.0f}"
     if display == "fx":

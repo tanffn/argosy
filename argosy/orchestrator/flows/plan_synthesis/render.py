@@ -856,6 +856,23 @@ def _canonical_crossing_cell(fi_crossing_rv, fallback: str) -> str:
     return fallback
 
 
+def _age_num(v: float) -> str:
+    """Bare age (or year-span) figure at load-bearing precision.
+
+    Integral → ``"46"``; fractional → one decimal (``"46.5"``). A half-year
+    fi_age silently flooring to the integer broke the FIRE-bridge arithmetic
+    coherence ((60 − 46) = 14 yrs vs a 13.5-yr-sized bridge figure — the
+    drun-156 reader BLOCK). Clean-round display applies to MONEY, not ages.
+    """
+    fv = float(v)
+    return f"{fv:.0f}" if fv == int(fv) else f"{fv:.1f}"
+
+
+def _age_str(v: float) -> str:
+    """``"age 46.5"`` / ``"age 60"`` — the prose form of :func:`_age_num`."""
+    return f"age {_age_num(v)}"
+
+
 def _fmt_nis_m(rv) -> str:
     """Format a resolver NIS value in ₪M, or the pending label."""
     if rv is None or rv.status != "resolved" or rv.value is None:
@@ -1012,7 +1029,7 @@ def render_trajectory_reconciliation_appendix(
     lines.append("## Appendix — Trajectory & Retirement-Age Reconciliation")
     lines.append("")
     fi_age_disp = (
-        f"age {fi_age.value:.0f}"
+        _age_str(fi_age.value)
         if fi_age.status == "resolved" and fi_age.value is not None
         else _pending_label()
     )
@@ -1214,7 +1231,7 @@ def render_trajectory_reconciliation_appendix(
     ):
         lines.append(
             "| Earliest safe retirement age (Monte-Carlo, 90% solvency to 95, "
-            f"typical-drawdown) | age {earliest_safe_age.value:.0f} "
+            f"typical-drawdown) | {_age_str(earliest_safe_age.value)} "
             "| `retirement.earliest_safe_age` |"
         )
     req_disp = (
@@ -1396,12 +1413,12 @@ def render_number_derivations_appendix(
         )
         lines.append(
             f"### FIRE bridge — {_n(bridge_nis)} liquid drawdown "
-            f"(perpetuity track: age {ret_age:.0f}→{LUMP_PENSION_AGE})"
+            f"(perpetuity track: {_age_str(ret_age)}→{LUMP_PENSION_AGE})"
         )
         lines.append("")
         lines.append(
-            f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {ret_age:.0f}) "
-            f"= {bridge_years:.0f} yrs × permanent-equivalent spend "
+            f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {_age_num(ret_age)}) "
+            f"= {_age_num(bridge_years)} yrs × permanent-equivalent spend "
             f"{_n(m.permanent_annual_spend_nis)}/yr = **{_n(bridge_nis)}** — the liquid "
             "capital that funds spend BEFORE the age-60 partial pension unlock. "
             "Sized on the permanent-equivalent basis, not the lower tracked T12 burn."
@@ -1415,12 +1432,12 @@ def render_number_derivations_appendix(
         if esa is not None and abs(esa - ret_age) >= 0.5:
             lines.append(
                 f"- **Which age is this?** This bridge is sized to the **perpetuity "
-                f"self-sufficiency age {ret_age:.0f}** (live off yield forever, no "
+                f"self-sufficiency age {_age_num(ret_age)}** (live off yield forever, no "
                 f"principal drawdown). The plan's **headline retirement age is the "
-                f"earliest-safe {esa:.0f}** — a distinct, more aggressive track that "
+                f"earliest-safe {_age_num(esa)}** — a distinct, more aggressive track that "
                 "draws principal down and is validated by the Monte-Carlo solvency "
                 "run (which already funds its own age-→60 gap internally). Retiring at "
-                f"{esa:.0f} is the earlier option; reaching {ret_age:.0f} is when the "
+                f"{_age_num(esa)} is the earlier option; reaching {_age_num(ret_age)} is when the "
                 "portfolio becomes perpetuity-self-sufficient. Both are real; they are "
                 "NOT two conflicting values for one age."
             )
@@ -1531,7 +1548,7 @@ def render_number_derivations_appendix(
             elif rv.unit == "pct":
                 val = f"{float(rv.value)*100:.1f}%"
             elif rv.unit == "age":
-                val = f"age {float(rv.value):.1f}"
+                val = _age_str(float(rv.value))
             else:
                 val = f"{rv.value}"
             formula = rv.formula or rv.source_locator

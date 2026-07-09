@@ -187,6 +187,46 @@ def test_derivations_appendix_renders_auditable_breakdown(session):
     ) == pytest.approx(m.finite_liability_reserve_nis)
 
 
+def test_derivations_appendix_bridge_keeps_half_year_fi_age(session):
+    """A half-year fi_age (46.5) must render at full precision in the FIRE-bridge
+    block. The drun-156 reader BLOCK: the sentence read '(60 − 46) = 14 yrs ×
+    ₪311,584 = ₪4,206,384' — the amount was sized over 13.5 yrs but the display
+    floored both the age and the span, so the stated arithmetic didn't cohere."""
+    from argosy.orchestrator.flows.plan_synthesis.render import (
+        render_number_derivations_appendix,
+    )
+
+    class _RV:
+        def __init__(self, value, status="resolved"):
+            self.value, self.status = value, status
+            self.unit = "age"
+            self.source_locator = "test"
+            self.formula = "test"
+            self.confidence = "HIGH"
+
+    class _Resolved:
+        def __init__(self, d):
+            self._d = d
+
+        def get(self, key):
+            return self._d.get(key)
+
+    resolved = _Resolved({"retirement.fi_age": _RV(46.5)})
+    md = render_number_derivations_appendix(
+        session=session, user_id="ariel", resolved=resolved
+    )
+
+    # The bridge sentence states the true half-year span and coherent arithmetic:
+    # (60 − 46.5) = 13.5 yrs × 311,584 = 4,206,384.
+    assert "(60 − 46.5) " in md
+    assert "= 13.5 yrs" in md
+    assert "₪4,206,384" in md
+    assert "age 46.5→60" in md
+    # The incoherent floored forms must be gone.
+    assert "(60 − 46)" not in md
+    assert "= 14 yrs" not in md
+
+
 def test_no_baseline_returns_none(tmp_path):
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     Base.metadata.create_all(engine)
