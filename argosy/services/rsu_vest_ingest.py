@@ -5,6 +5,12 @@ Reads a Schwab Equity Awards CSV via the existing parser at
 SchwabVestEvent as an RsuVestEvent row. Idempotent on
 (user_id, grant_id, vest_date) — re-ingesting the same CSV is a no-op.
 
+UNITS GOTCHA (audit 2026-07-09): Schwab split-adjusts the Lapse `Quantity`
+column (→ shares_vested) and FMV, but NOT `NetSharesDeposited`
+(→ shares_net). Pre-2024-06-split rows therefore carry shares_net in
+original at-vest units (shares_vested / 10). `shares_vested` is the truth
+column for share arithmetic — see the RsuVestEvent model docstring.
+
 Consumers:
   - <HolisticTimelineCard> (sprint commit #10) — render historical vest
     markers on the /retirement timeline.

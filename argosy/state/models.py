@@ -2592,6 +2592,20 @@ class RsuVestEvent(Base):
     spec was revised from `rsu_unvested_grants` → `rsu_vest_events` once
     the real CSV showed no future-vest rows.
 
+    UNITS (data-quality audit 2026-07-09, per-lot §102 ledger): Schwab
+    split-adjusts the Lapse `Quantity` and `FairMarketValuePrice` columns
+    retroactively but NOT `NetSharesDeposited`. Therefore:
+
+    * ``shares_vested`` and ``fmv_per_share_usd`` are the TRUTH columns —
+      always in post-split (current) units; ``shares_vested * fmv`` is a
+      consistent vest value for every row.
+    * ``shares_net`` is the raw ``NetSharesDeposited`` in ORIGINAL at-vest
+      units — for vests before the 2024-06 NVDA 10:1 split it is exactly
+      ``shares_vested / 10``. Never sum ``shares_net`` across the split
+      boundary; use ``shares_vested`` for share arithmetic.
+    * ``shares_withheld`` is 0 for all §102-trustee rows (no
+      sell-to-cover at vest; tax is withheld at SALE).
+
     Migration: alembic 0044.
     """
 

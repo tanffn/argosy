@@ -4,8 +4,8 @@ topic: israel_section_102_rsu_taxation
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual_with_employer_equity
-last_verified: 2026-07-08
-verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
+last_verified: 2026-07-09
+verified_by: per-lot §102 ledger reconciliation vs trustee simulation report (2026-07-09) + Amendment 147 statutory check; SUPERSEDES the 2026-07-08 web-search verification on the holding-clock rule (see correction trail in the holding-period section)
 next_refresh_due: 2027-01-31
 source_urls:
   - https://www.naspp.com/blog/hiring-in-israel--how-section-102-shapes-equity-compensation
@@ -33,25 +33,26 @@ sources:
 
 ## Summary
 
-`Section 102` of the Israeli Income Tax Ordinance governs taxation of employee stock-based compensation (RSUs, options, and similar awards). Two principal tracks exist; the choice has major rate consequences. The **Capital Gains Track via a Trustee** (`102 הוני באמצעות נאמן`) is the standard election at Israeli high-tech employers (including NVIDIA Israel) and delivers a **25% flat capital-gains rate** on the post-grant appreciation, provided the **24-month trustee holding period from the end of the tax year of grant** is observed.
+`Section 102` of the Israeli Income Tax Ordinance governs taxation of employee stock-based compensation (RSUs, options, and similar awards). Two principal tracks exist; the choice has major rate consequences. The **Capital Gains Track via a Trustee** (`102 הוני באמצעות נאמן`) is the standard election at Israeli high-tech employers (including NVIDIA Israel) and delivers a **25% flat capital-gains rate** on the post-grant appreciation, provided the **24-month trustee holding period from the grant (allotment) date** is observed (Amendment 147, 2006 — see the holding-clock section, including the correction trail).
 
 ## Rates / brackets / amounts (2026)
 
 | Track | Tax classification of gain | Statutory rate | Surtax overlay | Holding period | Employer expense deduction |
 |---|---|---|---|---|---|
-| **102 Capital — Trustee** | Capital gain (on the appreciation slice) | **25%** flat | + 3% general / + 2% capital-source above ₪721,560 → up to 30% | **24 months from end of tax year of grant** | **No** — employer cannot deduct |
+| **102 Capital — Trustee** | Capital gain (on the appreciation slice) | **25%** flat | + 3% general / + 2% capital-source above ₪721,560 → up to 30% | **24 months from grant (allotment) date** | **No** — employer cannot deduct |
 | **102 Ordinary — Trustee** | Salary income | Marginal labor rate (up to 47% + 3% surtax = 50%) + NI/health up to ceiling | Surtax applies as labor income | Same trustee mechanism, shorter "12 months" practical relevance | Yes |
 | **102 Non-Trustee** | Salary income at vesting | Marginal labor rate | Surtax applies as labor | None | Yes |
 | **Section 3(i)** — non-employees, contractors, controlling shareholders | Salary income | Marginal labor rate | Surtax applies | None | n/a |
 
 Sources: NASPP "Hiring in Israel — How Section 102 Shapes Equity Compensation"; VestingStrategy Israel Equity Compensation Tax Guide; RNC Law ESOP 102 vs 3(i) guide; PwC Israel Income Determination (last reviewed 1 Jan 2026).
 
-### Holding-period clock — the precise rule
+### Holding-period clock — the precise rule (CORRECTED 2026-07-09)
 
-- The 24-month period runs **from the end of the tax year in which the grant occurred**, deposited with a qualified trustee, **not** from grant date itself.
-  - Example: RSU granted 15 March 2024 → grant tax year is 2024 → 24-month clock starts 1 January 2025 → trustee release earliest 1 January 2027.
-  - This is the conservative LLM-trap clarification — many summaries say "24 months from grant" which understates the actual wait by up to ~11 months.
-- Source: NASPP; VestingStrategy; RNC.
+- The 24-month period runs **from the grant (allotment) date** — the date the awards are allotted to the qualified trustee — per **Amendment 147 to the Income Tax Ordinance (2006)**, which shortened the requirement from the original 2003-reform rule ("until the end of the tax year of grant plus 24 months") to a flat **24 months from allotment**.
+  - Example: RSU granted 8 April 2024 → trustee clock ends 8 April 2026 → capital-track eligible from 8 April 2026.
+- **Empirical confirmation (trustee's own eligibility engine):** the NVIDIA trustee simulation report dated 2026-06-18 marks grants **289172 / 289173 (granted 2024-04-08)** as capital-track **eligible** ("OK" holding period). Under an end-of-grant-tax-year rule they would only become eligible **2027-01-01** — the trustee's marking is consistent ONLY with 24-months-from-grant-date. Grants 331375 (2025-03-10) and 374434 (2026-03-09) are correspondingly marked "Breaking" (not yet eligible), exactly as from-grant-date predicts.
+- **Correction trail:** the 2026-06-02/2026-07-08 refreshes of this file asserted the opposite rule ("24 months from the end of the tax year of grant") based on secondary web summaries (NASPP / VestingStrategy / RNC) and labelled the from-grant-date rule an "LLM trap". That was the **pre-Amendment-147** rule. Several secondary sources still repeat it; the statute as amended in 2006 and the trustee's live eligibility behavior both say **from grant date**. Reviewers: do not "re-fix" this back from those secondary sources without checking Amendment 147 (תיקון 147) itself.
+- Sources: Income Tax Ordinance §102 as amended by Amendment 147 (2006); NVIDIA trustee simulation report 2026-06-18 (eligibility markings, `Resources/2026/Schwab/Nvidia simulation Report.xlsx`).
 
 ### Capital vs ordinary split for **public-company** RSUs (the user's case)
 
@@ -71,7 +72,7 @@ Sources: NASPP "Hiring in Israel — How Section 102 Shapes Equity Compensation"
 
 ### Consequences of breaking the holding period
 
-- Selling or transferring out of the trustee before the 24-month-from-EoT-year mark: **the entire gain (not just the ordinary slice) reclassifies as ordinary salary income** taxed at marginal rates (up to 50%) plus NI/health (up to ceiling).
+- Selling or transferring out of the trustee before the 24-month-from-grant-date mark: **the entire gain (not just the ordinary slice) reclassifies as ordinary salary income** taxed at marginal rates (up to 50%) plus NI/health (up to ceiling).
 - This is a one-way penalty — there is no partial credit and no way to "fix" the early sale.
 - The employer/trustee will withhold accordingly at sale; the ITA reconciles on the annual return.
 - Source: NASPP; RNC.
@@ -90,7 +91,7 @@ Sources: NASPP "Hiring in Israel — How Section 102 Shapes Equity Compensation"
 
 ### Ariel-specific cash-flow corollary (May 2026 portfolio snapshot)
 
-From the user's May 2026 TSV: ~11,471 NVDA shares at Schwab, ~$200/share, ~$2.296M USD. These are post-trustee-release shares; the 24-month Section 102 Capital clock has elapsed for the bulk of tranches. Each quarterly sale tranche under Plan v2.0 realizes a Section 102 Capital gain at 25% + surtax stack (`surtax.md`). The "Avg Price" Schwab tracks is the FMV-at-vest cost basis used for the capital-slice computation, **not** the original grant FMV — the agent must read the broker basis as the basis-for-25%-CGT, with the FMV-at-vest-minus-grant-FMV piece already having been taxed as ordinary income at vest.
+Current book (2026-07-09 equity-events correction): 10,940 NVDA shares at Schwab (RSU 9,445 + ESPP 1,495 per the trustee sim), ~$204/share, ~$2.23M USD. These are post-trustee-release shares; the 24-month Section 102 Capital clock has elapsed for the bulk of tranches. Each quarterly sale tranche under Plan v2.0 realizes a Section 102 Capital gain at 25% + surtax stack (`surtax.md`). The "Avg Price" Schwab tracks is the FMV-at-vest cost basis used for the capital-slice computation, **not** the original grant FMV — the agent must read the broker basis as the basis-for-25%-CGT, with the FMV-at-vest-minus-grant-FMV piece already having been taxed as ordinary income at vest.
 
 ## Stack with related rates
 
@@ -114,7 +115,7 @@ For an NVDA tranche realized after the 24-month period:
 
 ## Refresh cadence
 
-- **Annual (January)** — re-verify the 25% rate, the 24-month-from-end-of-tax-year rule, the trustee filing mechanism, and the capital/ordinary split for public-company RSUs.
+- **Annual (January)** — re-verify the 25% rate, the 24-month-from-grant-date rule (Amendment 147), the trustee filing mechanism, and the capital/ordinary split for public-company RSUs.
 - **On reform** — Section 102 has been amended multiple times (notably the 2003 reform that introduced the two-track regime). Any further amendment triggers immediate refresh.
 
 ## Open issues

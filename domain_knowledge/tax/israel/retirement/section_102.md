@@ -1,10 +1,10 @@
 ---
 topic: israel_section_102_rsu_taxation
 jurisdiction: israel
-last_verified: 2026-07-08
+last_verified: 2026-07-09
 next_refresh_due: 2027-01-31
 canonical_location: domain_knowledge/tax/israel/section_102.md
-note: This file is superseded by the canonical refreshed version at the path above. Retained for backwards-compatibility with any agent that imports the `retirement/` path. See the canonical file for 2026 rates, sources, and the precise 24-month-from-end-of-tax-year holding-period rule.
+note: This file is superseded by the canonical refreshed version at the path above. Retained for backwards-compatibility with any agent that imports the `retirement/` path. See the canonical file for 2026 rates, sources, and the holding-period rule — 24 months FROM GRANT (allotment) DATE per Amendment 147 (2006); an earlier refresh note here wrongly asserted end-of-grant-tax-year (corrected 2026-07-09, see the canonical file's correction trail).
 sources:
   - url: https://www.naspp.com/blog/hiring-in-israel--how-section-102-shapes-equity-compensation
     retrieved: 2026-06-02
@@ -17,7 +17,7 @@ sources:
     tier: 1
 ---
 
-> **POINTER:** The canonical Section 102 file is now `domain_knowledge/tax/israel/section_102.md`. The content below is preserved for reference but should not be the agent's primary citation. The canonical file carries the verified 2026 rates and the precise "24 months from the end of the tax year of grant" holding-period rule.
+> **POINTER:** The canonical Section 102 file is now `domain_knowledge/tax/israel/section_102.md`. The content below is preserved for reference but should not be the agent's primary citation. The canonical file carries the verified 2026 rates and the holding-period rule: **24 months from the grant (allotment) date** (Amendment 147, 2006). Note: a 2026-06/07 refresh note previously claimed "end of the tax year of grant" here — that is the pre-Amendment-147 rule; the body text below ("24 months from grant") was right all along. Corrected 2026-07-09 against the trustee simulation's eligibility markings (see the canonical file's correction trail).
 
 ---
 
@@ -25,7 +25,7 @@ sources:
 
 `Section 102` of the Israeli Income Tax Ordinance governs the taxation of stock-based compensation (RSUs and options) granted to Israeli employees by their employer (or a parent company, e.g., NVIDIA Corporation granting to NVIDIA Israel employees). The section offers two principal tracks; the choice has very material tax-rate consequences.
 
-> **Verification status:** Frontmatter on this file says `last_verified: 2026-06-02` and points to the canonical refreshed file at `domain_knowledge/tax/israel/section_102.md`. The prose body below was the pre-refresh draft and has NOT been re-edited to incorporate all 2026 corrections (notably: holding period runs from **end of tax year of grant**, not grant date; and the surtax stack on the capital slice is **5%** not 3%). Use the canonical file for any tax-consequential agent reasoning.
+> **Verification status:** This file points to the canonical refreshed file at `domain_knowledge/tax/israel/section_102.md`. The prose body below was the pre-refresh draft. Corrections vs the body: the surtax stack on the capital slice is **5%** not 3%. The body's holding-period statement ("24 months from grant date") IS correct per Amendment 147 (2006) — an intermediate 2026-06/07 refresh note wrongly "corrected" it to end-of-grant-tax-year and has been reverted (2026-07-09, verified against the trustee simulation's eligibility markings). Use the canonical file for any tax-consequential agent reasoning.
 
 ## The two tracks
 
