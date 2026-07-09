@@ -454,12 +454,23 @@ def build_inbox(
         next_review=future_due[0] if future_due else None,
     )
 
+    # Trade-plan overview table (current | after | why) — same isolation
+    # rule as the adapters: a failure here never blanks the feed.
+    trade_plan = None
+    try:
+        from argosy.services.inbox.trade_plan import build_trade_plan
+
+        trade_plan = build_trade_plan(db, user_id)
+    except Exception:  # noqa: BLE001
+        _log.exception("inbox.trade_plan_failed", extra={"user_id": user_id})
+
     return InboxFeed(
         items=surfaced,
         liveness=liveness,
         policy_version=policy.version,
         generated_at=_utcnow_iso(),
         dropped=dropped,
+        trade_plan=trade_plan,
     )
 
 

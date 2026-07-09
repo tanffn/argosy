@@ -30,6 +30,7 @@ import {
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { InboxItemCard } from "@/components/inbox/InboxItemCard";
 import { InboxDeferDialog } from "@/components/inbox/InboxDeferDialog";
+import { TradePlanTable } from "@/components/inbox/TradePlanTable";
 import { QuietState } from "@/components/inbox/QuietState";
 import { FunnelTransparencyCard } from "@/components/proposals/funnel-transparency-card";
 import { DeployCashCard } from "@/components/proposals/DeployCashCard";
@@ -256,9 +257,22 @@ export default function InboxPage() {
   // tail of notes never drowns the decisions. The OBSERVATION bucket ordinal is
   // 6 (see argosy/services/inbox/types.py PriorityBucket).
   const OBSERVATION_BUCKET = 6;
+  // All buy/sell decisions live under ONE "Trade plan" section (overview
+  // table + detail cards), whatever priority bucket ranked them.
+  const TRADE_KINDS = useMemo(() => new Set(["trade", "discovery_buy", "switch"]), []);
+  const tradeItems = useMemo(
+    () =>
+      items.filter(
+        (i) => TRADE_KINDS.has(i.kind) && (i.bucket ?? 99) < OBSERVATION_BUCKET,
+      ),
+    [items, TRADE_KINDS],
+  );
   const actionable = useMemo(
-    () => items.filter((i) => (i.bucket ?? 99) < OBSERVATION_BUCKET),
-    [items],
+    () =>
+      items.filter(
+        (i) => !TRADE_KINDS.has(i.kind) && (i.bucket ?? 99) < OBSERVATION_BUCKET,
+      ),
+    [items, TRADE_KINDS],
   );
   const observations = useMemo(
     () => items.filter((i) => i.bucket === OBSERVATION_BUCKET),
@@ -281,6 +295,33 @@ export default function InboxPage() {
       )}
       {loading && !feed && (
         <p className="text-sm text-muted-foreground">Loading…</p>
+      )}
+
+      {/* Trade plan — every open buy/sell under ONE section: the overview
+          table (current | after | why), then the detail cards for zoom-in. */}
+      {feed && !feed.quiet && (tradeItems.length > 0 || feed.trade_plan) && (
+        <section className="flex flex-col gap-3">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold tracking-tight">Trade plan</h2>
+            <span className="text-sm text-muted-foreground">
+              {tradeItems.length} to decide
+            </span>
+          </div>
+          {feed.trade_plan && <TradePlanTable plan={feed.trade_plan} />}
+          {tradeItems.length > 0 && (
+            <ul className="flex flex-col gap-3">
+              {tradeItems.map((it) => (
+                <li key={it.id}>
+                  <InboxItemCard
+                    item={it}
+                    busy={busyId === it.id}
+                    onAction={runAction}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       {/* Needs you now — the one prioritized queue (actionable buckets only). */}

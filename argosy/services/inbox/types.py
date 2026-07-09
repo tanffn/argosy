@@ -231,6 +231,9 @@ class InboxFeed:
     # shadow-mode, or dedupe), each with a reason. Empty in the client projection;
     # populated only for the debug view.
     dropped: list[dict[str, Any]] = field(default_factory=list)
+    # One-table overview of every open buy/sell (current | after | why),
+    # rendered above the trade cards. ``None`` when no trade is open.
+    trade_plan: Optional[dict[str, Any]] = None
 
     @property
     def quiet(self) -> bool:
@@ -247,6 +250,7 @@ class InboxFeed:
             "policy_version": self.policy_version,
             "generated_at": self.generated_at,
             "dropped": self.dropped if debug else [],
+            "trade_plan": self.trade_plan,
         }
 
 

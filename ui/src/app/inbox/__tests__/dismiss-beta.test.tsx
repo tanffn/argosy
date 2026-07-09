@@ -1,9 +1,9 @@
-/**
- * Regression test — "Dismiss" on a beta funnel trade card must actually
+﻿/**
+ * Regression test â€” "Dismiss" on a beta funnel trade card must actually
  * persist. The inbox service emits intent "dismiss" for beta (shadow
  * decision_funnel) proposals with a trade_proposal source ref, but the page's
  * runAction only mapped approve/reject/ask_deeper_review/execute for
- * trade_proposal — Dismiss fell through as a silent no-op and the card never
+ * trade_proposal â€” Dismiss fell through as a silent no-op and the card never
  * left the inbox (Ariel, "Buy SOFI (beta)", 2026-07-09).
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -29,7 +29,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 vi.mock("@/lib/ws", () => ({ useWSEvents: () => null }));
 
-// The secondary zones make their own network calls on mount — out of scope.
+// The secondary zones make their own network calls on mount â€” out of scope.
 vi.mock("@/components/proposals/funnel-transparency-card", () => ({
   FunnelTransparencyCard: () => null,
 }));
@@ -99,6 +99,7 @@ const FEED: InboxFeedDTO = {
   policy_version: "v1",
   generated_at: "2026-07-09T00:00:00Z",
   dropped: [],
+  trade_plan: null,
 };
 
 const EMPTY_FEED: InboxFeedDTO = {
@@ -125,7 +126,7 @@ describe("inbox 'Dismiss' on a beta funnel trade", () => {
     await waitFor(() => {
       expect(proposalReject).toHaveBeenCalledWith(1, "ariel", "Dismissed from inbox");
     });
-    // The queue refetched and the card is gone — no silent no-op.
+    // The queue refetched and the card is gone â€” no silent no-op.
     await waitFor(() => {
       expect(screen.queryByText("Buy SOFI (beta)")).not.toBeInTheDocument();
     });
@@ -144,3 +145,4 @@ describe("inbox 'Dismiss' on a beta funnel trade", () => {
     });
   });
 });
+

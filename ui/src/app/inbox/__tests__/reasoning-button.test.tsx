@@ -1,5 +1,5 @@
-/**
- * Regression test — "See the reasoning" on a trade item must actually open
+﻿/**
+ * Regression test â€” "See the reasoning" on a trade item must actually open
  * the reasoning trail ON SCREEN. The click fetched the detail and mounted
  * the trail card below the whole queue, off-viewport, so with 9 pending
  * proposals it looked like a dead button (Ariel, 2026-07-09).
@@ -27,7 +27,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 vi.mock("@/lib/ws", () => ({ useWSEvents: () => null }));
 
-// The secondary zones make their own network calls on mount — out of scope.
+// The secondary zones make their own network calls on mount â€” out of scope.
 vi.mock("@/components/proposals/funnel-transparency-card", () => ({
   FunnelTransparencyCard: () => null,
 }));
@@ -56,7 +56,7 @@ const FEED: InboxFeedDTO = {
       id: "trade:2",
       kind: "trade",
       title: "Sell NOW",
-      why_now: "Verdict: redeploy…",
+      why_now: "Verdict: redeployâ€¦",
       rank_reason: "Expires soon",
       bucket: 1,
       bucket_label: "Overdue or expiring",
@@ -96,6 +96,7 @@ const FEED: InboxFeedDTO = {
   policy_version: "v1",
   generated_at: "2026-07-09T00:00:00Z",
   dropped: [],
+  trade_plan: null,
 };
 
 const DETAIL: ProposalDetail = {
@@ -143,7 +144,7 @@ describe("inbox 'See the reasoning'", () => {
 
   it("opens the reasoning trail and scrolls it into view", async () => {
     const scrollIntoView = vi.fn();
-    // jsdom has no scrollIntoView; the page guards with ?. — install a spy.
+    // jsdom has no scrollIntoView; the page guards with ?. â€” install a spy.
     Element.prototype.scrollIntoView = scrollIntoView;
 
     render(<InboxPage />);
@@ -176,3 +177,4 @@ describe("inbox 'See the reasoning'", () => {
     expect(screen.queryByText("Reasoning trail")).not.toBeInTheDocument();
   });
 });
+

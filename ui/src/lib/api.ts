@@ -2072,6 +2072,25 @@ export interface InboxLivenessDTO {
   next_review: string | null;
 }
 
+export interface TradePlanLineDTO {
+  item_id: string;
+  label: string;
+  action: string; // "sell" | "buy" | "receives_proceeds"
+  current_usd: number;
+  current_pct: number | null;
+  after_usd: number;
+  after_pct: number | null;
+  delta_usd: number;
+  why: string;
+}
+
+export interface TradePlanDTO {
+  as_of: string;
+  book_total_usd: number;
+  lines: TradePlanLineDTO[];
+  totals: { sells_usd: number; buys_usd: number; net_to_cash_usd: number };
+}
+
 export interface InboxFeedDTO {
   items: InboxItemDTO[];
   quiet: boolean;
@@ -2080,6 +2099,7 @@ export interface InboxFeedDTO {
   policy_version: string;
   generated_at: string;
   dropped: unknown[];
+  trade_plan: TradePlanDTO | null;
 }
 
 // ----------------------------------------------------------------------

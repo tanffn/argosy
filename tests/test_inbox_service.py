@@ -363,6 +363,59 @@ def test_non_funnel_shadow_proposal_stays_hidden(db):
     assert not [i for i in feed.items if "ZZZ" in i.title]
 
 
+def test_trade_plan_overview_built_from_raw_rows(db):
+    """The overview table derives current|after|why from the snapshot +
+    open proposals, ends with the cash line, and rides the feed dict."""
+    import json as _json
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    db.add(
+        PortfolioSnapshotRow(
+            user_id="ariel",
+            snapshot_date=_TODAY,
+            imported_at=_NOW,
+            positions_json=_json.dumps(
+                [
+                    {"symbol": "AAA", "shares": 100.0, "current_price": 50.0,
+                     "usd_value_k": 5.0, "asset_type": "Stock"},
+                    {"symbol": "SGOV", "shares": 10.0, "current_price": 100.0,
+                     "usd_value_k": 1.0, "asset_type": "Defensive"},
+                ]
+            ),
+            totals_json=_json.dumps(
+                {"total_usd_value_k": 10.0, "cash_balances_usd_k": 2.0}
+            ),
+        )
+    )
+    db.commit()
+    _trade(
+        db, ticker="AAA", action="sell", size_shares_or_currency=40,
+        size_units="shares",
+        rationale_summary="**Verdict:** exit the stale half. More prose after.",
+    )
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    tp = feed.trade_plan
+    assert tp is not None
+    line = next(l for l in tp["lines"] if l["label"] == "AAA")
+    assert line["current_usd"] == 5000
+    assert line["delta_usd"] == -2000  # 40 sh × $50
+    assert line["after_usd"] == 3000
+    assert line["why"].startswith("exit the stale half")
+    cash = tp["lines"][-1]
+    assert cash["item_id"] == "cash"
+    assert cash["current_usd"] == 3000  # $2k cash + $1k SGOV
+    assert cash["after_usd"] == 5000
+    assert tp["totals"]["net_to_cash_usd"] == 2000
+    assert feed.to_dict()["trade_plan"] is tp
+
+
+def test_trade_plan_absent_without_open_trades(db):
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert feed.trade_plan is None
+    assert feed.to_dict()["trade_plan"] is None
+
+
 def test_debug_dict_exposes_signals_and_dropped(db):
     _note(db, summary="info note", severity="info")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)
