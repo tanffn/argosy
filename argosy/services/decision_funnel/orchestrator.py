@@ -464,7 +464,7 @@ async def run_funnel(
             try:
                 dd = await deep_decision_fn(
                     user_id=user_id, ticker=cand.subject, account_class="main",
-                    funnel_meta=funnel_meta,
+                    funnel_meta=funnel_meta, subject_type=cand.subject_type,
                 )
             except Exception as exc:  # noqa: BLE001 — never abort the run
                 with sf() as s3:

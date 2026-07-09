@@ -28,6 +28,7 @@ from argosy.decisions.tiers import Tier
 from argosy.logging import get_logger
 from argosy.services.decision_funnel.estate_kb import estate_constraints_block
 from argosy.services.decision_funnel.position_context import position_context_block
+from argosy.services.decision_funnel.sleeve_mandate import x10_sleeve_mandate_block
 
 _log = get_logger("argosy.services.decision_funnel.deep_decision")
 
@@ -53,6 +54,7 @@ async def run_deep_decision(
     tier: Tier = Tier.T2,
     consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold",
     funnel_meta: dict | None = None,
+    subject_type: str = "holding",
 ) -> DeepDecisionOutcome:
     """Run the full deep-decision fleet for one ticker. Never raises — returns
     a structured outcome the orchestrator records (incl. quorum / error).
@@ -60,6 +62,12 @@ async def run_deep_decision(
     ``funnel_meta`` (source/shadow/expires_at/funnel_run_id) is threaded into
     the flow so the proposal is born with its funnel lifecycle fields set
     ATOMICALLY — a shadow proposal is never briefly client-visible.
+
+    ``subject_type`` is the Stage-1 candidate kind: ``"discovery"`` (new-name
+    pick from the high-potential funnel) additionally injects the plan-owned
+    x10 SLEEVE MANDATE + live funding gap into ``user_constraints`` so the
+    fleet adjudicates the name against the bounded moonshot sleeve, never as
+    a core initiation (time-machine backtest lesson, 2026-07).
     """
     # INPUTS fix (SOFI proposal 1, 2026-07-09): the stage-3 fleet must know the
     # client's CURRENT POSITION in the ticker (shares/value/% book/account —
@@ -82,6 +90,24 @@ async def run_deep_decision(
             )
     except Exception:  # noqa: BLE001 — inputs enrichment must not crash stage 3
         _log.exception("decision_funnel.position_context_failed", ticker=ticker)
+    # INPUTS fix (time-machine backtest, 2026-07): a DISCOVERY candidate is a
+    # candidate for the bounded x10/high-potential SLEEVE — the fleet must be
+    # handed the sleeve mandate (plan-owned: class rationale + instrument
+    # meta) + the sleeve's live funding gap, or it judges the name like a
+    # core position (safety-first, initiation-sized) and kills exactly the
+    # asymmetric names the sleeve exists to hold. Deterministic inputs
+    # (mirrors estate_kb / position_context); best-effort — a load failure
+    # never kills the funnel.
+    if subject_type == "discovery":
+        try:
+            _mandate = await x10_sleeve_mandate_block(user_id=user_id)
+            if _mandate:
+                user_constraints = (
+                    f"{user_constraints}\n\n{_mandate}"
+                    if user_constraints.strip() else _mandate
+                )
+        except Exception:  # noqa: BLE001 — inputs enrichment must not crash stage 3
+            _log.exception("decision_funnel.sleeve_mandate_failed", ticker=ticker)
     # INPUTS fix (verify-run 2026-07-08, SOFI): the stage-3 fleet must see
     # the estate/us-situs domain_knowledge — the FM previously noted "no
     # domain_knowledge file authorizing a US-estate rule was supplied" and
