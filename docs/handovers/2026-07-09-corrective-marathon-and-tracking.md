@@ -27,9 +27,9 @@ Read this, then `git log`, then the section-3 queue. Prior: `docs/handovers/2026
 
 **Yesterday's queue (all done):** derived-cache/overview lineage fix (`adaa808` — wealth dashboard 6s→7ms), NVDA trajectory unified to canonical glide (`494dc49`), JobView DTO (`d381b6c`), snapshot upsert (`bd86387`), overdue-vest needs_you (`dbda837`), domain-refresh revival + write-back (`aad2df4`,`ae5eb16`,`6820673` — 17 files live-verified, all 2026 tax params current), estate floor horizon-scoped per Ariel (`dfcb91a`), snapshot_refresh ENABLED daily 08:00 (`aa552a2`), funnel estate KB + us-situs floor (`c4d724a`), test-log hygiene (`e4fc67f`).
 
-## 2. Running / landing after this handover
+## 2. Portfolio review — DONE (landed after the first handover commit)
 
-- **Fleet portfolio review** (agent in flight): deep decisions for NOW/CRM/SPCX (adopt-or-redeploy; zero proposal provenance today) + BRK/B, GOOG, AMD, AMZN, RKT (redeploy pace/trigger); x10 invalidation triggers written from recorded theses; holdings_review run under the new persistence. Deliverable = proposals awaiting Ariel in the inbox.
+Funnel run 4, trigger=portfolio_review, T2 Opus fleet, estate KB in, long_hold mode. **Eight proposals awaiting Ariel (ids 2-9): the fleet chose SELL/redeploy on ALL EIGHT** — NOW/CRM/SPCX full exits ($8.3k/$8.5k/$6.0k), BRK.B $31k + GOOG $21k first tranches, AMD $51.6k, AMZN 67 sh, RKT $40.2k full (~$260k staged total). Zero adopt/hold-with-thesis outcomes despite being allowed — the uniformity (NVDA-decorrelation + no-buffer valuations dominated every debate) is itself signal and deserves Ariel's skeptical read before approving. x10 exit triggers RECORDED for RXRX/TEM/OKLO (from their own cap-math theses, review_on 2026-09-30, durable through re-synthesis) — none fired. holdings_review: 41/41 positions reviewed (100% of book), 41 audit rows persisted, 2 held_unverified surfaced honestly (META trim, NKE sell — blind gate diverged, fail-closed). New defects found: slash-ticker (BRK/B) gets zero market data in per-ticker analysts (quorum-failed run 160 on record; re-ran as BRK.B); `ips.no_current_plan` logged at funnel-run open despite plan 67 current (build_ips keying bug?); one implausible NOW price fetch ($107.78, agent refused it). Artifacts: tmp/portfolio_review_results.jsonl, tmp/pr_*.log.
 
 ## 3. Next-round queue
 
