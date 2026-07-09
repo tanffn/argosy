@@ -21,6 +21,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { TradeRationale } from "@/components/inbox/TradeRationale";
 import type { InboxActionDTO, InboxItemDTO } from "@/lib/api";
 
 function styleToVariant(style: InboxActionDTO["style"]) {
@@ -58,7 +59,7 @@ function TradeBody({ body }: { body: Record<string, unknown> }) {
         {speculative && <Badge variant="outline">Higher-risk idea</Badge>}
         {conviction && <Badge variant="secondary">{conviction} conviction</Badge>}
       </div>
-      {rationale && <p>{rationale}</p>}
+      {rationale && <TradeRationale text={rationale} />}
     </div>
   );
 }

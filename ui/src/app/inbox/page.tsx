@@ -99,6 +99,17 @@ export default function InboxPage() {
     if (lastEvt) refresh();
   }, [lastEvt, refresh]);
 
+  // "See the reasoning" opens the trail card BELOW the queue; with a long
+  // queue it mounted off-screen and the click looked like a dead button.
+  // Bring it into view whenever a trail is opened.
+  useEffect(() => {
+    if (selected) {
+      document
+        .getElementById("reasoning-trail")
+        ?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }
+  }, [selected]);
+
   // --- deploy-cash tool wiring (ported) ---
   useEffect(() => {
     api
@@ -153,11 +164,20 @@ export default function InboxPage() {
 
       // View-reasoning + defer open UI rather than mutate; handle them first.
       if (intent === "view_reasoning" && ref?.source === "trade_proposal") {
+        setBusyId(item.id);
+        setError(null);
         try {
           const d = await api.proposalDetail(USER_ID, Number(ref.ref_id));
           setSelected(d);
         } catch (e: unknown) {
           setError(String(e));
+          // The error banner lives above the queue — bring it on screen so a
+          // failed fetch never looks like a dead button.
+          document
+            .getElementById("inbox-error")
+            ?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+        } finally {
+          setBusyId(null);
         }
         return;
       }
@@ -249,7 +269,11 @@ export default function InboxPage() {
         </p>
       </header>
 
-      {error && <p className="text-sm text-error font-mono">{error}</p>}
+      {error && (
+        <p id="inbox-error" className="text-sm text-error font-mono scroll-mt-6">
+          {error}
+        </p>
+      )}
       {loading && !feed && (
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
@@ -313,7 +337,7 @@ export default function InboxPage() {
 
       {/* Reasoning trail (opened from a trade's "See the reasoning"). */}
       {selected && (
-        <Card className="border-primary/50">
+        <Card id="reasoning-trail" className="border-primary/50 scroll-mt-6">
           <CardHeader className="flex flex-row justify-between items-start">
             <div>
               <CardTitle>Reasoning trail</CardTitle>

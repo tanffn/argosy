@@ -629,6 +629,39 @@ def test_trader_never_recommend_refresh_in_both_modes() -> None:
         )
 
 
+def test_trader_long_hold_prompt_requires_markdown_rationale_sections() -> None:
+    """The long-hold trader (the decision-funnel / portfolio-review deep
+    writer) must be told to emit ``rationale_summary`` as MARKDOWN sections
+    (**Verdict:** / **Quality read:** / … / **Recommendation:**) with the
+    citations collapsed into a final **Sources:** line — never one run-on
+    paragraph with inline bracket citations (Ariel, 2026-07-09: proposals
+    2-9 rendered as a single ~2k-char blob)."""
+    from argosy.agents.trader import TraderAgent
+
+    agent = TraderAgent(user_id="ariel", tier="T2")
+    sys_prompt, _ = agent.build_prompt(
+        analyst_reports=[],
+        debate_outcome={},
+        positions_snapshot="",
+        user_constraints="",
+        ticker="NOW",
+        mode="long_hold",
+    )
+    assert "AS MARKDOWN" in sys_prompt
+    for heading in (
+        "**Verdict:**",
+        "**Quality read:**",
+        "**Price read:**",
+        "**Recommendation:**",
+        "**Sources:**",
+    ):
+        assert heading in sys_prompt, f"missing {heading!r} in long-hold prompt"
+    lower = sys_prompt.lower()
+    assert "never one run-on paragraph" in lower
+    # Citations belong in the Sources line, not mid-sentence.
+    assert "mid-sentence" in lower
+
+
 def test_trader_proposal_accepts_insufficient_data_action() -> None:
     """The 4th verdict state — INSUFFICIENT_DATA — must be a valid
     action on TraderProposal. Distinct from HOLD per the 2026-05-31
