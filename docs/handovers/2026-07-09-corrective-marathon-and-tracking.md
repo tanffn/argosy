@@ -34,15 +34,17 @@ Funnel run 4, trigger=portfolio_review, T2 Opus fleet, estate KB in, long_hold m
 ## 3. Next-round queue
 
 1. **Draft 73: fix 4 reader findings + RESTORE THE x10 SLEEVE ROW → one read → ACCEPT** (§0; delegation stands). Ariel confirmed (2026-07-09): Alternatives (gold 3.5%) ≠ x10 (moonshot 5%) — draft 73's table DROPPED the x10 row entirely (v67 has high_growth_basket 5.0%); no sourced decision to remove it exists in the trail → dropped-sleeve regression, restore per v67 unless the trail proves otherwise. Also per Ariel: the 'sell June vest' greeting item is v67's OLD policy — verify it dies when draft 73 promotes (fresh vests held; quota sold from eligible core at plan pace).
-2. Verify-run the whole 156 chain post-accept.
-3. Patch/sliced live acceptance evidence → flip both flags default-ON; patch base-selection should support the PENDING DRAFT as base (tonight it compared refs against v67 and routed FULL wrongly).
-4. In-product zigzag mechanism (judges-disagree auto-resolution).
-5. Run-149 post-FM pipeline crash (no reader report, no corrective payload persisted) — un-diagnosed.
-6. Cost-cap resume semantics (a resume inherits all prior attempts' spend).
-7. Synthesizer placeholder protocol: phase 3 should EMIT `{{fact:key}}` tokens (root of the hand-typed bridge figure); audit MD variants don't render tokens — unify.
-8. x10 sleeve: draft 73's table shows **Alternatives 3.5%** and no high-growth 5.0% row — confirm with Ariel whether the x10 identity/5% survives; sleeve funded 0.38% vs target (≈$165k gap) — directive-loop item.
-9. SGLN executes under restored standalone-gold guardrail; SGLN missing from `LOOKTHROUGH_MAP` (pre-existing test failure).
-10. Carried: June-17 vest sale (Ariel real-world, in his greeting), test_api_phase4 hang → overnight suite, catchup KeyError race, funnel un-shadow as beta, bank DPYA / EXUS tranche, backend hosting decision (TWO stale uvicorns on port 8000 — kill both before restart; neither has this session's 52 commits).
+2. **Per-lot section-102 eligibility ledger** (Ariel 2026-07-09: 'most of what I got is eligible - see the simulation'): derive per-lot eligibility from rsu_vest_events + grant tax-years, reconcile against Ariel's sim xlsx (rate-authority memory caveat: its QUANTITIES are hypothetical - use it as cross-check, vest events as truth), and correct the plan's 9,230-eligible / 592-tail numbers; a larger eligible pool only simplifies the schedule.
+3. **RKT -> x10 candidate eval** (Ariel suggestion): fleet evaluates RKT against the x10 mandate (cap-math, asymmetric thesis, accepted 100% loss) - HOLD proposal 9 until this verdict.
+4. Verify-run the whole 156 chain post-accept.
+5.Patch/sliced live acceptance evidence → flip both flags default-ON; patch base-selection should support the PENDING DRAFT as base (tonight it compared refs against v67 and routed FULL wrongly).
+6.In-product zigzag mechanism (judges-disagree auto-resolution).
+7.Run-149 post-FM pipeline crash (no reader report, no corrective payload persisted) — un-diagnosed.
+8.Cost-cap resume semantics (a resume inherits all prior attempts' spend).
+9.Synthesizer placeholder protocol: phase 3 should EMIT `{{fact:key}}` tokens (root of the hand-typed bridge figure); audit MD variants don't render tokens — unify.
+10.x10 sleeve: draft 73's table shows **Alternatives 3.5%** and no high-growth 5.0% row — confirm with Ariel whether the x10 identity/5% survives; sleeve funded 0.38% vs target (≈$165k gap) — directive-loop item.
+11.SGLN executes under restored standalone-gold guardrail; SGLN missing from `LOOKTHROUGH_MAP` (pre-existing test failure).
+12.Carried: June-17 vest sale (Ariel real-world, in his greeting), test_api_phase4 hang → overnight suite, catchup KeyError race, funnel un-shadow as beta, bank DPYA / EXUS tranche, backend hosting decision (TWO stale uvicorns on port 8000 — kill both before restart; neither has this session's 52 commits).
 
 ## 4. Discipline notes
 
