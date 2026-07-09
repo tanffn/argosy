@@ -887,6 +887,57 @@ def _fmt_nis(rv) -> str:
     return f"₪{rv.value:,.0f}"
 
 
+def _fi_fx_fragility(
+    session, user_id: str, resolved
+) -> "tuple[float | None, float | None]":
+    """Canonical FX-fragility inputs for FI-sufficiency headline sentences.
+
+    Returns ``(sens_per_010_nis, nw_at_minus_10pct_nis)`` — the ₪ impact of a
+    0.10 USD/NIS move and the liquid net worth after a −10% FX move — computed
+    from the SAME liquid-basis decomposition the FX-risk block renders
+    (``liquid_components_from_positions`` over the latest snapshot at the
+    resolver's ``fx.usd_nis``), so a sufficiency-headline caveat can never
+    quote different figures than the FX section. ``(None, None)`` when the
+    snapshot / FX inputs are unavailable — callers must degrade to a
+    qualitative caveat, never fabricate.
+    """
+    if session is None or resolved is None:
+        return None, None
+    fx_rv = resolved.get("fx.usd_nis")
+    if fx_rv is None or fx_rv.status != "resolved" or fx_rv.value is None:
+        return None, None
+    fx_spot = float(fx_rv.value)
+    try:
+        from sqlalchemy import select
+        from argosy.state.models import PortfolioSnapshotRow
+        from argosy.services.plan_numeric_resolver import (
+            liquid_components_from_positions,
+        )
+
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if snap is None:
+            return None, None
+        positions = json.loads(snap.positions_json or "[]")
+        snap_fx = float(snap.fx_usd_nis or fx_spot)
+        usd_assets_usd, nis_assets_nis, _re_excluded_nis = (
+            liquid_components_from_positions(
+                positions, fx=fx_spot, snap_fx=snap_fx,
+            )
+        )
+    except Exception:  # noqa: BLE001 — fragility caveat is best-effort
+        return None, None
+    if not usd_assets_usd:
+        return None, None
+    sens_per_010 = usd_assets_usd * 0.10
+    nw_minus10 = usd_assets_usd * (fx_spot * 0.90) + (nis_assets_nis or 0.0)
+    return sens_per_010, nw_minus10
+
+
 def render_trajectory_reconciliation_appendix(
     *,
     session: "Session | None" = None,
@@ -1074,8 +1125,10 @@ def render_trajectory_reconciliation_appendix(
         f"(`spend.annual_t12_nis` — monthly_burn × 12)."
     )
     lines.append(
-        f"- Net annual savings (RSU known-grants-only conservative floor): "
-        f"**{_fmt_nis(savings)}/yr** "
+        f"- Net annual savings — the trajectory CONTRIBUTION basis (5-yr average "
+        f"net savings under the RSU known-grants-only conservative scenario; a "
+        f"DIFFERENT basis from the household recurring-surplus floor, which "
+        f"excludes RSU liquidation): **{_fmt_nis(savings)}/yr** "
         f"(`savings.annual_net_nis`)."
     )
     lines.append(
@@ -1179,11 +1232,43 @@ def render_trajectory_reconciliation_appendix(
         and fi_total.status == "resolved" and fi_total.value is not None
     ):
         if fi_basis.value >= fi_total.value:
-            lines.append(
+            # The sufficiency VERDICT must carry its own fragility in the SAME
+            # sentence (whole-artifact reader BLOCKER, report 2152): a margin
+            # smaller than one 0.10 USD/NIS move cannot headline unqualified
+            # "capital sufficiency reached". Figures are the SAME canonical
+            # decomposition the FX-risk block renders — never a second copy.
+            margin = fi_basis.value - fi_total.value
+            sens_010, nw_minus10 = _fi_fx_fragility(session, user_id, resolved)
+            headline = (
                 "Liquid net worth (spendable, excl. real estate) already covers the FULL "
                 "total capital target (perpetuity base + reserve) — capital sufficiency "
-                "reached."
+                "reached"
             )
+            if sens_010 is not None and margin < sens_010:
+                frag = (
+                    f", but only by a thin, FX-fragile margin of **₪{margin:,.0f}**: "
+                    f"a 0.10 USD/NIS move is ≈ ₪{sens_010:,.0f} of net worth "
+                    f"({sens_010 / margin:.0f}× the entire margin)"
+                    if margin > 0 else
+                    f", but with a ₪0 margin — any adverse FX move "
+                    f"(0.10 USD/NIS ≈ ₪{sens_010:,.0f}) breaks sufficiency"
+                )
+                if nw_minus10 is not None and (nw_minus10 - fi_total.value) < 0:
+                    frag += (
+                        f", and a −10% FX move (shekel strengthening) would leave the "
+                        f"plan ≈ ₪{fi_total.value - nw_minus10:,.0f} short of the total "
+                        f"target"
+                    )
+                frag += (
+                    ". The margin does not yet survive a ±0.10 FX shock, so the "
+                    "accumulation-and-savings mandate stays intact."
+                )
+                lines.append(headline + frag)
+            else:
+                lines.append(
+                    headline
+                    + f" with a **₪{margin:,.0f}** margin on the liquid basis."
+                )
         elif fi_basis.value >= fi_target.value:
             short = fi_total.value - fi_basis.value
             lines.append(
