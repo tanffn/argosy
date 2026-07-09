@@ -77,7 +77,7 @@ Blind re-derivation kept winning: the reader caught real vest-policy contradicti
 
 ## 6. FINAL CLOSE (Ariel's last directives, 2026-07-09 evening)
 
-**GOLD: Ariel APPROVED proposal 67** — agent ae62c5a9d69754ab0 dispatched to accept + apply via /api/plan/refine (gold 3.11% -> EXUS 4.0%). VERIFY next session: new plan version has no gold class, EXUS 4.0, sums 100, proposal 67 executed. If the refine tier blocked a scoped apply, the agent stopped - finish it.
+**GOLD: Ariel APPROVED proposal 67** — agent ae62c5a9d69754ab0 dispatched to accept + apply via /api/plan/refine (gold 3.11% -> EXUS 4.0%). DONE: **plan v74 CURRENT** - gold/IGLN gone, EXUS class 14.3->18.3 (+4.0pp per proposal; engine has fixed class set so the sleeve lands as EXUS-class deepening), US core 27.5, sums 100.00, x10 5.0 + NVDA 8/13 intact, proposal 67 executed, gated promote no overrides (warn-only section_coverage carried from v73 prose - next critique round). EXUS current 3.0% vs target 18.3% = the deployment gap the next tranches fill.
 
 **DRY-POWDER DIRECTIVE (Ariel, new):** "do we want to keep dry-powder to buy those discovery stocks?" - he wants a cash reserve earmarked for discovery buys. Ariel clarified: the reserve is held in CASH OR CASH-EQUIVALENT ONLY (SGOV/IB01-class T-bills - instantly deployable, zero drawdown; never parked in anything that can fall or takes days to unwind). Fleet proposes sizing + mechanics (earmarked slice of the cash sleeve so green-lit discovery candidates never wait for a sale). Fold into the discovery plan below. THIS IS A VALUES DIRECTIVE - design + propose, he confirms sizing.
 
