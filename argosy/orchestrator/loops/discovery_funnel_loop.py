@@ -18,6 +18,14 @@ from argosy.services.high_potential_funnel import run_funnel
 
 _log = get_logger("argosy.loops.discovery_funnel")
 
+# Cron, not interval: an interval schedule re-anchors on every process
+# restart, so a frequently-restarted backend can starve the loop forever
+# (observed: the funnel ran ONCE in its lifetime). Fixed wall-clock slot
+# 16:00 Asia/Jerusalem — comfortably before the 18:30 decision funnel so
+# fresh discovery picks are on the radar when Stage 0 reads the book.
+_DEFAULT_CRON = "0 16 * * *"
+_DEFAULT_TZ = "Asia/Jerusalem"
+
 
 class DiscoveryFunnelLoop(CadenceLoop):
     """Daily smart refresh of the high-potential discovery funnel."""
@@ -32,7 +40,7 @@ class DiscoveryFunnelLoop(CadenceLoop):
         user_id: str = "ariel",
     ) -> None:
         super().__init__(
-            schedule=schedule or LoopSchedule(interval_seconds=86_400),
+            schedule=schedule or LoopSchedule(cron=_DEFAULT_CRON, timezone=_DEFAULT_TZ),
             enabled=enabled,
         )
         self.user_id = user_id

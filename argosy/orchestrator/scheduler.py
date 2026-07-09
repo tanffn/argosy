@@ -137,13 +137,15 @@ class Scheduler:
         # Discovery funnel — a SEPARATE daily loop (codex #10): heavier
         # radar->estimator->fleet pass with its own cadence + failure isolation,
         # kept apart from the cheap speculative monitor. Smart refresh.
+        # Cron slot (16:00 Asia/Jerusalem) lives in the loop's default
+        # schedule — an interval here re-anchored on every restart and
+        # starved the loop.
         from argosy.orchestrator.loops.discovery_funnel_loop import (
             DiscoveryFunnelLoop,
         )
 
         self.register_loop(
             DiscoveryFunnelLoop(
-                schedule=LoopSchedule(interval_seconds=86_400),
                 enabled=True,
                 user_id=self.user_id,
             )
