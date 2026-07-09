@@ -365,6 +365,96 @@ def test_doc_build_returns_none_when_no_anchor_at_all(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------
+# High-growth sleeve inheritance: a synthesis-path re-render of a plan whose
+# prior CURRENT carries the team-sourced x10 sleeve must KEEP the row (with
+# its instruments + exit triggers). Before the fix, build_plan_target_allocation_doc
+# never threaded high_growth_pct, so every re-render structurally DROPPED the
+# sleeve — how draft 73 lost v67's 5% x10 row.
+# --------------------------------------------------------------------------
+
+_HG_LABEL = "High-growth / high-potential"
+
+
+def _prior_plan_with_hg_sleeve() -> "_PriorPlan":
+    hg_instruments = (
+        AllocationInstrument(
+            symbol="RXRX", role="primary", weight_within_class_pct=40.0,
+            rationale="AI drug discovery moonshot",
+            exit_triggers=["platform thesis break"], review_on="2027-01-09",
+        ),
+        AllocationInstrument(
+            symbol="OKLO", role="primary", weight_within_class_pct=60.0,
+            rationale="SMR moonshot", exit_triggers=["NRC denial"],
+        ),
+    )
+    doc = build_target_allocation_doc(
+        today=date(2026, 7, 1), today_composition=_TODAY_FULL_BOOK,
+        high_growth_pct=5.0, high_growth_instruments=hg_instruments,
+    )
+    assert any(c.label == _HG_LABEL for c in doc.classes)  # sanity: prior HAS it
+    return _PriorPlan(doc.model_dump_json(), pid=67)
+
+
+def test_rerender_inherits_high_growth_sleeve_from_prior_current(monkeypatch) -> None:
+    import argosy.services.target_allocation_doc as tad
+    import argosy.state.queries as queries
+
+    monkeypatch.setattr(
+        tad, "load_full_book_today_composition", lambda *_a, **_k: dict(_TODAY_FULL_BOOK)
+    )
+    monkeypatch.setattr(queries, "get_current_plan", lambda *_a, **_k: _prior_plan_with_hg_sleeve())
+    monkeypatch.setattr(tad, "_deconcentration_quarters", lambda *_a, **_k: 8)
+
+    doc = tad.build_plan_target_allocation_doc(None, "ariel", 156, date(2026, 7, 9))
+    assert doc is not None
+    hg = next((c for c in doc.classes if c.label == _HG_LABEL), None)
+    assert hg is not None, "re-render dropped the team-sourced high-growth sleeve"
+    assert hg.target_pct == pytest.approx(5.0)
+    # instruments + durable monitoring metadata survive the re-render
+    assert {i.symbol for i in hg.instruments} == {"RXRX", "OKLO"}
+    rxrx = next(i for i in hg.instruments if i.symbol == "RXRX")
+    assert rxrx.exit_triggers == ["platform thesis break"]
+    assert rxrx.review_on == "2027-01-09"
+    # the doc still conserves
+    for wp in doc.glide:
+        assert sum(wp.composition_pct_by_class.values()) == pytest.approx(100.0, abs=0.1)
+
+
+def test_rerender_explicit_zero_pct_forces_no_sleeve(monkeypatch) -> None:
+    """high_growth_pct=0.0 (explicit) must NOT inherit — a deliberate team
+    decision to drop the sleeve wins over inheritance."""
+    import argosy.services.target_allocation_doc as tad
+    import argosy.state.queries as queries
+
+    monkeypatch.setattr(
+        tad, "load_full_book_today_composition", lambda *_a, **_k: dict(_TODAY_FULL_BOOK)
+    )
+    monkeypatch.setattr(queries, "get_current_plan", lambda *_a, **_k: _prior_plan_with_hg_sleeve())
+    monkeypatch.setattr(tad, "_deconcentration_quarters", lambda *_a, **_k: 8)
+
+    doc = tad.build_plan_target_allocation_doc(
+        None, "ariel", 156, date(2026, 7, 9), high_growth_pct=0.0
+    )
+    assert doc is not None
+    assert not any(c.label == _HG_LABEL for c in doc.classes)
+
+
+def test_rerender_without_prior_plan_has_no_sleeve(monkeypatch) -> None:
+    import argosy.services.target_allocation_doc as tad
+    import argosy.state.queries as queries
+
+    monkeypatch.setattr(
+        tad, "load_full_book_today_composition", lambda *_a, **_k: dict(_TODAY_FULL_BOOK)
+    )
+    monkeypatch.setattr(queries, "get_current_plan", lambda *_a, **_k: None)
+    monkeypatch.setattr(tad, "_deconcentration_quarters", lambda *_a, **_k: 8)
+
+    doc = tad.build_plan_target_allocation_doc(None, "ariel", 156, date(2026, 7, 9))
+    assert doc is not None
+    assert not any(c.label == _HG_LABEL for c in doc.classes)
+
+
+# --------------------------------------------------------------------------
 # resolve_target_allocation_json — persistence-time carry-forward fallback.
 # A transient build failure must NOT silently persist NULL (the draft-36
 # 422 regression): it carries forward the prior CURRENT plan's canonical doc.

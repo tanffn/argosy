@@ -551,6 +551,8 @@ def build_plan_target_allocation_doc(
     db: "Session", user_id: str, decision_run_id: int, today: date,
     *, alternatives_sleeve: "object | None" = None,
     authored_overrides: "dict[str, float] | None" = None,
+    high_growth_pct: "float | None" = None,
+    high_growth_instruments: "tuple | None" = None,
 ) -> TargetAllocationDoc | None:
     """The DB-aware entry T1.5/backfill call: derive today's composition then
     build the canonical doc, or ``None`` when no anchor at all can be derived.
@@ -572,6 +574,14 @@ def build_plan_target_allocation_doc(
 
     ``authored_overrides`` pins named sleeve targets (by label) to durable
     human/fleet-authored values.  ``None`` = no overrides (default behaviour).
+
+    The team-sourced HIGH-GROWTH sleeve is INHERITED from the prior CURRENT
+    plan's stored doc when not passed explicitly (``high_growth_pct=None``).
+    ``build_target_allocation`` only emits the high-growth class when
+    ``high_growth_pct`` is threaded in explicitly — the sleeve is team-sourced,
+    not an engine constant — so before this inheritance every synthesis-path
+    re-render structurally DROPPED the sleeve row (how draft 73 lost the 5%
+    x10 sleeve v67 carried). Pass ``high_growth_pct=0.0`` to force NO sleeve.
     """
     comp = load_full_book_today_composition(db, user_id, decision_run_id)
     stale_anchor = False
@@ -580,11 +590,27 @@ def build_plan_target_allocation_doc(
         if comp is None:
             return None
         stale_anchor = True
+    if high_growth_pct is None:
+        # Inherit the sleeve (pct + instruments incl. exit triggers) from the
+        # prior current plan's canonical doc — same source the refinement path
+        # uses (plan_refinement._fixed_sleeves_from_current).
+        from argosy.services.plan_refinement import _fixed_sleeves_from_current
+        from argosy.state.queries import get_current_plan
+
+        prior = get_current_plan(db, user_id)
+        hg_pct, hg_instruments = (
+            _fixed_sleeves_from_current(prior) if prior is not None else (0.0, ())
+        )
+    else:
+        hg_pct = float(high_growth_pct)
+        hg_instruments = tuple(high_growth_instruments or ())
     quarters = _deconcentration_quarters(db, user_id, today)
     doc = build_target_allocation_doc(
         today=today, today_composition=comp, quarters=quarters,
         alternatives_sleeve=alternatives_sleeve,
         authored_overrides=authored_overrides,
+        high_growth_pct=hg_pct,
+        high_growth_instruments=hg_instruments,
     )
     if stale_anchor:
         # The TARGET is this-run-fresh; only the glide's q0 start is borrowed.
