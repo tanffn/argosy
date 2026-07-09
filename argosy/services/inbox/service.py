@@ -19,6 +19,7 @@ Design rules honoured here:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -60,6 +61,20 @@ def _utcnow_iso() -> str:
 def _trim(text: str, n: int = 160) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+_MD_TOKEN_RE = re.compile(r"^#{1,6}\s+|\*\*|__|`", re.MULTILINE)
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _plain(md: str) -> str:
+    """Markdown → one-liner-safe plain text.
+
+    The why-now line is a single sentence in a card header; raw ``##`` /
+    ``**`` tokens from a rationale_md read as garbage there. Headings,
+    emphasis and backticks are stripped; links keep their label."""
+    text = _MD_LINK_RE.sub(r"\1", md or "")
+    return _MD_TOKEN_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +188,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                 id=f"note:{v.id}",
                 kind="note",
                 title=v.summary or "Something to look at",
-                why_now=_trim(v.rationale_md) or "Argosy flagged this while watching your portfolio.",
+                why_now=_trim(_plain(v.rationale_md)) or "Argosy flagged this while watching your portfolio.",
                 primary_action=InboxAction("accept", "Accept", "primary"),
                 secondary_actions=[
                     InboxAction("defer", "Defer", "secondary"),

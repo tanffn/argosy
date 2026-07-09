@@ -21,6 +21,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Markdown } from "@/components/markdown";
 import { TradeRationale } from "@/components/inbox/TradeRationale";
 import type { InboxActionDTO, InboxItemDTO } from "@/lib/api";
 
@@ -131,8 +132,16 @@ function PlanTaskBody({ body }: { body: Record<string, unknown> }) {
 }
 
 function NoteBody({ body }: { body: Record<string, unknown> }) {
+  // ``detail`` is the proposal's rationale_md — real markdown (headings,
+  // bold leads, lists). Rendering it as one <p> made long decision
+  // rationales an unreadable block.
   const detail = typeof body.detail === "string" ? body.detail : "";
-  return detail ? <p className="text-sm">{detail}</p> : null;
+  if (!detail) return null;
+  return (
+    <div className="prose prose-sm max-w-none text-sm">
+      <Markdown>{detail}</Markdown>
+    </div>
+  );
 }
 
 function ItemBody({ item }: { item: InboxItemDTO }) {
