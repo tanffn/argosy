@@ -25,6 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
+from argosy.services.escalation_guard import ESCALATION_BAR
 
 
 class FMObjectionDialogueVerdict(BaseModel):
@@ -148,6 +149,17 @@ class FundManagerDialogueVerdictAgent(BaseAgent[FMObjectionDialogueVerdict]):
             "  - ESCALATE_TO_USER: this is a judgment call (e.g. risk "
             "tolerance, ethical line) that neither you nor the analyst "
             "can resolve from data. Surface to the human.\n\n"
+            f"{ESCALATION_BAR}\n\n"
+            "VERDICT-SPECIFIC RULE (binding): a disagreement with the "
+            "analyst over a VALUE or a WORDING — what a number, target, "
+            "or sentence should be — is NEVER ESCALATE_TO_USER. It is a "
+            "derivation question: use FM_MAINTAINS_OBJECTION (state the "
+            "evidence you need; the next round re-derives blind) or "
+            "FM_REVISES_OBJECTION. Before choosing ESCALATE_TO_USER, "
+            "your reasoning_md must state whether the impasse is an (a) "
+            "derivation/value/wording disagreement (then do NOT "
+            "escalate) or a (b) structurally different PATH / client-"
+            "owned fact (only then escalate).\n\n"
             "Rules:\n"
             "  - You retain authority. Do NOT cave to the analyst just "
             "because they pushed back hard. CONCEDE/REBUT are merely the "

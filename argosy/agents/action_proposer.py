@@ -89,6 +89,7 @@ from typing import Any, Literal, Union
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
+from argosy.services.escalation_guard import ESCALATION_BAR
 
 _log = logging.getLogger(__name__)
 
@@ -577,6 +578,17 @@ For each proposal, emit:
 
     Missing required fields DROP the proposal. Extra fields are
     tolerated.
+
+""" + ESCALATION_BAR + """
+
+Apply the bar to any proposal that ASKS the client — a `note_only`
+question, a needs-info style data request, or a proposal that merely
+arbitrates between two of Argosy's own values: (a) derivation / value /
+wording disagreements between Argosy's surfaces or judges go back to
+the fleet's reconciliation (dispute / blind re-derivation / replan),
+NEVER into the client's queue as a proposal; (b) only structurally
+different PATHS, or real-world facts only the client owns, become
+client asks. State (a)/(b) in the rationale of any such proposal.
 
 CITATION DISCIPLINE.
 

@@ -15,7 +15,10 @@ export and decides, per finding, which closer PATH resolves it:
 * ``refresh_snapshot``      — the finding is about stale PORTFOLIO DATA
   (prices, FX, weights) that the snapshot-refresh service can reprice.
 * ``needs_user_input``      — the finding needs data or a decision only
-  the client can supply (route to the inbox as needs-info).
+  the client can supply (route to the inbox as needs-info). Escalation
+  bar (fatal FORKS only): value/wording disagreements between surfaces
+  or judges are derivation questions — they go to ``dispute`` or
+  ``requires_resynthesis``, never here.
 * ``dispute``               — the closer, re-deriving from the supplied
   plan + facts, believes the critique's claim is WRONG. Provide the
   evidence; the critique re-verifies blind and either withdraws the
@@ -33,6 +36,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent
+from argosy.services.escalation_guard import ESCALATION_BAR
 
 
 CloserAction = Literal[
@@ -140,6 +144,16 @@ class CritiqueCloserAgent(BaseAgent[CritiqueClosePlan]):
             "critique's claim is WRONG. Give concrete evidence; a blind "
             "re-verification will adjudicate.\n\n"
             f"EDITABILITY CONTRACT (binding): {editability}\n\n"
+            f"{ESCALATION_BAR}\n\n"
+            "CLOSER-SPECIFIC RULE (binding): value disagreements between "
+            "plan surfaces or between judges — the critique vs the plan, "
+            "prose vs the structured allocation, one number vs another — "
+            "are NEVER needs_user_input. Route them to `dispute` (which "
+            "triggers the blind re-derivation) or `requires_resynthesis`. "
+            "Before choosing needs_user_input, your rationale must state "
+            "whether the finding is an (a) derivation question (then it "
+            "goes to dispute/requires_resynthesis instead) or a (b) "
+            "structural fork / client-owned fact (only then escalate).\n\n"
             "Route every finding index you were given exactly once. Do not "
             "soften real findings into disputes; dispute only with concrete "
             "contrary evidence.\n\n"

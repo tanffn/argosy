@@ -49,6 +49,7 @@ from sqlalchemy import select
 from argosy.agents.critique_closer import CritiqueCloserAgent, CritiqueClosePlan
 from argosy.agents.plan_critique import PlanCritiqueAgent, PlanCritiqueReport
 from argosy.logging import get_logger
+from argosy.services.escalation_guard import same_path_signature
 from argosy.state import db as db_mod
 from argosy.state.models import ActionProposal, PlanCritique, PlanVersion
 
@@ -380,6 +381,21 @@ async def reconcile_critique(
             question = (route.question_for_user if route else None) or (
                 f"The weekly critique needs input on: {f.get('summary')}"
             )
+            # Escalation-bar transport guard (deterministic SHAPE check,
+            # never judgment): a question comparing two same-unit numbers
+            # ("12.0% vs 13.0%") smells like a derivation disagreement
+            # that should have routed to dispute / requires_resynthesis.
+            # LOG ONLY — the agent may have good reason; the warning
+            # feeds the weekly fleet self-review. Never block.
+            if same_path_signature(question):
+                _log.warning(
+                    "escalation_guard.same_path_signature",
+                    user_id=user_id,
+                    source="critique_reconcile.needs_user_input",
+                    finding_index=idx,
+                    topic=f.get("topic"),
+                    question=question[:300],
+                )
             await _upsert_action_proposal(
                 user_id=user_id,
                 kind="note_only",
