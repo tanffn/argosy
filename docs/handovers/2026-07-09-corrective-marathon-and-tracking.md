@@ -53,3 +53,18 @@ Funnel run 4, trigger=portfolio_review, T2 Opus fleet, estate KB in, long_hold m
 ## 4. Discipline notes
 
 Blind re-derivation kept winning: the reader caught real vest-policy contradictions the FM missed twice; the gates caught garbage instructions pre-spend. Every mechanical failure became committed machinery — do NOT hand-fix symptoms the machinery now owns. One decision = one inbox row. cp1252 console: `PYTHONIOENCODING=utf-8`, durable side-effects BEFORE printing. Subagents that idle "waiting" for their own background children: resume them with SendMessage and make them finish synchronously.
+
+
+## 5. POST-ACCEPT SESSION TAIL (2026-07-09 evening — context-limited close)
+
+**Ariel's open decisions:** (1) discovery conviction floor HIGH→MEDIUM (zero discovery names have EVER reached the fleet; live picks SOUN/JOBY BUY-MED are floor-blocked) + radar cap ceiling $8B vs sleeve's sub-$30B doctrine + DiscoveryFunnelLoop interval->cron (ran ONCE ever); (2) the 8 sell proposals (his pushback: NOW/CRM maybe x2-3, BRK.B as ballast); (3) gold sleeve 3.1% — external reviewer challenged it; Ariel's recorded stance = burden-of-proof-on-gold, NOT a ban.
+
+**Agents in flight at close (harvest their task outputs next session):**
+- a87b50cc79f16d0ab — buy/sell SUM TABLE (v73 gap-fill: sells -> sleeve gaps -> leftover to held SGOV) + fleet re-adjudication of NOW/CRM (bounded-slot framing w/ Ariel's x2-3 thesis) + BRK.B (defensive-ballast framing).
+- a4a9c546d08f7359d — gold-sleeve MERITS adjudication (trace run-156 alternatives decision; if convention-inherited, fleet adjudicates FI-date impact w/ burden on gold; sinks a settled proposal; redistribute needs Ariel confirm).
+- adcf97526484a0ba9 — inbox Dismiss bug root-cause + RKT proposal DEFER (pending x10 eval) + SOFI card (auto-expires 07-10).
+- ae5de3dfa16e6afdf/earlier work UNCOMMITTED in tree: proposals API/inbox fixes from the Dismiss agent may be pending — check git status.
+
+**Committed this tail:** position-context plumbing d6afbd5; resolver de-hardcoding 6b15e14; successor settlement + RE-equity single-sourcing b18868f; ACCEPT recorded 012cd13; sleeve-mandate wiring (this commit). Time-machine backtest writeup: tmp/fleet_timemachine/ (7/7 with synthetic-pair decontamination — the lens works when pointed; production gap = discovery cadence+floor+sources, queued above).
+
+**Also queued:** multi-mandate adjudication (every reviewed name judged against hold/sleeve/ballast mandates — the 'why did I need to say that' fix); pre-momentum lead sources (Finviz sleeve-tuned screen, 13F/Form4 smart-money family post-parser-fix, earnings-acceleration screen); RKT x10 eval; verify-run of the 156 chain; greeting must re-derive from v73 (old 'sell June vest' item must die); backend restart pending (TWO stale uvicorns).
