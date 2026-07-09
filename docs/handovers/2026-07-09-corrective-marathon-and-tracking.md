@@ -33,7 +33,7 @@ Funnel run 4, trigger=portfolio_review, T2 Opus fleet, estate KB in, long_hold m
 
 ## 3. Next-round queue
 
-1. **Draft 73: fix 4 reader findings → one read → ACCEPT** (§0; delegation stands).
+1. **Draft 73: fix 4 reader findings + RESTORE THE x10 SLEEVE ROW → one read → ACCEPT** (§0; delegation stands). Ariel confirmed (2026-07-09): Alternatives (gold 3.5%) ≠ x10 (moonshot 5%) — draft 73's table DROPPED the x10 row entirely (v67 has high_growth_basket 5.0%); no sourced decision to remove it exists in the trail → dropped-sleeve regression, restore per v67 unless the trail proves otherwise. Also per Ariel: the 'sell June vest' greeting item is v67's OLD policy — verify it dies when draft 73 promotes (fresh vests held; quota sold from eligible core at plan pace).
 2. Verify-run the whole 156 chain post-accept.
 3. Patch/sliced live acceptance evidence → flip both flags default-ON; patch base-selection should support the PENDING DRAFT as base (tonight it compared refs against v67 and routed FULL wrongly).
 4. In-product zigzag mechanism (judges-disagree auto-resolution).
