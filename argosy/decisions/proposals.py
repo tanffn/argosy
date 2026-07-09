@@ -9,7 +9,8 @@ State machine (SDD §10.3):
 
     draft ──┬──> awaiting_human ──> approved ──> executed_paper
             │                  │              └─> executed_live
-            │                  └─> rejected
+            │                  ├─> rejected
+            │                  └─> cooling (user defer; resurfaces when ripe)
             ├──> cooling ──> awaiting_human (T2/T3 main) ──...
             │            └─> approved (limited/paper, auto-promotion)
             ├──> blocked
@@ -21,7 +22,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -63,6 +64,8 @@ _LEGAL_TRANSITIONS: dict[ProposalStatus, set[ProposalStatus]] = {
     ProposalStatus.AWAITING_HUMAN: {
         ProposalStatus.APPROVED,
         ProposalStatus.REJECTED,
+        ProposalStatus.COOLING,  # user defer — parked with cooling_off_until;
+        # the process_cooling loop re-queues it to awaiting_human when ripe.
         ProposalStatus.CANCELLED,
         ProposalStatus.EXPIRED,
     },
@@ -131,8 +134,8 @@ class Proposal(BaseModel):
     confidence: str = "MEDIUM"
     cooling_off_until: datetime | None = None
     decision_run_id: int | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -160,7 +163,7 @@ def transition(
     """
     src = proposal.status
     assert_legal(src, dst)
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     proposal.status = dst
     proposal.updated_at = moment
     return TransitionEvent(src=src, dst=dst, at=moment, by=by, note=note)

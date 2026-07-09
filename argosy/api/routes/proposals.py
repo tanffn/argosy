@@ -15,7 +15,7 @@ auth and adds the 2nd-factor flow on T3 approves.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -34,13 +34,17 @@ from argosy.security import totp as totp_mod
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AgentReport as AgentReportRow,
+)
+from argosy.state.models import (
     Approval,
     DecisionRun,
-    Proposal as ProposalRow,
+    DecisionSnapshot,
     ProposalHistory,
     TOTPSecret,
 )
-
+from argosy.state.models import (
+    Proposal as ProposalRow,
+)
 
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
@@ -113,6 +117,16 @@ class RejectRequest(BaseModel):
     note: str = ""
 
 
+class DeferRequest(BaseModel):
+    """Defer a trade proposal — the ``proposals``-table twin of the
+    action-proposal defer. ``defer_until_date`` is the ISO date the row
+    resurfaces (the process_cooling loop re-queues it to ``awaiting_human``)."""
+
+    user_id: str = "ariel"
+    defer_until_date: str
+    note: str | None = None
+
+
 class EscalateRequest(BaseModel):
     user_id: str = "ariel"
     levels: int = 1
@@ -178,7 +192,31 @@ def _row_to_item(row: ProposalRow) -> ProposalListItem:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
+
+
+async def _sync_snapshot_action_state(session, proposal_id: int, state: str) -> None:
+    """Propagate the human decision onto the immutable funnel trace.
+
+    ``decision_snapshots.human_action_state`` is one of the two lifecycle
+    columns the proposal lifecycle is ALLOWED to update (see the model
+    docstring) — it is how the calibrating funnel learns "the client
+    accepted/rejected this call". Only still-``proposed`` rows move; the
+    expiry sweep and re-decisions own the other transitions. No-op for
+    proposals without a snapshot (non-funnel origins).
+    """
+    snaps = (
+        (
+            await session.execute(
+                select(DecisionSnapshot).where(DecisionSnapshot.proposal_id == proposal_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for s in snaps:
+        if s.human_action_state == "proposed":
+            s.human_action_state = state
 
 
 # ----------------------------------------------------------------------
@@ -468,6 +506,7 @@ async def approve_proposal(
                 signed_token_id=body.signed_token_id,
             )
         )
+        await _sync_snapshot_action_state(session, row.id, "accepted")
         await session.commit()
 
         try:
@@ -513,6 +552,7 @@ async def reject_proposal(
                 note=body.note or "Rejected by user",
             )
         )
+        await _sync_snapshot_action_state(session, row.id, "rejected")
         await session.commit()
 
         try:
@@ -528,6 +568,62 @@ async def reject_proposal(
             proposal_id=row.id,
             message=f"Proposal #{row.id} rejected",
         )
+
+
+@router.post("/{proposal_id}/defer", response_model=ProposalActionResponse)
+async def defer_proposal(
+    proposal_id: int,
+    body: DeferRequest,
+) -> ProposalActionResponse:
+    """Defer an ``awaiting_human`` trade proposal until a date.
+
+    The row parks back in ``cooling`` with ``cooling_off_until`` set; the
+    process_cooling loop re-queues it to ``awaiting_human`` when the date
+    passes. The reason is persisted to ``ProposalHistory``. The linked
+    decision snapshot stays ``proposed`` — a defer is not a verdict.
+    """
+    from argosy.services.proposal_defer import DeferNotSupportedError, defer_trade_proposal
+
+    try:
+        defer_until = date.fromisoformat(body.defer_until_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"invalid defer_until_date: {body.defer_until_date!r}"
+        ) from exc
+
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, proposal_id)
+        if row is None or row.user_id != body.user_id:
+            raise HTTPException(status_code=404, detail="proposal not found")
+
+        try:
+            result = defer_trade_proposal(
+                row,
+                defer_until=defer_until,
+                note=body.note,
+                actor_user_id=body.user_id,
+            )
+        except DeferNotSupportedError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        session.add(result.history)
+        await session.commit()
+
+    try:
+        await publish_event(
+            "proposal.updated",
+            {"proposal_id": proposal_id, "user_id": body.user_id, "status": "cooling"},
+        )
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    return ProposalActionResponse(
+        status="ok",
+        proposal_id=proposal_id,
+        message=f"Proposal #{proposal_id} deferred until {defer_until.isoformat()}",
+    )
 
 
 @router.post("/{proposal_id}/escalate-tier", response_model=ProposalActionResponse)

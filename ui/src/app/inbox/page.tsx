@@ -202,6 +202,11 @@ export default function InboxPage() {
           else if (intent === "reject") await api.proposalReject(id, USER_ID, "Rejected from inbox");
           else if (intent === "ask_deeper_review") await api.proposalEscalateTier(id, USER_ID, 1);
           else if (intent === "execute") await api.proposalExecute(id, USER_ID);
+          // Beta funnel proposals carry a "dismiss" action (inbox service
+          // _adapt_trades); it maps to the reject transition. Unmapped, the
+          // click was a silent no-op — the card never left the inbox.
+          else if (intent === "dismiss")
+            await api.proposalReject(id, USER_ID, "Dismissed from inbox");
         } else if (ref?.source === "action_proposal") {
           const id = Number(ref.ref_id);
           if (intent === "accept") await api.acceptActionProposal(id, { userId: USER_ID });
