@@ -1216,6 +1216,33 @@ def test_accept_publishes_plan_current_changed(app_with_draft, monkeypatch):
     assert "plan.current.changed" in types
 
 
+def test_accept_renames_refinement_draft_label(app_with_draft):
+    """A promoted refinement draft must not keep its '-draft-' label —
+    /plan renders "Active: <version_label>" and a current plan named
+    refinement-draft-… reads as unpromoted."""
+    r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    draft_id = r1.json()["plan_version_id"]
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.version_label = "refinement-draft-2026-01-01-000000"
+        sess.commit()
+    finally:
+        sess.close()
+
+    r2 = app_with_draft.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r2.status_code == 200, r2.text
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        assert pv.role == "current"
+        assert pv.version_label == "refinement-2026-01-01-000000"
+    finally:
+        sess.close()
+
+
 # ---------------------------------------------------------------------------
 # I1 — home-brief cache invalidation on draft lifecycle changes
 # ---------------------------------------------------------------------------

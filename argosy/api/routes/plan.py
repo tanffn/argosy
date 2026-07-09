@@ -3774,6 +3774,11 @@ def post_draft_accept(
     pv.role = "current"
     pv.accepted_at = now
     pv.accepted_by_user_id = user_id
+    # A promoted plan must not keep a "-draft-" label: /plan renders
+    # "Active: <version_label>", and a current plan named
+    # "refinement-draft-…" reads as an unpromoted draft.
+    if (pv.version_label or "").startswith("refinement-draft-"):
+        pv.version_label = "refinement-" + pv.version_label[len("refinement-draft-"):]
 
     # Corrective promote hook (docs/design/corrective_resynthesis.md §2.C.3):
     # the proposals this corrective run FED (the aggregated critique_resynth
