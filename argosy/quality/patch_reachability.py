@@ -58,7 +58,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from argosy.quality.corrections_check import _present, value_variants
+from argosy.quality.corrections_check import _present, wrong_value_variants
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the module pure
     from argosy.agents.plan_synthesizer_types import PlanSynthesisOutput
@@ -108,10 +108,16 @@ def _token_match(ref_tokens: set[str], subject_tokens: set[str]) -> bool:
 
 
 def _occurrence_variants(value: Any) -> list[str]:
-    """``value_variants`` plus the float-JSON form of integers, so an
+    """``wrong_value_variants`` plus the float-JSON form of integers, so an
     occurrence scan over ``model_dump_json`` text (where ``value: 4136``
-    renders as ``4136.0``) still finds integer canonical/wrong values."""
-    variants = list(value_variants(value))
+    renders as ``4136.0``) still finds integer canonical/wrong values.
+
+    Uses the CONSERVATIVE variant set for both canonical and wrong values:
+    this scan SCOPES slices (occurrence spread beyond 2 of 4 forces FULL),
+    so the run-156-widened canonical set of ``value_variants`` (e.g. '13.0'
+    → bare '13') would false-implicate slices on unrelated digits and
+    needlessly degrade the patch tier to FULL."""
+    variants = list(wrong_value_variants(value))
     if isinstance(value, bool):
         return variants
     if isinstance(value, int):

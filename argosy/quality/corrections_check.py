@@ -77,13 +77,79 @@ class CorrectionsCheckResult:
         )
 
 
-def value_variants(value: Any) -> list[str]:
-    """Deterministic textual variants a canonical value may render as.
+def _numeric_variants(f: float) -> list[str]:
+    """Symmetric renderings of one numeric value: trailing-zero float ↔ int
+    ("13.0" ↔ "13"), comma-grouped ints ("4,136"), shortest float repr plus
+    a trailing-zero-stripped 2dp form. Shared by every value type so a
+    canonical arriving as int, float, or numeric STRING matches the same
+    surface renderings (run-156 regression: canonical '13.0' vs a skeleton
+    writing "13%" / 13 / 13.0)."""
+    if f == int(f):
+        i = int(f)
+        # Comma-grouped form last: callers use variants[-1] as the human
+        # display form in violation reasons.
+        return list(dict.fromkeys([str(i), f"{i}.0", f"{i:,}"]))
+    variants = [f"{f:g}"]
+    two_dp = f"{f:.2f}".rstrip("0").rstrip(".")
+    if two_dp not in variants:
+        variants.append(two_dp)
+    return variants
 
-    Integers match both plain and comma-grouped forms ("4136" / "4,136");
-    floats match their shortest repr plus a trailing-zero-stripped 2dp form;
-    strings match themselves (stripped). Conservative on purpose — a fuzzy
-    matcher has no place in a deterministic gate.
+
+# A numeric-looking canonical STRING (optionally comma-grouped, optionally
+# '%'-suffixed): widened to the same variant set as a real number.
+_NUMERIC_LIKE_STR_RE = re.compile(r"^-?[\d,]*\d(?:\.\d+)?$")
+
+
+def value_variants(value: Any) -> list[str]:
+    """Deterministic textual variants a CANONICAL value may render as
+    (presence check — a canonical is "landed" in ANY equivalent rendering).
+
+    Numbers (and numeric-looking strings, with or without a trailing '%')
+    match all equivalent renderings symmetrically: int ↔ trailing-zero float
+    ("13" ↔ "13.0"), plain ↔ comma-grouped ("4136" ↔ "4,136"), string ↔ JSON
+    numeric. Digit-boundary guards in ``_present`` keep this exact ("13"
+    never matches inside "130" or "4.13"); a '%' after the digits is ordinary
+    prose to the matcher, so "13" matches "13%" without an explicit variant.
+    Non-numeric strings match themselves (stripped).
+
+    Run-156 regression (2026-07-09): the canonical arrived as STRING '13.0'
+    and the skeleton wrote "13%" — the un-widened set had no '13' variant,
+    the skeleton gate failed after retry, and the sliced run degraded to the
+    monolith. Widening is CANONICAL-side only: ``wrong_value_variants`` stays
+    conservative (see its docstring for why the asymmetry is correct).
+    """
+    if isinstance(value, bool):
+        return [str(value)]
+    if isinstance(value, int):
+        return _numeric_variants(float(value))
+    if isinstance(value, float):
+        return _numeric_variants(value)
+    s = str(value).strip()
+    if not s:
+        return []
+    variants = [s]
+    core = s[:-1].rstrip() if s.endswith("%") else s
+    if _NUMERIC_LIKE_STR_RE.match(core.replace(",", "")):
+        for v in _numeric_variants(float(core.replace(",", ""))):
+            if v not in variants:
+                variants.append(v)
+    return variants
+
+
+def wrong_value_variants(value: Any) -> list[str]:
+    """Textual variants for a WRONG/superseded value (absence check).
+
+    Deliberately NARROWER than ``value_variants``: an absence check runs a
+    negative match over the whole draft (rendered horizons + appendices), so
+    collapsing a decimal string like "3.00" to bare "3" would flag every
+    numbered-list "3." and unrelated single digit as a surviving wrong value
+    and block clean drafts. Asymmetry doctrine: a canonical missed in an
+    equivalent rendering spuriously BLOCKS (run-156), so presence widens;
+    a wrong value over-matched spuriously BLOCKS too, so absence stays
+    conservative. Exact original semantics: ints match plain + comma-grouped;
+    integral floats collapse to the int forms; other floats match shortest
+    repr + 2dp-stripped; strings match themselves.
     """
     if isinstance(value, bool):
         return [str(value)]
@@ -149,7 +215,7 @@ def check_corrections_landed(
         wrong_hit: str | None = None
         hit_surfaces: list[str] = []
         for wv in wrong:
-            for variant in value_variants(wv):
+            for variant in wrong_value_variants(wv):
                 # Per-surface sweep (patch-synthesis §2.D: per-slice
                 # attribution feeds the escalation decision) — every
                 # surface is checked, not just the first hit.
@@ -214,4 +280,5 @@ __all__ = [
     "CorrectionsCheckResult",
     "check_corrections_landed",
     "value_variants",
+    "wrong_value_variants",
 ]

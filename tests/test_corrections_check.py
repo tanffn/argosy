@@ -132,6 +132,42 @@ def test_numeric_boundary_decimal_continuation():
     assert res2.passes
 
 
+def test_run_156_numeric_string_canonical_matches_pct_rendering():
+    """Run-156 regression (2026-07-09): the zigzag settlement produced the
+    canonical as STRING '13.0'; the draft writes 'cap of 13%'. The variant
+    set must bridge trailing-zero float ↔ int symmetrically — '13.0' was
+    absent, the skeleton gate failed after retry, and the run degraded to
+    the monolith."""
+    variants = value_variants("13.0")
+    assert "13" in variants and "13.0" in variants
+    res = check_corrections_landed(
+        corrections=[_corr(canonical=["13.0"])],
+        surfaces={"long": "NVDA concentration: hard cap of 13% single-name."},
+    )
+    assert res.passes, res.summary()
+
+
+def test_numeric_string_variants_symmetric():
+    # string ↔ JSON numeric, with/without '%', trailing-zero float ↔ int.
+    assert "13.0" in value_variants("13")
+    assert "13.0" in value_variants(13)
+    assert "13" in value_variants(13.0)
+    assert "13" in value_variants("13.0%")
+    assert "4,136" in value_variants("4136.0")
+    # Non-numeric strings stay exact-match only.
+    assert value_variants("fast-on-eligible-core") == ["fast-on-eligible-core"]
+
+
+def test_numeric_string_canonical_keeps_digit_boundary_guards():
+    """Widening must NOT loosen the boundary guards: canonical '13.0' still
+    must not match inside 130, 4.13, or 13.5."""
+    res = check_corrections_landed(
+        corrections=[_corr(canonical=["13.0"])],
+        surfaces={"long": "lot 130 sold at 4.13 with a 13.5 multiple"},
+    )
+    assert not res.passes
+
+
 def test_string_canonical_value():
     res = check_corrections_landed(
         corrections=[_corr(canonical=["fast-on-eligible-core"])],

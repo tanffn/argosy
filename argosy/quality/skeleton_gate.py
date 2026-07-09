@@ -38,7 +38,11 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from argosy.quality.corrections_check import _present, value_variants
+from argosy.quality.corrections_check import (
+    _present,
+    value_variants,
+    wrong_value_variants,
+)
 from argosy.quality.numeric_source_gate import (
     PENDING_LABEL,
     _matches,
@@ -180,14 +184,22 @@ def _value_matches_pool(value: float, cls: str, pool: list[float]) -> bool:
 # Occurrence variants — the skeleton haystack is a model_dump_json, where an
 # integer value in a float field renders "4136.0" (same widening as
 # patch_reachability).
+#
+# Asymmetric on purpose (run-156): CANONICAL presence uses the full
+# symmetric ``value_variants`` set (int ↔ trailing-zero float ↔ numeric
+# string ↔ '%'-suffixed — canonical '13.0' must accept a skeleton writing
+# "13%"), while WRONG/superseded absence keeps the conservative
+# ``wrong_value_variants`` set plus the float-JSON widening below —
+# collapsing a wrong "3.00" to bare "3" would false-flag unrelated digits
+# across the whole dump.
 # ---------------------------------------------------------------------------
 
 
 _NUMERIC_STR_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 
-def _occurrence_variants(value: Any) -> list[str]:
-    variants = list(value_variants(value))
+def _wrong_occurrence_variants(value: Any) -> list[str]:
+    variants = list(wrong_value_variants(value))
     if isinstance(value, bool):
         return variants
     if isinstance(value, int):
@@ -207,8 +219,14 @@ def _occurrence_variants(value: Any) -> list[str]:
     return variants
 
 
-def _occurs(value: Any, text: str) -> bool:
-    return any(_present(v, text) for v in _occurrence_variants(value))
+def _wrong_occurs(value: Any, text: str) -> bool:
+    return any(_present(v, text) for v in _wrong_occurrence_variants(value))
+
+
+def _canonical_occurs(value: Any, text: str) -> bool:
+    # value_variants already covers the float-JSON rendering ("13" ↔ "13.0")
+    # so no extra widening is needed on the canonical side.
+    return any(_present(v, text) for v in value_variants(value))
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +324,7 @@ def check_skeleton(
         for wv in c.get("wrong_values") or []:
             if wv is None:
                 continue
-            if _occurs(wv, skeleton_text):
+            if _wrong_occurs(wv, skeleton_text):
                 result.violations.append(
                     f"[corrective] correction [{idx}] {topic}: wrong value "
                     f"{wv!r} still present in the skeleton — it must be "
@@ -315,7 +333,9 @@ def check_skeleton(
         canonical = [
             v for v in (c.get("canonical_values") or []) if v is not None
         ]
-        missing = [cv for cv in canonical if not _occurs(cv, skeleton_text)]
+        missing = [
+            cv for cv in canonical if not _canonical_occurs(cv, skeleton_text)
+        ]
         if missing:
             result.violations.append(
                 f"[corrective] correction [{idx}] {topic}: canonical "
@@ -328,7 +348,7 @@ def check_skeleton(
         for sv in d.get("wrong_values") or []:
             if sv is None:
                 continue
-            if _occurs(sv, skeleton_text):
+            if _wrong_occurs(sv, skeleton_text):
                 result.violations.append(
                     f"[corrective] directive [D{idx}]: superseded value "
                     f"{sv!r} still present in the skeleton — apply the "

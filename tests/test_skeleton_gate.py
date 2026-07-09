@@ -219,6 +219,45 @@ def test_corrective_canonical_absent_fails_and_present_passes():
     assert check_skeleton(skeleton=sk_present, corrections=[correction]).passes
 
 
+def test_run_156_canonical_pct_string_in_key_facts():
+    """Run-156 end-to-end regression (2026-07-09, sliced_degraded_to_monolith):
+    correction canonical arrives as STRING '13.0' (zigzag settled_value);
+    a skeleton whose concentration key_facts state the cap as '13%' must
+    PASS (trailing-zero float ↔ int ↔ percent rendering are the same value);
+    the same skeleton WITHOUT any cap mention must fail with the original
+    violation text."""
+    correction = {
+        "index": 2,
+        "topic": "RECONCILE — single-name ceiling figure diverges from the",
+        "canonical_values": ["13.0"], "wrong_values": [],
+    }
+
+    def _roster(cap_fact: bool):
+        return [
+            SkeletonSectionEntry(
+                section_id=sid, horizon="medium", one_line_thesis=f"{sid} t",
+                key_facts=(
+                    ["hard cap 13% (single-name ceiling)"]
+                    if cap_fact and sid == "concentration" else []
+                ),
+            )
+            for sid in _CANONICAL_12
+        ]
+
+    sk_with_cap = _skeleton(section_roster=_roster(cap_fact=True))
+    res = check_skeleton(skeleton=sk_with_cap, corrections=[correction])
+    assert res.passes, res.violations
+
+    sk_without = _skeleton(section_roster=_roster(cap_fact=False))
+    res = check_skeleton(skeleton=sk_without, corrections=[correction])
+    assert not res.passes
+    assert any(
+        "canonical" in v and "absent from the skeleton" in v
+        and "targets / key_facts" in v
+        for v in res.violations
+    )
+
+
 def test_directive_superseded_value_present_fails():
     sk = _skeleton(medium=_horizon(
         "medium",

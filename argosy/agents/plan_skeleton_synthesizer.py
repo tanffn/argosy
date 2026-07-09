@@ -317,9 +317,17 @@ class PlanSkeletonSynthesizerAgent(BaseAgent[PlanSkeleton]):
                 "bake AGREED objections in, use DISAGREED counter-positions "
                 "as the target, re-evaluate DEFERRED honestly. Corrective "
                 "CORRECTIONS/DIRECTIVES listed there must be resolved BY "
-                "YOUR SKELETON — the canonical values belong in your "
-                "targets/key_facts; the wrong values must not appear "
-                "anywhere in your output."
+                "YOUR SKELETON, and a deterministic gate enforces this "
+                "before any expansion tokens are spent: EVERY canonical "
+                "value listed in the corrective block MUST be STATED in "
+                "your skeleton output — as a target row where the value is "
+                "a target, otherwise as an explicit entry in the relevant "
+                "section's key_facts (e.g. a corrected single-name cap of "
+                "13.0 belongs in the concentration section's key_facts as "
+                "'single-name cap 13.0%'). Cap/ceiling/rate-shaped "
+                "corrections have no natural home elsewhere — never leave "
+                "them implicit in a posture_summary. The wrong/superseded "
+                "values must not appear anywhere in your output."
             )
 
         # Prior-items index — same rendering as the monolith prompt.
