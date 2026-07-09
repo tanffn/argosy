@@ -73,3 +73,14 @@ Blind re-derivation kept winning: the reader caught real vest-policy contradicti
 
 
 **INBOX FIXES (landed, committed):** Dismiss root cause = UI intent-map no-op, fixed; trade-proposal defer built (cooling + resurface); SOFI rejected, RKT deferred to 07-16. Backend restart needed only for the new /defer endpoint; UI page refresh for future Dismiss.
+
+
+## 6. FINAL CLOSE (Ariel's last directives, 2026-07-09 evening)
+
+**GOLD: Ariel APPROVED proposal 67** — agent ae62c5a9d69754ab0 dispatched to accept + apply via /api/plan/refine (gold 3.11% -> EXUS 4.0%). VERIFY next session: new plan version has no gold class, EXUS 4.0, sums 100, proposal 67 executed. If the refine tier blocked a scoped apply, the agent stopped - finish it.
+
+**DRY-POWDER DIRECTIVE (Ariel, new):** "do we want to keep dry-powder to buy those discovery stocks?" - he wants a cash reserve earmarked for discovery buys. Fleet should propose the mechanics (e.g. a slice of the cash sleeve reserved for x10/discovery fills, so green-lit candidates never wait for a sale). Fold into the discovery plan below. THIS IS A VALUES DIRECTIVE - design + propose, he confirms sizing.
+
+**DISCOVERY IMPROVEMENT PLAN (committed direction):** (1) DiscoveryFunnelLoop interval->cron (fires before the 15:30 UTC funnel; ran ONCE ever); (2) Ariel decides: conviction floor HIGH->MEDIUM (zero discovery names have EVER reached the fleet; SOUN/JOBY BUY-MED floor-blocked) + radar cap ceiling $8B -> sub-$30B per sleeve doctrine; (3) pre-momentum sources: sleeve-tuned Finviz screen, earnings-acceleration screen, 13F/Form4/congressional smart-money family post-parser-fix; (4) multi-mandate adjudication (every name judged against hold/sleeve/ballast mandates); (5) sleeve mandate now IN stage-3 packets (aaa2199).
+
+**OPEN LIST (full):** Ariel's inbox: proposals 5-8 (staged legacy sells), 10 (NOW top-up $30k), reject 3 (CRM hold), RKT resurfaces 07-16 w/ x10 eval pending; discovery floor/cap decisions; dry-powder sizing. System queue: verify-run the 156 chain; greeting re-derives from v73 (old sell-June-vest item must be gone); backend restart (TWO stale uvicorns; new /defer endpoint + all session code); alternatives_phase systemic fix (hardcoded 3.0% + blind to settled records); patch/sliced flags to default-ON; in-product zigzag; run-149 pipeline crash diagnosis; cost-cap resume semantics; synthesizer emits fact tokens; NVDA avg_price per-lot basis rebuild; Schwab equity ingest path (gap proposal filed); slash-ticker (BRK/B) data bug; ips.no_current_plan keying; thesis-flag TTL + supersede-on-newer-verdict; test_api_phase4 hang; catchup KeyError; funnel un-shadow as beta; bank DPYA/EXUS tranche; SGLN in LOOKTHROUGH_MAP.
