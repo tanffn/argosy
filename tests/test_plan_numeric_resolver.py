@@ -1095,3 +1095,95 @@ def test_retention_capital_track_pct_from_statutory_rate(session):
     # and it is DISTINCT from the at-vest rate (the whole point)
     at_vest = resolved.get("tax.retention_at_vest_pct")
     assert abs(r.value - at_vest.value) > 0.1
+
+
+# ---------------------------------------------------------------------------
+# Corrective phase-reuse lineage (run-156 / draft-73 leak): a corrective
+# re-synthesis run reuses another run's phase 1-2 outputs and has NO phase-1
+# agent_reports of its own. The resolver must follow the recorded lineage
+# (decision_runs.notes_json, else plan_versions.synthesis_inputs_json) back
+# to the donor run instead of degrading every agent-sourced key to pending.
+# ---------------------------------------------------------------------------
+
+
+def _seed_decision_run(s, run_id: int, *, notes: dict | None = None):
+    from argosy.state.models import DecisionRun
+
+    row = DecisionRun(
+        id=run_id,
+        user_id="ariel",
+        ticker="(plan)",
+        tier="T3",
+        decision_kind="plan_revision",
+        started_at=datetime(2026, 7, 9),
+        status="completed",
+        notes_json=json.dumps(notes) if notes is not None else None,
+    )
+    s.add(row)
+    s.flush()
+    return row
+
+
+def test_reuse_lineage_via_notes_json_resolves_donor_reports(session):
+    # Reports live under plan-synth-71 (the donor). Run 72 reused phases 1-2.
+    _seed_all(session)
+    _seed_decision_run(session, DRUN)
+    _seed_decision_run(session, 72, notes={"phase_reuse_from_run_id": DRUN})
+    session.commit()
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=72)
+    for key in (
+        "retirement.fi_age",
+        "savings.annual_net_nis",
+        "spend.annual_t12_nis",
+    ):
+        rv = resolved.get(key)
+        assert rv.status == "resolved", f"{key} should resolve via donor run"
+
+
+def test_reuse_lineage_via_synthesis_inputs_json(session):
+    # No notes_json stamp (pre-fix historical run) — the lineage is recovered
+    # from the draft's synthesis_inputs_json.corrective.reused_from_run_id.
+    from argosy.state.models import PlanVersion
+
+    _seed_all(session)
+    _seed_decision_run(session, DRUN)
+    _seed_decision_run(session, 72, notes=None)
+    session.add(
+        PlanVersion(
+            user_id="ariel",
+            role="draft",
+            decision_run_id=72,
+            synthesis_inputs_json=json.dumps(
+                {"corrective": {"reused_from_run_id": DRUN, "reused_phases": [1, 2]}}
+            ),
+        )
+    )
+    session.commit()
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=72)
+    assert resolved.get("savings.annual_net_nis").status == "resolved"
+    assert resolved.get("retirement.fi_age").status == "resolved"
+
+
+def test_no_lineage_still_pending_no_fabrication(session):
+    # A run with no reports AND no recorded lineage keeps the hard no-
+    # fabrication rule: agent-sourced keys stay pending.
+    _seed_snapshot(session)
+    _seed_decision_run(session, 73, notes=None)
+    session.commit()
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=73)
+    assert resolved.get("savings.annual_net_nis").status == "pending"
+    assert resolved.get("retirement.fi_age").status == "pending"
+
+
+def test_reuse_lineage_cycle_guard(session):
+    # A (mis-stamped) self/cyclic lineage must terminate and stay pending.
+    _seed_snapshot(session)
+    _seed_decision_run(session, 74, notes={"phase_reuse_from_run_id": 75})
+    _seed_decision_run(session, 75, notes={"phase_reuse_from_run_id": 74})
+    session.commit()
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=74)
+    assert resolved.get("savings.annual_net_nis").status == "pending"

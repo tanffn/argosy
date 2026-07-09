@@ -104,9 +104,28 @@ _AGE_VALUE = re.compile(r"\b(\d{2})\b(?!\s*%)")
 # practice the renderer always suffixes millions, so the suffix is the
 # primary signal.
 
+# Suffix rules (draft-73 scrub-corruption fix):
+#   * a suffix letter must be STANDALONE — "₪31,805 margin" / "₪11,867,939 minus"
+#     must parse as bare amounts, not consume the "m" of the following word
+#     (the old pattern read them as ₪31,805M / ₪11.87e6M, traced to nothing,
+#     and the scrub replaced the amount PLUS the word's first letter, leaving
+#     "[derivation pending]argin" in the client body);
+#   * trailing whitespace is only consumed WITH a suffix (an unsuffixed match
+#     must not swallow the space before the next word — replacement used to
+#     glue "[derivation pending]of ...");
+#   * a range like "₪39-42k" inherits the range-end suffix for the first
+#     number (it means 39k-42k, never ₪39M) — captured as ``range_suffix``.
 _NIS_TOKEN = re.compile(
-    r"₪\s*(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<suffix>[MmKk])?"
+    r"₪\s*(?P<num>\d[\d,]*(?:\.\d+)?)"
+    r"(?:\s*(?P<suffix>[MmKk])(?![A-Za-z]))?"
+    r"(?:\s*[-–—]\s*\d[\d,]*(?:\.\d+)?\s*(?P<range_suffix>[MmKk])(?![A-Za-z]))?"
 )
+
+
+def _nis_suffix(m: re.Match) -> str | None:
+    """Effective suffix of a ``_NIS_TOKEN`` match: explicit, else the range-end
+    suffix ("₪39-42k" → "k")."""
+    return m.group("suffix") or m.group("range_suffix")
 _PCT_TOKEN = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*%")
 _AGE_TOKEN = re.compile(r"\bage[\s-]*(?P<num>\d{2})\b", re.IGNORECASE)
 
@@ -353,7 +372,7 @@ def _token_in(
     m = ms[-1] if last else ms[0]
     if unit == "nis":
         num = _parse_num(m.group("num"))
-        return (m.group(0).strip(), _nis_candidates(num, m.group("suffix"))) if num is not None else None
+        return (m.group(0).strip(), _nis_candidates(num, _nis_suffix(m))) if num is not None else None
     if unit == "pct":
         num = _parse_num(m.group("num"))
         return (m.group(0).strip(), [num]) if num is not None else None
@@ -531,11 +550,11 @@ def _scrub_line(line: str, by_unit: dict[str, list[tuple[str, float]]]) -> tuple
         num = _parse_num(m.group("num"))
         if num is None:
             continue
-        cands = _nis_candidates(num, m.group("suffix"))
+        cands = _nis_candidates(num, _nis_suffix(m))
         # Candidate magnitude must clear the FI-capital floor to be eligible.
         if not any(c >= _SCRUB_NIS_FLOOR for c in cands):
             continue
-        if not _token_ok_nis(num, m.group("suffix"), by_unit["nis"]):
+        if not _token_ok_nis(num, _nis_suffix(m), by_unit["nis"]):
             spans.append((m.start(), m.end(), m.group(0)))
 
     if not spans:

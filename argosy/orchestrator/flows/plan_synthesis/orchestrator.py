@@ -477,6 +477,35 @@ def run_synthesis(
                 reused_from_run_id=reuse_phases_from_run_id,
                 reused_phases=_corrective_reused_phases,
             )
+            # Stamp the phase-reuse lineage on the DecisionRun row NOW (not at
+            # draft persist): the numeric resolver keys agent_reports on
+            # ``plan-synth-<run>``, and a reused-phase run has no phase-1
+            # reports of its own. Every IN-RUN resolver call (headline scrub,
+            # appendix render — they fire before synthesis_inputs_json exists)
+            # follows ``notes_json.phase_reuse_from_run_id`` back to the donor
+            # so agent-sourced keys resolve instead of rendering
+            # ``[derivation pending]`` (run-156 / draft-73 leak).
+            try:
+                _dr_row = session.get(DecisionRun, decision_run_id)
+                if _dr_row is not None:
+                    _notes = {}
+                    if _dr_row.notes_json:
+                        try:
+                            _parsed_notes = json.loads(_dr_row.notes_json)
+                            if isinstance(_parsed_notes, dict):
+                                _notes = _parsed_notes
+                        except (json.JSONDecodeError, TypeError):
+                            pass  # keep {} — never lose the reuse stamp
+                    _notes["phase_reuse_from_run_id"] = reuse_phases_from_run_id
+                    _notes["phase_reuse_phases"] = _corrective_reused_phases
+                    _dr_row.notes_json = json.dumps(_notes, default=str)
+                    session.commit()
+            except Exception as exc:  # noqa: BLE001 — stamp is best-effort
+                log.warning(
+                    "plan_synthesis.phase_reuse_stamp_failed",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(exc),
+                )
 
     # Phase 1: analyst reports.
     # Phases 1-5 receive the string audit token (used for log annotations and
@@ -4778,6 +4807,40 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     _long_md = _pkg._strip_history_leak(_pkg._strip_jargon(_long_md))
     _medium_md = _pkg._strip_history_leak(_pkg._strip_jargon(_medium_md))
     _short_md = _pkg._strip_history_leak(_pkg._strip_jargon(_short_md))
+
+    # FAIL-LOUD PRE-READER (draft-73 leak): a persisted body carrying leak
+    # tokens ([derivation pending] / {{fact: / EMIT AS) is GUARANTEED to be
+    # BLOCKed by the whole-artifact reader's deterministic leakage gate ~30
+    # min later — surface it NOW, at persist, with the exact unresolved
+    # resolver keys, so the root cause (e.g. a phase-reuse run whose resolver
+    # found no agent_reports) is diagnosable from this one log line instead
+    # of a reader BLOCK with no provenance. Deliberately non-fatal: aborting
+    # here would strand the run with NO draft (the decision_run-43 incident
+    # class); the reader remains the fail-closed gate.
+    try:
+        from argosy.quality.leakage_gate import scan_leakage as _scan_leakage
+        _body_leaks = _scan_leakage(
+            "\n".join((_long_md, _medium_md, _short_md, _sections_json))
+        )
+        if _body_leaks:
+            _pending_keys: list[str] = []
+            try:
+                _pending_keys = sorted(
+                    k for k, rv in _manifest.values.items()
+                    if getattr(rv, "status", None) != "resolved"
+                )
+            except Exception:  # noqa: BLE001 — manifest may not exist (scrub failed)
+                pass
+            log.error(
+                "plan_synthesis.draft_persisted_with_leak_tokens",
+                user_id=user_id, decision_run_id=decision_run_id,
+                leaks=_body_leaks, pending_resolver_keys=_pending_keys,
+            )
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never break persist
+        log.warning(
+            "plan_synthesis.leak_precheck_failed",
+            user_id=user_id, error=str(exc),
+        )
 
     return {
         "horizon_long_md": _long_md,

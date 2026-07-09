@@ -45,6 +45,8 @@ def _resolved(**vals: float) -> ResolvedPlanNumbers:
         "concentration.nvda_current_pct": "pct",
         "retirement.liquidity_reserve_nis": "nis",
         "retirement.fi_total_capital_nis": "nis",
+        "retirement.fi_margin_signed_nis": "nis",
+        "portfolio.liquid_net_worth_nis": "nis",
     }
     out: dict[str, ResolvedValue] = {}
     for k, v in vals.items():
@@ -561,3 +563,71 @@ class TestMcShockNarrativeNotBound:
         ):
             v = check_headline_numeric_source({"long": txt}, self._resolved_conc())
             assert len(v) == 1 and "99%" in v[0].detail, txt
+
+
+# --------------------------------------------------------------------------
+# (g) Draft-73 scrub-corruption regressions — the ₪-token regex must not eat
+#     the first letter of a following word ("margin"/"minus"), must not
+#     swallow the space after an unsuffixed amount, and a "₪39-42k" range
+#     inherits the range-end suffix (39k, never ₪39M).
+# --------------------------------------------------------------------------
+
+
+class TestScrubTokenBoundaries:
+    def _resolved_margin(self):
+        return _resolved(**{
+            "retirement.fi_margin_signed_nis": 31_805.0,
+            "portfolio.liquid_net_worth_nis": 11_867_939.0,
+            "retirement.fi_total_capital_nis": 11_836_133.0,
+        })
+
+    def test_margin_word_m_not_read_as_millions_suffix(self):
+        # Live run 156: "₪31,805 margin" parsed as ₪31,805M (the regex consumed
+        # the "m" of "margin"), traced to nothing, and was scrubbed — leaving
+        # "[derivation pending]argin" in the client body.
+        md = {"medium": (
+            "Liquid net worth covers the total capital target with a "
+            "₪31,805 margin — FI is met, but thinly and FX-fragile."
+        )}
+        scrubbed, log = scrub_headline_numeric_source(md, self._resolved_margin())
+        assert scrubbed["medium"] == md["medium"]
+        assert log == []
+
+    def test_minus_word_m_not_read_as_millions_suffix(self):
+        md = {"medium": (
+            "Liquid net worth ₪11,867,939 minus total capital target "
+            "₪11,836,133 = ₪31,805."
+        )}
+        scrubbed, log = scrub_headline_numeric_source(md, self._resolved_margin())
+        assert scrubbed["medium"] == md["medium"]
+        assert log == []
+
+    def test_range_inherits_end_suffix_never_millions(self):
+        # "₪39-42k" means 39k-42k: below the ₪2M scrub floor, never ₪39M.
+        md = {"medium": (
+            "Fast track sheds single-name tail risk from the net worth for "
+            "only ~₪39-42k more CGT: a free-lunch de-risking."
+        )}
+        scrubbed, log = scrub_headline_numeric_source(md, self._resolved_margin())
+        assert scrubbed["medium"] == md["medium"]
+        assert log == []
+
+    def test_unsuffixed_scrub_does_not_glue_following_word(self):
+        # A genuinely fabricated amount is still scrubbed — but the
+        # replacement must not consume the trailing space (the old pattern
+        # produced "[derivation pending]of liquid drawdown").
+        resolved = self._resolved_margin()
+        md = {"long": (
+            "The FI capital target bridge spans ₪3,427,424 of liquid drawdown."
+        )}
+        scrubbed, log = scrub_headline_numeric_source(md, resolved)
+        assert PENDING_LABEL + " of liquid drawdown" in scrubbed["long"]
+        assert len(log) == 1
+
+    def test_real_millions_suffix_still_parsed(self):
+        # Guard: a legitimate "₪21.00M" fabrication is still caught as 21M.
+        resolved = _resolved(**{"retirement.fi_total_capital_nis": 11_836_133.0})
+        md = {"long": "- Derived FI target: **₪21.00M** sustains spend."}
+        scrubbed, log = scrub_headline_numeric_source(md, resolved)
+        assert PENDING_LABEL in scrubbed["long"]
+        assert "₪21.00M" not in scrubbed["long"]

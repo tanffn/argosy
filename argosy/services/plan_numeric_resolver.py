@@ -797,6 +797,83 @@ def _resolve_usd_exposure(
     )
 
 
+def _phase_reuse_donor_chain(
+    session: "Session", decision_run_id: int, *, max_hops: int = 3
+) -> list[int]:
+    """Follow the corrective phase-reuse lineage of ``decision_run_id``.
+
+    A corrective re-synthesis run reuses another run's persisted phase 1-2
+    outputs (analysts + debates) and does NOT re-run them, so its own
+    ``plan-synth-<id>`` token has no phase-1 ``agent_reports`` rows. The donor
+    is recorded in two places, checked in order:
+
+      1. ``decision_runs.notes_json['phase_reuse_from_run_id']`` — stamped by
+         the orchestrator the moment reuse is decided, so IN-RUN resolver
+         calls (scrub / appendix render, which happen before the draft row
+         persists) can already follow the lineage.
+      2. ``plan_versions.synthesis_inputs_json['corrective']['reused_from_run_id']``
+         — persisted with the draft; covers post-hoc resolution for runs that
+         predate the notes_json stamp.
+
+    Returns donor run ids in hop order (nearest first). Cycle-guarded and
+    bounded by ``max_hops``. Best-effort: any error returns what was found.
+    """
+    chain: list[int] = []
+    seen: set[int] = set()
+    current = decision_run_id
+    try:
+        current = int(current)
+    except (TypeError, ValueError):
+        return chain
+    seen.add(current)
+    from sqlalchemy import text as _sa_text
+
+    for _ in range(max_hops):
+        donor: int | None = None
+        try:
+            notes_raw = session.execute(
+                _sa_text("select notes_json from decision_runs where id = :i"),
+                {"i": current},
+            ).scalar()
+            if notes_raw:
+                notes = json.loads(notes_raw)
+                if isinstance(notes, dict):
+                    d = notes.get("phase_reuse_from_run_id")
+                    donor = int(d) if d is not None else None
+        except Exception as exc:  # noqa: BLE001 — lineage lookup is best-effort
+            log.warning(
+                "plan_numeric_resolver.reuse_lineage_notes_failed run=%s err=%s",
+                current, exc,
+            )
+        if donor is None:
+            try:
+                sij_raw = session.execute(
+                    _sa_text(
+                        "select synthesis_inputs_json from plan_versions "
+                        "where decision_run_id = :i "
+                        "order by id desc limit 1"
+                    ),
+                    {"i": current},
+                ).scalar()
+                if sij_raw:
+                    sij = json.loads(sij_raw)
+                    corr = sij.get("corrective") if isinstance(sij, dict) else None
+                    if isinstance(corr, dict):
+                        d = corr.get("reused_from_run_id")
+                        donor = int(d) if d is not None else None
+            except Exception as exc:  # noqa: BLE001 — lineage lookup is best-effort
+                log.warning(
+                    "plan_numeric_resolver.reuse_lineage_inputs_failed run=%s err=%s",
+                    current, exc,
+                )
+        if donor is None or donor in seen:
+            break
+        chain.append(donor)
+        seen.add(donor)
+        current = donor
+    return chain
+
+
 def resolve_plan_numbers(
     session: "Session", *, user_id: str, decision_run_id: int,
     include_canonical_ages: bool = False,
@@ -845,23 +922,48 @@ def resolve_plan_numbers(
 
     decision_id = f"plan-synth-{decision_run_id}"
 
+    # Corrective re-synthesis lineage (docs/design/corrective_resynthesis.md
+    # §2.B.3): a corrective run reuses ANOTHER completed run's phase 1-2 outputs
+    # and never re-runs the analysts, so its own ``plan-synth-<id>`` audit token
+    # has NO phase-1 agent_reports. Without following that lineage every
+    # agent-sourced key (withdrawal_sequencer → fi_age; equity_comp →
+    # savings.annual_net_nis; household_budget → spend.annual_t12_nis;
+    # concentration caps) degrades to pending and the draft renders
+    # ``[derivation pending]`` — the run-156 / draft-73 leak. Resolve the donor
+    # chain up front so each role can fall back to the run whose analyst
+    # outputs this synthesis actually consumed.
+    donor_decision_ids = [
+        f"plan-synth-{d}"
+        for d in _phase_reuse_donor_chain(session, decision_run_id)
+    ]
+
     for role, (keys, fn) in _RESOLVERS.items():
-        # Latest report for this role within the run (highest id wins).
+        # Latest report for this role within the run (highest id wins);
+        # falls back through the corrective phase-reuse donor chain.
         report = None
-        try:
-            report = session.execute(
-                select(AgentReport)
-                .where(AgentReport.decision_id == decision_id)
-                .where(AgentReport.agent_role == role)
-                .order_by(AgentReport.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-        except Exception as exc:  # noqa: BLE001 — defensive
-            log.warning(
-                "plan_numeric_resolver.report_query_failed role=%s err=%s",
-                role, exc,
-            )
-            report = None
+        for cand_decision_id in [decision_id, *donor_decision_ids]:
+            try:
+                report = session.execute(
+                    select(AgentReport)
+                    .where(AgentReport.decision_id == cand_decision_id)
+                    .where(AgentReport.agent_role == role)
+                    .order_by(AgentReport.id.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+            except Exception as exc:  # noqa: BLE001 — defensive
+                log.warning(
+                    "plan_numeric_resolver.report_query_failed role=%s err=%s",
+                    role, exc,
+                )
+                report = None
+            if report is not None:
+                if cand_decision_id != decision_id:
+                    log.info(
+                        "plan_numeric_resolver.report_from_reused_run "
+                        "role=%s run=%s donor=%s report_id=%s",
+                        role, decision_id, cand_decision_id, report.id,
+                    )
+                break
 
         if report is None:
             # Row missing → every key this role owns is pending (no fabrication).
