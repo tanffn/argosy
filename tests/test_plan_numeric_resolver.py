@@ -767,6 +767,106 @@ def test_nvda_target_pct_locked_to_allocation_plan():
     assert _NVDA_IPS_TARGET_W == pytest.approx(NVDA_TARGET_PCT / 100.0)
 
 
+# ---------------------------------------------------------------------------
+# RSU-VEST-POLICY block — determinism states FACTS + the ADJUDICATED policy;
+# it never AUTHORS a vest policy (the old hardcoded 'SELL net vested NVDA at
+# vest' directive contradicted the fleet-adjudicated hold-at-vest/quota-pace
+# verdict — proposal-49 class).
+# ---------------------------------------------------------------------------
+
+
+def _seed_glide_verdict(s, *, status="accepted", quota_year=None, quota=4_136.0,
+                        schedule="Fast glide on the Section-102 capital-eligible "
+                                 "9,230-share core (2026-2027), deferring only the "
+                                 "~592-share ineligible tail to 2028"):
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from argosy.state.models import ActionProposal
+
+    yr = quota_year or _dt.now(UTC).year
+    now = datetime(2026, 6, 1)
+    row = ActionProposal(
+        user_id="ariel",
+        summary="NVDA deconcentration pace adjudicated",
+        rationale_md="fleet glide verdict",
+        suggested_payload=json.dumps({
+            "verdict": {
+                "chosen_schedule": schedule,
+                f"quota_{yr}_shares": quota,
+            }
+        }),
+        severity="info", surfaced_at=now, expires_at=now,
+        status=status, kind="update_plan_assumption",
+        dedup_key="plan_glide_schedule_verdict:ariel:nvda",
+        execution_state="accepted_pending_user_action",
+    )
+    s.add(row)
+    s.commit()
+    return row
+
+
+def test_rsu_block_states_facts_never_authors_policy(session):
+    """With NO settled glide verdict on file the block states FACTS (weight vs
+    target, eligible pool source, per-lot clock rule, quota-derivation
+    anti-laundering fact) + the NEUTRAL policy wording — and contains no
+    hardcoded vest-timing directive in either direction."""
+    _seed_all(session)
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    block = render_numbers_for_synth(resolved)
+
+    assert "RSU-VEST-POLICY FACTS" in block
+    assert "vs the 8% IPS target" in block  # current weight vs target
+    assert "Per-lot Section-102 clock rule" in block  # per-lot eligibility rule
+    assert "never from prior-year sale cadence" in block  # anti-laundering FACT
+    # Neutral policy — determinism did not author a vest-timing policy.
+    assert "no settled adjudication on file" in block
+    assert "adjudicated quota pace from capital-track-eligible lots" in block
+    low = block.lower()
+    assert "sell at vest" not in low
+    assert "sell net vested" not in low
+    assert "hold vested nvda by default" not in low
+    assert "hold-at-vest" not in low and "sell-at-vest" not in low
+
+
+def test_rsu_block_reflects_adjudicated_policy_when_settled(session):
+    """With an ACCEPTED glide-schedule verdict proposal on file, the block
+    carries the settled policy statement VERBATIM + the current tax-year
+    quota, sourced to the proposal row — and still no authored directive."""
+    _seed_all(session)
+    row = _seed_glide_verdict(session)
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+
+    q = resolved.get("concentration.nvda_quota_tax_year_sh")
+    assert q.status == "resolved"
+    assert q.value == pytest.approx(4_136.0)
+    assert f"action_proposals #{row.id}" in q.source_locator
+
+    block = render_numbers_for_synth(resolved)
+    assert "ADJUDICATED VEST/SALE POLICY" in block
+    assert "Fast glide on the Section-102 capital-eligible 9,230-share core" in block
+    assert "4,136 shares" in block  # the tax-year quota FACT
+    assert f"action_proposals #{row.id}" in block  # provenance rendered
+    assert "no settled adjudication on file" not in block
+    low = block.lower()
+    assert "sell at vest" not in low
+    assert "sell net vested" not in low
+
+
+def test_rsu_quota_pending_when_no_settled_verdict(session):
+    """No settled verdict → the quota key is PENDING (never a default), and an
+    OPEN (unconfirmed) verdict is NOT treated as settled."""
+    _seed_all(session)
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    q = resolved.get("concentration.nvda_quota_tax_year_sh")
+    assert q.status == "pending"
+    assert q.value is None
+
+    _seed_glide_verdict(session, status="open")
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    assert resolved.get("concentration.nvda_quota_tax_year_sh").status == "pending"
+
+
 def test_structural_age_constants_in_synth_block(session):
     """Both structural ages appear in the synth numbers block so the synthesizer
     sees them as approved facts to placeholder."""

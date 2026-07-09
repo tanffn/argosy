@@ -137,6 +137,7 @@ _KEY_UNITS: dict[str, str] = {
     "concentration.nvda_target_sh": "shares",
     "concentration.nvda_sell_sh": "shares",
     "concentration.nvda_eligible_now_sh": "shares",
+    "concentration.nvda_quota_tax_year_sh": "shares",
     "retirement.liquidity_reserve_nis": "nis",
     "retirement.fi_total_capital_nis": "nis",
     "retirement.fi_margin_signed_nis": "nis",
@@ -1060,6 +1061,11 @@ def resolve_plan_numbers(
     # inheriting the baseline doc's sale cadence (the 3,000 class).
     _apply_nvda_deconcentration(session, user_id, values)
 
+    # The ADJUDICATED NVDA glide/vest policy — read from the settled proposal
+    # substrate (the fleet-authored, user-accepted glide-schedule verdict).
+    # Determinism STATES the settled policy; it never authors one.
+    _apply_adjudicated_glide(session, user_id, values)
+
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
     # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
     # hop and the non-display callers never trigger the heavy canonical MC.
@@ -1694,6 +1700,76 @@ def _apply_nvda_deconcentration(
         )
 
 
+def _apply_adjudicated_glide(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Read the SETTLED NVDA glide/vest verdict from the proposal substrate.
+
+    The fleet AUTHORS deconcentration/vest policy (adjudicated glide-schedule
+    verdict, ``dedup_key = plan_glide_schedule_verdict:<user>:nvda``, accepted
+    by the user); determinism only STATES it. Registers
+    ``concentration.nvda_quota_tax_year_sh`` — the CURRENT calendar-tax-year
+    sale quota per the settled schedule — with the verdict's
+    ``chosen_schedule`` statement carried in ``formula`` so the renderer can
+    state the adjudicated policy verbatim. Pending (never a guess, never a
+    default policy) when no settled verdict exists.
+    """
+    from datetime import UTC, datetime
+
+    key = "concentration.nvda_quota_tax_year_sh"
+    row = None
+    try:
+        from argosy.state.models import ActionProposal
+
+        row = session.execute(
+            select(ActionProposal)
+            .where(
+                ActionProposal.user_id == user_id,
+                ActionProposal.kind == "update_plan_assumption",
+                # Settled = the fleet's adjudicated verdict CONFIRMED by the
+                # user (accepted) or already applied (executed). An 'open'
+                # verdict is not yet settled — the renderer then states the
+                # neutral quota-pace wording instead.
+                ActionProposal.status.in_(("accepted", "executed")),
+                ActionProposal.dedup_key.like("plan_glide_schedule_verdict:%"),
+            )
+            .order_by(ActionProposal.id.desc())
+            .limit(1)
+        ).scalars().first()
+    except Exception as exc:  # noqa: BLE001 — degrade to pending, never raise
+        log.warning("plan_numeric_resolver.adjudicated_glide_failed err=%s", exc)
+    if row is None:
+        values[key] = ResolvedValue.pending(
+            key, "shares", "no settled glide-schedule verdict on file")
+        return
+    try:
+        payload = json.loads(row.suggested_payload or "{}")
+        verdict = payload.get("verdict") if isinstance(payload, dict) else None
+        verdict = verdict if isinstance(verdict, dict) else {}
+    except (TypeError, ValueError):
+        verdict = {}
+    schedule = str(verdict.get("chosen_schedule") or "").strip()
+    year = datetime.now(UTC).year
+    quota = _to_float(verdict.get(f"quota_{year}_shares"))
+    locator = f"action_proposals #{row.id} (adjudicated glide verdict, {row.status})"
+    if quota is None:
+        # Verdict exists but carries no quota for THIS tax year — keep the
+        # policy statement (formula) so the renderer still states it.
+        values[key] = ResolvedValue.pending(
+            key, "shares", f"{locator} — no quota_{year}_shares in payload",
+            formula=schedule or None,
+        )
+        return
+    values[key] = ResolvedValue(
+        key=key, value=float(quota), unit="shares", status="resolved",
+        source_locator=locator, agent_report_id=None, confidence="HIGH",
+        # ``formula`` carries the verdict's own policy statement so the
+        # renderer states the ADJUDICATED policy verbatim (or falls back to
+        # the neutral quota-pace wording when the payload has no statement).
+        formula=schedule or None,
+    )
+
+
 def _apply_fi_methodology(
     session: "Session", user_id: str, values: dict[str, ResolvedValue]
 ) -> None:
@@ -1980,25 +2056,62 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
         "supersede, or undercut the headline retirement age.",
     ]
 
-    # Canonical RSU-VEST-POLICY verdict — the recurring contradiction was 'hold vested NVDA
-    # by default' vs 'sell at vest' vs 'defer until Schwab CSV confirmed'. The tax-sim now
-    # CONFIRMS lot eligibility, so the defer-gate is obsolete and concentration dominates.
+    # RSU-VEST-POLICY block — FACTS + the ADJUDICATED policy only. HISTORY:
+    # this block once HARDCODED a sell-net-vested-at-vest directive (the
+    # anti-'3,000 sh/yr laundering' guard), which let a deterministic renderer
+    # AUTHOR policy the fleet had since adjudicated the other way (glide
+    # verdict: capital-rate-only sales; fresh vests season on their own §102
+    # clock). Doctrine: the fleet AUTHORS policy; determinism STATES FACTS and
+    # carries the SETTLED verdict — it never instructs a vest policy of its own.
     w = resolved.get("concentration.nvda_current_pct")
     elig = resolved.get("concentration.nvda_eligible_now_sh")
+    quota = resolved.get("concentration.nvda_quota_tax_year_sh")
     if (w is not None and w.status == "resolved" and w.value is not None
             and float(w.value) > _NVDA_IPS_TARGET_W):
-        elig_txt = (f"{int(elig.value):,} shares are Section-102 capital-track eligible NOW"
+        from datetime import UTC, datetime
+
+        elig_txt = (f"{int(elig.value):,} NVDA shares are Section-102 "
+                    "capital-track eligible NOW (the sellable pool)"
                     if elig is not None and elig.status == "resolved" and elig.value is not None
-                    else "lot eligibility is in the ingested tax-sim report")
+                    else "the capital-track-eligible pool is in the ingested tax-sim report")
         lines += [
             "",
-            f"RSU-VEST-POLICY VERDICT: NVDA is {float(w.value) * 100:.0f}% of the book (far "
-            f"above the {_NVDA_IPS_TARGET_W:.0%} target) and {elig_txt} — therefore SELL net "
-            f"vested NVDA at vest and deconcentrate at the capital rate.",
-            "  ^ Do NOT state a 'hold vested NVDA by default' policy, and do NOT gate the "
-            "sale on a 'Schwab tax-lot CSV not yet confirmed' condition — the ingested "
-            "tax-sim IS that confirmation. State ONE vest policy consistent with this.",
+            "RSU-VEST-POLICY FACTS (state these; the vest/sale POLICY itself is "
+            "fleet-authored — see the adjudicated policy below):",
+            f"  - Concentration: NVDA is {float(w.value) * 100:.0f}% of the book vs the "
+            f"{_NVDA_IPS_TARGET_W:.0%} IPS target.",
+            f"  - Eligible pool: {elig_txt}.",
+            "  - Per-lot Section-102 clock rule: each lot becomes capital-track "
+            "eligible only after ITS OWN holding period — per-lot eligibility "
+            "governs which lots may be sold; selling a lot before its clock "
+            "(e.g. a fresh vest) is taxed as ordinary income (up to ~50%), not "
+            "capital gains.",
+            "  - Anti-laundering: the sale quota derives from the ADJUDICATED "
+            "glide schedule, never from prior-year sale cadence (a past-behavior "
+            "'shares/yr' figure is history, not policy).",
         ]
+        if quota is not None and quota.status == "resolved" and quota.value is not None:
+            yr = datetime.now(UTC).year
+            lines.append(
+                f"  - Tax-year sale quota ({yr}, per the adjudicated glide): "
+                f"{int(quota.value):,} shares.   [{quota.source_locator}]"
+            )
+        settled_policy = (quota.formula or "").strip() if quota is not None else ""
+        if settled_policy:
+            lines += [
+                f"  ADJUDICATED VEST/SALE POLICY (settled fleet verdict — state it "
+                f"verbatim, do not re-decide): {settled_policy}",
+                "  ^ State ONE vest/sale policy consistent with this adjudicated "
+                "verdict and the per-lot clock rule above. Do NOT author any "
+                "vest-timing policy the fleet has not adjudicated.",
+            ]
+        else:
+            lines += [
+                "  POLICY (no settled adjudication on file): sales proceed at the "
+                "adjudicated quota pace from capital-track-eligible lots; per-lot "
+                "eligibility governs which lots may be sold. Do NOT author any "
+                "vest-timing policy the fleet has not adjudicated.",
+            ]
     return "\n".join(lines)
 
 
