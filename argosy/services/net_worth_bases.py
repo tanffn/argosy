@@ -23,6 +23,91 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 
+def real_estate_equity_for_snapshot(
+    *,
+    snapshot: "PortfolioSnapshotRow | None",
+    fx_usd_nis: float | None = None,
+    session: "Session | None" = None,
+    user_id: str | None = None,
+):
+    """Per-property real-estate NET equity for a snapshot — the ONE computation
+    the dashboard/resolver total-net-worth basis, the plan export's residence
+    breakdown, and the codex raw-data packet all bind to (owner-estimate
+    property values from the ingested owner sheet's ``real_estate_json``, with
+    payment-ledger / impairment overrides).
+
+    Returns a ``RealEstateEquity`` (see ``real_estate_equity``) or ``None``
+    when the snapshot carries no real-estate rows.
+    """
+    if snapshot is None:
+        return None
+
+    from argosy.services.real_estate_equity import compute_real_estate_equity
+
+    try:
+        re_rows = json.loads(snapshot.real_estate_json or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    re_objs = [SimpleNamespace(**r) for r in re_rows if isinstance(r, dict)]
+    if not re_objs:
+        return None
+    loan_override: dict[str, float] = {}
+    value_override: dict[str, float] = {}
+    if session is not None and user_id is not None:
+        from argosy.services.real_estate_ledger import (
+            load_property_ledgers,
+            load_real_estate_overrides,
+        )
+        price_by_prop = {
+            getattr(o, "location", None): getattr(o, "value_local", None)
+            for o in re_objs
+            if (getattr(o, "role", "") or "").strip().lower() == "home"
+            and getattr(o, "location", None)
+            and getattr(o, "value_local", None) is not None
+        }
+        ledgers = load_property_ledgers(
+            session, user_id=user_id, total_price_by_property=price_by_prop
+        )
+        loan_override = {
+            k: lg.remaining_local for k, lg in ledgers.items()
+            if lg.remaining_local is not None
+        }
+        # Impairment / write-off overrides (e.g. a bust property worth 0
+        # whose mortgage was never drawn) — apply to BOTH value and loan
+        # so headline net worth matches the panel (no phantom equity).
+        overrides = load_real_estate_overrides(session, user_id=user_id)
+        value_override = {
+            k: o.current_value_local for k, o in overrides.items()
+            if o.current_value_local is not None
+        }
+        for k, o in overrides.items():
+            if o.loan_local is not None:
+                loan_override[k] = o.loan_local
+    return compute_real_estate_equity(
+        re_objs,
+        fx_usd_nis=getattr(snapshot, "fx_usd_nis", None) or fx_usd_nis,
+        fx_usd_eur=getattr(snapshot, "fx_usd_eur", None),
+        loan_override=loan_override, value_override=value_override,
+    )
+
+
+def real_estate_stub_usd_k(snapshot: "PortfolioSnapshotRow | None") -> float:
+    """USD-k value of the legacy real-estate STUB rows inside the position
+    block (e.g. the "$69K Aborad" row) — the amount the total-incl-residence
+    basis swaps OUT before adding the full per-property net equity."""
+    if snapshot is None:
+        return 0.0
+    try:
+        positions = json.loads(snapshot.positions_json or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        positions = []
+    return sum(
+        float(p.get("usd_value_k") or 0.0)
+        for p in positions
+        if isinstance(p, dict) and (p.get("asset_type") or "").lower() == "real estate"
+    )
+
+
 def total_net_worth_incl_residence(
     *,
     snapshot: "PortfolioSnapshotRow | None",
@@ -42,11 +127,16 @@ def total_net_worth_incl_residence(
     Real-estate panel does — otherwise headline net worth would stay understated
     by the paid-down amount while the panel shows the new equity (the cross-
     surface inconsistency this whole change exists to kill).
+
+    PROVENANCE (output-trust doctrine): the property values behind the equity
+    component are OWNER ESTIMATES from the ingested owner sheet
+    (``real_estate_json``) — a stored, traceable source, but NOT auditable from
+    broker raw holdings. Surfaces rendering this basis must label the residence
+    component as an owner estimate (unaudited); see ``plan_export`` and the
+    codex raw-holdings packet (``raw_holdings_block``).
     """
     if snapshot is None:
         return None, None
-
-    from argosy.services.real_estate_equity import compute_real_estate_equity
 
     try:
         totals = json.loads(snapshot.totals_json or "{}")
@@ -60,60 +150,16 @@ def total_net_worth_incl_residence(
     # Swap the legacy real-estate stub (the "$69K Aborad" row in the position
     # block) for the full per-property net equity — so net worth includes real
     # estate properly and matches the Real-estate panel.
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except json.JSONDecodeError:
-        positions = []
-    re_stub_k = sum(
-        float(p.get("usd_value_k") or 0.0)
-        for p in positions
-        if isinstance(p, dict) and (p.get("asset_type") or "").lower() == "real estate"
-    )
+    re_stub_k = real_estate_stub_usd_k(snapshot)
     re_net_k = 0.0
     try:
-        re_rows = json.loads(snapshot.real_estate_json or "[]")
-        re_objs = [SimpleNamespace(**r) for r in re_rows if isinstance(r, dict)]
-        if re_objs:
-            loan_override: dict[str, float] = {}
-            value_override: dict[str, float] = {}
-            if session is not None and user_id is not None:
-                from argosy.services.real_estate_ledger import (
-                    load_property_ledgers,
-                    load_real_estate_overrides,
-                )
-                price_by_prop = {
-                    getattr(o, "location", None): getattr(o, "value_local", None)
-                    for o in re_objs
-                    if (getattr(o, "role", "") or "").strip().lower() == "home"
-                    and getattr(o, "location", None)
-                    and getattr(o, "value_local", None) is not None
-                }
-                ledgers = load_property_ledgers(
-                    session, user_id=user_id, total_price_by_property=price_by_prop
-                )
-                loan_override = {
-                    k: lg.remaining_local for k, lg in ledgers.items()
-                    if lg.remaining_local is not None
-                }
-                # Impairment / write-off overrides (e.g. a bust property worth 0
-                # whose mortgage was never drawn) — apply to BOTH value and loan
-                # so headline net worth matches the panel (no phantom equity).
-                overrides = load_real_estate_overrides(session, user_id=user_id)
-                value_override = {
-                    k: o.current_value_local for k, o in overrides.items()
-                    if o.current_value_local is not None
-                }
-                for k, o in overrides.items():
-                    if o.loan_local is not None:
-                        loan_override[k] = o.loan_local
-            eq = compute_real_estate_equity(
-                re_objs,
-                fx_usd_nis=getattr(snapshot, "fx_usd_nis", None) or fx_usd_nis,
-                fx_usd_eur=getattr(snapshot, "fx_usd_eur", None),
-                loan_override=loan_override, value_override=value_override,
-            )
+        eq = real_estate_equity_for_snapshot(
+            snapshot=snapshot, fx_usd_nis=fx_usd_nis,
+            session=session, user_id=user_id,
+        )
+        if eq is not None:
             re_net_k = eq.total_net_usd_k
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         pass
 
     usd = (base_k - re_stub_k + re_net_k) * 1000.0
@@ -122,4 +168,8 @@ def total_net_worth_incl_residence(
     return usd * fx_usd_nis, usd
 
 
-__all__ = ["total_net_worth_incl_residence"]
+__all__ = [
+    "real_estate_equity_for_snapshot",
+    "real_estate_stub_usd_k",
+    "total_net_worth_incl_residence",
+]

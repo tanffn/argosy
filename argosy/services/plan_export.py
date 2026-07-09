@@ -542,6 +542,46 @@ def build_plan_export_markdown(
             nw_line += f" ({_fmt_usd(ret.net_worth_usd)})"
         push(nw_line)
 
+        # Residence/property component — SHOWN and labeled. Output-trust
+        # doctrine: the incl.-real-estate total rests on OWNER-ESTIMATE
+        # property values (snapshot real_estate_json + payment-ledger
+        # overrides) that no broker export can audit. Without this labeled
+        # breakdown a blind raw-data auditor cannot bridge the total to the
+        # investable book and must flag the headline UNVERIFIABLE (codex
+        # draft-73 BLOCKER). Amount is computed from the same helper the
+        # dashboard total binds to — never hand-typed.
+        try:
+            from sqlalchemy import select as _select
+
+            from argosy.services.net_worth_bases import (
+                real_estate_equity_for_snapshot,
+            )
+            from argosy.state.models import PortfolioSnapshotRow
+
+            _snap = db.execute(
+                _select(PortfolioSnapshotRow)
+                .where(PortfolioSnapshotRow.user_id == user_id)
+                .order_by(PortfolioSnapshotRow.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            _re_eq = real_estate_equity_for_snapshot(
+                snapshot=_snap, session=db, user_id=user_id,
+            )
+        except Exception:  # noqa: BLE001 — defensive; never crash the export
+            _re_eq = None
+        if _re_eq is not None and _re_eq.properties:
+            _re_nis = _re_eq.total_net_usd_k * 1000.0 * dash.assumptions.fx_usd_nis
+            _props = ", ".join(p.name for p in _re_eq.properties)
+            push(
+                f"- of which real-estate NET equity (incl. primary residence): "
+                f"{_fmt_nis(_re_nis)} ({_fmt_usd(_re_eq.total_net_usd_k * 1000.0)}) "
+                f"— per-property home value minus outstanding loan ({_props}). "
+                "OWNER-ESTIMATE property values (unaudited; source: ingested "
+                "owner sheet real_estate_json + payment-ledger overrides) — "
+                "not auditable from broker raw holdings and EXCLUDED from the "
+                "plan's audited 'investable'/'liquid' figures."
+            )
+
         # FX provenance — the dashboard converts at TODAY's canonical rate
         # (BoI FxRate cache walkback), while plan-body figures were computed
         # at the FX frozen when the plan was synthesized (a plan INPUT, not a

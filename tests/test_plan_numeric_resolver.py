@@ -778,7 +778,8 @@ def test_nvda_target_pct_locked_to_allocation_plan():
 def _seed_glide_verdict(s, *, status="accepted", quota_year=None, quota=4_136.0,
                         schedule="Fast glide on the Section-102 capital-eligible "
                                  "9,230-share core (2026-2027), deferring only the "
-                                 "~592-share ineligible tail to 2028"):
+                                 "~592-share ineligible tail to 2028",
+                        dedup_key="plan_glide_schedule_verdict:ariel:nvda"):
     from datetime import UTC
     from datetime import datetime as _dt
 
@@ -798,7 +799,7 @@ def _seed_glide_verdict(s, *, status="accepted", quota_year=None, quota=4_136.0,
         }),
         severity="info", surfaced_at=now, expires_at=now,
         status=status, kind="update_plan_assumption",
-        dedup_key="plan_glide_schedule_verdict:ariel:nvda",
+        dedup_key=dedup_key,
         execution_state="accepted_pending_user_action",
     )
     s.add(row)
@@ -851,6 +852,39 @@ def test_rsu_block_reflects_adjudicated_policy_when_settled(session):
     low = block.lower()
     assert "sell at vest" not in low
     assert "sell net vested" not in low
+
+
+def test_rsu_block_prefers_latest_settled_successor_row(session):
+    """A SUCCESSOR settled verdict row (corrected application of an earlier
+    accepted adjudication — the proposal-49 stale-book correction) wins over
+    the original: latest settled row by id, renderer emits the CORRECTED
+    quota + policy statement verbatim from the successor payload."""
+    _seed_all(session)
+    original = _seed_glide_verdict(session)  # stale-book quotas (4,136)
+    successor_policy = (
+        "Fast glide on the Section-102 capital-eligible core at CAPITAL "
+        "RATES ONLY, deferring each ineligible lot to its own maturity — "
+        "corrected application on the true book (10,940 sh): calendar-2026 "
+        "quota 7,304 sh, 2027 quota 5,493 sh, no 2028 quota; retain 1,523 "
+        "sh. Supersedes proposal #49's stale-book quotas (4,136/5,094/592)."
+    )
+    successor = _seed_glide_verdict(
+        session, quota=7_304.0, schedule=successor_policy,
+        dedup_key="plan_glide_schedule_verdict:ariel:nvda:successor-of-49",
+    )
+    assert successor.id > original.id
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    q = resolved.get("concentration.nvda_quota_tax_year_sh")
+    assert q.status == "resolved"
+    assert q.value == pytest.approx(7_304.0)          # corrected, not 4,136
+    assert f"action_proposals #{successor.id}" in q.source_locator
+
+    block = render_numbers_for_synth(resolved)
+    assert "7,304 shares" in block                     # corrected quota FACT
+    assert "4,136 shares" not in block                 # stale quota gone
+    assert successor_policy in block                   # policy verbatim
+    assert f"action_proposals #{successor.id}" in block
 
 
 def test_rsu_quota_pending_when_no_settled_verdict(session):
