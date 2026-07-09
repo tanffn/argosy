@@ -3,7 +3,11 @@
 **Branch:** `master` · **HEAD at writing:** `2388a38` (52 commits this session; run `git log --oneline -55`).
 Read this, then `git log`, then the section-3 queue. Prior: `docs/handovers/2026-07-08-next-round-queue.md`.
 
-## 0. Where things stand (the short truth)
+## 0. ACCEPTED — plan v73 is CURRENT (2026-07-09 14:55 UTC, 200 OK, no overrides)
+
+Accepted under Ariel's delegation after ALL authorities cleared on merits: FM approved (report 2300), reader APPROVE_WITH_CONDITIONS (2301), codex APPROVE_WITH_CONDITIONS (2302 — all 8 headline audits MATCH incl. the 14.09M bridge), deterministic gate 0 violations, rederivation clean, look-through 11.44% vs 13% cap. Side-effects verified: v67 superseded, proposals 49+60 executed, critique 4 cleared_by=73, proposal 66 = the living successor schedule (7,304/5,493/0, retain 1,523, full source trail). v73 = corrected book 10,940, per-lot §102 ledger (rule: 24mo FROM GRANT), honest FI status (-69,324 margin, FX fragility in every headline), unified hold-at-vest policy, settled 13.0 cap, restored x10 5.0% sleeve, SGLN guardrail. NEXT-SESSION FIRST: verify-run the whole chain (run 156 + ~15 repair cycles + promote); then check greeting/action-items re-derive from v73 (the old 'sell June vest' item must be gone); codex conditions to track (estate docs, MC input export, archive superseded directives).
+
+## 0b. Where things stood before the accept (history)
 
 - **Proposal 49 (adjudicated NVDA glide) is ACCEPTED and substantively applied** in draft 73: 9,230 eligible core 2026–27 + 592 deferred to 2028 = 9,822, retain ~1,649, quotas 4,136/5,094/592 — consistent everywhere, FM-confirmed. The 9 critique findings cleared. Cap settled at **13.0** by internal zigzag (proposal 63, `zigzag_settled:nvda_cap` — both arguments on record; 12 was a flapping per-run sample + stale target echo).
 - **Draft 73 is NOT accepted** (Ariel delegated "accept if good" — it is not yet good). FM approved the content; the blind reader still BLOCKS (report **2153**, 4 findings, all NEW): (1+2 BLOCKER, one root) the **vest-sale lot policy is stated two contradictory ways** — "sell net-vested at vest" on one surface vs "sell from older eligible core lots, never the fresh vest" on another; (3 AMBER) 25% base capital rate vs ~30% all-in CGT wording toggles unlabeled; (4 YELLOW) estate-counsel task duplicated same-date under two labels. Draft 73's artifact is otherwise leak-free and figure-canonical (0 placeholders, every number resolver-derived, fi_age 46.5 coherent, arithmetic closes).
