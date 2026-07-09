@@ -27,6 +27,7 @@ from argosy.decisions.per_ticker_analysts import (
 from argosy.decisions.tiers import Tier
 from argosy.logging import get_logger
 from argosy.services.decision_funnel.estate_kb import estate_constraints_block
+from argosy.services.decision_funnel.position_context import position_context_block
 
 _log = get_logger("argosy.services.decision_funnel.deep_decision")
 
@@ -60,6 +61,27 @@ async def run_deep_decision(
     the flow so the proposal is born with its funnel lifecycle fields set
     ATOMICALLY — a shadow proposal is never briefly client-visible.
     """
+    # INPUTS fix (SOFI proposal 1, 2026-07-09): the stage-3 fleet must know the
+    # client's CURRENT POSITION in the ticker (shares/value/% book/account —
+    # a BUY on a held name is a TOP-UP, never an initiation) and every ACTIVE
+    # monitor flag on it (e.g. thesis_monitor_weakened) with its reason, so a
+    # buy-more-vs-flag conflict is adjudicated explicitly. Previously the
+    # orchestrator never passed positions_summary and the fleet ran position-
+    # blind ("no prior holding in positions snapshot" on a ~$35.5k holding).
+    # Deterministic input plumbing; best-effort — a load failure never kills
+    # the funnel. Goes into BOTH positions_summary (trader) and
+    # user_constraints (risk team + fund manager read that channel).
+    try:
+        _pos_ctx = await position_context_block(user_id=user_id, ticker=ticker)
+        if _pos_ctx:
+            if not positions_summary.strip():
+                positions_summary = _pos_ctx
+            user_constraints = (
+                f"{user_constraints}\n\n{_pos_ctx}" if user_constraints.strip()
+                else _pos_ctx
+            )
+    except Exception:  # noqa: BLE001 — inputs enrichment must not crash stage 3
+        _log.exception("decision_funnel.position_context_failed", ticker=ticker)
     # INPUTS fix (verify-run 2026-07-08, SOFI): the stage-3 fleet must see
     # the estate/us-situs domain_knowledge — the FM previously noted "no
     # domain_knowledge file authorizing a US-estate rule was supplied" and
