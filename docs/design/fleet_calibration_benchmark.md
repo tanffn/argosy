@@ -37,6 +37,24 @@ change (model upgrade, prompt edit, mandate change) — and catches regressions 
 Categories are the four failure modes that cost real money. Every case is judged BLIND
 (the fleet never sees these names).
 
+### Freeze-point rule (how entry-case dates are DEFINED — never eyeballed off the chart)
+
+For every entry case, derive three dated facts from the data, then set the freeze points:
+- **T_parabola** — onset of the re-rating, from price history (first sustained leg of the move,
+  e.g. trailing-60-trading-day return crossing +50% with follow-through, not a one-day spike).
+- **T_signal** — the earliest CITABLE public fact supporting the thesis (a specific filing,
+  guidance line, contract award, product datapoint), found in contemporaneous sources.
+- **Two freeze points per case:**
+  - **F1 = after T_signal, before T_parabola** — the *foresight* test. Graded leniently:
+    a PASS is BUY-class, but a reasoned pass-with-falsifiers is only a half-fail (the signal
+    was genuinely early).
+  - **F2 = immediately after the first CONFIRMING print, inside the early parabola** — the
+    *act-on-confirmation* test. Graded strictly: the remaining upside after confirmation was
+    still large in every table case, and refusing to buy "because it already moved" is a real
+    fleet failure mode (price-anchoring) this benchmark must catch.
+If T_signal cannot be found before T_parabola (the move genuinely front-ran public data), the
+case is recorded as F2-only — that honesty matters more than a bigger table.
+
 ### A. Entry lens — should have said BUY (asymmetry recognition)
 | Case (real) | Frozen at | Ground truth | PASS = |
 |---|---|---|---|
