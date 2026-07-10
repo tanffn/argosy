@@ -60,12 +60,16 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
     """The overview table, or ``None`` when no trade decision is open."""
     from argosy.state.models import ActionProposal, Proposal
 
+    # Cooling proposals (user-deferred / scheduled resurfaces, e.g. a sell
+    # parked for a pending evaluation) ARE part of "how will my portfolio
+    # change" — they render as dated lines even though no decision card is
+    # up yet. Excluding them made the table lie by omission.
     rows = (
         db.execute(
             select(Proposal)
             .where(
                 Proposal.user_id == user_id,
-                Proposal.status.in_(("awaiting_human", "approved")),
+                Proposal.status.in_(("awaiting_human", "approved", "cooling")),
             )
             .order_by(Proposal.id.asc())
         )
@@ -125,6 +129,9 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
             sells_usd += amount
         else:
             buys_usd += amount
+        why = _verdict_line(r.rationale_summary or "")
+        if r.status == "cooling" and r.cooling_off_until:
+            why = f"From {str(r.cooling_off_until)[:10]}: {why}"
         lines.append(
             {
                 "item_id": f"trade:{r.id}",
@@ -135,22 +142,22 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
                 "after_usd": round(after),
                 "after_pct": pct(after),
                 "delta_usd": round(signed),
-                "why": _verdict_line(r.rationale_summary or ""),
+                "why": why,
             }
         )
 
-    # Cash line: settled cash + T-bill-class holdings; the trades' net
-    # proceeds land here until the deployment tranches move them. The why
-    # names the SPECIFIC instruments, all read from fleet-authored records:
-    # the plan's cash-sleeve instrument + target (plan_versions.current),
-    # the redeploy destination (the open proceeds_redeploy row), and the
-    # dry-powder earmark (its open row).
+    # Deploy lines: the proceeds' destinations render as REAL rows with
+    # before/after like every other line — the park instrument (IB01) and
+    # the excess destination (EXUS) — followed by the cash-sleeve summary.
+    # All figures derive from fleet-authored records: the plan's cash class
+    # (plan_versions.current) and the open proceeds_redeploy binding.
     net = sells_usd - buys_usd
     cash_current = cash_usd + tbill_usd
     why_cash = (
         "Sale proceeds settle here (cash + T-bills) until the plan's "
         "deployment tranches move them to the underfunded sleeves."
     )
+    cash_after = cash_current + net
     try:
         from argosy.state.models import PlanVersion
 
@@ -167,60 +174,83 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
                 if "cash" in (cls.get("label") or "").lower():
                     cash_cls = cls
                     break
-            if cash_cls is not None:
-                label = cash_cls.get("label") or "Cash & T-bills"
-                target_pct = float(
-                    overrides.get(label, cash_cls.get("target_pct") or 0.0)
-                )
-                target_usd = book_usd * target_pct / 100.0
-                instr = next(
-                    (
-                        i.get("symbol")
-                        for i in (cash_cls.get("instruments") or [])
-                        if i.get("role") == "primary" or i.get("symbol")
-                    ),
-                    None,
-                )
-                after_cash = cash_current + net
+        rd = db.execute(
+            select(ActionProposal).where(
+                ActionProposal.user_id == user_id,
+                ActionProposal.dedup_key.like("proceeds_redeploy%"),
+                ActionProposal.status == "open",
+            )
+        ).scalar_one_or_none()
+        dest = None
+        if rd is not None:
+            try:
+                dest = (
+                    json.loads(rd.suggested_payload or "{}").get("destination", {})
+                ).get("symbol")
+            except (ValueError, AttributeError):
                 dest = None
-                rd = db.execute(
-                    select(ActionProposal).where(
-                        ActionProposal.user_id == user_id,
-                        ActionProposal.dedup_key.like("proceeds_redeploy%"),
-                        ActionProposal.status == "open",
-                    )
-                ).scalar_one_or_none()
-                if rd is not None:
-                    try:
-                        dest = (
-                            json.loads(rd.suggested_payload or "{}").get(
-                                "destination", {}
-                            )
-                        ).get("symbol")
-                    except (ValueError, AttributeError):
-                        dest = None
-                parts = []
-                if instr:
-                    parts.append(
-                        f"Buy {instr} with settling dollars that stay parked "
-                        f"(the plan's cash-sleeve instrument — not more SGOV, "
-                        f"which adds US estate exposure)."
-                    )
-                parts.append(
-                    f"Sleeve target is ${target_usd:,.0f} ({target_pct:g}%)"
+        if cash_cls is not None and dest:
+            label = cash_cls.get("label") or "Cash & T-bills"
+            target_pct = float(
+                overrides.get(label, cash_cls.get("target_pct") or 0.0)
+            )
+            target_usd = book_usd * target_pct / 100.0
+            park = next(
+                (
+                    i.get("symbol")
+                    for i in (cash_cls.get("instruments") or [])
+                    if i.get("symbol")
+                ),
+                None,
+            )
+            raw_after = cash_current + net
+            excess = max(raw_after - target_usd, 0.0)
+            park_buy = max(min(net - excess, target_usd - cash_current), 0.0)
+            if park and park_buy > 0:
+                park_held = held.get(park, {"usd": 0.0})["usd"]
+                lines.append(
+                    {
+                        "item_id": f"deploy:{park}",
+                        "label": park,
+                        "action": "buy",
+                        "current_usd": round(park_held),
+                        "current_pct": pct(park_held),
+                        "after_usd": round(park_held + park_buy),
+                        "after_pct": pct(park_held + park_buy),
+                        "delta_usd": round(park_buy),
+                        "why": (
+                            "Parked proceeds buy the plan's cash-sleeve "
+                            "instrument (Irish UCITS 0-1yr Treasuries) — not "
+                            "more SGOV, which adds US estate exposure."
+                        ),
+                    }
                 )
-                excess = after_cash - target_usd
-                if dest and excess > 0:
-                    parts.append(
-                        f"— the ~${excess:,.0f} above it buys {dest} per the "
-                        f"redeploy binding."
-                    )
-                elif dest:
-                    parts.append(
-                        f"— proceeds refill this sleeve first; {dest} tranches "
-                        f"ride the NVDA glide sales."
-                    )
-                why_cash = " ".join(parts)
+            if excess > 0:
+                dest_held = held.get(dest, {"usd": 0.0})["usd"]
+                lines.append(
+                    {
+                        "item_id": f"deploy:{dest}",
+                        "label": dest,
+                        "action": "buy",
+                        "current_usd": round(dest_held),
+                        "current_pct": pct(dest_held),
+                        "after_usd": round(dest_held + excess),
+                        "after_pct": pct(dest_held + excess),
+                        "delta_usd": round(excess),
+                        "why": (
+                            "Proceeds above the cash-sleeve target buy the "
+                            "plan's biggest-gap sleeve per the redeploy "
+                            "binding; the larger tranches ride the NVDA "
+                            "glide sales."
+                        ),
+                    }
+                )
+            cash_after = cash_current + net - excess
+            why_cash = (
+                f"Sleeve lands at its {target_pct:g}% plan target "
+                f"(${target_usd:,.0f}) — working cash + ILS expense tranche "
+                f"+ held SGOV + the {park or 'T-bill'} purchase above."
+            )
     except Exception:  # noqa: BLE001 — the plain fallback why already stands
         _log.exception("trade_plan.cash_why_failed")
     dp = db.execute(
@@ -255,13 +285,13 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
     lines.append(
         {
             "item_id": "cash",
-            "label": "Cash & T-bills",
+            "label": "Cash & T-bills sleeve",
             "action": "receives_proceeds",
             "current_usd": round(cash_current),
             "current_pct": pct(cash_current),
-            "after_usd": round(cash_current + net),
-            "after_pct": pct(cash_current + net),
-            "delta_usd": round(net),
+            "after_usd": round(cash_after),
+            "after_pct": pct(cash_after),
+            "delta_usd": round(cash_after - cash_current),
             "why": why_cash,
         }
     )
