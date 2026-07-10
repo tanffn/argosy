@@ -101,14 +101,56 @@ def _overlay_open_proposals(
         .scalars()
         .all()
     )
-    if not rows:
-        return dtos
+    # Latest fleet review per symbol (holding_reviews) — the second voice.
+    # An unverified TRIM/SELL review (blind gate diverged, fail-closed, no
+    # proposal filed) must still be VISIBLE (nothing-hidden doctrine): the
+    # verdict stays the plan stance, the note says what the fleet thought
+    # and why it wasn't acted on.
+    reviews: dict[str, object] = {}
+    try:
+        from argosy.state.models import HoldingReview
+
+        for hr in (
+            db.execute(
+                select(HoldingReview)
+                .where(HoldingReview.user_id == user_id)
+                .order_by(HoldingReview.id.asc())
+            )
+            .scalars()
+            .all()
+        ):
+            reviews[(hr.symbol or "").upper()] = hr  # latest wins
+    except Exception:  # noqa: BLE001 — reviews are an annotation, never fatal
+        logger.warning("holding_reviews overlay failed", exc_info=True)
+
     by_ticker = {(r.ticker or "").upper(): r for r in rows}
     out: list[PositionThesisDTO] = []
     for dto in dtos:
         r = by_ticker.get((dto.ticker or "").upper())
         if r is None:
-            out.append(dto)
+            notes = []
+            hr = reviews.get((dto.ticker or "").upper())
+            if hr is not None and (hr.outcome or "") == "held_unverified":
+                notes.append(
+                    f"**Fleet review ({str(hr.reviewed_at)[:10]}):** suggested "
+                    f"{hr.verdict} ({hr.confidence} confidence) but the blind "
+                    f"verification diverged, so no action was filed "
+                    f"(fail-closed). The stance shown is the plan's.\n\n"
+                )
+            if dto.verdict in ("BUY", "ADD"):
+                notes.append(
+                    "**Underweight vs plan target** — funded by the "
+                    "deployment schedule (proceeds route to the biggest-gap "
+                    "sleeve first), not by an action needed from you now.\n\n"
+                )
+            if notes:
+                out.append(
+                    dto.model_copy(
+                        update={"reasoning_md": "".join(notes) + dto.reasoning_md}
+                    )
+                )
+            else:
+                out.append(dto)
             continue
         if r.action == "sell":
             size = float(r.size_shares_or_currency or 0.0)
