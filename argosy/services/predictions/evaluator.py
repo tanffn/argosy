@@ -824,6 +824,395 @@ def _to_date(dt: datetime) -> date:
 
 
 # ---------------------------------------------------------------------------
+# Entry-backfill re-evaluation (v2 methods) — supersedes v1 unparseable rows
+# ---------------------------------------------------------------------------
+
+
+#: Suffix appended to the base ``fixed_lookahead_*`` method name to form
+#: the v2 entry-backfilled method name. The v2 rows are seeded into
+#: ``evaluation_method_registry`` by migration 0081 with
+#: ``method_version=2`` so the reliability view's per-(prediction,
+#: family) dedup picks the re-evaluated outcome over the v1
+#: ``unparseable`` one — supersession WITHOUT mutating history.
+ENTRY_BACKFILL_SUFFIX = "_entry_backfilled"
+
+#: Base methods eligible for entry-backfill re-evaluation. ``target_stop``
+#: is deliberately excluded: its entry participates in the target/stop
+#: geometry the AUTHOR chose, so inventing an entry post-hoc would change
+#: the prediction's meaning, not just its bookkeeping.
+ENTRY_BACKFILL_BASE_METHODS: tuple[str, ...] = (
+    "fixed_lookahead_7d",
+    "fixed_lookahead_30d",
+)
+
+#: Calendar-day lookback when hunting for the entry bar. ``event_at``
+#: can fall on a weekend/holiday; the backfilled entry is then the LAST
+#: trading close at or before the event date. 7 calendar days covers
+#: any weekend + holiday cluster on US exchanges.
+_ENTRY_BACKFILL_LOOKBACK_DAYS: int = 7
+
+
+@dataclass
+class ReevaluationSummary:
+    """Per-batch totals returned by :func:`run_reevaluation_batch`."""
+
+    candidates: int = 0
+    reevaluated: int = 0
+    skipped_existing: int = 0
+    still_unparseable: int = 0
+    adapter_errors: int = 0
+    by_kind: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidates": self.candidates,
+            "reevaluated": self.reevaluated,
+            "skipped_existing": self.skipped_existing,
+            "still_unparseable": self.still_unparseable,
+            "adapter_errors": self.adapter_errors,
+            "by_kind": dict(self.by_kind),
+        }
+
+
+def _compute_backfilled_outcome(
+    prediction: Prediction,
+    *,
+    price_fetcher: PriceFetcher,
+) -> Outcome:
+    """Fixed-lookahead scoring with the entry backfilled from bars.
+
+    Entry resolution:
+
+    * ``prediction.entry_price`` set → use it verbatim (the writer's
+      snapshot remains authoritative; this path then only fixes a
+      transient no-bars failure).
+    * NULL → entry = close of the LAST bar dated at or before the
+      ``event_at`` date (standard backtest convention: you could have
+      traded the call at that day's close). No bar in the lookback →
+      ``unparseable``.
+
+    Exit + classification are IDENTICAL to v1 ``_score_fixed_lookahead``
+    (end-of-window close, ±10% hit thresholds, ±1% neutral band) so the
+    v2 method changes ONLY the entry provenance, keeping v1/v2 outcomes
+    comparable within the ``fixed_lookahead`` family.
+    """
+    if prediction.evaluation_method not in ENTRY_BACKFILL_BASE_METHODS:
+        return Outcome(
+            kind="unparseable",
+            notes=(
+                "entry backfill unsupported for method="
+                f"{prediction.evaluation_method!r}"
+            ),
+        )
+    if prediction.ticker is None:
+        return Outcome(
+            kind="unparseable",
+            notes="ticker is NULL for single-ticker method",
+        )
+
+    event_date = _to_date(prediction.event_at)
+    fetch_start = event_date - timedelta(
+        days=_ENTRY_BACKFILL_LOOKBACK_DAYS
+    )
+    window_start = _next_day(prediction.event_at)
+    window_end = _to_date(prediction.evaluation_due_at)
+
+    raw_bars = price_fetcher(prediction.ticker, fetch_start, window_end)
+    if raw_bars is None:
+        return Outcome(
+            kind="unparseable",
+            notes=f"no price coverage for {prediction.ticker}",
+        )
+    bars: list[Bar]
+    if raw_bars and isinstance(raw_bars[0], Bar):
+        bars = list(raw_bars)
+    else:
+        bars = _normalize_rows(raw_bars)  # type: ignore[arg-type]
+    bars.sort(key=lambda b: b.bar_date)
+
+    # Entry provenance.
+    entry_note: str
+    if prediction.entry_price is not None:
+        entry = float(prediction.entry_price)
+        entry_bar: Bar | None = None
+        entry_note = "entry from writer snapshot"
+    else:
+        entry_candidates = [
+            b for b in bars if fetch_start <= b.bar_date <= event_date
+        ]
+        if not entry_candidates:
+            return Outcome(
+                kind="unparseable",
+                notes=(
+                    f"no entry bar for {prediction.ticker} at/before "
+                    f"{event_date} (lookback {fetch_start})"
+                ),
+            )
+        entry_bar = entry_candidates[-1]
+        entry = entry_bar.close
+        entry_note = (
+            f"entry backfilled from close({entry_bar.bar_date.isoformat()})"
+        )
+
+    window_bars = [
+        b for b in bars if window_start <= b.bar_date <= window_end
+    ]
+    if not window_bars:
+        return Outcome(
+            kind="unparseable",
+            notes=(
+                f"no bars for {prediction.ticker} in "
+                f"[{window_start}, {window_end}]"
+            ),
+        )
+
+    last_close = window_bars[-1].close
+    raw_return = (last_close - entry) / entry
+    signed = _signed_pnl(prediction.direction, raw_return)
+    kind = _classify_lookahead(signed)
+    evidence: dict[str, Any] = {
+        "first_bar": _bar_to_evidence(window_bars[0]),
+        "last_bar": _bar_to_evidence(window_bars[-1]),
+    }
+    if entry_bar is not None:
+        evidence["entry_bar"] = _bar_to_evidence(entry_bar)
+    return Outcome(
+        kind=kind,
+        pnl_pct=signed,
+        entry_price_used=entry,
+        exit_price_used=last_close,
+        exit_trigger_date=window_bars[-1].bar_date,
+        notes=entry_note,
+        evidence=evidence,
+    )
+
+
+def reevaluate_prediction(
+    session: Session,
+    prediction: Prediction,
+    *,
+    price_fetcher: PriceFetcher = default_price_fetcher,
+) -> PredictionOutcome:
+    """Score ``prediction`` under the v2 entry-backfilled method.
+
+    Insert-only supersession: the v1 outcome row (typically
+    ``unparseable``) is left untouched; a NEW row is inserted under
+    ``<base_method>_entry_backfilled``. Idempotency mirrors
+    :func:`evaluate_prediction` — an existing v2 row short-circuits,
+    and the ``(prediction_id, evaluation_method)`` UNIQUE index is the
+    second line of defence.
+
+    Transient adapter errors propagate as
+    :class:`EvaluatorAdapterError` (caller skips; retry later).
+    """
+    method = prediction.evaluation_method + ENTRY_BACKFILL_SUFFIX
+
+    existing = (
+        session.execute(
+            select(PredictionOutcome)
+            .where(PredictionOutcome.prediction_id == prediction.id)
+            .where(PredictionOutcome.evaluation_method == method)
+        )
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    outcome = _compute_backfilled_outcome(
+        prediction, price_fetcher=price_fetcher
+    )
+
+    row = PredictionOutcome(
+        prediction_id=prediction.id,
+        evaluation_method=method,
+        outcome_kind=outcome.kind,
+        pnl_pct=(
+            Decimal(str(round(outcome.pnl_pct, 6)))
+            if outcome.pnl_pct is not None
+            else None
+        ),
+        entry_price_used=(
+            Decimal(str(outcome.entry_price_used))
+            if outcome.entry_price_used is not None
+            else None
+        ),
+        exit_price_used=(
+            Decimal(str(outcome.exit_price_used))
+            if outcome.exit_price_used is not None
+            else None
+        ),
+        exit_trigger_date=outcome.exit_trigger_date,
+        evidence_json=(
+            json.dumps(outcome.evidence, sort_keys=True)
+            if outcome.evidence
+            else None
+        ),
+        notes=outcome.notes,
+    )
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except IntegrityError:
+        winner = (
+            session.execute(
+                select(PredictionOutcome)
+                .where(PredictionOutcome.prediction_id == prediction.id)
+                .where(PredictionOutcome.evaluation_method == method)
+            )
+            .scalars()
+            .one()
+        )
+        return winner
+    return row
+
+
+def find_reevaluation_candidates(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    batch_size: int = 500,
+    source: str | None = None,
+) -> list[Prediction]:
+    """Predictions whose v1 outcome is ``unparseable`` and that have no
+    v2 entry-backfilled outcome yet.
+
+    Selection:
+
+    * base ``evaluation_method`` in :data:`ENTRY_BACKFILL_BASE_METHODS`
+    * ``evaluation_due_at <= now`` (never score an open window)
+    * an outcome row EXISTS for the base method with
+      ``outcome_kind='unparseable'`` (scored rows are settled — the
+      verdict stands; only structurally-unscored rows re-run)
+    * NO outcome row exists for ``<base>_entry_backfilled``
+    * optional ``source`` filter (e.g. ``'discord_alpha_report'``).
+
+    Archived predictions are deliberately INCLUDED — retention archives
+    evaluated rows, and an unparseable evaluation may already have
+    aged past the archive window; the backtest still wants them.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    unparseable_exists = (
+        select(PredictionOutcome.id)
+        .where(PredictionOutcome.prediction_id == Prediction.id)
+        .where(
+            PredictionOutcome.evaluation_method
+            == Prediction.evaluation_method
+        )
+        .where(PredictionOutcome.outcome_kind == "unparseable")
+        .exists()
+    )
+    backfilled_exists = (
+        select(PredictionOutcome.id)
+        .where(PredictionOutcome.prediction_id == Prediction.id)
+        .where(
+            PredictionOutcome.evaluation_method
+            == Prediction.evaluation_method + ENTRY_BACKFILL_SUFFIX
+        )
+        .exists()
+    )
+
+    stmt = (
+        select(Prediction)
+        .where(
+            Prediction.evaluation_method.in_(ENTRY_BACKFILL_BASE_METHODS)
+        )
+        .where(Prediction.evaluation_due_at <= now)
+        .where(unparseable_exists)
+        .where(~backfilled_exists)
+        .order_by(Prediction.evaluation_due_at.asc(), Prediction.id.asc())
+        .limit(batch_size)
+    )
+    if source is not None:
+        stmt = stmt.where(Prediction.source == source)
+
+    return list(session.execute(stmt).scalars().all())
+
+
+def run_reevaluation_batch(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    batch_size: int = 500,
+    price_fetcher: PriceFetcher = default_price_fetcher,
+    source: str | None = None,
+) -> ReevaluationSummary:
+    """Entry-backfill re-evaluation over all eligible predictions.
+
+    On-demand path (backtest / operator-invoked) — deliberately NOT
+    wired into the daily cron: the daily evaluator keeps scoring new
+    predictions under their v1 method; this batch exists to recover
+    rows the v1 method structurally could not score. Caller owns the
+    transaction (same contract as :func:`run_evaluator_batch`).
+    """
+    summary = ReevaluationSummary()
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    candidates = find_reevaluation_candidates(
+        session, now=now, batch_size=batch_size, source=source
+    )
+    summary.candidates = len(candidates)
+    _log.info(
+        "predictions.reevaluator.batch.start",
+        candidates=len(candidates),
+        source=source,
+    )
+
+    for prediction in candidates:
+        try:
+            outcome = reevaluate_prediction(
+                session, prediction, price_fetcher=price_fetcher
+            )
+        except EvaluatorAdapterError as exc:
+            summary.adapter_errors += 1
+            _log.warning(
+                "predictions.reevaluator.adapter_error",
+                prediction_id=prediction.id,
+                ticker=prediction.ticker,
+                error=str(exc),
+            )
+            continue
+        except Exception as exc:  # pragma: no cover - defensive
+            summary.adapter_errors += 1
+            _log.exception(
+                "predictions.reevaluator.unexpected_error",
+                prediction_id=prediction.id,
+                error_type=type(exc).__name__,
+            )
+            continue
+
+        summary.reevaluated += 1
+        kind = outcome.outcome_kind
+        summary.by_kind[kind] = summary.by_kind.get(kind, 0) + 1
+        if kind == "unparseable":
+            summary.still_unparseable += 1
+
+    _log.info(
+        "predictions.reevaluator.batch.done",
+        **summary.to_dict(),
+    )
+
+    try:
+        from argosy.services.predictions.reliability import (
+            invalidate_reliability_cache,
+        )
+        invalidate_reliability_cache()
+    except Exception:  # noqa: BLE001 — never break the re-evaluator
+        _log.warning(
+            "predictions.reevaluator.cache_invalidate_failed",
+            exc_info=True,
+        )
+
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Batch driver
 # ---------------------------------------------------------------------------
 
@@ -947,13 +1336,19 @@ def run_evaluator_batch(
 
 __all__ = [
     "Bar",
+    "ENTRY_BACKFILL_BASE_METHODS",
+    "ENTRY_BACKFILL_SUFFIX",
     "EvaluatorAdapterError",
     "EvaluatorSummary",
     "Outcome",
     "OutcomeKind",
     "PriceFetcher",
+    "ReevaluationSummary",
     "default_price_fetcher",
     "evaluate_prediction",
     "find_due_predictions",
+    "find_reevaluation_candidates",
+    "reevaluate_prediction",
     "run_evaluator_batch",
+    "run_reevaluation_batch",
 ]
