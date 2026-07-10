@@ -101,7 +101,7 @@ One row per symbol per time point, three columns, none optional:
 
 | Column | Content |
 |---|---|
-| **Fleet reasoning** | Verdict (buy/sell/hold/trim) + conviction + SIZE ("buy a lot or a starter slot") + the decisive reasoning line + the falsifiers it recorded |
+| **Fleet reasoning** | Verdict (buy/sell/hold/trim) + conviction + SIZE ("buy a lot or a starter slot") + the decisive reasoning line + the falsifiers it recorded + **the clock (owner-specified 2026-07-10): the NEXT VALIDATION POINT (the dated or estimated event where the thesis gets tested — an earnings print, launch, readout, contract renewal) and the expected re-rating horizon with an honest band ("3-6 months" vs "2-3 years"). Hard to estimate ≠ optional: an unestimable horizon is itself reportable and lowers conviction.** Scoring later checks horizon calibration: did re-ratings land inside the stated bands? |
 | **Reasoning-integrity audit** | Did it cheat? TWO checks: (a) **packet audit** — every fact in the case packet must come from a source DATED ON OR BEFORE the freeze date (a "why the stock moved" piece from a week later is future knowledge; we are in the future relative to the test — the packet builder must cite each source's date, and the audit re-verifies); (b) **output audit** — the fleet's reasoning must not use any fact absent from the packet (real names, later events, outcome knowledge). Either failure = the point doesn't score. |
 | **Agent score** | Was the reasoning correct → "if we acted on this verdict we would have gained/lost **NN%**" measured at the case's resolution horizon (and to the terminal outcome for trap/exit cases), vs the benchmark path (buy-and-hold / ride-to-zero) |
 
