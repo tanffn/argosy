@@ -4338,3 +4338,71 @@ class HoldingReview(Base):
     __table_args__ = (
         Index("ix_holding_reviews_user_symbol", "user_id", "symbol", "reviewed_at"),
     )
+
+
+class PositionStance(Base):
+    """ONE canonical stance record per position — every surface projects this.
+
+    Kills the three-voices defect (2026-07-10): /portfolio said HOLD while the
+    fleet review said SELL and the inbox held a proposal for the same ticker.
+    The stance registry reconciles the three sources with a fixed precedence:
+
+        open proposal  >  verified review (outcome 'proposed'/'hold')  >  plan
+
+    A ``held_unverified`` review (fleet said act, blind gate diverged,
+    fail-closed) NEVER changes the stance — it sets ``divergence=True`` and a
+    nothing-hidden note so the disagreement is visible without being acted on.
+
+    Rows are a rebuildable projection (no backfill; delete+insert per user).
+    ``built_at`` + ``snapshot_key`` + ``plan_version_id`` let the service
+    detect staleness against the source rows. Per the verdicts-defended
+    directive (2026-07-10) a stance carries conviction + falsifiers.
+
+    Migration: alembic 0080.
+    """
+
+    __tablename__ = "position_stances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    # BUY | ADD | HOLD | TRIM | SELL — the ONE reconciled stance.
+    stance: Mapped[str] = mapped_column(String(8), nullable=False)
+    # proposal | review | plan — which layer won the precedence.
+    stance_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    # HIGH | MED | LOW
+    conviction: Mapped[str] = mapped_column(String(16), nullable=False)
+    plan_verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    review_verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    review_outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pending_proposal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
+    )
+    # True when the fleet review said act but the blind gate failed
+    # (fail-closed): the stance is NOT the review's verdict, and the
+    # reasoning carries a nothing-hidden note saying so.
+    divergence: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=_sa_text("0")
+    )
+    falsifiers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reasoning_md: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    plan_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Identity of the portfolio snapshot the plan layer was derived from
+    # (date|position-count|total) — staleness fingerprint, not an FK.
+    snapshot_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    built_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_position_stances_user_symbol"),
+    )
