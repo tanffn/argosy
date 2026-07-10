@@ -2084,10 +2084,21 @@ export interface TradePlanLineDTO {
   why: string;
 }
 
+export interface TradePlanGroupDTO {
+  label: string;
+  target_pct: number | null;
+  target_usd: number | null;
+  current_usd: number;
+  after_usd: number;
+  why: string | null;
+  lines: TradePlanLineDTO[];
+}
+
 export interface TradePlanDTO {
   as_of: string;
   book_total_usd: number;
   lines: TradePlanLineDTO[];
+  groups?: TradePlanGroupDTO[];
   totals: { sells_usd: number; buys_usd: number; net_to_cash_usd: number };
 }
 

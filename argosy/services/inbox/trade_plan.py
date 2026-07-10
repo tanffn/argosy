@@ -108,6 +108,13 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
         return round(v / book_usd * 100.0, 2) if book_usd else None
 
     lines: list[dict[str, Any]] = []
+    proposal_lines: list[dict[str, Any]] = []
+    park_line: dict[str, Any] | None = None
+    dest_line: dict[str, Any] | None = None
+    dest_label: str | None = None
+    dest_target_pct: float | None = None
+    cash_target_pct: float | None = None
+    cash_target_usd: float | None = None
     sells_usd = 0.0
     buys_usd = 0.0
     for r in rows:
@@ -145,6 +152,7 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
                 "why": why,
             }
         )
+        proposal_lines.append(lines[-1])
 
     # Deploy lines: the proceeds' destinations render as REAL rows with
     # before/after like every other line — the park instrument (IB01) and
@@ -206,6 +214,17 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
             raw_after = cash_current + net
             excess = max(raw_after - target_usd, 0.0)
             park_buy = max(min(net - excess, target_usd - cash_current), 0.0)
+            cash_target_pct, cash_target_usd = target_pct, target_usd
+            for cls in ta.get("classes", []):
+                if any(
+                    (i.get("symbol") or "").upper() == dest.upper()
+                    for i in (cls.get("instruments") or [])
+                ):
+                    dest_label = cls.get("label")
+                    dest_target_pct = float(
+                        overrides.get(dest_label, cls.get("target_pct") or 0.0)
+                    )
+                    break
             if park and park_buy > 0:
                 park_held = held.get(park, {"usd": 0.0})["usd"]
                 lines.append(
@@ -225,6 +244,7 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
                         ),
                     }
                 )
+                park_line = lines[-1]
             if excess > 0:
                 dest_held = held.get(dest, {"usd": 0.0})["usd"]
                 lines.append(
@@ -245,6 +265,7 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
                         ),
                     }
                 )
+                dest_line = lines[-1]
             cash_after = cash_current + net - excess
             why_cash = (
                 f"Sleeve lands at its {target_pct:g}% plan target "
@@ -295,11 +316,60 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
             "why": why_cash,
         }
     )
+    cash_line = lines[-1]
+
+    # Sleeve grouping — the client reads the table sleeve by sleeve:
+    #   + sleeve header (current -> after vs its plan target)
+    #     -- movement lines
+    # Legacy singles hold every trade proposal (their plan target is 0);
+    # the park buy nests under the cash sleeve; the excess buy under its
+    # own destination sleeve.
+    groups: list[dict[str, Any]] = []
+    if proposal_lines:
+        groups.append(
+            {
+                "label": "Legacy single stocks",
+                "target_pct": 0.0,
+                "target_usd": 0,
+                "current_usd": sum(l["current_usd"] for l in proposal_lines),
+                "after_usd": sum(l["after_usd"] for l in proposal_lines),
+                "why": "Off-plan single names — plan v74 target is 0%; "
+                "staged redeploys, not bare exits.",
+                "lines": proposal_lines,
+            }
+        )
+    groups.append(
+        {
+            "label": cash_line["label"],
+            "target_pct": cash_target_pct,
+            "target_usd": round(cash_target_usd) if cash_target_usd else None,
+            "current_usd": cash_line["current_usd"],
+            "after_usd": cash_line["after_usd"],
+            "why": why_cash,
+            "lines": [park_line] if park_line else [],
+        }
+    )
+    if dest_line is not None:
+        dest_target_usd = (
+            round(book_usd * dest_target_pct / 100.0) if dest_target_pct else None
+        )
+        groups.append(
+            {
+                "label": dest_label or dest_line["label"],
+                "target_pct": dest_target_pct,
+                "target_usd": dest_target_usd,
+                "current_usd": dest_line["current_usd"],
+                "after_usd": dest_line["after_usd"],
+                "why": None,
+                "lines": [dest_line],
+            }
+        )
 
     return {
         "as_of": str(snap.snapshot_date or ""),
         "book_total_usd": round(book_usd),
         "lines": lines,
+        "groups": groups,
         "totals": {
             "sells_usd": round(sells_usd),
             "buys_usd": round(buys_usd),
