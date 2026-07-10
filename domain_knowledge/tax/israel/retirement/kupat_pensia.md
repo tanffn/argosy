@@ -1,7 +1,7 @@
 ---
 topic: israel_kupat_pensia
 jurisdiction: israel
-last_verified: 2026-07-08
+last_verified: 2026-07-10
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.gov.il/he/departments/topics/pension_funds

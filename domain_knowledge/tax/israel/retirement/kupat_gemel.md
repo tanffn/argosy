@@ -1,7 +1,7 @@
 ---
 topic: israel_kupat_gemel
 jurisdiction: israel
-last_verified: 2026-07-08
+last_verified: 2026-07-10
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.taxes.gov.il/Pages/default.aspx
