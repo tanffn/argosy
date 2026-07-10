@@ -95,6 +95,20 @@ Freeze dates below are DERIVED per the freeze-point rule; evidence in the append
 Category D is the counterweight to C: a fleet that passes C by selling everything that falls
 fails D. Calibration = passing BOTH, which is only possible by judging falsifiers, not price.
 
+## 2b. Per-case report format (owner-specified, 2026-07-10 — every suite run reports this table)
+
+One row per symbol per time point, three columns, none optional:
+
+| Column | Content |
+|---|---|
+| **Fleet reasoning** | Verdict (buy/sell/hold/trim) + conviction + SIZE ("buy a lot or a starter slot") + the decisive reasoning line + the falsifiers it recorded |
+| **Reasoning-integrity audit** | Did it cheat? TWO checks: (a) **packet audit** — every fact in the case packet must come from a source DATED ON OR BEFORE the freeze date (a "why the stock moved" piece from a week later is future knowledge; we are in the future relative to the test — the packet builder must cite each source's date, and the audit re-verifies); (b) **output audit** — the fleet's reasoning must not use any fact absent from the packet (real names, later events, outcome knowledge). Either failure = the point doesn't score. |
+| **Agent score** | Was the reasoning correct → "if we acted on this verdict we would have gained/lost **NN%**" measured at the case's resolution horizon (and to the terminal outcome for trap/exit cases), vs the benchmark path (buy-and-hold / ride-to-zero) |
+
+The suite summary aggregates the third column per category: "acting on the fleet at every
+frozen point would have returned X% vs Y% benchmark" — the number that says whether the fleet
+earns live-money trust.
+
 ## 3. Scoring judgment calls (recorded so they're not re-litigated)
 
 - A trap-case BUY is a *graded* fail: full fail if bought without the killing falsifier
