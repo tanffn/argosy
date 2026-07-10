@@ -75,6 +75,71 @@ def _to_dto(t: PositionThesis) -> PositionThesisDTO:
     return PositionThesisDTO(**t.to_dict())
 
 
+def _overlay_open_proposals(
+    db: Session, user_id: str, dtos: list[PositionThesisDTO]
+) -> list[PositionThesisDTO]:
+    """Open trade proposals override the plan-derived verdict.
+
+    The plan-thesis derivation knows only the plan + snapshot; a live
+    fleet decision (an ``awaiting_human``/``approved``/``cooling``
+    proposal) is FRESHER than the plan's stance — without this overlay
+    /portfolio showed the "no plan instruction" HOLD default on a ticker
+    whose SELL sat in the client's inbox (cross-surface contradiction,
+    SPCX 2026-07-10). Applied AFTER the cache, on copies, so cached
+    derivations are never poisoned and closing a proposal restores the
+    plan stance on the next request.
+    """
+    from argosy.state.models import Proposal as ProposalRow
+
+    rows = (
+        db.execute(
+            select(ProposalRow).where(
+                ProposalRow.user_id == user_id,
+                ProposalRow.status.in_(("awaiting_human", "approved", "cooling")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return dtos
+    by_ticker = {(r.ticker or "").upper(): r for r in rows}
+    out: list[PositionThesisDTO] = []
+    for dto in dtos:
+        r = by_ticker.get((dto.ticker or "").upper())
+        if r is None:
+            out.append(dto)
+            continue
+        if r.action == "sell":
+            size = float(r.size_shares_or_currency or 0.0)
+            if (r.size_units or "") == "shares":
+                full = bool(dto.current_shares) and size >= 0.95 * dto.current_shares
+            else:
+                full = (
+                    bool(dto.current_usd_value)
+                    and size >= 0.95 * dto.current_usd_value
+                )
+            verdict = "SELL" if full else "TRIM"
+        else:
+            verdict = "ADD" if (dto.current_shares or 0) > 0 else "BUY"
+        when = (
+            f" (resurfaces {str(r.cooling_off_until)[:10]})"
+            if r.status == "cooling" and r.cooling_off_until
+            else ""
+        )
+        note = (
+            f"**Pending decision{when}:** a {r.action} proposal for "
+            f"{dto.ticker} awaits you in the inbox — it overrides the "
+            f"plan-derived stance below until decided.\n\n"
+        )
+        out.append(
+            dto.model_copy(
+                update={"verdict": verdict, "reasoning_md": note + dto.reasoning_md}
+            )
+        )
+    return out
+
+
 def _load_portfolio_snapshot(user_id: str, db: Session | None = None) -> object | None:
     """Return the freshest portfolio snapshot or None.
 
@@ -135,7 +200,7 @@ def get_position_theses(
     cache_key = (user_id, pv.id, _snapshot_cache_key(snapshot))
     cached = _THESIS_CACHE.get(cache_key)
     if cached is not None:
-        return cached
+        return _overlay_open_proposals(db, user_id, cached)
 
     # Pull analyst reports for the draft's synthesis decision_run so we
     # can attribute conviction + cited sources. When the draft wasn't
@@ -198,7 +263,7 @@ def get_position_theses(
     if len(_THESIS_CACHE) >= _THESIS_CACHE_MAX:
         _THESIS_CACHE.clear()  # simple bound — keys are plan/snapshot scoped
     _THESIS_CACHE[cache_key] = dtos
-    return dtos
+    return _overlay_open_proposals(db, user_id, dtos)
 
 
 __all__ = ["PositionThesisDTO", "router"]

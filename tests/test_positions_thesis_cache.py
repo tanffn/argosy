@@ -51,6 +51,42 @@ def test_thesis_endpoint_caches_and_emits_once(monkeypatch):
     assert len(emit_calls) == 1, f"emit ran {len(emit_calls)}x (expected 1; no write on cached read)"
 
 
+def test_open_proposal_overlays_plan_verdict():
+    """An open trade proposal is FRESHER than the plan-derived stance: the
+    verdict column must show it (SPCX HOLD-vs-SELL contradiction,
+    2026-07-10) — and cached DTOs must NOT be mutated."""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import Base, Proposal, User
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.add(
+        Proposal(
+            user_id="ariel", ticker="SPCX", action="sell",
+            size_shares_or_currency=40, size_units="shares",
+            instrument="stock", order_type="market", tier="T2",
+            account_class="main", status="awaiting_human",
+            rationale_summary="exit", shadow=0,
+        )
+    )
+    s.commit()
+
+    dto = positions.PositionThesisDTO(
+        ticker="SPCX", current_shares=40.0, current_weight_pct=0.15,
+        current_usd_value=6000.0, verdict="HOLD", conviction="LOW",
+        reasoning_md="No plan instruction found.",
+    )
+    out = positions._overlay_open_proposals(s, "ariel", [dto])
+    assert out[0].verdict == "SELL"  # 40 of 40 shares = full exit
+    assert "Pending decision" in out[0].reasoning_md
+    assert dto.verdict == "HOLD"  # original (cacheable) DTO untouched
+    s.close()
+
+
 def test_thesis_cache_misses_on_new_plan_version(monkeypatch):
     derive_calls: list[int] = []
     emit_calls: list[int] = []
