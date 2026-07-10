@@ -74,12 +74,12 @@ class RoutingPolicy:
 
     # --- discovery-driven new-name candidates ---
     # The discovery funnel's conviction picks feed the decision funnel as
-    # new-name BUY candidates. Only the strongest (HIGH conviction + a BUY
-    # verdict) earn a deep review — a new name is a higher bar than acting on a
-    # held one. Routing them is conservative: deep decision is still
-    # propose-and-ask, and (until the funding engine lands) shadow-gated.
+    # new-name BUY candidates. The floor admits MEDIUM+HIGH BUYs (proposal 68,
+    # Ariel-approved 2026-07-10): the prior HIGH-only floor routed ZERO names
+    # in 440 lifetime scans (SOUN/JOBY BUY-MED both blocked). Deep decision is
+    # still propose-and-ask — the floor only decides what the fleet may look at.
     route_discovery_picks: bool = True
-    discovery_conviction_floor: str = "HIGH"
+    discovery_conviction_floor: str = "MEDIUM"
 
     @property
     def version(self) -> str:

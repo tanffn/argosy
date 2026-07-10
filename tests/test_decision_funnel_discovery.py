@@ -81,21 +81,43 @@ def sf():
 # --- loader ----------------------------------------------------------------
 
 
-def test_loader_routes_only_high_conviction_buys(sf):
+def test_loader_default_floor_routes_medium_and_high_buys(sf):
+    # Default floor is MEDIUM (proposal 68, Ariel-approved 2026-07-10): the
+    # HIGH-only default routed ZERO names in 440 lifetime scans. MEDIUM+HIGH
+    # BUYs route; non-BUYs still drop.
     s = sf()
     _seed_pick(s, "ASML", "HIGH", "BUY")
-    _seed_pick(s, "MELI", "MED", "BUY")    # conviction too low
+    _seed_pick(s, "MELI", "MED", "BUY")
     _seed_pick(s, "SHOP", "HIGH", "WATCH")  # not a BUY
     s.commit()
     cands = load_discovery_candidates(s, user_id="ariel", held_tickers=set())
     s.close()
-    assert [c.subject for c in cands] == ["ASML"]
-    c = cands[0]
+    assert {c.subject for c in cands} == {"ASML", "MELI"}
+    c = next(c for c in cands if c.subject == "ASML")
     assert c.subject_type == "discovery"
     assert c.primary_signal == "discovery_pick"
     assert c.extra["conviction"] == "HIGH"
     assert c.extra["verdict"] == "BUY"
     assert "10-K" in c.extra["grader_cites"]
+
+
+def test_explicit_high_floor_routes_only_high(sf):
+    # The floor stays IPS/policy-owned — an explicit HIGH floor restores the
+    # strict behavior.
+    from dataclasses import replace
+
+    from argosy.services.decision_funnel.policy import DEFAULT_POLICY
+
+    s = sf()
+    _seed_pick(s, "ASML", "HIGH", "BUY")
+    _seed_pick(s, "MELI", "MED", "BUY")
+    s.commit()
+    policy = replace(DEFAULT_POLICY, discovery_conviction_floor="HIGH")
+    cands = load_discovery_candidates(
+        s, user_id="ariel", held_tickers=set(), policy=policy
+    )
+    s.close()
+    assert [c.subject for c in cands] == ["ASML"]
 
 
 def test_lowering_floor_to_medium_routes_med_and_high(sf):

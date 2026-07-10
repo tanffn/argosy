@@ -45,11 +45,13 @@ log = get_logger(__name__)
 _FAMILY_SCORE = {"MOMENTUM": 35.0, "ATTENTION": 30.0, "GROWTH": 25.0}
 
 # Liquidity band defaults — tuned for a high-potential SATELLITE (small/mid cap
-# with real upside, but tradeable). cap_max deliberately tight ($8B) so the
-# radar surfaces genuine high-growth names, not megacaps already in the core.
+# with real upside, but tradeable). cap_max $30B aligns the radar band to the
+# sleeve doctrine's sub-$30B moonshot gate (proposal 68, Ariel-approved
+# 2026-07-10 — the prior $8B ceiling excluded the sleeve's own upper band);
+# still far below the megacaps already in the core.
 DEFAULT_MIN_PRICE = 5.0
 DEFAULT_CAP_MIN = 300e6
-DEFAULT_CAP_MAX = 8e9
+DEFAULT_CAP_MAX = 30e9
 DEFAULT_MIN_DOLLAR_VOLUME = 10e6
 
 _UA = {"User-Agent": "Mozilla/5.0 (Argosy trend-radar)"}
