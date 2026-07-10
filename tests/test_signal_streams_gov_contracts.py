@@ -232,12 +232,87 @@ def test_resolver_output_allows_omitted_ticker_as_unresolved() -> None:
 
     output = _RecipientResolutionOutput.model_validate(
         {
-            "rationale": "No candidate is sufficiently grounded",
             "citations": [],
         }
     )
 
     assert output.ticker is None
+    assert output.rationale == ""
+
+
+def test_resolver_stages_without_lock_and_commits_once(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "resolver-lock.db"
+    engine = sa.create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 0.1},
+    )
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(sa.text("PRAGMA journal_mode=WAL"))
+        connection.execute(
+            sa.text(
+                "CREATE TABLE resolver_lock_probe "
+                "(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        )
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    resolver = RecipientResolver()
+    session = factory()
+
+    assert resolver.resolve(session, "Palantir Technologies Inc.") == "PLTR"
+    assert resolver.resolve(session, "Palantir Technologies Inc.") == "PLTR"
+    pending = [
+        row for row in session.new if isinstance(row, RecipientResolution)
+    ]
+    assert len(pending) == 1
+
+    # This independent write is the production cache-write shape that used to
+    # fail with "database is locked" after resolver.flush().
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO resolver_lock_probe (id, value) "
+                "VALUES (1, 'cache write succeeded')"
+            )
+        )
+
+    session.commit()
+    session.close()
+    with factory() as verify:
+        persisted = verify.get(
+            RecipientResolution, "palantir technologies inc"
+        )
+        assert persisted.ticker == "PLTR"
+
+    # A rolled-back session-local tombstone cannot leak into a new session.
+    calls = 0
+
+    def unresolved_choice(recipient, candidates):
+        nonlocal calls
+        calls += 1
+        return None
+
+    ambiguous = RecipientResolver(
+        public_companies={
+            "GD": "General Dynamics Corporation",
+            "GDYN": "General Dynamics Software",
+        },
+        llm_choice=unresolved_choice,
+        fuzzy_cutoff=0.45,
+        automatic_match_cutoff=0.99,
+    )
+    rolled_back = factory()
+    assert ambiguous.resolve(rolled_back, "General Dynamics Systems") is None
+    rolled_back.rollback()
+    rolled_back.close()
+    retry_session = factory()
+    assert ambiguous.resolve(retry_session, "General Dynamics Systems") is None
+    assert calls == 2
+    retry_session.rollback()
+    retry_session.close()
+    engine.dispose()
 
 
 def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(

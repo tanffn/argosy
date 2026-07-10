@@ -210,7 +210,7 @@ LlmChoice = Callable[[str, dict[str, str]], str | None]
 
 class _RecipientResolutionOutput(BaseModel):
     ticker: str | None = None
-    rationale: str
+    rationale: str = ""
 
 
 def _default_llm_choice(
@@ -261,7 +261,22 @@ class RecipientResolver:
 
     def resolve(self, session: Session, recipient_name: str) -> str | None:
         normalised = _normalise_name(recipient_name)
-        existing = session.get(RecipientResolution, normalised)
+        pending_key = "signal_recipient_resolutions_pending"
+        pending: dict[str, RecipientResolution] = session.info.setdefault(
+            pending_key, {}
+        )
+        cached = pending.get(normalised)
+        if cached is not None:
+            if cached in session:
+                return cached.ticker
+            # Rollback/expunge made the cached object transient. Drop this
+            # session-local entry and re-resolve from durable state.
+            pending.pop(normalised, None)
+
+        # A pending resolution for another recipient must not autoflush here:
+        # fetch still has independent cache-backed adapters to call.
+        with session.no_autoflush:
+            existing = session.get(RecipientResolution, normalised)
         if existing is not None:
             return existing.ticker
 
@@ -321,7 +336,7 @@ class RecipientResolver:
             ),
         )
         session.add(row)
-        session.flush()
+        pending[normalised] = row
         return ticker
 
 
