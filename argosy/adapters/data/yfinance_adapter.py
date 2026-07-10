@@ -410,7 +410,7 @@ class YFinanceAdapter:
         """Latest quote + shares outstanding + market cap.
 
         Returns a dict with keys:
-          ``ticker``, ``price``, ``shares``, ``market_cap``,
+          ``ticker``, ``price``, ``shares``, ``market_cap``, ``average_volume``,
           ``currency``, ``timestamp_utc``.
 
         ``shares`` and ``market_cap`` may be ``None`` when yfinance does not
@@ -432,6 +432,7 @@ class YFinanceAdapter:
             price: float | None = None
             shares: float | None = None
             market_cap: float | None = None
+            average_volume: float | None = None
             currency: str | None = None
 
             # Prefer full info dict — it carries shares/market_cap.
@@ -457,6 +458,12 @@ class YFinanceAdapter:
                         market_cap = float(raw_mc)
                     except (TypeError, ValueError):
                         pass
+                raw_avg_volume = info_dict.get("averageVolume")
+                if raw_avg_volume is not None:
+                    try:
+                        average_volume = float(raw_avg_volume)
+                    except (TypeError, ValueError):
+                        pass
                 currency = info_dict.get("currency")
 
             # Fallback to fast_info for price when info dict missed it.
@@ -474,24 +481,39 @@ class YFinanceAdapter:
                             pass
                     if currency is None:
                         currency = getattr(fi, "currency", None)
+                    if average_volume is None:
+                        raw_avg_volume = (
+                            getattr(fi, "three_month_average_volume", None)
+                            or getattr(fi, "ten_day_average_volume", None)
+                        )
+                        if raw_avg_volume is not None:
+                            try:
+                                average_volume = float(raw_avg_volume)
+                            except (TypeError, ValueError):
+                                pass
 
             return {
                 "ticker": ticker,
                 "price": price,
                 "shares": shares,
                 "market_cap": market_cap,
+                "average_volume": average_volume,
                 "currency": currency,
                 "timestamp_utc": None,
             }
 
-        payload = await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=key,
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
-        return payload
+        with track_adapter_call(
+            "yfinance_quote_fundamentals", target=ticker
+        ) as outcome:
+            payload = await cached_call(
+                kind=CacheKind.PRICES,
+                provider=self.PROVIDER,
+                key=key,
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
 
 __all__ = ["Quote", "YFinanceAdapter"]

@@ -372,6 +372,20 @@ def create_app() -> FastAPI:
         # plan_watcher — gated on agent_settings.yaml cadence flags).
         scheduler.register_default_loops()
 
+        # Early-signal ingest is part of the default scheduler set; attach its
+        # dedicated metadata before generic adoption so /api/jobs exposes it
+        # as an ingest job with the 15:30 cron.
+        from argosy.orchestrator.loops.signal_streams_daily import (
+            signal_streams_daily_metadata,
+        )
+
+        signal_streams_loop = scheduler._loops.get("signal_streams_daily")
+        if signal_streams_loop is not None:
+            registry.register(
+                job=signal_streams_loop,
+                metadata=signal_streams_daily_metadata(),
+            )
+
         # Sprint A commit #9 — JobRunsRetentionLoop. Gated on
         # ``cadences.job_runs_retention.enabled`` (default True).
         # Registered alongside the default cadence loops so it appears

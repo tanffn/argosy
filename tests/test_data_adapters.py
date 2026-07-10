@@ -5,7 +5,7 @@ Verifies cache TTL behavior and adapter shape. No live API calls.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +17,6 @@ from argosy.adapters.data.fred_adapter import FredAdapter
 from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 from argosy.state import db as db_mod
 from argosy.state.models import KvCacheEntry
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -151,6 +150,31 @@ async def test_yfinance_get_quote(engine: None) -> None:
     assert q.ticker == "AAPL"
     assert q.price == 200.0
     assert q.currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_yfinance_quote_fundamentals_includes_average_volume(
+    engine: None,
+) -> None:
+    class _Ticker:
+        info = {
+            "currentPrice": 25.0,
+            "marketCap": 5_000_000_000,
+            "sharesOutstanding": 2_000_000_000,
+            "averageVolume": 10_000_000,
+            "currency": "USD",
+        }
+        fast_info = None
+
+    fake = SimpleNamespace(Ticker=lambda ticker: _Ticker())
+
+    payload = await YFinanceAdapter(
+        client=fake
+    ).get_quote_with_fundamentals("PLTR", ttl_seconds=0)
+
+    assert payload["price"] == 25.0
+    assert payload["market_cap"] == 5_000_000_000
+    assert payload["average_volume"] == 10_000_000
 
 
 @pytest.mark.asyncio
@@ -295,7 +319,7 @@ async def test_cache_ttl_expired_triggers_refetch(engine: None) -> None:
                 )
             )
         ).scalar_one()
-        row.expires_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        row.expires_at = datetime(2000, 1, 1, tzinfo=UTC)
         await session.commit()
 
     out = await cached_call(

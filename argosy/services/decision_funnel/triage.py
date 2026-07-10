@@ -12,6 +12,7 @@ it is judging whether the surfaced signal is decision-worthy today.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -71,10 +72,21 @@ class Stage2TriageAgent(BaseAgent[TriageOutput]):
             "Routine drift or stale news is a no-op. 'Hold / do nothing' is a "
             "legitimate no-op. Be decisive and terse."
         )
+        signal_context = ""
+        stream = candidate.extra.get("signal_stream")
+        scorecard = candidate.extra.get("signal_scorecard")
+        if stream and scorecard:
+            signal_context = (
+                f"SIGNAL STREAM: {stream}\n"
+                "SIGNAL SCORECARD (descriptive context only; do not "
+                "multiply weights): "
+                f"{json.dumps(scorecard, sort_keys=True)}\n"
+            )
         user = (
             f"SUBJECT: {candidate.subject} ({candidate.subject_type})\n"
             f"ROUTER TRIGGERS: {', '.join(candidate.triggers)}\n"
             f"ROUTER REASON: {candidate.reason}\n"
+            f"{signal_context}"
             f"CURRENT WEIGHT %: {weight_pct}\n"
             f"CONCENTRATION CAP %: {cap_pct}\n"
             f"MACRO READ: {market_summary}\n\n"

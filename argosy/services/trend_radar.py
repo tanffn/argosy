@@ -85,6 +85,9 @@ class TrendCandidate:
     market_cap: float | None
     dollar_volume: float | None
     pct_change: float | None
+    stream: str | None = None
+    event_id: str | None = None
+    evidence: dict | None = None
 
 
 @dataclass(frozen=True)

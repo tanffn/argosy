@@ -51,8 +51,10 @@ from argosy.services.jobs.registry import JobMetadata
 from argosy.services.predictions.evaluator import (
     EvaluatorSummary,
     PriceFetcher,
+    ReevaluationSummary,
     default_price_fetcher,
     run_evaluator_batch,
+    run_reevaluation_batch,
 )
 from argosy.services.predictions.retention import (
     DEFAULT_ARCHIVE_DAYS,
@@ -225,6 +227,11 @@ class PredictionsEvaluatorLoop(CadenceLoop):
                 batch_size=self._batch_size,
                 price_fetcher=self._price_fetcher,
             )
+            reeval_summary: ReevaluationSummary = run_reevaluation_batch(
+                session,
+                now=now_dt,
+                price_fetcher=self._price_fetcher,
+            )
             ret_summary: RetentionSummary = run_retention_pass(
                 session,
                 now=now_dt,
@@ -240,6 +247,7 @@ class PredictionsEvaluatorLoop(CadenceLoop):
 
         return {
             "evaluator": ev_summary.to_dict(),
+            "reevaluation": reeval_summary.to_dict(),
             "retention": ret_summary.to_dict(),
         }
 

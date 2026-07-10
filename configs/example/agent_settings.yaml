@@ -62,6 +62,14 @@ security:
   t3_second_factor: delay    # totp | delay
   delay_minutes: 60
 
+# Early-signal nomination streams. Thresholds are policy/config owned; a
+# signal only enters radar → estimator → fleet and never proposes a buy.
+signal_streams:
+  enabled: true
+  gov_contracts:
+    materiality_threshold: 0.05
+    lookback_days: 90
+
 # Household-expenses subsystem (EX1+). Omit the block to use defaults.
 expenses:
   enabled: true

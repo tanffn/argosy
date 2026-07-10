@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from argosy.services.decision_funnel.policy import DEFAULT_POLICY, RoutingPolicy
 from argosy.services.decision_funnel.stage1_routing import RoutedCandidate
+from argosy.services.predictions.reliability import signal_source_scorecard
 
 if TYPE_CHECKING:  # pragma: no cover
     from sqlalchemy.orm import Session
@@ -54,7 +55,7 @@ def _active_fleet_picks(session: Session, user_id: str):
         if not r.fleet_json:
             continue
         try:
-            yield _pick_from_json(r.fleet_json)
+            yield _pick_from_json(r.fleet_json), r
         except (ValueError, KeyError):
             continue
 
@@ -79,7 +80,7 @@ def load_discovery_candidates(
     held = {t.upper() for t in held_tickers}
     seen: set[str] = set()
     out: list[RoutedCandidate] = []
-    for pick in _active_fleet_picks(session, user_id):
+    for pick, row in _active_fleet_picks(session, user_id):
         tk = (pick.ticker or "").upper()
         if not tk or tk in held or tk in seen:
             continue
@@ -91,6 +92,25 @@ def load_discovery_candidates(
         if verdict != "BUY" or _CONVICTION_RANK.get(conviction, 0) < floor_rank:
             continue
         seen.add(tk)
+        extra = {
+            "conviction": conviction,
+            "verdict": verdict,
+            "grader_cites": list(getattr(pick, "cites", []) or [])[:8],
+        }
+        if row.nomination_evidence_json:
+            import json
+
+            try:
+                nomination = json.loads(row.nomination_evidence_json)
+                stream = nomination.get("stream")
+                if stream:
+                    extra["signal_stream"] = stream
+                    extra["signal_nomination"] = nomination
+                    extra["signal_scorecard"] = signal_source_scorecard(
+                        session, user_id, stream
+                    )
+            except (TypeError, ValueError):
+                pass
         out.append(
             RoutedCandidate(
                 subject=tk,
@@ -101,11 +121,7 @@ def load_discovery_candidates(
                     f"discovery pick — {conviction} conviction BUY from the "
                     f"high-potential funnel"
                 ),
-                extra={
-                    "conviction": conviction,
-                    "verdict": verdict,
-                    "grader_cites": list(getattr(pick, "cites", []) or [])[:8],
-                },
+                extra=extra,
             )
         )
     return out

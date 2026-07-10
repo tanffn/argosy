@@ -45,6 +45,86 @@ def _scan_radar() -> ScanResult:
     return scan_trends()
 
 
+def _external_rows(user_id: str, status: str):
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+    from argosy.state.models import ScanState
+
+    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    factory = sessionmaker(
+        bind=create_engine(url, connect_args={"check_same_thread": False})
+    )
+    try:
+        with factory() as db:
+            return list(
+                db.execute(
+                    select(ScanState).where(
+                        ScanState.user_id == user_id,
+                        ScanState.status == status,
+                        ScanState.nomination_evidence_json.is_not(None),
+                    )
+                ).scalars()
+            )
+    except Exception as exc:  # noqa: BLE001 - external stream is additive
+        log.warning(
+            "high_potential_funnel.external_rows_unavailable",
+            status=status,
+            error=str(exc)[:200],
+        )
+        return []
+
+
+def _load_external_candidates(user_id: str) -> list[TrendCandidate]:
+    out: list[TrendCandidate] = []
+    for row in _external_rows(user_id, "active"):
+        try:
+            payload = json.loads(row.nomination_evidence_json)
+            evidence = payload["evidence"]
+            price = evidence.get("price")
+            avg_volume = evidence.get("average_volume")
+            out.append(
+                TrendCandidate(
+                    ticker=row.ticker,
+                    name=row.ticker,
+                    score=float(payload["strength"]) * 100,
+                    families=(f"SIGNAL_STREAM:{payload['stream']}",),
+                    reasons=(
+                        f"{payload['stream']}: {payload['dedup_key']}",
+                    ),
+                    price=float(price) if price is not None else None,
+                    market_cap=(
+                        float(evidence["market_cap"])
+                        if evidence.get("market_cap") is not None
+                        else None
+                    ),
+                    dollar_volume=(
+                        float(price) * float(avg_volume)
+                        if price is not None and avg_volume is not None
+                        else None
+                    ),
+                    pct_change=None,
+                    stream=payload["stream"],
+                    event_id=payload["dedup_key"],
+                    evidence=payload,
+                )
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            log.warning(
+                "high_potential_funnel.external_evidence_invalid",
+                ticker=row.ticker,
+            )
+    return out
+
+
+def _load_external_quarantine(user_id: str) -> list[tuple[str, str]]:
+    return [
+        (row.ticker, row.quarantine_reason or "failed-liquidity")
+        for row in _external_rows(user_id, "quarantined")
+    ]
+
+
 def _estimate(candidate, *, user_id: str = "ariel") -> EstimatorVerdict:
     from argosy.agents.quick_estimator import estimate
     return estimate(candidate, user_id=user_id)
@@ -75,6 +155,7 @@ def _load_scan_states(user_id: str) -> dict[str, dict]:
                 "radar_fingerprint": r.radar_fingerprint, "status": r.status,
                 "rank": r.rank, "quarantine_reason": r.quarantine_reason,
                 "estimator_json": r.estimator_json, "fleet_json": r.fleet_json,
+                "nomination_evidence_json": r.nomination_evidence_json,
                 "last_estimated_at": _iso(r.last_estimated_at),
                 "last_radar_at": _iso(r.last_radar_at),
                 "last_fleet_at": _iso(r.last_fleet_at),
@@ -107,6 +188,9 @@ def _persist_scan_states(user_id: str, states) -> None:
             row.quarantine_reason = s.get("quarantine_reason", "")
             row.estimator_json = s.get("estimator_json")
             row.fleet_json = s.get("fleet_json")
+            row.nomination_evidence_json = s.get(
+                "nomination_evidence_json"
+            )
             row.last_estimated_at = _parse(s.get("last_estimated_at"))
             row.last_radar_at = _parse(s.get("last_radar_at"))
             row.last_fleet_at = _parse(s.get("last_fleet_at"))
@@ -143,7 +227,10 @@ def radar_fingerprint(c: TrendCandidate) -> str:
     dv = c.dollar_volume or 0.0
     liq = "high" if dv >= 1e8 else "mid" if dv >= 1e7 else "low"
     fams = ",".join(sorted(c.families or ()))
-    return f"s={round(c.score, 1)}|f={fams}|l={liq}"
+    external = ""
+    if c.stream and c.event_id:
+        external = f"|stream={c.stream}|event={c.event_id}"
+    return f"s={round(c.score, 1)}|f={fams}|l={liq}{external}"
 
 
 def _fresh(prev_iso: str | None, ttl: timedelta, now: datetime) -> bool:
@@ -183,8 +270,11 @@ async def run_funnel(user_id: str, *, force: bool = False,
     names -> persist. ``force`` re-estimates + re-grades everything."""
     now = now or datetime.now(timezone.utc)
     scan = _scan_radar()
-    shortlist = list(scan.shortlist)
+    merged = {c.ticker: c for c in scan.shortlist}
+    merged.update({c.ticker: c for c in _load_external_candidates(user_id)})
+    shortlist = sorted(merged.values(), key=lambda c: -c.score)
     _scan_quarantine = list(scan.quarantine or ())
+    _scan_quarantine.extend(_load_external_quarantine(user_id))
     existing = _load_scan_states(user_id)
     radar_tickers = {c.ticker for c in shortlist}
 
@@ -223,6 +313,11 @@ async def run_funnel(user_id: str, *, force: bool = False,
             "last_radar_at": now.isoformat(),
             "last_fleet_at": prev.get("last_fleet_at") if fleet_fresh else None,
             "last_seen_at": now.isoformat(),
+            "nomination_evidence_json": (
+                json.dumps(c.evidence, sort_keys=True, default=str)
+                if c.evidence is not None
+                else (prev or {}).get("nomination_evidence_json")
+            ),
         }
         states[c.ticker] = state
         if verdict.go:
@@ -255,6 +350,9 @@ async def run_funnel(user_id: str, *, force: bool = False,
                              "rank": prev.get("rank"),
                              "estimator_json": prev.get("estimator_json"),
                              "fleet_json": prev.get("fleet_json"),
+                             "nomination_evidence_json": prev.get(
+                                 "nomination_evidence_json"
+                             ),
                              "last_estimated_at": prev.get("last_estimated_at"),
                              "last_radar_at": now.isoformat(),
                              "last_fleet_at": prev.get("last_fleet_at")},

@@ -1,0 +1,32 @@
+{
+  "results": [
+    {
+      "Award ID": "FA8750-26-C-0001",
+      "Recipient Name": "Palantir Technologies Inc.",
+      "Award Amount": 40000000,
+      "Base Obligation Date": "2026-07-01",
+      "generated_internal_id": "CONT_AWD_FA875026C0001_9700",
+      "Potential Award Amount": 900000000
+    },
+    {
+      "Award ID": "W519TC-26-C-0042",
+      "Recipient Name": "PALANTIR TECHNOLOGIES, INC.",
+      "Award Amount": 25000000,
+      "Base Obligation Date": "2026-06-15",
+      "generated_internal_id": "CONT_AWD_W519TC26C0042_9700",
+      "Potential Award Amount": 700000000
+    },
+    {
+      "Award ID": "HISTORICAL-OLD",
+      "Recipient Name": "Palantir Technologies Inc.",
+      "Award Amount": 100000000,
+      "Base Obligation Date": "2026-01-01",
+      "generated_internal_id": "CONT_AWD_HISTORICALOLD_9700",
+      "Potential Award Amount": 1500000000
+    }
+  ],
+  "page_metadata": {
+    "page": 1,
+    "hasNext": false
+  }
+}

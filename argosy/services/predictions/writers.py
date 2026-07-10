@@ -250,6 +250,7 @@ def _choose_method_and_window(
     stop_price: Decimal | float | None,
     direction: str,
     timeframe_days: int | None,
+    preserve_long_horizon: bool = False,
 ) -> tuple[str, int]:
     """Return ``(evaluation_method, window_days)`` per spec §3.1.
 
@@ -293,6 +294,9 @@ def _choose_method_and_window(
         # leaves it unset.
         chosen_window = timeframe_days or DEFAULT_TIMEFRAME_DAYS_DISCORD
         return ("target_stop", chosen_window)
+
+    if preserve_long_horizon and timeframe_days == 180:
+        return ("fixed_lookahead_180d", 180)
 
     # No-target-stop path: bucket by stated timeframe into the two
     # fixed-lookahead methods. The 30d cap (§5.5) is realised here so
@@ -352,6 +356,7 @@ def _insert_prediction(
     multi_ticker_json: str | None = None,
     entry_prices_json: str | None = None,
     provenance_weights_applied: bool = False,
+    preserve_long_horizon: bool = False,
 ) -> Prediction:
     """INSERT one prediction row with per-source idempotency.
 
@@ -374,6 +379,7 @@ def _insert_prediction(
         stop_price=stop_price,
         direction=direction,
         timeframe_days=timeframe_days,
+        preserve_long_horizon=preserve_long_horizon,
     )
     event_at_aware = _ensure_aware(event_at)
     evaluation_due_at = event_at_aware + timedelta(days=window_days)
@@ -455,6 +461,51 @@ def _insert_prediction(
         # the caller's outer try/except captures it.
         raise
     return row
+
+
+def write_signal_stream_predictions(
+    session: Session,
+    user_id: str,
+    *,
+    stream: str,
+    dedup_key: str,
+    ticker: str,
+    direction: Literal["long", "short"],
+    event_at: datetime,
+    entry_price: Decimal | float,
+    evidence: dict[str, Any],
+) -> tuple[Prediction, Prediction]:
+    """Write the tactical and thesis-horizon rows for one nomination."""
+    if entry_price is None:
+        raise ValueError("signal-stream predictions require an entry price")
+    source = f"signal_stream:{stream}"
+    common = {
+        "session": session,
+        "user_id": user_id,
+        "source": source,
+        "source_ref": {
+            "stream": stream,
+            "dedup_key": dedup_key,
+            "evidence": evidence,
+        },
+        "ticker": ticker.upper(),
+        "direction": direction,
+        "event_at": event_at,
+        "entry_price": entry_price,
+        "raw_text_ref": evidence.get("award_url"),
+    }
+    tactical = _insert_prediction(
+        message_id=f"v1|predictions|{source}|{dedup_key}|30d",
+        timeframe_days=30,
+        **common,
+    )
+    thesis = _insert_prediction(
+        message_id=f"v1|predictions|{source}|{dedup_key}|180d",
+        timeframe_days=180,
+        preserve_long_horizon=True,
+        **common,
+    )
+    return tactical, thesis
 
 
 # ---------------------------------------------------------------------------
@@ -938,4 +989,5 @@ __all__ = [
     "write_news_signal_prediction",
     "write_per_position_thesis_prediction",
     "write_state_observer_prediction",
+    "write_signal_stream_predictions",
 ]

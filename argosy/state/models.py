@@ -3842,6 +3842,34 @@ class PendingReevaluation(Base):
     resolved_decision_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class RecipientResolution(Base):
+    """Persisted government-award recipient → public ticker resolution."""
+
+    __tablename__ = "signal_recipient_resolutions"
+
+    recipient_normalized: Mapped[str] = mapped_column(
+        String(256), primary_key=True
+    )
+    recipient_name: Mapped[str] = mapped_column(Text, nullable=False)
+    ticker: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resolution_method: Mapped[str] = mapped_column(String(16), nullable=False)
+    candidates_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default=_sa_text("'[]'")
+    )
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "json_valid(candidates_json)",
+            name="ck_signal_recipient_resolutions_candidates_json",
+        ),
+    )
+
+
 class ScanState(Base):
     """Per-(user, ticker) discovery memory for the high-potential funnel's smart
     refresh (Phase 2). Records the last radar score + a radar fingerprint, the
@@ -3874,6 +3902,9 @@ class ScanState(Base):
     radar_fingerprint: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=_sa_text("''"),
     )
+    nomination_evidence_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     estimator_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     fleet_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_radar_at: Mapped[datetime | None] = mapped_column(
@@ -3900,6 +3931,10 @@ class ScanState(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "nomination_evidence_json IS NULL OR json_valid(nomination_evidence_json)",
+            name="ck_trend_scan_state_nomination_evidence_json_valid",
+        ),
         CheckConstraint(
             "estimator_json IS NULL OR json_valid(estimator_json)",
             name="ck_trend_scan_state_estimator_json_valid",

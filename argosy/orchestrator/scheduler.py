@@ -134,6 +134,16 @@ class Scheduler:
             )
         )
 
+        # Early-signal streams run at 15:30, before the 16:00 discovery
+        # funnel. The loop isolates each adapter and only nominates names.
+        from argosy.orchestrator.loops.signal_streams_daily import (
+            SignalStreamsDailyLoop,
+        )
+
+        self.register_loop(
+            SignalStreamsDailyLoop(enabled=True, user_id=self.user_id)
+        )
+
         # Discovery funnel — a SEPARATE daily loop (codex #10): heavier
         # radar->estimator->fleet pass with its own cadence + failure isolation,
         # kept apart from the cheap speculative monitor. Smart refresh.

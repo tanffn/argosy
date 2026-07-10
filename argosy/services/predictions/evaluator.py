@@ -790,11 +790,20 @@ def _compute_outcome(
 
     if method == "target_stop":
         return _score_target_stop(prediction, bars)
-    if method in ("fixed_lookahead_7d", "fixed_lookahead_30d"):
+    if method in (
+        "fixed_lookahead_7d",
+        "fixed_lookahead_30d",
+        "fixed_lookahead_180d",
+    ):
+        windows = {
+            "fixed_lookahead_7d": 7,
+            "fixed_lookahead_30d": 30,
+            "fixed_lookahead_180d": 180,
+        }
         return _score_fixed_lookahead(
             prediction,
             bars,
-            window_days=7 if method == "fixed_lookahead_7d" else 30,
+            window_days=windows[method],
         )
 
     # Unknown method — registry should have rejected at write time.
@@ -843,6 +852,7 @@ ENTRY_BACKFILL_SUFFIX = "_entry_backfilled"
 ENTRY_BACKFILL_BASE_METHODS: tuple[str, ...] = (
     "fixed_lookahead_7d",
     "fixed_lookahead_30d",
+    "fixed_lookahead_180d",
 )
 
 #: Calendar-day lookback when hunting for the entry bar. ``event_at``

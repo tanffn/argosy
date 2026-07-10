@@ -79,10 +79,11 @@ from datetime import datetime
 from threading import RLock
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
+from argosy.state.models import Prediction
 
 _log = get_logger("argosy.services.predictions.reliability")
 
@@ -610,6 +611,55 @@ def reliability_annotation(
     }
 
 
+def signal_scorecard_label(*, scored: int, observation_days: int) -> str:
+    if scored < 30:
+        return (
+            f"uncalibrated (beta — {scored} scored over "
+            f"{observation_days} days)"
+        )
+    return "calibrated"
+
+
+def signal_source_scorecard(
+    session: Session,
+    user_id: str,
+    stream: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Descriptive scorecard for Stage-2 context; never a weight."""
+    source = f"signal_stream:{stream}"
+    rows = get_source_reliability(session, user_id, source=source)
+    scored = sum(row.scored_predictions for row in rows)
+    weighted_pnl = sum(
+        (row.mean_pnl_pct or 0.0) * row.scored_predictions for row in rows
+    )
+    hits = sum(
+        (row.hit_rate or 0.0) * row.scored_predictions for row in rows
+    )
+    first_event = session.execute(
+        select(func.min(Prediction.event_at)).where(
+            Prediction.user_id == user_id,
+            Prediction.source == source,
+        )
+    ).scalar_one_or_none()
+    now_dt = now or datetime.utcnow()
+    if first_event is None:
+        observation_days = 0
+    else:
+        observation_days = max(0, (now_dt.date() - first_event.date()).days)
+    return {
+        "source": source,
+        "win_rate": (hits / scored) if scored else None,
+        "scored_outcomes": scored,
+        "avg_pnl_pct": (weighted_pnl / scored) if scored else None,
+        "observation_days": observation_days,
+        "calibration": signal_scorecard_label(
+            scored=scored, observation_days=observation_days
+        ),
+    }
+
+
 __all__ = [
     "CACHE_TTL_SECONDS",
     "FULL_SAMPLE_SIZE",
@@ -621,4 +671,6 @@ __all__ = [
     "get_weight_for_source",
     "invalidate_reliability_cache",
     "reliability_annotation",
+    "signal_scorecard_label",
+    "signal_source_scorecard",
 ]

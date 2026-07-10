@@ -176,6 +176,7 @@ def test_v2_methods_registered_at_head(sync_session) -> None:
         )
     ).all()
     assert [tuple(r) for r in rows] == [
+        ("fixed_lookahead_180d_entry_backfilled", "fixed_lookahead", 2, 1),
         ("fixed_lookahead_30d_entry_backfilled", "fixed_lookahead", 2, 1),
         ("fixed_lookahead_7d_entry_backfilled", "fixed_lookahead", 2, 1),
     ]

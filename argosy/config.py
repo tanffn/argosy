@@ -523,6 +523,28 @@ def get_user_agent_settings(user_id: str) -> dict:
 
 
 # ----------------------------------------------------------------------
+# Early-signal streams config
+# ----------------------------------------------------------------------
+
+
+class GovContractsSignalConfig(BaseModel):
+    materiality_threshold: float = Field(default=0.05, gt=0, le=1)
+    lookback_days: int = Field(default=90, gt=0)
+
+
+class SignalStreamsConfig(BaseModel):
+    enabled: bool = True
+    gov_contracts: GovContractsSignalConfig = Field(
+        default_factory=GovContractsSignalConfig
+    )
+
+
+def load_signal_streams_config(user_id: str) -> SignalStreamsConfig:
+    raw = get_user_agent_settings(user_id)
+    return SignalStreamsConfig.model_validate(raw.get("signal_streams") or {})
+
+
+# ----------------------------------------------------------------------
 # Expenses config (household-expenses subsystem, Wave A)
 # ----------------------------------------------------------------------
 
