@@ -225,6 +225,89 @@ def test_llm_resolver_can_only_choose_from_plausible_public_candidates(
     assert seen and "AAPL" not in seen
 
 
+def test_resolver_output_allows_omitted_ticker_as_unresolved() -> None:
+    from argosy.services.signal_streams.contracts import (
+        _RecipientResolutionOutput,
+    )
+
+    output = _RecipientResolutionOutput.model_validate(
+        {
+            "rationale": "No candidate is sufficiently grounded",
+            "citations": [],
+        }
+    )
+
+    assert output.ticker is None
+
+
+def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(
+    db_session,
+) -> None:
+    calls = 0
+    bad_award = {
+        "Award ID": "BAD-1",
+        "Recipient Name": "General Dynamics Systems",
+        "Award Amount": 70_000_000,
+        "Base Obligation Date": "2026-07-10",
+        "generated_internal_id": "BAD-1",
+    }
+    good_award = {
+        "Award ID": "PLTR-1",
+        "Recipient Name": "Palantir Technologies Inc.",
+        "Award Amount": 60_000_000,
+        "Base Obligation Date": "2026-07-10",
+        "generated_internal_id": "PLTR-1",
+    }
+
+    def llm_choice(recipient: str, candidates: dict[str, str]) -> str | None:
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("resolver transport failed")
+
+    def fetch_json(payload: dict) -> dict:
+        recipient = payload["filters"].get("recipient_search_text")
+        return {
+            "results": [good_award] if recipient else [bad_award, good_award],
+            "page_metadata": {"hasNext": False},
+        }
+
+    resolver = RecipientResolver(
+        public_companies={
+            "GD": "General Dynamics Corporation",
+            "GDYN": "General Dynamics Software",
+        },
+        llm_choice=llm_choice,
+        fuzzy_cutoff=0.45,
+        automatic_match_cutoff=0.99,
+    )
+    stream = GovContractsStream(
+        config=GovContractsConfig(
+            materiality_threshold=0.05,
+            lookback_days=90,
+            recent_scan_days=2,
+            max_pages_per_query=3,
+        ),
+        curated_contractors={"PLTR": "Palantir Technologies Inc"},
+        fetch_json=fetch_json,
+        resolver=resolver,
+        market_snapshot=_snapshot,
+        today=lambda: date(2026, 7, 10),
+    )
+
+    first = stream.fetch(db_session, since=date(2026, 7, 9))
+    second = stream.fetch(db_session, since=date(2026, 7, 9))
+
+    assert [nomination.ticker for nomination in first] == ["PLTR"]
+    assert [nomination.ticker for nomination in second] == ["PLTR"]
+    assert calls == 1
+    tombstone = db_session.get(
+        RecipientResolution, "general dynamics systems"
+    )
+    assert tombstone.ticker is None
+    assert tombstone.resolution_method == "agent_error"
+    assert json.loads(tombstone.candidates_json) == ["GD", "GDYN"]
+
+
 def test_materiality_is_revenue_relative_and_strength_is_threshold_normalized() -> None:
     assert materiality_ratio(65_000_000, 1_000_000_000) == pytest.approx(0.065)
     assert strength_from_materiality(0.025, threshold=0.05) == pytest.approx(0.5)

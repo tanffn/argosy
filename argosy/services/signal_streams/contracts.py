@@ -14,8 +14,10 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from argosy.logging import get_logger
 from argosy.services.signal_streams.base import SignalNomination
 from argosy.state.models import RecipientResolution
 
@@ -23,6 +25,7 @@ USASPENDING_ENDPOINT = (
     "https://api.usaspending.gov/api/v2/search/spending_by_award/"
 )
 AWARD_TYPE_CODES: tuple[str, ...] = ("A", "B", "C", "D")
+_log = get_logger("argosy.services.signal_streams.contracts")
 
 _PUBLIC_CONTRACTORS: dict[str, str] = {
     "PLTR": "Palantir Technologies Inc",
@@ -205,21 +208,20 @@ def strength_from_materiality(ratio: float, *, threshold: float) -> float:
 LlmChoice = Callable[[str, dict[str, str]], str | None]
 
 
+class _RecipientResolutionOutput(BaseModel):
+    ticker: str | None = None
+    rationale: str
+
+
 def _default_llm_choice(
     recipient: str, candidates: dict[str, str]
 ) -> str | None:
     """Ask an LLM to choose only among pre-filtered plausible candidates."""
-    from pydantic import BaseModel
-
     from argosy.agents.base import BaseAgent
 
-    class _Output(BaseModel):
-        ticker: str | None
-        rationale: str
-
-    class _ResolverAgent(BaseAgent[_Output]):
+    class _ResolverAgent(BaseAgent[_RecipientResolutionOutput]):
         agent_role = "signal_recipient_resolver"
-        output_model = _Output
+        output_model = _RecipientResolutionOutput
         require_citations = False
 
         def build_prompt(self, **kwargs):
@@ -294,10 +296,20 @@ class RecipientResolver:
                     ticker = best_symbol
                     method = "fuzzy"
                 else:
-                    chosen = self.llm_choice(recipient_name, candidates)
-                    if chosen in candidates:
-                        ticker = chosen
-                        method = "llm"
+                    try:
+                        chosen = self.llm_choice(recipient_name, candidates)
+                        if chosen in candidates:
+                            ticker = chosen
+                            method = "llm"
+                    except Exception as exc:  # noqa: BLE001 - fail closed per recipient
+                        method = "agent_error"
+                        _log.warning(
+                            "signal_streams.recipient_resolver.agent_failed",
+                            recipient=recipient_name,
+                            candidates=sorted(candidates),
+                            error_type=type(exc).__name__,
+                            error=str(exc)[:300],
+                        )
 
         row = RecipientResolution(
             recipient_normalized=normalised,
