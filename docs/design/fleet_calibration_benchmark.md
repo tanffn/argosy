@@ -40,9 +40,10 @@ Categories are the four failure modes that cost real money. Every case is judged
 ### A. Entry lens — should have said BUY (asymmetry recognition)
 | Case (real) | Frozen at | Ground truth | PASS = |
 |---|---|---|---|
-| AMD | 2015-2016 turnaround | ~50x over 6y | BUY-class at small sleeve size (already in harness, passed masked) |
+| AMD (turnaround) | 2015-2016 | ~50x over 6y | BUY-class at small sleeve size (already in harness, passed masked) |
+| AMD (owner case) | **three points: Jan-2023 (post-crash ~$65) · Apr-2025 (mid-cycle chop, thesis intact) · Mar-2026 (post-run)** | ~9x Jan-23→2026 | T1 BUY-class; T2 HOLD/ADD-class (category-D behavior mid-case); T3 re-derive-not-trim under the exit-discipline rule — mirrors the client's actual holding |
 | PLTR | 2023 pre-GAAP-profit, post-crash | ~10x+ in 2y | BUY-class; falsifiers on gov-contract growth |
-| NVDA | 2015 (pre-AI narrative, gaming+auto optionality) | ~100x | BUY-class on optionality/cap-math |
+| NVDA | **early-2023 (the AI-capex moonshot moment: post-chatbot inflection, BEFORE the blowout datacenter guidance)** | ~10x from there | BUY-class on the AI-capex thesis before confirmation. ⚠ hardest decontamination in the suite — the story is world-famous; alias + rescale + genericize the AI narrative aggressively ("a new compute-intensive workload class"), and lean on the contamination check + synthetic control |
 | NFLX | 2012 post-Qwikster collapse | ~40x | BUY-class; streaming-transition thesis |
 | ANET | 2016 (cloud networking share gains vs CSCO) | ~15x | BUY-class |
 
