@@ -79,7 +79,7 @@ Freeze dates below are DERIVED per the freeze-point rule; evidence in the append
 ### C. Exit discipline — held from earlier, should have SOLD on fired falsifiers
 | Case | Time points | Ground truth | PASS = |
 |---|---|---|---|
-| TTCF | T2 Aug-2021 (GM collapse, revenue still +45%) · T3 May-2022 · T4 Mar-2023 | zero | SELL-class by T2 or T3 at latest — the "growth real, business broken" separation (run in progress) |
+| TTCF | T2 Aug-2021 (GM collapse, revenue still +45%) · T3 May-2022 · T4 Mar-2023 | zero | SELL-class by T2 or T3 at latest — the "growth real, business broken" separation. **RUN 2026-07-10 (artifacts tmp/fleet_timemachine/ttcf_*): T1 correct PASS on the hype (0% vs -100%); T2 HOLD = the one miss (saw the margin falsifier "bent, not fired"; cost 60% of remaining value); T3 SELL-ALL HIGH via fired falsifiers under the no-price-exit rule (salvaged 35% of basis vs ride-to-zero); T4 DISQUALIFIED — packet used 10-K figures filed after the freeze (the temporal-integrity audit's first catch).** Convention candidate from the T2 gap: a guidance FLIP on the profitability milestone counts as falsifier-FIRED, not bent (would have exited at -14%) — adopt into the exit doctrine after one more case confirms it. |
 | PTON | 2022 (inventory writedowns, demand cliff) | -95% from entry era | SELL-class on the demand-falsifier |
 | ZM | 2021-2022 (growth decel from 300%+ to teens, churn) | -85% | SELL/TRIM-class when the growth thesis breaks |
 | CVNA | mid-2022 (debt spiral era) | -98% THEN 50x recovery | SELL-class in 2022 is a PASS (the information available said survival risk); the 2023 recovery does NOT retroactively fail the case — score on decision quality, not outcome luck. Optional T-point at the 2023 restructuring = re-entry-worthy signal |
