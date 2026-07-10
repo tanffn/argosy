@@ -3,6 +3,11 @@
 **Branch:** `master` · **HEAD at writing:** `b3bf545`. Read this, then `git log --oneline -30`.
 Prior: `docs/handovers/2026-07-09-corrective-marathon-and-tracking.md` (§7 resume session; §6 final close; §0 v73 accept).
 
+**Memory (REQUIRED for non-Claude-Code agents — Claude Code auto-loads it):**
+- Index: `C:\Users\ariel\.claude\projects\D--Projects-financial-advisor\memory\MEMORY.md` — one line per memory; read it FIRST, then open the linked files that matter for your task (same directory).
+- Binding-behavior files to always read: `feedback_verdicts_defended_not_reopened.md`, `feedback_escalation_bar_fatal_forks_only.md`, `feedback_fleet_authors_determinism_verifies.md`, `feedback_argosy_prime_directive.md`, `feedback_output_trust_doctrine.md`, `feedback_adversarial_review_must_re_derive_blind.md`.
+- Project instructions: `D:\Projects\financial-advisor\CLAUDE.md` (routes everything; binding preferences duplicated there for non-Claude agents); canonical design: `docs/design/SDD.md` (start at "Quickstart for new agents").
+
 ## 0. PLAN v76 CURRENT — three plan versions promoted this session, all gated accepts
 
 - **v74** (`refinement-2026-07-09-160650`): gold retired → EXUS 18.3 (proposal 67). Verified: sums 100.00, no gold class, proposal executed. Label bug fixed (`389fcd7`): promoted refinement drafts drop the `-draft-` label.
