@@ -8,7 +8,7 @@ sources:
     retrieved: 2026-05-02
     tier: 1
   - url: https://www.gov.il/he/departments/ministry_of_finance
-    retrieved: 2026-05-02
+    retrieved: 2026-07-10
     tier: 1
   - url: https://www.kolzchut.org.il/he/%D7%92%D7%9E%D7%9C%D7%A0%D7%98
     retrieved: 2026-05-02

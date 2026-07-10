@@ -16,7 +16,7 @@ sources:
     retrieved: 2026-07-10
     tier: 1
   - url: https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
-    retrieved: 2026-06-02
+    retrieved: 2026-07-10
     tier: 1
   - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
     retrieved: 2026-06-02

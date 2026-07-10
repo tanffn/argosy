@@ -17,13 +17,13 @@ sources:
     retrieved: 2026-07-10
     tier: 1
   - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
-    retrieved: 2026-06-02
+    retrieved: 2026-07-10
     tier: 2
   - url: https://mysachar.co.il/articles/en/tax-brackets.html
     retrieved: 2026-06-02
     tier: 2
   - url: https://www.gov.il/en/pages/sa120426-1
-    retrieved: 2026-07-09
+    retrieved: 2026-07-10
     tier: 1
 ---
 
