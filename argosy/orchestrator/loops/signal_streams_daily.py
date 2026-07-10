@@ -17,6 +17,7 @@ from argosy.services.signal_streams.contracts import (
     GovContractsStream,
 )
 from argosy.services.signal_streams.pipeline import process_nominations
+from argosy.state.models import Prediction
 
 _log = get_logger("argosy.loops.signal_streams_daily")
 _DEFAULT_CRON = "30 15 * * *"
@@ -62,6 +63,8 @@ def _default_streams(user_id: str) -> list[SignalStream]:
             config=GovContractsConfig(
                 materiality_threshold=gov.materiality_threshold,
                 lookback_days=gov.lookback_days,
+                recent_scan_days=gov.recent_scan_days,
+                max_pages_per_query=gov.max_pages_per_query,
             )
         )
     ]
@@ -103,8 +106,24 @@ class SignalStreamsDailyLoop(CadenceLoop):
                 lookback = int(
                     getattr(getattr(stream, "config", None), "lookback_days", 1)
                 )
+                recent = int(
+                    getattr(
+                        getattr(stream, "config", None),
+                        "recent_scan_days",
+                        lookback,
+                    )
+                )
+                prior_prediction = (
+                    session.query(Prediction.id)
+                    .filter(
+                        Prediction.user_id == self.user_id,
+                        Prediction.source == f"signal_stream:{name}",
+                    )
+                    .first()
+                )
+                since_days = recent if prior_prediction is not None else lookback
                 since: date = now_dt.date() - timedelta(
-                    days=max(0, lookback - 1)
+                    days=max(0, since_days - 1)
                 )
                 nominations = stream.fetch(session, since=since)
                 processed = process_nominations(

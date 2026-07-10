@@ -69,6 +69,8 @@ signal_streams:
   gov_contracts:
     materiality_threshold: 0.05
     lookback_days: 90
+    recent_scan_days: 2
+    max_pages_per_query: 10
 
 # Household-expenses subsystem (EX1+). Omit the block to use defaults.
 expenses:

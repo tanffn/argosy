@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, date, datetime, timedelta
+from http.client import RemoteDisconnected
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import URLError
 
 import pytest
@@ -341,19 +343,182 @@ def test_gov_contract_stream_fetches_all_usaspending_pages(db_session) -> None:
         fetch_json=fetch_json,
         resolver=RecipientResolver(),
         market_snapshot=_snapshot,
+        curated_contractors={},
         today=lambda: date(2026, 7, 2),
     )
     nominations = stream.fetch(db_session, since=date(2026, 7, 1))
-    assert pages == [1, 2]
+    assert pages == [1, 2, 1, 2]
     assert {nomination.dedup_key for nomination in nominations} == {
         "usaspending:AWARD-1",
         "usaspending:AWARD-2",
     }
 
 
+def test_global_query_is_recent_and_curated_query_uses_full_history(
+    db_session,
+) -> None:
+    requests: list[dict] = []
+
+    def fetch_json(payload: dict) -> dict:
+        requests.append(payload)
+        return {"results": [], "page_metadata": {"hasNext": False}}
+
+    stream = GovContractsStream(
+        config=GovContractsConfig(
+            lookback_days=90,
+            recent_scan_days=2,
+            max_pages_per_query=3,
+        ),
+        curated_contractors={"PLTR": "Palantir Technologies Inc"},
+        fetch_json=fetch_json,
+        today=lambda: date(2026, 7, 10),
+    )
+    stream.fetch(db_session, since=date(2026, 7, 9))
+
+    global_request = next(
+        request
+        for request in requests
+        if "recipient_search_text" not in request["filters"]
+    )
+    curated_request = next(
+        request
+        for request in requests
+        if request["filters"].get("recipient_search_text")
+        == ["Palantir Technologies Inc"]
+    )
+    assert global_request["filters"]["time_period"] == [
+        {"start_date": "2026-07-09", "end_date": "2026-07-10"}
+    ]
+    assert curated_request["filters"]["time_period"] == [
+        {"start_date": "2026-04-12", "end_date": "2026-07-10"}
+    ]
+
+
+def test_global_and_curated_duplicate_award_is_merged_once(db_session) -> None:
+    duplicate = {
+        "Award ID": "DUP",
+        "Recipient Name": "Palantir Technologies Inc.",
+        "Award Amount": 60_000_000,
+        "Base Obligation Date": "2026-07-10",
+        "generated_internal_id": "DUP-STABLE",
+    }
+
+    stream = GovContractsStream(
+        config=GovContractsConfig(
+            materiality_threshold=0.05,
+            lookback_days=90,
+            recent_scan_days=2,
+            max_pages_per_query=3,
+        ),
+        curated_contractors={"PLTR": "Palantir Technologies Inc"},
+        fetch_json=lambda payload: {
+            "results": [duplicate],
+            "page_metadata": {"hasNext": False},
+        },
+        resolver=RecipientResolver(),
+        market_snapshot=_snapshot,
+        today=lambda: date(2026, 7, 10),
+    )
+
+    nominations = stream.fetch(db_session, since=date(2026, 4, 12))
+
+    assert len(nominations) == 1
+    assert nominations[0].dedup_key == "usaspending:DUP-STABLE"
+    assert nominations[0].evidence["trailing_90d_obligated"] == 60_000_000
+
+
+def test_newly_resolved_global_recipient_gets_full_history_query(
+    db_session,
+) -> None:
+    requests: list[dict] = []
+    recent = {
+        "Award ID": "NEW-RECENT",
+        "Recipient Name": "Novel Defense Corporation",
+        "Award Amount": 10_000_000,
+        "Base Obligation Date": "2026-07-10",
+        "generated_internal_id": "NEW-RECENT",
+    }
+    older = {
+        "Award ID": "NEW-OLDER",
+        "Recipient Name": "Novel Defense Corporation",
+        "Award Amount": 50_000_000,
+        "Base Obligation Date": "2026-06-01",
+        "generated_internal_id": "NEW-OLDER",
+    }
+
+    def fetch_json(payload: dict) -> dict:
+        requests.append(payload)
+        recipient = payload["filters"].get("recipient_search_text")
+        return {
+            "results": [recent, older] if recipient else [recent],
+            "page_metadata": {"hasNext": False},
+        }
+
+    stream = GovContractsStream(
+        config=GovContractsConfig(
+            materiality_threshold=0.05,
+            lookback_days=90,
+            recent_scan_days=2,
+            max_pages_per_query=3,
+        ),
+        curated_contractors={},
+        fetch_json=fetch_json,
+        resolver=RecipientResolver(
+            public_companies={"NEW": "Novel Defense Corporation"}
+        ),
+        market_snapshot=_snapshot,
+        today=lambda: date(2026, 7, 10),
+    )
+
+    nominations = stream.fetch(db_session, since=date(2026, 7, 9))
+
+    assert any(
+        request["filters"].get("recipient_search_text")
+        == ["Novel Defense Corporation"]
+        and request["filters"]["time_period"][0]["start_date"] == "2026-04-12"
+        for request in requests
+    )
+    assert len(nominations) == 1
+    assert nominations[0].ticker == "NEW"
+    assert nominations[0].evidence["trailing_90d_obligated"] == 60_000_000
+
+
+def test_usaspending_page_cap_exhaustion_fails_without_partial_results(
+    db_session,
+) -> None:
+    pages: list[int] = []
+
+    def fetch_json(payload: dict) -> dict:
+        pages.append(payload["page"])
+        return {
+            "results": [],
+            "page_metadata": {"hasNext": True},
+        }
+
+    stream = GovContractsStream(
+        config=GovContractsConfig(
+            recent_scan_days=2,
+            max_pages_per_query=2,
+        ),
+        curated_contractors={},
+        fetch_json=fetch_json,
+        today=lambda: date(2026, 7, 10),
+    )
+
+    with pytest.raises(RuntimeError, match="page cap"):
+        stream.fetch(db_session, since=date(2026, 7, 9))
+
+    assert pages == [1, 2]
+    assert db_session.query(RecipientResolution).count() == 0
+
+
 @pytest.mark.parametrize(
     "transient_error",
-    [TimeoutError("read timed out"), URLError("connection reset while reading")],
+    [
+        TimeoutError("read timed out"),
+        URLError("connection reset while reading"),
+        RemoteDisconnected("remote closed"),
+    ],
 )
 def test_usaspending_page_retry_includes_success_once_and_continues(
     db_session, transient_error
@@ -395,13 +560,14 @@ def test_usaspending_page_retry_includes_success_once_and_continues(
         fetch_json=fetch_json,
         resolver=RecipientResolver(),
         market_snapshot=_snapshot,
+        curated_contractors={},
         today=lambda: date(2026, 7, 2),
         max_page_attempts=3,
         page_retry_backoff=(0.25, 0.5),
         sleep=sleeps.append,
     )
     nominations = stream.fetch(db_session, since=date(2026, 7, 1))
-    assert calls == [1, 2, 2]
+    assert calls == [1, 2, 2, 1, 2]
     assert sleeps == [0.25]
     assert [nomination.dedup_key for nomination in nominations] == [
         "usaspending:AWARD-1",
@@ -435,6 +601,7 @@ def test_usaspending_exhausted_page_retry_fails_without_partial_results(
 
     stream = GovContractsStream(
         fetch_json=fetch_json,
+        curated_contractors={},
         max_page_attempts=2,
         page_retry_backoff=(0.1,),
         sleep=sleeps.append,
@@ -458,6 +625,7 @@ def test_usaspending_does_not_retry_programming_errors(db_session) -> None:
 
     stream = GovContractsStream(
         fetch_json=fetch_json,
+        curated_contractors={},
         max_page_attempts=3,
         page_retry_backoff=(0.1, 0.2),
         sleep=sleeps.append,
@@ -806,6 +974,60 @@ def test_signal_streams_daily_is_cron_registered_and_isolates_stream_failures(
     assert metadata.name == "signal_streams_daily"
     assert metadata.schedule_cron == "30 15 * * *"
     assert metadata.source_kind == "ingest"
+    engine.dispose()
+
+
+def test_signal_stream_loop_bootstraps_then_uses_recent_since(
+    tmp_path,
+) -> None:
+    from argosy.orchestrator.loops.signal_streams_daily import (
+        SignalStreamsDailyLoop,
+    )
+
+    class RecordingStream:
+        name = "gov_contracts"
+        config = SimpleNamespace(lookback_days=90, recent_scan_days=2)
+
+        def __init__(self) -> None:
+            self.since: list[date] = []
+
+        def fetch(self, session, *, since):
+            self.since.append(since)
+            return []
+
+    engine = sa.create_engine(
+        f"sqlite:///{tmp_path / 'bootstrap.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as setup:
+        setup.add(User(id="ariel", plan="free"))
+        setup.commit()
+    stream = RecordingStream()
+    loop = SignalStreamsDailyLoop(
+        streams=[stream],
+        session_factory=factory,
+        user_id="ariel",
+    )
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+
+    loop._run_sync(now)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO predictions "
+                "(user_id, source, source_ref, ticker, direction, "
+                "entry_price, timeframe_days, message_id, event_at, "
+                "evaluation_due_at, evaluation_method) VALUES "
+                "('ariel', 'signal_stream:gov_contracts', '{}', 'PLTR', "
+                "'long', 25, 30, 'prior-signal', '2026-07-01', "
+                "'2026-07-31', 'fixed_lookahead_30d')"
+            )
+        )
+    loop._run_sync(now)
+
+    assert stream.since == [date(2026, 4, 12), date(2026, 7, 9)]
     engine.dispose()
 
 

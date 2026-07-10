@@ -530,6 +530,8 @@ def get_user_agent_settings(user_id: str) -> dict:
 class GovContractsSignalConfig(BaseModel):
     materiality_threshold: float = Field(default=0.05, gt=0, le=1)
     lookback_days: int = Field(default=90, gt=0)
+    recent_scan_days: int = Field(default=2, gt=0)
+    max_pages_per_query: int = Field(default=10, gt=0)
 
 
 class SignalStreamsConfig(BaseModel):

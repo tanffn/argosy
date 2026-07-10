@@ -67,12 +67,20 @@ _CURATED_ALIASES: dict[str, str] = {
 class GovContractsConfig:
     materiality_threshold: float = 0.05
     lookback_days: int = 90
+    recent_scan_days: int = 2
+    max_pages_per_query: int = 10
 
     def __post_init__(self) -> None:
         if not 0 < self.materiality_threshold <= 1:
             raise ValueError("materiality_threshold must be in (0, 1]")
         if self.lookback_days <= 0:
             raise ValueError("lookback_days must be positive")
+        if not 0 < self.recent_scan_days <= self.lookback_days:
+            raise ValueError(
+                "recent_scan_days must be positive and no greater than lookback_days"
+            )
+        if self.max_pages_per_query <= 0:
+            raise ValueError("max_pages_per_query must be positive")
 
 
 @dataclass(frozen=True)
@@ -101,19 +109,27 @@ def _normalise_name(value: str) -> str:
     return re.sub(r"\s+", " ", value)
 
 
-def build_usaspending_payload(*, start: date, end: date) -> dict[str, Any]:
+def build_usaspending_payload(
+    *,
+    start: date,
+    end: date,
+    recipient_search_text: str | None = None,
+) -> dict[str, Any]:
     """Build the prime-contract award search request."""
+    filters: dict[str, Any] = {
+        "time_period": [
+            {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+            }
+        ],
+        "award_type_codes": list(AWARD_TYPE_CODES),
+    }
+    if recipient_search_text:
+        filters["recipient_search_text"] = [recipient_search_text]
     return {
         "subawards": False,
-        "filters": {
-            "time_period": [
-                {
-                    "start_date": start.isoformat(),
-                    "end_date": end.isoformat(),
-                }
-            ],
-            "award_type_codes": list(AWARD_TYPE_CODES),
-        },
+        "filters": filters,
         "fields": [
             "Award ID",
             "Recipient Name",
@@ -378,6 +394,7 @@ class GovContractsStream:
         resolver: RecipientResolver | None = None,
         market_snapshot: Callable[[str], MarketSnapshot] | None = None,
         today: Callable[[], date] = date.today,
+        curated_contractors: dict[str, str] | None = None,
         max_page_attempts: int = 3,
         page_retry_backoff: tuple[float, ...] = (0.25, 0.75),
         sleep: Callable[[float], None] = time.sleep,
@@ -391,6 +408,11 @@ class GovContractsStream:
         self.resolver = resolver or RecipientResolver()
         self.market_snapshot = market_snapshot or ArgosyMarketSnapshotProvider()
         self.today = today
+        self.curated_contractors = (
+            dict(_PUBLIC_CONTRACTORS)
+            if curated_contractors is None
+            else dict(curated_contractors)
+        )
         self.max_page_attempts = max_page_attempts
         self.page_retry_backoff = page_retry_backoff
         self.sleep = sleep
@@ -402,7 +424,7 @@ class GovContractsStream:
                 return self.fetch_json(payload)
             except HTTPError:
                 raise
-            except (TimeoutError, URLError):
+            except (TimeoutError, URLError, ConnectionError):
                 if attempt + 1 >= self.max_page_attempts:
                     raise
                 if self.page_retry_backoff:
@@ -412,21 +434,24 @@ class GovContractsStream:
                     self.sleep(delay)
         raise RuntimeError("unreachable USAspending page retry state")
 
-    def fetch(
-        self, session: Session, *, since: date
-    ) -> list[SignalNomination]:
-        through = self.today()
-        window_start = through - timedelta(
-            days=self.config.lookback_days - 1
-        )
+    def _fetch_query(
+        self,
+        *,
+        start: date,
+        end: date,
+        recipient_search_text: str | None = None,
+    ) -> dict[str, ContractAward]:
+        """Fetch one bounded query completely or fail without partial data."""
         payload = build_usaspending_payload(
-            start=window_start, end=through
+            start=start,
+            end=end,
+            recipient_search_text=recipient_search_text,
         )
-        awards: list[ContractAward] = []
-        for page in range(1, 101):
-            page_payload = {**payload, "page": page}
-            response = self._fetch_page(page_payload)
-            awards.extend(parse_usaspending_awards(response))
+        awards: dict[str, ContractAward] = {}
+        for page in range(1, self.config.max_pages_per_query + 1):
+            response = self._fetch_page({**payload, "page": page})
+            for award in parse_usaspending_awards(response):
+                awards[award.stable_id] = award
             metadata = (
                 response.get("page_metadata", {})
                 if isinstance(response, dict)
@@ -436,10 +461,66 @@ class GovContractsStream:
                 metadata.get("hasNext")
                 or metadata.get("has_next_page")
             ):
-                break
+                return awards
+        query_name = recipient_search_text or "global"
+        raise RuntimeError(
+            "USAspending page cap exhausted before query completed: "
+            f"query={query_name!r}, max_pages={self.config.max_pages_per_query}"
+        )
+
+    def fetch(
+        self, session: Session, *, since: date
+    ) -> list[SignalNomination]:
+        through = self.today()
+        window_start = through - timedelta(
+            days=self.config.lookback_days - 1
+        )
+        recent_start = through - timedelta(
+            days=self.config.recent_scan_days - 1
+        )
+        recent_global = self._fetch_query(
+            start=recent_start,
+            end=through,
+        )
+        awards_by_id = dict(recent_global)
+        for recipient_name in self.curated_contractors.values():
+            awards_by_id.update(
+                self._fetch_query(
+                    start=window_start,
+                    end=through,
+                    recipient_search_text=recipient_name,
+                )
+            )
+
+        recent_resolutions: dict[str, str] = {}
+        for award in recent_global.values():
+            ticker = self.resolver.resolve(session, award.recipient_name)
+            if ticker:
+                recent_resolutions[award.stable_id] = ticker.upper()
+
+        covered_tickers = {
+            ticker.upper() for ticker in self.curated_contractors
+        }
+        queried_discoveries: set[str] = set()
+        for award in recent_global.values():
+            ticker = recent_resolutions.get(award.stable_id)
+            if (
+                ticker is None
+                or ticker in covered_tickers
+                or ticker in queried_discoveries
+            ):
+                continue
+            queried_discoveries.add(ticker)
+            awards_by_id.update(
+                self._fetch_query(
+                    start=window_start,
+                    end=through,
+                    recipient_search_text=award.recipient_name,
+                )
+            )
 
         resolved: list[tuple[ContractAward, str]] = []
-        for award in awards:
+        for award in awards_by_id.values():
             ticker = self.resolver.resolve(session, award.recipient_name)
             if ticker:
                 resolved.append((award, ticker.upper()))
