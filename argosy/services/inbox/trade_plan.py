@@ -140,13 +140,89 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
         )
 
     # Cash line: settled cash + T-bill-class holdings; the trades' net
-    # proceeds land here until the deployment tranches move them.
+    # proceeds land here until the deployment tranches move them. The why
+    # names the SPECIFIC instruments, all read from fleet-authored records:
+    # the plan's cash-sleeve instrument + target (plan_versions.current),
+    # the redeploy destination (the open proceeds_redeploy row), and the
+    # dry-powder earmark (its open row).
     net = sells_usd - buys_usd
     cash_current = cash_usd + tbill_usd
     why_cash = (
         "Sale proceeds settle here (cash + T-bills) until the plan's "
         "deployment tranches move them to the underfunded sleeves."
     )
+    try:
+        from argosy.state.models import PlanVersion
+
+        pv = db.execute(
+            select(PlanVersion).where(
+                PlanVersion.user_id == user_id, PlanVersion.role == "current"
+            )
+        ).scalar_one_or_none()
+        cash_cls = None
+        if pv is not None and pv.target_allocation_json:
+            ta = json.loads(pv.target_allocation_json)
+            overrides = json.loads(pv.target_allocation_overrides_json or "{}")
+            for cls in ta.get("classes", []):
+                if "cash" in (cls.get("label") or "").lower():
+                    cash_cls = cls
+                    break
+            if cash_cls is not None:
+                label = cash_cls.get("label") or "Cash & T-bills"
+                target_pct = float(
+                    overrides.get(label, cash_cls.get("target_pct") or 0.0)
+                )
+                target_usd = book_usd * target_pct / 100.0
+                instr = next(
+                    (
+                        i.get("symbol")
+                        for i in (cash_cls.get("instruments") or [])
+                        if i.get("role") == "primary" or i.get("symbol")
+                    ),
+                    None,
+                )
+                after_cash = cash_current + net
+                dest = None
+                rd = db.execute(
+                    select(ActionProposal).where(
+                        ActionProposal.user_id == user_id,
+                        ActionProposal.dedup_key.like("proceeds_redeploy%"),
+                        ActionProposal.status == "open",
+                    )
+                ).scalar_one_or_none()
+                if rd is not None:
+                    try:
+                        dest = (
+                            json.loads(rd.suggested_payload or "{}").get(
+                                "destination", {}
+                            )
+                        ).get("symbol")
+                    except (ValueError, AttributeError):
+                        dest = None
+                parts = []
+                if instr:
+                    parts.append(
+                        f"Buy {instr} with settling dollars that stay parked "
+                        f"(the plan's cash-sleeve instrument — not more SGOV, "
+                        f"which adds US estate exposure)."
+                    )
+                parts.append(
+                    f"Sleeve target is ${target_usd:,.0f} ({target_pct:g}%)"
+                )
+                excess = after_cash - target_usd
+                if dest and excess > 0:
+                    parts.append(
+                        f"— the ~${excess:,.0f} above it buys {dest} per the "
+                        f"redeploy binding."
+                    )
+                elif dest:
+                    parts.append(
+                        f"— proceeds refill this sleeve first; {dest} tranches "
+                        f"ride the NVDA glide sales."
+                    )
+                why_cash = " ".join(parts)
+    except Exception:  # noqa: BLE001 — the plain fallback why already stands
+        _log.exception("trade_plan.cash_why_failed")
     dp = db.execute(
         select(ActionProposal).where(
             ActionProposal.user_id == user_id,
@@ -160,6 +236,7 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
             payload = json.loads(dp.suggested_payload or "{}")
             earmark = (
                 payload.get("reserve_usd")
+                or payload.get("reserve_usd_at_current_book")
                 or (payload.get("reserve") or {}).get("usd")
                 or (payload.get("sizing") or {}).get("reserve_usd")
             )
