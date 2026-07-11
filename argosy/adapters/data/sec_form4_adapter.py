@@ -290,103 +290,166 @@ class SecForm4Adapter:
             if not selected:
                 return []
 
+            day_summaries: dict[str, dict[str, int | dict[str, int]]] = {}
+            for current in business_days:
+                day_summaries[current.isoformat()] = {
+                    "seen": 0,
+                    "parsed": 0,
+                    "dropped": {},
+                }
+            for filing in selected:
+                filed_at = str(filing.get("filed_at") or "")
+                summary = day_summaries.get(filed_at)
+                if summary is not None:
+                    summary["seen"] = int(summary["seen"]) + 1
+
             collected_filings: list[dict[str, Any] | None] = [
                 None
             ] * len(selected)
             pending = iter(enumerate(selected))
 
+            def _drop(filed_at: str, reason: str) -> None:
+                summary = day_summaries.get(filed_at)
+                if summary is None:
+                    return
+                dropped = summary["dropped"]
+                assert isinstance(dropped, dict)
+                dropped[reason] = int(dropped.get(reason, 0)) + 1
+
             async def _worker() -> None:
                 for selected_index, filing in pending:
-                    index_cik = str(filing["cik"]).zfill(10)
-                    archive_filename = str(
-                        filing["archive_filename"]
-                    ).lstrip("/")
-                    filing_url = (
-                        f"{EDGAR_BASE}/Archives/{archive_filename}"
-                    )
-                    submission = await self._fetch_text(filing_url)
-                    xml_text = _extract_ownership_document(submission)
-                    parsed_issuer_cik = _ownership_document_issuer_cik(
-                        xml_text
-                    )
-                    parsed = _parse_form4_xml(
-                        xml_text,
-                        accession=str(filing["accession"]),
-                    )
-                    if not parsed:
-                        continue
-                    parsed_symbol = str(
-                        parsed[0].get("ticker") or ""
-                    ).strip().upper()
-                    if parsed_symbol:
-                        official_symbols = [
-                            symbol
-                            for symbol in equivalent_class_symbols(
-                                parsed_symbol
+                    filed_at = str(filing["filed_at"])
+                    accession = str(filing["accession"])
+                    try:
+                        index_cik = str(filing["cik"]).zfill(10)
+                        archive_filename = str(
+                            filing["archive_filename"]
+                        ).lstrip("/")
+                        filing_url = (
+                            f"{EDGAR_BASE}/Archives/{archive_filename}"
+                        )
+                        try:
+                            submission = await self._fetch_text(filing_url)
+                        except MissingDataSourceError as exc:
+                            _log.warning(
+                                "sec_form4.filing_skip",
+                                accession=accession,
+                                reason=str(exc)[:300],
                             )
-                            if ticker_to_cik.get(symbol) == parsed_issuer_cik
-                        ]
-                        if len(official_symbols) != 1:
+                            _drop(filed_at, "fetch_failed")
                             continue
-                        ticker = official_symbols[0]
-                    else:
-                        issuer_tickers = tuple(
-                            cik_to_tickers.get(parsed_issuer_cik, ())
-                        )
-                        if len(issuer_tickers) != 1:
+                        try:
+                            xml_text = _extract_ownership_document(submission)
+                            parsed_issuer_cik = _ownership_document_issuer_cik(
+                                xml_text
+                            )
+                            parsed = _parse_form4_xml(
+                                xml_text,
+                                accession=accession,
+                            )
+                        except MissingDataSourceError as exc:
+                            _log.warning(
+                                "sec_form4.parse_skip",
+                                accession=accession,
+                                reason=str(exc)[:300],
+                            )
+                            _drop(filed_at, "xml_malformed")
                             continue
-                        ticker = issuer_tickers[0]
-                    for row in parsed:
-                        document_type = (
-                            str(row.get("document_type") or "")
-                            or str(filing["document_type"])
+                        except Exception as exc:  # noqa: BLE001 - isolate filing
+                            _log.warning(
+                                "sec_form4.parse_skip",
+                                accession=accession,
+                                reason=str(exc)[:300],
+                            )
+                            _drop(filed_at, "xml_malformed")
+                            continue
+                        if not parsed:
+                            _drop(filed_at, "empty_parse")
+                            continue
+                        parsed_symbol = str(
+                            parsed[0].get("ticker") or ""
+                        ).strip().upper()
+                        if parsed_symbol:
+                            official_symbols = [
+                                symbol
+                                for symbol in equivalent_class_symbols(
+                                    parsed_symbol
+                                )
+                                if ticker_to_cik.get(symbol) == parsed_issuer_cik
+                            ]
+                            if len(official_symbols) != 1:
+                                _drop(filed_at, "ticker_ambiguous")
+                                continue
+                            ticker = official_symbols[0]
+                        else:
+                            issuer_tickers = tuple(
+                                cik_to_tickers.get(parsed_issuer_cik, ())
+                            )
+                            if len(issuer_tickers) != 1:
+                                _drop(filed_at, "ticker_ambiguous")
+                                continue
+                            ticker = issuer_tickers[0]
+                        for row in parsed:
+                            document_type = (
+                                str(row.get("document_type") or "")
+                                or str(filing["document_type"])
+                            )
+                            row.update(
+                                {
+                                    "filing_url": filing_url,
+                                    "filed_at": filed_at,
+                                    "accession": accession,
+                                    "index_cik": index_cik,
+                                    "issuer_cik": parsed_issuer_cik,
+                                    "issuer_name": str(
+                                        row.get("issuer_name")
+                                        or filing["company_name"]
+                                    ),
+                                    "ticker": ticker,
+                                    "reported_ticker": parsed_symbol,
+                                    "document_type": document_type,
+                                    "is_amendment": bool(
+                                        filing["is_amendment"]
+                                        or row.get("is_amendment")
+                                    ),
+                                    "source_urls": [filing_url],
+                                }
+                            )
+                        collected_filings[selected_index] = {
+                            "accession": accession,
+                            "filed_at": filed_at,
+                            "filing_url": filing_url,
+                            "is_amendment": bool(
+                                filing["is_amendment"]
+                                or parsed[0].get("is_amendment")
+                            ),
+                            "index_cik": index_cik,
+                            "issuer_cik": parsed_issuer_cik,
+                            "filer_cik": str(
+                                parsed[0].get("filer_cik") or ""
+                            ),
+                            "filer_name": str(
+                                parsed[0].get("filer_name") or ""
+                            ),
+                            "reporting_owners": list(
+                                parsed[0].get("reporting_owners") or []
+                            ),
+                            "date_of_original_submission": str(
+                                parsed[0].get("date_of_original_submission")
+                                or ""
+                            ),
+                            "rows": parsed,
+                        }
+                        summary = day_summaries.get(filed_at)
+                        if summary is not None:
+                            summary["parsed"] = int(summary["parsed"]) + 1
+                    except Exception as exc:  # noqa: BLE001 - never abort the day
+                        _log.warning(
+                            "sec_form4.filing_skip",
+                            accession=accession,
+                            reason=str(exc)[:300],
                         )
-                        row.update(
-                            {
-                                "filing_url": filing_url,
-                                "filed_at": str(filing["filed_at"]),
-                                "accession": str(filing["accession"]),
-                                "index_cik": index_cik,
-                                "issuer_cik": parsed_issuer_cik,
-                                "issuer_name": str(
-                                    row.get("issuer_name")
-                                    or filing["company_name"]
-                                ),
-                                "ticker": ticker,
-                                "reported_ticker": parsed_symbol,
-                                "document_type": document_type,
-                                "is_amendment": bool(
-                                    filing["is_amendment"]
-                                    or row.get("is_amendment")
-                                ),
-                                "source_urls": [filing_url],
-                            }
-                        )
-                    collected_filings[selected_index] = {
-                        "accession": str(filing["accession"]),
-                        "filed_at": str(filing["filed_at"]),
-                        "filing_url": filing_url,
-                        "is_amendment": bool(
-                            filing["is_amendment"]
-                            or parsed[0].get("is_amendment")
-                        ),
-                        "index_cik": index_cik,
-                        "issuer_cik": parsed_issuer_cik,
-                        "filer_cik": str(
-                            parsed[0].get("filer_cik") or ""
-                        ),
-                        "filer_name": str(
-                            parsed[0].get("filer_name") or ""
-                        ),
-                        "reporting_owners": list(
-                            parsed[0].get("reporting_owners") or []
-                        ),
-                        "date_of_original_submission": str(
-                            parsed[0].get("date_of_original_submission")
-                            or ""
-                        ),
-                        "rows": parsed,
-                    }
+                        _drop(filed_at, "unexpected_error")
 
             workers = [
                 asyncio.create_task(_worker())
@@ -404,6 +467,16 @@ class SecForm4Adapter:
                     worker.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
                 raise
+            for day_key, summary in sorted(day_summaries.items()):
+                if int(summary["seen"]) == 0 and int(summary["parsed"]) == 0:
+                    continue
+                _log.info(
+                    "sec_form4.daily_index_summary",
+                    date=day_key,
+                    seen=int(summary["seen"]),
+                    parsed=int(summary["parsed"]),
+                    dropped=dict(summary["dropped"]),
+                )
             return _select_filing_versions(
                 [
                     filing
@@ -539,7 +612,7 @@ class SecForm4Adapter:
             f"{SEC_DAILY_INDEX_BASE}/{filing_date.year}/"
             f"QTR{quarter}/{filename}"
         )
-        response = await self._request(url)
+        response = await self._request_with_retry(url)
         status = getattr(response, "status_code", 0)
         if status != 200:
             raise MissingDataSourceError(
@@ -594,7 +667,7 @@ class SecForm4Adapter:
     async def _fetch_text(
         self, url: str, *, params: dict[str, str] | None = None
     ) -> str:
-        resp = await self._request(url, params=params)
+        resp = await self._request_with_retry(url, params=params)
         if getattr(resp, "status_code", 0) != 200:
             raise MissingDataSourceError(
                 f"SEC EDGAR returned HTTP {getattr(resp, 'status_code', '?')} for {url}"
@@ -604,6 +677,17 @@ class SecForm4Adapter:
             raw: bytes = getattr(resp, "content", b"")
             text = raw.decode("utf-8", errors="replace")
         return text
+
+    async def _request_with_retry(
+        self, url: str, *, params: dict[str, str] | None = None
+    ) -> Any:
+        """One retry with backoff on transient SEC HTTP 429/503."""
+        resp = await self._request(url, params=params)
+        status = getattr(resp, "status_code", 0)
+        if status in {429, 503}:
+            await self._sleep(1.0)
+            resp = await self._request(url, params=params)
+        return resp
 
     async def _request(
         self, url: str, *, params: dict[str, str] | None = None
@@ -629,7 +713,7 @@ class SecForm4Adapter:
             ) from exc
 
     async def _fetch_json(self, url: str) -> dict[str, Any]:
-        resp = await self._request(url)
+        resp = await self._request_with_retry(url)
         if getattr(resp, "status_code", 0) != 200:
             raise MissingDataSourceError(
                 f"SEC EDGAR returned HTTP {getattr(resp, 'status_code', '?')} for {url}"

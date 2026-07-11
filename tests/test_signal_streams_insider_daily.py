@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -97,7 +97,15 @@ class _DailySec:
         through: date | None = None,
     ) -> list[dict[str, Any]]:
         self.calls.append((start_date, through))
-        return [dict(row) for row in self.rows_by_day.get(start_date, [])]
+        end = through or start_date
+        if end < start_date:
+            return []
+        rows: list[dict[str, Any]] = []
+        current = start_date
+        while current <= end:
+            rows.extend(dict(row) for row in self.rows_by_day.get(current, []))
+            current += timedelta(days=1)
+        return rows
 
 
 def _snapshot(ticker: str) -> InsiderMarketSnapshot:
@@ -134,6 +142,7 @@ def ledger(tmp_path):
 def test_daily_pull_config_is_exactly_one_day() -> None:
     assert InsiderClusterConfig().daily_pull_days == 1
     assert InsiderClusterSignalConfig().daily_pull_days == 1
+    assert InsiderClusterSignalConfig().enabled is False
     assert InsiderClusterConfig().ledger_horizon_days == 45
     assert InsiderClusterSignalConfig().ledger_horizon_days == 45
     with pytest.raises(ValueError, match="daily_pull_days"):
@@ -203,13 +212,13 @@ def test_two_daily_pulls_accumulate_locally_and_rerun_is_idempotent(
     )
 
     with factory() as session:
-        assert stream.fetch(session, since=date(2020, 1, 1)) == []
+        assert stream.fetch(session, since=first_day) == []
         session.commit()
     assert sec.calls == [(first_day, first_day)]
 
     clock["today"] = date(2026, 7, 9)
     with factory() as session:
-        nominations = stream.fetch(session, since=date(2020, 1, 1))
+        nominations = stream.fetch(session, since=second_day)
         session.commit()
     assert len(nominations) == 1
     assert nominations[0].as_of == second_day
@@ -219,7 +228,7 @@ def test_two_daily_pulls_accumulate_locally_and_rerun_is_idempotent(
     }
 
     with factory() as session:
-        assert stream.fetch(session, since=date(1990, 1, 1)) == []
+        assert stream.fetch(session, since=second_day) == []
         session.commit()
         events = session.query(SignalStreamEvent).order_by(SignalStreamEvent.id).all()
         assert len(events) == 2
@@ -493,6 +502,103 @@ def test_corrected_amendment_restores_recent_tainted_original_group(ledger) -> N
     )
 
 
+def test_ownerless_amendment_taint_restores_collateral_sibling_when_alice_resolves(
+    ledger,
+) -> None:
+    """Replay B3: Alice+Bob tainted by ownerless amendment; Alice correction
+    must restore Bob (live taint recompute), not leave the sibling dead."""
+    _engine, factory = ledger
+    original_day = date(2026, 7, 7)
+    taint_day = date(2026, 7, 8)
+    correction_day = date(2026, 7, 9)
+    clock = {"today": date(2026, 7, 8)}
+    alice = _row(
+        accession="alice-original",
+        owner_cik="0000001001",
+        owner_name="Alice",
+        transaction_date="2026-07-06",
+        filed_at=original_day.isoformat(),
+        value_usd=60_000,
+    )
+    bob = _row(
+        accession="bob-original",
+        owner_cik="0000001002",
+        owner_name="Bob",
+        transaction_date="2026-07-06",
+        filed_at=original_day.isoformat(),
+        value_usd=40_000,
+    )
+    ownerless_taint = _row(
+        accession="ownerless-amendment",
+        owner_cik="",
+        owner_name="",
+        transaction_date="2026-07-06",
+        filed_at=taint_day.isoformat(),
+        value_usd=60_000,
+        is_amendment=True,
+        date_of_original_submission=original_day.isoformat(),
+        cluster_eligible=False,
+    )
+    ownerless_taint["reporting_owners"] = [
+        {"filer_cik": "", "filer_name": "", "role": "director"}
+    ]
+    alice_correction = _row(
+        accession="alice-correction",
+        owner_cik="0000001001",
+        owner_name="Alice",
+        transaction_date="2026-07-06",
+        filed_at=correction_day.isoformat(),
+        value_usd=65_000,
+        is_amendment=True,
+        date_of_original_submission=original_day.isoformat(),
+        cluster_eligible=False,
+    )
+    sec = _DailySec(
+        {
+            original_day: [alice, bob],
+            taint_day: [ownerless_taint],
+            correction_day: [alice_correction],
+        }
+    )
+    stream = InsiderClusterStream(
+        user_id="ariel",
+        config=InsiderClusterConfig(index_publication_lag_days=1),
+        sec_adapter=sec,
+        market_snapshot=_snapshot,
+        today=lambda: clock["today"],
+    )
+
+    with factory() as session:
+        assert len(stream.fetch(session, since=original_day)) == 1
+        session.commit()
+    clock["today"] = date(2026, 7, 9)
+    with factory() as session:
+        assert stream.fetch(session, since=taint_day) == []
+        session.commit()
+        assert {
+            json.loads(event.payload_json)["accession"]
+            for event in session.query(SignalStreamEvent).all()
+            if event.active == 1
+        } == set()
+    clock["today"] = date(2026, 7, 10)
+    with factory() as session:
+        nominations = stream.fetch(session, since=correction_day)
+        session.commit()
+        events = session.query(SignalStreamEvent).all()
+
+    active_accessions = {
+        json.loads(event.payload_json)["accession"]
+        for event in events
+        if event.active == 1
+    }
+    assert "alice-correction" in active_accessions
+    assert "bob-original" in active_accessions
+    assert "alice-original" not in active_accessions
+    assert "ownerless-amendment" not in active_accessions
+    assert len(nominations) == 1
+    assert nominations[0].ticker == "ACME"
+
+
 def test_adapter_matched_same_day_amendment_is_locally_eligible(ledger) -> None:
     _engine, factory = ledger
     day = date(2026, 7, 7)
@@ -701,8 +807,9 @@ def test_market_snapshot_failure_retries_pending_local_cluster(ledger) -> None:
 
     clock["today"] = date(2026, 7, 9)
     observed["at"] = datetime(2026, 7, 9, 12, tzinfo=UTC)
+    next_day = date(2026, 7, 8)
     with factory() as session:
-        recovered = stream.fetch(session, since=day)
+        recovered = stream.fetch(session, since=next_day)
         assert len(recovered) == 1
         process_nominations(
             session,
@@ -722,7 +829,7 @@ def test_market_snapshot_failure_retries_pending_local_cluster(ledger) -> None:
         assert session.query(Prediction).count() == 2
 
     with factory() as session:
-        assert stream.fetch(session, since=day) == []
+        assert stream.fetch(session, since=next_day) == []
         process_nominations(
             session,
             user_id="ariel",
@@ -731,7 +838,6 @@ def test_market_snapshot_failure_retries_pending_local_cluster(ledger) -> None:
         )
         session.commit()
         assert session.query(Prediction).count() == 2
-    next_day = date(2026, 7, 8)
     assert sec.calls == [(day, day), (next_day, next_day), (next_day, next_day)]
     assert snapshot_attempts == 2
 

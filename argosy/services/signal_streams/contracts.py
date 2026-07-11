@@ -8,7 +8,7 @@ import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -72,6 +72,7 @@ class GovContractsConfig:
     lookback_days: int = 90
     recent_scan_days: int = 2
     max_pages_per_query: int = 10
+    agent_error_ttl_hours: int = 24
 
     def __post_init__(self) -> None:
         if not 0 < self.materiality_threshold <= 1:
@@ -84,6 +85,14 @@ class GovContractsConfig:
             )
         if self.max_pages_per_query <= 0:
             raise ValueError("max_pages_per_query must be positive")
+        if (
+            isinstance(self.agent_error_ttl_hours, bool)
+            or not isinstance(self.agent_error_ttl_hours, int)
+            or not 0 < self.agent_error_ttl_hours <= 168
+        ):
+            raise ValueError(
+                "agent_error_ttl_hours must be an integer between 1 and 168"
+            )
 
 
 @dataclass(frozen=True)
@@ -244,7 +253,7 @@ def _default_llm_choice(
 
 
 class RecipientResolver:
-    """Persist-once recipient resolver with safe unresolved tombstones."""
+    """Persist-once recipient resolver with TTL'd agent_error tombstones."""
 
     def __init__(
         self,
@@ -253,11 +262,17 @@ class RecipientResolver:
         llm_choice: LlmChoice | None = None,
         fuzzy_cutoff: float = 0.72,
         automatic_match_cutoff: float = 0.92,
+        agent_error_ttl: timedelta = timedelta(hours=24),
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.public_companies = public_companies or dict(_PUBLIC_CONTRACTORS)
         self.llm_choice = llm_choice or _default_llm_choice
         self.fuzzy_cutoff = fuzzy_cutoff
         self.automatic_match_cutoff = automatic_match_cutoff
+        if agent_error_ttl <= timedelta(0):
+            raise ValueError("agent_error_ttl must be positive")
+        self.agent_error_ttl = agent_error_ttl
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def resolve(self, session: Session, recipient_name: str) -> str | None:
         normalised = _normalise_name(recipient_name)
@@ -268,20 +283,31 @@ class RecipientResolver:
         cached = pending.get(normalised)
         if cached is not None:
             if cached in session:
-                return cached.ticker
-            # Rollback/expunge made the cached object transient. Drop this
-            # session-local entry and re-resolve from durable state.
-            pending.pop(normalised, None)
+                if self._agent_error_expired(cached):
+                    session.delete(cached)
+                    pending.pop(normalised, None)
+                    session.flush()
+                else:
+                    return cached.ticker
+            else:
+                # Rollback/expunge made the cached object transient. Drop this
+                # session-local entry and re-resolve from durable state.
+                pending.pop(normalised, None)
 
         # A pending resolution for another recipient must not autoflush here:
         # fetch still has independent cache-backed adapters to call.
         with session.no_autoflush:
             existing = session.get(RecipientResolution, normalised)
         if existing is not None:
-            return existing.ticker
+            if self._agent_error_expired(existing):
+                session.delete(existing)
+                pending.pop(normalised, None)
+                session.flush()
+            else:
+                return existing.ticker
 
         ticker = _CURATED_ALIASES.get(normalised)
-        method = "seed" if ticker else "unresolved"
+        method = "seed" if ticker else "not_public"
         candidates: dict[str, str] = {}
         if ticker is None:
             scored = sorted(
@@ -316,6 +342,8 @@ class RecipientResolver:
                         if chosen in candidates:
                             ticker = chosen
                             method = "llm"
+                        else:
+                            method = "not_public"
                     except Exception as exc:  # noqa: BLE001 - fail closed per recipient
                         method = "agent_error"
                         _log.warning(
@@ -334,10 +362,29 @@ class RecipientResolver:
             candidates_json=json.dumps(
                 sorted(candidates), separators=(",", ":")
             ),
+            resolved_at=self._clock(),
         )
         session.add(row)
         pending[normalised] = row
         return ticker
+
+    def _agent_error_expired(self, row: RecipientResolution) -> bool:
+        if row.resolution_method != "agent_error":
+            return False
+        resolved_at = row.resolved_at
+        if resolved_at is None:
+            # Not yet flushed — treat as freshly written within TTL.
+            return False
+        if resolved_at.tzinfo is None:
+            resolved_at = resolved_at.replace(tzinfo=UTC)
+        else:
+            resolved_at = resolved_at.astimezone(UTC)
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        else:
+            now = now.astimezone(UTC)
+        return now - resolved_at >= self.agent_error_ttl
 
 
 def _post_usaspending(payload: dict[str, Any]) -> dict[str, Any]:
@@ -432,7 +479,9 @@ class GovContractsStream:
             raise ValueError("page_retry_backoff delays must be non-negative")
         self.config = config or GovContractsConfig()
         self.fetch_json = fetch_json
-        self.resolver = resolver or RecipientResolver()
+        self.resolver = resolver or RecipientResolver(
+            agent_error_ttl=timedelta(hours=self.config.agent_error_ttl_hours)
+        )
         self.market_snapshot = market_snapshot or ArgosyMarketSnapshotProvider()
         self.today = today
         self.curated_contractors = (

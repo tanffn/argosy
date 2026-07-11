@@ -119,9 +119,10 @@ def test_signal_stream_config_defaults_and_validation() -> None:
         lookback_days=90,
         recent_scan_days=2,
         max_pages_per_query=10,
+        agent_error_ttl_hours=24,
     )
     assert config.insider_cluster == InsiderClusterSignalConfig(
-        enabled=True,
+        enabled=False,
         lookback_days=14,
         recent_scan_days=2,
         daily_pull_days=1,
@@ -171,19 +172,9 @@ def test_default_streams_register_enabled_a_then_b_with_production_seams(
     )
     streams = _default_streams("ariel")
 
-    assert [stream.name for stream in streams] == [
-        "gov_contracts",
-        "insider_cluster",
-    ]
+    assert [stream.name for stream in streams] == ["gov_contracts"]
     assert isinstance(streams[0], GovContractsStream)
-    assert isinstance(streams[1], InsiderClusterStream)
-    assert isinstance(streams[1].sec_adapter, SecForm4Adapter)
-    assert isinstance(
-        streams[1].market_snapshot,
-        YFinanceInsiderMarketProvider,
-    )
-    assert streams[1].config.warning_ttl_days == 30
-    assert signal_streams.InsiderClusterStream is InsiderClusterStream
+    assert InsiderClusterSignalConfig().enabled is False
 
     monkeypatch.setattr(
         "argosy.config.load_signal_streams_config",
@@ -192,9 +183,16 @@ def test_default_streams_register_enabled_a_then_b_with_production_seams(
             insider_cluster=InsiderClusterSignalConfig(enabled=True),
         ),
     )
-    assert [stream.name for stream in _default_streams("ariel")] == [
-        "insider_cluster"
-    ]
+    enabled_b = _default_streams("ariel")
+    assert [stream.name for stream in enabled_b] == ["insider_cluster"]
+    assert isinstance(enabled_b[0], InsiderClusterStream)
+    assert isinstance(enabled_b[0].sec_adapter, SecForm4Adapter)
+    assert isinstance(
+        enabled_b[0].market_snapshot,
+        YFinanceInsiderMarketProvider,
+    )
+    assert enabled_b[0].config.warning_ttl_days == 30
+    assert signal_streams.InsiderClusterStream is InsiderClusterStream
 
 
 def test_signal_nomination_contract_is_frozen_and_runtime_checkable() -> None:
@@ -278,7 +276,7 @@ def test_usaspending_parser_uses_obligation_not_ceiling() -> None:
     assert awards[0].obligated_amount != payload["results"][0]["Potential Award Amount"]
 
 
-def test_recipient_resolution_is_persisted_once_and_unknown_stays_unresolved(
+def test_recipient_resolution_is_persisted_once_and_unknown_stays_not_public(
     db_session,
 ) -> None:
     llm_calls: list[tuple[str, tuple[str, ...]]] = []
@@ -297,8 +295,40 @@ def test_recipient_resolution_is_persisted_once_and_unknown_stays_unresolved(
     assert resolver.resolve(db_session, "Acme Plumbing LLC") is None
     rows = db_session.query(RecipientResolution).all()
     assert len(rows) == 2
-    assert next(r for r in rows if "acme" in r.recipient_normalized).ticker is None
+    acme = next(r for r in rows if "acme" in r.recipient_normalized)
+    assert acme.ticker is None
+    assert acme.resolution_method == "not_public"
     assert llm_calls == []
+
+
+def test_recipient_not_public_tombstone_is_permanent(db_session) -> None:
+    clock = {"now": datetime(2026, 7, 10, 12, 0, tzinfo=UTC)}
+    calls = 0
+
+    def llm_choice(recipient: str, candidates: dict[str, str]) -> str | None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    resolver = RecipientResolver(
+        public_companies={
+            "GD": "General Dynamics Corporation",
+            "GDYN": "General Dynamics Software",
+        },
+        llm_choice=llm_choice,
+        fuzzy_cutoff=0.45,
+        automatic_match_cutoff=0.99,
+        agent_error_ttl=timedelta(hours=1),
+        clock=lambda: clock["now"],
+    )
+    assert resolver.resolve(db_session, "General Dynamics Systems") is None
+    db_session.commit()
+    clock["now"] = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+    assert resolver.resolve(db_session, "General Dynamics Systems") is None
+    assert calls == 1
+    row = db_session.get(RecipientResolution, "general dynamics systems")
+    assert row is not None
+    assert row.resolution_method == "not_public"
 
 
 def test_llm_resolver_can_only_choose_from_plausible_public_candidates(
@@ -418,6 +448,7 @@ def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(
     db_session,
 ) -> None:
     calls = 0
+    clock = {"now": datetime(2026, 7, 10, 12, 0, tzinfo=UTC)}
     bad_award = {
         "Award ID": "BAD-1",
         "Recipient Name": "General Dynamics Systems",
@@ -436,7 +467,9 @@ def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(
     def llm_choice(recipient: str, candidates: dict[str, str]) -> str | None:
         nonlocal calls
         calls += 1
-        raise TimeoutError("resolver transport failed")
+        if calls == 1:
+            raise TimeoutError("resolver transport failed")
+        return "GD"
 
     def fetch_json(payload: dict) -> dict:
         recipient = payload["filters"].get("recipient_search_text")
@@ -453,6 +486,8 @@ def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(
         llm_choice=llm_choice,
         fuzzy_cutoff=0.45,
         automatic_match_cutoff=0.99,
+        agent_error_ttl=timedelta(hours=24),
+        clock=lambda: clock["now"],
     )
     stream = GovContractsStream(
         config=GovContractsConfig(
@@ -480,6 +515,18 @@ def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(
     assert tombstone.ticker is None
     assert tombstone.resolution_method == "agent_error"
     assert json.loads(tombstone.candidates_json) == ["GD", "GDYN"]
+
+    db_session.commit()
+    clock["now"] = datetime(2026, 7, 12, 13, 0, tzinfo=UTC)
+    assert resolver.resolve(db_session, "General Dynamics Systems") == "GD"
+    assert calls == 2
+    db_session.commit()
+    refreshed = db_session.get(
+        RecipientResolution, "general dynamics systems"
+    )
+    assert refreshed is not None
+    assert refreshed.resolution_method == "llm"
+    assert refreshed.ticker == "GD"
 
 
 def test_materiality_is_revenue_relative_and_strength_is_threshold_normalized() -> None:

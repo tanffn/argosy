@@ -292,14 +292,6 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
             "dropped_stale_count": 1,
         },
         {
-            "key": "insider_cluster",
-            "label": "Insider clusters",
-            "tracked_count": 0,
-            "active_count": 0,
-            "quarantined_count": 0,
-            "dropped_stale_count": 0,
-        },
-        {
             "key": "momentum",
             "label": "Momentum",
             "tracked_count": 2,
@@ -311,8 +303,7 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
     assert all(
         source["scorecard"] is None
         for source in body["sources"]
-        if source["key"]
-        not in {"gov_contracts", "insider_cluster"}
+        if source["key"] != "gov_contracts"
     )
     government_scorecard = next(
         source["scorecard"]
@@ -320,12 +311,7 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
         if source["key"] == "gov_contracts"
     )
     assert government_scorecard["scored_outcomes"] == 0
-    insider_scorecard = next(
-        source["scorecard"]
-        for source in body["sources"]
-        if source["key"] == "insider_cluster"
-    )
-    assert insider_scorecard["scored_outcomes"] == 0
+    assert "insider_cluster" not in {source["key"] for source in body["sources"]}
 
     cmps = next(row for row in body["candidates"] if row["ticker"] == "CMPS")
     assert cmps["source_keys"] == ["gov_contracts", "growth", "momentum"]

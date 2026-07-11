@@ -533,10 +533,11 @@ class GovContractsSignalConfig(BaseModel):
     lookback_days: int = Field(default=90, gt=0)
     recent_scan_days: int = Field(default=2, gt=0)
     max_pages_per_query: int = Field(default=10, gt=0)
+    agent_error_ttl_hours: int = Field(default=24, gt=0, le=168)
 
 
 class InsiderClusterSignalConfig(BaseModel):
-    enabled: bool = Field(default=True, strict=True)
+    enabled: bool = Field(default=False, strict=True)
     lookback_days: int = Field(default=14, gt=0)
     recent_scan_days: int = Field(default=2, gt=0)
     index_publication_lag_days: int = Field(default=2, ge=1, strict=True)

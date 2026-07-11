@@ -72,8 +72,9 @@ signal_streams:
     lookback_days: 90
     recent_scan_days: 2
     max_pages_per_query: 10
+    agent_error_ttl_hours: 24
   insider_cluster:
-    enabled: true
+    enabled: false
     lookback_days: 14
     recent_scan_days: 2
     index_publication_lag_days: 2

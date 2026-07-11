@@ -503,6 +503,120 @@ def _normalize_daily_rows(
     return normalized, replacement_groups, tainted_groups
 
 
+def _live_tainted_groups(
+    events: list[_LocalEvent],
+    *,
+    window_start: date,
+    through: date,
+) -> set[str]:
+    """Recompute amendment taint from the full live ledger state.
+
+    Ownerless / ambiguous amendments only taint groups that are still
+    unresolved. Once any unique amendment match exists for the same
+    issuer + original filing date, an ownerless amendment for that scope
+    is obsolete and no longer collaterally taints siblings.
+    """
+    candidates: dict[str, _OriginalGroup] = {}
+    for event in events:
+        candidate = _original_group_from_event(
+            event,
+            window_start=window_start,
+            through=through,
+        )
+        if candidate is not None:
+            prior = candidates.get(candidate.group_key)
+            candidates[candidate.group_key] = (
+                replace(candidate, in_lookback=True)
+                if prior is not None and prior.in_lookback
+                else candidate
+            )
+
+    uniquely_resolved_issuer_dates: set[tuple[str, date]] = set()
+    uniquely_resolved_groups: set[str] = set()
+    for event in events:
+        payload = event.payload()
+        if not bool(payload.get("is_amendment")):
+            continue
+        if payload.get("_signal_resolution_reason") != "unique_original_candidate":
+            continue
+        if event.active != 1 and payload.get("cluster_eligible") is not True:
+            continue
+        issuer_cik = str(payload.get("_signal_issuer_cik") or "")
+        original_filed_at = _parse_date(payload.get("_signal_original_filed_date"))
+        if issuer_cik and original_filed_at is not None:
+            uniquely_resolved_issuer_dates.add((issuer_cik, original_filed_at))
+        uniquely_resolved_groups.add(event.event_group_key)
+
+    live_tainted: set[str] = set()
+    for event in events:
+        payload = event.payload()
+        if not bool(payload.get("is_amendment")):
+            continue
+        reason = str(payload.get("_signal_resolution_reason") or "")
+        if reason == "unique_original_candidate":
+            continue
+        if payload.get("amendment_match_status") != "ambiguous" and reason not in {
+            "multiple_original_candidates",
+            "ownerless_original_date_scope",
+            "ownerless_issuer_lookback_scope",
+            "no_original_candidate_overlap_scope",
+        }:
+            continue
+        issuer_cik = str(payload.get("_signal_issuer_cik") or "")
+        original_filed_at = _parse_date(payload.get("_signal_original_filed_date"))
+        if (
+            reason == "ownerless_original_date_scope"
+            and issuer_cik
+            and original_filed_at is not None
+            and (issuer_cik, original_filed_at) in uniquely_resolved_issuer_dates
+        ):
+            continue
+        stored = [
+            str(value)
+            for value in payload.get("_signal_candidate_groups") or []
+            if value
+        ]
+        if stored:
+            live_tainted.update(
+                group
+                for group in stored
+                if group not in uniquely_resolved_groups
+            )
+            continue
+        owner_keys = tuple(
+            sorted(
+                str(value)
+                for value in payload.get("_signal_owner_keys") or []
+                if value
+            )
+        ) or None
+        if reason == "ownerless_original_date_scope" and issuer_cik and original_filed_at:
+            live_tainted.update(
+                candidate.group_key
+                for candidate in candidates.values()
+                if candidate.issuer_cik == issuer_cik
+                and candidate.filed_at == original_filed_at
+                and candidate.group_key not in uniquely_resolved_groups
+            )
+        elif reason == "ownerless_issuer_lookback_scope" and issuer_cik:
+            live_tainted.update(
+                candidate.group_key
+                for candidate in candidates.values()
+                if candidate.issuer_cik == issuer_cik
+                and candidate.in_lookback
+                and candidate.group_key not in uniquely_resolved_groups
+            )
+        elif owner_keys is not None and issuer_cik:
+            live_tainted.update(
+                candidate.group_key
+                for candidate in candidates.values()
+                if candidate.issuer_cik == issuer_cik
+                and set(candidate.owner_keys).intersection(owner_keys)
+                and candidate.group_key not in uniquely_resolved_groups
+            )
+    return live_tainted
+
+
 def market_cap_floor(market_cap: float, *, config: InsiderClusterConfig) -> float:
     """Return the larger of the absolute and market-cap-scaled buy floors."""
     _validate_positive_finite(market_cap, "market_cap")
@@ -976,11 +1090,13 @@ def _sell_nomination(
         if not is_sale:
             contaminated_blocks.add(block_key)
             continue
-        if (
-            _signal_contributor_eligible(row)
-            and insider is not None
-            and _role_is_c_suite(owners[0]["role"])
-        ):
+        if not _signal_contributor_eligible(row):
+            # Ineligible sells (10b5-1 / derivative / incomplete identity)
+            # must contaminate the same-pool stake math — skipping them
+            # silently would inflate stake_sale_pct toward 100%.
+            contaminated_blocks.add(block_key)
+            continue
+        if insider is not None and _role_is_c_suite(owners[0]["role"]):
             rows_by_seller_block.setdefault(
                 (
                     insider,
@@ -1441,10 +1557,10 @@ class YFinanceInsiderMarketProvider:
 
 
 class InsiderClusterStream:
-    """Pull one completed SEC day and classify from the local raw-event ledger."""
+    """Pull SEC Form 4 days (steady-state one day; catch-up after outages)."""
 
     name = "insider_cluster"
-    cursor_controls_fetch_range = False
+    cursor_controls_fetch_range = True
 
     def __init__(
         self,
@@ -1464,11 +1580,16 @@ class InsiderClusterStream:
         self.observed_at = observed_at
 
     def fetch(self, session: Any, *, since: date) -> list[SignalNomination]:
-        del since
         through = latest_completed_sec_day(
             self.today(),
             lag_days=self.config.index_publication_lag_days,
         )
+        catchup_floor = through - timedelta(
+            days=self.config.cursor_max_catchup_days - 1
+        )
+        pull_start = max(since, catchup_floor)
+        if pull_start > through:
+            pull_start = through
         window_start = through - timedelta(days=self.config.lookback_days - 1)
         ledger_start = through - timedelta(
             days=self.config.ledger_horizon_days - 1
@@ -1505,11 +1626,11 @@ class InsiderClusterStream:
 
         fetched_rows = asyncio.run(
             self.sec_adapter.get_form4_for_date_range(
-                through,
+                pull_start,
                 through,
             )
         )
-        incoming, replacement_groups, tainted_groups = _normalize_daily_rows(
+        incoming, replacement_groups, _day_tainted = _normalize_daily_rows(
             fetched_rows,
             existing_events=list(working.values()),
             window_start=window_start,
@@ -1521,19 +1642,21 @@ class InsiderClusterStream:
                 event.event_key
             )
 
+        superseded_keys: set[str] = set()
         for group_key in replacement_groups:
             current_keys = incoming_by_group.get(group_key, set())
             for event_key, event in list(working.items()):
                 if (
                     event.event_group_key == group_key
-                    and event.active == 1
                     and event_key not in current_keys
                 ):
-                    working[event_key] = replace(
-                        event,
-                        active=0,
-                        evaluation_pending=0,
-                    )
+                    superseded_keys.add(event_key)
+                    if event.active == 1:
+                        working[event_key] = replace(
+                            event,
+                            active=0,
+                            evaluation_pending=0,
+                        )
 
         incoming_keys: set[str] = set()
         for event in incoming:
@@ -1597,13 +1720,43 @@ class InsiderClusterStream:
                 event = replace(event, evaluation_pending=0)
             working[event.event_key] = event
 
+        tainted_groups = _live_tainted_groups(
+            list(working.values()),
+            window_start=window_start,
+            through=through,
+        )
         for event_key, event in list(working.items()):
-            if event.active == 1 and event.event_group_key in tainted_groups:
+            if event_key in superseded_keys:
+                continue
+            payload = event.payload()
+            reason = str(payload.get("_signal_resolution_reason") or "")
+            base_eligible = (
+                reason == "original_accession"
+                and payload.get("cluster_eligible") is True
+            ) or (
+                reason == "unique_original_candidate"
+                and (
+                    event.active == 1
+                    or payload.get("cluster_eligible") is True
+                    or payload.get("amendment_match_status") == "matched"
+                )
+            )
+            should_be_active = (
+                base_eligible and event.event_group_key not in tainted_groups
+            )
+            if should_be_active and event.active != 1:
                 working[event_key] = replace(
                     event,
-                    active=0,
-                    evaluation_pending=0,
+                    active=1,
+                    evaluation_pending=_PENDING_ALL,
                 )
+            elif not should_be_active and event.active == 1:
+                if event.event_group_key in tainted_groups or not base_eligible:
+                    working[event_key] = replace(
+                        event,
+                        active=0,
+                        evaluation_pending=0,
+                    )
 
         active_rows = [
             event.payload()

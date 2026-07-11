@@ -1023,6 +1023,40 @@ def test_ineligible_10b5_purchase_still_contaminates_same_block_split_sales() ->
     assert _classify(rows) == []
 
 
+def test_ineligible_10b5_sells_contaminate_same_pool_stake_block() -> None:
+    """Replay: planned sells must contaminate, not inflate stake to ~100%."""
+    rows: list[dict[str, Any]] = []
+    for filer, role, accession in [
+        (1, "officer (CEO)", "planned-sell-1"),
+        (2, "officer (CFO)", "planned-sell-2"),
+    ]:
+        planned_sale = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=900,
+                post_holdings=100,
+                accession=accession,
+            ),
+            "is_10b5_1": True,
+        }
+        discretionary_sale = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=100,
+                post_holdings=0,
+                accession=accession,
+            ),
+            "transaction_index": 1,
+        }
+        rows.extend([planned_sale, discretionary_sale])
+
+    # Without contamination the discretionary 100-of-100 sale alone would
+    # look like a 100% stake dump and fire a false C-suite warning.
+    assert _classify(rows) == []
+
+
 def test_direct_and_trust_sales_never_combine_into_false_threshold() -> None:
     rows: list[dict[str, Any]] = []
     for filer, role, accession in [
@@ -1630,7 +1664,7 @@ def test_joint_c_suite_sale_fails_closed_without_owner_attribution() -> None:
     assert _classify([joint_sale]) == []
 
 
-def test_initial_bootstrap_requests_only_latest_completed_sec_day() -> None:
+def test_initial_bootstrap_respects_since_within_catchup_cap() -> None:
     sec = _FixtureSecAdapter([])
     stream = InsiderClusterStream(
         sec_adapter=sec,
@@ -1640,10 +1674,10 @@ def test_initial_bootstrap_requests_only_latest_completed_sec_day() -> None:
 
     assert stream.fetch(None, since=date(2026, 7, 18)) == []
 
-    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 7, 18), date(2026, 7, 29))]
 
 
-def test_publication_lag_fixture_acceptance_uses_one_network_day() -> None:
+def test_publication_lag_fixture_acceptance_uses_catchup_from_since() -> None:
     rows = [
         _row(
             transaction_date="2026-07-15",
@@ -1663,19 +1697,20 @@ def test_publication_lag_fixture_acceptance_uses_one_network_day() -> None:
 
     nominations = stream.fetch(None, since=date(2026, 7, 30))
 
+    # since after through clamps to the completed SEC day
     assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
     assert nominations == []
 
 
-def test_twenty_day_outage_does_not_expand_network_range() -> None:
+def test_twenty_day_outage_expands_network_range_within_catchup_cap() -> None:
     rows = [
         _row(
-            transaction_date="2026-07-08",
-            filed_at="2026-07-11",
+            transaction_date="2026-07-20",
+            filed_at="2026-07-21",
         ),
         _second_buyer(
-            transaction_date="2026-07-10",
-            filed_at="2026-07-12",
+            transaction_date="2026-07-22",
+            filed_at="2026-07-22",
         ),
     ]
     sec = _FixtureSecAdapter(rows)
@@ -1687,11 +1722,11 @@ def test_twenty_day_outage_does_not_expand_network_range() -> None:
 
     nominations = stream.fetch(None, since=date(2026, 7, 10))
 
-    assert nominations == []
-    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 7, 10), date(2026, 7, 29))]
+    assert [nomination.ticker for nomination in nominations] == ["ACME"]
 
 
-def test_insider_fetch_never_uses_historical_adapter_range() -> None:
+def test_insider_fetch_clamps_historical_since_to_catchup_cap() -> None:
     sec = _FixtureSecAdapter([])
     stream = InsiderClusterStream(
         sec_adapter=sec,
@@ -1702,7 +1737,7 @@ def test_insider_fetch_never_uses_historical_adapter_range() -> None:
     stream.fetch(None, since=date(2026, 5, 1))
 
     assert MAX_GLOBAL_DATE_RANGE_DAYS == 45
-    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 6, 29), date(2026, 7, 29))]
 
 
 def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:

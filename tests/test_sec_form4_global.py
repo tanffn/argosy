@@ -199,11 +199,18 @@ class _FakeResp:
 class _Http:
     def __init__(
         self,
-        routes: dict[str, _FakeResp],
+        routes: dict[str, _FakeResp | list[_FakeResp]],
         *,
         clock: _FakeClock | None = None,
     ) -> None:
-        self.routes = routes
+        self.routes = {
+            needle: (
+                list(response)
+                if isinstance(response, list)
+                else [response]
+            )
+            for needle, response in routes.items()
+        }
         self.calls: list[str] = []
         self.headers: list[dict[str, str]] = []
         self.clock = clock
@@ -214,9 +221,13 @@ class _Http:
         self.headers.append(dict(kwargs.get("headers") or {}))
         if self.clock is not None:
             self.starts.append(self.clock())
-        for needle, response in self.routes.items():
+        for needle, responses in self.routes.items():
             if needle in url:
-                return response
+                if not responses:
+                    return _FakeResp(status=404, text="not found")
+                if len(responses) == 1:
+                    return responses[0]
+                return responses.pop(0)
         return _FakeResp(status=404, text="not found")
 
 
@@ -250,9 +261,11 @@ class _ConcurrencyHttp(_Http):
                         break
             finally:
                 self.active_filings -= 1
-        for needle, response in self.routes.items():
+        for needle, responses in self.routes.items():
             if needle in url:
-                return response
+                if not responses:
+                    return _FakeResp(status=404, text="not found")
+                return responses[0]
         return _FakeResp(status=404, text="not found")
 
 
@@ -983,44 +996,53 @@ async def test_global_filing_fetches_are_bounded_paced_and_deterministic(
 
 
 @pytest.mark.asyncio
-async def test_global_worker_failure_cancels_siblings_and_stops_new_requests(
+async def test_global_worker_failure_isolates_filing_and_continues_siblings(
     engine: None,
 ) -> None:
     day = date(2026, 7, 10)
-    accessions = [f"0001234567-26-{index:06d}" for index in range(1, 4)]
+    failing = "0001234567-26-000001"
+    surviving = "0001321655-26-000111"
     index = _daily_index(
-        *[
-            (
-                "4",
-                "NVIDIA CORP",
-                "1045810",
-                day.isoformat(),
-                f"edgar/data/1045810/{accession}.txt",
-            )
-            for accession in accessions
-        ]
+        (
+            "4",
+            "NVIDIA CORP",
+            "1045810",
+            day.isoformat(),
+            f"edgar/data/1045810/{failing}.txt",
+        ),
+        (
+            "4",
+            "PALANTIR TECHNOLOGIES INC.",
+            "1321655",
+            day.isoformat(),
+            f"edgar/data/1321655/{surviving}.txt",
+        ),
     )
-    clock = _FakeClock()
-    http = _CancellationHttp(
+    http = _Http(
         {
             "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
             "form.20260710.idx": _FakeResp(text=index),
-        },
-        clock=clock,
-        accessions=accessions,
+            failing: _FakeResp(text="<SEC-DOCUMENT>broken</SEC-DOCUMENT>"),
+            surviving: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="0001321655",
+                        issuer_ticker="PLTR",
+                        owner_cik="0001111111",
+                    )
+                )
+            ),
+        }
     )
-    adapter = _adapter(
+
+    rows = await _adapter(
         http,
-        clock=clock,
         max_concurrent_filing_fetches=2,
-    )
+    ).get_form4_for_date_range(day, day, ttl_seconds=0)
 
-    with pytest.raises(MissingDataSourceError, match="simulated filing failure"):
-        await adapter.get_form4_for_date_range(day, day, ttl_seconds=0)
-
-    await asyncio.sleep(0)
-    assert http.blocked_cancelled is True
-    assert not any(accessions[2] in call for call in http.calls)
+    assert {row["ticker"] for row in rows} == {"PLTR"}
+    assert any(failing in call for call in http.calls)
+    assert any(surviving in call for call in http.calls)
 
 
 @pytest.mark.asyncio
@@ -1695,3 +1717,104 @@ async def test_global_date_range_is_bounded_and_ordered(engine: None) -> None:
             http_client=http,
             max_concurrent_filing_fetches=0,
         )
+
+
+@pytest.mark.asyncio
+async def test_global_fetch_isolates_malformed_filing_and_logs_day_summary(
+    engine: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    day = date(2026, 7, 10)
+    good = "0001321655-26-000111"
+    bad = "0001045810-26-000222"
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "PALANTIR TECHNOLOGIES INC.",
+                        "1321655",
+                        day.isoformat(),
+                        f"edgar/data/1321655/{good}.txt",
+                    ),
+                    (
+                        "4",
+                        "NVIDIA CORP",
+                        "1045810",
+                        day.isoformat(),
+                        f"edgar/data/1045810/{bad}.txt",
+                    ),
+                )
+            ),
+            good: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="0001321655",
+                        issuer_ticker="PLTR",
+                        owner_cik="0001111111",
+                    )
+                )
+            ),
+            bad: _FakeResp(text="<SEC-DOCUMENT>not ownership xml</SEC-DOCUMENT>"),
+        }
+    )
+
+    with caplog.at_level("INFO"):
+        rows = await _adapter(http).get_form4_for_date_range(
+            day, day, ttl_seconds=0
+        )
+
+    assert {row["ticker"] for row in rows} == {"PLTR"}
+    assert any(
+        "sec_form4.daily_index_summary" in record.message
+        or getattr(record, "event", "") == "sec_form4.daily_index_summary"
+        or "daily_index_summary" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_fetch_retries_filing_429_once_then_succeeds(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    accession = "0001321655-26-000111"
+    body = _full_submission(
+        _form4_xml(
+            issuer_cik="0001321655",
+            issuer_ticker="PLTR",
+            owner_cik="0001111111",
+        )
+    )
+    clock = _FakeClock()
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "PALANTIR TECHNOLOGIES INC.",
+                        "1321655",
+                        day.isoformat(),
+                        f"edgar/data/1321655/{accession}.txt",
+                    )
+                )
+            ),
+            accession: [
+                _FakeResp(status=429, text="slow down"),
+                _FakeResp(text=body),
+            ],
+        },
+        clock=clock,
+    )
+
+    rows = await _adapter(http, clock=clock).get_form4_for_date_range(
+        day, day, ttl_seconds=0
+    )
+
+    assert {row["ticker"] for row in rows} == {"PLTR"}
+    assert sum(1 for call in http.calls if accession in call) == 2
+    assert 1.0 in clock.sleeps
