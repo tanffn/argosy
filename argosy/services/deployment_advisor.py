@@ -77,6 +77,16 @@ class DeploymentPlan:
     market_context_age: str | None   # P1: None ("plan-only"); P2 fills cached-read age
     caveats: tuple[str, ...]
     note: str = ""
+    # Item D — dry-powder earmark subtracted from deployable cash (0 when absent).
+    # Conservation: deploy_amount + discovery_reserve + (cash_total - deploy_amount
+    # - discovery_reserve if pre-split) … see ``cash_total_usd``.
+    # Invariant when cash_total_usd is set:
+    #   deploy_amount_usd + discovery_reserve_usd + undeployed_remainder_usd
+    #   + (optional buys already in deploy_amount accounting)
+    # Practically: cash_total = deploy_amount(=post-reserve attempt) + discovery_reserve
+    # and deploy_amount = deployed_buys + undeployed_remainder.
+    discovery_reserve_usd: float = 0.0
+    cash_total_usd: float | None = None
 
     @property
     def deployed_total_usd(self) -> float:
@@ -431,6 +441,21 @@ def assemble_deployment_plan(
     ``sum(high-tier lines) == sleeve_budget`` (within $0.50).
     """
     amount = round(deploy_amount_usd, 2)
+    cash_total = amount
+
+    # Item D — discovery dry-powder earmark is not deployable general cash.
+    from argosy.services.discovery_reserve import (
+        DISCOVERY_RESERVE_LABEL,
+        apply_discovery_reserve,
+        labeled_exclusion,
+        resolve_discovery_reserve_usd,
+    )
+
+    book_for_pct = round(sum(holdings.values()), 2)
+    reserve_resolved = resolve_discovery_reserve_usd(doc, book_usd=book_for_pct)
+    amount, discovery_reserve = apply_discovery_reserve(
+        cash_total_usd=cash_total, reserve_usd=reserve_resolved,
+    )
 
     # Resolve market_context_age up front.
     mca: str | None = market_context.overall_age_label if market_context is not None else None
@@ -443,6 +468,8 @@ def assemble_deployment_plan(
             undeployed_remainder_usd=amount, market_context_age=mca,
             caveats=_CAVEATS + (_remainder_caveat(amount),) if amount > 0.005 else _CAVEATS,
             note="No current canonical plan — accept a plan first.",
+            discovery_reserve_usd=discovery_reserve,
+            cash_total_usd=cash_total,
         )
 
     from argosy.services.allocation_engine import cash_only_deploy
@@ -563,6 +590,8 @@ def assemble_deployment_plan(
     # pro-rata rounding noise (the exact figure is still on undeployed_remainder_usd).
     if remainder >= 1.0:
         caveats = caveats + (_remainder_caveat(remainder),)
+    if discovery_reserve > 0:
+        caveats = caveats + (labeled_exclusion(discovery_reserve),)
     # P2: loud staleness caveat when any context feed is stale.
     if market_context is not None and market_context.is_any_stale:
         caveats = caveats + (
@@ -575,6 +604,11 @@ def assemble_deployment_plan(
                 "for market-aware pacing); tactical sleeves arrive in later phases.")
     else:
         note = f"Market-aware deploy (P2): context age {mca}."
+    if discovery_reserve > 0:
+        note = (
+            f"{note} {DISCOVERY_RESERVE_LABEL}: "
+            f"${discovery_reserve:,.2f} of ${cash_total:,.2f} cash excluded."
+        ).strip()
     return DeploymentPlan(
         deploy_amount_usd=amount, as_of=as_of, tiers=tiers,
         us_situs_exposed_usd=round(exposed_total, 2),
@@ -582,4 +616,6 @@ def assemble_deployment_plan(
         undeployed_remainder_usd=remainder, market_context_age=mca,
         caveats=caveats,
         note=note,
+        discovery_reserve_usd=discovery_reserve,
+        cash_total_usd=cash_total,
     )

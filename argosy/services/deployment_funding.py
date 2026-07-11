@@ -60,7 +60,12 @@ def _fmt_local(currency: str, v: float) -> str:
     return f"{currency} {v:,.0f}"
 
 
-def derive_cash_funding(snapshot, deploy_amount_usd: float) -> FundingBreakdown:
+def derive_cash_funding(
+    snapshot,
+    deploy_amount_usd: float,
+    *,
+    discovery_reserve_usd: float = 0.0,
+) -> FundingBreakdown:
     """Derive the funding table + required actions from a PortfolioSnapshot.
 
     Pure derivation — no LLM, no live calls. ``deploy_amount_usd`` is the
@@ -168,6 +173,12 @@ def derive_cash_funding(snapshot, deploy_amount_usd: float) -> FundingBreakdown:
             f"the deploy amount is an explicit override or the snapshot moved; "
             f"both are shown."
         )
+
+    if discovery_reserve_usd and float(discovery_reserve_usd) > _EPSILON_USD:
+        from argosy.services.discovery_reserve import labeled_exclusion
+
+        excl = labeled_exclusion(float(discovery_reserve_usd))
+        note = f"{note} {excl}".strip() if note else excl
 
     return FundingBreakdown(
         rows=rows, total_usd=total_usd,

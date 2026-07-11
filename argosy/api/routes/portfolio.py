@@ -1582,7 +1582,13 @@ def get_deploy_cash(
         _fund_row = get_latest_snapshot_row(db, user_id)
         if _fund_row is not None:
             _funding_dto = funding_breakdown_to_dto(
-                derive_cash_funding(row_to_snapshot(_fund_row), amount)
+                derive_cash_funding(
+                    row_to_snapshot(_fund_row),
+                    float(plan.deploy_amount_usd),
+                    discovery_reserve_usd=float(
+                        getattr(plan, "discovery_reserve_usd", 0.0) or 0.0
+                    ),
+                )
             )
         dto.funding = _funding_dto
     except Exception as exc:  # noqa: BLE001 — additive; never break the route

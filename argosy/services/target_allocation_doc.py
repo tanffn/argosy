@@ -77,6 +77,9 @@ class AllocationClassDoc(BaseModel):
     agreement: str = ""
     rationale: str = ""
     dissent: str = ""
+    # Dry-powder earmark on the cash class (v76+). Absent on other classes.
+    # Deployment tooling subtracts this from deployable cash (Item D).
+    discovery_reserve: dict | None = None
 
 
 class GlideWaypoint(BaseModel):

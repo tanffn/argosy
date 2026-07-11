@@ -54,6 +54,30 @@ def build_decision_packet(
     """
     holdings_usd = {k: float(v) for k, v in (holdings_usd or {}).items()}
 
+    # Item D — discovery dry-powder earmark is not deployable general cash.
+    from argosy.services.discovery_reserve import (
+        DISCOVERY_RESERVE_LABEL,
+        apply_discovery_reserve,
+        resolve_discovery_reserve_usd,
+    )
+
+    book = book_usd if book_usd is not None else sum(holdings_usd.values())
+    reserve_resolved = resolve_discovery_reserve_usd(doc, book_usd=book)
+    if (
+        cash_usd is not None
+        and float(deployable_usd) + 0.02 < float(cash_usd)
+    ):
+        # Caller already netted deployable; label the gap without double-subtract.
+        deployable_net = float(deployable_usd)
+        room = round(float(cash_usd) - float(deployable_usd), 2)
+        discovery_excl = min(reserve_resolved, room) if reserve_resolved > 0 else 0.0
+    else:
+        deployable_net, discovery_excl = apply_discovery_reserve(
+            cash_total_usd=float(deployable_usd),
+            reserve_usd=reserve_resolved,
+        )
+    deployable_usd = deployable_net
+
     # --- plan menu (sleeve → target → tickers → domiciles → current/gap) --
     # current_pct_by_sleeve is Argosy's canonical current-vs-target attribution
     # (from build_allocation_breakdown, look-through aware). Carrying the gap lets
@@ -98,7 +122,6 @@ def build_decision_packet(
     known |= {s.upper() for s in (extra_known_symbols or set())}
 
     # --- concentration -----------------------------------------------------
-    book = book_usd if book_usd is not None else sum(holdings_usd.values())
     nvda_ltv = (
         nvda_lookthrough_usd if nvda_lookthrough_usd is not None
         else holdings_usd.get("NVDA", 0.0)
@@ -127,9 +150,12 @@ def build_decision_packet(
             "confidence": f.confidence,
         })
 
-    return {
+    packet: dict[str, Any] = {
         "deployable_usd": float(deployable_usd),
-        "total_cash_usd": float(cash_usd) if cash_usd is not None else None,
+        "total_cash_usd": (
+            float(cash_usd) if cash_usd is not None
+            else round(float(deployable_usd) + float(discovery_excl), 2)
+        ),
         "holdings": holdings_usd,
         "known_symbols": known,
         "plan_menu": plan_menu,
@@ -154,6 +180,12 @@ def build_decision_packet(
         },
         "user_constraints": user_constraints or "",
     }
+    if discovery_excl > 0:
+        packet["discovery_reserve"] = {
+            "usd": round(float(discovery_excl), 2),
+            "label": DISCOVERY_RESERVE_LABEL,
+        }
+    return packet
 
 
 __all__ = ["build_decision_packet"]

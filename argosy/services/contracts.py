@@ -615,6 +615,9 @@ class DeploymentPlanDTO(BaseModel):
     # deterministic pre-execution actions (convert NIS->USD, wire from broker,
     # cover a negative balance). null when no snapshot is available.
     funding: FundingBreakdownDTO | None = None
+    # Item D — dry-powder earmark excluded from deployable cash (0 when absent).
+    discovery_reserve_usd: float = 0.0
+    cash_total_usd: float | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
@@ -641,6 +644,10 @@ def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
             ) for l in t.lines],
         ) for t in plan.tiers],
         caveats=list(plan.caveats), note=plan.note,
+        discovery_reserve_usd=float(
+            getattr(plan, "discovery_reserve_usd", 0.0) or 0.0
+        ),
+        cash_total_usd=getattr(plan, "cash_total_usd", None),
     )
 
 
