@@ -749,13 +749,21 @@ class DecisionFlow:
         falsifiers: list[str] | None = None,
         revisit_triggers: list[dict] | None = None,
     ) -> None:
-        """Best-effort write to the settled-verdict registry (Item B)."""
+        """Write settled verdict + retract contradictory open proposals atomically.
+
+        Item B + Item C: one transaction commits the verdict row and any
+        retract-on-reversal cancellations (proposals_history note citing the
+        run). Best-effort — must not fail the decision flow.
+        """
         if self.config.skip_persistence:
             return
         try:
             import sqlalchemy as sa
             from sqlalchemy.orm import sessionmaker
 
+            from argosy.decisions.retract_on_reversal import (
+                retract_contradictory_open_proposals,
+            )
             from argosy.services.verdict_registry import write_verdict
 
             url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
@@ -780,6 +788,19 @@ class DecisionFlow:
                     reasoning_md=note,
                     settled=True,
                 )
+                # Item C — same transaction as the verdict write.
+                if decision_run_id:
+                    detail = (reasoning_md or "").strip()
+                    if len(detail) > 180:
+                        detail = detail[:177] + "..."
+                    retract_contradictory_open_proposals(
+                        sess,
+                        user_id=self.user_id,
+                        ticker=ticker,
+                        verdict=verdict,
+                        decision_run_id=decision_run_id,
+                        detail=detail,
+                    )
                 sess.commit()
             finally:
                 sess.close()
