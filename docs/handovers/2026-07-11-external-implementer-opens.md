@@ -85,7 +85,13 @@ earmark shows reserve excluded + labeled.
 **E. Signal streams B → D → C → E** per `docs/design/early_signal_streams.md` §4/§6 (contract
 §3 already implemented by stream A — reuse it). One stream per hand-back; entry prices
 snapshotted AT WRITE on ledger predictions; per-stream ledger sub-sources (stream C:
-per-person). Do NOT start until the stream-A post-merge review verdict lands (§4).
+per-person). **UNBLOCKED — stream-A post-merge review PASSED all 5 dimensions (2026-07-11:
+spec contract, migrations 0082/0083 additive + at head, 138 tests green, live cycle verified
+end-to-end with 16 entry-priced ledger rows, dedup + failure isolation proven against real
+production failures).** Adopt its patterns verbatim. ONE review follow-up folded into this
+item: the recipient-resolver's `agent_error` tombstone is permanent — a transient LLM failure
+hides a real public recipient forever; make agent_error tombstones retryable/TTL'd (keep
+`not_public` permanent).
 
 **F. Benchmark five-agent pipeline + case batch** per
 `docs/design/fleet_calibration_benchmark.md` §2a: separate sanitizer / review / grading agents
