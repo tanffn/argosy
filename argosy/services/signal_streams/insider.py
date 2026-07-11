@@ -41,6 +41,8 @@ class InsiderClusterConfig:
     min_cluster_value_market_cap_bps: float = 0.5
     min_distinct_sellers: int = 2
     min_stake_sale_pct: float = 20
+    warning_ttl_days: int = 30
+    cursor_max_catchup_days: int = 31
 
     def __post_init__(self) -> None:
         if (
@@ -77,6 +79,30 @@ class InsiderClusterConfig:
         _validate_positive_finite(self.min_stake_sale_pct, "min_stake_sale_pct")
         if self.min_stake_sale_pct >= 100:
             raise ValueError("min_stake_sale_pct must be less than 100")
+        if (
+            isinstance(self.warning_ttl_days, bool)
+            or not isinstance(self.warning_ttl_days, int)
+            or not 0 < self.warning_ttl_days <= 365
+        ):
+            raise ValueError(
+                "warning_ttl_days must be an integer between 1 and 365"
+            )
+        if (
+            isinstance(self.cursor_max_catchup_days, bool)
+            or not isinstance(self.cursor_max_catchup_days, int)
+            or not 0 < self.cursor_max_catchup_days <= 31
+        ):
+            raise ValueError(
+                "cursor_max_catchup_days must be an integer between 1 and 31"
+            )
+        if (
+            self.lookback_days + self.cursor_max_catchup_days
+            > MAX_GLOBAL_DATE_RANGE_DAYS
+        ):
+            raise ValueError(
+                "lookback_days plus cursor_max_catchup_days exceeds "
+                "SEC range limit"
+            )
 
 
 @dataclass(frozen=True)
@@ -579,19 +605,82 @@ def _sell_nomination(
     )
 
 
+def _nomination_transaction_identities(
+    nomination: SignalNomination,
+) -> frozenset[str]:
+    identities: set[str] = set()
+    for transaction in nomination.evidence.get("transactions", []):
+        filing_identity = str(transaction.get("filing_identity") or "")
+        transaction_table = str(transaction.get("transaction_table") or "")
+        transaction_index = transaction.get("transaction_index")
+        if filing_identity and transaction_table and transaction_index is not None:
+            identities.add(
+                f"{filing_identity}:{transaction_table}:{transaction_index}"
+            )
+    return frozenset(identities)
+
+
+def _collapse_overlapping_nominations(
+    nominations: list[SignalNomination],
+) -> list[SignalNomination]:
+    unique = {nomination.dedup_key: nomination for nomination in nominations}
+    remaining = sorted(unique.values(), key=lambda item: item.dedup_key)
+    representatives: list[SignalNomination] = []
+    while remaining:
+        component = [remaining.pop(0)]
+        component_identities = set(
+            _nomination_transaction_identities(component[0])
+        )
+        changed = True
+        while changed:
+            changed = False
+            still_remaining: list[SignalNomination] = []
+            for candidate in remaining:
+                identities = _nomination_transaction_identities(candidate)
+                if component_identities.intersection(identities):
+                    component.append(candidate)
+                    component_identities.update(identities)
+                    changed = True
+                else:
+                    still_remaining.append(candidate)
+            remaining = still_remaining
+        representatives.append(
+            max(
+                component,
+                key=lambda item: (
+                    item.as_of,
+                    item.strength,
+                    len(_nomination_transaction_identities(item)),
+                    item.dedup_key,
+                ),
+            )
+        )
+    return representatives
+
+
 def classify_insider_transactions(
     rows: list[dict[str, Any]],
     *,
     snapshots: Mapping[str, InsiderMarketSnapshot],
     config: InsiderClusterConfig,
     through: date,
+    availability_since: date | None = None,
 ) -> list[SignalNomination]:
     """Purely classify verified Form 4 rows into deterministic clusters."""
-    window_start = through - timedelta(days=config.lookback_days - 1)
+    availability_since = availability_since or (
+        through - timedelta(days=config.lookback_days - 1)
+    )
+    predecessor_start = availability_since - timedelta(
+        days=config.lookback_days - 1
+    )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in _deduplicate_rows(rows):
         ticker = str(row.get("ticker") or "").strip().upper()
-        if ticker and _base_eligible(row, window_start=window_start, through=through):
+        if ticker and _base_eligible(
+            row,
+            window_start=predecessor_start,
+            through=through,
+        ):
             grouped.setdefault(ticker, []).append(row)
 
     nominations: list[SignalNomination] = []
@@ -600,13 +689,95 @@ def classify_insider_transactions(
         if snapshot is None or _positive_number(snapshot.price) is None:
             continue
         ticker_rows = sorted(grouped[ticker], key=_row_sort_key)
-        if _positive_number(snapshot.market_cap) is not None:
-            buy = _buy_nomination(ticker, ticker_rows, snapshot=snapshot, config=config)
-            if buy is not None:
-                nominations.append(buy)
-        sell = _sell_nomination(ticker, ticker_rows, snapshot=snapshot, config=config)
-        if sell is not None:
-            nominations.append(sell)
+        candidates: dict[str, list[SignalNomination]] = {
+            "long": [],
+            "short": [],
+        }
+        window_ends = sorted(
+            {
+                transaction_date
+                for row in ticker_rows
+                if (
+                    transaction_date := _parse_date(
+                        row.get("transaction_date")
+                    )
+                )
+                is not None
+            }
+        )
+        for window_end in window_ends:
+            window_start = window_end - timedelta(
+                days=config.lookback_days - 1
+            )
+            window_rows = [
+                row
+                for row in ticker_rows
+                if (
+                    transaction_date := _parse_date(
+                        row.get("transaction_date")
+                    )
+                )
+                is not None
+                and window_start <= transaction_date <= window_end
+            ]
+            latest_filed_at = max(
+                (
+                    filed_at
+                    for row in window_rows
+                    if (
+                        filed_at := _parse_date(row.get("filed_at"))
+                    )
+                    is not None
+                ),
+                default=None,
+            )
+            if (
+                latest_filed_at is None
+                or latest_filed_at < availability_since
+            ):
+                continue
+            window_nominations: list[SignalNomination | None] = []
+            if _positive_number(snapshot.market_cap) is not None:
+                window_nominations.append(
+                    _buy_nomination(
+                        ticker,
+                        window_rows,
+                        snapshot=snapshot,
+                        config=config,
+                    )
+                )
+            window_nominations.append(
+                _sell_nomination(
+                    ticker,
+                    window_rows,
+                    snapshot=snapshot,
+                    config=config,
+                )
+            )
+            for nomination in window_nominations:
+                if (
+                    nomination is None
+                    or nomination.as_of < availability_since
+                ):
+                    continue
+                candidates[nomination.direction].append(nomination)
+        ticker_nominations = [
+            representative
+            for direction in ("long", "short")
+            for representative in _collapse_overlapping_nominations(
+                candidates[direction]
+            )
+        ]
+        nominations.extend(
+            sorted(
+                ticker_nominations,
+                key=lambda item: (
+                    item.as_of,
+                    item.direction,
+                    item.dedup_key,
+                ),
+            )
+        )
     return nominations
 
 
@@ -649,8 +820,15 @@ class InsiderClusterStream:
         del session
         through = self.today() - timedelta(days=1)
         recent_start = through - timedelta(days=self.config.recent_scan_days - 1)
-        trigger_start = min(since, recent_start)
-        requested_start = trigger_start - timedelta(days=self.config.lookback_days - 1)
+        availability_since = min(since, recent_start)
+        normal_start = through - timedelta(
+            days=self.config.lookback_days - 1
+        )
+        requested_start = normal_start
+        if availability_since < normal_start:
+            requested_start = availability_since - timedelta(
+                days=self.config.lookback_days - 1
+            )
         bounded_start = max(
             requested_start,
             through - timedelta(days=MAX_GLOBAL_DATE_RANGE_DAYS - 1),
@@ -684,6 +862,7 @@ class InsiderClusterStream:
             snapshots=snapshots,
             config=self.config,
             through=through,
+            availability_since=availability_since,
         )
 
 

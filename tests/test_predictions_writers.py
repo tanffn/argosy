@@ -96,7 +96,7 @@ def sync_session(tmp_path):
             pass
         conn.execute(sa.text(
             "CREATE UNIQUE INDEX ix_predictions_source_messageid "
-            "ON predictions (source, message_id) "
+            "ON predictions (user_id, source, message_id) "
             "WHERE message_id IS NOT NULL"
         ))
 

@@ -66,12 +66,13 @@ def _prediction(
     timeframe_days: int,
     direction: str = "long",
     event_at: datetime | None = None,
+    source: str = "signal_stream:gov_contracts",
 ) -> Prediction:
     event_at = event_at or datetime(2026, 1, 1, tzinfo=UTC)
     method = f"fixed_lookahead_{timeframe_days}d"
     prediction = Prediction(
         user_id="ariel",
-        source="signal_stream:gov_contracts",
+        source=source,
         source_ref="{}",
         ticker="TEST",
         direction=direction,
@@ -85,6 +86,36 @@ def _prediction(
     db.add(prediction)
     db.flush()
     return prediction
+
+
+def test_warning_only_source_predictions_contribute_to_scorecard(db) -> None:
+    prediction = _prediction(
+        db,
+        timeframe_days=30,
+        direction="short",
+        source="signal_stream:insider_cluster",
+    )
+    _outcome(
+        db,
+        prediction,
+        outcome_kind="hit_target",
+        pnl_pct=0.12,
+        entry=100,
+        exit=88,
+    )
+    db.commit()
+
+    scorecard = reliability.signal_source_scorecard(
+        db,
+        "ariel",
+        "insider_cluster",
+        now=datetime(2026, 7, 10, tzinfo=UTC),
+    )
+
+    assert scorecard["source"] == "signal_stream:insider_cluster"
+    assert scorecard["scored_outcomes"] == 1
+    assert scorecard["win_rate"] == pytest.approx(1.0)
+    assert scorecard["horizons"]["30d"]["scored_outcomes"] == 1
 
 
 def _outcome(

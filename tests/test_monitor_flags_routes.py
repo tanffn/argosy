@@ -137,6 +137,38 @@ class TestListMonitorFlags:
         assert rows[0]["kind"] == "mc_regression"
         assert rows[0]["payload"]["delta_pp"] == -10.0
 
+    def test_signal_stream_warning_payload_is_returned_generically(
+        self,
+        client_with_db,
+    ):
+        _ensure_user(client_with_db)
+        payload = {
+            "headline": "SCHW: insider cluster warning",
+            "summary": "SCHW generated a short insider cluster signal.",
+            "detail": "Two C-suite sellers reduced verified stakes.",
+            "ticker": "SCHW",
+            "stream": "insider_cluster",
+            "direction": "short",
+            "source_urls": [
+                "https://www.sec.gov/Archives/edgar/data/1/form4.xml"
+            ],
+            "evidence": {"distinct_insider_count": 2},
+        }
+        _seed_flag(
+            client_with_db,
+            kind="signal_stream_warning",
+            payload=payload,
+        )
+
+        response = client_with_db.get(
+            "/api/retirement/monitor/flags?user_id=ariel",
+        )
+
+        assert response.status_code == 200
+        row = response.json()[0]
+        assert row["kind"] == "signal_stream_warning"
+        assert row["payload"] == payload
+
 
 class TestAcknowledgeMonitorFlag:
     def test_acknowledge_sets_acknowledged_at(self, client_with_db):

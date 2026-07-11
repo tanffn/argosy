@@ -309,7 +309,7 @@ function severityBadgeVariant(
   }
 }
 
-function buildSummary(flag: MonitorFlagDTO): string {
+export function buildSummary(flag: MonitorFlagDTO): string {
   try {
     switch (flag.kind) {
       case "allocation_drift":
@@ -326,6 +326,12 @@ function buildSummary(flag: MonitorFlagDTO): string {
     }
     if (flag.kind.startsWith("thesis_monitor_")) {
       return thesisMonitorSummary(flag.payload);
+    }
+    for (const key of ["summary", "detail", "headline"]) {
+      const value = flag.payload[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value.trim();
+      }
     }
     return `${kindLabel(flag.kind)} flag detected`;
   } catch {

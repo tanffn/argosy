@@ -15,7 +15,10 @@ from sqlalchemy.orm import sessionmaker
 
 import argosy.services.high_potential_funnel as hpf
 from argosy.services.contracts import EstimatorVerdict, FleetPick
-from argosy.services.predictions.reliability import signal_scorecard_label
+from argosy.services.predictions.reliability import (
+    signal_scorecard_label,
+    signal_source_scorecard,
+)
 from argosy.services.signal_streams.base import SignalNomination, SignalStream
 from argosy.services.signal_streams.contracts import (
     AWARD_TYPE_CODES,
@@ -33,6 +36,7 @@ from argosy.services.signal_streams.pipeline import process_nominations
 from argosy.services.trend_radar import ScanResult
 from argosy.state.models import (
     Base,
+    MonitorFlag,
     Prediction,
     RecipientResolution,
     ScanState,
@@ -97,6 +101,100 @@ def db_session():
     finally:
         session.close()
         engine.dispose()
+
+
+def test_signal_stream_config_defaults_and_validation() -> None:
+    from argosy.config import (
+        GovContractsSignalConfig,
+        InsiderClusterSignalConfig,
+        SignalStreamsConfig,
+    )
+
+    config = SignalStreamsConfig()
+
+    assert config.enabled is True
+    assert config.gov_contracts == GovContractsSignalConfig(
+        enabled=True,
+        materiality_threshold=0.05,
+        lookback_days=90,
+        recent_scan_days=2,
+        max_pages_per_query=10,
+    )
+    assert config.insider_cluster == InsiderClusterSignalConfig(
+        enabled=True,
+        lookback_days=14,
+        recent_scan_days=2,
+        min_distinct_buyers=2,
+        min_cluster_value_usd=100_000,
+        min_cluster_value_market_cap_bps=0.5,
+        min_distinct_sellers=2,
+        min_stake_sale_pct=20,
+        warning_ttl_days=30,
+        cursor_max_catchup_days=31,
+    )
+    with pytest.raises(ValueError):
+        InsiderClusterSignalConfig(recent_scan_days=15)
+    with pytest.raises(ValueError):
+        InsiderClusterSignalConfig(
+            lookback_days=30,
+            recent_scan_days=3,
+        )
+    with pytest.raises(ValueError):
+        InsiderClusterSignalConfig(warning_ttl_days=0)
+    with pytest.raises(ValueError):
+        InsiderClusterSignalConfig(warning_ttl_days=366)
+    with pytest.raises(ValueError):
+        InsiderClusterSignalConfig(cursor_max_catchup_days=32)
+    with pytest.raises(ValueError):
+        GovContractsSignalConfig(enabled="yes")
+
+
+def test_default_streams_register_enabled_a_then_b_with_production_seams(
+    monkeypatch,
+) -> None:
+    import argosy.services.signal_streams as signal_streams
+    from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
+    from argosy.config import (
+        GovContractsSignalConfig,
+        InsiderClusterSignalConfig,
+        SignalStreamsConfig,
+    )
+    from argosy.orchestrator.loops.signal_streams_daily import _default_streams
+    from argosy.services.signal_streams.insider import (
+        InsiderClusterStream,
+        YFinanceInsiderMarketProvider,
+    )
+
+    monkeypatch.setattr(
+        "argosy.config.load_signal_streams_config",
+        lambda user_id: SignalStreamsConfig(),
+    )
+    streams = _default_streams("ariel")
+
+    assert [stream.name for stream in streams] == [
+        "gov_contracts",
+        "insider_cluster",
+    ]
+    assert isinstance(streams[0], GovContractsStream)
+    assert isinstance(streams[1], InsiderClusterStream)
+    assert isinstance(streams[1].sec_adapter, SecForm4Adapter)
+    assert isinstance(
+        streams[1].market_snapshot,
+        YFinanceInsiderMarketProvider,
+    )
+    assert streams[1].config.warning_ttl_days == 30
+    assert signal_streams.InsiderClusterStream is InsiderClusterStream
+
+    monkeypatch.setattr(
+        "argosy.config.load_signal_streams_config",
+        lambda user_id: SignalStreamsConfig(
+            gov_contracts=GovContractsSignalConfig(enabled=False),
+            insider_cluster=InsiderClusterSignalConfig(enabled=True),
+        ),
+    )
+    assert [stream.name for stream in _default_streams("ariel")] == [
+        "insider_cluster"
+    ]
 
 
 def test_signal_nomination_contract_is_frozen_and_runtime_checkable() -> None:
@@ -893,7 +991,9 @@ def test_nomination_writes_auditable_radar_state_and_true_30_180_predictions(
 def test_warning_only_nomination_writes_predictions_without_radar_candidate(
     db_session,
 ) -> None:
+    observed_at = datetime(2026, 7, 10, 14, 30, tzinfo=UTC)
     warning = _market_nomination(
+        ticker="SCHW",
         stream="insider_cluster",
         direction="short",
         route_to_funnel=False,
@@ -901,6 +1001,21 @@ def test_warning_only_nomination_writes_predictions_without_radar_candidate(
         evidence={
             **_market_nomination().evidence,
             "warning_only": True,
+            "warning_ttl_days": 14,
+            "transactions": [
+                {
+                    "filer_name": "Alice Seller",
+                    "source_urls": [
+                        "https://www.sec.gov/Archives/edgar/data/1/form4.xml"
+                    ],
+                },
+                {
+                    "filer_name": "Bob Seller",
+                    "source_urls": [
+                        "https://www.sec.gov/Archives/edgar/data/2/form4.xml"
+                    ],
+                },
+            ],
         },
     )
 
@@ -908,7 +1023,7 @@ def test_warning_only_nomination_writes_predictions_without_radar_candidate(
         db_session,
         user_id="ariel",
         nominations=[warning],
-        observed_at=datetime(2026, 7, 10, 14, 30, tzinfo=UTC),
+        observed_at=observed_at,
     )
     db_session.commit()
 
@@ -918,8 +1033,177 @@ def test_warning_only_nomination_writes_predictions_without_radar_candidate(
     assert summary.quarantined == 0
     assert summary.candidates == []
     assert summary.to_dict()["warning_only"] == 1
+    assert summary.monitor_flags_written == 1
+    assert summary.monitor_flags_refreshed == 0
     assert db_session.query(Prediction).count() == 2
     assert db_session.query(ScanState).count() == 0
+    scorecard = signal_source_scorecard(
+        db_session,
+        "ariel",
+        "insider_cluster",
+        now=datetime(2026, 7, 20, tzinfo=UTC),
+    )
+    assert scorecard["source"] == "signal_stream:insider_cluster"
+    assert scorecard["observation_days"] == 10
+    assert scorecard["scored_outcomes"] == 0
+    flag = db_session.query(MonitorFlag).one()
+    payload = json.loads(flag.payload)
+    assert flag.kind == "signal_stream_warning"
+    assert flag.severity == "warning"
+    assert flag.status == "active"
+    assert flag.dedup_key == (
+        "v1|signal_stream_warning|ariel|insider_cluster|"
+        "sec-form4:short:SCHW:warning"
+    )
+    assert flag.surfaced_at == observed_at.replace(tzinfo=None)
+    assert flag.expires_at == (
+        observed_at + timedelta(days=14)
+    ).replace(tzinfo=None)
+    assert payload["stream"] == "insider_cluster"
+    assert payload["ticker"] == "SCHW"
+    assert payload["direction"] == "short"
+    assert payload["dedup_key"] == warning.dedup_key
+    assert payload["headline"]
+    assert payload["summary"]
+    assert payload["detail"]
+    assert payload["evidence"] == warning.evidence
+    assert payload["source_urls"] == [
+        "https://finance.yahoo.com/quote/PLTR",
+        "https://finance.yahoo.com/quote/PLTR/financials",
+        "https://www.sec.gov/Archives/edgar/data/1/form4.xml",
+        "https://www.sec.gov/Archives/edgar/data/2/form4.xml",
+        "https://www.usaspending.gov/award/A1/",
+    ]
+
+    refreshed_at = observed_at + timedelta(days=1)
+    rerun = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[warning],
+        observed_at=refreshed_at,
+    )
+    db_session.commit()
+    assert rerun.monitor_flags_written == 0
+    assert rerun.monitor_flags_refreshed == 0
+    assert db_session.query(MonitorFlag).count() == 1
+    assert db_session.query(Prediction).count() == 2
+    db_session.refresh(flag)
+    assert flag.surfaced_at == observed_at.replace(tzinfo=None)
+    assert flag.expires_at == (
+        observed_at + timedelta(days=14)
+    ).replace(tzinfo=None)
+
+    changed_warning = _market_nomination(
+        ticker="SCHW",
+        stream="insider_cluster",
+        direction="short",
+        route_to_funnel=False,
+        dedup_key=warning.dedup_key,
+        evidence={
+            **warning.evidence,
+            "new_verified_fact": "stake sale increased",
+        },
+    )
+    changed = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[changed_warning],
+        observed_at=refreshed_at + timedelta(hours=1),
+    )
+    db_session.commit()
+    assert changed.monitor_flags_written == 0
+    assert changed.monitor_flags_refreshed == 1
+    db_session.refresh(flag)
+    assert json.loads(flag.payload)["evidence"]["new_verified_fact"] == (
+        "stake sale increased"
+    )
+    assert flag.surfaced_at == observed_at.replace(tzinfo=None)
+    assert flag.expires_at == (
+        observed_at + timedelta(days=14)
+    ).replace(tzinfo=None)
+
+    flag.acknowledged_at = refreshed_at
+    flag.status = "acknowledged"
+    db_session.commit()
+    hidden = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[warning],
+        observed_at=refreshed_at + timedelta(days=1),
+    )
+    db_session.commit()
+    assert hidden.monitor_flags_written == 0
+    assert hidden.monitor_flags_refreshed == 0
+    assert db_session.query(MonitorFlag).count() == 1
+    db_session.refresh(flag)
+    assert flag.status == "acknowledged"
+    assert flag.acknowledged_at is not None
+
+
+def test_expired_warning_event_never_resurrects(db_session) -> None:
+    observed_at = datetime(2026, 7, 10, 14, 30, tzinfo=UTC)
+    warning = _market_nomination(
+        ticker="SCHW",
+        stream="insider_cluster",
+        direction="short",
+        route_to_funnel=False,
+        dedup_key="sec-form4:short:SCHW:expired",
+        evidence={
+            **_market_nomination().evidence,
+            "warning_only": True,
+            "warning_ttl_days": 1,
+        },
+    )
+    first = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[warning],
+        observed_at=observed_at,
+    )
+    db_session.commit()
+    flag = db_session.query(MonitorFlag).one()
+    original_payload = flag.payload
+
+    changed_warning = _market_nomination(
+        ticker="SCHW",
+        stream="insider_cluster",
+        direction="short",
+        route_to_funnel=False,
+        dedup_key=warning.dedup_key,
+        evidence={**warning.evidence, "new_verified_fact": "later filing"},
+    )
+    rerun = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[changed_warning],
+        observed_at=observed_at + timedelta(days=2),
+    )
+    db_session.commit()
+
+    assert first.monitor_flags_written == 1
+    assert rerun.monitor_flags_written == 0
+    assert rerun.monitor_flags_refreshed == 0
+    assert db_session.query(MonitorFlag).count() == 1
+    db_session.refresh(flag)
+    assert flag.payload == original_payload
+    assert flag.surfaced_at == observed_at.replace(tzinfo=None)
+    assert flag.expires_at == (
+        observed_at + timedelta(days=1)
+    ).replace(tzinfo=None)
+
+
+def test_funnel_nomination_never_creates_monitor_flag(db_session) -> None:
+    summary = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[_market_nomination()],
+        observed_at=datetime(2026, 7, 10, 14, 30, tzinfo=UTC),
+    )
+    db_session.commit()
+
+    assert summary.monitor_flags_written == 0
+    assert summary.monitor_flags_refreshed == 0
+    assert db_session.query(MonitorFlag).count() == 0
 
 
 def test_180d_prediction_scores_at_the_real_180_day_due_date(
@@ -1164,6 +1448,29 @@ def test_signal_streams_daily_is_cron_registered_and_isolates_stream_failures(
         def fetch(self, session, *, since):
             return [_market_nomination()]
 
+    class WarningStream:
+        name = "insider_cluster"
+        config = SimpleNamespace(
+            lookback_days=14,
+            recent_scan_days=2,
+            warning_ttl_days=7,
+        )
+
+        def fetch(self, session, *, since):
+            return [
+                _market_nomination(
+                    ticker="SCHW",
+                    stream=self.name,
+                    direction="short",
+                    route_to_funnel=False,
+                    dedup_key="sec-form4:short:SCHW:warning",
+                    evidence={
+                        **_market_nomination().evidence,
+                        "warning_only": True,
+                    },
+                )
+            ]
+
     engine = sa.create_engine(
         f"sqlite:///{tmp_path / 'signals.db'}",
         connect_args={"check_same_thread": False},
@@ -1174,7 +1481,7 @@ def test_signal_streams_daily_is_cron_registered_and_isolates_stream_failures(
         setup.add(User(id="ariel", plan="free"))
         setup.commit()
     loop = SignalStreamsDailyLoop(
-        streams=[BrokenStream(), GoodStream()],
+        streams=[BrokenStream(), GoodStream(), WarningStream()],
         session_factory=factory,
         user_id="ariel",
     )
@@ -1189,8 +1496,16 @@ def test_signal_streams_daily_is_cron_registered_and_isolates_stream_failures(
     assert summary["streams"]["broken"]["status"] == "error"
     assert summary["streams"]["gov_contracts"]["status"] == "ok"
     assert summary["streams"]["gov_contracts"]["nominations"] == 1
+    insider = summary["streams"]["insider_cluster"]
+    assert insider["status"] == "ok"
+    assert insider["nominations"] == 1
+    assert insider["warning_only"] == 1
+    assert insider["predictions"] == 2
+    assert insider["monitor_flags_written"] == 1
+    assert insider["cursor"] == "2026-07-02T12:00:00+00:00"
     with factory() as verify:
-        assert verify.query(Prediction).count() == 2
+        assert verify.query(Prediction).count() == 4
+        assert verify.query(MonitorFlag).count() == 1
     metadata = signal_streams_daily_metadata()
     assert metadata.name == "signal_streams_daily"
     assert metadata.schedule_cron == "30 15 * * *"
@@ -1228,6 +1543,62 @@ class _RecordingCursorStream:
         if self.fail:
             raise RuntimeError("stream failed")
         return []
+
+
+def test_insider_cursor_catchup_applies_only_after_durable_anchor(
+    tmp_path,
+) -> None:
+    from argosy.orchestrator.loops.signal_streams_daily import _resolve_since
+    from argosy.state.models import SignalStreamCursor
+
+    engine, factory = _cursor_test_factory(tmp_path, "ariel")
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    with factory() as session:
+        bootstrap_since, cursor = _resolve_since(
+            session,
+            user_id="ariel",
+            stream="insider_cluster",
+            now_dt=now,
+            lookback_days=14,
+            recent_scan_days=2,
+            cursor_max_catchup_days=31,
+        )
+        assert cursor is None
+        assert bootstrap_since == date(2026, 7, 18)
+
+        session.add(
+            SignalStreamCursor(
+                user_id="ariel",
+                stream="insider_cluster",
+                last_success_at=datetime(2026, 7, 10, 12, 0, tzinfo=UTC),
+            )
+        )
+        session.commit()
+        catchup_since, cursor = _resolve_since(
+            session,
+            user_id="ariel",
+            stream="insider_cluster",
+            now_dt=now,
+            lookback_days=14,
+            recent_scan_days=2,
+            cursor_max_catchup_days=31,
+        )
+        assert cursor is not None
+        assert catchup_since == date(2026, 7, 9)
+
+        cursor.last_success_at = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+        session.commit()
+        capped_since, _ = _resolve_since(
+            session,
+            user_id="ariel",
+            stream="insider_cluster",
+            now_dt=now,
+            lookback_days=14,
+            recent_scan_days=2,
+            cursor_max_catchup_days=31,
+        )
+        assert capped_since == date(2026, 7, 1)
+    engine.dispose()
 
 
 def test_signal_cursor_initial_bootstrap_zero_success_and_normal_overlap(
@@ -1531,7 +1902,7 @@ def test_stream_a_migration_round_trips_on_empty_database(
         sync_url, connect_args={"check_same_thread": False}
     )
     assert sa.inspect(engine).has_table("signal_stream_cursors")
-    command.downgrade(config, "-1")
+    command.downgrade(config, "0082_early_signal_stream_a")
     assert not sa.inspect(engine).has_table("signal_stream_cursors")
     command.upgrade(config, "head")
     assert sa.inspect(engine).has_table("signal_stream_cursors")

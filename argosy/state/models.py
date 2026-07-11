@@ -3008,9 +3008,9 @@ class Prediction(Base):
     * ``ix_predictions_ticker_event`` on ``(ticker, event_at DESC)``
       partial ``WHERE ticker IS NOT NULL`` — per-ticker historical
       lookup.
-    * ``ix_predictions_source_messageid`` UNIQUE on ``(source,
+    * ``ix_predictions_source_messageid`` UNIQUE on ``(user_id, source,
       message_id)`` partial ``WHERE message_id IS NOT NULL`` —
-      per-source dedup; writer computes
+      per-user/per-source dedup; writer computes
       ``v1|predictions|<source>|<entity-id>`` per §2.2.
     * ``ix_predictions_due_at`` on ``(evaluation_due_at)`` partial
       ``WHERE archived = 0`` — evaluator hot-path.

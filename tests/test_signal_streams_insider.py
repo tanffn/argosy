@@ -11,6 +11,7 @@ import pytest
 
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.sec_form4_adapter import (
+    MAX_GLOBAL_DATE_RANGE_DAYS,
     _parse_form4_xml,
     _select_filing_versions,
 )
@@ -121,12 +122,14 @@ def _classify(
     snapshots: dict[str, InsiderMarketSnapshot] | None = None,
     config: InsiderClusterConfig | None = None,
     through: date = date(2026, 7, 10),
+    availability_since: date | None = None,
 ):
     return classify_insider_transactions(
         rows,
         snapshots=snapshots or {"ACME": _snapshot()},
         config=config or InsiderClusterConfig(),
         through=through,
+        availability_since=availability_since,
     )
 
 
@@ -142,6 +145,10 @@ def _classify(
         ("min_distinct_sellers", 1),
         ("min_stake_sale_pct", 0),
         ("min_stake_sale_pct", 100),
+        ("warning_ttl_days", 0),
+        ("warning_ttl_days", 366),
+        ("cursor_max_catchup_days", 0),
+        ("cursor_max_catchup_days", 32),
     ],
 )
 def test_insider_config_validates_every_threshold(field: str, value: Any) -> None:
@@ -192,6 +199,37 @@ def test_one_distinct_insider_is_rejected_even_across_multiple_rows() -> None:
         _second_buyer(filer_cik="0000001001", filer_name="Alice Buyer"),
     ]
     assert _classify(rows) == []
+
+
+def test_cluster_filed_before_availability_is_not_reemitted() -> None:
+    assert (
+        _classify(
+            [_row(), _second_buyer()],
+            availability_since=date(2026, 7, 7),
+        )
+        == []
+    )
+
+
+def test_cluster_transactions_must_share_one_fourteen_day_window() -> None:
+    rows = [
+        _row(
+            transaction_date="2026-07-01",
+            filed_at="2026-07-16",
+        ),
+        _second_buyer(
+            transaction_date="2026-07-15",
+            filed_at="2026-07-17",
+        ),
+    ]
+    assert (
+        _classify(
+            rows,
+            through=date(2026, 7, 20),
+            availability_since=date(2026, 7, 1),
+        )
+        == []
+    )
 
 
 @pytest.mark.parametrize("status", [True, None])
@@ -254,6 +292,132 @@ def test_dedup_hash_and_evidence_order_are_stable_across_input_order() -> None:
 
     assert forward.dedup_key == reverse.dedup_key
     assert forward.evidence["transactions"] == reverse.evidence["transactions"]
+
+
+def _two_disjoint_buy_clusters() -> list[dict[str, Any]]:
+    return [
+        _row(
+            accession="buy-a1",
+            filer_cik="1001",
+            filer_name="Early Buyer A",
+            transaction_date="2026-07-01",
+            filed_at="2026-07-03",
+        ),
+        _second_buyer(
+            accession="buy-a2",
+            filer_cik="1002",
+            filer_name="Early Buyer B",
+            transaction_date="2026-07-02",
+            filed_at="2026-07-04",
+        ),
+        _row(
+            accession="buy-b1",
+            filer_cik="2001",
+            filer_name="Late Buyer A",
+            transaction_date="2026-07-20",
+            filed_at="2026-07-22",
+        ),
+        _second_buyer(
+            accession="buy-b2",
+            filer_cik="2002",
+            filer_name="Late Buyer B",
+            transaction_date="2026-07-21",
+            filed_at="2026-07-23",
+        ),
+    ]
+
+
+def test_disjoint_buy_clusters_emit_and_write_separate_dedup_events() -> None:
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.signal_streams.pipeline import process_nominations
+    from argosy.state.models import Base, Prediction, User
+
+    nominations = _classify(
+        _two_disjoint_buy_clusters(),
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+
+    assert [(item.as_of, item.direction) for item in nominations] == [
+        (date(2026, 7, 4), "long"),
+        (date(2026, 7, 23), "long"),
+    ]
+    assert len({item.dedup_key for item in nominations}) == 2
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        session.add(User(id="ariel", plan="free"))
+        session.commit()
+        summary = process_nominations(
+            session,
+            user_id="ariel",
+            nominations=nominations,
+        )
+        session.commit()
+        rows = session.query(Prediction).all()
+        assert summary.active + summary.quarantined == 2
+        assert len(rows) == 4
+        assert len({row.message_id.rsplit("|", 1)[0] for row in rows}) == 2
+    engine.dispose()
+
+
+def test_overlapping_buy_windows_collapse_to_one_maximal_nomination() -> None:
+    rows = [
+        _row(
+            accession="overlap-1",
+            filer_cik="3001",
+            transaction_date="2026-07-01",
+            filed_at="2026-07-03",
+            value_usd=50_000,
+        ),
+        _second_buyer(
+            accession="overlap-2",
+            filer_cik="3002",
+            transaction_date="2026-07-02",
+            filed_at="2026-07-04",
+            value_usd=50_000,
+        ),
+        _row(
+            accession="overlap-3",
+            filer_cik="3003",
+            transaction_date="2026-07-03",
+            filed_at="2026-07-05",
+            value_usd=50_000,
+        ),
+    ]
+
+    nominations = _classify(
+        rows,
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+
+    assert len(nominations) == 1
+    assert nominations[0].as_of == date(2026, 7, 5)
+    assert len(nominations[0].evidence["transactions"]) == 3
+
+
+def test_disjoint_cluster_output_order_is_stable_across_input_order() -> None:
+    rows = _two_disjoint_buy_clusters()
+    forward = _classify(
+        rows,
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+    reverse = _classify(
+        list(reversed(rows)),
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+
+    assert len(forward) == 2
+    assert [(item.as_of, item.direction, item.dedup_key) for item in forward] == [
+        (item.as_of, item.direction, item.dedup_key) for item in reverse
+    ]
 
 
 def test_transaction_identity_separates_derivative_and_non_derivative_tables() -> None:
@@ -403,6 +567,53 @@ def _seller(
         value_usd=shares * 10,
         post_transaction_holdings=post_holdings,
     )
+
+
+def test_disjoint_warning_clusters_are_preserved() -> None:
+    early_a = _seller(
+        filer=4101,
+        role="officer (CEO)",
+        shares=300,
+        post_holdings=700,
+        accession="warning-a1",
+    )
+    early_a.update(transaction_date="2026-07-01", filed_at="2026-07-03")
+    early_b = _seller(
+        filer=4102,
+        role="officer (CFO)",
+        shares=300,
+        post_holdings=700,
+        accession="warning-a2",
+    )
+    early_b.update(transaction_date="2026-07-02", filed_at="2026-07-04")
+    late_a = _seller(
+        filer=4201,
+        role="officer (CEO)",
+        shares=300,
+        post_holdings=700,
+        accession="warning-b1",
+    )
+    late_a.update(transaction_date="2026-07-20", filed_at="2026-07-22")
+    late_b = _seller(
+        filer=4202,
+        role="officer (CFO)",
+        shares=300,
+        post_holdings=700,
+        accession="warning-b2",
+    )
+    late_b.update(transaction_date="2026-07-21", filed_at="2026-07-23")
+
+    nominations = _classify(
+        [early_a, early_b, late_a, late_b],
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+
+    assert [(item.as_of, item.direction) for item in nominations] == [
+        (date(2026, 7, 4), "short"),
+        (date(2026, 7, 23), "short"),
+    ]
+    assert len({item.dedup_key for item in nominations}) == 2
 
 
 def test_exact_twenty_percent_sale_is_rejected_but_above_twenty_warns() -> None:
@@ -770,6 +981,58 @@ def _official_schw_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
+    sec = _FixtureSecAdapter([])
+    stream = InsiderClusterStream(
+        sec_adapter=sec,
+        market_snapshot=lambda ticker: _snapshot(ticker=ticker),
+        today=lambda: date(2026, 7, 31),
+    )
+
+    assert stream.fetch(None, since=date(2026, 7, 18)) == []
+
+    assert sec.calls == [(date(2026, 7, 17), date(2026, 7, 30))]
+
+
+def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
+    rows = [
+        _row(
+            transaction_date="2026-07-08",
+            filed_at="2026-07-11",
+        ),
+        _second_buyer(
+            transaction_date="2026-07-10",
+            filed_at="2026-07-12",
+        ),
+    ]
+    sec = _FixtureSecAdapter(rows)
+    stream = InsiderClusterStream(
+        sec_adapter=sec,
+        market_snapshot=lambda ticker: _snapshot(ticker=ticker),
+        today=lambda: date(2026, 7, 31),
+    )
+
+    nominations = stream.fetch(None, since=date(2026, 7, 10))
+
+    assert [nomination.ticker for nomination in nominations] == ["ACME"]
+    assert nominations[0].as_of == date(2026, 7, 12)
+    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 30))]
+
+
+def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
+    sec = _FixtureSecAdapter([])
+    stream = InsiderClusterStream(
+        sec_adapter=sec,
+        market_snapshot=lambda ticker: _snapshot(ticker=ticker),
+        today=lambda: date(2026, 7, 31),
+    )
+
+    stream.fetch(None, since=date(2026, 5, 1))
+
+    assert MAX_GLOBAL_DATE_RANGE_DAYS == 45
+    assert sec.calls == [(date(2026, 6, 16), date(2026, 7, 30))]
+
+
 def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
     fixture = _official_schw_rows()
     assert [(row["shares"], row["price_per_share"]) for row in fixture] == [
@@ -803,7 +1066,7 @@ def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
         "0001062993-23-006879",
         "0001062993-23-006880",
     }
-    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14))]
+    assert sec.calls == [(date(2023, 3, 1), date(2023, 3, 14))]
 
 
 def test_sec_adapter_outage_fails_the_stream() -> None:

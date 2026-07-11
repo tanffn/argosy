@@ -749,7 +749,7 @@ async def test_global_date_range_is_bounded_and_ordered(engine: None) -> None:
     with pytest.raises(ValueError, match="start_date"):
         await adapter.get_form4_for_date_range(start, start - timedelta(days=1))
     with pytest.raises(ValueError, match="at most"):
-        await adapter.get_form4_for_date_range(start, start + timedelta(days=31))
+        await adapter.get_form4_for_date_range(start, start + timedelta(days=45))
 
     await adapter.get_form4_for_date_range(start, start + timedelta(days=2), ttl_seconds=0)
     daily_calls = [call for call in http.calls if call.endswith(".idx")]
