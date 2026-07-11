@@ -237,19 +237,38 @@ def build_constraints(packet: dict) -> str:
     return c
 
 
+def build_trader_inputs(packet: dict) -> dict:
+    """Exact kwargs passed to TraderAgent.run — excludes answer-key fields."""
+    return {
+        "analyst_reports": packet["analyst_reports"],
+        "debate_outcome": {},
+        "positions_snapshot": packet["positions"],
+        "user_constraints": build_constraints(packet),
+        "tier": "T2",
+        "mode": "long_hold",
+        "ticker": packet["alias"],
+    }
+
+
+def new_pipeline_run_doc(*, started: str) -> dict:
+    """Fresh suite run — pipeline receipts are required at score time."""
+    return {
+        "started": started,
+        "pipeline_version": 1,
+        "results": [],
+    }
+
+
+def resume_run_doc(existing: dict) -> dict:
+    """Resume without inventing pipeline_version on legacy (pre-pipeline) files."""
+    return existing
+
+
 async def run_point(packet: dict) -> dict:
     from argosy.agents.trader import TraderAgent  # deferred: import cost
 
     agent = TraderAgent(user_id="ariel", tier="T2")
-    report = await agent.run(
-        analyst_reports=packet["analyst_reports"],
-        debate_outcome={},
-        positions_snapshot=packet["positions"],
-        user_constraints=build_constraints(packet),
-        tier="T2",
-        mode="long_hold",
-        ticker=packet["alias"],
-    )
+    report = await agent.run(**build_trader_inputs(packet))
     out = report.output.model_dump()
     return {
         "status": "ok",
@@ -446,14 +465,16 @@ async def main() -> None:
     )
     ensure_output_path_writable(out_path, dry_run=args.dry_run)
     RUNS_DIR.mkdir(exist_ok=True)
-    run_doc: dict = {
-        "started": datetime.now(timezone.utc).isoformat(),
-        "pipeline_version": 1,
-        "results": [],
-    }
+    # New runs are pipeline v1. Resume must NOT stamp pipeline_version onto a
+    # legacy (pre-pipeline) file — that would retroactively disqualify its OK
+    # points at score time when require_pipeline becomes true.
+    run_doc: dict = new_pipeline_run_doc(
+        started=datetime.now(timezone.utc).isoformat()
+    )
     if out_path.exists() and not args.dry_run:
-        run_doc = json.loads(out_path.read_text(encoding="utf-8"))
-        run_doc.setdefault("pipeline_version", 1)
+        run_doc = resume_run_doc(
+            json.loads(out_path.read_text(encoding="utf-8"))
+        )
         done = {r["case_id"] for r in run_doc["results"] if r.get("status") in ("ok", "disqualified_temporal")}
         packets = [p for p in packets if p["case_id"] not in done]
         print(f"resuming: {len(done)} points already in {out_path.name}", flush=True)

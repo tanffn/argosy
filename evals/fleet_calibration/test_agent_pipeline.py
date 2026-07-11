@@ -98,24 +98,6 @@ def _sanitizer_receipt() -> dict:
     }
 
 
-def test_classifier_receipt_preserves_packet_construction_provenance() -> None:
-    from agent_pipeline import build_classifier_receipt
-
-    receipt = build_classifier_receipt(_packet())
-
-    assert receipt == {
-        "stage": 1,
-        "agent_role": "classifier_data_sourcing",
-        "case_id": "masked_case",
-        "packet_file": "masked_case.json",
-        "category": "A",
-        "grading": "F1_lenient",
-        "freeze_date": "2020-01-01",
-        "sources": _packet()["sources"],
-        "status": "persisted_fixture",
-    }
-
-
 def test_classifier_agent_contract_requires_dated_primary_sources() -> None:
     from agent_pipeline import CalibrationClassifierSourcingAgent
 
@@ -135,23 +117,6 @@ def test_classifier_agent_contract_requires_dated_primary_sources() -> None:
     assert "Secret Corp" in user
     assert "expected_classes" not in user
     assert "eventual outcome" in system
-
-
-def test_classifier_receipt_uses_persisted_agent_output_when_present() -> None:
-    from agent_pipeline import build_classifier_receipt
-
-    packet = _packet()
-    packet["classifier_receipt"] = {
-        "agent_role": "calibration_classifier_sourcing",
-        "model": "claude-opus-4-8",
-        "output": {"category": "A", "freeze_date": "2020-01-01"},
-    }
-
-    receipt = build_classifier_receipt(packet)
-
-    assert receipt["stage"] == 1
-    assert receipt["status"] == "agent_sourced"
-    assert receipt["agent_receipt"] == packet["classifier_receipt"]
 
 
 def test_classifier_input_has_source_manifest_but_no_outcome_answer_key() -> None:
@@ -203,15 +168,18 @@ def test_sanitizer_input_is_blind_to_outcome_but_has_exact_trader_payload() -> N
     from agent_pipeline import CalibrationSanitizerAgent, build_sanitizer_input
 
     packet = _packet()
-    sourced_facts = [
-        {
-            "fact": "Unscaled revenue was $100M",
-            "url": "https://example.test/filing",
-            "publication_date": "2019-12-20",
-        }
-    ]
+    # Correlated-failure bait: if stage 2 still preferred classifier facts,
+    # this invented unscaled figure would become the rescale proof.
     packet["_classifier_receipt"] = {
-        "output": {"sourced_facts": sourced_facts}
+        "output": {
+            "sourced_facts": [
+                {
+                    "fact": "CLASSIFIER-ONLY unscaled revenue was $999M",
+                    "url": "https://example.test/classifier-only",
+                    "publication_date": "2019-12-20",
+                }
+            ]
+        }
     }
     payload = build_sanitizer_input(packet, "EXACT CONSTRAINTS")
     encoded = json.dumps(payload, ensure_ascii=False)
@@ -223,11 +191,61 @@ def test_sanitizer_input_is_blind_to_outcome_but_has_exact_trader_payload() -> N
         "constraints_rendered": "EXACT CONSTRAINTS",
     }
     assert payload["forbidden_terms"] == ["Secret Corp", "SECR", "Famous Product"]
-    assert payload["source_manifest"] == sourced_facts
+    assert payload["raw_sources"] == _packet()["sources"]
+    assert payload["source_manifest"] == [
+        {
+            "fact": "Revenue grew 40%",
+            "url": "https://example.test/filing",
+            "publication_date": "2019-12-20",
+        }
+    ]
+    assert "CLASSIFIER-ONLY" not in encoded
     assert "Secret Corp @ 2020-01-01" not in encoded
     assert "expected_classes" not in encoded
     assert "benchmark_return_pct" not in encoded
     assert CalibrationSanitizerAgent.claude_code_allowed_tools == ()
+
+
+def test_sanitizer_source_manifest_ignores_classifier_sourced_facts() -> None:
+    from agent_pipeline import independent_source_manifest, build_sanitizer_input
+
+    packet = _packet()
+    packet["sources"] = [
+        {
+            "fact": "Unscaled revenue $100M",
+            "url": "https://example.test/10k",
+            "date": "2019-11-01",
+            "unscaled_revenue_usd_m": 100,
+        }
+    ]
+    packet["_classifier_receipt"] = {
+        "output": {
+            "sourced_facts": [
+                {
+                    "fact": "should never reach sanitizer",
+                    "url": "https://evil.test",
+                    "publication_date": "2019-12-01",
+                }
+            ]
+        }
+    }
+
+    manifest = independent_source_manifest(packet)
+    payload = build_sanitizer_input(packet, "C")
+
+    assert manifest == [
+        {
+            "fact": "Unscaled revenue $100M",
+            "url": "https://example.test/10k",
+            "publication_date": "2019-11-01",
+            "unscaled_revenue_usd_m": 100,
+        }
+    ]
+    assert payload["source_manifest"] == manifest
+    assert all(
+        "should never reach sanitizer" not in json.dumps(row)
+        for row in payload["source_manifest"]
+    )
 
 
 def test_review_input_reads_replay_without_answer_key() -> None:
@@ -706,7 +724,7 @@ async def test_classifier_preparation_persists_before_returning(
         classifier_runner=classifier_runner,
     )
 
-    assert prepared == ["masked_case"]
+    assert prepared == {"prepared": ["masked_case"], "skipped_existing": []}
     persisted = json.loads(
         (tmp_path / "masked_case.json").read_text(encoding="utf-8")
     )
@@ -729,8 +747,44 @@ async def test_classifier_preparation_dry_run_is_call_and_write_free(
         classifier_runner=classifier_runner,
     )
 
-    assert prepared == ["masked_case"]
+    assert prepared == {"prepared": ["masked_case"], "skipped_existing": []}
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_classifier_preparation_skips_existing_receipts(
+    tmp_path: Path,
+) -> None:
+    from prepare_classifier import prepare_classifier_receipts
+
+    existing = tmp_path / "masked_case.json"
+    existing.write_text('{"stage": 1}', encoding="utf-8")
+    calls: list[str] = []
+
+    async def classifier_runner(packet: dict) -> dict:
+        calls.append(packet["case_id"])
+        return _classifier_receipt()
+
+    # Real path: must not raise mid-batch, must not rewrite.
+    result = await prepare_classifier_receipts(
+        [_packet()],
+        receipts_dir=tmp_path,
+        dry_run=False,
+        classifier_runner=classifier_runner,
+    )
+    assert result == {"prepared": [], "skipped_existing": ["masked_case"]}
+    assert calls == []
+    assert existing.read_text(encoding="utf-8") == '{"stage": 1}'
+
+    # Dry-run over an existing receipt is also skip-and-report (no raise).
+    dry = await prepare_classifier_receipts(
+        [_packet()],
+        receipts_dir=tmp_path,
+        dry_run=True,
+        classifier_runner=classifier_runner,
+    )
+    assert dry == {"prepared": [], "skipped_existing": ["masked_case"]}
+    assert calls == []
 
 
 def test_score_uses_verified_grading_agent_judgment() -> None:
@@ -1030,6 +1084,61 @@ def test_disqualified_pipeline_report_keeps_structured_receipts() -> None:
 
     assert "sanitizer verification failed" in rendered
     assert '"checks"' in rendered
+
+
+def test_stage3_trader_payload_excludes_real_and_expected_classes() -> None:
+    from run_suite import build_trader_inputs
+
+    packet = _packet()
+    payload = build_trader_inputs(packet)
+    encoded = json.dumps(payload, ensure_ascii=False)
+
+    assert set(payload) == {
+        "analyst_reports",
+        "debate_outcome",
+        "positions_snapshot",
+        "user_constraints",
+        "tier",
+        "mode",
+        "ticker",
+    }
+    assert payload["ticker"] == packet["alias"]
+    assert payload["analyst_reports"] == packet["analyst_reports"]
+    assert payload["positions_snapshot"] == packet["positions"]
+    assert "real" not in payload
+    assert "expected_classes" not in payload
+    assert "resolution" not in payload
+    assert "contamination_terms" not in payload
+    assert "Secret Corp" not in encoded
+    assert "expected_classes" not in encoded
+    assert "benchmark_return_pct" not in encoded
+
+
+def test_resume_preserves_legacy_run_without_pipeline_version() -> None:
+    from run_suite import new_pipeline_run_doc, resume_run_doc
+    from score import pipeline_disqualification
+
+    legacy = {
+        "started": "2026-07-11T00:00:00+00:00",
+        "results": [
+            {"case_id": "masked_case", "status": "ok", "action": "buy"}
+        ],
+    }
+    resumed = resume_run_doc(legacy)
+    assert "pipeline_version" not in resumed
+    assert resumed is legacy
+
+    fresh = new_pipeline_run_doc(started="2026-07-11T12:00:00+00:00")
+    assert fresh["pipeline_version"] == 1
+
+    # Legacy OK point still scores under the non-pipeline regime.
+    require_pipeline = resumed.get("pipeline_version") == 1
+    assert require_pipeline is False
+    assert pipeline_disqualification(
+        {"action": "buy"},
+        _packet(),
+        require_pipeline=require_pipeline,
+    ) is None
 
 
 def test_historical_result_without_agent_pipeline_keeps_legacy_scoring() -> None:

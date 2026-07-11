@@ -71,12 +71,15 @@ Proven ad-hoc harness it was lifted from: `tmp/fleet_timemachine/` (2026-07-09/1
    `prepare_classifier.py`, at packet-construction time. It persists an immutable
    sidecar receipt under `classifier_receipts/`; suite scoring only loads and
    verifies that receipt, so a frozen case cannot absorb later knowledge. Real
-   preparation calls require `--reviewer-approved`.
+   preparation calls require `--reviewer-approved`. Existing receipts are
+   skipped and reported (never overwritten; write-once).
 2. **Sanitizer** sees the exact masked packet/positions/constraints that Trader
-   would receive, the classifier's pre-freeze raw-fact manifest, and the
-   contamination denylist. It has no tools and does not see the expected verdict
-   or outcome. Any failed or unverifiable protocol check prevents the Trader
-   call; synthetic-only inapplicable checks are recorded as `not_applicable`.
+   would receive, an independently constructed source manifest from the frozen
+   packet's `sources` (plus `raw_sources` verbatim — never the classifier's
+   `sourced_facts`), and the contamination denylist. It has no tools and does
+   not see the expected verdict or outcome. Any failed or unverifiable protocol
+   check prevents the Trader call; synthetic-only inapplicable checks are
+   recorded as `not_applicable`.
 3. **Production Trader** runs unchanged in `long_hold` / T2 mode. Its exact
    packet snapshot, rendered constraints, raw response, and structured output
    are persisted.

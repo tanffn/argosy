@@ -40,16 +40,22 @@ async def prepare_classifier_receipts(
     classifier_runner: Callable[
         [dict[str, Any]], Awaitable[dict[str, Any]]
     ] = _run_classifier,
-) -> list[str]:
-    """Create one immutable receipt per packet; dry-run is call/write free."""
+) -> dict[str, list[str]]:
+    """Create one immutable receipt per packet; dry-run is call/write free.
+
+    Existing receipts are skip-and-report (never overwritten). Returns
+    ``{"prepared": [...], "skipped_existing": [...]}``.
+    """
     prepared: list[str] = []
+    skipped_existing: list[str] = []
     if not dry_run:
         receipts_dir.mkdir(parents=True, exist_ok=True)
     for packet in packets:
         case_id = packet["case_id"]
         out_path = receipts_dir / f"{case_id}.json"
         if out_path.exists():
-            raise RuntimeError(f"classifier receipt is immutable: {out_path}")
+            skipped_existing.append(case_id)
+            continue
         if dry_run:
             prepared.append(case_id)
             continue
@@ -62,7 +68,7 @@ async def prepare_classifier_receipts(
         )
         tmp_path.replace(out_path)
         prepared.append(case_id)
-    return prepared
+    return {"prepared": prepared, "skipped_existing": skipped_existing}
 
 
 async def main() -> None:
@@ -86,14 +92,16 @@ async def main() -> None:
         )
     only = [part.strip() for part in args.only.split(",")] if args.only else None
     packets = load_packets(only)
-    prepared = await prepare_classifier_receipts(
+    result = await prepare_classifier_receipts(
         packets,
         receipts_dir=args.receipts_dir,
         dry_run=args.dry_run,
     )
     mode = "planned" if args.dry_run else "persisted"
-    for case_id in prepared:
+    for case_id in result["prepared"]:
         print(f"{case_id}: classifier receipt {mode}", flush=True)
+    for case_id in result["skipped_existing"]:
+        print(f"{case_id}: skipped existing receipt (immutable)", flush=True)
 
 
 if __name__ == "__main__":

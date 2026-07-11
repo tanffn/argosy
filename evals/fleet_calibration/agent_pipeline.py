@@ -82,25 +82,6 @@ class CalibrationGradingOutput(BaseModel):
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
 
 
-def build_classifier_receipt(packet: dict[str, Any]) -> dict[str, Any]:
-    """Persist construction provenance without rerunning frozen sourcing."""
-    receipt = {
-        "stage": 1,
-        "agent_role": "classifier_data_sourcing",
-        "case_id": packet["case_id"],
-        "packet_file": packet.get("_file") or f"{packet['case_id']}.json",
-        "category": packet["category"],
-        "grading": packet.get("grading"),
-        "freeze_date": packet.get("freeze_date"),
-        "sources": packet.get("sources") or [],
-        "status": "persisted_fixture",
-    }
-    if packet.get("classifier_receipt"):
-        receipt["status"] = "agent_sourced"
-        receipt["agent_receipt"] = packet["classifier_receipt"]
-    return receipt
-
-
 def build_classifier_input(packet: dict[str, Any]) -> dict[str, Any]:
     """Expose construction evidence without the expected verdict or outcome."""
     subject = str(packet.get("real") or packet["case_id"]).split("@", 1)[0].strip()
@@ -116,12 +97,42 @@ def build_classifier_input(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def independent_source_manifest(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build stage-2's rescale/temporal anchor from the frozen packet only.
+
+    Deliberately ignores classifier sourced_facts so a stage-1 error cannot
+    supply the proof stage 2 uses for absolute_figure_rescaling.
+    """
+    manifest: list[dict[str, Any]] = []
+    for entry in packet.get("sources") or []:
+        if not isinstance(entry, dict):
+            continue
+        publication = entry.get("publication_date") or entry.get("date")
+        fact = entry.get("fact")
+        url = entry.get("url")
+        if fact is None and url is None and publication is None:
+            continue
+        row: dict[str, Any] = {
+            "fact": fact or "",
+            "url": url or "",
+            "publication_date": publication or "",
+        }
+        # Preserve any extra fixture fields (e.g. unscaled figures) as raw
+        # evidence without inventing structure the packet did not carry.
+        for key, value in entry.items():
+            if key in {"fact", "url", "date", "publication_date"}:
+                continue
+            row[key] = value
+        manifest.append(row)
+    return manifest
+
+
 def build_sanitizer_input(
     packet: dict[str, Any], constraints_rendered: str
 ) -> dict[str, Any]:
     """Return only what an independent sanitizer needs before the fleet test."""
-    classifier = packet.get("_classifier_receipt") or {}
-    classifier_output = classifier.get("output") or {}
+    # Decorrelated from stage 1: never read classifier sourced_facts here.
+    raw_sources = list(packet.get("sources") or [])
     return {
         "case_id": packet["case_id"],
         "alias": packet["alias"],
@@ -134,11 +145,8 @@ def build_sanitizer_input(
             "constraints_rendered": constraints_rendered,
         },
         "forbidden_terms": packet.get("contamination_terms") or [],
-        "source_manifest": (
-            classifier_output.get("sourced_facts")
-            or packet.get("sources")
-            or []
-        ),
+        "raw_sources": raw_sources,
+        "source_manifest": independent_source_manifest(packet),
     }
 
 
@@ -375,12 +383,15 @@ class CalibrationSanitizerAgent(
             "Trader sees it. Check all four protocol dimensions: aliasing, "
             "absolute-figure rescaling, relative dates, and genericized macro "
             "events. Treat forbidden_terms as an answer-key denylist, never as "
-            "facts to add. A concrete leak makes safe_to_run=false. If scaling "
-            "cannot be independently proven from the source manifest and the "
-            "masked payload, mark that check unverifiable rather than inventing "
-            "proof. You have no tools and may not fetch or search. For a fully "
-            "fictional synthetic packet, mark inapplicable checks not_applicable. "
-            "Do not identify the company in your output or infer the eventual outcome."
+            "facts to add. A concrete leak makes safe_to_run=false. Prove "
+            "absolute-figure rescaling only from raw_sources / source_manifest "
+            "(independently constructed from the frozen packet — never from a "
+            "classifier agent's facts). If scaling cannot be independently "
+            "proven from that manifest and the masked payload, mark that check "
+            "unverifiable rather than inventing proof. You have no tools and "
+            "may not fetch or search. For a fully fictional synthetic packet, "
+            "mark inapplicable checks not_applicable. Do not identify the "
+            "company in your output or infer the eventual outcome."
         )
         return system, "SANITIZER INPUT:\n" + _render(payload)
 
@@ -597,10 +608,10 @@ __all__ = [
     "ProtocolCheck",
     "SourcedFact",
     "build_classifier_input",
-    "build_classifier_receipt",
     "build_grader_input",
     "build_review_input",
     "build_sanitizer_input",
+    "independent_source_manifest",
     "run_classifier_sourcing",
     "run_grading",
     "run_replay_pipeline",

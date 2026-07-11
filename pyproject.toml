@@ -73,7 +73,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "evals/fleet_calibration"]
 pythonpath = ["."]
 markers = [
     "llm_eval: marks tests that call the live Anthropic API (deselect with -m 'not llm_eval')",
