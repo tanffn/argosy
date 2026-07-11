@@ -1,0 +1,135 @@
+{
+  "case_id": "zm_2022",
+  "alias": "CFL",
+  "category": "C",
+  "grading": "exit",
+  "real": "ZM @ 2022-06-01 (~$108; growth 300%+ era -> single digits)",
+  "freeze_date": "2022-06-01",
+  "rescale_factor": 0.33,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS CFL from an earlier entry at $155.10/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $35.52 -> unrealized P&L -77%. Entered ~7 quarters ago, near the peak of the demand surge. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 51,
+  "contamination_terms": [
+    "Zoom",
+    "ZM",
+    "Eric Yuan",
+    "Zoomtopia",
+    "Teams",
+    "Webex"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 107.65,
+    "price_at_horizon_real": 61.34,
+    "horizon_label": "freeze+24m (2024-05-31 adjusted close)",
+    "benchmark_return_pct": -43.0,
+    "note": "yfinance adjusted closes fetched 2026-07-11; freeze 2022-06-01 close 107.65, horizon 2024-05-31 close 61.34 (buy-and-hold -43.0%)"
+  },
+  "sources": [
+    {
+      "fact": "FQ1-FY23 print: revenue $1,073.8M +12% YoY (slowest ever); GAAP operating margin 17.4%, non-GAAP 37.2%; enterprise customers ~198,900 (+24%), enterprise trailing-12m net dollar expansion 123%; enterprise revenue grew ~31% YoY and crossed to a majority (~52%) of total while the online segment declined; phone product crossed 3M seats; FY23 guide $4.530-4.550B (+~11%) with non-GAAP operating income $1.43-1.45B; free cash flow $501M in the quarter",
+      "url": "https://www.globenewswire.com/news-release/2022/05/23/2448753/0/en/Zoom-Video-Communications-Reports-Financial-Results-for-the-First-Quarter-of-Fiscal-Year-2023.html",
+      "date": "2022-05-23",
+      "verify": true
+    },
+    {
+      "fact": "FQ2-FY21 print (the boom quarter, ~7 quarters before freeze): revenue $663.5M, +355% YoY",
+      "url": "https://www.globenewswire.com/news-release/2020/08/31/2086444/0/en/zoom-reports-second-quarter-results-for-fiscal-year-2021.html",
+      "date": "2020-08-31",
+      "verify": true
+    },
+    {
+      "fact": "FQ1-FY22 print (~4 quarters before freeze): revenue $956.2M, +191% YoY",
+      "url": "https://www.globenewswire.com/news-release/2021/06/01/2239905/0/en/Zoom-Reports-Financial-Results-for-the-First-Quarter-of-Fiscal-Year-2022.html",
+      "date": "2021-06-01",
+      "verify": true
+    },
+    {
+      "fact": "FQ4/FY-full print: FY22 revenue $4,099.9M +55%; Q4 growth had already decelerated to +21%; management guided FY23 to ~+11% with the online business expected to decline; $1B buyback authorized",
+      "url": "https://www.globenewswire.com/news-release/2022/02/28/2393668/0/en/Zoom-Video-Communications-Reports-Fourth-Quarter-and-Fiscal-Year-2022-Financial-Results.html",
+      "date": "2022-02-28",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/CFL",
+      "company": "ConferLink (alias CFL)",
+      "as_of": "current",
+      "market_cap_usd_m": 10600,
+      "share_price_usd": 35.52,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 1880,
+        "total_debt_usd_m": 0,
+        "note": "fortress balance sheet: ~1880 of cash and marketable securities, effectively zero debt; a ~330 share-buyback authorization was announced two prints ago and is being executed"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1 (ended ~4 months ago; January fiscal year-end)",
+          "revenue_usd_m": 1353,
+          "revenue_growth_pct": 55,
+          "gaap_operating_margin_pct": 25.9,
+          "free_cash_flow_usd_m": 480,
+          "note": "growth decelerated through the year: the final quarter of FY-1 grew only +21%"
+        },
+        {
+          "fy": "FY-2 (the shock year)",
+          "revenue_usd_m": 875,
+          "revenue_growth_pct": 326,
+          "note": "the demand-surge year — quarterly growth peaked at +355% YoY"
+        },
+        {
+          "fy": "FY-3 (pre-shock baseline)",
+          "revenue_usd_m": 205,
+          "revenue_growth_pct": 88,
+          "note": "pre-surge trajectory: high-80s growth, already profitable — rare for software at this scale"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q1 of the new FY, reported ~1 week ago",
+        "revenue_usd_m": 354,
+        "revenue_growth_yoy_pct": 12,
+        "gaap_operating_margin_pct": 17.4,
+        "non_gaap_operating_margin_pct": 37.2,
+        "free_cash_flow_usd_m": 165,
+        "enterprise_customers_growth_yoy_pct": 24,
+        "enterprise_net_dollar_expansion_pct": 123,
+        "note": "slowest growth in company history: +12% vs +355% at the surge peak (~7 quarters ago, around the sleeve's entry) and +191% four quarters ago. Enterprise revenue grew ~31% and crossed to ~52% of total — a majority for the first time — while the ONLINE (self-serve/consumer) segment DECLINED year over year."
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "1495-1500 (+~11%)",
+        "non_gaap_operating_income_usd_m": "472-478",
+        "note": "management expects the online segment to decline for the full year, with enterprise carrying all growth; profitability guidance remains strong"
+      },
+      "valuation": {
+        "ps_forward": 7.0,
+        "ps_forward_ex_cash": 5.8,
+        "pe_trailing": null,
+        "price_action": "stock -81% from its all-time high and -77% vs the sleeve's entry; roughly flat over the last month after the print was received as 'better than feared'",
+        "peer_context": "~7x forward sales is no longer expensive in absolute software terms (high-growth peers fetched 30x+ at the entry era), but the growth rate (+11-12%) is now BELOW the median software peer, so the multiple is no longer obviously cheap growth-adjusted"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/CFL",
+      "business_description": "Video-first communications platform that became the default meeting layer for businesses and consumers during a global demand shock. The entry thesis (~7 quarters ago, at the height of the surge): a category-defining communications platform riding a STRUCTURAL shift to remote and distributed work, with a land-and-expand path from meetings into a full enterprise communications suite (voice, conference rooms, contact center). Milestones: (a) hyper-growth persisting as the shock normalized (proving the shift structural, not pulled-forward), (b) enterprise/platform expansion large enough to offset any consumer fade, (c) attach of the voice and rooms products. Falsifiers recorded at entry: growth collapsing toward market rate as the shock normalizes, online/consumer churn eroding the base, and enterprise expansion failing to offset.",
+      "recent_developments": [
+        "The growth falsifier has fired: quarterly YoY growth has collapsed +355% -> +191% -> +21% -> +12% (slowest ever), and the FY guide of +~11% concedes the normalization is structural, not a one-quarter air pocket.",
+        "The online/consumer segment — the surge-era windfall — is now DECLINING outright year over year, with elevated churn among shock-era monthly subscribers; management guides it to decline for the full year.",
+        "Enterprise IS delivering (revenue +31%, now ~52% majority of mix, net dollar expansion 123%, voice product past ~3M seats) — real traction, but it is offsetting the online decline to a ~12% blend, not re-accelerating the company.",
+        "Competitive pressure is heavy: the two largest enterprise-software incumbents bundle competing meeting/voice suites into their productivity platforms at near-zero marginal cost, contesting the enterprise expansion that the remaining thesis depends on.",
+        "The bull case: exceptional profitability (37% non-GAAP operating margin, ~165 FCF this quarter alone), ~1880 net cash, a buyback underway, and a ~7x forward sales multiple that is a fraction of the entry-era rating — the balance sheet and margins make this a viable standalone business even at market-rate growth.",
+        "Return-to-office has normalized meeting-seat growth; hybrid work is sticky as a BEHAVIOR, but paid-seat expansion has stalled outside enterprise accounts."
+      ],
+      "macro_context": "Aggressive central-bank tightening underway; the shock-beneficiary cohort is down 70-90% from highs; enterprise software budgets are under new scrutiny and sales cycles are lengthening.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

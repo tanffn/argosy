@@ -1,0 +1,133 @@
+{
+  "case_id": "amd_owner_t3",
+  "alias": "VRS",
+  "category": "D",
+  "grading": "rederive",
+  "real": "AMD @ 2026-03-31 ($203.43 month close; ~3.1x T1, consolidating post-first-re-rating, -23% off the post-deal high)",
+  "freeze_date": "2026-03-31",
+  "rescale_factor": 1.35,
+  "synthetic": false,
+  "expected_classes": [
+    "hold",
+    "buy"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS VRS from an earlier entry at $95.85/share (~1-2% of portfolio at entry). Current price $274.60 -> unrealized P&L +187%; the position has roughly TRIPLED and is now one of the sleeve's largest holdings. Entered ~thirteen quarters ago; held through a -57% drawdown ~a year ago per the sleeve's falsifier discipline. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 17,
+  "contamination_terms": [
+    "AMD",
+    "Advanced Micro Devices",
+    "Lisa Su",
+    "Ryzen",
+    "EPYC",
+    "Instinct",
+    "MI300",
+    "MI308",
+    "MI350",
+    "MI400",
+    "Xilinx",
+    "Radeon",
+    "OpenAI",
+    "Altman",
+    "Nvidia",
+    "Intel",
+    "Genoa",
+    "CES"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 203.43,
+    "price_at_horizon_real": 580.91,
+    "horizon_label": "2026-06-30 (3 months — deliberately short: this point tests re-derive-not-trim right before the vindicating leg)",
+    "benchmark_return_pct": 186,
+    "note": "yfinance adjusted closes, fetched 2026-07-11; buy-and-hold freeze->horizon"
+  },
+  "sources": [
+    {
+      "fact": "AMD-OpenAI strategic partnership (2025-10-06): 6 gigawatts of Instinct GPUs across multiple generations; first 1GW of MI450 deploys 2H-2026; warrant to OpenAI for up to 160M AMD shares (~10% of shares outstanding), vesting tied to deployment milestones AND AMD share-price targets; stock re-rated ~+24% on the announcement day",
+      "url": "https://www.amd.com/en/newsroom/press-releases/2025-10-6-amd-and-openai-announce-strategic-partnership-to-d.html",
+      "date": "2025-10-06",
+      "verify": true
+    },
+    {
+      "fact": "Q3-2025 results (2025-11-04): record revenue $9.2B +36% YoY, Data Center $4.3B +22%, GAAP GM 52%, GAAP net income $1.2B; quarter included NO revenue from MI308 China shipments",
+      "url": "https://ir.amd.com/news-events/press-releases/detail/1265/amd-reports-third-quarter-2025-financial-results",
+      "date": "2025-11-04",
+      "verify": true
+    },
+    {
+      "fact": "Q4-2025 / FY2025 results (2026-02-03): Q4 revenue record $10.3B +34% YoY, Q4 Data Center $5.4B +39%, GAAP GM 54%, Q4 GAAP net income $1.5B; FY2025 revenue record $34.6B +34%, FY Data Center $16.6B +32%, FY Client+Gaming $14.6B +51%, FY GAAP net income $4.3B; Q1-2026 guide ~$9.8B +/-$0.3B (~+32% YoY, ~-5% QoQ) incl ~$100M of resumed MI308 China sales; cash+ST investments $10.5B, total debt $3.2B",
+      "url": "https://www.globenewswire.com/news-release/2026/02/03/3231629/0/en/amd-reports-fourth-quarter-and-full-year-2025-financial-results.html",
+      "date": "2026-02-03",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/VRS",
+      "company": "Vireon Semiconductor (alias VRS)",
+      "as_of": "current",
+      "market_cap_usd_m": 445000,
+      "share_price_usd": 274.6,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 14175,
+        "total_debt_usd_m": 4320,
+        "note": "strongly net cash; NOTE a warrant for up to ~10% of shares outstanding is held by the large AI-model-developer partner (below), vesting on deployment milestones and share-price targets — potential future dilution, no cash impact"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 34830,
+          "revenue_growth_pct": 14,
+          "gross_margin_pct": 49,
+          "net_income_usd_m": 2214,
+          "note": "first full accelerator ramp year; Data Center +94%"
+        },
+        {
+          "fy": "FY-1 (just closed, reported ~8 weeks ago)",
+          "revenue_usd_m": 46710,
+          "revenue_growth_pct": 34,
+          "gross_margin_pct": 50,
+          "net_income_usd_m": 5805,
+          "note": "Data Center segment 22410 (+32%) despite the China-market accelerator ban for most of the year; Client+Gaming 19710 (+51%) — share gains on BOTH engines simultaneously"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q4 of FY-1, reported ~8 weeks ago",
+        "revenue_usd_m": 13905,
+        "revenue_growth_yoy_pct": 34,
+        "gross_margin_pct": 54,
+        "gaap_net_income_usd_m": "2,025",
+        "segment_note": "Data Center record 7290 (+39% YoY); gross margin expanded ~3 points YoY as the accelerator mix matured",
+        "note": "records on every line; the prior quarter (+36% revenue) contained ZERO China-market accelerator revenue — growth is ex-China"
+      },
+      "guidance": {
+        "q1_revenue_usd_m": "~13230 +/- 405 (~+32% YoY, ~-5% sequentially) including only ~135 of resumed China-market accelerator sales under newly granted licenses",
+        "note": "management guides the giant partnership deployment (below) to START in the SECOND HALF of this year — the current guide contains essentially none of it"
+      },
+      "valuation": {
+        "pe_trailing_gaap": 77,
+        "ps_trailing": 9.5,
+        "price_action": "stock ~2.9x the sleeve's entry (+187% unrealized); it re-rated ~+24% in a single day on the partnership announcement ~6 months ago, peaked shortly after, and has since CONSOLIDATED ~-23% below that high as the market digests dilution, deal timing and an AI-capex-sustainability debate; roughly flat over the last four months"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/VRS",
+      "business_description": "Fabless #2 x86 CPU + GPU designer (see prior coverage). ENTRY THESIS (~13 quarters ago): (1) server-CPU share gains vs a slipping incumbent; (2) the datacenter AI accelerator becomes a second growth engine; (3) the PC collapse was cyclical. Recorded falsifiers: accelerator fails to win hyperscaler deployments at scale; server share stalls; balance-sheet stress. MILESTONE STATUS: ALL THREE LANDED — server share at records, the accelerator franchise is now a multi-billion run-rate with broadening hyperscaler adoption, Client rebounded and kept growing (+51% last FY). The position tripled; under the sleeve's exit rule, price appreciation alone is not a trigger — this review is the thesis RE-DERIVATION.",
+      "recent_developments": [
+        "~6 months ago the company signed a LANDMARK multi-generation compute partnership with a leading AI-model developer: 6 gigawatts of its accelerators to be deployed over several years, the first gigawatt starting the SECOND HALF of this year on its next-gen rack-scale platform. The counterparty received a warrant for up to ~10% of the company, vesting on deployment milestones AND share-price targets. The stock re-rated ~+24% on announcement day.",
+        "Execution since the deal: two record quarterly prints in a row (+36% and +34% revenue YoY), Data Center accelerating (+39% last quarter), gross margin expanding, and essentially NONE of the partnership revenue is in numbers or guidance yet.",
+        "Export walls partially lifted: licenses were granted for limited China-market accelerator sales (a token ~135 in the current-quarter guide, vs zero for most of last year).",
+        "BEAR — concentration and circularity: the 6GW partner is the industry's most aggressively levered capex bettor and is simultaneously a customer, a warrant-holder and a rival buyer of a competing platform; the warrant structure has vendor-financing optics, and full vesting means up to ~10% dilution. If AI capex pauses, the deal's out-year gigawatts may never convert.",
+        "BEAR — competitive response: the category leader still commands ~90% of the accelerator market with the default software ecosystem and its own next-generation cycle shipping this year; hyperscalers continue scaling in-house custom silicon. The company must execute a rack-scale platform transition — a discipline it has never delivered at this scale — on schedule for the partnership's first tranche.",
+        "BEAR — valuation: ~77x trailing GAAP earnings and ~9.5x trailing sales pre-pays for years of deployment; the stock has gone sideways-to-down for four months and is -23% off its high as the market debates whether the AI-infrastructure buildout is sustainable or a circular-financing bubble."
+      ],
+      "macro_context": "AI-infrastructure capex at record highs amid an intensifying public debate over sustainability and circular vendor-financing structures; rates stable; export-control regime partially eased with case-by-case licenses.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

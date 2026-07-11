@@ -1,0 +1,148 @@
+{
+  "case_id": "cvna_2022",
+  "alias": "APO",
+  "category": "C",
+  "grading": "exit",
+  "real": "CVNA @ 2022-06-15 (~$23; debt-spiral era; -98% THEN 50x — outcome-luck rule)",
+  "freeze_date": "2022-06-15",
+  "rescale_factor": 1.15,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS APO from an earlier entry at $310.50/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $28.10 -> unrealized P&L -91%. Entered ~6 quarters ago, when the scale-economics inflection looked imminent. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 52,
+  "contamination_terms": [
+    "Carvana",
+    "CVNA",
+    "Garcia",
+    "ADESA",
+    "vending machine",
+    "Apollo"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 24.43,
+    "price_at_horizon_real": 103.06,
+    "horizon_label": "freeze+24m (2024-06-14 close, as-traded)",
+    "benchmark_return_pct": 321.9,
+    "outcome_luck_case": true,
+    "note": "yfinance adjusted closes fetched 2026-07-11 (as-traded prices reconstructed via the later 5:1 split, factor 5). Freeze 2022-06-15 close $24.43; the stock then fell ~-85% FURTHER to a trough of ~$3.72 in Dec-2022 (-98% from the entry era) before the 2023 debt restructuring ignited a ~50x recovery off the trough; horizon 2024-06-14 close $103.06 (buy-and-hold +321.9%). Per the spec's outcome-luck rule, SELL at this freeze is a PASS: the information available in mid-2022 said survival risk, and decision quality — not the later recovery — is what scores."
+  },
+  "sources": [
+    {
+      "fact": "Q1-2022 results: revenue $3.497B +56%, retail units 105,185 +14% YoY (vs ~+75-100% growth rates in prior years) and down sequentially; total gross profit per unit $2,833, DOWN $823 (-23%) YoY; GAAP net loss -$506M (vs -$82M a year earlier), the largest in company history; adjusted EBITDA margin ~-10%",
+      "url": "https://www.businesswire.com/news/home/20220420005910/en/Carvana-Announces-First-Quarter-2022-Results",
+      "date": "2022-04-20",
+      "verify": true
+    },
+    {
+      "fact": "Cash and cash equivalents $247M at quarter-end (per the Q1 results financial tables); revolving facilities are collateral-bound (floorplan / finance receivables)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1690820/000169082022000139/ex99_2q12022.htm",
+      "date": "2022-04-20",
+      "verify": true
+    },
+    {
+      "fact": "Senior unsecured notes offering announced to finance the ~$2.2B acquisition of a national physical wholesale-auction network; upsized and priced at $3.275B with a 10.25% coupon (8-year paper); a large alternative-credit manager anchored roughly half; a concurrent ~$1.25B common-equity offering priced at $80/share (~-70% from the prior-year high) with insiders taking a large chunk",
+      "url": "https://www.businesswire.com/news/home/20220424005108/en/Carvana-Co.-Announces-Senior-Unsecured-Notes-Offering-to-Finance-ADESA-U.S.-Auction-Acquisition",
+      "date": "2022-04-25",
+      "verify": true
+    },
+    {
+      "fact": "Business-press opinion column framed the 10.25% junk-debt deal as a rescue financing that 'digs the company out of a giant hole', noting the double-digit coupon a month after the acquisition was announced",
+      "url": "https://www.washingtonpost.com/business/apollo-digs-carvana-out-of-a-giant-used-car-hole/2022/04/28/5c7b3fa6-c6e7-11ec-8cff-33b059f4c1b7_story.html",
+      "date": "2022-04-28",
+      "verify": true
+    },
+    {
+      "fact": "Layoffs: ~2,500 employees (~12% of workforce) cut, mostly operations; executives forgoing salaries for the rest of the year to fund severance; company cited macro factors pushing auto retail into recession",
+      "url": "https://www.upi.com/Top_News/US/2022/05/10/Carvana-lay-off-2500-employees/3871652229306/",
+      "date": "2022-05-10",
+      "verify": true
+    },
+    {
+      "fact": "Contemporaneous sell-side/press debate on solvency: bull-side piece titled 'Liquidity Issues Are Overblown, Secular Growth Narrative Intact' arguing the concerns priced in were transitory — evidence the liquidity/bankruptcy debate was live before the freeze",
+      "url": "https://seekingalpha.com/article/4512714-carvana-liquidity-issues-are-overblown-secular-growth-narrative-remains-intact",
+      "date": "2022-05-18",
+      "verify": true
+    },
+    {
+      "fact": "Wholesale used-vehicle values peaked at a record in the Dec/Jan window and have declined through spring; the May index release confirms the rollover from the shock-era spike",
+      "url": "https://press.manheim.com/Used-Vehicle-Value-Index-for-May",
+      "date": "2022-06-07",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/APO",
+      "company": "AutoPort Online (alias APO)",
+      "as_of": "current",
+      "market_cap_usd_m": 5300,
+      "share_price_usd": 28.1,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 285,
+        "total_debt_usd_m": 7600,
+        "note": "cash was ~285 at quarter-end, since supplemented by a ~1440 dilutive equity raise priced alongside the new notes. Pro-forma total debt is ~7600 after 3765 of NEW 8-year unsecured notes at a 10.25% coupon (a large credit fund anchored roughly half the deal) — issued against NEGATIVE EBITDA. Annual cash interest is now roughly 690. The revolving facilities (~3200) are collateral-bound (vehicle floorplan and finance receivables), not general-purpose liquidity. The new notes already trade below issue price ~7 weeks after pricing."
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1 (the blowout growth year)",
+          "revenue_usd_m": 14735,
+          "revenue_growth_pct": 129,
+          "net_income_usd_m": -330,
+          "adj_ebitda_usd_m": -117,
+          "note": "grew 129% on shock-era used-car demand and record used-vehicle prices; still EBITDA-negative at ~15,000 scale"
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 6425,
+          "revenue_growth_pct": 42,
+          "net_income_usd_m": -531,
+          "note": "growth held through the shock year; losses widened with expansion spend"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q1 of the current FY, reported ~2 months ago",
+        "revenue_usd_m": 4022,
+        "revenue_growth_yoy_pct": 56,
+        "retail_units": 121000,
+        "retail_units_growth_yoy_pct": 14,
+        "total_gross_profit_per_unit_usd": 3260,
+        "gpu_change_yoy_usd": -950,
+        "gaap_net_loss_usd_m": -582,
+        "adj_ebitda_margin_pct": -10.4,
+        "note": "the inflection thesis ran BACKWARD: unit growth decelerated to +14% (vs +75-100% historically) with units DOWN sequentially, gross profit per unit fell -23% YoY, and the GAAP loss was the largest in company history; management cited a winter public-health wave, record used-vehicle prices, and rapid rate rises"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "no formal FY guide",
+        "note": "management has pivoted messaging from growth to 'accelerating the path to profitability': ~12% of the workforce cut ~5 weeks ago (executives forgoing salaries to fund severance), expansion spend curtailed, and per-unit cost reduction now the stated priority"
+      },
+      "valuation": {
+        "ps_trailing": 0.33,
+        "pe_trailing": null,
+        "price_action": "stock -93% from its all-time high, -91% vs the sleeve's entry, and -89% year-to-date; the new 10.25% notes trade below par, a distressed-credit signal",
+        "peer_context": "at ~0.3x sales the equity is priced for severe distress; incumbent brick-and-mortar used-car dealers trade profitably at similar sales multiples with a fraction of the leverage"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/APO",
+      "business_description": "Online used-car retailer: e-commerce purchase, financing attach, home delivery, and vertically integrated reconditioning. The entry thesis (~6 quarters ago): the category winner digitizing the largest US retail category still transacted offline, with a SCALE-ECONOMICS INFLECTION to profitability imminent — gross profit per unit rising while per-unit SG&A falls with density, so growth mechanically converges on EBITDA breakeven. Milestones: (a) GPU continuing to climb, (b) per-unit SG&A leverage each quarter, (c) EBITDA breakeven within a couple of years, funded without distressed capital. Falsifiers recorded at entry: unit economics failing to inflect (GPU falling or SG&A per unit rising), leverage becoming a SURVIVAL question rather than a growth tool, and the used-car cycle reversing against an inventory-owning model.",
+      "recent_developments": [
+        "The unit-economics falsifier fired: gross profit per unit fell -23% YoY while unit growth collapsed to +14% (units down sequentially) and the quarterly loss set a company record — the inflection is moving AWAY, not closer, at larger scale.",
+        "The leverage falsifier fired: the company closed a levered ~2530 acquisition of a national physical auction network, financed with 3765 of unsecured 8-year notes at a 10.25% coupon (a large credit fund anchored half); pro-forma debt is ~7600 against negative EBITDA, and a business-press column framed the financing itself as a rescue. The notes already trade below issue price.",
+        "The cycle falsifier is firing: wholesale used-vehicle values peaked around the turn of the year at shock-era records and are now declining month after month, while rate spikes crush monthly-payment affordability — a direct mark-to-market risk for an inventory-owning retailer.",
+        "Emergency posture is visible: ~12% of the workforce cut ~5 weeks ago with executives forgoing salaries to fund severance, and a heavily dilutive equity raise priced ~-70% below the prior-year high, with insiders buying a large chunk of it.",
+        "The solvency debate is live in the press and sell-side notes: bears argue the company is up against the clock on cash at the current burn; bulls counter that liquidity fears are overblown, the raise plus collateral capacity buys several quarters, and the secular-shift thesis is intact at ~0.3x sales.",
+        "The bull case is not a strawman: ~16,000 annualized revenue scale, a founder-led team with high insider ownership that just bought more stock, a genuinely differentiated logistics/reconditioning network the auction acquisition deepens, the online-shift secular story still real — and after -91%, a lot of the bear case is arguably in the price."
+      ],
+      "macro_context": "The fastest rate-tightening cycle in decades; auto-loan affordability at record lows; the high-yield market has effectively closed to stressed issuers, so refinancing optionality is gone; consumer discretionary demand rolling over from the shock-era spike.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
