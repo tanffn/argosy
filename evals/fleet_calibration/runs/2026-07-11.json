@@ -92,6 +92,782 @@
       }
     },
     {
+      "case_id": "ttcf_t4",
+      "alias": "PVF",
+      "category": "C",
+      "grading": "exit",
+      "real": "TTCF @ 2023-03-15 (~$1.20); going-concern, delisting risk",
+      "freeze_date": "2023-03-15",
+      "temporal_violations": [
+        "source dated 2023-06-15 > freeze 2023-03-15: FY-2022 FINAL figures used in packet (revenue $230.9M +11%, GROSS LOSS -5.8% GM,"
+      ],
+      "packet_calendar_years": [],
+      "status": "disqualified_temporal"
+    },
+    {
+      "case_id": "pltr_2023_f1",
+      "alias": "MDS",
+      "category": "A",
+      "grading": "F1_lenient",
+      "real": "PLTR @ 2023-03-01 (~$8.0x)",
+      "freeze_date": "2023-03-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Buy a starter high-potential-sleeve position — this is a moat-protected software business that just crossed into profit, and the price is fair (not cheap) for the quality.\n\n**Quality read:** This is a high-margin software company. It keeps about 78.6 cents of gross profit on every sales dollar, which is excellent. About 55% of its revenue comes from government, defense and intelligence agencies on multi-year contracts that are very hard to switch away from (security accreditations and deep data integration lock customers in), and that government book is still growing about 20% a year. The balance sheet is a fortress: roughly $7.9B of cash and marketable securities and zero debt. Most importantly, the company just reported its FIRST-EVER profitable quarter (net income of 93 on 1,526 of revenue) and management is guiding to its first profitable full YEAR. Here is the apparent contradiction the numbers hide: revenue growth has slowed for eight straight quarters (from ~49% down to ~18%) AND the company still posted a full-year accounting (GAAP) loss last year — yet cash generation was positive (adjusted free cash flow of 609). The reason is that a huge chunk of pay is issued as stock (stock-based compensation was 1,694, about 30% of revenue), which is a real cost to shareholders through dilution but does not drain cash. So the business already prints cash; it is only now converting that into accounting profit as those stock costs shrink relative to sales.\n\n**Price read:** The stock trades at about 8.5x trailing sales (price-to-sales, P/S) and about 7.1x on an enterprise-value-to-sales basis (EV/S — which strips out the big cash pile). De-rated peers sit around 6-12x, so this is inside the range but above the cheap end. There is no price-to-earnings (P/E) ratio yet because profitability only just began. It is down about 80% from its high two years ago and has traded flat near multi-year lows for over a year. The buffer between price and fair value (the cushion that protects us if our estimate is wrong) is modest, not large — you are paying a fair price for a good business, not a bargain price. What makes the risk acceptable is the combination of ~15-24% growth PLUS ~22-28% cash margins (comfortably clearing the 'Rule of 40' health test), which justifies a mid-single-digit EV/S multiple over a long horizon.\n\n**Thesis fit:** This is a textbook fit for the high-potential sleeve: asymmetric growth candidate, high volatility tolerated, sized small (~1-2% of portfolio). It is uncorrelated with the broad index core and unrelated to the concentrated technology position being glided down. The asymmetry is real — a durable government-revenue anchor providing downside support, plus a large, not-yet-monetized commercial customer cohort (customer count up 79% to 143, but their revenue up only ~12% so far) as the free upside option.\n\n**Data quality:** Company name and absolute dollar figures are intentionally masked/scaled by the research service; all ratios, growth rates and margins are exact and internally consistent, so valuation and quality judgments are unaffected. Sizing is expressed as ~1.5% of portfolio because the true portfolio dollar total is not in this consult — scale the notional to your book at execution.\n\n**Recommendation:** Initiate a ~1.5% high-potential-sleeve position at market, good-till-cancelled, and let it compound. FALSIFIERS (any one kills the thesis): (1) government/defense revenue growth rolls from ~20% down toward single digits — the anchor breaks; (2) the first-profitable-year guide slips back into GAAP losses; (3) stock-based comp stays ~30% of revenue and share count keeps compounding >10%/yr so dilution eats owner returns; (4) the 143-customer commercial cohort still fails to convert to revenue over the next 4-6 quarters; (5) EV/S expands well above the ~12x peer ceiling with no growth re-acceleration. THE CLOCK: next validation point is the next quarterly earnings print, roughly 3 months out (last quarter was reported ~2.5 weeks ago) — the first quarter reported under the full-year profitability guide. Honest re-rating horizon is 2-3 years, because the upside depends on the slow conversion of the commercial cohort and sustained profitability, neither of which resolves in one or two prints.\n\n**Sources:** fundamentals/MDS, news/MDS",
+      "cited_sources": [
+        "fundamentals/MDS",
+        "news/MDS"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4452,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "pltr_2023_f2",
+      "alias": "MDS",
+      "category": "A",
+      "grading": "F2_strict",
+      "real": "PLTR @ 2023-06-01 (~$14.3)",
+      "freeze_date": "2023-06-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.0,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Own it — but only as a small, deliberately-sized high-potential-sleeve bet, because the business quality is real while the price already reflects a lot of optimism.\n\n**Quality read:** This is a genuinely strong business. It sells data-integration and analytics software, and about 55% of sales come from government, defense, and intelligence customers on multi-year contracts. Those customers face high switching costs and security-accreditation hurdles, which is a durable moat — hard for rivals to dislodge. The balance sheet is pristine: about $8.7B of cash and treasuries and zero debt, so it never has to raise money on bad terms. Gross margin — what's left of each sales dollar after the direct cost of delivering the software — is roughly 78.6%, which is excellent. The company just turned a corner: the latest quarter was its second straight quarter of profit under standard accounting rules (GAAP) and the FIRST quarter of positive operating profit, and management now commits to profit in every quarter this year. Adjusted free cash flow — the actual cash the business throws off after spending — was a very strong 36% of revenue last quarter. Two caveats hold it back from top marks. First, stock-based compensation (paying staff in shares) runs near 30% of revenue; that quietly dilutes existing owners, so 'profit' flatters the picture versus true cash returns to shareholders. Second, growth has slowed — revenue rose only about 18% year-on-year and the full-year guide implies roughly 15-17%. So this is a high-quality, moaty, now-profitable business whose growth has flattened rather than re-accelerated.\n\n**Price read:** This is the sticking point. The stock trades at about 15.9x trailing sales (price-to-sales, P/S — market value divided by yearly revenue), and roughly 14.4x on enterprise-value-to-sales, which adjusts for cash and debt. Comparable high-growth software peers trade at about 6-12x sales after the interest-rate-driven sell-off. So MDS sits at a large premium to its own peer group. Worse for a new buyer: the shares nearly DOUBLED (up ~80-90%) in the month since the print, on the profit beat plus excitement about a new artificial-intelligence (AI) product layer. There is essentially no buffer between today's price and a defensible fair value — a buffer being the gap that would protect us if our estimate is wrong. Paying ~16x sales for a business growing 15-17% means most of the price is a bet on future optionality (the AI layer and continued margin expansion), not on the numbers in hand. A true fair-value estimate here is unusually wide because the AI layer has disclosed zero revenue, so the premium can't yet be underwritten with data.\n\n**Thesis fit:** This is exactly the kind of asymmetric candidate the high-potential sleeve exists for: a moaty, founder-led franchise inflecting to profitability with a large, unpriced call option (generative AI on customers' private data). It is uncorrelated with the user's index core and the separate concentrated tech position being glided down. High volatility tolerance and a 5+ year horizon both fit. The rich entry is the reason to keep it SMALL, not the reason to skip it — our doctrine is that price does not gate a growth-sleeve entry, but sizing does.\n\n**Data quality:** Figures are masked and dollar-scaled by design; every ratio, margin, and multiple is exact and internally consistent, so the analysis is sound. The only genuinely missing input is AI-layer monetization — none has been disclosed — which is what makes fair value a wide band rather than a point.\n\n**Recommendation:** Initiate a STARTER position at the LOW end of the sleeve — target ~1% of portfolio net asset value (portfolio dollar total not supplied due to masking; size to ~1% at execution), leaving room to add on evidence rather than on hype. Market order, good-till-cancelled — a long-hold buyer does not time the entry. FALSIFIERS that would kill the thesis: (1) revenue growth decelerating below ~12-13% for two consecutive quarters, signalling the flattening has turned into decline; (2) a slide back into GAAP operating losses or abandonment of the every-quarter-profit commitment; (3) stock-based compensation staying at/above ~30% of revenue with no downward path, i.e. profitability that never reaches real per-share cash returns; (4) two-plus quarters after launch with still zero disclosed AI-layer revenue or engagement metrics, meaning the AI premium is a repackage with no monetization; (5) the sleeve breaching its ~5% cap. THE CLOCK: next validation point is the Q2 earnings print, roughly 3 months out (about 2.5 months after the just-reported Q1), where we watch for the first hard AI-layer numbers, the growth trajectory, and margin follow-through. Honest re-rating horizon: 2-3 years for the AI optionality to prove or disprove itself; the near-term 3-month print tests direction, not the full thesis.\n\n**Sources:** fundamentals/MDS, news/MDS",
+      "cited_sources": [
+        "fundamentals/MDS",
+        "news/MDS"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 5059,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "pltr_2022_trough",
+      "alias": "MDS",
+      "category": "D",
+      "grading": "hold_drawdown",
+      "real": "PLTR @ 2022-12-20 (~$6.4); the client-scar test",
+      "freeze_date": "2022-12-20",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Keep the existing high-potential slot — the position is down 74%, but none of the recorded thesis falsifiers have fired, and in this sleeve price decline alone is never an exit trigger.\n\n**Quality read:** This is a 20-year-old data-integration software vendor where roughly 55% of sales come from government, defense, and intelligence agencies on multi-year contracts with very high switching costs and security-accreditation barriers — a durable moat. The business is still growing: government revenue is up about 20% over the trailing twelve months and US government up 23% in the latest quarter. Gross margin is high at 78%. The balance sheet is a fortress: about $7.2 billion of cash and marketable securities and zero debt. On a cash basis it is now healthy — the 8th straight quarter of positive adjusted free cash flow (trailing ~$693 million), and management RAISED full-year adjusted operating-income guidance. The catch: it has never earned a GAAP (official accounting standard) profit. Here is the apparent contradiction — revenue keeps rising yet the company still posts net losses. Two things eat the profit. First, stock-based compensation (paying staff in shares) runs about 33% of revenue, which is a real cost even though it does not drain cash; it is falling in absolute terms but has diluted shareholders ~35% since listing. Second, the latest quarter's loss was worsened by ~$178 million of losses on a speculative investment portfolio (see below). Strip those out and the underlying operating loss margin is only -13% and improving about 10 points year-over-year.\n\n**Price read:** The stock trades at roughly 7.2x trailing sales (price-to-sales, P/S) and 5.8x on an enterprise-value-to-sales basis (which nets out the large cash pile). There is no price-to-earnings (P/E) ratio because there are no earnings yet. That is not obviously cheap versus beaten-down peers, and today's market only pays up for software that is already GAAP-profitable — which this is not. So there is no clean valuation buffer here; the case rests on the business inflecting to real profit over several years, not on the price being a bargain today. Note the stock is down ~84% from its high and the entire high-multiple software group is down 60-80% amid the sharpest rate-hike cycle in decades — much of this drawdown is the sector and the rate environment, not company-specific collapse.\n\n**Thesis fit:** This is exactly what the high-potential sleeve is for — an asymmetric growth candidate sized as an accepted-total-loss slot (~1% at entry, now a fraction of that after the drawdown). The sleeve mandate is explicit: a position falling in price is NOT a reason to sell; only a fired falsifier or a sleeve cap breach justifies action, and neither applies. The prior scar (selling a winner purely on price and missing a 10x) cuts against panic-exiting a loser purely on price too — the discipline is symmetric and driven by the thesis, not the quote.\n\n**Data quality:** Figures are masked/scaled by an undisclosed constant, but all ratios, growth rates, and margins are exact and internally consistent, so the analysis is valid. Both analyst reports are HIGH confidence. The genuine soft spots are business facts, not data gaps: growth has decelerated for seven straight quarters (~49% down to 22%, Q4 guide implies only 16-17%), international commercial revenue is shrinking, and the ~$1,350m parked in ~two dozen speculative newly-listed 'customers' is down ~75% (~$1,000m cumulative losses) — that program is discontinued, some of that cohort's revenue is now at risk, and it taints the stock by association. This is poor capital allocation and a legitimate ding to management judgment.\n\n**Recommendation:** HOLD — keep the existing slot, do not add and do not trim. Adding is not warranted: valuation is not cheap, growth is decelerating, and the speculative-portfolio misstep raises a capital-allocation question, so there is no reason to enlarge a below-target slot here. Exiting is not warranted either: the slot was sized for total loss, so the -74% mark does no further damage, and the exit-discipline rule forbids selling on price alone. FALSIFIERS (the checkable conditions that would kill the thesis and DO justify an exit): (a) government/defense revenue growth stalls or turns negative — currently +20% trailing, NOT fired; (b) adjusted free cash flow turns negative and stays negative — currently 8 consecutive positive quarters, NOT fired; (c) dilution re-accelerates, i.e. stock-comp as a share of revenue climbs again or share-count growth speeds up — currently ~33% and decelerating, bent but NOT fired. A fourth, forward-looking watch-item: if government growth AND the FCF trend both roll over together, treat the thesis as broken. THE CLOCK: next validation point is the Q4 / full-year print roughly one quarter out (~3 months), where the tests are whether the reaffirmed ~24% full-year revenue guide holds despite decelerating momentum, whether the +124% US commercial customer adds start converting into revenue, and whether the adjusted-profit trend keeps rising. The re-rating horizon — the market recognizing a genuine GAAP-profit inflection — is honestly a long, 2-3 year band and hard to pin precisely; that uncertainty is real and is why conviction here is MEDIUM, not HIGH.\n\n**Sources:** fundamentals/MDS, news/MDS",
+      "cited_sources": [
+        "fundamentals/MDS",
+        "news/MDS"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 3740,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "nvda_2023_f1",
+      "alias": "HLC",
+      "category": "A",
+      "grading": "F1_lenient",
+      "real": "NVDA @ 2023-01-17 ($17.70 split-adj); F1 per spec appendix (post-chatbot inflection, pre-parabola, before the blowout datacenter guide). Financials k=0.23, price factor 3.475 (existing HLC packet convention).",
+      "freeze_date": "2023-01-17",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "HIGH",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Buy a starter high-potential-sleeve position — this is an asymmetric growth candidate whose growth engine is accelerating while the market still prices last year's slump.\n\n**Quality read:** This is a very strong business. It is founder-led by the same chief executive for 30 years, holds 80%+ share of the discrete consumer-graphics market, and is the default standard for datacenter artificial-intelligence (AI) accelerators. Its real moat is a 15-year proprietary software ecosystem — the developer toolset almost every machine-learning framework targets first — which makes its chips the path of least resistance for anyone building AI. The balance sheet is healthy: roughly net-cash-neutral (about $3,000M cash against $2,530M debt) and investment-grade. Return on the business shows in its margins: gross margin (the share of each sales dollar left after direct product cost) ran near 65% in the last full year. Growth has been powerful too — revenue grew 52.7% then 61.4% in the prior two years.\n\n**Price read:** This is the hard part, and the buffer is thin. The price-to-earnings ratio (P/E, price divided by yearly profit per share) is 73 on trailing earnings versus 15-25 for diversified chip peers. But that 73 is misleadingly high because recent earnings are depressed, not because the business is failing. Here is the apparent contradiction the numbers hide: total revenue fell 17% year-on-year and profit fell 72%, yet the datacenter segment GREW 31% and is now ~65% of sales. The collapse came entirely from the OTHER segment — consumer gaming down 51% plus write-downs on unsold inventory, which knocked gross margin down about 11 points. So the shrinking, cyclical part masked the accelerating, structural part. Measured against prior-peak earnings the multiple is 45 — still a rich premium, so there is little margin of safety (little buffer between price and provable worth) on today's proven numbers. The upside case is that a viral generative-AI moment just landed, sell-side profit estimates have NOT yet been revised up, and a next-generation accelerator with a claimed 3-6x performance uplift is now shipping. You are paying a full price for an inflection consensus has not yet modeled.\n\n**Thesis fit:** This fits the high-potential sleeve precisely — an asymmetric growth bet, sized at 1-2% of the portfolio, funded from investable cash, with high volatility tolerance. It is uncorrelated to the diversified index core and is a distinct name from the large concentrated technology position being glided down, so it does not deepen an existing concentration. Size it at the middle of the band (~1.5% of portfolio net asset value; the '1.5' here denotes percent-of-portfolio for the allocator to convert against live NAV, not a dollar figure), leaving room to add if the datacenter re-rating confirms.\n\n**Data quality:** All absolute dollar figures are scaled by an undisclosed constant per the masking protocol, but every ratio, margin, growth rate, and multiple is exact and internally consistent, so the valuation read is sound. Underlying analyst confidence is HIGH and current.\n\n**Recommendation:** Initiate a ~1.5% high-potential-sleeve position at market, good-till-cancelled, and let it compound; do not trim on a first double — a double is a reason to re-derive the thesis, not to exit. FALSIFIERS that would kill the thesis: (1) datacenter revenue growth stalls or turns negative for two consecutive quarters (the growth engine is the whole case); (2) gross margin fails to recover back toward the low-60s% as consumer inventory clears; (3) export controls widen materially beyond the ~10% of datacenter revenue currently at risk; (4) a credible competitor or open software standard erodes the developer-ecosystem lock-in; (5) the AI demand surge proves a one-off with no durable follow-on capex from cloud buyers. THE CLOCK: the next validation point is the upcoming quarterly earnings print (~1 quarter out, since the last was reported ~2 months ago), where the tests are whether consumer channel inventory normalizes as guided over 1-2 quarters and whether datacenter growth re-accelerates on AI demand; the honest re-rating horizon is 2-3 years for the structural AI-compute thesis to play out, with the first datacenter-driven estimate revisions plausibly in the next 3-6 months.\n\n**Sources:** fundamentals/HLC, news/HLC",
+      "cited_sources": [
+        "fundamentals/HLC",
+        "news/HLC"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4548,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "nvda_2023_f2",
+      "alias": "HLC",
+      "category": "A",
+      "grading": "F2_strict",
+      "real": "NVDA @ 2023-06-01 (~$38 split-adj); F2 per spec appendix (immediately after the Q1-FY24 confirming print and shock ~$11.0B guide, inside the early parabola). Financials k=0.23, price factor 3.475 (HLC packet convention).",
+      "freeze_date": "2023-06-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Buy a starter position in the high-potential sleeve — this is a rare wide-moat business at the center of a structural demand shift, and it is exactly what that asymmetric-growth sleeve exists for.\n\n**Quality read:** This is a very high-quality business. It is founder-led by the same chief executive for 30 years, holds 80%+ of the discrete consumer-graphics market, and is the de-facto standard for datacenter artificial-intelligence (AI) accelerators. Its real durable advantage (its 'moat') is not the chips — it is a 15-year proprietary software toolchain that nearly every machine-learning framework targets first. That makes its hardware the path of least resistance for anyone building AI, which is the kind of lock-in that survives across cycles. Gross margin — the share of each sales dollar left after the direct cost of making the product — runs 62–65% and is guided toward ~70%, which signals genuine pricing power. The balance sheet is net cash (about 3,524 million dollars of cash versus 2,519 million of debt) and investment-grade, so there is no financial-fragility risk. One apparent contradiction to explain: last quarter revenue fell 13% versus a year ago, yet net income rose 26%. That is because the weak part (consumer/gaming, down 38%) shrank while the high-margin datacenter part grew to a record and now makes up ~60% of sales — so the company sold less overall but kept much more of each dollar. Separately, the latest full year was flat (+0.2%) after two years of 50–60% growth, because a consumer/gaming bust and inventory write-downs offset datacenter growth — that flat year is the trough, not the trend.\n\n**Price read:** There is no buffer between price and value here — the opposite. The stock trades at 206 times trailing earnings (price-to-earnings, or P/E — how many years of current profit you pay for one share) versus 15–25 times for diversified chip peers, and it is up ~170% this year including a ~25% jump in one session. The only way to justify that price is if the shock guidance is a NEW baseline, not a one-off spike. On that basis it looks far less extreme: if next quarter's guide (~50% above what analysts expected, one of the largest guidance beats ever for a company this size) simply annualizes at guided margins, the multiple falls to roughly 48–58 times forward earnings. So you are not buying a cheap stock with a safety cushion — you are paying a full price for a platform bet that the AI-compute build-out is durable. If demand normalizes like it did in the company's two prior boom-bust cycles, the price could fall 50%+ before earnings catch up.\n\n**Thesis fit:** This fits the high-potential sleeve precisely: a high-volatility, asymmetric-growth candidate sized small (~1–2% of the portfolio, ~1.5% here) so a permanent loss is survivable while the upside is uncapped. It is a separate bet from the large concentrated technology position being glided down, so this is a deliberate new sleeve position, not a top-up. The user's high volatility tolerance and 5-year-plus horizon are what make owning something this expensive and this volatile rational.\n\n**Data quality:** Inputs are current and internally consistent; the masked name and scaled dollar figures are intentional and do not degrade the ratios, which are exact. Conviction is tempered (MEDIUM) not by data gaps but by genuine thesis uncertainty — whether this is a durable multi-year cycle or a one-time order scramble is the open question the price already assumes will resolve favorably.\n\n**Recommendation:** Initiate a ~1.5%-of-portfolio starter via a market order, good-till-cancelled — long-hold investors do not time entries. Keep it at the low-to-mid end of the sleeve given the valuation risk, leaving room to add on evidence the demand is durable. FALSIFIERS (conditions that would kill the thesis): (1) datacenter revenue growth stalls or reverses in the next 1–2 quarters, revealing the guide as a channel-restock spike rather than a baseline; (2) gross margin rolls back below the low-60s, signalling the pricing power was temporary; (3) a hyperscaler's in-house custom silicon or a rival/startup accelerator materially takes datacenter share, breaking the software-ecosystem lock-in; (4) an export-control tightening that removes materially more than the ~10% of datacenter revenue currently exposed. THE CLOCK: the next validation point is next quarter's earnings print (~3 months out), where the ~2,530-million guide either confirms the new baseline or exposes it as a spike; a second confirmation lands one quarter later. Re-rating horizon is honestly a 2–3 year band — long enough for two to four prints to prove whether the AI-compute cycle is structural — with the caveat that the exact durability is not precisely estimable, and that unestimability is itself a reason to size small.\n\n**Sources:** fundamentals/HLC, news/HLC",
+      "cited_sources": [
+        "fundamentals/HLC",
+        "news/HLC"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4901,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "amd_owner_t1",
+      "alias": "VRS",
+      "category": "A",
+      "grading": "entry",
+      "real": "AMD @ 2023-01-17 (~$71); post-crash base entry test (2022-12 close $64.77, ~-55% from prior peak)",
+      "freeze_date": "2023-01-17",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Buy a small high-potential-sleeve starter position — this is a genuine asymmetric growth candidate whose datacenter engine is compounding while the market pays almost nothing for its coming AI-compute option.\n\n**Quality read:** This is the #2 designer of x86 computer processors (CPUs), five years into taking server-CPU market share from a slipping incumbent — from roughly 1% of units back toward ~20%. That share engine is still working through the downturn: the Data Center segment grew +45% year-over-year and a new server chip just launched to strong reviews. The balance sheet is healthy: about $7.56B cash against $3.38B debt, so it holds more cash than debt (a 'net-cash' position), investment-grade, with the recent industry-record FPGA (a type of reprogrammable chip) acquisition paid in stock, not borrowing. Two contradictions to explain. First, full-year revenue grew +68% but reported net income rose far less (roughly $3.36B to $4.27B, about +27%) — that gap is because the prior year's profit was flattered by a one-time tax benefit, so the true underlying earnings growth is understated in that comparison, not weak. Second, last quarter revenue rose +29% yet the company posted an accounting operating loss — that loss is almost entirely non-cash amortization of intangibles from the acquisition, not a cash drain; stripping it out, adjusted gross margin is about 50% versus the 42% reported figure. The real soft spot is the consumer half of the business (PCs and gaming), roughly half of revenue, in a deep downcycle — PC-facing sales fell 40% year-over-year.\n\n**Price read:** The stock trades at about 19 times adjusted trailing earnings (price-to-earnings, P/E) and ~5.1 times sales (price-to-sales, P/S). That is not a distressed price, but it is reasonable for a business with structural server share gains — and critically, sell-side models give essentially zero credit to the just-previewed datacenter AI accelerator (a 146-billion-transistor package sampling now, shipping in the second half of this year). That means the buffer here is not a cheap headline multiple; it is a real, in-hand product line the price is treating as worthless. If it lands even modestly in a market ~90% owned by one rival, there is meaningful upside not in today's price. The trailing GAAP P/E of ~50 looks scary but is distorted by the same non-cash amortization; the ~19 adjusted figure is the truer picture.\n\n**Thesis fit:** This fits the high-potential sleeve precisely — an asymmetric, high-volatility growth bet sized small (~1-2% per position), funded from available cash, held for the 5+ year horizon. It is uncorrelated with the large concentrated technology position being glided down. High volatility tolerance is appropriate: the consumer downcycle can get worse before it gets better.\n\n**Data quality:** Inputs are current and internally consistent (masked/scaled per the research-service protocol, which is intentional and not a defect). The main soft input is fair value itself: the AI-accelerator upside is real but genuinely unquantifiable today, so the estimate leans on the datacenter franchise plus a free option — hence moderate, not high, conviction.\n\n**Recommendation:** Initiate a ~1.5% of-portfolio position (mid of the 1-2% sleeve band) at market, GTC, and hold. FALSIFIERS that would kill the thesis: (1) Data Center growth stalls to single digits for 2+ quarters as the incumbent's roadmap stabilizes and share gains reverse; (2) adjusted gross margin structurally drops below ~45%; (3) the PC correction proves structural (demand lost, not just delayed) beyond 1-2 quarters with no server offset; (4) the FPGA/embedded integration fails — embedded revenue rolls over or a writedown appears; (5) the AI accelerator slips, fails to ship, or wins no design traction within ~2 years; (6) the net-cash balance sheet flips to meaningfully leveraged. THE CLOCK: next validation is the Q4 earnings print due in ~2 weeks (fiscal Q4 just closed ~2.5 weeks ago) — watch whether Data Center keeps compounding and whether management still frames the PC correction as only 1-2 more quarters. The bigger validation point is AI-accelerator sampling now with volume shipments in H2 this year. Honest re-rating horizon: 2-3 years for the datacenter/AI thesis to prove out; the AI-accelerator payoff timing is hard to estimate precisely, which itself caps conviction at moderate.\n\n**Sources:** fundamentals/VRS, news/VRS",
+      "cited_sources": [
+        "fundamentals/VRS",
+        "news/VRS"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4943,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "amd_owner_t2",
+      "alias": "VRS",
+      "category": "D",
+      "grading": "hold_drawdown",
+      "real": "AMD @ 2025-04-30 ($97.35 month close; -57% from Mar-2024 peak); fresh MI308 export-control 8-K, thesis intact",
+      "freeze_date": "2025-04-30",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Keep the existing position — the entry thesis is intact and no falsifier has fired, so the deep drawdown is a price de-rating, not a business breakdown; do not add fresh money yet.\n\n**Quality read:** This is a genuine franchise, not a broken story. The company is the number-two designer of both server processors and graphics/AI-accelerator chips. Last full year revenue grew 14% to about $34.8B at a 49% gross margin (what's left of each sales dollar after the direct cost of making the product), and the most recent quarter set records: revenue up 24% year-over-year, gross margin 51%, and the Data Center segment up 69%. The new datacenter AI accelerator went from zero to over $6.75B of revenue in its first full year, with multiple large cloud customers deploying it. The balance sheet is strong — about $6.9B cash against $2.3B debt, so roughly $4.6B net cash — and management flagged the fresh export charge as a non-cash write-down, not a cash crisis. All three original milestones (server share gains, the accelerator landing, the PC rebound) have either landed or are on track.\n\n**Price read:** The stock trades at about 29x adjusted trailing earnings (price-to-earnings, or P/E — how many years of profit you pay for the share), 96x on a strict accounting (GAAP) basis because past-acquisition charges depress reported profit, and 6.1x sales. Twenty-nine times earnings for a business growing datacenter revenue 69% is not expensive, but it is not deeply cheap either — the buffer between today's price and a reasonable fair value (the protection you'd want in case our estimate is wrong) is modest, not generous. The share is down 57% from its peak 13 months ago yet still up 37% from the sleeve's entry at $95.85. Important: the price fell, but the numbers kept rising — that is a fall in what the market is willing to PAY per dollar of earnings (expectations reset lower), not a fall in the earnings themselves.\n\n**Thesis fit:** This is a high-potential-sleeve holding sized for asymmetric upside with an accepted risk of total loss, and it fits that mandate. Per the client's exit discipline, price alone is never a sell trigger — a prior double here triggers a re-derivation, not a trim. Re-deriving now: the core engine (server share plus a real second AI-accelerator product cycle) is intact, but the upside CEILING did move down — a new export-license rule just walled off the China market for the accelerator, costing up to ~$1.08B in charges and roughly $1.35B–$2B+ of annual revenue that may never come back. That is a real, partial impairment of the ceiling, not a falsifier. The competitive gap to the category leader (whose datacenter revenue is roughly ten times larger and still growing faster in absolute dollars) widened, and several cloud customers are building their own in-house AI chips — both are genuine long-term squeezes on a merchant number-two.\n\n**Data quality:** Both analyst inputs are HIGH confidence, but two forward unknowns cap conviction: the export-license outcome is genuinely uncertain (management will apply; no assurance of grants), and the next quarter reports in about one week, so a key data point is imminent but not yet in hand.\n\n**Recommendation:** KEEP the existing position; do not trim on price and do not add new money until the near-term picture clears. FALSIFIERS (any one kills the thesis): (1) the accelerator loses or fails to win hyperscaler deployments at scale as customers shift to in-house custom silicon; (2) server-CPU share stalls or reverses; (3) balance-sheet stress emerges; (4) the China wall-off proves to be the leading edge of broader structural share loss, OR the mid-year next-generation accelerator slips or fails to gain traction. THE CLOCK: the very next validation point is the new fiscal-year Q1 earnings print in roughly one week (watch guidance realism after the export hit and accelerator momentum), followed by the mid-year next-gen accelerator launch and a rack-scale successor next year. Honest re-rating horizon: 2–3 years for the second product cycle to prove out — the export-license resolution timing inside that window is not reliably estimable, which itself keeps conviction at medium rather than high.\n\n**Sources:** fundamentals/VRS, news/VRS",
+      "cited_sources": [
+        "fundamentals/VRS",
+        "news/VRS"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4206,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "amd_owner_t3",
+      "alias": "VRS",
+      "category": "D",
+      "grading": "rederive",
+      "real": "AMD @ 2026-03-31 ($203.43 month close; ~3.1x T1, consolidating post-first-re-rating, -23% off the post-deal high)",
+      "freeze_date": "2026-03-31",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Keep the existing VRS position at full size — the thesis re-derivation confirms all three original milestones landed and the ceiling moved higher, so this is a conviction hold, not a price-based trim.\n\n**Quality read:** This is a genuinely strong business. Sales grew 34% last fiscal year, and profit more than doubled (from about 2,214 to about 5,805 in the report's scaled units). Notice those two numbers don't move together: profit grew much faster than sales. That is a good sign — it means the company kept a bigger slice of each sale (gross margin rose from 49% to 50% for the full year and to 54% in the latest quarter). So it is selling more AND earning more per sale at the same time. The balance sheet is very safe: about 14,175 in cash against about 4,320 of total debt, so it holds far more cash than debt. The data-center accelerator engine set a record last quarter (+39% year over year), and the growth came even with China accelerator sales near zero for most of the year — so the growth is real, not a one-market fluke.\n\n**Price read:** The stock is expensive on today's numbers: about 77 times trailing earnings (price-to-earnings, P/E — how many years of current profit you pay for the stock) and about 9.5 times sales (price-to-sales, P/S). On trailing figures there is little to no buffer between price and value — you are pre-paying for years of future deployment. What softens this: the landmark 6-gigawatt partnership starts in the second half of this year and is NOT yet in the reported revenue or guidance. So the earnings that would justify the price are largely still ahead, not in the price. That is why a rich multiple is tolerable in a growth sleeve here, but it is also why this is a keep, not an add.\n\n**Thesis fit:** This sits in the user's high-potential sleeve, which accepts high volatility and 100% loss on a slot in exchange for asymmetric upside. The position was entered small (~1-2%), tripled, and is now one of the sleeve's largest holdings. Per the client's exit discipline and the PLTR scar, price appreciation alone is NEVER a trim trigger — a triple triggers this re-derivation, which it passed. No recorded falsifier has fired: the accelerator won hyperscaler scale, server share is at records, and there is no balance-sheet stress.\n\n**Data quality:** Figures are masked/scaled by an undisclosed constant, but all ratios, margins and growth rates are exact and audited — not a defect. One thing I cannot compute from the inputs: the position's exact current percentage of the total portfolio. If the sleeve as a whole now exceeds its ~5% plan cap, the only sanctioned action is a mechanical rebalance back to cap while KEEPING the position — that is a portfolio-level calculation, not a price call.\n\n**Recommendation:** Hold the full position; do not trim on price and do not add at this valuation and concentration. FALSIFIERS (any one kills the thesis): (1) the first gigawatt of the 6GW partnership fails to begin deployment in the second half of this year, slips materially, or is cancelled; (2) server-CPU share stalls or reverses versus the incumbent; (3) balance-sheet stress — net cash swings toward meaningful net debt, or vendor-financing optics force real cash out; (4) gross margin compresses sharply, signalling the accelerator mix is deteriorating; (5) an AI-capex pause converts the out-year gigawatts into cancelled orders. THE CLOCK: the next routine test is the Q1 earnings print (~6-8 weeks out, since the last report landed ~8 weeks ago), but the LOAD-BEARING validation point is the first-gigawatt partnership deployment beginning in the second half of this year (next ~3-6 months). Full re-rating horizon on the 6GW ramp is an honest 2-3 years. If the sleeve breaches its ~5% cap, rebalance mechanically to cap while keeping the position.\n\n**Sources:** fundamentals/VRS, news/VRS",
+      "cited_sources": [
+        "fundamentals/VRS",
+        "news/VRS"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 3972,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [
+          "PLTR"
+        ],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "meta_2022",
+      "alias": "NSG",
+      "category": "D",
+      "grading": "hold_drawdown",
+      "real": "META @ 2022-11-04 (~$90.79; post-Q3 capex panic)",
+      "freeze_date": "2022-11-04",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 0.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Keep the existing position and add a measured amount — the original reasons to own this are still true, none of the recorded exit triggers have fired, and the price is now extraordinarily cheap.\n\n**Quality read:** This is a dominant business, not a broken one. It reaches about 3.71 billion monthly users, and that base is still GROWING (+4% year over year), with daily users around 2.93 billion and also rising. Its core apps still earn roughly a 34% operating margin this quarter — meaning it keeps about 34 cents of profit per dollar of sales in that segment — down from 40%+ over the past year, but still elite. The balance sheet is strong: about $18.38B of cash against only $4.36B of debt, so it holds far more cash than debt (a net-cash position). In its last full year before the current spending surge it generated about $17.2B of free cash flow (the cash left after running and investing in the business). Two things look alarming but have plain explanations. First, reported revenue fell 4% — but almost all of that is a strong home-currency effect; stripping currency out, sales actually grew about 2%. Second, profit roughly HALVED even though sales were about flat. That is because total costs rose 19% while revenue did not, so the company is keeping less of each dollar (margin compression), and a big 'moonshot' division burned about $1.62B in the quarter on only about $125M of revenue.\n\n**Price read:** The stock trades at a price-to-earnings ratio (P/E) of about 8.3 — you pay roughly $8.30 for each $1 of annual profit — versus a much richer broad market. Excluding the loss-making moonshot, the profitable core is priced at only about 6-7x earnings. That is a deep discount to the market and to every large peer, which gives a large buffer: even if our estimate of fair value is too optimistic, the entry price already assumes a lot of bad news, so we are protected on the downside.\n\n**Thesis fit:** This sits in the high-potential growth sleeve, which is built for exactly this kind of asymmetric, high-volatility bet. The position is down about 74% from the sleeve's entry at $156.20 to $39.95. Per the client's exit discipline, a price fall alone is NOT a reason to sell — only a fired falsifier or a sleeve-cap breach is. Checking the three falsifiers set at entry: users are still growing (not fired), core ad margins compressed but did not collapse (not fired), and capital discipline is the one genuinely open question — costs and planned capital spending are still rising and the moonshot's losses are guided to grow. But a hiring freeze was announced and management acknowledged the pressure, so 'indiscipline persisting indefinitely' has not yet been proven.\n\n**Data quality:** This is a masked, scaled research feed — the name and all absolute dollar figures are aliased, but ratios, growth rates and multiples are exact and audited, so the analysis is valid. Confidence is held at MEDIUM because the capital-allocation question is a real, unresolved fork: the founder controls the company through a dual-class share structure, so outside shareholders cannot force cost cuts, and the outcome depends on management's willingness to show discipline.\n\n**Recommendation:** Hold the position and add modestly, sizing the top-up to the sleeve's per-position ceiling (about 1-2% of portfolio; concretely a small ~0.5%-of-NAV add now, keeping dry powder — the exact absolute figure is set by cap math since portfolio NAV is masked in this consult). Do NOT sell on the drawdown. FALSIFIERS that would kill the thesis and trigger an exit: (1) monthly/daily users begin a sustained decline across the app family; (2) core ad-segment operating margin structurally collapses (from ~34% down into the sustained low-20s or below, beyond the current cyclical/currency dip); (3) capital indiscipline persists indefinitely — costs keep climbing and the moonshot loss is left uncapped with no path to profitability. THE CLOCK: the next validation point is the upcoming quarterly earnings print (Q+1, roughly 3 months out), where guidance already points to $13.2-14.3B revenue; watch whether expense growth decelerates, whether the hiring freeze and cost discipline actually show up, the moonshot loss trajectory, and constant-currency ad growth. The re-rating horizon is honestly 2-3 years — long enough for the ad-market cycle to turn and for capital discipline to prove out — so near-term conviction is deliberately capped.\n\n**Sources:** fundamentals/NSG, news/NSG",
+      "cited_sources": [
+        "fundamentals/NSG",
+        "news/NSG"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 7010,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "nflx_2022",
+      "alias": "SMC",
+      "category": "D",
+      "grading": "hold_drawdown",
+      "real": "NFLX @ 2022-06-15 (~$180 adj; post-subscriber-loss panic)",
+      "freeze_date": "2022-06-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Keep the existing position — none of the three thesis-killing conditions set at entry have actually fired, so the 66% drop is a price event, not a broken business.\n\n**Quality read:** This is the category leader in subscription video streaming (~222 million paying households across 190 countries) and the only major player that makes money at scale — a ~20-25% operating margin while every large competitor's streaming unit loses money. Revenue still grew about 19% last full year and ~9.8% in the latest quarter, and the company is now guided to positive free cash flow (cash left after all spending) for the first sustained stretch (~2,200), because the years of debt-funded content buildout are past their peak. Note an apparent contradiction: paying households FELL for the first time in a decade, yet revenue GREW ~10% and the operating margin EXPANDED to 25.1% from 20.9%. That gap is explained by two things — most of the subscriber drop (-0.7M of -0.2M net) was a one-time forced shutdown in one overseas market (excluding it, households still grew +0.5M), and pricing power plus cost discipline lifted revenue and margin per household even as the raw count dipped. In short, the company is earning more per customer, not selling more for less.\n\n**Price read:** The stock has de-rated from about 55x trailing earnings to ~15.5x (price-to-earnings, the price paid per dollar of annual profit) — the price already fell so far that today's earnings comfortably justify it, which was the opposite problem a year ago. At ~15x earnings, ~2.6x sales, a mid-single/low-double-digit grower with a 20%+ margin and newly positive cash generation, there is now a real buffer between price and a reasonable fair value — meaning we are far less exposed if our estimate is a bit wrong. Two monetization levers not yet in the numbers (a lower-priced ad-supported tier and paid password-sharing, ~$2-3/mo per extra household against 100M+ non-paying viewers) are free optionality on top.\n\n**Thesis fit:** This is the high-potential growth sleeve, where a doubling triggers re-derivation and a drop does NOT trigger an exit — the client's recorded scar is selling on price, and that discipline cuts both ways. The entry was a full-size position; after -66% its weight is materially reduced, so it now sits closer to a normal sleeve slot. I am not adding because (a) the next two quarters carry guided subscriber declines while the new levers are still being built, and (b) exact current sleeve weight isn't confirmed, so I won't risk over-concentration on a masked-data candidate. Adding is defensible on valuation but not initiated here.\n\n**Data quality:** Company name and absolute dollars are intentionally masked/scaled by the research service; every ratio, margin, growth rate and multiple is exact and audited, so this is not a data defect. Both analyst inputs are HIGH-confidence and current.\n\n**Recommendation:** KEEP the position; do not exit, do not trim on price. FALSIFIERS that would kill the thesis and trigger an exit: (1) sustained paid-household decline ACROSS regions for two-plus quarters after stripping the one-time overseas suspension — i.e. real demand erosion, not a one-off; (2) STRUCTURAL operating-margin compression (margin falling into the low-teens or below on a constant-currency basis — the current 19-20% FY guide is currency, not structural, so it does not count); (3) the new monetization levers (ad tier, paid sharing) failing to add subscribers or revenue-per-user once broadly rolled out. THE CLOCK: next validation point is the upcoming quarterly print (~1 quarter out), which management has already guided to -2M households — the test is whether underlying (ex one-off) subscribers stabilize and whether paid-sharing traction shows in the test markets. The larger re-rating catalyst is the ad-supported tier launch, targeted within ~1-2 years. Honest re-rating horizon: 2-3 years for the monetization story to prove out; the near-term quarter is noisy and I am not treating it as decisive.\n\n**Sources:** fundamentals/SMC, news/SMC",
+      "cited_sources": [
+        "fundamentals/SMC",
+        "news/SMC"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4583,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "amzn_2014",
+      "alias": "EVC",
+      "category": "D",
+      "grading": "hold_drawdown",
+      "real": "AMZN @ 2014-11-15 (~$16.4 split-adj; loss headlines, AWS not yet broken out)",
+      "freeze_date": "2014-11-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Keep the existing position — the thesis is intact, none of the entry falsifiers have fired, and the price is DOWN (not up), so the exit-discipline rules point squarely at holding, not trimming.\n\n**Quality read:** This is a dominant online general-merchandise retailer growing revenue about 20% a year, with a widening logistics/fulfillment moat and real pricing power — it raised its paid-membership fee roughly 25% earlier this year with minimal member loss. It runs on a net-cash balance sheet (about $11.1B cash against $4.96B debt), so the heavy building it is doing is funded from its own operating cash, not borrowing. Underneath the reported loss, the cash engine is compounding: trailing-12-month operating cash flow is about $9.14B, up 15% year-on-year and rising every quarter. Buried inside an 'Other' line is a cloud-infrastructure rental business at roughly $2.14B/quarter growing 40%+, rated the clear market leader with about 5x the compute capacity of the other 14 rated vendors combined — a high-margin business the consolidated income statement currently hides.\n\n**Price read:** The apparent contradiction is the whole story: revenue grew about 20% but the company posted its largest net loss in ~14 years (about -$699M). That is NOT the business breaking — it is (1) a one-time ~$272M writedown on a failed smartphone launch that was killed within months, and (2) deliberate reinvestment of gross profit into capacity, logistics and the cloud buildout. Management is explicit and consistent: it manages to long-term free-cash-flow per share, not quarterly earnings. On the numbers that survive the masking, the stock trades at a price-to-sales ratio (P/S) of 2.7 and an enterprise-value-to-operating-cash-flow multiple of about 25 — not cheap on a stopwatch, but reasonable for a 20%+ grower whose fastest, highest-margin unit isn't broken out. Because absolute dollar figures are scaled by an undisclosed constant, a precise fair-value dollar number can't be struck — but the ratios are exact, and they describe a compounder being punished for a philosophy the market is treating as a flaw.\n\n**Thesis fit:** This sits in the high-potential sleeve as an asymmetric compounder — exactly the profile it was bought for. The client's standing scar rule applies in the mirror image here: price alone is never an exit trigger, and this position is down about 18%, not up. Selling into a 'profitless growth' narrative while the cash flow accelerates is precisely the mistake the sleeve is designed to avoid. Slot sizing already caps the downside risk.\n\n**Data quality:** Figures are intentionally masked and dollar-scaled (aliased name, scaled absolutes), so no exact fair-value dollar target is possible; every ratio, growth rate and margin is audited and internally consistent, which is enough to judge whether the thesis holds. The cloud unit is not separately disclosed, so its margins rely on third-party estimates.\n\n**Recommendation:** Keep the full position; do not trim and do not exit on the drawdown. Adding is defensible only if the sleeve still has room under its ~1-2%-per-position cap — otherwise hold as-is. FALSIFIERS (the conditions that would kill the thesis and justify a sanctioned exit): (a) operating cash flow stops growing / turns down on a trailing basis; (b) the core retail franchise loses share — revenue growth breaks durably below the mid-teens without a reinvestment explanation; (c) the cloud unit's actual UNIT ECONOMICS break — segment margins collapse below cost as the price war bites, as opposed to headline price cuts alone (the ~30-60% cuts so far have not dented its leadership or estimated margin premium). THE CLOCK: next validation point is the Q+1 earnings print, roughly one quarter out — watch the operating-cash-flow trajectory and the 'Other'-line cloud growth rate; guidance already concedes a possible full-year GAAP loss, so a headline miss is not itself a falsifier. Expected re-rating horizon is honestly long — 2-3 years for the market to re-price the free-cash-flow philosophy, likely catalyzed if/when the cloud unit is broken out and disclosed separately.\n\n**Sources:** fundamentals/EVC, news/EVC",
+      "cited_sources": [
+        "fundamentals/EVC",
+        "news/EVC"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 3601,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "pton_2022",
+      "alias": "HSF",
+      "category": "C",
+      "grading": "exit",
+      "real": "PTON @ 2022-02-10 (~$37; post-guidance-collapse, inventory writedowns, CEO out)",
+      "freeze_date": "2022-02-10",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "sell",
+      "confidence": "HIGH",
+      "size": 100.0,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Exit the full HSF position — this is a sanctioned falsifier-driven sell, not a price-driven one.\n\n**Quality read:** The business the entry thesis was built on has broken on every axis the thesis itself named as a killer. HomeStride sells premium at-home exercise hardware that is supposed to convert each machine sale into a sticky, high-margin content subscription. Three things were recorded at entry as thesis-enders, and all three have now fired. (1) Demand falling below the elevated base: full-year revenue guidance has been cut twice in three months (from ~3295 to 2685-2930 to 2255-2320), which now implies the first annual revenue DECLINE in company history, and the latest quarter grew only +6% year-on-year versus triple digits a year ago. (2) Unit economics breaking: hardware gross margin — the profit left after building and shipping the machine — collapsed to 6.4%, meaning they now make almost nothing per machine after price cuts, freight, and promotions. (3) An inventory/cash-burn spiral: unsold stock has ballooned to ~915 (close to a full YEAR of sales sitting in warehouses and on ships, a real write-down risk), while free cash flow was about -335 in a single quarter. Management raised ~760 of fresh equity weeks after saying it needed no capital, then added ~460 of bank debt — the behaviour of a company scrambling for cash, not one funding growth from strength. The one genuinely healthy signal is the subscriber base still growing +66% with churn under 1% per month, but that flywheel was supposed to be FED by profitable hardware, and the hardware engine is now broken.\n\n**Price read:** The stock trades at about 3.3x sales on the cut guidance and has no price-to-earnings ratio (P/E) because the company is loss-making (a GAAP net loss of -268 last quarter). More importantly, it just bounced ~50% in two sessions on takeover rumours and a chief-executive change — meaning a chunk of any acquisition premium is arguably already in today's price. There is no reliable fair-value estimate to anchor to here: the business is guiding to shrink, burning cash, and any near-term upside rests on a speculative buyout rather than on fundamentals. So we are not exiting because the price is 'high' or 'low' — we are exiting because the thing we were paying for no longer exists.\n\n**Thesis fit:** This is a high-potential sleeve slot, sized for an accepted 100% loss, so the -61% drawdown alone does NOT force a sale — and price appreciation would never force one either (the client's PLTR scar). The sleeve mandate says the only sanctioned exits are (a) the recorded thesis falsifier fires, or (b) the sleeve breaches its cap. Falsifier (a) has fired unambiguously and repeatedly. That is exactly what this mandate says to act on. Redeploying the freed cash into a candidate whose thesis is still intact serves the wealth-maximisation goal better than holding a broken one on buyout hope.\n\n**Data quality:** Figures are masked and scaled by an undisclosed constant, but every ratio, margin, and growth rate is exact and internally consistent (fundamentals confidence HIGH, news confidence HIGH), so the thesis judgment is unaffected. The user's absolute share count and position notional are not exposed by the masked snapshot; the order is a FULL liquidation of the entire held HSF position — exact share count per broker records. The takeover speculation is the one live source of upside and is genuinely unknowable in timing and outcome, which is a reason to take the certain exit rather than gamble the slot on a rumoured bid.\n\n**Recommendation:** Sell 100% of the held HSF position at market. This realises a capital loss (entry $57.95 vs current $22.85, about -61%) that can be used to offset other realised capital gains elsewhere in the book. FALSIFIERS (already fired — this is why we are selling): guidance cut into an outright annual revenue decline; hardware gross margin collapsed to single digits; inventory near a full year of sales with heavy cash burn and emergency financing. THE CLOCK: the next validation point is the next quarterly earnings print (~3 months out) and the resolution of the live takeover chatter — but because the thesis is already broken and the only remaining upside is a speculative bid on an unestimable timeline, waiting for that clock is not warranted; the honest re-rating horizon on the fundamentals is negative and the buyout horizon is unestimable, which itself argues for exiting now rather than holding.\n\n**Sources:** fundamentals/HSF, news/HSF",
+      "cited_sources": [
+        "fundamentals/HSF",
+        "news/HSF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 8122,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [
+          "PLTR"
+        ],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "zm_2022",
+      "alias": "CFL",
+      "category": "C",
+      "grading": "exit",
+      "real": "ZM @ 2022-06-01 (~$108; growth 300%+ era -> single digits)",
+      "freeze_date": "2022-06-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "sell",
+      "confidence": "HIGH",
+      "size": 100.0,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Exit the full CFL slot — the position's recorded thesis falsifier has FIRED, which is a sanctioned exit under the sleeve mandate. This is a broken-thesis sell, NOT a sell on price.\n\n**Quality read:** The business is now high-quality but slow. Revenue grew 55% in the last full fiscal year, but the newest quarter grew only 12% year-over-year (YoY) — the slowest in company history, down from +355% at the demand-surge peak (right around where we entered). The consumer/self-serve segment (\"online\") is now shrinking outright, with heavy churn from shock-era subscribers. Enterprise is doing its job — revenue up ~31%, now a ~52% majority of the mix, with net dollar expansion of 123% (existing customers spend 23% more year-over-year). But enterprise only OFFSETS the consumer decline to a blended ~11-12% growth rate; it does not re-accelerate the whole company. Profitability and safety are excellent: 37.2% non-GAAP operating margin (margin = profit kept per dollar of sales), $165M free cash flow (the cash left after running and investing in the business) in one quarter, ~$1,880M cash, zero debt, and a buyback underway. So it is a durable standalone company — just no longer an asymmetric-growth one.\n\n**Price read:** It trades at 7x forward price-to-sales (P/S = market value divided by a year of sales), or 5.8x stripping out the cash. That is a fraction of the 30x+ it commanded at entry, so it is far cheaper in absolute terms. But growth of +11-12% is now BELOW the typical software peer, so once you adjust for how fast it is growing, it is no longer obviously cheap. There is no visible re-rating catalyst — management itself guides the online segment to decline all year and the full-year blend to ~11%.\n\n**Thesis fit:** This slot lives in the high-potential sleeve, which is reserved for asymmetric GROWTH. The entry thesis was a structural shift to remote work driving hyper-growth that persists after the shock. That thesis was explicitly falsified: growth collapsed toward market rate, the consumer base is eroding, and enterprise cannot re-accelerate the blend. Two-plus of the three recorded falsifiers fired. The mandate sanctions an exit exactly here — when the recorded falsifier fires. Crucially, we are NOT selling because the stock fell 77%, and this is the opposite of the prior scar (selling a winner after it doubled); the trigger is a mechanically-confirmed broken thesis.\n\n**Data quality:** Under the intentional name/scale masking, the exact share count and portfolio dollar value are not recoverable, so the numeric size field is a placeholder — execution should liquidate 100% of the held CFL slot per the positions ledger. The verdict itself rests on exact, audited ratios and growth rates and is high-confidence.\n\n**Recommendation:** Sell the entire remaining CFL position (100% of the slot) and harvest the capital loss (the sale realizes a loss versus the $155.10 entry, usable to offset capital gains taxed elsewhere; no gain means no capital-gains tax due on this sale). (1) FALSIFIERS — already fired: growth normalizing to market rate (fired at +12%); consumer/online base declining (fired, guided down all year); enterprise failing to re-accelerate the blended rate (effectively fired — it offsets but does not re-accelerate). The only condition that would REVERSE the call is enterprise re-accelerating blended growth back above ~20% while online stabilizes. (2) THE CLOCK — next validation point is the next quarterly earnings print (~3 months out) plus full-year guidance confirmation; management already guides online to decline and the blend to ~11%, so no near-term re-rating is expected. An honest re-rating horizon is genuinely unestimable absent a new product cycle or acquisition catalyst — and that unestimability is itself a reason NOT to keep this in a growth slot.\n\n**Sources:** fundamentals/CFL, news/CFL",
+      "cited_sources": [
+        "fundamentals/CFL",
+        "news/CFL"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 15092,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "cvna_2022",
+      "alias": "APO",
+      "category": "C",
+      "grading": "exit",
+      "real": "CVNA @ 2022-06-15 (~$23; debt-spiral era; -98% THEN 50x — outcome-luck rule)",
+      "freeze_date": "2022-06-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "sell",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Sell — exit the entire remaining APO slot; all three of the thesis's own recorded falsifiers have fired, so the story that justified owning it is broken.\n\n**Quality read:** The core bet was a \"scale-economics inflection\": as the company sold more cars, gross profit per unit (GPU — the dollars kept per vehicle sold) was supposed to keep rising while selling and admin cost per unit fell, driving the business toward breakeven. The opposite happened. In the latest quarter GPU fell 23% year-on-year, unit growth collapsed from the historic 75-100% down to just 14% (units actually fell versus the prior quarter), and the company posted its largest loss ever. The business is still EBITDA-negative (earnings before interest, taxes, depreciation and amortization — a rough proxy for operating cash generation) at roughly $16bn of annual sales. On top of that, total debt is about $7,600m against negative EBITDA, the new 8-year notes carry a 10.25% coupon and already trade below their issue price, and management has cut ~12% of staff with executives forgoing salary to fund severance. That combination — heavy debt on a business that loses money, bonds trading below par, emergency cost cuts — is a solvency question, not a growth question.\n\n**Price read:** At about 0.33x sales (price-to-sales) the equity looks cheap, and there is no price-to-earnings ratio because the company loses money. But cheap here reflects real distress, not a bargain: profitable brick-and-mortar used-car dealers trade at similar sales multiples with far less debt, and the below-par notes show the credit market is pricing meaningful default risk. This is a value trap, not a buffer.\n\n**Thesis fit:** This sits in the high-potential sleeve as an accepted-total-loss slot, and the exit rules matter here. The client's scar (PLTR) was about selling a WINNER purely because the price had doubled while the thesis was still intact — that is banned. This is the opposite case: the price is down 91%, but we are NOT exiting on price. We are exiting because the position's own recorded falsifiers all fired — unit economics moving away instead of inflecting, leverage becoming a survival question, and the used-car cycle turning against an inventory-owning model. Under the sleeve mandate a fired falsifier is an explicitly sanctioned exit.\n\n**Data quality:** The name and absolute dollar figures are masked and scaled, but every ratio, growth rate and margin is exact, internally consistent, and audited, and both analyst reports are HIGH confidence. The masking is intentional and is not a defect.\n\n**Recommendation:** Liquidate 100% of the held APO shares at market. FALSIFIERS (all three fired): (1) unit economics failed to inflect — GPU down 23% YoY and per-unit leverage reversing; (2) leverage became a survival tool, not a growth tool — pro-forma debt ~$7,600m on negative EBITDA, rescue-style 10.25% notes below par; (3) the used-car cycle reversed — wholesale vehicle values now falling month after month against an inventory-owning retailer while rate rises crush affordability. THE CLOCK: the next scheduled test is the upcoming quarterly print (~3 months out), but the thesis is already broken, so there is no reason to wait for it — the more urgent, unschedulable risk is the refinancing wall, because the high-yield market has effectively closed to stressed issuers and refinancing optionality is gone; that timing is genuinely unestimable, which itself argues for exiting now rather than holding for a re-rate. Re-rating horizon for any recovery would be long and low-probability (2-3+ years and conditional on solvency), which does not justify keeping capital or attention on the slot.\n\n**Sources:** fundamentals/APO, news/APO",
+      "cited_sources": [
+        "fundamentals/APO",
+        "news/APO"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 5385,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [
+          "PLTR"
+        ],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "gpro_2016",
+      "alias": "VOP",
+      "category": "B",
+      "grading": "trap",
+      "real": "GPRO @ 2016-06-01 ($10.32); post-collapse 'value' trap",
+      "freeze_date": "2016-06-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Do not initiate a position — this looks like a cheap price on a shrinking business (a 'value trap'), not an asymmetric growth candidate.\n\n**Quality read:** The core problem is that the business is now going backwards, not forwards. Revenue grew fast around its stock-market debut — up 41.4% two years ago — but growth then slowed to 16.2% last year and, most recently, collapsed: last quarter's sales fell 49.5% versus a year earlier. Profit tells the same story, only worse. Net income (what's left after all costs) went from $109M two years ago, to just $31M last year, to a loss of $91M last quarter — the second straight quarterly loss and by far the deepest. Notice the gap: even when sales were still rising 16%, profit fell about 72%. That means costs were eating up almost all the revenue, so the company was selling nearly as much but keeping far less. Gross margin (the cut kept on each sale before overhead) also slipped from 41.6% for the year to 32.5% last quarter, because the flagship product had to be price-cut twice to clear a retailer inventory glut. Underneath is a structural problem, not a one-off: the enthusiast market for its rugged cameras is saturated, people upgrade less often, and improving smartphone cameras keep chewing into demand. Roughly 100% of revenue is still hardware despite years of talk about becoming a 'media platform', and that platform still has no defined way to make money. The founder-CEO controls the vote, so outside shareholders can't force a change. The one genuine strength is the balance sheet: about a third of the company's value ($403M) is cash with zero debt — but the company has now started burning that cash, so the cushion shrinks every losing quarter.\n\n**Price read:** On last year's sales the stock looks cheap — about 0.59x enterprise-value-to-sales (EV/sales, the whole-company price adjusted for its cash and debt, measured against revenue). But that 'cheap' number is measured against sales that are now falling 50%. Annualize the latest quarter and the run-rate is closer to $624M, which pushes the same multiple to roughly 1.3x — not cheap at all for a business that is both declining and now unprofitable. The price-to-earnings ratio (P/E) of 39 is meaningless here because it sits on top of earnings that have just turned negative. So the apparent bargain is an illusion created by comparing today's price to yesterday's revenue. There is no reliable buffer between price and true worth, because the true worth itself is falling as the cash pile is spent down.\n\n**Thesis fit:** The high-potential sleeve is meant for asymmetric GROWTH — a small bet where the upside dwarfs the downside. This is the opposite shape: a structurally declining hardware business where the downside (continued cash burn, secular smartphone pressure) is concrete and the upside (an unproven drone entering a crowded market against an entrenched leader, and an undefined media-platform pivot) is speculative. A strong brand and a cash pile are real, but they are a floor that is actively eroding, not an engine of compounding wealth.\n\n**Data quality:** Figures are masked/scaled by design, but all ratios, margins and growth rates are exact and internally consistent, and both analyst reports are HIGH confidence — so the read is reliable even though the name is aliased.\n\n**Recommendation:** Pass — do not initiate. FALSIFIERS that would make me reconsider (i.e. things that would need to become TRUE for this to become ownable): revenue stops falling and returns to year-on-year growth; the cash burn stops and the business returns to positive net income; and the 'media platform' turns into real, recurring, higher-margin subscription revenue rather than one-off hardware. Any one of those firing would change the picture; none has fired yet. THE CLOCK — next validation points are (1) the next quarterly earnings print, which will show whether losses and cash burn deepened, and (2) the two hoped-for second-half catalysts, the first drone and the next-generation flagship camera, both expected later this year. Honest re-rating horizon: 2-3 years for any turnaround to prove itself, and I'd flag that it is genuinely hard to estimate because the platform monetization is undefined and the category is in secular decline — that unestimability itself lowers conviction and argues for staying out until the falsifiers actually reverse.\n\n**Sources:** fundamentals/VOP, news/VOP",
+      "cited_sources": [
+        "fundamentals/VOP",
+        "news/VOP"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 3184,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "ttcf_t1",
+      "alias": "PVF",
+      "category": "B",
+      "grading": "trap",
+      "real": "TTCF @ 2020-12-15 (~$20.26); post-SPAC hype",
+      "freeze_date": "2020-12-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Do not initiate — even as a speculative slot, you would be buying a thin-margin food manufacturer at a story-stock price with no buffer against being wrong.\n\n**Quality read:** The growth is real but the business quality is weak. Revenue is compounding fast (up 57% last year, up 65% year-on-year last quarter, with management guiding to roughly 7x current sales in 5-6 years), and the balance sheet is clean — about $480M cash against only $8M debt, so bankruptcy risk is low near-term. But the economics are those of a private-label vegetable processor wearing a brand costume: gross margin is only about 15.5%, meaning that for every dollar of product sold the company keeps roughly 15 cents before overhead — this is a commodity-manufacturing margin, not a scalable consumer-brand margin. The bigger red flag is dependence: the top three customers are about 88% of revenue (one single warehouse-club chain is ~39%), and those are mostly rotational placements — temporary shelf slots, not permanent listings. Losing one of those three retailers, or simply not being re-selected in a rotation, could erase a third or more of sales overnight. A short-seller has publicly flagged exactly these points.\n\n**Price read:** The stock trades at about 8.7x current-year sales and 5.8x next-year guided sales after roughly quadrupling since listing (up ~50% this month alone, ~5% below its all-time high). Conventional frozen-food peers with similar economics trade at only ~1-2.5x sales. A fair-value estimate anchored to that peer range on this year's ~$548M revenue lands the whole company near $1,100-1,400M versus its current ~$4,750M — so the price is roughly 3-4x a generous fair value. There is no buffer between what you'd pay and what the business is plausibly worth; you would be paying up-front for a 7x-growth story that has to go almost perfectly. Even if that story fully plays out (~$3,700M revenue), at a normal food multiple the company would be worth only modestly more than today — that is capped upside sitting on top of large downside, which is poor asymmetry.\n\n**Thesis fit:** The high-potential sleeve is designed for asymmetric bets where a small slot (~0.5-1%, 100% loss accepted) can pay off many times over. This candidate fails that asymmetry test: most of the upside is already priced in, the theme is at peak hype (a hot newly-listed sector, retail money hunting 'the next one', rates near zero), and the downside if the concentration or margin risk bites is severe. Buying into a vertical launch at a bubble multiple is the opposite of the buffered entry the sleeve wants.\n\n**Data quality:** Figures are masked/scaled by an undisclosed constant, but ratios and growth rates are exact and internally consistent, and the analyst payloads are HIGH confidence. The full-year FY-0 result is still ~2 weeks out, so the 548 revenue target is management-reiterated, not yet reported.\n\n**Recommendation:** Do not initiate a position; revisit only if the price falls back toward a defensible multiple OR the business proves durable shelf economics. FALSIFIERS that would kill any bull thesis: (1) loss of, or non-renewal by, any top-3 club customer — especially the ~39% account; (2) rotational placements failing to convert to permanent shelf as door count expands; (3) gross margin staying stuck near 15% instead of expanding as the branded mix grows; (4) missing the ~548 FY-0 revenue mark or the ~821 next-year guide; (5) multiple compressing toward the 1-2.5x-sales sector norm. THE CLOCK: next validation point is the FY-0 full-year revenue print in ~2 weeks (target 548), followed by the first fresh guidance-vs-actual check next quarter; the door-expansion and plant-based-meat launch milestones are the multi-quarter tests. Honest re-rating horizon: the valuation gap could close on a single disappointing print (weeks to a few months on the downside), while the bull case needs 2-3 years of flawless execution to grow into today's price — an unfavorable time-asymmetry that itself lowers conviction.\n\n**Sources:** fundamentals/PVF, news/PVF",
+      "cited_sources": [
+        "fundamentals/PVF",
+        "news/PVF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4012,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "ttcf_t2",
+      "alias": "PVF",
+      "category": "C",
+      "grading": "exit",
+      "real": "TTCF @ 2021-08-16 (~$17.50); Q2-21 miss + guidance cut",
+      "freeze_date": "2021-08-16",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Keep the existing ~1% high-potential slot — the core distribution bet is landing, but the profitability path has deteriorated enough that adding is not justified.\n\n**Quality read:** Provida is a plant-forward frozen-food brand trying to convert warehouse-club private-label volume into a branded mass-retail business. The single most important part of the original bet — getting its own brand onto real shelves — is actually happening: a nationwide launch at a major mass retailer, ~1,800 stores of a large grocery chain, and management guiding to 12,000+ retail stores by the end of next quarter. That is the engine working. But two other pillars are moving the wrong way. Gross margin (the share of each sales dollar left after the cost of making the product) is only ~15.7% and guidance for the full year was cut to 16-22% from 20-25% — so the hoped-for climb toward 20%+ is stalling. Full-year adjusted EBITDA (a rough proxy for operating cash profit) guidance flipped from +$7-15m to -$52-63m — the year goes from profitable to a meaningful loss. Customer concentration has not improved: the top two customers are still ~71% of revenue. And the share count is ~30% higher than at our entry (warrant exercises), which quietly shrinks each existing share's claim on the business.\n\n**Price read:** At $64.75 the stock trades around 6x this year's guided revenue. For a food manufacturer with mid-teens gross margins that is now burning cash, that is a rich price — comparable food makers typically trade at a low-single-digit multiple of sales. There is no buffer between price and a conservative fair value here; the price already assumes the brand conversion succeeds and margins eventually expand. Note the apparent contradiction in the latest quarter: revenue grew 45.9% year-over-year, yet the company posted a $197m net loss. Most of that loss (~$170m) is a one-time NON-CASH accounting write-off of tax assets, not real cash out the door — but even stripping it out the operating loss was ~-$27m. So the business is selling far more while keeping less, because freight, storage and heavy marketing costs are rising faster than sales.\n\n**Thesis fit:** This is exactly what the high-potential sleeve is for — a sized-for-total-loss ~1% slot where we accept a full wipeout in exchange for asymmetric upside. Per the client's exit discipline, price alone is never a sell trigger, and the position is DOWN (-14%), not up — so the 'don't sell winners on price' scar does not force a trim here either way. The sanctioned exit is a recorded thesis falsifier firing or a sleeve cap breach; neither is cleanly the case yet. The decisive distribution milestone is delivering, which is why this is a hold and not an exit.\n\n**Data quality:** Both analyst reports are HIGH confidence and the quarter was reported ~4 days ago, so inputs are fresh and primary. The masked name and scaled dollar figures are intentional and audited; all ratios and growth rates are exact. Conviction is only MEDIUM because the thesis is genuinely bifurcated — one pillar landing, two eroding.\n\n**Recommendation:** Keep the existing ~1% position. Do NOT add (profitability guidance cut, 30% dilution, 71% customer concentration, rich 6x-sales valuation, and a whole cohort de-rating all argue against putting in more), and do NOT exit on the -14% price alone. FALSIFIERS (any one kills the thesis): (1) the full-year revenue guide of $870-895m (+~59%) gets cut materially — that would mean the one thing working, the distribution engine, is stalling; (2) gross margin fails to inflect and stays below ~16% into next fiscal year as branded mix scales, signaling the margin problem is structural not transitional; (3) top-2 customer concentration is still above ~65% a year from now — brand conversion isn't diversifying the base; (4) cash burn accelerates against the $519m cash pile plus further heavy dilution, threatening the balance sheet. THE CLOCK: next validation point is next quarter's print, when the '12,000+ stores by end of next quarter' claim and the first branded-shelf margin data get tested. Expected re-rating horizon for the brand-conversion-into-margins story to prove out is honestly a long 2-3 years, and the margin trajectory is hard to estimate right now — that uncertainty is itself part of why conviction is capped at MEDIUM.\n\n**Sources:** fundamentals/PVF, news/PVF",
+      "cited_sources": [
+        "fundamentals/PVF",
+        "news/PVF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 5253,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "ttcf_t3",
+      "alias": "PVF",
+      "category": "C",
+      "grading": "exit",
+      "real": "TTCF @ 2022-05-16 (~$7.00); GM ~11%, heavy burn, -75% from ATH",
+      "freeze_date": "2022-05-16",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "sell",
+      "confidence": "HIGH",
+      "size": 100.0,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Exit the full PVF slot — the core pillar of the entry thesis (margin expansion toward 20%+) has failed for four straight quarters and management has abandoned it, so the position's recorded falsifier has fired. This is a thesis-break exit, NOT a price exit.\n\n**Quality read:** The business is selling a lot more but keeping almost nothing. Revenue grew 43.7% last full year and 37.3% last quarter, yet the company posted a net loss of 323 (full year) and 65 (last quarter). The reason for that gap is gross margin: the fraction of each sales dollar left after the cost of making the product. It printed ~10-11% for four straight quarters, versus the 20-25% the original thesis required and management now calls 10-12% the new normal — the 20%+ ambition is gone from their own narrative. The big new push into mass-retail doors is the culprit: it wins revenue but LOSES money, because it comes with heavy slotting and promotion spend, and the new doors reorder more slowly than the old channel. Freight alone rose 70% year over year. So the growth is real but unprofitable, and the one thing we owned this for — margins climbing toward 20% — is not happening.\n\n**Price read:** Cash has fallen from 519 to 212 over three quarters while the company burned roughly 190 last year and 98 last quarter. At that pace the cash lasts only about 2-3 quarters without new financing. Share count is already up 30% since our entry, and a rescue equity raise at this depressed price would dilute owners heavily. The stock at $25.90 trades at ~2.5x trailing sales, which looks cheap only if you assume margins recover — but there is no evidence they will, and a real risk the company needs emergency financing first. There is no protective buffer here; the downside is potentially total.\n\n**Thesis fit:** This is a ~1%-at-entry high-potential slot, sized to absorb a 100% loss, now at -65%. The client's exit discipline is explicit: price appreciation alone is never an exit, and a doubling triggers re-derivation, not a trim. That rule protects WINNERS from being sold on price. This is the opposite case — a documented falsifier has fired: margins failed the thesis for four consecutive quarters AND management abandoned the margin framework AND the whole plant-forward category is now shrinking (the category leader posted its first-ever year-over-year revenue decline and several peers have issued going-concern or restructuring notices). Under the sleeve mandate, a fired falsifier is a sanctioned exit. Holding on hope now would repeat a different mistake — staying in a structurally broken business.\n\n**Data quality:** Company name and absolute dollar figures are masked/scaled by design; every ratio, margin, and growth rate is exact, which is all this decision needs. Both analyst inputs are HIGH confidence.\n\n**Recommendation:** SELL the entire remaining PVF slot at market. FALSIFIERS (all already fired): (1) gross margin stuck at 10-11% versus the 20%+ the thesis required, for four straight quarters; (2) management publicly abandoned the margin-recovery framework; (3) the plant-forward category is contracting industry-wide, removing the tailwind; (4) cash runway down to ~2-3 quarters with a heavily dilutive raise looming. THE CLOCK: management points to margin recovery 'next year' and receivable/inventory normalization as the cash fix, and the next earnings print lands in roughly 3 months — but the thesis does not survive to that test, so waiting is not warranted. Honest re-rating horizon if one held: 2-3 years and genuinely unestimable, because it depends on both a margin turnaround management no longer promises and avoiding a going-concern outcome — that unestimability itself is a reason to exit rather than wait.\n\n**Sources:** fundamentals/PVF, news/PVF",
+      "cited_sources": [
+        "fundamentals/PVF",
+        "news/PVF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 6473,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "nkla_2020",
+      "alias": "HHM",
+      "category": "B",
+      "grading": "trap",
+      "real": "NKLA @ 2020-07-15 ($54.58; SPAC hype peak era, pre-fraud-report)",
+      "freeze_date": "2020-07-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Do not initiate a position — this is a pre-revenue promotional story priced as if it has already won, and even the high-potential sleeve needs a real business underneath the story.\n\n**Quality read:** This is a company that has never sold a single product. Its entire history of sales is a tiny amount of leftover solar-installation work — $0.1M two years ago, $0.3M last year, and $0.0M last quarter — none of it from trucks. It loses money at an accelerating pace (net loss of $45M, then $62M, then $23M in the latest quarter alone as it spends on research and overhead ahead of any product). On the positive side, the balance sheet is clean: about $490M of cash from the recent listing and essentially zero debt, plus a genuine industrial partner (a major truck maker put in $175M and is contributing engineering and a European production line). But today its own truck-production capacity is zero, and the headline value — more than 9,800 'reservations' worth a claimed $7,000M+ — is explicitly non-binding. Those are expressions of interest, not signed orders, and can evaporate at no cost to the customer. The business is controlled by a founder-promoter with voting control who markets reservation windows directly to retail followers; that concentrates a lot of risk in one person's claims.\n\n**Price read:** There is no sane way to value this against fundamentals. The company is worth about $13,800M on roughly $0.3M of trailing sales — about 40,000 times sales — a multiple that only exists because there are essentially no sales. Normal valuation math (price-to-earnings, enterprise-value-to-EBITDA, price-to-sales) cannot be computed in any meaningful way, because there are no earnings, no operating cash generation, and no product revenue to divide by. That means there is zero buffer between what we'd pay and any defensible estimate of what the business is worth today — we would be paying entirely for a promise. The stock already spiked to roughly 8x its listing reference price (briefly worth more than a century-old major automaker) and has since fallen about 32% from that peak while still trading around 5.5x the listing price, which tells you the price is driven by speculative flows, not by results.\n\n**Thesis fit:** The high-potential sleeve is for asymmetric growth candidates — real businesses with a small chance of a very large payoff. This does not clear that bar. Asymmetry requires an underlying business we can underwrite; here the 'business' is a reservation book plus founder claims (600-mile hydrogen range, sub-$3/kg hydrogen, a fueling network that does not yet exist). The payoff is not asymmetric growth — it is a binary bet on promotional claims coming true, with heavy fraud-and-hype risk. That is speculation, not the compounding quality this sleeve is meant to hold.\n\n**Data quality:** The masked name and scaled dollar figures are intentional and audited; ratios, growth rates and multiples are exact, so this is not a data defect. The fundamentals and news feeds are both HIGH confidence, so the picture is complete — the analysis DID complete, and the answer is 'no'.\n\n**Recommendation:** Do not initiate. Keep the cash for the sleeve deployed into candidates with an actual product and revenue. FALSIFIERS that would flip this to a real buy candidate later: (1) actual, delivered trucks in customer hands with recognized product revenue; (2) a material share of the non-binding reservations converting into signed, binding purchase orders; (3) the company's own production line operational and producing at scale; (4) the valuation falling to a level a real revenue base could justify. THE CLOCK: near-term events are theater, not proof — a factory groundbreaking is scheduled for next week (capacity today is still zero), and the first battery-electric truck deliveries are only 'targeted' for next year off the partner's line. The first true test is the company's first public quarterly report and, more importantly, evidence of real deliveries and binding orders roughly 12 months out. Honest re-rating horizon to prove (or disprove) an actual business: 2-3 years, and genuinely low-confidence within that band — a pre-revenue promotional name can also unravel much faster if the reservations or founder claims are challenged. The wide, uncertain horizon is itself a reason for low conviction.\n\n**Sources:** fundamentals/HHM, news/HHM",
+      "cited_sources": [
+        "fundamentals/HHM",
+        "news/HHM"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 2398,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "bynd_2019",
+      "alias": "GGF",
+      "category": "B",
+      "grading": "trap",
+      "real": "BYND @ 2019-07-26 ($234.90 all-time-high close; -95%+ eventually)",
+      "freeze_date": "2019-07-26",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Do not initiate — this is a genuinely fast-growing story stock priced so richly that even years of flawless execution are already paid for, and the underlying business has no durable moat.\n\n**Quality read:** The top line is real and explosive: sales grew 170% in the latest full year and 215% year-over-year last quarter, with demand outstripping production. But the economics are thin. This is food manufacturing, not software: gross margin — the money left after making the product, before all other costs — is only 20-27%, and the company is still loss-making (net loss of $15.5M last year, $3.4M last quarter on the scaled figures). More importantly, there is no protective wall around the business. The core ingredient (pea protein) is a commodity, there is no patent on the recipe, retailers are launching cheaper private-label copies, and the biggest players in the industry — the largest US meat processor, the world's largest food company, and a well-funded private rival — are all pushing directly into the category. A ~2x price premium over real beef has to shrink for this to go mass-market, which will squeeze already-slim margins further. Fast growth without a moat is not a durable long-hold.\n\n**Price read:** The stock trades at about 123 times trailing sales (price-to-sales, or P/S — market value divided by revenue) and about 67 times sales even on management's own optimistic full-year forecast. For context, ordinary packaged-food companies trade at 1-3x sales, and even the fastest-growing premium food brands in history have peaked below roughly 10x sales. So a generous fair-value ceiling — 10x the forward sales guide — sits at roughly one-seventh of today's price. There is no buffer between price and worth; it is the opposite — the price sits far above any sane estimate of value, so a buyer is exposed to a very large fall if growth so much as slows. On top of that, about 85% of the shares are locked up until a release in ~3 months, which will flood the market with new supply, and the recent spike has been amplified by a tiny tradable float and an extreme short squeeze — mechanics that inflate price, not fundamentals.\n\n**Thesis fit:** This would be a high-potential-sleeve candidate, which is meant for asymmetric bets — big upside, contained downside. Here the asymmetry runs the wrong way: capped, moat-less upside against enormous valuation and supply-shock downside. It does not earn a slot.\n\n**Recommendation:** Do not initiate a position at this valuation. FALSIFIERS that would flip this to a buy: (1) the valuation resets toward food-brand norms — say below ~10x forward sales — while revenue growth stays intact; (2) the company demonstrates durable pricing power and lifts gross margin sustainably toward branded-consumer levels (40%+) rather than commodity-food levels; (3) it builds a real moat (protected formulation, exclusive large-scale distribution, or clear cost leadership) that holds off private-label and big-food entrants. THE CLOCK: the next validation point is the Q2 earnings print, due in ~3 days — watch whether margin and the growth trajectory confirm the guide. The larger structural test is the insider lockup expiry in ~3 months, when tradable supply multiplies. Honest re-rating horizon: the valuation gap is likely to close within 6-18 months given the lockup and competitive pressure, but the exact timing of a valuation reset is inherently hard to call — that uncertainty itself argues for lower conviction and for staying out.\n\n**Sources:** fundamentals/GGF, news/GGF",
+      "cited_sources": [
+        "fundamentals/GGF",
+        "news/GGF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 2554,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "wish_2021",
+      "alias": "DDT",
+      "category": "B",
+      "grading": "trap",
+      "real": "WISH @ 2021-02-01 ($31.19, post-IPO retail-wave pop; to ~zero)",
+      "freeze_date": "2021-02-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Do not initiate a position — this is not a long-hold candidate at any conviction I can justify today.\n\n**Quality read:** This is a mobile 'discovery-commerce' marketplace selling ultra-cheap, mostly unbranded goods shipped from overseas. On the surface the top line looks exciting: revenue over the last nine months grew 32% versus a year earlier, and it has 205 million (scaled) monthly active users. But underneath, the business is deteriorating on the two things that matter most for a durable company. First, it does not keep its customers. The number of active buyers actually FELL for two straight years (122 million to 118 million to 114 million) even though the company spent enormous sums on advertising to buy that growth; it only bounced back to 129 million because of a one-off outside event (an at-home demand surge). In plain terms: it has to keep paying to replace customers who leave, and it has never shown it can grow buyers WITHOUT that paid advertising. Second, profitability is going the wrong way. Gross margin — the share of each sale left after the direct cost of the goods and shipping — collapsed from 84% two years ago to 65% now. So the apparent 'growth' is misleading: revenue rose, but the company keeps far less of each dollar AND its losses got much bigger (a nine-month loss of 334 versus roughly 10 a year earlier). It is selling more while losing more. On top of that, its high-margin advertising revenue from sellers fell 34%. The company is still unprofitable, so there is no price-to-earnings ratio (P/E) — the ratio of share price to per-share profit — to lean on.\n\n**Price read:** The stock trades at roughly 7.9 times trailing sales (price-to-sales, or P/S — market value divided by yearly revenue), which is near the TOP of the 4-to-10 range where PROFITABLE peers with GROWING buyer bases trade. So this business is priced like a healthy grower while its buyer base is shrinking and its margins are falling. There is no buffer between price and value here — no protection if the optimistic case is wrong. Worse, the current quote is distorted: the stock flopped at its IPO seven weeks ago (down 16% on day one, the worst large debut of the year) and sat below its offer price for most of six weeks, then jumped about 77% in the last two weeks purely on a speculative retail short-squeeze wave — sentiment, not results. Today's price is a meme-driven number, not a considered valuation.\n\n**Thesis fit:** The high-potential sleeve is for asymmetric growth bets, and high volatility tolerance is fine. But asymmetry means a real chance of durable upside, not just a wide price swing. Here the core engine — buying customers who then leave — has not been shown to work, so the 'upside' rests on an unproven turnaround while the entry price is inflated by a squeeze. That is speculation, not the kind of durable growth candidate this sleeve is meant to hold.\n\n**Data quality:** The supplied figures are audited, internally consistent, and HIGH confidence; the masked name and scaled dollars are intentional and not a defect. The important limitation is timing: DDT has never reported a quarter as a public company — its first print is about five weeks out — so the retention and margin trajectory that would make or break the thesis is still unverified going forward.\n\n**Recommendation:** Do not initiate. Wait for hard evidence from the public reporting record before considering this name. (1) FALSIFIERS — conditions that would overturn this avoid-call and warrant a fresh look: sustained buyer/monthly-active-user growth that is clearly ORGANIC (i.e. holds up as ad spend is moderated); the two-year buyer decline reversing durably rather than only via the demand shock; gross margin stabilizing at or above ~65% as logistics scales instead of falling further; the merchant-advertising revenue line recovering; and evidence the at-home demand surge is durable rather than pulled-forward. (2) THE CLOCK — the next validation point is the company's FIRST public earnings print, expected in roughly 5 weeks, which will show whether buyer retention and margins are stabilizing or still eroding. Honest re-rating horizon: the business thesis needs 2-3 years and multiple clean prints to prove self-sustaining, retention-driven growth; a genuine buy case cannot be estimated before that first print, and that unresolved uncertainty is itself a reason for low conviction.\n\n**Sources:** fundamentals/DDT, news/DDT",
+      "cited_sources": [
+        "fundamentals/DDT",
+        "news/DDT"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 3448,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "pton_2021",
+      "alias": "HSF",
+      "category": "B",
+      "grading": "trap",
+      "real": "PTON @ 2021-11-01 ($92.83; days before the guidance-collapse print of 2021-11-04)",
+      "freeze_date": "2021-11-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "hold",
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "**Verdict:** Do not initiate a position — this is a genuinely great subscription franchise bolted onto a deteriorating, capital-heavy hardware business at the exact moment its core demand question is unresolved, and the price gives no buffer.\n\n**Quality read:** There are two businesses here. The subscription side is excellent: 1.42 million connected members growing 114% year-over-year, monthly churn under 1% (0.73%), and a rich ~65% subscription gross margin. That is a best-in-class, compounding recurring-revenue engine. The hardware side is the problem. Revenue grew 120% last fiscal year to 2,453, but the company still lost money (net income -115), and gross margin fell about 11 points — from 46.8% to 35.7%. Growing sales while keeping less on each sale means costs (price cuts, recall costs, freight) rose faster than revenue. Two more warning lights: the flagship bike price was cut ~21% just weeks into the new year (management calls it market expansion; skeptics read it as a demand signal), and a regulator forced a treadmill recall after a child fatality (~100 of revenue plus brand damage). Meanwhile the company built its cost base for the OLD growth curve — inventory doubled year-over-year to 572 (a real writedown risk if demand cools), plus a ~244 factory build and a hardware-maker acquisition. Those are fixed-cost bets that only pay off if surge-era demand is permanent.\n\n**Price read:** The stock trades at 6.9x trailing sales and 5.2x on the full-year guide, with no price-to-earnings ratio because it loses money. The catch: what it's worth depends entirely on which kind of company it is. Premium consumer-hardware brands trade ~3-5x sales; subscription/content platforms trade ~8-15x. At 6.9x it is fully priced — even after falling 45% from its high — IF the market ends up treating it as a hardware company. There is no reliable single fair-value estimate to anchor to, because the valuation is bimodal and the deciding fact (is demand permanent or pulled forward?) is exactly what's unproven. So there is no dependable buffer between price and value to protect us if we're wrong.\n\n**Thesis fit:** This is the kind of asymmetric, high-volatility name the high-potential sleeve exists for, and cash is available. But a good sleeve candidate needs upside that's large AND downside the company can survive. Here the downside is amplified by the fixed-cost commitments, the inventory overhang, and convertible debt issued near the stock's peak — if the shares stay down, that converts effectively becomes real debt. That is fragility, not clean asymmetry, at this moment.\n\n**Data quality:** None — the fundamentals and news feeds are both HIGH confidence and internally consistent. The masked name and scaled dollar figures are intentional and do not degrade the ratios, growth rates, or multiples used here.\n\n**Recommendation:** Do not initiate now; keep this on the watchlist. Management maintained a +34% full-year guide while guiding the very next quarter to only ~+6% — the slowest growth since it went public — which requires a back-half re-acceleration it has not yet shown. Buying today means paying a full multiple to bet on unevidenced guidance right as reopening (gyms, travel) works directly against the thesis. (1) FALSIFIERS that would keep me out or turn this into a SELL: subscriber growth stalling or monthly churn breaking meaningfully above ~1.5-2%; an inventory writedown; further hardware margin compression; a cut to the full-year guide; or the guided back-half re-acceleration failing to appear. What would turn this into a BUY: a print showing hardware demand stabilizing at the new lower price with the subscription flywheel intact and guidance credible, OR a further de-rating to a price that offers a real buffer even under the cheaper hardware-multiple (~3-5x sales). (2) THE CLOCK: the next validation point is imminent — the September-end (Q1) print is due within days (historically early November). That resolves the near-term fork fast. The larger question — was surge demand a permanent step-change or a pull-forward that's now unwinding — honestly takes 2-3 years to settle, because the lockdown-acquired member cohorts have not yet been tested through a full normal year. That long, hard-to-estimate horizon on the load-bearing question is itself a reason for lower conviction.\n\n**Sources:** fundamentals/HSF, news/HSF",
+      "cited_sources": [
+        "fundamentals/HSF",
+        "news/HSF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4302,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "nflx_2012_f1",
+      "alias": "SMC",
+      "category": "A",
+      "grading": "F1_lenient",
+      "real": "NFLX @ 2012-06-15 ($0.94 adj; post-collapse lows, F1 per spec appendix — T_signal = Q1-2012 recovery print 2012-04-23)",
+      "freeze_date": "2012-06-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Buy a small starter in the high-potential sleeve — this is a classic asymmetric bet where a hidden, profitable core is being masked by deliberate growth spending, and the price already assumes near-disaster.\n\n**Quality read:** The business has two engines. The old disc-by-mail rental service is shrinking about 10% of subscribers per quarter but still throws off cash at a roughly 46% contribution margin — a melting-but-fat annuity. The new streaming service is the future: it just posted its first clean recovery quarter after a self-inflicted price/spinoff blunder, adding 7.1 million home-market subscribers to reach 96.0 million, with a home-market contribution margin of 13.2% (above target) guided toward ~15% and expanding about 100 basis points (1 percentage point) per quarter. It has roughly 10x the paid streaming members of its nearest pure-play rival and added over 3x more subscribers than that rival last quarter. The structural tailwind (rising broadband and internet-connected-TV usage) is real and durable. That is a genuinely dominant, widening lead.\n\n**Price read:** Here is the apparent contradiction the reader needs: revenue grew 48.2% last full year, yet the company just reported a quarterly loss of $19M and negative earnings per share of -$0.33 — its first loss in years. That is NOT the core business breaking. It is caused entirely by international expansion, which lost $421M last quarter by design. Strip that out and the home-market streaming and disc segments are solidly profitable. So the trailing price-to-earnings ratio (P/E) of 16.2 is real but the current-year P/E is meaningless (earnings are steered to roughly breakeven while overseas losses run). The better lens: the stock trades at just 1.1x sales (price-to-sales, P/S) versus comparable content peers at 3-4x enterprise-value-to-sales, and the disc annuity alone (contribution profit ~$2.4B/year run-rate) covers most of the entire company's value at even a low multiple. In plain terms, you are getting the dominant streaming franchise almost for free at this price — a large buffer between what we'd pay and what the profitable pieces alone appear to be worth, which protects us if we're wrong on the growth story. The stock is down about 78% from its high and sits near post-collapse lows.\n\n**Thesis fit:** This is exactly what the high-potential sleeve exists for: an asymmetric growth candidate with high volatility, held for years, sized small (1-2% of portfolio, ~1.5% here). It is uncorrelated with the user's large concentrated technology position and with the broad index core, so it diversifies the risk rather than doubling down. High volatility tolerance and a 5+ year horizon are the right profile for a story that needs several years to play out.\n\n**Data quality:** Both analyst reports are marked HIGH confidence on current data. Conviction is set to MEDIUM (not HIGH) because outcomes are genuinely wide: a clean fair value can't be pinned down while consolidated earnings are deliberately suppressed, and the thesis leans on management hitting its margin-expansion and international-profitability path. The absolute dollar figures are intentionally scaled (masked candidate) — all ratios and growth rates are exact, so the analysis stands.\n\n**Recommendation:** Initiate a ~1.5% high-potential-sleeve position at market; do not oversize. FALSIFIERS (any one kills the thesis): (1) home-market streaming net adds turn negative outside the flagged seasonal Q2 softness — the recovery was a head-fake; (2) home-market streaming contribution margin stalls or compresses instead of climbing toward and past 15% — the streaming economics don't scale; (3) content owners collectively withhold catalogs AND it starts driving measurable subscriber churn (the February movie-output-deal expiry showed none — that's the tell to watch); (4) international markets fail to cross into profit on the promised path while consolidated losses keep widening — reinvestment isn't compounding; (5) the disc annuity melts materially faster than ~10%/quarter, pulling the cash engine before streaming can self-fund. THE CLOCK: next validation point is the next quarterly print (~3 months out), where management guided a return to consolidated profitability (-$25M to +$33M) and the first overseas market turning profitable a quarter early — that print tests falsifiers (1), (2) and (4) at once. Expected re-rating horizon is honestly 2-4 years as international markets mature and streaming margin compounds; it is NOT a near-term catalyst trade, and that long, uncertain payoff window is itself a reason conviction is MEDIUM rather than HIGH.\n\n**Sources:** fundamentals/SMC, news/SMC",
+      "cited_sources": [
+        "fundamentals/SMC",
+        "news/SMC"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 5171,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "nflx_2013_f2",
+      "alias": "SMC",
+      "category": "A",
+      "grading": "F2_strict",
+      "real": "NFLX @ 2013-02-01 ($2.35 adj; F2 per spec appendix — immediately after the confirming Q4-2012 print of 2013-01-23, early parabola)",
+      "freeze_date": "2013-02-01",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** A qualifying high-potential-sleeve buy — a real business turnaround that has now proven itself twice, sized small because the financing and competition risks are real.\n\n**Quality read:** The core home-market streaming business is getting genuinely better, not just bigger. It added 8.4 million net subscribers in the latest quarter (versus just 0.9 million in the bad quarter five quarters ago) to reach 111.3 million, and the money it keeps per subscriber — its contribution margin, meaning revenue left after the direct costs of serving those subscribers — rose to 18.5% from 10.9% a year earlier. That is the sixth quarter in a row of margin improvement, and management targets roughly another 1 percentage point per quarter. On top of that sits a shrinking but very profitable disc-rental annuity at a 50.1% margin. The company deliberately runs 'two speeds': the profitable home business plus the disc cash cow are funding about $1.6 billion a year of international expansion losses. That is why the headline looks strange — see the Price read.\n\n**Price read:** The trailing price-to-earnings ratio (P/E) — price divided by annual profit per share — is 533, which looks absurd. Here is the apparent contradiction, explained: revenue grew 12.6% for the year but net profit collapsed about 92% (to $71 million). That is not the business breaking; it is a choice. Management is intentionally pouring nearly all consolidated profit into launching internationally, which pins reported earnings near zero. So the honest way to value it is on the home segment's contribution-profit run-rate of roughly $1.8 billion a year, which is compounding as margins climb. A comparable cable incumbent monetizes a similar subscriber base at about 30% margins and trades at a low-teens earnings multiple; SMC already has that subscriber scale at home with margins only about one-third of the way there and still rising. If margins keep marching toward that peer level, today's price becomes ordinary rather than extreme — that is the asymmetric upside. The buffer, though — the gap between price and provable worth that protects us if we are wrong — is thin right now, because the stock has already tripled off its low and jumped ~60% in six days on a short squeeze. We are paying up for a story that still has to be executed.\n\n**Thesis fit:** This is exactly what the high-potential sleeve is for: an asymmetric growth candidate the user can hold for years while the margin-expansion and international-scaling story plays out. High volatility tolerance fits — this will be a bumpy ride. It is unrelated to the concentrated technology position being glided down, so it does not add to that risk. Sizing at the sleeve cap (~1-2% per position) keeps a bad outcome survivable. Note: the recent short-squeeze price pop and any entry-timing framing are deliberately ignored here — the user is a 5+ year holder, not timing a trade.\n\n**Data quality:** Both analyst reports are marked HIGH confidence and the key quarter was reported about a week ago, so the data is fresh. All dollar figures are scaled by an undisclosed constant by design (masked candidate); every ratio, margin, and growth rate is exact, which is what this decision rests on. One genuine flag: free cash flow (FCF — cash generated after reinvestment) is negative (-$209M) and worsens next quarter, and the company plans to raise debt against roughly $10 billion of content obligations. This is a real risk, not a data defect.\n\n**Recommendation:** Initiate a new position at market for the long term, sized at ~1-1.5% of the total portfolio (do not exceed the ~2% single-position sleeve cap). Because the portfolio total was not supplied, the exact USD notional should be set to that percentage at execution.\n\nFALSIFIERS (conditions that would kill the thesis): (1) home-market streaming contribution margin stops expanding or reverses — the ~100bps/quarter cadence breaking is the single most load-bearing signal; (2) home-market net subscriber adds turn negative or badly miss the guided 116.9-119.7M range; (3) international losses stop declining or balloon on new launches instead of shrinking as guided; (4) the planned debt raise / content obligations impair the balance sheet and FCF does NOT inflect positive within a couple quarters as management promises; (5) a competitor (the e-commerce rival's bundled service or the cable incumbent's app) demonstrably erodes SMC's exclusives advantage and subscriber growth. THE CLOCK: next validation point is next quarter's earnings print (~3 months out), where the checkable tests are guided net income $0-57M, subscribers 116.9-119.7M, and home-market contribution profit up ~90% year-over-year (guided to exceed the disc segment for the first time). Nearer-term, the flagship original premiering today and the family-studio output deal are qualitative catalysts. Honest re-rating horizon: 2-3 years for the margin-toward-peer story to prove out; an activist pushing for a possible sale could compress that unpredictably, but that path is not estimable and should not be counted on.\n\n**Sources:** fundamentals/SMC, news/SMC",
+      "cited_sources": [
+        "fundamentals/SMC",
+        "news/SMC"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 5187,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "anet_2016_f1",
+      "alias": "LWN",
+      "category": "A",
+      "grading": "F1_lenient",
+      "real": "ANET @ 2016-06-15 ($4.57 adj; mid-grind, F1 per spec appendix — T_signal = FY2015 10-K cloud-titan concentration disclosure)",
+      "freeze_date": "2016-06-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** A genuine asymmetric growth candidate for the high-potential sleeve — buy a small starter position, with the trade-commission ruling as the one binary risk to size around.\n\n**Quality read:** This is a real business, not a story stock. LatticeWave Networks (LWN) designs high-performance data-center networking switches built on a single software operating system, and sells to six of the largest cloud operators. It has been profitable under standard accounting (GAAP) every year on record while growing revenue 40-90% a year — a four-year average growth rate (compound annual growth rate, CAGR) of 56.4%. Gross margin (what's left of each sales dollar after the cost of the product itself) is a strong ~64-65% and holding. The balance sheet carries roughly $2.0B of cash and zero debt, so the company funds its own growth and could absorb a legal setback. Note one apparent tension: last year revenue grew 43.4% while net profit went from $252M to $351M (about 39%) — those track closely, so growth is not being bought at the expense of margins. The growth-rate 'deceleration' (86.8% → 61.7% → 43.4% → 35.3%) is mostly the arithmetic of getting bigger, and the single down quarter (-1.3% versus the prior quarter) reflects lumpy, purchase-order-driven buying by a concentrated cloud customer base — not lost demand.\n\n**Price read:** The stock trades at about 38x trailing GAAP earnings (price-to-earnings ratio, P/E), ~27x on adjusted earnings, and mid-20s on forward estimates — a growth multiple, but a defensible one for a profitable ~35% grower with net cash. The slow-growing incumbent trades at 12-14x earnings for low-single-digit growth, so per unit of growth LWN is arguably cheap, not expensive. Importantly, the price is 'dead money': roughly flat over a year and ~20% below its high, while earnings kept compounding for six straight quarters. That means the valuation has already come down to absorb the legal overhang — which gives us a reasonable buffer between what we'd pay and what the business is worth, so we're partly protected if the legal outcome is bad.\n\n**Thesis fit:** This is exactly what the high-potential sleeve is for — an asymmetric, profitable, founder-led share-gainer riding double-digit cloud infrastructure spending, with high volatility tolerance and a 5+ year horizon. It is uncorrelated with the large concentrated technology position being glided down, and fits inside the ~1-2% per-position sleeve budget.\n\n**Data quality:** Analyst inputs are current and internally consistent (masked name and scaled dollar figures are intentional, not a defect; all ratios and growth rates are exact). The load-bearing uncertainty is not data — it's an unresolved binary legal event, which caps conviction to MEDIUM.\n\n**Recommendation:** Initiate a small position now at ~1% of the portfolio (the figure above is expressed as percent-of-portfolio because the absolute portfolio value wasn't supplied), holding room to add toward the ~1.5-2% sleeve cap after the trade-commission ruling clears. FALSIFIERS (conditions that kill the thesis): (1) the trade-commission's final determination imposes an import ban AND the prepared design-arounds / domestic manufacturing fail to keep the flagship shipping, causing revenue disruption beyond a short transition; (2) growth falls durably below ~25-30% with repeated real (not lumpy) sequential declines, signaling the share-gain engine has stalled; (3) loss of the ~12% anchor hyperscale customer, or hyperscalers shifting to commodity 'white-box' switches that erode pricing; (4) gross margin sliding below ~60%, the classic sign of commoditization. THE CLOCK: the next validation point is the trade-commission's FINAL determination, due within weeks — a true binary that could re-rate the stock sharply either way; a second, similar case trails about a year behind; the next earnings print lands in roughly 6-7 weeks. Re-rating horizon for the underlying share-gain thesis is an honest 2-3 years, but the near-term legal event can move the stock hard in the next 1-3 months.\n\n**Sources:** fundamentals/LWN, news/LWN",
+      "cited_sources": [
+        "fundamentals/LWN",
+        "news/LWN"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 6364,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "anet_2017_f2",
+      "alias": "LWN",
+      "category": "A",
+      "grading": "F2_strict",
+      "real": "ANET @ 2017-03-15 ($8.02 adj; F2 per spec appendix — immediately after the confirming Q4-2016 print of 2017-02-16, early in the only parabola-qualifying leg)",
+      "freeze_date": "2017-03-15",
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "status": "ok",
+      "model": "claude-opus-4-8",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 1.5,
+      "size_units": "currency",
+      "rationale_summary": "**Verdict:** Buy a starter position in the high-potential sleeve — this is a genuine asymmetric-growth candidate whose thesis has already survived its designed kill-shot.\n\n**Quality read:** LatticeWave designs software-driven data-center switches and sells to six of the largest cloud operators. The business is strong on every fundamental. Revenue has compounded from a rescaled $1,694M to $2,429M to $3,275M over the last three years (growth of 61.7%, then 43.4%, then 34.8% — decelerating, but still very fast off a bigger base). Crucially, profit is growing FASTER than sales: net income went from $351M to $534M (about +52%) while revenue rose 34.8%. That means the company is keeping more of each dollar it sells as it scales — the opposite of margin compression. Gross margin (the share of revenue left after the direct cost of the product) is steady around 64%, and the balance sheet holds $2,517M of cash with zero debt, so lawsuits and the shift to domestic manufacturing are funded out of ordinary cash flow rather than borrowing. The most recent quarter confirmed it: revenue +33.6% year-over-year AND +13.0% versus the prior quarter, with record earnings — delivered while operating the WHOLE quarter under the incumbent's import ban. A second product line (routing) is now landing in hyperscaler buildouts, aimed at the incumbent's most profitable franchise, right as those customers are guiding their infrastructure spending up double-digits.\n\n**Price read:** The stock trades at a price-to-earnings ratio (P/E — price divided by profit per share) of about 49x on the last year's reported (GAAP) earnings, roughly 38x on adjusted earnings, and high-20s to ~30x on next-year consensus. The forward number is lower simply because earnings are expected to keep rising fast. For a ~34% grower with net cash and expanding margins, ~30x forward is a full but not absurd price — the growth roughly justifies it. The catch: the incumbent trades at only 12-14x with flat sales, so LWN's premium is entirely a bet on continued share gains, and the shares already jumped ~35% since the print (and ~75% over the year) to all-time highs. So there is very little buffer between today's price and a reasonable fair value — if growth stumbles OR the litigation goes badly, the price has real room to fall. This is priced for things to keep going right.\n\n**Thesis fit:** This is a textbook fit for the high-potential sleeve: high-volatility, founder-led, asymmetric upside from a challenger taking share in a structurally growing market, with a bounded downside because we size it small. It is uncorrelated with the core index funds and the separate large concentrated tech position. Volatility tolerance is high and there is investable cash — both align.\n\n**Data quality:** The data is masked (alias name, all dollar figures scaled by a hidden constant) but every ratio, margin and growth rate is exact and internally consistent, so the analysis is unaffected. No data-quality defect. The one honest unknown is the binary legal outcome described below.\n\n**Recommendation:** Initiate at the LOWER end of the sleeve budget (~1% of portfolio now, keeping room to top up toward 1.5-2% after the legal overhang clears). Buy at market — long-hold investors do not time entries, and the ~20% cheaper price a month ago is gone and not worth waiting for. FALSIFIERS (any one kills or badly wounds the thesis): (1) the second trade-commission case final ruling comes back adverse AND the domestic manufacturing line cannot cover demand, causing revenue growth to fall below ~20-25%; (2) gross margin erodes below ~55% from pricing pressure or higher domestic-manufacturing cost; (3) the >10%-of-revenue hyperscale customer leaves or the hyperscalers move to commoditize (white-box) the product; (4) sustained revenue deceleration below ~20% or stalling net income. THE CLOCK: the next hard validation point is the trade-commission's FINAL ruling in the second patent case, due in roughly 2 months — this is a real binary event that could stack another import exclusion on top of the current Customs re-freeze. The next earnings print (~3 months out) then tests whether growth holds under those remedies. Expected re-rating horizon for the full routing/second-product-line share-gain thesis is 2-3 years. Because a genuine binary legal event sits only ~2 months away, conviction is deliberately held to a starter size rather than a full sleeve weight.\n\n**Sources:** fundamentals/LWN, news/LWN",
+      "cited_sources": [
+        "fundamentals/LWN",
+        "news/LWN"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 5317,
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    }
+  ],
+  "finished": "2026-07-11T04:58:59.112087+00:00",
+  "superseded": [
+    {
       "case_id": "gpro_2016",
       "alias": "VOP",
       "category": "B",
@@ -118,7 +894,8 @@
         "suspect_terms": [],
         "calendar_years_in_output": [],
         "contaminated": false
-      }
+      },
+      "superseded_reason": "ran against pre-verification packet text; verifier applied substantive factual fixes (commit 1b583d9); re-run on corrected packets"
     },
     {
       "case_id": "ttcf_t1",
@@ -147,7 +924,8 @@
         "suspect_terms": [],
         "calendar_years_in_output": [],
         "contaminated": false
-      }
+      },
+      "superseded_reason": "ran against pre-verification packet text; verifier applied substantive factual fixes (commit 1b583d9); re-run on corrected packets"
     },
     {
       "case_id": "ttcf_t2",
@@ -178,7 +956,8 @@
           "2026"
         ],
         "contaminated": false
-      }
+      },
+      "superseded_reason": "ran against pre-verification packet text; verifier applied substantive factual fixes (commit 1b583d9); re-run on corrected packets"
     },
     {
       "case_id": "ttcf_t3",
@@ -209,21 +988,8 @@
         ],
         "calendar_years_in_output": [],
         "contaminated": false
-      }
-    },
-    {
-      "case_id": "ttcf_t4",
-      "alias": "PVF",
-      "category": "C",
-      "grading": "exit",
-      "real": "TTCF @ 2023-03-15 (~$1.20); going-concern, delisting risk",
-      "freeze_date": "2023-03-15",
-      "temporal_violations": [
-        "source dated 2023-06-15 > freeze 2023-03-15: FY-2022 FINAL figures used in packet (revenue $230.9M +11%, GROSS LOSS -5.8% GM,"
-      ],
-      "packet_calendar_years": [],
-      "status": "disqualified_temporal"
+      },
+      "superseded_reason": "ran against pre-verification packet text; verifier applied substantive factual fixes (commit 1b583d9); re-run on corrected packets"
     }
-  ],
-  "finished": "2026-07-11T04:21:36.564612+00:00"
+  ]
 }

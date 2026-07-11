@@ -101,7 +101,10 @@ def grade_point(result: dict, packet: dict) -> dict:
         "acted_return_pct": acted_ret,
         "benchmark_return_pct": bench_ret,
         "falsifiers_snippet": find_snippet(rationale, r"falsifier"),
-        "clock_snippet": find_snippet(rationale, r"\bclock\b|next validation|validation point"),
+        "clock_snippet": find_snippet(
+            rationale,
+            r"THE CLOCK|\bCLOCK\b\s*[:—-]|next validation|validation point",
+        ),
         "verdict_line": extract_section(rationale, "Verdict"),
     }
 
