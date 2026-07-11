@@ -1577,9 +1577,13 @@ def build_corrective_context(
     # (findings_match): a re-flag means the landing was cosmetic/regressed
     # and the correction must re-feed. Best-effort; a loader crash keeps
     # today's re-attach behavior (fail-safe toward re-feeding).
-    if selected and current is not None:
-        landed: list[dict[str, Any]] = []
-        landed_draft_id: int | None = None
+    #
+    # Aftermath follow-up: Source-6 accept-gate blobs take the SAME floor —
+    # a pending draft that verified the gate violations landed must not
+    # re-feed them for one redundant cycle until /accept.
+    landed: list[dict[str, Any]] = []
+    landed_draft_id: int | None = None
+    if current is not None and (selected or accept_gate_harvest):
         try:
             landed, landed_draft_id = _landed_corrections_from_recent_drafts(
                 session,
@@ -1593,43 +1597,43 @@ def build_corrective_context(
                 "corrective_context.landed_suppression_failed",
                 user_id=user_id, error=str(exc)[:200],
             )
-        if landed:
-            harvest_findings = (
-                (verdict_harvest["findings"] if verdict_harvest else [])
-                + (accept_gate_harvest["findings"] if accept_gate_harvest else [])
+    if selected and landed:
+        harvest_findings = (
+            (verdict_harvest["findings"] if verdict_harvest else [])
+            + (accept_gate_harvest["findings"] if accept_gate_harvest else [])
+        )
+        kept: list[tuple[dict[str, Any], str]] = []
+        suppressed: list[dict[str, Any]] = []
+        for f, status in selected:
+            is_landed = any(findings_match(f, lf) for lf in landed)
+            reflagged = is_landed and any(
+                findings_match(f, hf) for hf in harvest_findings
             )
-            kept: list[tuple[dict[str, Any], str]] = []
-            suppressed: list[dict[str, Any]] = []
-            for f, status in selected:
-                is_landed = any(findings_match(f, lf) for lf in landed)
-                reflagged = is_landed and any(
-                    findings_match(f, hf) for hf in harvest_findings
-                )
-                if is_landed and not reflagged:
-                    suppressed.append({
-                        "topic": str(f.get("topic") or ""),
-                        "plan_item_ref": str(f.get("plan_item_ref") or ""),
-                    })
-                    continue
-                if reflagged:
-                    _log.info(
-                        "corrective_context.landed_correction_reflagged",
-                        user_id=user_id,
-                        landed_draft_id=landed_draft_id,
-                        topic=f.get("topic"),
-                    )
-                kept.append((f, status))
-            if suppressed:
+            if is_landed and not reflagged:
+                suppressed.append({
+                    "topic": str(f.get("topic") or ""),
+                    "plan_item_ref": str(f.get("plan_item_ref") or ""),
+                })
+                continue
+            if reflagged:
                 _log.info(
-                    "corrective_context.landed_corrections_suppressed",
+                    "corrective_context.landed_correction_reflagged",
                     user_id=user_id,
                     landed_draft_id=landed_draft_id,
-                    suppressed=len(suppressed),
-                    topics=[s["topic"] for s in suppressed],
+                    topic=f.get("topic"),
                 )
-                ctx.landed_suppressed = suppressed
-                ctx.landed_source_draft_id = landed_draft_id
-            selected = kept
+            kept.append((f, status))
+        if suppressed:
+            _log.info(
+                "corrective_context.landed_corrections_suppressed",
+                user_id=user_id,
+                landed_draft_id=landed_draft_id,
+                suppressed=len(suppressed),
+                topics=[s["topic"] for s in suppressed],
+            )
+            ctx.landed_suppressed = suppressed
+            ctx.landed_source_draft_id = landed_draft_id
+        selected = kept
 
     if verdict_harvest is not None:
         for f in verdict_harvest["findings"]:
@@ -1648,6 +1652,7 @@ def build_corrective_context(
             )
 
     if accept_gate_harvest is not None:
+        gate_suppressed: list[dict[str, Any]] = []
         for f in accept_gate_harvest["findings"]:
             if any(findings_match(f, sf) for sf, _ in selected):
                 continue
@@ -1655,7 +1660,25 @@ def build_corrective_context(
                 continue
             if any(findings_match(f, af) for af in accept_gate_findings):
                 continue
+            if landed and any(findings_match(f, lf) for lf in landed):
+                gate_suppressed.append({
+                    "topic": str(f.get("topic") or ""),
+                    "plan_item_ref": str(f.get("plan_item_ref") or ""),
+                })
+                continue
             accept_gate_findings.append(f)
+        if gate_suppressed:
+            _log.info(
+                "corrective_context.accept_gate_landed_suppressed",
+                user_id=user_id,
+                landed_draft_id=landed_draft_id,
+                suppressed=len(gate_suppressed),
+                topics=[s["topic"] for s in gate_suppressed],
+            )
+            # Extend the same provenance surface critique suppression uses.
+            ctx.landed_suppressed = list(ctx.landed_suppressed) + gate_suppressed
+            if ctx.landed_source_draft_id is None:
+                ctx.landed_source_draft_id = landed_draft_id
         if accept_gate_findings:
             ctx.accept_gate_reject_draft_id = accept_gate_harvest["draft_id"]
             ctx.accept_gate_reject_run_id = accept_gate_harvest.get("run_id")

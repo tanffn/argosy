@@ -1771,3 +1771,64 @@ def test_accept_gate_reject_dedup_vs_critique(session):
     assert ctx is not None
     assert len(ctx.corrections) == 1
     assert ctx.corrections[0].source == "critique"
+
+
+def test_accept_gate_landed_suppression_after_fixing_draft(session):
+    """Source-6 blob whose violations a pending draft fixed must not re-feed
+    after that draft's floor verified landing (and after it is accepted).
+
+    Closes the known redundant cycle: accept-gate reject → corrective draft
+    lands the fix → blob kept re-feeding until /accept. Critique corrections
+    already took this floor; accept-gate now does too.
+    """
+    from argosy.services.corrective_context import build_corrective_context
+
+    current = session.query(PlanVersion).filter_by(
+        user_id="ariel", role="current",
+    ).one()
+    _add_accept_gate_draft(
+        session,
+        violations_by_check={
+            "headline_numeric_source": [
+                {
+                    "detail": "headline 'age 13' untraced",
+                    "locator": "medium:fi_timeline",
+                },
+            ],
+        },
+    )
+    # Corrective draft that verified the gate violation landed. Role
+    # superseded (partial unique: one pending draft per user — the gate
+    # reject draft already occupies role=draft).
+    run = _add_run(session, fund_manager_decision="approved")
+    fixing = _add_corrective_draft(
+        session, run,
+        corrections=[{
+            "index": 1,
+            "topic": "headline_numeric_source",
+            "plan_item_ref": "medium:fi_timeline",
+            "source": "accept_gate_reject",
+        }],
+        unresolved=[],
+        role="superseded",
+    )
+
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is None or not any(
+        c.source == "accept_gate_reject" for c in ctx.corrections
+    )
+    if ctx is not None:
+        assert any(
+            s["topic"] == "headline_numeric_source"
+            for s in ctx.landed_suppressed
+        )
+
+    # Promote the fixing draft (accept simulation) — blob must still not
+    # re-feed against the new current.
+    current.role = "superseded"
+    fixing.role = "current"
+    session.commit()
+    ctx_after = build_corrective_context(session, user_id="ariel")
+    assert ctx_after is None or not any(
+        c.source == "accept_gate_reject" for c in ctx_after.corrections
+    )
