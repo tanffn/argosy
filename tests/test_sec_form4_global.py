@@ -21,6 +21,11 @@ _TICKERS_JSON = json.dumps(
             "ticker": "PLTR",
             "title": "PALANTIR TECHNOLOGIES INC.",
         },
+        "3": {
+            "cik_str": 1726711,
+            "ticker": "PUB",
+            "title": "PUBLIC ISSUER INC.",
+        },
     }
 )
 
@@ -500,6 +505,14 @@ async def test_global_fetch_uses_public_issuers_only(engine: None) -> None:
                     )
                 )
             ),
+            private_accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik=private_issuer_cik,
+                        owner_cik="7654321",
+                    )
+                )
+            ),
         }
     )
 
@@ -521,7 +534,9 @@ async def test_global_fetch_uses_public_issuers_only(engine: None) -> None:
     assert row["issuer_cik"] == "0001045810"
     assert row["issuer_name"] == "NVIDIA CORP"
     assert row["ticker"] == "NVDA"
-    assert not any(f"/{private_issuer_cik}/" in call for call in http.calls)
+    assert row["index_cik"] == "0001045810"
+    assert any(f"/{private_issuer_cik}/" in call for call in http.calls)
+    assert sum(call.endswith(".txt") for call in http.calls) == 2
     assert not any("index.json" in call for call in http.calls)
 
 
@@ -563,7 +578,6 @@ async def test_official_index_cik_is_issuer_while_xml_cik_is_owner(
     rows = await _adapter(http).get_form4_for_date_range(
         date(2026, 7, 9),
         date(2026, 7, 9),
-        min_filings_per_issuer=2,
         ttl_seconds=0,
     )
 
@@ -576,7 +590,7 @@ async def test_official_index_cik_is_issuer_while_xml_cik_is_owner(
 
 
 @pytest.mark.asyncio
-async def test_minimum_filings_filter_avoids_single_issuer_filing_request(
+async def test_single_index_filing_is_fetched_for_joint_owner_discovery(
     engine: None,
 ) -> None:
     day = date(2026, 7, 10)
@@ -595,22 +609,29 @@ async def test_minimum_filings_filter_avoids_single_issuer_filing_request(
                     )
                 )
             ),
+            accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="1045810",
+                        owner_cik="1234567",
+                    )
+                )
+            ),
         }
     )
 
     rows = await _adapter(http).get_form4_for_date_range(
         day,
         day,
-        min_filings_per_issuer=2,
         ttl_seconds=0,
     )
 
-    assert rows == []
-    assert not any(call.endswith(".txt") for call in http.calls)
+    assert len(rows) == 1
+    assert sum(call.endswith(".txt") for call in http.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_global_fetch_cost_is_one_full_submission_per_selected_filing(
+async def test_global_fetch_cost_is_one_full_submission_per_index_filing(
     engine: None,
 ) -> None:
     day = date(2026, 7, 10)
@@ -656,7 +677,6 @@ async def test_global_fetch_cost_is_one_full_submission_per_selected_filing(
     rows = await _adapter(http).get_form4_for_date_range(
         day,
         day,
-        min_filings_per_issuer=2,
         ttl_seconds=0,
     )
 
@@ -673,11 +693,11 @@ async def test_global_fetch_cost_is_one_full_submission_per_selected_filing(
 
 
 @pytest.mark.asyncio
-async def test_global_fetch_rejects_index_and_xml_issuer_cik_mismatch(
+async def test_index_reporting_owner_cik_resolves_parsed_public_issuer(
     engine: None,
 ) -> None:
     day = date(2026, 7, 10)
-    accession = "0001234567-26-000111"
+    accession = "0000070858-26-000336"
     http = _Http(
         {
             "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
@@ -685,33 +705,38 @@ async def test_global_fetch_rejects_index_and_xml_issuer_cik_mismatch(
                 text=_daily_index(
                     (
                         "4",
-                        "NVIDIA CORP",
-                        "1045810",
+                        "REPORTING OWNER",
+                        "70858",
                         day.isoformat(),
-                        f"edgar/data/1045810/{accession}.txt",
+                        f"edgar/data/1726711/{accession}.txt",
                     )
                 )
             ),
             accession: _FakeResp(
                 text=_full_submission(
                     _form4_xml(
-                        issuer_cik="320193",
-                        owner_cik="1234567",
+                        issuer_cik="1726711",
+                        owner_cik="70858",
                     )
                 )
             ),
         }
     )
 
-    with pytest.raises(
-        MissingDataSourceError,
-        match=r"issuer CIK mismatch.*0001045810.*0000320193.*0001234567-26-000111",
-    ):
-        await _adapter(http).get_form4_for_date_range(
-            day,
-            day,
-            ttl_seconds=0,
-        )
+    rows = await _adapter(http).get_form4_for_date_range(
+        day,
+        day,
+        ttl_seconds=0,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["index_cik"] == "0000070858"
+    assert rows[0]["filer_cik"] == "0000070858"
+    assert rows[0]["issuer_cik"] == "0001726711"
+    assert rows[0]["ticker"] == "PUB"
+    assert rows[0]["filing_url"].endswith(
+        "/Archives/edgar/data/1726711/0000070858-26-000336.txt"
+    )
 
 
 @pytest.mark.asyncio
@@ -1260,12 +1285,6 @@ async def test_global_date_range_is_bounded_and_ordered(engine: None) -> None:
     )
     adapter = _adapter(http)
 
-    with pytest.raises(ValueError, match="min_filings_per_issuer"):
-        await adapter.get_form4_for_date_range(
-            start,
-            start,
-            min_filings_per_issuer=0,
-        )
     with pytest.raises(ValueError, match="start_date"):
         await adapter.get_form4_for_date_range(start, start - timedelta(days=1))
     with pytest.raises(ValueError, match="at most"):

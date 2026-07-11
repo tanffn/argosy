@@ -241,7 +241,6 @@ class SecForm4Adapter:
         start_date: date,
         through: date | None = None,
         *,
-        min_filings_per_issuer: int = 1,
         ttl_seconds: int = FORM4_TTL_SECONDS,
     ) -> list[dict[str, Any]]:
         """Collect public-issuer Form 4 transactions from daily indexes.
@@ -264,15 +263,6 @@ class SecForm4Adapter:
             )
         if ttl_seconds < 0:
             raise ValueError("ttl_seconds must be non-negative")
-        if (
-            isinstance(min_filings_per_issuer, bool)
-            or not isinstance(min_filings_per_issuer, int)
-            or min_filings_per_issuer < 1
-        ):
-            raise ValueError(
-                "min_filings_per_issuer must be an integer of at least 1"
-            )
-
         business_days = [
             start_date + timedelta(days=offset)
             for offset in range(day_count)
@@ -293,21 +283,7 @@ class SecForm4Adapter:
                     await self._fetch_daily_form_index(current)
                 )
 
-            issuer_counts: dict[str, int] = {}
-            for filing in indexed_filings:
-                issuer_cik = str(filing["cik"]).zfill(10)
-                if issuer_cik in cik_to_ticker:
-                    issuer_counts[issuer_cik] = (
-                        issuer_counts.get(issuer_cik, 0) + 1
-                    )
-            selected = [
-                filing
-                for filing in indexed_filings
-                if (
-                    issuer_counts.get(str(filing["cik"]).zfill(10), 0)
-                    >= min_filings_per_issuer
-                )
-            ]
+            selected = indexed_filings
             if not selected:
                 return []
 
@@ -318,8 +294,7 @@ class SecForm4Adapter:
 
             async def _worker() -> None:
                 for selected_index, filing in pending:
-                    issuer_cik = str(filing["cik"]).zfill(10)
-                    ticker = cik_to_ticker[issuer_cik]
+                    index_cik = str(filing["cik"]).zfill(10)
                     archive_filename = str(
                         filing["archive_filename"]
                     ).lstrip("/")
@@ -331,13 +306,9 @@ class SecForm4Adapter:
                     parsed_issuer_cik = _ownership_document_issuer_cik(
                         xml_text
                     )
-                    if parsed_issuer_cik != issuer_cik:
-                        raise MissingDataSourceError(
-                            "SEC Form 4 issuer CIK mismatch: "
-                            f"index={issuer_cik} parsed={parsed_issuer_cik or '<missing>'} "
-                            f"accession={filing['accession']} "
-                            f"filing_url={filing_url}"
-                        )
+                    ticker = cik_to_ticker.get(parsed_issuer_cik)
+                    if ticker is None:
+                        continue
                     parsed = _parse_form4_xml(
                         xml_text,
                         accession=str(filing["accession"]),
@@ -354,7 +325,8 @@ class SecForm4Adapter:
                                 "filing_url": filing_url,
                                 "filed_at": str(filing["filed_at"]),
                                 "accession": str(filing["accession"]),
-                                "issuer_cik": issuer_cik,
+                                "index_cik": index_cik,
+                                "issuer_cik": parsed_issuer_cik,
                                 "issuer_name": str(
                                     row.get("issuer_name")
                                     or filing["company_name"]
@@ -376,7 +348,8 @@ class SecForm4Adapter:
                             filing["is_amendment"]
                             or parsed[0].get("is_amendment")
                         ),
-                        "issuer_cik": issuer_cik,
+                        "index_cik": index_cik,
+                        "issuer_cik": parsed_issuer_cik,
                         "filer_cik": str(
                             parsed[0].get("filer_cik") or ""
                         ),
@@ -422,8 +395,7 @@ class SecForm4Adapter:
             provider=self.PROVIDER,
             key=(
                 f"global:{start_date.isoformat()}:"
-                f"{effective_through.isoformat()}:"
-                f"min_issuer_filings={min_filings_per_issuer}"
+                f"{effective_through.isoformat()}"
             ),
             ttl_seconds=ttl_seconds,
             fetch=_fetch,

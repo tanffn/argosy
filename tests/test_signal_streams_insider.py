@@ -994,16 +994,14 @@ def test_missing_market_cap_keeps_sell_warning_but_omits_buy_cluster() -> None:
 class _FixtureSecAdapter:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
-        self.calls: list[tuple[date, date | None, int]] = []
+        self.calls: list[tuple[date, date | None]] = []
 
     async def get_form4_for_date_range(
         self,
         start_date: date,
         through: date | None = None,
-        *,
-        min_filings_per_issuer: int = 1,
     ) -> list[dict[str, Any]]:
-        self.calls.append((start_date, through, min_filings_per_issuer))
+        self.calls.append((start_date, through))
         return list(self.rows)
 
 
@@ -1126,7 +1124,7 @@ def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
 
     assert stream.fetch(None, since=date(2026, 7, 18)) == []
 
-    assert sec.calls == [(date(2026, 7, 5), date(2026, 7, 29), 1)]
+    assert sec.calls == [(date(2026, 7, 5), date(2026, 7, 29))]
 
 
 def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
@@ -1149,7 +1147,7 @@ def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
 
     nominations = stream.fetch(None, since=date(2026, 7, 30))
 
-    assert sec.calls == [(date(2026, 7, 15), date(2026, 7, 29), 1)]
+    assert sec.calls == [(date(2026, 7, 15), date(2026, 7, 29))]
     assert len(nominations) == 1
     assert nominations[0].as_of == date(2026, 7, 28)
     assert nominations[0].evidence["latest_filed_date"] == "2026-07-28"
@@ -1177,7 +1175,7 @@ def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
 
     assert [nomination.ticker for nomination in nominations] == ["ACME"]
     assert nominations[0].as_of == date(2026, 7, 12)
-    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 29), 1)]
+    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 29))]
 
 
 def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
@@ -1191,7 +1189,7 @@ def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
     stream.fetch(None, since=date(2026, 5, 1))
 
     assert MAX_GLOBAL_DATE_RANGE_DAYS == 45
-    assert sec.calls == [(date(2026, 6, 15), date(2026, 7, 29), 1)]
+    assert sec.calls == [(date(2026, 6, 15), date(2026, 7, 29))]
 
 
 def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
@@ -1227,7 +1225,7 @@ def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
         "0001062993-23-006879",
         "0001062993-23-006880",
     }
-    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14), 1)]
+    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14))]
 
 
 def test_sec_adapter_outage_fails_the_stream() -> None:
@@ -1236,8 +1234,6 @@ def test_sec_adapter_outage_fails_the_stream() -> None:
             self,
             start_date,
             through=None,
-            *,
-            min_filings_per_issuer=1,
         ):
             raise MissingDataSourceError("SEC unavailable")
 
