@@ -56,6 +56,7 @@ from argosy.adapters.data.sec_rate_limit import (
 )
 from argosy.logging import get_logger
 from argosy.services.adapter_outcomes import track_adapter_call
+from argosy.services.ticker_aliases import equivalent_class_symbols
 
 
 def _approx_size_bytes(payload: Any) -> int:
@@ -318,12 +319,16 @@ class SecForm4Adapter:
                         parsed[0].get("ticker") or ""
                     ).strip().upper()
                     if parsed_symbol:
-                        if (
-                            ticker_to_cik.get(parsed_symbol)
-                            != parsed_issuer_cik
-                        ):
+                        official_symbols = [
+                            symbol
+                            for symbol in equivalent_class_symbols(
+                                parsed_symbol
+                            )
+                            if ticker_to_cik.get(symbol) == parsed_issuer_cik
+                        ]
+                        if len(official_symbols) != 1:
                             continue
-                        ticker = parsed_symbol
+                        ticker = official_symbols[0]
                     else:
                         issuer_tickers = tuple(
                             cik_to_tickers.get(parsed_issuer_cik, ())
@@ -348,6 +353,7 @@ class SecForm4Adapter:
                                     or filing["company_name"]
                                 ),
                                 "ticker": ticker,
+                                "reported_ticker": parsed_symbol,
                                 "document_type": document_type,
                                 "is_amendment": bool(
                                     filing["is_amendment"]

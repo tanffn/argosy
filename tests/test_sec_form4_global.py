@@ -375,6 +375,65 @@ def test_ticker_maps_preserve_all_share_classes_per_issuer() -> None:
     }
 
 
+def test_class_symbol_aliases_cover_delimiters_only_for_class_suffixes() -> None:
+    from argosy.services.ticker_aliases import equivalent_class_symbols
+
+    expected = ("BRK-B", "BRK.B", "BRK/B")
+    assert equivalent_class_symbols("brk.b") == expected
+    assert equivalent_class_symbols("BRK/B") == expected
+    assert equivalent_class_symbols("BRK-B") == expected
+    assert equivalent_class_symbols("ABC-DEF") == ("ABC-DEF",)
+    assert equivalent_class_symbols("AAPL") == ("AAPL",)
+
+
+@pytest.mark.asyncio
+async def test_global_collector_canonicalizes_brk_class_alias_and_preserves_reported(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    cik = "1067983"
+    accession = "0001067983-26-000111"
+    tickers = json.dumps(
+        {
+            "0": {"cik_str": 1067983, "ticker": "BRK-B"},
+            "1": {"cik_str": 9999999, "ticker": "OTHER"},
+        }
+    )
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=tickers),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "BERKSHIRE HATHAWAY INC.",
+                        cik,
+                        day.isoformat(),
+                        f"edgar/data/{cik}/{accession}.txt",
+                    )
+                )
+            ),
+            accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik=cik,
+                        issuer_ticker="BRK.B",
+                    )
+                )
+            ),
+        }
+    )
+
+    rows = await _adapter(http).get_form4_for_date_range(
+        day,
+        day,
+        ttl_seconds=0,
+    )
+
+    assert {row["ticker"] for row in rows} == {"BRK-B"}
+    assert {row["reported_ticker"] for row in rows} == {"BRK.B"}
+
+
 @pytest.mark.asyncio
 async def test_global_collector_uses_exact_parsed_multi_class_symbol(
     engine: None,

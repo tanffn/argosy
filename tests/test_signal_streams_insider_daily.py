@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from argosy.config import InsiderClusterSignalConfig
 from argosy.orchestrator.loops import signal_streams_daily as daily_loop_mod
+from argosy.services.signal_streams import insider as insider_mod
 from argosy.services.signal_streams.insider import (
     InsiderClusterConfig,
     InsiderClusterStream,
@@ -133,10 +134,16 @@ def ledger(tmp_path):
 def test_daily_pull_config_is_exactly_one_day() -> None:
     assert InsiderClusterConfig().daily_pull_days == 1
     assert InsiderClusterSignalConfig().daily_pull_days == 1
+    assert InsiderClusterConfig().ledger_horizon_days == 45
+    assert InsiderClusterSignalConfig().ledger_horizon_days == 45
     with pytest.raises(ValueError, match="daily_pull_days"):
         InsiderClusterConfig(daily_pull_days=2)
     with pytest.raises(ValueError, match="daily_pull_days"):
         InsiderClusterSignalConfig(daily_pull_days=2)
+    with pytest.raises(ValueError, match="ledger_horizon_days"):
+        InsiderClusterConfig(ledger_horizon_days=46)
+    with pytest.raises(ValueError, match="ledger_horizon_days"):
+        InsiderClusterSignalConfig(ledger_horizon_days=13)
 
 
 @pytest.mark.parametrize(
@@ -224,7 +231,7 @@ def test_two_daily_pulls_accumulate_locally_and_rerun_is_idempotent(
     ]
 
 
-def test_matched_amendment_replaces_group_and_preserves_cluster_dedup(
+def test_matched_amendment_replaces_group_and_changes_dedup_when_row_removed(
     ledger,
 ) -> None:
     _engine, factory = ledger
@@ -290,7 +297,7 @@ def test_matched_amendment_replaces_group_and_preserves_cluster_dedup(
         events = session.query(SignalStreamEvent).order_by(SignalStreamEvent.id).all()
 
     assert len(amended) == 1
-    assert amended[0].dedup_key == first[0].dedup_key
+    assert amended[0].dedup_key != first[0].dedup_key
     alice = [
         event
         for event in events
@@ -384,6 +391,106 @@ def test_unmatched_amendment_taints_overlapping_local_group_only(ledger) -> None
         if json.loads(event.payload_json)["accession"] == "unknown-amendment"
     )
     assert json.loads(unknown.payload_json)["amendment_match_status"] == "ambiguous"
+
+
+def test_corrected_amendment_restores_recent_tainted_original_group(ledger) -> None:
+    _engine, factory = ledger
+    original_day = date(2026, 7, 7)
+    taint_day = date(2026, 7, 8)
+    correction_day = date(2026, 7, 9)
+    clock = {"today": date(2026, 7, 8)}
+    original = _row(
+        accession="restore-original",
+        owner_cik="0000001001",
+        owner_name="Alice",
+        transaction_date="2026-07-06",
+        filed_at=original_day.isoformat(),
+        value_usd=30_000,
+    )
+    removed = {
+        **original,
+        "transaction_index": 1,
+        "value_usd": 30_000,
+        "shares": 300,
+    }
+    ownerless_taint = _row(
+        accession="restore-ownerless",
+        owner_cik="",
+        owner_name="",
+        transaction_date="2026-07-06",
+        filed_at=taint_day.isoformat(),
+        value_usd=60_000,
+        is_amendment=True,
+        date_of_original_submission=original_day.isoformat(),
+        cluster_eligible=False,
+    )
+    ownerless_taint["reporting_owners"] = [
+        {"filer_cik": "", "filer_name": "", "role": "director"}
+    ]
+    corrected = _row(
+        accession="restore-corrected",
+        owner_cik="0000001001",
+        owner_name="Alice",
+        transaction_date="2026-07-06",
+        filed_at=correction_day.isoformat(),
+        value_usd=65_000,
+        is_amendment=True,
+        date_of_original_submission=original_day.isoformat(),
+        cluster_eligible=False,
+    )
+    sec = _DailySec(
+        {
+            original_day: [original, removed],
+            taint_day: [ownerless_taint],
+            correction_day: [corrected],
+        }
+    )
+    stream = InsiderClusterStream(
+        user_id="ariel",
+        config=InsiderClusterConfig(index_publication_lag_days=1),
+        sec_adapter=sec,
+        market_snapshot=_snapshot,
+        today=lambda: clock["today"],
+    )
+
+    with factory() as session:
+        stream.fetch(session, since=original_day)
+        session.commit()
+    clock["today"] = date(2026, 7, 9)
+    with factory() as session:
+        stream.fetch(session, since=taint_day)
+        session.commit()
+        assert all(
+            event.active == 0
+            for event in session.query(SignalStreamEvent).all()
+        )
+    clock["today"] = date(2026, 7, 10)
+    with factory() as session:
+        stream.fetch(session, since=correction_day)
+        session.commit()
+        events = session.query(SignalStreamEvent).all()
+
+    stable_group = [
+        event
+        for event in events
+        if event.event_group_key == "sec-form4:restore-original"
+    ]
+    assert len(stable_group) == 2
+    active = [event for event in stable_group if event.active == 1]
+    assert len(active) == 1
+    assert json.loads(active[0].payload_json)["accession"] == "restore-corrected"
+    assert active[0].event_key.endswith(":non_derivative:0")
+    removed_event = next(
+        event
+        for event in stable_group
+        if event.event_key.endswith(":non_derivative:1")
+    )
+    assert removed_event.active == 0
+    assert all(
+        event.active == 0
+        for event in events
+        if event.event_group_key == "sec-form4:restore-ownerless"
+    )
 
 
 def test_adapter_matched_same_day_amendment_is_locally_eligible(ledger) -> None:
@@ -1242,6 +1349,114 @@ def test_local_window_expires_old_events_and_unrelated_changes_do_not_repeat(
     with factory() as session:
         assert stream.fetch(session, since=third_day) == []
         session.commit()
+
+
+def test_ledger_read_is_bounded_and_keeps_recent_inactive_and_pending_rows(
+    ledger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _engine, factory = ledger
+    through = date(2026, 7, 9)
+    old_day = through.replace(month=5, day=1)
+    recent_payload = _row(
+        accession="recent",
+        owner_cik="0000001001",
+        owner_name="Alice",
+        transaction_date=through.isoformat(),
+        filed_at=through.isoformat(),
+        value_usd=10_000,
+    )
+    with factory() as session:
+        session.add_all(
+            [
+                SignalStreamEvent(
+                    user_id="ariel",
+                    stream="insider_cluster",
+                    event_key=f"old-malformed-{index}",
+                    event_group_key=f"old-group-{index}",
+                    ticker="OLD",
+                    event_at=old_day,
+                    available_at=old_day,
+                    payload_json="[]",
+                    source_urls_json="[]",
+                    active=index % 2,
+                    evaluation_pending=index % 4,
+                )
+                for index in range(100)
+            ]
+            + [
+                SignalStreamEvent(
+                    user_id="ariel",
+                    stream="insider_cluster",
+                    event_key="future-malformed",
+                    event_group_key="future-group",
+                    ticker="FUTURE",
+                    event_at=date(2026, 7, 10),
+                    available_at=date(2026, 7, 10),
+                    payload_json="[]",
+                    source_urls_json="[]",
+                    active=0,
+                    evaluation_pending=0,
+                ),
+                SignalStreamEvent(
+                    user_id="ariel",
+                    stream="insider_cluster",
+                    event_key="recent-inactive",
+                    event_group_key="recent-inactive",
+                    ticker="ACME",
+                    event_at=through,
+                    available_at=through,
+                    payload_json=json.dumps(recent_payload),
+                    source_urls_json="[]",
+                    active=0,
+                    evaluation_pending=0,
+                ),
+                SignalStreamEvent(
+                    user_id="ariel",
+                    stream="insider_cluster",
+                    event_key="recent-pending",
+                    event_group_key="recent-pending",
+                    ticker="ACME",
+                    event_at=through,
+                    available_at=through,
+                    payload_json=json.dumps(recent_payload),
+                    source_urls_json="[]",
+                    active=1,
+                    evaluation_pending=1,
+                ),
+            ]
+        )
+        session.commit()
+
+    seen_existing_keys: list[str] = []
+    original_normalize = insider_mod._normalize_daily_rows
+
+    def capture_existing(rows, **kwargs):
+        seen_existing_keys.extend(
+            event.event_key for event in kwargs["existing_events"]
+        )
+        return original_normalize(rows, **kwargs)
+
+    monkeypatch.setattr(
+        insider_mod,
+        "_normalize_daily_rows",
+        capture_existing,
+    )
+    stream = InsiderClusterStream(
+        user_id="ariel",
+        config=InsiderClusterConfig(index_publication_lag_days=1),
+        sec_adapter=_DailySec({through: []}),
+        market_snapshot=_snapshot,
+        today=lambda: date(2026, 7, 10),
+    )
+
+    with factory() as session:
+        assert stream.fetch(session, since=through) == []
+
+    assert set(seen_existing_keys) == {
+        "recent-inactive",
+        "recent-pending",
+    }
 
 
 def test_loop_treats_insider_cursor_as_audit_only(ledger) -> None:

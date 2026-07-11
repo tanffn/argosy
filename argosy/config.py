@@ -541,6 +541,7 @@ class InsiderClusterSignalConfig(BaseModel):
     recent_scan_days: int = Field(default=2, gt=0)
     index_publication_lag_days: int = Field(default=2, ge=1, strict=True)
     daily_pull_days: int = Field(default=1, ge=1, le=1, strict=True)
+    ledger_horizon_days: int = Field(default=45, ge=1, le=45, strict=True)
     min_distinct_buyers: int = Field(default=2, ge=2)
     min_cluster_value_usd: float = Field(default=100_000, gt=0)
     min_cluster_value_market_cap_bps: float = Field(default=0.5, ge=0)
@@ -554,6 +555,10 @@ class InsiderClusterSignalConfig(BaseModel):
         if self.recent_scan_days > self.lookback_days:
             raise ValueError(
                 "recent_scan_days must be no greater than lookback_days"
+            )
+        if self.ledger_horizon_days < self.lookback_days:
+            raise ValueError(
+                "ledger_horizon_days must be no less than lookback_days"
             )
         return self
 

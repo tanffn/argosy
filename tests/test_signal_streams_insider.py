@@ -180,6 +180,7 @@ def test_default_streams_passes_configured_publication_lag(
         recent_scan_days=2,
         index_publication_lag_days=3,
         daily_pull_days=1,
+        ledger_horizon_days=45,
         min_distinct_buyers=2,
         min_cluster_value_usd=100_000,
         min_cluster_value_market_cap_bps=0.5,
@@ -202,10 +203,11 @@ def test_default_streams_passes_configured_publication_lag(
     assert len(streams) == 1
     assert streams[0].config.index_publication_lag_days == 3
     assert streams[0].config.daily_pull_days == 1
+    assert streams[0].config.ledger_horizon_days == 45
     assert streams[0].user_id == "ariel"
 
 
-def test_example_config_documents_publication_lag() -> None:
+def test_example_config_documents_daily_pull_boundary() -> None:
     path = Path(__file__).parents[1] / "configs" / "example" / "agent_settings.yaml"
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -214,6 +216,10 @@ def test_example_config_documents_publication_lag() -> None:
             "index_publication_lag_days"
         ]
         == 2
+    )
+    assert (
+        payload["signal_streams"]["insider_cluster"]["daily_pull_days"]
+        == 1
     )
 
 
@@ -424,6 +430,56 @@ def test_disjoint_buy_clusters_emit_and_write_separate_dedup_events() -> None:
         assert len(rows) == 4
         assert len({row.message_id.rsplit("|", 1)[0] for row in rows}) == 2
     engine.dispose()
+
+
+def test_disjoint_clusters_from_different_rows_of_one_accession_have_unique_dedup() -> None:
+    rows = [
+        _row(
+            accession="shared-accession",
+            transaction_index=0,
+            filer_cik="5101",
+            transaction_date="2026-07-01",
+            filed_at="2026-07-03",
+        ),
+        _second_buyer(
+            accession="shared-accession",
+            transaction_index=1,
+            filer_cik="5102",
+            transaction_date="2026-07-02",
+            filed_at="2026-07-04",
+        ),
+        _row(
+            accession="shared-accession",
+            transaction_index=2,
+            filer_cik="5201",
+            transaction_date="2026-07-20",
+            filed_at="2026-07-22",
+        ),
+        _second_buyer(
+            accession="shared-accession",
+            transaction_index=3,
+            filer_cik="5202",
+            transaction_date="2026-07-21",
+            filed_at="2026-07-23",
+        ),
+    ]
+
+    forward = _classify(
+        rows,
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+    reverse = _classify(
+        list(reversed(rows)),
+        through=date(2026, 7, 30),
+        availability_since=date(2026, 7, 1),
+    )
+
+    assert len(forward) == 2
+    assert len({item.dedup_key for item in forward}) == 2
+    assert [item.dedup_key for item in forward] == [
+        item.dedup_key for item in reverse
+    ]
 
 
 def test_overlapping_buy_windows_collapse_to_one_maximal_nomination() -> None:
@@ -854,6 +910,117 @@ def test_split_sales_qualify_on_per_holder_aggregate_stake() -> None:
         }
         for pool in warning.evidence["seller_pools"]
     )
+
+
+def test_split_sales_on_different_days_never_combine_into_false_stake() -> None:
+    rows: list[dict[str, Any]] = []
+    for filer, role, accession in [
+        (1, "officer (CEO)", "cross-day-1"),
+        (2, "officer (CFO)", "cross-day-2"),
+    ]:
+        first = _seller(
+            filer=filer,
+            role=role,
+            shares=110,
+            post_holdings=890,
+            accession=accession,
+        )
+        first["transaction_date"] = "2026-07-01"
+        second = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=110,
+                post_holdings=780,
+                accession=accession,
+            ),
+            "transaction_index": 1,
+            "transaction_date": "2026-07-02",
+        }
+        rows.extend([first, second])
+
+    assert _classify(rows) == []
+
+
+def test_purchase_in_same_filing_date_pool_contaminates_split_sale_stake() -> None:
+    rows: list[dict[str, Any]] = []
+    for filer, role, accession in [
+        (1, "officer (CEO)", "contaminated-1"),
+        (2, "officer (CFO)", "contaminated-2"),
+    ]:
+        first_sale = _seller(
+            filer=filer,
+            role=role,
+            shares=150,
+            post_holdings=850,
+            accession=accession,
+        )
+        purchase = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=100,
+                post_holdings=950,
+                accession=accession,
+            ),
+            "transaction_index": 1,
+            "transaction_code": "P",
+            "acquired_disposed_code": "A",
+        }
+        second_sale = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=100,
+                post_holdings=850,
+                accession=accession,
+            ),
+            "transaction_index": 2,
+        }
+        rows.extend([first_sale, purchase, second_sale])
+
+    assert _classify(rows) == []
+
+
+def test_ineligible_10b5_purchase_still_contaminates_same_block_split_sales() -> None:
+    rows: list[dict[str, Any]] = []
+    for filer, role, accession in [
+        (1, "officer (CEO)", "planned-contamination-1"),
+        (2, "officer (CFO)", "planned-contamination-2"),
+    ]:
+        first_sale = _seller(
+            filer=filer,
+            role=role,
+            shares=150,
+            post_holdings=850,
+            accession=accession,
+        )
+        planned_purchase = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=100,
+                post_holdings=950,
+                accession=accession,
+            ),
+            "transaction_index": 1,
+            "transaction_code": "P",
+            "acquired_disposed_code": "A",
+            "is_10b5_1": True,
+        }
+        second_sale = {
+            **_seller(
+                filer=filer,
+                role=role,
+                shares=100,
+                post_holdings=850,
+                accession=accession,
+            ),
+            "transaction_index": 2,
+        }
+        rows.extend([first_sale, planned_purchase, second_sale])
+
+    assert _classify(rows) == []
 
 
 def test_direct_and_trust_sales_never_combine_into_false_threshold() -> None:

@@ -44,6 +44,7 @@ class InsiderClusterConfig:
     recent_scan_days: int = 2
     index_publication_lag_days: int = 2
     daily_pull_days: int = 1
+    ledger_horizon_days: int = 45
     min_distinct_buyers: int = 2
     min_cluster_value_usd: float = 100_000
     min_cluster_value_market_cap_bps: float = 0.5
@@ -75,6 +76,15 @@ class InsiderClusterConfig:
             )
         if self.daily_pull_days != 1 or isinstance(self.daily_pull_days, bool):
             raise ValueError("daily_pull_days must be exactly 1")
+        if (
+            isinstance(self.ledger_horizon_days, bool)
+            or not isinstance(self.ledger_horizon_days, int)
+            or not self.lookback_days <= self.ledger_horizon_days <= 45
+        ):
+            raise ValueError(
+                "ledger_horizon_days must be an integer between "
+                "lookback_days and 45"
+            )
         if (
             isinstance(self.min_distinct_buyers, bool)
             or not isinstance(self.min_distinct_buyers, int)
@@ -207,9 +217,13 @@ def _original_group_from_event(
     window_start: date,
     through: date,
 ) -> _OriginalGroup | None:
-    if event.active != 1:
-        return None
     payload = event.payload()
+    if (
+        event.active != 1
+        and payload.get("_signal_resolution_reason")
+        not in {"original_accession", "unique_original_candidate"}
+    ):
+        return None
     issuer_cik = str(payload.get("_signal_issuer_cik") or "")
     owner_keys = tuple(
         sorted(str(value) for value in payload.get("_signal_owner_keys", []) if value)
@@ -644,7 +658,7 @@ def _deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(by_identity.values(), key=_row_sort_key)
 
 
-def _base_eligible(
+def _window_context_eligible(
     row: Mapping[str, Any],
     *,
     window_start: date,
@@ -658,7 +672,12 @@ def _base_eligible(
         and transaction_date <= filed_at
         and window_start <= transaction_date <= through
         and _transaction_identity(row) is not None
-        and _insider_key(row) is not None
+    )
+
+
+def _signal_contributor_eligible(row: Mapping[str, Any]) -> bool:
+    return bool(
+        _insider_key(row) is not None
         and row.get("cluster_eligible") is True
         and row.get("is_derivative") is False
         and row.get("is_10b5_1") is False
@@ -786,7 +805,14 @@ def _evidence_transaction(
 
 def _dedup_key(*, ticker: str, direction: str, transactions: list[dict[str, Any]]) -> str:
     identities = sorted(
-        {str(transaction["filing_identity"]) for transaction in transactions}
+        {
+            (
+                f"{transaction['filing_identity']}:"
+                f"{transaction['transaction_table']}:"
+                f"{transaction['transaction_index']}"
+            )
+            for transaction in transactions
+        }
     )
     digest = hashlib.sha256(
         json.dumps(identities, separators=(",", ":")).encode("utf-8")
@@ -832,7 +858,8 @@ def _buy_cluster_inputs(
     eligible = [
         row
         for row in rows
-        if str(row.get("transaction_code") or "").upper() == "P"
+        if _signal_contributor_eligible(row)
+        and str(row.get("transaction_code") or "").upper() == "P"
         and str(row.get("acquired_disposed_code") or "").upper() in {"", "A"}
         and _is_officer_or_director(row)
         and _valid_transaction_value(row) is not None
@@ -914,24 +941,55 @@ def _sell_nomination(
     snapshot: InsiderMarketSnapshot,
     config: InsiderClusterConfig,
 ) -> SignalNomination | None:
-    rows_by_seller_pool: dict[
-        tuple[tuple[str, str], tuple[str, str, str, str]],
+    rows_by_seller_block: dict[
+        tuple[
+            tuple[str, str],
+            str,
+            str,
+            tuple[str, str, str, str],
+        ],
         list[dict[str, Any]],
     ] = {}
+    contaminated_blocks: set[
+        tuple[str, str, tuple[str, str, str, str]]
+    ] = set()
     for row in rows:
+        filing_identity = str(row.get("filing_identity") or "").strip()
+        transaction_date = _parse_date(row.get("transaction_date"))
+        pool_key, _ = _ownership_pool(row)
+        if not filing_identity or transaction_date is None:
+            continue
+        block_key = (
+            filing_identity,
+            transaction_date.isoformat(),
+            pool_key,
+        )
         owners = _reporting_owners(row)
         if len(owners) != 1:
-            # Transaction-to-owner stake attribution is ambiguous in a
-            # joint filing, so sell warnings fail closed.
+            contaminated_blocks.add(block_key)
             continue
         insider = _owner_key(owners[0])
+        is_sale = (
+            str(row.get("transaction_code") or "").upper() == "S"
+            and str(row.get("acquired_disposed_code") or "").upper() == "D"
+        )
+        if not is_sale:
+            contaminated_blocks.add(block_key)
+            continue
         if (
-            insider is not None
-            and str(row.get("transaction_code") or "").upper() == "S"
+            _signal_contributor_eligible(row)
+            and insider is not None
             and _role_is_c_suite(owners[0]["role"])
         ):
-            pool_key, _ = _ownership_pool(row)
-            rows_by_seller_pool.setdefault((insider, pool_key), []).append(row)
+            rows_by_seller_block.setdefault(
+                (
+                    insider,
+                    filing_identity,
+                    transaction_date.isoformat(),
+                    pool_key,
+                ),
+                [],
+            ).append(row)
 
     qualifying_pools: list[
         tuple[
@@ -941,7 +999,14 @@ def _sell_nomination(
             dict[str, Any],
         ]
     ] = []
-    for (insider, _), pool_rows in sorted(rows_by_seller_pool.items()):
+    for (
+        insider,
+        filing_identity,
+        transaction_date,
+        pool_key,
+    ), pool_rows in sorted(rows_by_seller_block.items()):
+        if (filing_identity, transaction_date, pool_key) in contaminated_blocks:
+            continue
         shares = [_positive_number(row.get("shares")) for row in pool_rows]
         post_holdings = [
             _nonnegative_number(row.get("post_transaction_holdings")) for row in pool_rows
@@ -971,6 +1036,8 @@ def _sell_nomination(
                     "filer_cik": str(representative.get("filer_cik") or ""),
                     "filer_name": str(representative.get("filer_name") or ""),
                     "role": str(representative.get("role") or ""),
+                    "filing_identity": filing_identity,
+                    "transaction_date": transaction_date,
                     "ownership_pool": pool_evidence,
                     "transaction_count": len(pool_rows),
                     "total_shares_sold": total_shares,
@@ -1129,7 +1196,7 @@ def prepare_insider_windows(
     ] = {}
     for row in _deduplicate_rows(rows):
         ticker = str(row.get("ticker") or "").strip().upper()
-        if ticker and _base_eligible(
+        if ticker and _window_context_eligible(
             row,
             window_start=predecessor_start,
             through=through,
@@ -1403,12 +1470,17 @@ class InsiderClusterStream:
             lag_days=self.config.index_publication_lag_days,
         )
         window_start = through - timedelta(days=self.config.lookback_days - 1)
+        ledger_start = through - timedelta(
+            days=self.config.ledger_horizon_days - 1
+        )
         existing_rows = (
             list(
                 session.execute(
                     select(SignalStreamEvent)
                     .where(SignalStreamEvent.user_id == self.user_id)
                     .where(SignalStreamEvent.stream == self.name)
+                    .where(SignalStreamEvent.available_at >= ledger_start)
+                    .where(SignalStreamEvent.available_at <= through)
                     .order_by(SignalStreamEvent.id)
                 ).scalars()
             )

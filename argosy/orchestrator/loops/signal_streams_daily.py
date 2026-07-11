@@ -87,6 +87,7 @@ def _default_streams(user_id: str) -> list[SignalStream]:
                         insider.index_publication_lag_days
                     ),
                     daily_pull_days=insider.daily_pull_days,
+                    ledger_horizon_days=insider.ledger_horizon_days,
                     min_distinct_buyers=insider.min_distinct_buyers,
                     min_cluster_value_usd=insider.min_cluster_value_usd,
                     min_cluster_value_market_cap_bps=(

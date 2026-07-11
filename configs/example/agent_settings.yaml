@@ -77,6 +77,7 @@ signal_streams:
     lookback_days: 14
     recent_scan_days: 2
     index_publication_lag_days: 2
+    daily_pull_days: 1
     min_distinct_buyers: 2
     min_cluster_value_usd: 100000
     min_cluster_value_market_cap_bps: 0.5
