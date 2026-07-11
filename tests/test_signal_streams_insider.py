@@ -53,6 +53,7 @@ def _row(
     transaction_index: int = 0,
     filer_cik: str = "0000001001",
     filer_name: str = "Alice Buyer",
+    issuer_cik: str = "0000009999",
     role: str = "director",
     transaction_date: str = "2026-07-01",
     filed_at: str = "2026-07-02",
@@ -78,6 +79,7 @@ def _row(
         "transaction_index": transaction_index,
         "filer_cik": filer_cik,
         "filer_name": filer_name,
+        "issuer_cik": issuer_cik,
         "role": role,
         "transaction_date": transaction_date,
         "filed_at": filed_at,
@@ -177,6 +179,7 @@ def test_default_streams_passes_configured_publication_lag(
         lookback_days=14,
         recent_scan_days=2,
         index_publication_lag_days=3,
+        daily_pull_days=1,
         min_distinct_buyers=2,
         min_cluster_value_usd=100_000,
         min_cluster_value_market_cap_bps=0.5,
@@ -198,6 +201,8 @@ def test_default_streams_passes_configured_publication_lag(
 
     assert len(streams) == 1
     assert streams[0].config.index_publication_lag_days == 3
+    assert streams[0].config.daily_pull_days == 1
+    assert streams[0].user_id == "ariel"
 
 
 def test_example_config_documents_publication_lag() -> None:
@@ -1260,10 +1265,10 @@ def test_stream_prepares_windows_once_and_reuses_outputs(
     assert prepare_calls == 1
     assert market_calls == ["PALI", "SELL", "UUUU", "WRAP"]
     assert [
-        (item.ticker, item.direction, item.as_of, item.dedup_key)
+        (item.ticker, item.direction, item.as_of)
         for item in actual
     ] == [
-        (item.ticker, item.direction, item.as_of, item.dedup_key)
+        (item.ticker, item.direction, item.as_of)
         for item in expected
     ]
 
@@ -1458,7 +1463,7 @@ def test_joint_c_suite_sale_fails_closed_without_owner_attribution() -> None:
     assert _classify([joint_sale]) == []
 
 
-def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
+def test_initial_bootstrap_requests_only_latest_completed_sec_day() -> None:
     sec = _FixtureSecAdapter([])
     stream = InsiderClusterStream(
         sec_adapter=sec,
@@ -1468,10 +1473,10 @@ def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
 
     assert stream.fetch(None, since=date(2026, 7, 18)) == []
 
-    assert sec.calls == [(date(2026, 7, 5), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
 
 
-def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
+def test_publication_lag_fixture_acceptance_uses_one_network_day() -> None:
     rows = [
         _row(
             transaction_date="2026-07-15",
@@ -1491,13 +1496,11 @@ def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
 
     nominations = stream.fetch(None, since=date(2026, 7, 30))
 
-    assert sec.calls == [(date(2026, 7, 15), date(2026, 7, 29))]
-    assert len(nominations) == 1
-    assert nominations[0].as_of == date(2026, 7, 28)
-    assert nominations[0].evidence["latest_filed_date"] == "2026-07-28"
+    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
+    assert nominations == []
 
 
-def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
+def test_twenty_day_outage_does_not_expand_network_range() -> None:
     rows = [
         _row(
             transaction_date="2026-07-08",
@@ -1517,12 +1520,11 @@ def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
 
     nominations = stream.fetch(None, since=date(2026, 7, 10))
 
-    assert [nomination.ticker for nomination in nominations] == ["ACME"]
-    assert nominations[0].as_of == date(2026, 7, 12)
-    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 29))]
+    assert nominations == []
+    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
 
 
-def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
+def test_insider_fetch_never_uses_historical_adapter_range() -> None:
     sec = _FixtureSecAdapter([])
     stream = InsiderClusterStream(
         sec_adapter=sec,
@@ -1533,7 +1535,7 @@ def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
     stream.fetch(None, since=date(2026, 5, 1))
 
     assert MAX_GLOBAL_DATE_RANGE_DAYS == 45
-    assert sec.calls == [(date(2026, 6, 15), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 7, 29), date(2026, 7, 29))]
 
 
 def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
@@ -1569,7 +1571,7 @@ def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
         "0001062993-23-006879",
         "0001062993-23-006880",
     }
-    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14))]
+    assert sec.calls == [(date(2023, 3, 14), date(2023, 3, 14))]
 
 
 def test_sec_adapter_outage_fails_the_stream() -> None:

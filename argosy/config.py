@@ -540,6 +540,7 @@ class InsiderClusterSignalConfig(BaseModel):
     lookback_days: int = Field(default=14, gt=0)
     recent_scan_days: int = Field(default=2, gt=0)
     index_publication_lag_days: int = Field(default=2, ge=1, strict=True)
+    daily_pull_days: int = Field(default=1, ge=1, le=1, strict=True)
     min_distinct_buyers: int = Field(default=2, ge=2)
     min_cluster_value_usd: float = Field(default=100_000, gt=0)
     min_cluster_value_market_cap_bps: float = Field(default=0.5, ge=0)
@@ -550,21 +551,9 @@ class InsiderClusterSignalConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_scan_window(self) -> InsiderClusterSignalConfig:
-        from argosy.adapters.data.sec_form4_adapter import (
-            MAX_GLOBAL_DATE_RANGE_DAYS,
-        )
-
         if self.recent_scan_days > self.lookback_days:
             raise ValueError(
                 "recent_scan_days must be no greater than lookback_days"
-            )
-        if (
-            self.lookback_days + self.cursor_max_catchup_days
-            > MAX_GLOBAL_DATE_RANGE_DAYS
-        ):
-            raise ValueError(
-                "lookback_days plus cursor_max_catchup_days exceeds "
-                "SEC range limit"
             )
         return self
 

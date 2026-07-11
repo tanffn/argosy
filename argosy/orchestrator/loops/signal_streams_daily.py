@@ -79,12 +79,14 @@ def _default_streams(user_id: str) -> list[SignalStream]:
     if insider.enabled:
         streams.append(
             InsiderClusterStream(
+                user_id=user_id,
                 config=InsiderClusterConfig(
                     lookback_days=insider.lookback_days,
                     recent_scan_days=insider.recent_scan_days,
                     index_publication_lag_days=(
                         insider.index_publication_lag_days
                     ),
+                    daily_pull_days=insider.daily_pull_days,
                     min_distinct_buyers=insider.min_distinct_buyers,
                     min_cluster_value_usd=insider.min_cluster_value_usd,
                     min_cluster_value_market_cap_bps=(
@@ -196,15 +198,22 @@ class SignalStreamsDailyLoop(CadenceLoop):
                         lookback,
                     )
                 )
-                since, cursor = _resolve_since(
-                    session,
-                    user_id=self.user_id,
-                    stream=name,
-                    now_dt=now_dt,
-                    lookback_days=lookback,
-                    recent_scan_days=recent,
-                    cursor_max_catchup_days=cursor_max_catchup,
-                )
+                if getattr(stream, "cursor_controls_fetch_range", True):
+                    since, cursor = _resolve_since(
+                        session,
+                        user_id=self.user_id,
+                        stream=name,
+                        now_dt=now_dt,
+                        lookback_days=lookback,
+                        recent_scan_days=recent,
+                        cursor_max_catchup_days=cursor_max_catchup,
+                    )
+                else:
+                    since = now_dt.date()
+                    cursor = session.get(
+                        SignalStreamCursor,
+                        {"user_id": self.user_id, "stream": name},
+                    )
                 nominations = stream.fetch(session, since=since)
                 processed = process_nominations(
                     session,

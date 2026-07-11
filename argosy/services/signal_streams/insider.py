@@ -15,21 +15,27 @@ import json
 import math
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from datetime import date, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
+
 from argosy.adapters.data.sec_form4_adapter import (
-    MAX_GLOBAL_DATE_RANGE_DAYS,
     SecForm4Adapter,
+    _is_us_federal_holiday,
 )
 from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 from argosy.logging import get_logger
 from argosy.services.signal_streams.base import SignalNomination
+from argosy.state.models import SignalStreamEvent
 
 _log = get_logger("argosy.services.signal_streams.insider")
 _C_SUITE_ACRONYM_PATTERN = re.compile(r"\b(?:ceo|cfo|coo|cto|cio|cmo|cro)\b")
 _CHIEF_OFFICER_PATTERN = re.compile(r"\bchief(?:\s+[a-z]+){1,5}\s+officer\b")
+_PENDING_BUY = 1
+_PENDING_WARNING = 2
+_PENDING_ALL = _PENDING_BUY | _PENDING_WARNING
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,7 @@ class InsiderClusterConfig:
     lookback_days: int = 14
     recent_scan_days: int = 2
     index_publication_lag_days: int = 2
+    daily_pull_days: int = 1
     min_distinct_buyers: int = 2
     min_cluster_value_usd: float = 100_000
     min_cluster_value_market_cap_bps: float = 0.5
@@ -66,8 +73,8 @@ class InsiderClusterConfig:
             raise ValueError(
                 "index_publication_lag_days must be an integer of at least 1"
             )
-        if self.lookback_days + self.recent_scan_days - 1 > MAX_GLOBAL_DATE_RANGE_DAYS:
-            raise ValueError("lookback_days plus recent_scan_days overlap exceeds SEC range limit")
+        if self.daily_pull_days != 1 or isinstance(self.daily_pull_days, bool):
+            raise ValueError("daily_pull_days must be exactly 1")
         if (
             isinstance(self.min_distinct_buyers, bool)
             or not isinstance(self.min_distinct_buyers, int)
@@ -104,14 +111,6 @@ class InsiderClusterConfig:
             raise ValueError(
                 "cursor_max_catchup_days must be an integer between 1 and 31"
             )
-        if (
-            self.lookback_days + self.cursor_max_catchup_days
-            > MAX_GLOBAL_DATE_RANGE_DAYS
-        ):
-            raise ValueError(
-                "lookback_days plus cursor_max_catchup_days exceeds "
-                "SEC range limit"
-            )
 
 
 @dataclass(frozen=True)
@@ -140,6 +139,354 @@ def _validate_nonnegative_finite(value: float, field: str) -> None:
         or value < 0
     ):
         raise ValueError(f"{field} must be non-negative and finite")
+
+
+def latest_completed_sec_day(today: date, *, lag_days: int) -> date:
+    """Return the latest completed SEC index date for a daily run."""
+    if isinstance(lag_days, bool) or not isinstance(lag_days, int) or lag_days < 1:
+        raise ValueError("lag_days must be an integer of at least 1")
+    candidate = today - timedelta(days=lag_days)
+    while candidate.weekday() >= 5 or _is_us_federal_holiday(candidate):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+@dataclass(frozen=True)
+class _LocalEvent:
+    event_key: str
+    event_group_key: str
+    ticker: str
+    event_at: date
+    available_at: date
+    payload_json: str
+    source_urls_json: str
+    active: int
+    evaluation_pending: int
+
+    def payload(self) -> dict[str, Any]:
+        value = json.loads(self.payload_json)
+        if not isinstance(value, dict):
+            raise ValueError("signal event payload must be a JSON object")
+        return value
+
+
+@dataclass(frozen=True)
+class _OriginalGroup:
+    group_key: str
+    issuer_cik: str
+    owner_keys: tuple[str, ...]
+    filed_at: date
+    in_lookback: bool
+
+
+def _complete_owner_identities(row: Mapping[str, Any]) -> tuple[str, ...] | None:
+    owners = _reporting_owners(row)
+    identities: list[str] = []
+    for owner in owners:
+        key = _owner_key(owner)
+        if key is None:
+            return None
+        identities.append(f"{key[0]}:{key[1]}")
+    return tuple(sorted(set(identities))) or None
+
+
+def _normalized_issuer_cik(row: Mapping[str, Any]) -> str:
+    return str(row.get("issuer_cik") or "").strip().lstrip("0")
+
+
+def _accession_group_key(value: Any) -> str | None:
+    accession = str(value or "").strip()
+    if not accession:
+        return None
+    return accession if accession.startswith("sec-form4:") else f"sec-form4:{accession}"
+
+
+def _original_group_from_event(
+    event: _LocalEvent,
+    *,
+    window_start: date,
+    through: date,
+) -> _OriginalGroup | None:
+    if event.active != 1:
+        return None
+    payload = event.payload()
+    issuer_cik = str(payload.get("_signal_issuer_cik") or "")
+    owner_keys = tuple(
+        sorted(str(value) for value in payload.get("_signal_owner_keys", []) if value)
+    )
+    filed_at = _parse_date(payload.get("_signal_original_filed_date"))
+    if not issuer_cik or not owner_keys or filed_at is None:
+        return None
+    return _OriginalGroup(
+        group_key=event.event_group_key,
+        issuer_cik=issuer_cik,
+        owner_keys=owner_keys,
+        filed_at=filed_at,
+        in_lookback=(
+            window_start <= event.event_at <= through
+            and event.available_at <= through
+        ),
+    )
+
+
+def _original_group_from_row(
+    row: Mapping[str, Any],
+    *,
+    window_start: date,
+    through: date,
+) -> _OriginalGroup | None:
+    if row.get("is_amendment"):
+        return None
+    group_key = _accession_group_key(row.get("accession"))
+    issuer_cik = _normalized_issuer_cik(row)
+    owner_keys = _complete_owner_identities(row)
+    filed_at = _parse_date(row.get("filed_at"))
+    event_at = _parse_date(row.get("transaction_date"))
+    if (
+        group_key is None
+        or not issuer_cik
+        or owner_keys is None
+        or filed_at is None
+        or event_at is None
+    ):
+        return None
+    return _OriginalGroup(
+        group_key=group_key,
+        issuer_cik=issuer_cik,
+        owner_keys=owner_keys,
+        filed_at=filed_at,
+        in_lookback=(
+            window_start <= event_at <= through
+            and filed_at <= through
+        ),
+    )
+
+
+def _event_from_row(
+    raw_row: Mapping[str, Any],
+    *,
+    group_key: str,
+    original_filed_at: date | None,
+    owner_keys: tuple[str, ...] | None,
+    issuer_cik: str,
+    active: bool,
+    resolution_reason: str,
+    candidate_groups: list[str],
+) -> _LocalEvent | None:
+    row = dict(raw_row)
+    event_at = _parse_date(row.get("transaction_date"))
+    available_at = _parse_date(row.get("filed_at"))
+    transaction_index = row.get("transaction_index")
+    is_derivative = row.get("is_derivative")
+    if (
+        event_at is None
+        or available_at is None
+        or isinstance(transaction_index, bool)
+        or not isinstance(transaction_index, int)
+        or transaction_index < 0
+        or not isinstance(is_derivative, bool)
+    ):
+        return None
+    source_urls = sorted(
+        str(url) for url in (row.get("source_urls") or []) if url
+    )
+    is_amendment = bool(row.get("is_amendment"))
+    if is_amendment:
+        row["amendment_match_status"] = "matched" if active else "ambiguous"
+        row["amendment_ambiguity_evidence"] = list(candidate_groups)
+    row.update(
+        {
+            "filing_identity": group_key,
+            "cluster_eligible": bool(active),
+            "source_urls": source_urls,
+            "_signal_group_key": group_key,
+            "_signal_owner_keys": list(owner_keys or ()),
+            "_signal_issuer_cik": issuer_cik,
+            "_signal_original_filed_date": (
+                original_filed_at.isoformat()
+                if original_filed_at is not None
+                else None
+            ),
+            "_signal_resolution_reason": resolution_reason,
+            "_signal_candidate_groups": list(candidate_groups),
+        }
+    )
+    table = "derivative" if is_derivative else "non_derivative"
+    return _LocalEvent(
+        event_key=f"{group_key}:{table}:{transaction_index}",
+        event_group_key=group_key,
+        ticker=str(row.get("ticker") or "").strip().upper(),
+        event_at=event_at,
+        available_at=available_at,
+        payload_json=json.dumps(
+            row,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
+        source_urls_json=json.dumps(source_urls, separators=(",", ":")),
+        active=int(active),
+        evaluation_pending=_PENDING_ALL if active else 0,
+    )
+
+
+def _normalize_daily_rows(
+    rows: list[dict[str, Any]],
+    *,
+    existing_events: list[_LocalEvent],
+    window_start: date,
+    through: date,
+) -> tuple[list[_LocalEvent], set[str], set[str]]:
+    normalized: list[_LocalEvent] = []
+    replacement_groups: set[str] = set()
+    tainted_groups: set[str] = set()
+    candidates: dict[str, _OriginalGroup] = {}
+    for event in existing_events:
+        candidate = _original_group_from_event(
+            event,
+            window_start=window_start,
+            through=through,
+        )
+        if candidate is not None:
+            prior = candidates.get(candidate.group_key)
+            candidates[candidate.group_key] = (
+                replace(candidate, in_lookback=True)
+                if prior is not None and prior.in_lookback
+                else candidate
+            )
+    for row in rows:
+        candidate = _original_group_from_row(
+            row,
+            window_start=window_start,
+            through=through,
+        )
+        if candidate is not None:
+            candidates[candidate.group_key] = candidate
+
+    original_rows = [row for row in rows if not row.get("is_amendment")]
+    amendment_rows = [row for row in rows if row.get("is_amendment")]
+    for row in original_rows:
+        candidate = _original_group_from_row(
+            row,
+            window_start=window_start,
+            through=through,
+        )
+        if candidate is None:
+            continue
+        event = _event_from_row(
+            row,
+            group_key=candidate.group_key,
+            original_filed_at=candidate.filed_at,
+            owner_keys=candidate.owner_keys,
+            issuer_cik=candidate.issuer_cik,
+            active=row.get("cluster_eligible") is True,
+            resolution_reason="original_accession",
+            candidate_groups=[],
+        )
+        if event is not None:
+            normalized.append(event)
+            replacement_groups.add(candidate.group_key)
+
+    for row in amendment_rows:
+        issuer_cik = _normalized_issuer_cik(row)
+        owner_keys = _complete_owner_identities(row)
+        original_filed_at = _parse_date(row.get("date_of_original_submission"))
+        adapter_group = None
+        if row.get("amendment_match_status") == "matched":
+            filing_identity = str(row.get("filing_identity") or "").strip()
+            accession = str(row.get("accession") or "").strip()
+            if filing_identity and filing_identity != accession:
+                adapter_group = _accession_group_key(filing_identity)
+                if (
+                    adapter_group is not None
+                    and issuer_cik
+                    and owner_keys is not None
+                    and original_filed_at is not None
+                ):
+                    candidates.setdefault(
+                        adapter_group,
+                        _OriginalGroup(
+                            group_key=adapter_group,
+                            issuer_cik=issuer_cik,
+                            owner_keys=owner_keys,
+                            filed_at=original_filed_at,
+                            in_lookback=True,
+                        ),
+                    )
+
+        exact_candidates = sorted(
+            candidate.group_key
+            for candidate in candidates.values()
+            if issuer_cik
+            and owner_keys is not None
+            and original_filed_at is not None
+            and candidate.issuer_cik == issuer_cik
+            and candidate.owner_keys == owner_keys
+            and candidate.filed_at == original_filed_at
+        )
+        resolved_group = exact_candidates[0] if len(exact_candidates) == 1 else None
+        if resolved_group is not None:
+            resolution_reason = "unique_original_candidate"
+            candidate_groups = exact_candidates
+            active = True
+            group_key = resolved_group
+            replacement_groups.add(group_key)
+            resolved = candidates[group_key]
+            resolved_owners = resolved.owner_keys
+            resolved_date = resolved.filed_at
+        else:
+            if len(exact_candidates) > 1:
+                resolution_reason = "multiple_original_candidates"
+                candidate_groups = exact_candidates
+            elif owner_keys is None and issuer_cik and original_filed_at is not None:
+                resolution_reason = "ownerless_original_date_scope"
+                candidate_groups = sorted(
+                    candidate.group_key
+                    for candidate in candidates.values()
+                    if candidate.issuer_cik == issuer_cik
+                    and candidate.filed_at == original_filed_at
+                )
+            elif owner_keys is None and issuer_cik:
+                resolution_reason = "ownerless_issuer_lookback_scope"
+                candidate_groups = sorted(
+                    candidate.group_key
+                    for candidate in candidates.values()
+                    if candidate.issuer_cik == issuer_cik
+                    and candidate.in_lookback
+                )
+            else:
+                resolution_reason = "no_original_candidate_overlap_scope"
+                candidate_groups = sorted(
+                    candidate.group_key
+                    for candidate in candidates.values()
+                    if candidate.issuer_cik == issuer_cik
+                    and owner_keys is not None
+                    and set(candidate.owner_keys).intersection(owner_keys)
+                )
+            tainted_groups.update(candidate_groups)
+            group_key = _accession_group_key(row.get("accession"))
+            if group_key is None:
+                digest = hashlib.sha256(
+                    json.dumps(row, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()[:20]
+                group_key = f"sec-form4:unidentified-amendment:{digest}"
+            active = False
+            resolved_owners = owner_keys
+            resolved_date = original_filed_at
+
+        event = _event_from_row(
+            row,
+            group_key=group_key,
+            original_filed_at=resolved_date,
+            owner_keys=resolved_owners,
+            issuer_cik=issuer_cik,
+            active=active,
+            resolution_reason=resolution_reason,
+            candidate_groups=candidate_groups,
+        )
+        if event is not None:
+            normalized.append(event)
+    return normalized, replacement_groups, tainted_groups
 
 
 def market_cap_floor(market_cap: float, *, config: InsiderClusterConfig) -> float:
@@ -439,12 +786,7 @@ def _evidence_transaction(
 
 def _dedup_key(*, ticker: str, direction: str, transactions: list[dict[str, Any]]) -> str:
     identities = sorted(
-        (
-            f"{transaction['filing_identity']}:"
-            f"{transaction['transaction_table']}:"
-            f"{transaction['transaction_index']}"
-        )
-        for transaction in transactions
+        {str(transaction["filing_identity"]) for transaction in transactions}
     )
     digest = hashlib.sha256(
         json.dumps(identities, separators=(",", ":")).encode("utf-8")
@@ -862,32 +1204,49 @@ def _potential_tickers_from_prepared(
     *,
     config: InsiderClusterConfig,
 ) -> list[str]:
-    potential: list[str] = []
+    groups = _potential_groups_from_prepared(prepared, config=config)
+    return sorted(
+        ticker
+        for ticker, by_direction in groups.items()
+        if by_direction["long"] or by_direction["short"]
+    )
+
+
+def _potential_groups_from_prepared(
+    prepared: PreparedInsiderWindows,
+    *,
+    config: InsiderClusterConfig,
+) -> dict[str, dict[str, set[str]]]:
+    potential: dict[str, dict[str, set[str]]] = {}
     for ticker, windows in prepared.windows_by_ticker.items():
-        could_nominate = False
+        by_direction = {"long": set(), "short": set()}
         for window in windows:
             window_rows = list(window.rows)
-            _, distinct_buyers, aggregate_buy_value = _buy_cluster_inputs(
+            buy_rows, distinct_buyers, aggregate_buy_value = _buy_cluster_inputs(
                 window_rows
             )
-            could_buy = (
+            if (
                 distinct_buyers >= config.min_distinct_buyers
                 and aggregate_buy_value >= config.min_cluster_value_usd
-            )
-            could_warn = (
-                _sell_nomination(
-                    ticker,
-                    window_rows,
-                    snapshot=_PREFILTER_SNAPSHOT,
-                    config=config,
+            ):
+                by_direction["long"].update(
+                    str(row.get("filing_identity") or "")
+                    for row in buy_rows
+                    if row.get("filing_identity")
                 )
-                is not None
+            warning = _sell_nomination(
+                ticker,
+                window_rows,
+                snapshot=_PREFILTER_SNAPSHOT,
+                config=config,
             )
-            if could_buy or could_warn:
-                could_nominate = True
-                break
-        if could_nominate:
-            potential.append(ticker)
+            if warning is not None:
+                by_direction["short"].update(
+                    str(transaction.get("filing_identity") or "")
+                    for transaction in warning.evidence.get("transactions", [])
+                    if transaction.get("filing_identity")
+                )
+        potential[ticker] = by_direction
     return potential
 
 
@@ -1015,61 +1374,231 @@ class YFinanceInsiderMarketProvider:
 
 
 class InsiderClusterStream:
-    """Fetch global Form 4 rows and classify per ticker with isolation."""
+    """Pull one completed SEC day and classify from the local raw-event ledger."""
 
     name = "insider_cluster"
+    cursor_controls_fetch_range = False
 
     def __init__(
         self,
         *,
+        user_id: str = "ariel",
         config: InsiderClusterConfig | None = None,
         sec_adapter: Any | None = None,
         market_snapshot: Callable[[str], InsiderMarketSnapshot] | None = None,
         today: Callable[[], date] = date.today,
+        observed_at: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self.user_id = user_id
         self.config = config or InsiderClusterConfig()
         self.sec_adapter = sec_adapter or SecForm4Adapter()
         self.market_snapshot = market_snapshot or YFinanceInsiderMarketProvider()
         self.today = today
+        self.observed_at = observed_at
 
     def fetch(self, session: Any, *, since: date) -> list[SignalNomination]:
-        del session
-        through = self.today() - timedelta(
-            days=self.config.index_publication_lag_days
+        del since
+        through = latest_completed_sec_day(
+            self.today(),
+            lag_days=self.config.index_publication_lag_days,
         )
-        recent_start = through - timedelta(days=self.config.recent_scan_days - 1)
-        availability_since = min(since, recent_start)
-        normal_start = through - timedelta(
-            days=self.config.lookback_days - 1
+        window_start = through - timedelta(days=self.config.lookback_days - 1)
+        existing_rows = (
+            list(
+                session.execute(
+                    select(SignalStreamEvent)
+                    .where(SignalStreamEvent.user_id == self.user_id)
+                    .where(SignalStreamEvent.stream == self.name)
+                    .order_by(SignalStreamEvent.id)
+                ).scalars()
+            )
+            if session is not None
+            else []
         )
-        predecessor_start = availability_since - timedelta(
-            days=self.config.lookback_days - 1
-        )
-        requested_start = min(normal_start, predecessor_start)
-        bounded_start = max(
-            requested_start,
-            through - timedelta(days=MAX_GLOBAL_DATE_RANGE_DAYS - 1),
-        )
-        rows = asyncio.run(
+        existing_by_key = {row.event_key: row for row in existing_rows}
+        working: dict[str, _LocalEvent] = {
+            row.event_key: _LocalEvent(
+                event_key=row.event_key,
+                event_group_key=row.event_group_key,
+                ticker=row.ticker,
+                event_at=row.event_at,
+                available_at=row.available_at,
+                payload_json=row.payload_json,
+                source_urls_json=row.source_urls_json,
+                active=row.active,
+                evaluation_pending=row.evaluation_pending,
+            )
+            for row in existing_rows
+        }
+
+        fetched_rows = asyncio.run(
             self.sec_adapter.get_form4_for_date_range(
-                bounded_start,
+                through,
                 through,
             )
         )
+        incoming, replacement_groups, tainted_groups = _normalize_daily_rows(
+            fetched_rows,
+            existing_events=list(working.values()),
+            window_start=window_start,
+            through=through,
+        )
+        incoming_by_group: dict[str, set[str]] = {}
+        for event in incoming:
+            incoming_by_group.setdefault(event.event_group_key, set()).add(
+                event.event_key
+            )
+
+        for group_key in replacement_groups:
+            current_keys = incoming_by_group.get(group_key, set())
+            for event_key, event in list(working.items()):
+                if (
+                    event.event_group_key == group_key
+                    and event.active == 1
+                    and event_key not in current_keys
+                ):
+                    working[event_key] = replace(
+                        event,
+                        active=0,
+                        evaluation_pending=0,
+                    )
+
+        incoming_keys: set[str] = set()
+        for event in incoming:
+            incoming_keys.add(event.event_key)
+            prior = working.get(event.event_key)
+            if prior is not None:
+                prior_urls = json.loads(prior.source_urls_json)
+                current_urls = json.loads(event.source_urls_json)
+                merged_urls = sorted(
+                    {
+                        str(url)
+                        for url in [*prior_urls, *current_urls]
+                        if url
+                    }
+                )
+                payload = event.payload()
+                payload["source_urls"] = merged_urls
+                event = replace(
+                    event,
+                    payload_json=json.dumps(
+                        payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                    source_urls_json=json.dumps(
+                        merged_urls,
+                        separators=(",", ":"),
+                    ),
+                )
+            prior_content = (
+                (
+                    prior.event_group_key,
+                    prior.ticker,
+                    prior.event_at,
+                    prior.available_at,
+                    prior.payload_json,
+                    prior.source_urls_json,
+                    prior.active,
+                )
+                if prior is not None
+                else None
+            )
+            event_content = (
+                event.event_group_key,
+                event.ticker,
+                event.event_at,
+                event.available_at,
+                event.payload_json,
+                event.source_urls_json,
+                event.active,
+            )
+            if prior_content == event_content and prior is not None:
+                event = replace(
+                    event,
+                    evaluation_pending=prior.evaluation_pending,
+                )
+            elif event.active == 1:
+                event = replace(event, evaluation_pending=_PENDING_ALL)
+            else:
+                event = replace(event, evaluation_pending=0)
+            working[event.event_key] = event
+
+        for event_key, event in list(working.items()):
+            if event.active == 1 and event.event_group_key in tainted_groups:
+                working[event_key] = replace(
+                    event,
+                    active=0,
+                    evaluation_pending=0,
+                )
+
+        active_rows = [
+            event.payload()
+            for event in working.values()
+            if event.active == 1
+            and window_start <= event.event_at <= through
+            and event.available_at <= through
+        ]
         prepared = prepare_insider_windows(
-            rows,
+            active_rows,
             config=self.config,
             through=through,
-            availability_since=availability_since,
+            availability_since=window_start,
         )
-        tickers = _potential_tickers_from_prepared(
+        potential_groups = _potential_groups_from_prepared(
             prepared,
             config=self.config,
         )
+        applicable_masks: dict[str, int] = {}
+        for by_direction in potential_groups.values():
+            for group_key in by_direction["long"]:
+                applicable_masks[group_key] = (
+                    applicable_masks.get(group_key, 0) | _PENDING_BUY
+                )
+            for group_key in by_direction["short"]:
+                applicable_masks[group_key] = (
+                    applicable_masks.get(group_key, 0) | _PENDING_WARNING
+                )
+        for event_key, event in list(working.items()):
+            if event.active == 1 and event.evaluation_pending:
+                working[event_key] = replace(
+                    event,
+                    evaluation_pending=(
+                        event.evaluation_pending
+                        & applicable_masks.get(event.event_group_key, 0)
+                    ),
+                )
+
+        buy_evaluation_groups = {
+            event.event_group_key
+            for event in working.values()
+            if event.active == 1
+            and event.evaluation_pending & _PENDING_BUY
+        }
+        warning_evaluation_groups = {
+            event.event_group_key
+            for event in working.values()
+            if event.active == 1
+            and event.evaluation_pending & _PENDING_WARNING
+        }
+        evaluation_groups = buy_evaluation_groups | warning_evaluation_groups
+        evaluation_tickers = {
+            event.ticker
+            for event in working.values()
+            if event.active == 1
+            and event.event_group_key in evaluation_groups
+        }
         snapshots: dict[str, InsiderMarketSnapshot] = {}
-        for ticker in tickers:
+        clear_masks: dict[str, int] = {}
+        potential_tickers = {
+            ticker
+            for ticker, by_direction in potential_groups.items()
+            if by_direction["long"] or by_direction["short"]
+        }
+        for ticker in sorted(potential_tickers.intersection(evaluation_tickers)):
             try:
-                snapshots[ticker] = self.market_snapshot(ticker)
+                raw_snapshot = self.market_snapshot(ticker)
             except Exception as exc:  # noqa: BLE001 - isolate one bad ticker
                 _log.warning(
                     "signal_streams.insider.market_snapshot_failed",
@@ -1077,11 +1606,134 @@ class InsiderClusterStream:
                     error_type=type(exc).__name__,
                     error=str(exc)[:300],
                 )
-        return classify_prepared_insider_windows(
+                continue
+            if isinstance(raw_snapshot, InsiderMarketSnapshot):
+                snapshot = raw_snapshot
+            elif isinstance(raw_snapshot, Mapping):
+                snapshot = InsiderMarketSnapshot(
+                    price=raw_snapshot.get("price"),
+                    market_cap=raw_snapshot.get("market_cap"),
+                    average_volume=raw_snapshot.get("average_volume"),
+                    quote_source_url=str(
+                        raw_snapshot.get("quote_source_url") or ""
+                    ),
+                )
+            else:
+                snapshot = InsiderMarketSnapshot(
+                    price=getattr(raw_snapshot, "price", None),
+                    market_cap=getattr(raw_snapshot, "market_cap", None),
+                    average_volume=getattr(raw_snapshot, "average_volume", None),
+                    quote_source_url=str(
+                        getattr(raw_snapshot, "quote_source_url", "") or ""
+                    ),
+                )
+            snapshots[ticker] = snapshot
+            if _positive_number(snapshot.price) is None:
+                _log.warning(
+                    "signal_streams.insider.market_snapshot_incomplete",
+                    ticker=ticker,
+                    missing="price",
+                )
+                continue
+            clear_mask = _PENDING_WARNING
+            if _positive_number(snapshot.market_cap) is not None:
+                clear_mask |= _PENDING_BUY
+            else:
+                _log.warning(
+                    "signal_streams.insider.market_snapshot_incomplete",
+                    ticker=ticker,
+                    missing="market_cap",
+                )
+            clear_masks[ticker] = clear_mask
+        nominations = classify_prepared_insider_windows(
             prepared,
             snapshots=snapshots,
             config=self.config,
         )
+        nominations = [
+            nomination
+            for nomination in nominations
+            if (
+                buy_evaluation_groups
+                if nomination.direction == "long"
+                else warning_evaluation_groups
+            ).intersection(
+                transaction.get("filing_identity", "")
+                for transaction in nomination.evidence.get("transactions", [])
+            )
+        ]
+        for event_key, event in list(working.items()):
+            clear_mask = clear_masks.get(event.ticker, 0)
+            if event.active == 1 and event.evaluation_pending and clear_mask:
+                working[event_key] = replace(
+                    event,
+                    evaluation_pending=(
+                        event.evaluation_pending
+                        & (_PENDING_ALL ^ clear_mask)
+                    ),
+                )
+
+        if session is not None:
+            observed_at = self.observed_at()
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=UTC)
+            else:
+                observed_at = observed_at.astimezone(UTC)
+            for event_key, event in working.items():
+                row = existing_by_key.get(event_key)
+                if row is None:
+                    session.add(
+                        SignalStreamEvent(
+                            user_id=self.user_id,
+                            stream=self.name,
+                            event_key=event.event_key,
+                            event_group_key=event.event_group_key,
+                            ticker=event.ticker,
+                            event_at=event.event_at,
+                            available_at=event.available_at,
+                            payload_json=event.payload_json,
+                            source_urls_json=event.source_urls_json,
+                            active=event.active,
+                            evaluation_pending=event.evaluation_pending,
+                            first_seen_at=observed_at,
+                            last_seen_at=observed_at,
+                        )
+                    )
+                    continue
+                desired = (
+                    event.event_group_key,
+                    event.ticker,
+                    event.event_at,
+                    event.available_at,
+                    event.payload_json,
+                    event.source_urls_json,
+                    event.active,
+                    event.evaluation_pending,
+                )
+                current = (
+                    row.event_group_key,
+                    row.ticker,
+                    row.event_at,
+                    row.available_at,
+                    row.payload_json,
+                    row.source_urls_json,
+                    row.active,
+                    row.evaluation_pending,
+                )
+                if desired != current:
+                    (
+                        row.event_group_key,
+                        row.ticker,
+                        row.event_at,
+                        row.available_at,
+                        row.payload_json,
+                        row.source_urls_json,
+                        row.active,
+                        row.evaluation_pending,
+                    ) = desired
+                if event_key in incoming_keys:
+                    row.last_seen_at = observed_at
+        return nominations
 
 
 __all__ = [
@@ -1094,6 +1746,7 @@ __all__ = [
     "classify_prepared_insider_windows",
     "classify_insider_transactions",
     "cluster_strength",
+    "latest_completed_sec_day",
     "market_cap_floor",
     "potential_insider_nomination_tickers",
     "prepare_insider_windows",

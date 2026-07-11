@@ -124,6 +124,7 @@ def test_signal_stream_config_defaults_and_validation() -> None:
         enabled=True,
         lookback_days=14,
         recent_scan_days=2,
+        daily_pull_days=1,
         min_distinct_buyers=2,
         min_cluster_value_usd=100_000,
         min_cluster_value_market_cap_bps=0.5,
@@ -134,11 +135,10 @@ def test_signal_stream_config_defaults_and_validation() -> None:
     )
     with pytest.raises(ValueError):
         InsiderClusterSignalConfig(recent_scan_days=15)
-    with pytest.raises(ValueError):
-        InsiderClusterSignalConfig(
-            lookback_days=30,
-            recent_scan_days=3,
-        )
+    assert InsiderClusterSignalConfig(
+        lookback_days=30,
+        recent_scan_days=3,
+    ).lookback_days == 30
     with pytest.raises(ValueError):
         InsiderClusterSignalConfig(warning_ttl_days=0)
     with pytest.raises(ValueError):
