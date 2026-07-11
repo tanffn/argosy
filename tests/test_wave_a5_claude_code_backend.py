@@ -17,6 +17,7 @@ backend gained:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -99,6 +100,7 @@ def _make_result_message(
     cache_creation_input_tokens: int = 0,
     thinking_tokens: int = 0,
     total_cost_usd: float = 0.0,
+    structured_output: Any = None,
 ):
     """Construct a real `ResultMessage` with the given usage shape.
 
@@ -125,6 +127,7 @@ def _make_result_message(
         total_cost_usd=total_cost_usd,
         usage=usage,
         result="ok",
+        structured_output=structured_output,
     )
 
 
@@ -215,6 +218,50 @@ async def test_use_structured_output_omitted_by_default(monkeypatch):
 
     opts = captured["options"]
     assert opts.output_format is None
+
+
+@pytest.mark.asyncio
+async def test_structured_output_channel_preferred_over_prose_textblocks(
+    monkeypatch,
+):
+    """Live fingerprint (calibration burns 2026-07-11): with
+    ``output_format=json_schema``, AssistantMessage TextBlocks carry
+    narration while the schema payload lands on
+    ``ResultMessage.structured_output``. Prefer that channel so
+    ``_parse_output`` does not see prose-only text.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    payload = {"confidence": "HIGH", "category": "synthetic"}
+    stream = [
+        AssistantMessage(
+            content=[
+                TextBlock(
+                    text=(
+                        "The classification is complete. My structured "
+                        "output has been submitted."
+                    )
+                )
+            ],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(
+            input_tokens=11,
+            output_tokens=22,
+            structured_output=payload,
+        ),
+    ]
+    captured = _install_fake_query(monkeypatch, yielded=stream)
+
+    class _Structured(_Subagent):
+        use_structured_output = True
+
+    agent = _Structured(user_id="test", model="claude-sonnet-4-6")
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert json.loads(call.text) == payload
+    assert "classification is complete" not in call.text
+    assert captured["options"].output_format["type"] == "json_schema"
 
 
 # ----------------------------------------------------------------------

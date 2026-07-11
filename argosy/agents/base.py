@@ -2134,6 +2134,28 @@ class BaseAgent(Generic[T]):
                             if _msg_text.strip():
                                 assistant_msg_texts.append(_msg_text)
                         elif isinstance(message, ResultMessage):
+                            # Schema-constrained calls put the validated
+                            # payload on ``ResultMessage.structured_output``
+                            # while AssistantMessage TextBlocks often carry
+                            # only narration ("classification complete...").
+                            # Prefer the structured channel when present —
+                            # otherwise ``_parse_output`` sees prose and
+                            # raises ``Expecting value: line 1 column 1``.
+                            structured = getattr(
+                                message, "structured_output", None
+                            )
+                            if structured is not None:
+                                if isinstance(structured, str):
+                                    structured_text = structured
+                                else:
+                                    structured_text = json.dumps(
+                                        structured, ensure_ascii=False
+                                    )
+                                turn_buffers[-1] = [structured_text]
+                                if structured_text.strip():
+                                    assistant_msg_texts.append(
+                                        structured_text
+                                    )
                             turns_seen += 1
                             cost_usd_from_sdk += float(
                                 getattr(message, "total_cost_usd", 0.0) or 0.0
