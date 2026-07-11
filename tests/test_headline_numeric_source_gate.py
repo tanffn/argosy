@@ -685,3 +685,26 @@ class TestSignedMagnitudeMatching:
         scrubbed, log = scrub_headline_numeric_source(md, resolved)
         assert scrubbed["long"] == md["long"]
         assert log == []
+
+
+class TestDurationAfterAgeNotHeadlineAge:
+    """draft-80 false positive: '...(60): 13 years' must not bind as age 13."""
+
+    def test_duration_years_after_retirement_age_not_flagged(self):
+        resolved = _resolved(**{
+            "retirement.earliest_safe_age": 60.0,
+            "retirement.fi_age": 60.0,
+        })
+        # Exact draft-80 shape: parenthetical unlock age, then a duration.
+        md = {"medium": (
+            "Earliest-safe retirement age (60): 13 years of bridge spending "
+            "before the pension unlock."
+        )}
+        assert check_headline_numeric_source(md, resolved) == []
+
+    def test_real_wrong_age_still_flagged(self):
+        resolved = _resolved(**{"retirement.earliest_safe_age": 60.0})
+        md = {"medium": "Earliest-safe retirement age is 13."}
+        v = check_headline_numeric_source(md, resolved)
+        assert len(v) == 1
+        assert "age 13" in v[0].detail

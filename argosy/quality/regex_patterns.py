@@ -35,9 +35,12 @@ HISTORY_LEAK_PATTERNS: list[re.Pattern[str]] = [
         r"\bformer\s+(framing|approach|stance|position|recommendation)\b",
         re.IGNORECASE,
     ),
-    # explicit revision verbs (bare — high signal)
+    # explicit revision verbs (bare — high signal). "superseded by the
+    # operative glide" is current-state instrument policy, not draft history
+    # (draft-80 false positive) — exclude that technical construction.
     re.compile(
-        r"\b(retracted|retracts|retracting|supersedes|superseded|deprecated|rescinded|reversed)\b",
+        r"\b(retracted|retracts|retracting|supersedes|deprecated|rescinded|reversed)\b"
+        r"|\bsuperseded\b(?!\s+by\s+(?:the\s+)?operative\b)",
         re.IGNORECASE,
     ),
     # "updated/revised/amended from"

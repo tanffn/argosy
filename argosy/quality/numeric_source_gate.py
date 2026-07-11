@@ -84,8 +84,11 @@ _SUBJECT_BINDINGS: tuple[tuple[re.Pattern[str], str, int], ...] = (
 
 # First value token of each unit in a post-subject window. The subject already
 # says "age", so the value is a bare 2-digit — but NOT one followed by "%" (a
-# percent in a parenthetical like "worst-10%" / "90% solvency" is not the age).
+# percent in a parenthetical like "worst-10%" / "90% solvency" is not the age)
+# and NOT one followed by "year(s)" (a duration like "...(60): 13 years" is
+# not a headline age — draft-80 false positive).
 _AGE_VALUE = re.compile(r"\b(\d{2})\b(?!\s*%)")
+_AGE_DURATION_TAIL = re.compile(r"\s*years?\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +353,13 @@ def _value_belongs_to_other_quantity(segment: str, unit: str, *, value_at_end: b
     where the value is end-anchored): the word appears anywhere in the clause
     ahead of the value."""
     regs = {"nis": _NIS_TOKEN, "pct": _PCT_TOKEN, "age": _AGE_VALUE}
-    ms = list(regs[unit].finditer(segment))
+    if unit == "age":
+        ms = [
+            m for m in _AGE_VALUE.finditer(segment)
+            if not _AGE_DURATION_TAIL.match(segment[m.end():])
+        ]
+    else:
+        ms = list(regs[unit].finditer(segment))
     if not ms:
         return False
     m = ms[-1] if value_at_end else ms[0]
@@ -366,7 +375,10 @@ def _token_in(
     elif unit == "pct":
         ms = list(_PCT_TOKEN.finditer(text))
     else:
-        ms = list(_AGE_VALUE.finditer(text))
+        ms = [
+            m for m in _AGE_VALUE.finditer(text)
+            if not _AGE_DURATION_TAIL.match(text[m.end():])
+        ]
     if not ms:
         return None
     m = ms[-1] if last else ms[0]

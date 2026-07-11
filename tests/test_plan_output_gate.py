@@ -102,6 +102,8 @@ FINANCIAL_ADVICE_CORPUS: list[str] = [
     "The IPS specifies an equity range of 50% to 80%.",
     "Israeli pension fund mandatory contribution caps apply.",
     "Section 102 capital track requires 24-month trustee holding.",
+    # draft-80: technical glide-policy wording, not revision narration
+    "The interim schedule is superseded by the operative glide.",
 ]
 
 
@@ -195,6 +197,18 @@ class TestV20FailsAllChecks:
 # ---------------------------------------------------------------------------
 
 class TestNoFalsePositivesOnLegitimateProse:
+
+    def test_operative_glide_superseded_allowed(self):
+        """draft-80: technical glide wording is not revision narration."""
+        text = (
+            "The interim schedule is superseded by the operative glide; "
+            "apply the settled legs on every surface."
+        )
+        assert check_history_leak(text) == []
+
+    def test_superseded_draft_still_flagged(self):
+        text = "This claim was superseded by the prior draft's correction."
+        assert check_history_leak(text)
 
     @pytest.mark.parametrize("sentence", FINANCIAL_ADVICE_CORPUS)
     def test_history_leak_no_false_positives(self, sentence: str):
