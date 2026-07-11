@@ -505,8 +505,9 @@ class GovContractsStream:
         recent_start = through - timedelta(
             days=self.config.recent_scan_days - 1
         )
+        global_start = max(window_start, min(recent_start, since))
         recent_global = self._fetch_query(
-            start=recent_start,
+            start=global_start,
             end=through,
         )
         awards_by_id = dict(recent_global)

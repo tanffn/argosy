@@ -3870,6 +3870,27 @@ class RecipientResolution(Base):
     )
 
 
+class SignalStreamCursor(Base):
+    """Durable last-success watermark for one user's signal stream."""
+
+    __tablename__ = "signal_stream_cursors"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    stream: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_success_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+
 class ScanState(Base):
     """Per-(user, ticker) discovery memory for the high-potential funnel's smart
     refresh (Phase 2). Records the last radar score + a radar fingerprint, the

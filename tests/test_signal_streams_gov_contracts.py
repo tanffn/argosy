@@ -552,6 +552,33 @@ def test_global_query_is_recent_and_curated_query_uses_full_history(
     ]
 
 
+def test_global_query_honors_older_cursor_since_with_lookback_clamp(
+    db_session,
+) -> None:
+    requests: list[dict] = []
+    stream = GovContractsStream(
+        config=GovContractsConfig(
+            lookback_days=90,
+            recent_scan_days=2,
+            max_pages_per_query=3,
+        ),
+        curated_contractors={},
+        fetch_json=lambda payload: requests.append(payload)
+        or {"results": [], "page_metadata": {"hasNext": False}},
+        today=lambda: date(2026, 7, 10),
+    )
+
+    stream.fetch(db_session, since=date(2026, 7, 2))
+    stream.fetch(db_session, since=date(2026, 1, 1))
+
+    assert requests[0]["filters"]["time_period"] == [
+        {"start_date": "2026-07-02", "end_date": "2026-07-10"}
+    ]
+    assert requests[1]["filters"]["time_period"] == [
+        {"start_date": "2026-04-12", "end_date": "2026-07-10"}
+    ]
+
+
 def test_global_and_curated_duplicate_award_is_merged_once(db_session) -> None:
     duplicate = {
         "Award ID": "DUP",
@@ -1135,42 +1162,95 @@ def test_signal_streams_daily_is_cron_registered_and_isolates_stream_failures(
     engine.dispose()
 
 
-def test_signal_stream_loop_bootstraps_then_uses_recent_since(
+def _cursor_test_factory(tmp_path, *user_ids: str):
+    engine = sa.create_engine(
+        f"sqlite:///{tmp_path / 'cursor.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as setup:
+        for user_id in user_ids or ("ariel",):
+            setup.add(User(id=user_id, plan="free"))
+        setup.commit()
+    return engine, factory
+
+
+class _RecordingCursorStream:
+    config = SimpleNamespace(lookback_days=90, recent_scan_days=2)
+
+    def __init__(self, name="gov_contracts", *, fail=False, on_fetch=None):
+        self.name = name
+        self.fail = fail
+        self.on_fetch = on_fetch
+        self.since: list[date] = []
+
+    def fetch(self, session, *, since):
+        self.since.append(since)
+        if self.on_fetch:
+            self.on_fetch()
+        if self.fail:
+            raise RuntimeError("stream failed")
+        return []
+
+
+def test_signal_cursor_initial_bootstrap_zero_success_and_normal_overlap(
+    tmp_path,
+) -> None:
+    from argosy.orchestrator.loops.signal_streams_daily import (
+        SignalStreamsDailyLoop,
+    )
+    from argosy.state.models import SignalStreamCursor
+
+    engine, factory = _cursor_test_factory(tmp_path, "ariel")
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "CREATE TABLE cursor_lock_probe "
+                "(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        )
+
+    def independent_adapter_write():
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT OR REPLACE INTO cursor_lock_probe (id, value) "
+                    "VALUES (1, 'adapter cache write')"
+                )
+            )
+
+    stream = _RecordingCursorStream(on_fetch=independent_adapter_write)
+    loop = SignalStreamsDailyLoop(
+        streams=[stream],
+        session_factory=factory,
+        user_id="ariel",
+    )
+    loop._run_sync(datetime(2026, 7, 10, 12, 0, tzinfo=UTC))
+    with factory() as verify:
+        cursor = verify.get(
+            SignalStreamCursor, ("ariel", "gov_contracts")
+        )
+        assert cursor.last_success_at == datetime(2026, 7, 10, 12, 0)
+
+    loop._run_sync(datetime(2026, 7, 11, 12, 0, tzinfo=UTC))
+    assert stream.since == [date(2026, 4, 12), date(2026, 7, 9)]
+    with factory() as verify:
+        cursor = verify.get(
+            SignalStreamCursor, ("ariel", "gov_contracts")
+        )
+        assert cursor.last_success_at == datetime(2026, 7, 11, 12, 0)
+    engine.dispose()
+
+
+def test_signal_cursor_uses_existing_prediction_as_migration_fallback(
     tmp_path,
 ) -> None:
     from argosy.orchestrator.loops.signal_streams_daily import (
         SignalStreamsDailyLoop,
     )
 
-    class RecordingStream:
-        name = "gov_contracts"
-        config = SimpleNamespace(lookback_days=90, recent_scan_days=2)
-
-        def __init__(self) -> None:
-            self.since: list[date] = []
-
-        def fetch(self, session, *, since):
-            self.since.append(since)
-            return []
-
-    engine = sa.create_engine(
-        f"sqlite:///{tmp_path / 'bootstrap.db'}",
-        connect_args={"check_same_thread": False},
-    )
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
-    with factory() as setup:
-        setup.add(User(id="ariel", plan="free"))
-        setup.commit()
-    stream = RecordingStream()
-    loop = SignalStreamsDailyLoop(
-        streams=[stream],
-        session_factory=factory,
-        user_id="ariel",
-    )
-    now = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
-
-    loop._run_sync(now)
+    engine, factory = _cursor_test_factory(tmp_path, "ariel")
     with engine.begin() as connection:
         connection.execute(
             sa.text(
@@ -1179,13 +1259,148 @@ def test_signal_stream_loop_bootstraps_then_uses_recent_since(
                 "entry_price, timeframe_days, message_id, event_at, "
                 "evaluation_due_at, evaluation_method) VALUES "
                 "('ariel', 'signal_stream:gov_contracts', '{}', 'PLTR', "
-                "'long', 25, 30, 'prior-signal', '2026-07-01', "
-                "'2026-07-31', 'fixed_lookahead_30d')"
+                "'long', 25, 30, 'prior-signal', '2026-07-05 12:00:00', "
+                "'2026-08-04', 'fixed_lookahead_30d')"
             )
         )
-    loop._run_sync(now)
+    stream = _RecordingCursorStream()
+    loop = SignalStreamsDailyLoop(
+        streams=[stream],
+        session_factory=factory,
+        user_id="ariel",
+    )
 
-    assert stream.since == [date(2026, 4, 12), date(2026, 7, 9)]
+    loop._run_sync(datetime(2026, 7, 10, 12, 0, tzinfo=UTC))
+
+    assert stream.since == [date(2026, 7, 4)]
+    engine.dispose()
+
+
+def test_signal_cursor_catches_up_seven_day_outage_and_advances(
+    tmp_path,
+) -> None:
+    from argosy.orchestrator.loops.signal_streams_daily import (
+        SignalStreamsDailyLoop,
+    )
+    from argosy.state.models import SignalStreamCursor
+
+    engine, factory = _cursor_test_factory(tmp_path, "ariel")
+    with factory() as setup:
+        setup.add(
+            SignalStreamCursor(
+                user_id="ariel",
+                stream="gov_contracts",
+                last_success_at=datetime(2026, 7, 3, 12, 0, tzinfo=UTC),
+            )
+        )
+        setup.commit()
+    stream = _RecordingCursorStream()
+    loop = SignalStreamsDailyLoop(
+        streams=[stream],
+        session_factory=factory,
+        user_id="ariel",
+    )
+
+    loop._run_sync(datetime(2026, 7, 10, 12, 0, tzinfo=UTC))
+
+    assert stream.since == [date(2026, 7, 2)]
+    with factory() as verify:
+        cursor = verify.get(
+            SignalStreamCursor, ("ariel", "gov_contracts")
+        )
+        assert cursor.last_success_at == datetime(2026, 7, 10, 12, 0)
+    engine.dispose()
+
+
+def test_signal_cursor_failure_does_not_advance(
+    tmp_path,
+) -> None:
+    from argosy.orchestrator.loops.signal_streams_daily import (
+        SignalStreamsDailyLoop,
+    )
+    from argosy.state.models import SignalStreamCursor
+
+    engine, factory = _cursor_test_factory(tmp_path, "ariel")
+    original = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+    with factory() as setup:
+        setup.add(
+            SignalStreamCursor(
+                user_id="ariel",
+                stream="gov_contracts",
+                last_success_at=original,
+            )
+        )
+        setup.commit()
+    stream = _RecordingCursorStream(fail=True)
+    loop = SignalStreamsDailyLoop(
+        streams=[stream],
+        session_factory=factory,
+        user_id="ariel",
+    )
+
+    summary = loop._run_sync(datetime(2026, 7, 10, 12, 0, tzinfo=UTC))
+
+    assert summary["streams"]["gov_contracts"]["status"] == "error"
+    with factory() as verify:
+        cursor = verify.get(
+            SignalStreamCursor, ("ariel", "gov_contracts")
+        )
+        assert cursor.last_success_at == original.replace(tzinfo=None)
+    engine.dispose()
+
+
+def test_signal_cursors_are_isolated_by_user_and_stream(
+    tmp_path,
+) -> None:
+    from argosy.orchestrator.loops.signal_streams_daily import (
+        SignalStreamsDailyLoop,
+    )
+    from argosy.state.models import SignalStreamCursor
+
+    engine, factory = _cursor_test_factory(tmp_path, "ariel", "noga")
+    with factory() as setup:
+        setup.add_all(
+            [
+                SignalStreamCursor(
+                    user_id="ariel",
+                    stream="gov_contracts",
+                    last_success_at=datetime(2026, 7, 3, 12, 0, tzinfo=UTC),
+                ),
+                SignalStreamCursor(
+                    user_id="ariel",
+                    stream="insider_cluster",
+                    last_success_at=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
+                ),
+                SignalStreamCursor(
+                    user_id="noga",
+                    stream="gov_contracts",
+                    last_success_at=datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
+                ),
+            ]
+        )
+        setup.commit()
+    gov = _RecordingCursorStream("gov_contracts")
+    insider = _RecordingCursorStream("insider_cluster")
+    loop = SignalStreamsDailyLoop(
+        streams=[gov, insider],
+        session_factory=factory,
+        user_id="ariel",
+    )
+
+    loop._run_sync(datetime(2026, 7, 10, 12, 0, tzinfo=UTC))
+
+    assert gov.since == [date(2026, 7, 2)]
+    assert insider.since == [date(2026, 7, 4)]
+    with factory() as verify:
+        assert verify.get(
+            SignalStreamCursor, ("noga", "gov_contracts")
+        ).last_success_at == datetime(2026, 7, 1, 12, 0)
+        assert verify.get(
+            SignalStreamCursor, ("ariel", "gov_contracts")
+        ).last_success_at == datetime(2026, 7, 10, 12, 0)
+        assert verify.get(
+            SignalStreamCursor, ("ariel", "insider_cluster")
+        ).last_success_at == datetime(2026, 7, 10, 12, 0)
     engine.dispose()
 
 
@@ -1220,6 +1435,7 @@ def test_stream_a_migration_adds_resolution_evidence_and_180d_methods(
     )
     inspector = sa.inspect(engine)
     assert inspector.has_table("signal_recipient_resolutions")
+    assert inspector.has_table("signal_stream_cursors")
     scan_columns = {
         column["name"]
         for column in inspector.get_columns("trend_scan_state")
@@ -1272,5 +1488,15 @@ def test_stream_a_migration_round_trips_on_empty_database(
     reload_settings()
     config = Config("alembic.ini")
     command.upgrade(config, "head")
+    from argosy.config import get_settings
+
+    sync_url = get_settings().database_url.replace("+aiosqlite", "")
+    engine = sa.create_engine(
+        sync_url, connect_args={"check_same_thread": False}
+    )
+    assert sa.inspect(engine).has_table("signal_stream_cursors")
     command.downgrade(config, "-1")
+    assert not sa.inspect(engine).has_table("signal_stream_cursors")
     command.upgrade(config, "head")
+    assert sa.inspect(engine).has_table("signal_stream_cursors")
+    engine.dispose()

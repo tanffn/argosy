@@ -1,4 +1,4 @@
-"""Daily early-signal ingest, before the 16:00 discovery funnel."""
+"""Daily early-signal ingest with durable per-stream success cursors."""
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.logging import get_logger
@@ -17,7 +18,7 @@ from argosy.services.signal_streams.contracts import (
     GovContractsStream,
 )
 from argosy.services.signal_streams.pipeline import process_nominations
-from argosy.state.models import Prediction
+from argosy.state.models import Prediction, SignalStreamCursor
 
 _log = get_logger("argosy.loops.signal_streams_daily")
 _DEFAULT_CRON = "30 15 * * *"
@@ -32,8 +33,8 @@ def signal_streams_daily_metadata() -> JobMetadata:
         source_kind="ingest",
         description=(
             "Fetches configured early-signal streams with per-stream failure "
-            "isolation, writes prediction-ledger rows, and nominates liquid "
-            "names into the 16:00 discovery funnel."
+            "isolation and durable outage-safe cursors, writes prediction-ledger "
+            "rows, and nominates liquid names into the 16:00 discovery funnel."
         ),
         long_running=False,
     )
@@ -68,6 +69,46 @@ def _default_streams(user_id: str) -> list[SignalStream]:
             )
         )
     ]
+
+
+def _as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _resolve_since(
+    session: Session,
+    *,
+    user_id: str,
+    stream: str,
+    now_dt: datetime,
+    lookback_days: int,
+    recent_scan_days: int,
+) -> tuple[date, SignalStreamCursor | None]:
+    cursor = session.get(
+        SignalStreamCursor, {"user_id": user_id, "stream": stream}
+    )
+    anchor: datetime | None = (
+        _as_utc(cursor.last_success_at) if cursor is not None else None
+    )
+    if anchor is None:
+        anchor = session.execute(
+            select(func.max(Prediction.event_at)).where(
+                Prediction.user_id == user_id,
+                Prediction.source == f"signal_stream:{stream}",
+            )
+        ).scalar_one_or_none()
+        if anchor is not None:
+            anchor = _as_utc(anchor)
+
+    floor = now_dt.date() - timedelta(days=max(0, lookback_days - 1))
+    if anchor is None:
+        return floor, cursor
+    overlapped = anchor.date() - timedelta(
+        days=max(0, recent_scan_days - 1)
+    )
+    return max(floor, overlapped), cursor
 
 
 class SignalStreamsDailyLoop(CadenceLoop):
@@ -113,17 +154,13 @@ class SignalStreamsDailyLoop(CadenceLoop):
                         lookback,
                     )
                 )
-                prior_prediction = (
-                    session.query(Prediction.id)
-                    .filter(
-                        Prediction.user_id == self.user_id,
-                        Prediction.source == f"signal_stream:{name}",
-                    )
-                    .first()
-                )
-                since_days = recent if prior_prediction is not None else lookback
-                since: date = now_dt.date() - timedelta(
-                    days=max(0, since_days - 1)
+                since, cursor = _resolve_since(
+                    session,
+                    user_id=self.user_id,
+                    stream=name,
+                    now_dt=now_dt,
+                    lookback_days=lookback,
+                    recent_scan_days=recent,
                 )
                 nominations = stream.fetch(session, since=since)
                 processed = process_nominations(
@@ -132,9 +169,22 @@ class SignalStreamsDailyLoop(CadenceLoop):
                     nominations=nominations,
                     observed_at=now_dt,
                 )
+                if cursor is None:
+                    cursor = SignalStreamCursor(
+                        user_id=self.user_id,
+                        stream=name,
+                        last_success_at=now_dt,
+                        updated_at=now_dt,
+                    )
+                    session.add(cursor)
+                else:
+                    cursor.last_success_at = now_dt
+                    cursor.updated_at = now_dt
                 session.commit()
                 summary["streams"][name] = {
                     "status": "ok",
+                    "since": since.isoformat(),
+                    "cursor_advanced_to": now_dt.isoformat(),
                     "nominations": len(nominations),
                     **processed.to_dict(),
                 }
