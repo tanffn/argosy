@@ -37,22 +37,19 @@
   },
   "sources": [
     {
-      "fact": "Q1-2022 results: revenue $72.2M (+37.3%), GM 11.3%, net loss -$17.7M, operating cash flow ~-$26M; FY guide $280-285M reiterated, GM guide 10-12%",
-      "url": "https://www.globenewswire.com/",
-      "date": "2022-05-11",
-      "verify": true
+      "fact": "Q1-2022 results: revenue $72.1M (+37.3%), GM 11.3%, net loss -$17.6M, operating cash flow ~-$26M (per the 10-Q filed 2022-05-10); FY guide $280-285M reiterated, GM guide 10-12%",
+      "url": "https://www.globenewswire.com/en/news-release/2022/05/09/2439108/0/en/Tattooed-Chef-Reports-First-Quarter-2022-Financial-Results-Reiterates-FY-2022-Outlook.html",
+      "date": "2022-05-09"
     },
     {
       "fact": "FY2021 10-K: revenue $213.4M (+43.7%), GM 10.4%, net loss -$87.4M, operating cash flow ~-$51M; freight +70% YoY",
-      "url": "https://www.sec.gov/",
-      "date": "2022-03-11",
-      "verify": true
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390022012981/f10k2021_tattooedchefinc.htm",
+      "date": "2022-03-16"
     },
     {
-      "fact": "Plant-based category demand slowing industry-wide; category leader revenue shrinking YoY",
-      "url": "https://www.wsj.com/",
-      "date": "2022-05-06",
-      "verify": true
+      "fact": "Plant-based category demand slowing industry-wide; the category leader printed its first YoY quarterly revenue DECLINE (-1.2%) in its Q4/FY results",
+      "url": "https://www.globenewswire.com/news-release/2022/02/24/2391909/0/en/Beyond-Meat-Reports-Fourth-Quarter-and-Full-Year-2021-Financial-Results.html",
+      "date": "2022-02-24"
     }
   ],
   "analyst_reports": [
@@ -112,12 +109,16 @@
         "Gross margin has now printed ~10-11% for four straight quarters vs the 20-25% the thesis required; management blames freight/commodity inflation but competitors' margins have compressed far less.",
         "Operating cash burn is severe (about -190 last FY, -98 last quarter alone); cash cover has fallen from 'years' to quarters.",
         "The mass-retail expansion is REVENUE-successful but margin-dilutive: heavy slotting/promo spend, and the new doors reorder more slowly than club channels.",
-        "Plant-based category demand is now visibly slowing industry-wide; the category leader's revenue is SHRINKING YoY and several peers have issued going-concern or restructuring announcements.",
+        "Plant-based category demand is now visibly slowing industry-wide; the category leader's growth has stalled to roughly flat — including its first-ever YoY quarterly revenue decline in the recent holiday quarter — and several peers have issued going-concern or restructuring announcements.",
         "Management insists no equity raise is imminent and points to inventory/receivable normalization as the cash fix; sell-side is split between 'deep value on sales' and 'uninvestable until the burn stops'."
       ],
       "macro_context": "Aggressive central-bank tightening underway; speculative growth and listing-vehicle names down 70-90%; food inflation at multi-decade highs squeezing low-margin manufacturers hardest.",
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: Q1-2022 PR date corrected 2022-05-11 -> 2022-05-09 (GlobeNewswire; 10-Q filed 2022-05-10) — still 'reported ~1 week ago' vs the 2022-05-16 freeze; revenue corrected $72.2M -> $72.1M and net loss -$17.7M -> -$17.6M per the PR; FY $280-285M + GM 10-12% guidance reiteration CONFIRMED verbatim in the PR."},
+    {"date": "2026-07-11", "fix": "FY2021 10-K filing date corrected 2022-03-11 -> 2022-03-16 (EDGAR; Q4/FY2021 PR same day), URL pinned; revenue $213.4M (+43.7%) confirmed."},
+    {"date": "2026-07-11", "fix": "Category-slowdown source was a placeholder wsj.com URL dated 2022-05-06 — replaced with the real Beyond Meat Q4/FY2021 results PR (2022-02-24, first YoY quarterly revenue decline, -1.2%). News bullet softened from 'leader's revenue is SHRINKING YoY' to 'growth stalled to roughly flat incl. first YoY decline in the holiday quarter' because the leader's latest pre-freeze print (Q1, 2022-05-11) was +1.2% YoY — as written it was contradicted by the pre-freeze record. verify flags cleared."}
+  ]
 }

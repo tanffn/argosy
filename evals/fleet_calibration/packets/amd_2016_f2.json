@@ -38,15 +38,13 @@
   "sources": [
     {
       "fact": "FY2015 revenue $3,991M (-27.5%), net loss -$660M, GM depressed by inventory write-downs; console semi-custom annuity scale",
-      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000002488&type=10-K&dateb=&owner=include&count=10",
-      "date": "2016-02-18",
-      "verify": true
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000002488&type=10-K&dateb=20170101&owner=include&count=10",
+      "date": "2016-02-18"
     },
     {
       "fact": "Q1-2016 results: revenue $832M (-19.2% YoY), net loss -$109M; fourth consecutive quarterly loss",
-      "url": "https://ir.amd.com/news-events/press-releases",
-      "date": "2016-04-21",
-      "verify": true
+      "url": "https://ir.amd.com/news-events/press-releases/detail/683/amd-reports-2016-first-quarter-results",
+      "date": "2016-04-21"
     },
     {
       "fact": "THATIC China x86 server JV, ~$293M licensing up-front + royalties",
@@ -59,10 +57,9 @@
       "date": "2015-05-06"
     },
     {
-      "fact": "Incumbent's process-node cadence slip (10nm delay disclosed on Q2-2015 earnings call)",
+      "fact": "Incumbent's process-node cadence slip (10nm volume production pushed from late 2016 to H2-2017, disclosed on the Q2-2015 earnings call of 2015-07-15; Kaby Lake added as a third 14nm generation)",
       "url": "https://www.anandtech.com/show/9447/intel-10nm-and-kaby-lake",
-      "date": "2015-07-15",
-      "verify": true
+      "date": "2015-07-16"
     }
   ],
   "analyst_reports": [
@@ -132,5 +129,7 @@
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: 10-K filing date 2016-02-18 CONFIRMED via EDGAR; Q1-2016 PR date 2016-04-21 CONFIRMED, URL pinned to the actual ir.amd.com release (detail/683); Intel 10nm-delay source date corrected 2015-07-15 -> 2015-07-16 (AnandTech publication date; the earnings call itself was 07-15). All facts matched real figures (FY2015 rev $3,991M/-27.5%, NL -$660M; Q1-2016 rev $832M/-19.2%, NL -$109M). verify flags cleared."}
+  ]
 }

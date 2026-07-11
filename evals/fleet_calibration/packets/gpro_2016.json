@@ -32,28 +32,24 @@
   },
   "sources": [
     {
-      "fact": "FY2015 revenue $1,620M (+16.2%), NI $36M; profitable every prior year",
-      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001500435&type=10-K",
-      "date": "2016-02-29",
-      "verify": true
+      "fact": "FY2015 revenue $1,620M (+16.2%), NI $36M; profitable every prior full year",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001500435&type=10-K&dateb=20170101&owner=include&count=10",
+      "date": "2016-02-29"
     },
     {
-      "fact": "Q1-2016 results: revenue $183.5M (-49.5% YoY), first quarterly loss as a public company, GM 32.5%, 7% workforce cut",
-      "url": "https://investor.gopro.com/press-releases",
-      "date": "2016-05-05",
-      "verify": true
+      "fact": "Q1-2016 results: revenue $183.5M (-49.5% YoY), GAAP net loss -$107.5M (second consecutive quarterly GAAP loss; Q4-2015's -$34.5M was the first), GM 32.5%; 7% workforce cut announced in January alongside the Q4 preannouncement",
+      "url": "https://investor.gopro.com/press-releases/press-release-details/2016/GoPro-Announces-First-Quarter-2016-Results/default.aspx",
+      "date": "2016-05-05"
     },
     {
-      "fact": "Flagship (HERO4 Session) priced too high, cut twice within months; channel inventory glut",
-      "url": "https://investor.gopro.com/press-releases",
-      "date": "2015-12-08",
-      "verify": true
+      "fact": "Flagship (HERO4 Session) priced too high ($399 at launch), cut to $299 in September then to $199 in December; channel inventory glut",
+      "url": "https://techcrunch.com/2015/12/04/gopro-further-muddles-its-product-line-with-hero4-session-price-drop/",
+      "date": "2015-12-04"
     },
     {
-      "fact": "First drone (Karma) targeted for later in the year into an entrenched competitive market",
-      "url": "https://investor.gopro.com/press-releases",
-      "date": "2016-05-05",
-      "verify": true
+      "fact": "First drone (Karma) delayed at the Q1 report; launch targeted for later in the year ('should now benefit from the holidays') into an entrenched competitive market",
+      "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+      "date": "2016-05-05"
     }
   ],
   "analyst_reports": [
@@ -96,7 +92,7 @@
         "revenue_growth_yoy_pct": -49.5,
         "gaap_net_income_usd_m": -91,
         "gross_margin_pct": 32.5,
-        "note": "first quarterly loss as a public company; channel inventory glut forced two price cuts on the flagship product; 7% workforce reduction announced"
+        "note": "second consecutive quarterly GAAP loss and by far the deepest (the first, much smaller one came in the prior holiday quarter); channel inventory glut forced two price cuts on the flagship product; 7% workforce reduction announced"
       },
       "valuation": {
         "ps_trailing": 0.75,
@@ -121,5 +117,7 @@
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: FY2015 10-K date 2016-02-29 CONFIRMED (EDGAR); Q1-2016 PR date 2016-05-05 CONFIRMED, URL pinned to the real IR release. FACTUAL FIX: 'first quarterly loss as a public company' was wrong — Q4-2015 already printed a GAAP net loss of -$34.5M (8-K exhibit, 2016-02-03); source fact and the fundamentals latest_quarter note reworded to 'second consecutive quarterly GAAP loss' (does not weaken the trap; the Q1 loss was ~3x deeper). HERO4 Session second price cut date corrected 2015-12-08 -> 2015-12-04 (TechCrunch/Fortune contemporaneous coverage), URL pinned. Karma-delay source CONFIRMED in the Q1-2016 earnings PR itself (Woodman quote), URL pinned to the SEC 8-K exhibit. verify flags cleared."}
+  ]
 }

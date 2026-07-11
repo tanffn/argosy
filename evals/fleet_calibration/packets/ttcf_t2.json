@@ -37,28 +37,24 @@
   },
   "sources": [
     {
-      "fact": "Q2-2021 results: revenue $50.7M (+45.9%), GM 15.7%, GAAP net loss -$53.3M incl ~$46M non-cash deferred-tax valuation allowance; first consensus miss; GM guide CUT to 16-22 from 20-25; adj-EBITDA guide flipped to loss",
-      "url": "https://www.globenewswire.com/",
-      "date": "2021-08-12",
-      "verify": true
+      "fact": "Q2-2021 results: revenue $50.7M (+45.9%), GM 15.7%, GAAP net loss -$53.2M incl a one-time non-cash $46.0M deferred-tax valuation allowance; first consensus miss; GM guide CUT to 16-22% from the 20-25% guided at Q1 (2021-05-12 PR); adj-EBITDA guide flipped to negative $14-17M from positive $2-4M",
+      "url": "https://www.globenewswire.com/news-release/2021/08/12/2280137/0/en/Tattooed-Chef-Reports-Second-Quarter-2021-Financial-Results.html",
+      "date": "2021-08-12"
     },
     {
-      "fact": "National mass-retail distribution wins (two largest mass retailers + drug chain)",
-      "url": "https://www.globenewswire.com/",
-      "date": "2021-07-15",
-      "verify": true
+      "fact": "National retail distribution wins: nationwide launch at a top mass retailer (Target, six products, PR 2021-03-10) and ~1,800 stores at the largest US grocer (Kroger, 12 SKUs, PR 2021-07-12)",
+      "url": "https://www.globenewswire.com/news-release/2021/07/12/2261160/0/en/Tattooed-Chef-to-Launch-in-Kroger-Stores-Nationwide.html",
+      "date": "2021-07-12"
     },
     {
-      "fact": "Cash acquisitions of food/tortilla plants (~$37M total real) for capacity + southwestern line",
-      "url": "https://www.globenewswire.com/",
-      "date": "2021-05-17",
-      "verify": true
+      "fact": "Cash acquisitions of food/tortilla plants (New Mexico Food Distributors + Karsten Tortilla Factory, ~$37M total real) for capacity + southwestern line; BOTH closed 2021-05-14, completion PR 2021-05-18",
+      "url": "https://www.globenewswire.com/news-release/2021/05/18/2231349/0/en/Tattooed-Chef-Completes-Acquisition-of-New-Mexico-Food-Distributors-Inc-and-Karsten-Tortilla-Factory-LLC-Reclassifies-Certain-Expenses.html",
+      "date": "2021-05-18"
     },
     {
-      "fact": "FY2020 final: revenue $148.5M (+75%), GM 14.6% after reclassifications",
-      "url": "https://www.sec.gov/",
-      "date": "2021-03-19",
-      "verify": true
+      "fact": "FY2020 final: revenue $148.5M (+75%), GM 14.6% after reclassifications (reclass detailed in the 2021-05-18 PR)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm",
+      "date": "2021-03-19"
     }
   ],
   "analyst_reports": [
@@ -118,7 +114,7 @@
       "report_name": "news/PVF",
       "business_description": "Plant-forward frozen-food brand (see prior coverage): family-founded, vertically integrated, converting warehouse-club private-label volume into a branded mass-retail rollout. The entry thesis was: category tailwind + 75% growth + brand conversion + cheap-ish vs the category leader, with milestones of (a) branded distribution expansion beyond the club channel, (b) gross-margin expansion toward 20%+ as brand mix rises, (c) reduced customer concentration.",
       "recent_developments": [
-        "Mass-retail door expansion IS happening: the brand landed national placements at two of the largest mass retailers (thousands of new stores) plus a drug-store chain.",
+        "Mass-retail door expansion IS happening: the brand landed a nationwide launch at one of the largest mass-market retailers plus ~1,800 stores of the largest grocery chain, and management says branded products will be in over 12,000 retail stores by the end of next quarter.",
         "But the P&L is moving AWAY from the thesis: gross margin guidance cut hard (freight, storage, input costs), full-year EBITDA flipped from positive to a sizable loss, and management concedes marketing spend to win the new shelf space will run heavy 'for several quarters'.",
         "Customer concentration has NOT improved yet (top-2 still ~71%), and much of the club volume remains rotational.",
         "Two capacity acquisitions (cash) diversify into southwestern/tortilla products — some analysts question the strategic focus of buying low-margin co-packing plants during a brand build-out.",
@@ -128,5 +124,9 @@
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: Q2-2021 PR date 2021-08-12 CONFIRMED, URL pinned; net loss corrected -$53.3M -> -$53.2M; prior-guidance baselines VERIFIED against the Q1-2021 PR of 2021-05-12 (GM 20-25%, adj-EBITDA +$2-4M) so the cut/flip framing stands with sources."},
+    {"date": "2026-07-11", "fix": "ACQUISITIONS VERIFIED: both New Mexico Food Distributors AND Karsten Tortilla Factory closed 2021-05-14 for ~$37.0M cash total (completion PR 2021-05-18) — well before the 2021-08-16 freeze; packet 'two acquisitions ~$37M' text stands; source date corrected 2021-05-17 -> 2021-05-18 and URL pinned."},
+    {"date": "2026-07-11", "fix": "FACTUAL FIX: distribution wins were NOT 'two largest mass retailers + drug chain' — pre-freeze reality was Target nationwide (PR 2021-03-10) + Kroger ~1,800 stores (PR 2021-07-12); no Walmart deal and no drug-store chain existed before the freeze (Walmart expansion came a year later). Source fact and news bullet rewritten accordingly (12,000-store quarter-end target from the Q2 PR added, so the expansion story is not weakened). FY2020 10-K date 2021-03-19 CONFIRMED (EDGAR), URL pinned. verify flags cleared."}
+  ]
 }
