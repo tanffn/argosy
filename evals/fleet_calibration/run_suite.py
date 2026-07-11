@@ -55,11 +55,16 @@ USER_CONSTRAINTS = (
     "are audited)."
 )
 
-# v77 exit-discipline rule VERBATIM (scripts/apply_no_price_exit_rule.py);
-# attached when the fixture sets constraints_extra == "exit_rule".
+# v77 exit-discipline rule (scripts/apply_no_price_exit_rule.py), with ONE
+# benchmark-required change: the scar sentence is GENERICIZED (production text
+# names PLTR + its $8->$16->10x path — that ticker/outcome is itself a case
+# under test here, so quoting it verbatim would leak an answer into the prompt
+# and false-flag the contamination audit). Semantics preserved.
+# Attached when the fixture sets constraints_extra == "exit_rule".
 EXIT_RULE = (
-    "\n\nEXIT DISCIPLINE (client directive 2026-07-10 — the PLTR lesson: "
-    "held at $8, sold at $16 on price, missed the 10x+): PRICE APPRECIATION "
+    "\n\nEXIT DISCIPLINE (client directive — the client's scar: a prior "
+    "high-potential position was held through its trough, then sold purely "
+    "on price after it doubled, missing the subsequent 10x+): PRICE APPRECIATION "
     "ALONE IS NEVER AN EXIT TRIGGER in this sleeve, in either lane. A "
     "position doubling triggers a thesis RE-DERIVATION (did a milestone "
     "land? has the cap-math ceiling moved?), never an automatic trim. The "
@@ -141,18 +146,25 @@ def packet_year_audit(packet: dict) -> list[str]:
 
 
 def output_audit(packet: dict, response_text: str) -> dict:
-    """Contamination check on the fleet's output."""
+    """Contamination check on the fleet's output.
+
+    Terms that appear in the PROMPT we sent (packet text, positions,
+    constraints) are prompt echoes, not training-data leakage — excluded.
+    """
+    prompt_text = (
+        json.dumps(packet.get("analyst_reports", []), ensure_ascii=False)
+        + " " + (packet.get("positions") or "")
+        + " " + build_constraints(packet)
+    )
     hits: list[str] = []
     for term in packet.get("contamination_terms", []):
-        if re.search(r"(?i)\b" + re.escape(term) + r"\b", response_text):
+        pat = r"(?i)\b" + re.escape(term) + r"\b"
+        if re.search(pat, response_text) and not re.search(pat, prompt_text):
             hits.append(term)
     suspects: list[str] = []
-    packet_text = json.dumps(packet.get("analyst_reports", []), ensure_ascii=False)
     for term in GLOBAL_SUSPECT_TERMS:
-        pat = re.escape(term.strip())
-        if re.search(r"(?i)\b" + pat + r"\b", response_text) and not re.search(
-            r"(?i)\b" + pat + r"\b", packet_text
-        ):
+        pat = r"(?i)\b" + re.escape(term.strip()) + r"\b"
+        if re.search(pat, response_text) and not re.search(pat, prompt_text):
             suspects.append(term.strip())
     years = sorted({m.group(0) for m in YEAR_RE.finditer(response_text)})
     return {

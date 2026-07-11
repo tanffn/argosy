@@ -1,0 +1,181 @@
+{
+  "case_id": "nvda_2023_f2",
+  "alias": "HLC",
+  "category": "A",
+  "grading": "F2_strict",
+  "real": "NVDA @ 2023-06-01 (~$38 split-adj); F2 per spec appendix (immediately after the Q1-FY24 confirming print and shock ~$11.0B guide, inside the early parabola). Financials k=0.23, price factor 3.475 (HLC packet convention).",
+  "freeze_date": "2023-06-01",
+  "rescale_factor": 0.23,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in HLC. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 14,
+  "contamination_terms": [
+    "Nvidia",
+    "NVDA",
+    "Jensen",
+    "Huang",
+    "CUDA",
+    "GeForce",
+    "Hopper",
+    "H100",
+    "A100",
+    "ChatGPT",
+    "OpenAI",
+    "Microsoft",
+    "Mellanox",
+    "DGX",
+    "Ampere"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 39.69,
+    "price_at_horizon_real": 137.19,
+    "horizon_label": "2y (2025-06-01; priced 2025-06-02, first trading day)",
+    "benchmark_return_pct": 246,
+    "note": "yfinance adjusted closes, fetched 2026-07-11"
+  },
+  "sources": [
+    {
+      "fact": "Q1-FY24 print: revenue $7,192M (-13% YoY, +19% QoQ); RECORD Data Center $4,284M (+14% YoY, +18% QoQ); Gaming $2,240M (-38% YoY, +22% QoQ); GAAP GM 64.6%; GAAP net income $2,043M (+26% YoY); Q2-FY24 outlook $11.00B +/-2% with GAAP/non-GAAP GM 68.6%/70.0% +/-50bp and GAAP opex ~$2.71B; balance sheet: cash+marketable securities $15,320M, short-term debt $1,250M + long-term debt $9,704M = $10,954M total; Huang: flagship datacenter platform 'in production... significantly increasing our supply to meet surging demand'",
+      "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581023000087/q1fy24pr.htm",
+      "date": "2023-05-24"
+    },
+    {
+      "fact": "Q2-FY24 revenue guide of $11.00B vs Refinitiv analyst consensus of $7.15B (~54% above consensus)",
+      "url": "https://www.cnbc.com/2023/05/24/nvidia-nvda-earnings-report-q1-2024.html",
+      "date": "2023-05-24",
+      "verify": true
+    },
+    {
+      "fact": "Shares surged ~24% to a record close the day after the print, putting NVDA within reach of a $1 trillion valuation; JPMorgan doubled its price target",
+      "url": "https://www.cnbc.com/2023/05/25/nvidia-on-track-for-record-high-driven-by-ai-chip-demand.html",
+      "date": "2023-05-25"
+    },
+    {
+      "fact": "NVDA crossed $1 trillion market value intraday (sixth company ever), before closing just below; stock up ~170% year-to-date",
+      "url": "https://www.forbes.com/sites/dereksaul/2023/05/30/nvidia-hits-1-trillion-market-value/",
+      "date": "2023-05-30"
+    },
+    {
+      "fact": "Q4/FY23 print: FY2023 revenue $26,974M (~flat YoY), GAAP GM 56.9%, GAAP net income $4,368M; Q4-FY23 revenue $6,051M; Q1-FY23 revenue $8,288M / net income $1,618M (YoY bases for the Q1-FY24 comparisons)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581023000014/q4fy23pr.htm",
+      "date": "2023-02-22"
+    },
+    {
+      "fact": "FY2022 10-K: FY2022 revenue $26,914M (+61.4%), GM 64.9%, net income $9,752M; FY2021 revenue $16,675M (+52.7%), GM 62.3%, net income $4,332M",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001045810&type=10-K&dateb=&owner=include&count=10",
+      "date": "2022-03-18"
+    },
+    {
+      "fact": "ChatGPT est. 100M monthly active users in January, two months after launch — fastest-growing consumer application in history (UBS note via Reuters)",
+      "url": "https://finance.yahoo.com/news/chatgpt-sets-record-fastest-growing-190911828.html",
+      "date": "2023-02-01"
+    },
+    {
+      "fact": "NVIDIA US license requirement restricting A100/H100 exports to China (~10% of Data Center revenue exposure); compliant variants shipping",
+      "url": "https://www.reuters.com/technology/nvidia-says-us-has-imposed-new-license-requirement-future-exports-china-2022-08-31/",
+      "date": "2022-08-31"
+    },
+    {
+      "fact": "Microsoft developing in-house AI chip ('Athena') — hyperscaler custom-silicon efforts contemporaneously reported (Google TPU v4 details published 2023-04 as well)",
+      "url": "https://www.reuters.com/technology/microsoft-readies-ai-chip-information-2023-04-18/",
+      "date": "2023-04-18"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/HLC",
+      "company": "Helios Compute (alias HLC)",
+      "as_of": "current",
+      "market_cap_usd_m": 227000,
+      "share_price_usd": 137.9,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 3524,
+        "total_debt_usd_m": 2519,
+        "note": "net cash; investment-grade"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 3830,
+          "revenue_growth_pct": 52.7,
+          "gross_margin_pct": 62.3,
+          "net_income_usd_m": 998
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 6190,
+          "revenue_growth_pct": 61.4,
+          "gross_margin_pct": 64.9,
+          "net_income_usd_m": 2243
+        },
+        {
+          "fy": "FY-1 (latest full year, ended ~4 months ago)",
+          "revenue_usd_m": 6204,
+          "revenue_growth_pct": 0.2,
+          "gross_margin_pct": 56.9,
+          "net_income_usd_m": 1005,
+          "note": "flat year: consumer/gaming bust offset datacenter growth; GM depressed by inventory write-downs"
+        }
+      ],
+      "trailing_twelve_months": {
+        "revenue_usd_m": 5952,
+        "gaap_net_income_usd_m": 1102,
+        "note": "trough TTM: spans the consumer downturn"
+      },
+      "latest_quarter": {
+        "which": "Q0, reported ~1 week ago",
+        "revenue_usd_m": 1654,
+        "revenue_growth_yoy_pct": -13,
+        "revenue_growth_qoq_pct": 19,
+        "gaap_net_income_usd_m": 470,
+        "net_income_growth_yoy_pct": 26,
+        "gross_margin_pct": 64.6,
+        "segment_detail": {
+          "consumer_gaming_usd_m": 515,
+          "consumer_gaming_yoy_pct": -38,
+          "consumer_gaming_qoq_pct": 22,
+          "datacenter_usd_m": 985,
+          "datacenter_yoy_pct": 14,
+          "datacenter_qoq_pct": 18,
+          "note": "datacenter is a RECORD and now ~60% of revenue; consumer stabilizing off the bottom as channel inventory normalizes"
+        }
+      },
+      "guidance": {
+        "next_quarter_revenue_usd_m": "~2530, plus or minus 2% (~+64% YoY, ~+53% QoQ; sell-side consensus stood near ~1650 — a guide ~50% ABOVE consensus, among the largest guidance beats ever recorded for a company this size)",
+        "gross_margin_guide_pct": "68.6 GAAP / 70.0 non-GAAP, up ~4-6 pts, implying datacenter mix shift plus real pricing power",
+        "note": "management: next-generation datacenter accelerator in full production, 'significantly increasing our supply to meet surging demand'; commentary cites demand visibility extending the next several quarters and substantially higher supply procured for the second half"
+      },
+      "valuation": {
+        "pe_trailing": 206,
+        "ps_trailing": 38,
+        "pe_if_guide_annualizes": "~48x non-GAAP / ~58x GAAP if the shock guide merely annualizes at guided margins",
+        "pe_forward_pre_revision": "~60x on sell-side forward estimates as they stood BEFORE the print (estimates are being rewritten upward this week)",
+        "price_action": "+170% year-to-date; jumped ~25% in a single session on the Q0 print to an all-time high; market cap now flirting with the trillion-dollar mark — a level only a handful of companies have ever reached",
+        "peer_context": "diversified semiconductor peers trade at 15-25x trailing earnings; the premium is only justified if the guide is a new baseline rather than a spike"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/HLC",
+      "business_description": "Founder-led (30 years, same CEO) fabless designer of parallel-compute accelerators. ~80%+ share of the discrete consumer-graphics market and the de-facto standard in datacenter AI/HPC accelerators. Its real moat is a 15-year proprietary software ecosystem — the developer toolchain virtually all machine-learning frameworks target first — which makes its silicon the path of least resistance for any organization doing AI. 10-year revenue CAGR ~21% with two prior boom-bust cycles around consumer/crypto demand.",
+      "recent_developments": [
+        "The Q0 print one week ago was a thunderclap: record datacenter revenue and a next-quarter revenue guide ~50% above sell-side consensus. Management attributes it to a broad-based race by cloud providers and enterprises to stand up infrastructure for a new compute-intensive workload class — training and serving large generative-AI models — and says it has procured substantially higher supply for the second half, with demand visibility extending the next several quarters.",
+        "The consumer generative-AI chatbot that ignited the demand wave (~6 months ago; the fastest-adopted consumer application ever recorded, an estimated 100M monthly users within two months of launch) keeps growing, and every major cloud vendor now sells hosted access to large-model compute. This company's accelerators plus its 15-year proprietary software toolchain remain the default platform for both training and inference.",
+        "The re-rating has already been violent: the stock is +170% year-to-date and jumped ~25% in one session on the print. Skeptics note the company has twice before ridden a demand boom (a consumer upgrade cycle, then crypto-mining demand) to peak multiples that collapsed 50%+ once demand normalized — and argue one quarter of orders could reflect a one-time scramble / channel restock rather than a durable multi-year capex cycle.",
+        "Export controls bar its top accelerators from one major country (~10% of datacenter revenue exposure); compliant modified variants are shipping, but a further tightening of the rules is a live, openly discussed regulatory risk.",
+        "Its largest hyperscaler customers are all developing in-house custom AI silicon; those chips today serve internal niches while this company's ecosystem lock-in holds, but customer-turned-competitor risk is rising and a handful of hyperscalers now drive a large share of datacenter orders.",
+        "The ~70% gross-margin guide implies extraordinary pricing power on the new datacenter flagship; rival merchant-silicon accelerators have so far failed to dent its share, and a well-funded startup field is targeting the inference market with claims of better economics."
+      ],
+      "macro_context": "Rates have plateaued at cycle highs; the broader semiconductor industry is still in an inventory correction with PC and handset demand weak; equity-market leadership is unusually narrow — a handful of mega-cap technology names, this one now included, account for most of the index's year-to-date gain.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
