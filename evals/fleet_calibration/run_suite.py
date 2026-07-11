@@ -227,6 +227,15 @@ async def run_point(packet: dict) -> dict:
         "cited_sources": out.get("cited_sources"),
         "tokens_in": report.tokens_in,
         "tokens_out": report.tokens_out,
+        # Full replay trail for an INDEPENDENT auditor (owner requirement
+        # 2026-07-11): the exact constraints string the trader received and
+        # the complete raw model output — so a checker agent can verify the
+        # reasoning used only packet facts (no real names, no post-freeze
+        # knowledge) without trusting the summary. The packet itself is the
+        # committed fixture; together these three reproduce the whole call.
+        "constraints_rendered": build_constraints(packet),
+        "response_raw": report.response_text,
+        "output_full": out,
     }
 
 
