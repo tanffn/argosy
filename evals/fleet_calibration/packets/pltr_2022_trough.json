@@ -1,0 +1,158 @@
+{
+  "case_id": "pltr_2022_trough",
+  "alias": "MDS",
+  "category": "D",
+  "grading": "hold_drawdown",
+  "real": "PLTR @ 2022-12-20 (~$6.4); the client-scar test",
+  "freeze_date": "2022-12-20",
+  "rescale_factor": 3.0,
+  "synthetic": false,
+  "expected_classes": [
+    "hold",
+    "buy"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS MDS from an earlier entry at $73.25/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $18.90 -> unrealized P&L -74%. Entered ~6 quarters ago. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 12,
+  "contamination_terms": [
+    "Palantir",
+    "PLTR",
+    "Karp",
+    "Thiel",
+    "AIP",
+    "Gotham",
+    "Foundry",
+    "Apollo",
+    "Denver",
+    "in-Q-Tel",
+    "Shyam Sankar",
+    "Artificial Intelligence Platform"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 6.31,
+    "price_at_horizon_real": 80.55,
+    "horizon_label": "2y (2024-12-20)",
+    "benchmark_return_pct": 1177,
+    "note": "yfinance adjusted closes, fetched 2026-07-11; entry basis real ~$24.4 (2021-06-15 adjusted close) x3.0 = $73.25"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2022 results (reported 2022-11-07): revenue $477.9M (+22% YoY); US gov revenue +23% YoY, US commercial revenue +53% YoY; TTM government revenue $1.02B (+20% YoY), first time over $1B; loss from operations -$62.2M (-13% margin, +1,000bps YoY); GAAP net loss -$123.9M; adjusted income from operations $81.3M (17% margin); adjusted FCF +$36.6M — 8th consecutive positive-AFCF quarter, TTM AFCF $231M; cash & equivalents $2,411M, no debt; FY2022 revenue guidance reaffirmed $1,900-1,902M (+~24%) despite FX headwind; Q4 revenue guided $503-505M; FY adjusted income from operations RAISED to $384-386M",
+      "url": "https://www.sec.gov/Archives/edgar/data/1321655/000132165522000029/a2022q3ex991pressrelease.htm",
+      "date": "2022-11-07",
+      "verify": true
+    },
+    {
+      "fact": "FY2021 (latest full year at freeze): revenue $1,541.9M (+41%); government revenue $897M (+47%); gross margin 78%; loss from operations -$411.0M; net loss -$520.4M; adjusted FCF +$424.1M (28% margin) — first adjusted-FCF-positive full year; SBC $778.2M (~50% of revenue)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1321655/000119312522044821/d317188dex991.htm",
+      "date": "2022-02-17",
+      "verify": true
+    },
+    {
+      "fact": "FY2020: revenue $1,092.7M (+47%); GAAP net loss -$1,166M (direct-listing year, large one-off SBC). FY2019: revenue $742.6M (+25%), net loss -$580M",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001321655&type=8-K&dateb=20210301&owner=include&count=10",
+      "date": "2021-02-16",
+      "verify": true
+    },
+    {
+      "fact": "Entry-era print (Q2-2021, reported 2021-08-12): revenue +49% YoY; government-moat + commercial-expansion + path-to-profitability thesis era",
+      "url": "https://www.sec.gov/Archives/edgar/data/1321655/000119312521250350/",
+      "date": "2021-08-12",
+      "verify": true
+    },
+    {
+      "fact": "Q3-2022 10-Q: SBC falling in absolute terms YoY ($435M 9M-2022 vs $611M 9M-2021); $192.8M net unrealized + $67.9M realized 9M losses on the speculative-company investment portfolio ($18.0M unrealized + $41.3M realized in Q3)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1321655/000132165522000032/pltr-20220930.htm",
+      "date": "2022-11-08",
+      "verify": true
+    },
+    {
+      "fact": "~$450M invested since 2021 in ~two dozen ex-blank-check startups that promised to buy the company's software; portfolio down ~75% (~$333M realized+unrealized losses) by end of Q3-2022; program discontinued",
+      "url": "https://www.bloomberg.com/opinion/articles/2022-11-29/palantir-failed-to-spot-pattern-in-spac-debacle",
+      "date": "2022-11-29"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/MDS",
+      "company": "Meridian Data Systems (alias MDS)",
+      "as_of": "current",
+      "market_cap_usd_m": 39400,
+      "share_price_usd": 18.9,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 7234,
+        "marketable_securities_usd_m": 172,
+        "total_debt_usd_m": 0,
+        "note": "large net-cash position, no debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 2228,
+          "revenue_growth_pct": 25.0,
+          "net_income_usd_m": -1740
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 3278,
+          "revenue_growth_pct": 47.0,
+          "net_income_usd_m": -3499,
+          "note": "public-listing year; enormous one-off stock-based compensation"
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 4626,
+          "revenue_growth_pct": 41.1,
+          "gross_margin_pct": 78.0,
+          "operating_income_usd_m": -1233,
+          "net_income_usd_m": -1561,
+          "adjusted_free_cash_flow_usd_m": 1272,
+          "stock_based_comp_usd_m": 2335,
+          "note": "first adjusted-FCF-positive full year (28% margin); SBC ~50% of revenue that year, falling in absolute terms since"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q3 of the current FY, reported ~6 weeks ago",
+        "revenue_usd_m": 1434,
+        "revenue_growth_yoy_pct": 22.0,
+        "gaap_operating_income_usd_m": -187,
+        "gaap_net_loss_usd_m": -372,
+        "adjusted_operating_income_usd_m": 244,
+        "adjusted_free_cash_flow_usd_m": 110,
+        "net_loss_note": "the GAAP net loss includes ~178 of realized+unrealized NON-OPERATING losses on a speculative investment portfolio (see news); operating-loss margin -13%, improved ~1,000bps YoY",
+        "note": "8th consecutive quarter of positive adjusted FCF (TTM ~693); revenue beat consensus"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "5700-5706 reaffirmed (+~24%) despite a currency headwind",
+        "q4_revenue_usd_m": "1509-1515 (+~16-17% YoY)",
+        "fy_adjusted_operating_income_usd_m": "RAISED to 1152-1158",
+        "note": "no GAAP-profitability commitment yet; adjusted profitability improving each quarter"
+      },
+      "valuation": {
+        "ps_trailing": 7.2,
+        "ev_s_trailing": 5.8,
+        "pe_trailing": null,
+        "price_action": "-~84% from its all-time high ~23 months ago; -74% vs the sleeve's entry ~6 quarters ago; the whole high-multiple software cohort is down 60-80% amid the fastest rate-tightening cycle in decades"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/MDS",
+      "business_description": "Twenty-year-old data-integration and analytics software vendor (see prior coverage): ~55% of revenue from government / defense / intelligence agencies on multi-year contracts with very high switching costs and security-accreditation moats; the rest is commercial enterprise, sold top-down, expanding within accounts over years. Founder-led, dual-class shares. The sleeve's ENTRY THESIS was: government-software moat + US commercial expansion off a small base + a credible path to GAAP profitability as growth scales past heavy fixed costs — with falsifiers of (a) government revenue growth stalling, (b) free cash flow failing to turn (and stay) positive, (c) unbounded dilution from stock compensation.",
+      "recent_developments": [
+        "Government business is still growing: trailing-twelve-month government revenue crossed the ~3,060 mark for the first time (+20% YoY), US government +23% in the latest quarter, and defense/intelligence budgets in its home market are rising. Entry falsifier (a) has NOT fired.",
+        "Cash generation has turned: 8th consecutive quarter of positive adjusted free cash flow (TTM ~693) on top of a large net-cash, debt-free balance sheet; GAAP operating-loss margin improved ~10pts YoY and management RAISED the full-year adjusted-operating-income guide. Entry falsifier (b) has NOT fired — though GAAP profitability itself remains unreached.",
+        "Dilution continues but is decelerating: stock comp is ~33% of trailing revenue, falling in absolute terms YoY; share count is up ~35% since the public listing. Entry falsifier (c) is bent, not fired.",
+        "Bear: growth has decelerated for seven straight quarters (~49% -> 22% YoY) and the Q4 guide implies ~16-17%; international commercial revenue is shrinking; US commercial customer adds (+124% YoY) have not yet converted into large revenue.",
+        "Bear: ~1,350 invested in ~two dozen small speculative newly-listed companies that promised to buy its software is down ~75% (~1,000 of cumulative losses); the program is discontinued, some of that customer cohort's revenue is at risk, and the association drags the stock into the collapsed speculative-listing cohort in investors' minds.",
+        "Bear: at ~7x trailing sales the stock is still not cheap versus beaten-down peers, and the market currently pays only for GAAP-profitable growth — which this company has never delivered."
+      ],
+      "macro_context": "The fastest central-bank tightening cycle in decades is still under way; long-duration/unprofitable software is down 60-80% from highs; recession fears dominate positioning into the new year; tax-loss selling season is pressuring the year's biggest losers.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
