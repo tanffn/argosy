@@ -1,0 +1,41 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 6,
+  "tokens_out": 6504,
+  "response_raw": "{\"category\": \"A\", \"grading\": \"entry\", \"freeze_date\": \"2023-08-01\", \"classification_rationale\": \"Genuine historical freeze point (real ticker CVNA, real SEC/IR filings), so not 'synthetic'. The case_id 'cvna_2023_reentry' and the packet describe a fallen-angel/distressed name at a turnaround inflection: Q2-2023 posted first-ever record total GPU ($6,520, +94% YoY) and record positive Adjusted EBITDA (+$155M) alongside a debt-restructuring support agreement that cuts near-term maturities, cash interest, and total debt — but with still-negative GAAP net income (-$105M), declining volumes/revenue (units -35%, revenue -24% YoY), thin cash ($677M) and heavy leverage. That structure is a two-sided NEW/RE-ENTRY decision (bull turnaround thesis vs. falling-knife/leverage-trap risk), not an exit, hold-through-drawdown, or thesis re-derivation of an existing position — hence Category A, grading 'entry'. Classification chosen on setup structure only; the eventual post-freeze price path was not used. Packet left un-sanitized (both the record-metrics bull case and the loss/leverage/coercive-exchange bear case retained). All four manifest sources are primary (SEC EDGAR + Carvana investor relations), published 2023-07-19, which is <= the 2023-08-01 freeze date, so no source postdates the freeze. Confidence held at MEDIUM: I could not independently re-fetch the live pages, and the load-bearing freeze-date market price/valuation for an entry decision is absent from the manifest.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"Q2-2023: retail units sold 76,530 (-35% YoY); total revenue $2.968B (-24% YoY); total GPU $6,520 (+94% YoY, company record); Adjusted EBITDA +$155M (company record positive); GAAP net loss -$105M.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1690820/000169082023000218/ex99_1q22023.htm\", \"publication_date\": \"2023-07-19\"}, {\"fact\": \"Transaction support agreement with holders of >90% of senior unsecured notes: eliminates >83% of 2025/2027 unsecured note maturities, reduces cash interest expense by >$430M/yr for two years, and cuts total debt by >$1.2B; new notes secured by operating and auction-network assets.\", \"url\": \"https://investors.carvana.com/news-releases/2023/07-19-2023-113111747\", \"publication_date\": \"2023-07-19\"}, {\"fact\": \"Cash, cash equivalents and restricted cash of $677M as of 2023-06-30.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1690820/000169082023000219/cvna-20230630.htm\", \"publication_date\": \"2023-07-19\"}, {\"fact\": \"Management guides to another quarter of positive Adjusted EBITDA and frames the strategy as profitability-first, then return-to-growth.\", \"url\": \"https://investors.carvana.com/news-releases/2023/07-19-2023-113026425\", \"publication_date\": \"2023-07-19\"}]}",
+  "output": {
+    "category": "A",
+    "grading": "entry",
+    "freeze_date": "2023-08-01",
+    "classification_rationale": "Genuine historical freeze point (real ticker CVNA, real SEC/IR filings), so not 'synthetic'. The case_id 'cvna_2023_reentry' and the packet describe a fallen-angel/distressed name at a turnaround inflection: Q2-2023 posted first-ever record total GPU ($6,520, +94% YoY) and record positive Adjusted EBITDA (+$155M) alongside a debt-restructuring support agreement that cuts near-term maturities, cash interest, and total debt — but with still-negative GAAP net income (-$105M), declining volumes/revenue (units -35%, revenue -24% YoY), thin cash ($677M) and heavy leverage. That structure is a two-sided NEW/RE-ENTRY decision (bull turnaround thesis vs. falling-knife/leverage-trap risk), not an exit, hold-through-drawdown, or thesis re-derivation of an existing position — hence Category A, grading 'entry'. Classification chosen on setup structure only; the eventual post-freeze price path was not used. Packet left un-sanitized (both the record-metrics bull case and the loss/leverage/coercive-exchange bear case retained). All four manifest sources are primary (SEC EDGAR + Carvana investor relations), published 2023-07-19, which is <= the 2023-08-01 freeze date, so no source postdates the freeze. Confidence held at MEDIUM: I could not independently re-fetch the live pages, and the load-bearing freeze-date market price/valuation for an entry decision is absent from the manifest.",
+    "sourced_facts": [
+      {
+        "fact": "Q2-2023: retail units sold 76,530 (-35% YoY); total revenue $2.968B (-24% YoY); total GPU $6,520 (+94% YoY, company record); Adjusted EBITDA +$155M (company record positive); GAAP net loss -$105M.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1690820/000169082023000218/ex99_1q22023.htm",
+        "publication_date": "2023-07-19"
+      },
+      {
+        "fact": "Transaction support agreement with holders of >90% of senior unsecured notes: eliminates >83% of 2025/2027 unsecured note maturities, reduces cash interest expense by >$430M/yr for two years, and cuts total debt by >$1.2B; new notes secured by operating and auction-network assets.",
+        "url": "https://investors.carvana.com/news-releases/2023/07-19-2023-113111747",
+        "publication_date": "2023-07-19"
+      },
+      {
+        "fact": "Cash, cash equivalents and restricted cash of $677M as of 2023-06-30.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1690820/000169082023000219/cvna-20230630.htm",
+        "publication_date": "2023-07-19"
+      },
+      {
+        "fact": "Management guides to another quarter of positive Adjusted EBITDA and frames the strategy as profitability-first, then return-to-growth.",
+        "url": "https://investors.carvana.com/news-releases/2023/07-19-2023-113026425",
+        "publication_date": "2023-07-19"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 8,
+  "tokens_out": 6617,
+  "response_raw": "{\"category\": \"A\", \"grading\": \"F1_lenient\", \"freeze_date\": \"2016-02-29\", \"classification_rationale\": \"Real (non-synthetic) single-name entry decision at a clean freeze point → Category A. At 2016-02-29 the packet is a genuine contested turnaround: the bear case (FY2015 revenue $3,991M −27.5% YoY, −$660M net loss, −$412M stockholders' equity deficit, $785M liquidity against $2.26B debt and $160M interest expense) and the bull catalyst (clean-sheet Zen +40% IPC + SMT roadmap from the 2015-05-06 Financial Analyst Day; incumbent process-node cadence slip disclosed mid-2015) are BOTH fully disclosed by primary sources before the freeze. That makes it a well-posed, resolvable entry case rather than a value trap (B), a hold-through-drawdown (C), or a constructed scenario (synthetic). Grading = F1_lenient (matches case_id 'amd_2016_f1'): the test is the directional entry thesis on a multi-year turnaround, not precise entry price/date, so timing is graded leniently. Freeze date 2016-02-29 chosen because it is the first clean point after the FY2015 10-K (2016-02-18) with the full financial-distress-vs-catalyst evidence set on the table and no source postdating it. Classification and freeze point were selected without reference to the eventual outcome; latest source (2016-02-18) precedes the freeze.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"AMD FY2015 revenue $3,991M (-27.5% YoY), net loss -$660M; gross margin depressed by inventory write-downs; console semi-custom annuity at scale.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/2488/000000248816000047/amd-123115x10k.htm\", \"publication_date\": \"2016-02-18\"}, {\"fact\": \"FY2015 year-end: cash & cash equivalents + marketable securities $785M; total debt $2.26B; stockholders' equity deficit -$412M; FY2015 interest expense $160M.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/2488/000000248816000047/amd-123115x10k.htm\", \"publication_date\": \"2016-02-18\"}, {\"fact\": \"2015 Financial Analyst Day: clean-sheet Zen core roadmap claiming up to +40% IPC plus SMT; first competitive CPU attempt in a decade.\", \"url\": \"https://ir.amd.com/news-events/press-releases/detail/611/amd-outlines-sharpened-focus-at-2015-financial-analyst-day\", \"publication_date\": \"2015-05-06\"}, {\"fact\": \"Incumbent process-node cadence slip disclosed mid-2015 (next node volume pushed; an intermediate 14nm refresh added), signaling a competitor stumble ahead of Zen.\", \"url\": \"https://www.anandtech.com/show/9447/intel-10nm-and-kaby-lake\", \"publication_date\": \"2015-07-16\"}]}",
+  "output": {
+    "category": "A",
+    "grading": "F1_lenient",
+    "freeze_date": "2016-02-29",
+    "classification_rationale": "Real (non-synthetic) single-name entry decision at a clean freeze point → Category A. At 2016-02-29 the packet is a genuine contested turnaround: the bear case (FY2015 revenue $3,991M −27.5% YoY, −$660M net loss, −$412M stockholders' equity deficit, $785M liquidity against $2.26B debt and $160M interest expense) and the bull catalyst (clean-sheet Zen +40% IPC + SMT roadmap from the 2015-05-06 Financial Analyst Day; incumbent process-node cadence slip disclosed mid-2015) are BOTH fully disclosed by primary sources before the freeze. That makes it a well-posed, resolvable entry case rather than a value trap (B), a hold-through-drawdown (C), or a constructed scenario (synthetic). Grading = F1_lenient (matches case_id 'amd_2016_f1'): the test is the directional entry thesis on a multi-year turnaround, not precise entry price/date, so timing is graded leniently. Freeze date 2016-02-29 chosen because it is the first clean point after the FY2015 10-K (2016-02-18) with the full financial-distress-vs-catalyst evidence set on the table and no source postdating it. Classification and freeze point were selected without reference to the eventual outcome; latest source (2016-02-18) precedes the freeze.",
+    "sourced_facts": [
+      {
+        "fact": "AMD FY2015 revenue $3,991M (-27.5% YoY), net loss -$660M; gross margin depressed by inventory write-downs; console semi-custom annuity at scale.",
+        "url": "https://www.sec.gov/Archives/edgar/data/2488/000000248816000047/amd-123115x10k.htm",
+        "publication_date": "2016-02-18"
+      },
+      {
+        "fact": "FY2015 year-end: cash & cash equivalents + marketable securities $785M; total debt $2.26B; stockholders' equity deficit -$412M; FY2015 interest expense $160M.",
+        "url": "https://www.sec.gov/Archives/edgar/data/2488/000000248816000047/amd-123115x10k.htm",
+        "publication_date": "2016-02-18"
+      },
+      {
+        "fact": "2015 Financial Analyst Day: clean-sheet Zen core roadmap claiming up to +40% IPC plus SMT; first competitive CPU attempt in a decade.",
+        "url": "https://ir.amd.com/news-events/press-releases/detail/611/amd-outlines-sharpened-focus-at-2015-financial-analyst-day",
+        "publication_date": "2015-05-06"
+      },
+      {
+        "fact": "Incumbent process-node cadence slip disclosed mid-2015 (next node volume pushed; an intermediate 14nm refresh added), signaling a competitor stumble ahead of Zen.",
+        "url": "https://www.anandtech.com/show/9447/intel-10nm-and-kaby-lake",
+        "publication_date": "2015-07-16"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

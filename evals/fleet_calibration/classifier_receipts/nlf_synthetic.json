@@ -1,0 +1,20 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 4,
+  "tokens_out": 1366,
+  "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_winner\", \"freeze_date\": null, \"classification_rationale\": \"Case is explicitly synthetic: case_id 'nlf_synthetic', freeze_date null, empty source_manifest, and subject 'SYNTHETIC winner-shape (no real company) — obscure industrial-software niche'. No real issuer exists, so there is no historical calendar to anchor and no primary/market sources to gather; per the rules I do not fabricate any. Category=synthetic because it is a constructed case rather than a real-issuer freeze point (A/B/C/D). Grading=synthetic_winner because the subject specifies a 'winner-shape', not a trap. Freeze_date remains null since a synthetic packet has no real-world evidence stream to time-box, and no date may be invented. Outcome was not used to select category or grading; classification derives solely from the case metadata.\", \"confidence\": \"HIGH\", \"sourced_facts\": []}",
+  "output": {
+    "category": "synthetic",
+    "grading": "synthetic_winner",
+    "freeze_date": null,
+    "classification_rationale": "Case is explicitly synthetic: case_id 'nlf_synthetic', freeze_date null, empty source_manifest, and subject 'SYNTHETIC winner-shape (no real company) — obscure industrial-software niche'. No real issuer exists, so there is no historical calendar to anchor and no primary/market sources to gather; per the rules I do not fabricate any. Category=synthetic because it is a constructed case rather than a real-issuer freeze point (A/B/C/D). Grading=synthetic_winner because the subject specifies a 'winner-shape', not a trap. Freeze_date remains null since a synthetic packet has no real-world evidence stream to time-box, and no date may be invented. Outcome was not used to select category or grading; classification derives solely from the case metadata.",
+    "sourced_facts": [],
+    "confidence": "HIGH"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

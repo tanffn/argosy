@@ -1,0 +1,36 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 6,
+  "tokens_out": 7922,
+  "response_raw": "{\"category\": \"B\", \"grading\": \"trap\", \"freeze_date\": \"2021-11-15\", \"classification_rationale\": \"SmileDirectClub at the 2021-11-15 freeze is a real single-name equity (not synthetic) sitting at a genuine historical inflection: the 2021-11-08 Q3 print and guidance cut. Pre-freeze evidence describes a former high-growth IPO name whose thesis is actively breaking — revenue contracting 18.3% YoY to $137.7M, FY guide slashed to $630-650M from a prior $750-800M, Q4 guided $120-140M vs ~$202M street, marketing/selling ~70% of revenue funding widening losses (-$89M Q3, -$240M YTD), and management attributing the miss to demand-side macro pressure on its core demographic plus ad-attribution breakage. The post-earnings crash creates an optically cheap 'buy-the-dip' entry, but the fundamentals signal broken unit economics and structural demand erosion. This is the classic value-trap / falling-knife setup, so the correct grading key is 'trap' (avoid the tempting entry). Classification and freeze selection rely only on the contemporaneous 2021-11-08 disclosures, not on the eventual 2023 bankruptcy outcome or any retrospective post-mortem. The freeze date sits ~5 trading days after the earnings/guidance cut, giving the market time to digest the disclosed information while staying strictly pre-outcome.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"Q3-2021 total revenue $137.7M, down 18.3% YoY from $168.5M; net loss -$89M; marketing and selling ~$96M (~70% of revenue); initial aligner shipments ~70k, with the decline driven by lower aligner shipments amid negative macro factors on the core demographic.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1775625/000177562521000075/sdcearningsrelease-09302021.htm\", \"publication_date\": \"2021-11-08\"}, {\"fact\": \"FY2021 revenue guidance cut to $630-650M (from prior $750-800M); Q4-2021 guided to $120-140M versus consensus of ~$202M; management cited macro headwinds to the core demographic plus digital-ad attribution breakage.\", \"url\": \"https://www.globenewswire.com/news-release/2021/11/08/2329688/0/en/SmileDirectClub-Reports-Third-Quarter-2021-Financial-Results.html\", \"publication_date\": \"2021-11-08\"}, {\"fact\": \"YTD nine-month revenue ~$511M (+8.3%) masks sequential and YoY quarterly contraction; cumulative YTD net loss approximately -$240M.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1775625/000177562521000075/sdcearningsrelease-09302021.htm\", \"publication_date\": \"2021-11-08\"}]}",
+  "output": {
+    "category": "B",
+    "grading": "trap",
+    "freeze_date": "2021-11-15",
+    "classification_rationale": "SmileDirectClub at the 2021-11-15 freeze is a real single-name equity (not synthetic) sitting at a genuine historical inflection: the 2021-11-08 Q3 print and guidance cut. Pre-freeze evidence describes a former high-growth IPO name whose thesis is actively breaking — revenue contracting 18.3% YoY to $137.7M, FY guide slashed to $630-650M from a prior $750-800M, Q4 guided $120-140M vs ~$202M street, marketing/selling ~70% of revenue funding widening losses (-$89M Q3, -$240M YTD), and management attributing the miss to demand-side macro pressure on its core demographic plus ad-attribution breakage. The post-earnings crash creates an optically cheap 'buy-the-dip' entry, but the fundamentals signal broken unit economics and structural demand erosion. This is the classic value-trap / falling-knife setup, so the correct grading key is 'trap' (avoid the tempting entry). Classification and freeze selection rely only on the contemporaneous 2021-11-08 disclosures, not on the eventual 2023 bankruptcy outcome or any retrospective post-mortem. The freeze date sits ~5 trading days after the earnings/guidance cut, giving the market time to digest the disclosed information while staying strictly pre-outcome.",
+    "sourced_facts": [
+      {
+        "fact": "Q3-2021 total revenue $137.7M, down 18.3% YoY from $168.5M; net loss -$89M; marketing and selling ~$96M (~70% of revenue); initial aligner shipments ~70k, with the decline driven by lower aligner shipments amid negative macro factors on the core demographic.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1775625/000177562521000075/sdcearningsrelease-09302021.htm",
+        "publication_date": "2021-11-08"
+      },
+      {
+        "fact": "FY2021 revenue guidance cut to $630-650M (from prior $750-800M); Q4-2021 guided to $120-140M versus consensus of ~$202M; management cited macro headwinds to the core demographic plus digital-ad attribution breakage.",
+        "url": "https://www.globenewswire.com/news-release/2021/11/08/2329688/0/en/SmileDirectClub-Reports-Third-Quarter-2021-Financial-Results.html",
+        "publication_date": "2021-11-08"
+      },
+      {
+        "fact": "YTD nine-month revenue ~$511M (+8.3%) masks sequential and YoY quarterly contraction; cumulative YTD net loss approximately -$240M.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1775625/000177562521000075/sdcearningsrelease-09302021.htm",
+        "publication_date": "2021-11-08"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

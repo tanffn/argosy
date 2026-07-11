@@ -1,0 +1,20 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 4,
+  "tokens_out": 1396,
+  "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_trap\", \"freeze_date\": null, \"classification_rationale\": \"The construction brief self-identifies this as a SYNTHETIC trap-shape ('no real company') modeling meal-kit / D2C 'growth theater'. There is no real underlying issuer, no freeze_date, and an empty source_manifest — so no primary or external sources exist to gather, and none may be fabricated (Rule 4). This places the case in the 'synthetic' category rather than A/B/C/D, which are reserved for real historical freeze points backed by period-accurate primary sources. Within synthetic, the subject describes a declining direct-to-consumer meal-kit shape dressed up as growth ('growth theater') — the canonical trap silhouette (surface-level revenue/subscriber optics masking deteriorating unit economics, churn, and CAC/LTV decay), analogous to the Blue Apron-style D2C fade. That maps to the 'synthetic_trap' grading rather than 'synthetic_winner'. freeze_date is left null because a synthetic construct has no real-world publication timeline to anchor a no-postdating cutoff. sourced_facts is intentionally empty: citing any URL here would be a hallucinated source, since the manifest is empty and the subject is not a real company.\", \"confidence\": \"HIGH\", \"sourced_facts\": []}",
+  "output": {
+    "category": "synthetic",
+    "grading": "synthetic_trap",
+    "freeze_date": null,
+    "classification_rationale": "The construction brief self-identifies this as a SYNTHETIC trap-shape ('no real company') modeling meal-kit / D2C 'growth theater'. There is no real underlying issuer, no freeze_date, and an empty source_manifest — so no primary or external sources exist to gather, and none may be fabricated (Rule 4). This places the case in the 'synthetic' category rather than A/B/C/D, which are reserved for real historical freeze points backed by period-accurate primary sources. Within synthetic, the subject describes a declining direct-to-consumer meal-kit shape dressed up as growth ('growth theater') — the canonical trap silhouette (surface-level revenue/subscriber optics masking deteriorating unit economics, churn, and CAC/LTV decay), analogous to the Blue Apron-style D2C fade. That maps to the 'synthetic_trap' grading rather than 'synthetic_winner'. freeze_date is left null because a synthetic construct has no real-world publication timeline to anchor a no-postdating cutoff. sourced_facts is intentionally empty: citing any URL here would be a hallucinated source, since the manifest is empty and the subject is not a real company.",
+    "sourced_facts": [],
+    "confidence": "HIGH"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

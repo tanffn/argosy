@@ -1,0 +1,36 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 6,
+  "tokens_out": 5978,
+  "response_raw": "{\"category\": \"B\", \"grading\": \"trap\", \"freeze_date\": \"2021-06-01\", \"classification_rationale\": \"Real, verifiable ticker (HYLN) with a genuine SEC/filing trail, so this is not a synthetic packet. At the 2021-06-01 freeze the evidence presents a classic trap structure: an attractive surface narrative (large ~$632M cash + short/long-term investments war chest, an exciting hybrid/EV powertrain story, guidance for 'first Hybrid revenue in H2,' Hypertruck ERX demo units 'toward year-end,' and ten powertrains installed in Q1) layered over absent fundamentals ($0 revenue, -$16.6M net loss, cash burn from $9.3M R&D and $7.4M SG&A, plus a 2020 restatement for blank-check warrant accounting and repeatedly-deferred product/revenue milestones). No existing position is specified, so this is an entry decision whose disciplined, period-accurate answer is 'avoid' — the packet is engineered to lure a story/cash-rich buy while the falsifiable fundamentals do not support it. Grading = trap was selected purely from the pre-freeze setup; HYLN's later decline was deliberately NOT used to pick the category or freeze point. All three cited facts predate the freeze (2021-05-11, 2021-05-17, 2021-05-19); no source postdates 2021-06-01. Category letter B (real-ticker hype/story-trap archetype) is inferred from the taxonomy structure — hence MEDIUM confidence on the letter — while the trap grading and the underlying facts are primary-sourced and high-confidence. Exact share price at freeze was not in the manifest and could not be re-sourced under current tool permissions, but it is not load-bearing for the archetype; a domain-refresh pass could add it for packet completeness.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"Q1-2021: $0 revenue; net loss -$16.6M; R&D $9.3M; SG&A $7.4M; cash and cash equivalents $335M plus short- and long-term investments (~$297M combined)\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1759631/000162828021010423/hyln-20210331.htm\", \"publication_date\": \"2021-05-17\"}, {\"fact\": \"Business update: expects first Hybrid revenue in H2; Hypertruck ERX demo units targeted for fleets toward year-end; ten Hybrid powertrains installed in Q1 (pre-revenue deployments)\", \"url\": \"https://investors.hyliion.com/news/news-details/2021/Hyliion-Reports-First-Quarter-2021-Business-Updates/default.aspx\", \"publication_date\": \"2021-05-11\"}, {\"fact\": \"Company restating 2020 financials for blank-check warrant accounting (same class of restatement affecting ~80 blank-check vehicles); delayed detailed financial commentary until amended filings\", \"url\": \"https://www.ttnews.com/articles/hyliion-q1-results-lack-revenue-product-development-accelerates\", \"publication_date\": \"2021-05-19\"}]}",
+  "output": {
+    "category": "B",
+    "grading": "trap",
+    "freeze_date": "2021-06-01",
+    "classification_rationale": "Real, verifiable ticker (HYLN) with a genuine SEC/filing trail, so this is not a synthetic packet. At the 2021-06-01 freeze the evidence presents a classic trap structure: an attractive surface narrative (large ~$632M cash + short/long-term investments war chest, an exciting hybrid/EV powertrain story, guidance for 'first Hybrid revenue in H2,' Hypertruck ERX demo units 'toward year-end,' and ten powertrains installed in Q1) layered over absent fundamentals ($0 revenue, -$16.6M net loss, cash burn from $9.3M R&D and $7.4M SG&A, plus a 2020 restatement for blank-check warrant accounting and repeatedly-deferred product/revenue milestones). No existing position is specified, so this is an entry decision whose disciplined, period-accurate answer is 'avoid' — the packet is engineered to lure a story/cash-rich buy while the falsifiable fundamentals do not support it. Grading = trap was selected purely from the pre-freeze setup; HYLN's later decline was deliberately NOT used to pick the category or freeze point. All three cited facts predate the freeze (2021-05-11, 2021-05-17, 2021-05-19); no source postdates 2021-06-01. Category letter B (real-ticker hype/story-trap archetype) is inferred from the taxonomy structure — hence MEDIUM confidence on the letter — while the trap grading and the underlying facts are primary-sourced and high-confidence. Exact share price at freeze was not in the manifest and could not be re-sourced under current tool permissions, but it is not load-bearing for the archetype; a domain-refresh pass could add it for packet completeness.",
+    "sourced_facts": [
+      {
+        "fact": "Q1-2021: $0 revenue; net loss -$16.6M; R&D $9.3M; SG&A $7.4M; cash and cash equivalents $335M plus short- and long-term investments (~$297M combined)",
+        "url": "https://www.sec.gov/Archives/edgar/data/1759631/000162828021010423/hyln-20210331.htm",
+        "publication_date": "2021-05-17"
+      },
+      {
+        "fact": "Business update: expects first Hybrid revenue in H2; Hypertruck ERX demo units targeted for fleets toward year-end; ten Hybrid powertrains installed in Q1 (pre-revenue deployments)",
+        "url": "https://investors.hyliion.com/news/news-details/2021/Hyliion-Reports-First-Quarter-2021-Business-Updates/default.aspx",
+        "publication_date": "2021-05-11"
+      },
+      {
+        "fact": "Company restating 2020 financials for blank-check warrant accounting (same class of restatement affecting ~80 blank-check vehicles); delayed detailed financial commentary until amended filings",
+        "url": "https://www.ttnews.com/articles/hyliion-q1-results-lack-revenue-product-development-accelerates",
+        "publication_date": "2021-05-19"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}
