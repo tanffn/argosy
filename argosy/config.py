@@ -539,6 +539,7 @@ class InsiderClusterSignalConfig(BaseModel):
     enabled: bool = Field(default=True, strict=True)
     lookback_days: int = Field(default=14, gt=0)
     recent_scan_days: int = Field(default=2, gt=0)
+    index_publication_lag_days: int = Field(default=2, ge=1, strict=True)
     min_distinct_buyers: int = Field(default=2, ge=2)
     min_cluster_value_usd: float = Field(default=100_000, gt=0)
     min_cluster_value_market_cap_bps: float = Field(default=0.5, ge=0)

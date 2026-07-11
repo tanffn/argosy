@@ -82,6 +82,9 @@ def _default_streams(user_id: str) -> list[SignalStream]:
                 config=InsiderClusterConfig(
                     lookback_days=insider.lookback_days,
                     recent_scan_days=insider.recent_scan_days,
+                    index_publication_lag_days=(
+                        insider.index_publication_lag_days
+                    ),
                     min_distinct_buyers=insider.min_distinct_buyers,
                     min_cluster_value_usd=insider.min_cluster_value_usd,
                     min_cluster_value_market_cap_bps=(

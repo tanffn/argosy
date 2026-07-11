@@ -19,7 +19,7 @@ _TICKERS_JSON = json.dumps(
     }
 )
 
-_REAL_FORM_INDEX_2026_07_09 = (
+_OFFICIAL_FORM_INDEX_2026_07_09 = (
     "Description: Daily Index of EDGAR Dissemination Feed\n"
     "Last Data Received: July  9, 2026\n"
     "Comments: webmaster@sec.gov\n"
@@ -29,11 +29,11 @@ _REAL_FORM_INDEX_2026_07_09 = (
     "      Date Filed  File Name\n"
     "--------------------------------------------------------------------------------"
     "----------------------\n"
-    "4           PALANTIR TECHNOLOGIES INC.                                    "
+    "4                PALANTIR TECHNOLOGIES INC.                                    "
     "1321655     20260709    edgar/data/1321655/0001321655-26-000111.txt\n"
-    "4/A         PALANTIR TECHNOLOGIES INC.                                    "
+    "4/A              PALANTIR TECHNOLOGIES INC.                                    "
     "1321655     20260709    edgar/data/1321655/0001321655-26-000112.txt\n"
-    "8-K         NVIDIA CORP                                                   "
+    "8-K              NVIDIA CORP                                                   "
     "1045810     20260709    edgar/data/1045810/0001045810-26-000222.txt\n"
 )
 
@@ -257,8 +257,8 @@ def test_parse_daily_form_index_extracts_form4_and_amendments_only() -> None:
     assert rows[1]["accession"] == "0001045810-26-000111-amend"
 
 
-def test_parse_real_two_line_daily_index_and_normalize_compact_dates() -> None:
-    rows = sec._parse_daily_form_index(_REAL_FORM_INDEX_2026_07_09)
+def test_parse_official_two_line_daily_index_and_normalize_compact_dates() -> None:
+    rows = sec._parse_daily_form_index(_OFFICIAL_FORM_INDEX_2026_07_09)
 
     assert [row["document_type"] for row in rows] == ["4", "4/A"]
     assert [row["filed_at"] for row in rows] == ["2026-07-09", "2026-07-09"]

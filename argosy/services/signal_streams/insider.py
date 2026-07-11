@@ -36,6 +36,7 @@ _CHIEF_OFFICER_PATTERN = re.compile(r"\bchief(?:\s+[a-z]+){1,5}\s+officer\b")
 class InsiderClusterConfig:
     lookback_days: int = 14
     recent_scan_days: int = 2
+    index_publication_lag_days: int = 2
     min_distinct_buyers: int = 2
     min_cluster_value_usd: float = 100_000
     min_cluster_value_market_cap_bps: float = 0.5
@@ -57,6 +58,14 @@ class InsiderClusterConfig:
             or not 0 < self.recent_scan_days <= self.lookback_days
         ):
             raise ValueError("recent_scan_days must be positive and no greater than lookback_days")
+        if (
+            isinstance(self.index_publication_lag_days, bool)
+            or not isinstance(self.index_publication_lag_days, int)
+            or self.index_publication_lag_days < 1
+        ):
+            raise ValueError(
+                "index_publication_lag_days must be an integer of at least 1"
+            )
         if self.lookback_days + self.recent_scan_days - 1 > MAX_GLOBAL_DATE_RANGE_DAYS:
             raise ValueError("lookback_days plus recent_scan_days overlap exceeds SEC range limit")
         if (
@@ -818,17 +827,18 @@ class InsiderClusterStream:
 
     def fetch(self, session: Any, *, since: date) -> list[SignalNomination]:
         del session
-        through = self.today() - timedelta(days=1)
+        through = self.today() - timedelta(
+            days=self.config.index_publication_lag_days
+        )
         recent_start = through - timedelta(days=self.config.recent_scan_days - 1)
         availability_since = min(since, recent_start)
         normal_start = through - timedelta(
             days=self.config.lookback_days - 1
         )
-        requested_start = normal_start
-        if availability_since < normal_start:
-            requested_start = availability_since - timedelta(
-                days=self.config.lookback_days - 1
-            )
+        predecessor_start = availability_since - timedelta(
+            days=self.config.lookback_days - 1
+        )
+        requested_start = min(normal_start, predecessor_start)
         bounded_start = max(
             requested_start,
             through - timedelta(days=MAX_GLOBAL_DATE_RANGE_DAYS - 1),

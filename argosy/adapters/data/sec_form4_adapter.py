@@ -635,33 +635,55 @@ def _parse_daily_form_index(text: str) -> list[dict[str, Any]]:
     for raw_line in lines[separator_index + 1 :]:
         if not raw_line.strip():
             continue
-        if len(raw_line) < 99:
-            raise MissingDataSourceError(
-                "SEC EDGAR daily Form index malformed: invalid data row"
-            )
-        form_type = raw_line[:12].strip()
-        company_name = raw_line[12:74].strip()
-        cik_raw = raw_line[74:86].strip()
-        filed_at_raw = raw_line[86:98].strip()
-        archive_filename = raw_line[98:].strip()
-        if (
-            not form_type
-            or not company_name
-            or not cik_raw.isdigit()
-            or not archive_filename
+        parsed_columns: tuple[str, str, str, str, str] | None = None
+        # Current SEC form.idx contract, observed 2026-07-09.
+        # The legacy offsets remain solely for historical fixture compatibility.
+        for form_end, company_end, cik_end, date_end in (
+            (17, 79, 91, 103),
+            (12, 74, 86, 98),
         ):
+            if len(raw_line) <= date_end:
+                continue
+            form_type = raw_line[:form_end].strip()
+            company_name = raw_line[form_end:company_end].strip()
+            cik_raw = raw_line[company_end:cik_end].strip()
+            filed_at_raw = raw_line[cik_end:date_end].strip()
+            archive_filename = raw_line[date_end:].strip()
+            if (
+                not form_type
+                or not company_name
+                or not cik_raw.isdigit()
+                or not archive_filename
+            ):
+                continue
+            try:
+                if re.fullmatch(r"\d{8}", filed_at_raw):
+                    filed_at = (
+                        datetime.strptime(filed_at_raw, "%Y%m%d")
+                        .date()
+                        .isoformat()
+                    )
+                else:
+                    filed_at = date.fromisoformat(filed_at_raw).isoformat()
+            except ValueError as exc:
+                raise MissingDataSourceError(
+                    "SEC EDGAR daily Form index malformed: invalid filed date"
+                ) from exc
+            parsed_columns = (
+                form_type,
+                company_name,
+                cik_raw,
+                filed_at,
+                archive_filename,
+            )
+            break
+        if parsed_columns is None:
             raise MissingDataSourceError(
                 "SEC EDGAR daily Form index malformed: invalid columns"
             )
-        try:
-            if re.fullmatch(r"\d{8}", filed_at_raw):
-                filed_at = datetime.strptime(filed_at_raw, "%Y%m%d").date().isoformat()
-            else:
-                filed_at = date.fromisoformat(filed_at_raw).isoformat()
-        except ValueError as exc:
-            raise MissingDataSourceError(
-                "SEC EDGAR daily Form index malformed: invalid filed date"
-            ) from exc
+        form_type, company_name, cik_raw, filed_at, archive_filename = (
+            parsed_columns
+        )
         if form_type not in {"4", "4/A"}:
             continue
         basename = archive_filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]

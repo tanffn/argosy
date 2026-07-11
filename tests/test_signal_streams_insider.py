@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.sec_form4_adapter import (
@@ -15,6 +17,8 @@ from argosy.adapters.data.sec_form4_adapter import (
     _parse_form4_xml,
     _select_filing_versions,
 )
+from argosy.config import InsiderClusterSignalConfig
+from argosy.orchestrator.loops.signal_streams_daily import _default_streams
 from argosy.services.signal_streams.insider import (
     InsiderClusterConfig,
     InsiderClusterStream,
@@ -139,6 +143,7 @@ def _classify(
         ("lookback_days", 0),
         ("recent_scan_days", 0),
         ("recent_scan_days", 15),
+        ("index_publication_lag_days", 0),
         ("min_distinct_buyers", 1),
         ("min_cluster_value_usd", 0),
         ("min_cluster_value_market_cap_bps", -0.1),
@@ -154,6 +159,57 @@ def _classify(
 def test_insider_config_validates_every_threshold(field: str, value: Any) -> None:
     with pytest.raises(ValueError):
         InsiderClusterConfig(**{field: value})
+
+
+def test_insider_publication_lag_config_defaults_and_validates() -> None:
+    assert InsiderClusterConfig().index_publication_lag_days == 2
+    assert InsiderClusterSignalConfig().index_publication_lag_days == 2
+
+    with pytest.raises(ValueError):
+        InsiderClusterSignalConfig(index_publication_lag_days=0)
+
+
+def test_default_streams_passes_configured_publication_lag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    insider = SimpleNamespace(
+        enabled=True,
+        lookback_days=14,
+        recent_scan_days=2,
+        index_publication_lag_days=3,
+        min_distinct_buyers=2,
+        min_cluster_value_usd=100_000,
+        min_cluster_value_market_cap_bps=0.5,
+        min_distinct_sellers=2,
+        min_stake_sale_pct=20,
+        warning_ttl_days=30,
+        cursor_max_catchup_days=31,
+    )
+    monkeypatch.setattr(
+        "argosy.config.load_signal_streams_config",
+        lambda _user_id: SimpleNamespace(
+            enabled=True,
+            gov_contracts=SimpleNamespace(enabled=False),
+            insider_cluster=insider,
+        ),
+    )
+
+    streams = _default_streams("ariel")
+
+    assert len(streams) == 1
+    assert streams[0].config.index_publication_lag_days == 3
+
+
+def test_example_config_documents_publication_lag() -> None:
+    path = Path(__file__).parents[1] / "configs" / "example" / "agent_settings.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert (
+        payload["signal_streams"]["insider_cluster"][
+            "index_publication_lag_days"
+        ]
+        == 2
+    )
 
 
 def test_exact_buy_thresholds_nominate_officer_and_director_with_full_evidence() -> None:
@@ -991,7 +1047,33 @@ def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
 
     assert stream.fetch(None, since=date(2026, 7, 18)) == []
 
-    assert sec.calls == [(date(2026, 7, 17), date(2026, 7, 30))]
+    assert sec.calls == [(date(2026, 7, 5), date(2026, 7, 29))]
+
+
+def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
+    rows = [
+        _row(
+            transaction_date="2026-07-15",
+            filed_at="2026-07-16",
+        ),
+        _second_buyer(
+            transaction_date="2026-07-28",
+            filed_at="2026-07-28",
+        ),
+    ]
+    sec = _FixtureSecAdapter(rows)
+    stream = InsiderClusterStream(
+        sec_adapter=sec,
+        market_snapshot=lambda ticker: _snapshot(ticker=ticker),
+        today=lambda: date(2026, 7, 31),
+    )
+
+    nominations = stream.fetch(None, since=date(2026, 7, 30))
+
+    assert sec.calls == [(date(2026, 7, 15), date(2026, 7, 29))]
+    assert len(nominations) == 1
+    assert nominations[0].as_of == date(2026, 7, 28)
+    assert nominations[0].evidence["latest_filed_date"] == "2026-07-28"
 
 
 def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
@@ -1016,7 +1098,7 @@ def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
 
     assert [nomination.ticker for nomination in nominations] == ["ACME"]
     assert nominations[0].as_of == date(2026, 7, 12)
-    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 30))]
+    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 29))]
 
 
 def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
@@ -1030,7 +1112,7 @@ def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
     stream.fetch(None, since=date(2026, 5, 1))
 
     assert MAX_GLOBAL_DATE_RANGE_DAYS == 45
-    assert sec.calls == [(date(2026, 6, 16), date(2026, 7, 30))]
+    assert sec.calls == [(date(2026, 6, 15), date(2026, 7, 29))]
 
 
 def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
@@ -1053,7 +1135,7 @@ def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
             market_cap=100_000_000_000,
             average_volume=20_000_000,
         ),
-        today=lambda: date(2023, 3, 15),
+        today=lambda: date(2023, 3, 16),
     )
     nominations = asyncio.run(asyncio.to_thread(stream.fetch, None, since=date(2023, 3, 14)))
 
@@ -1066,7 +1148,7 @@ def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
         "0001062993-23-006879",
         "0001062993-23-006880",
     }
-    assert sec.calls == [(date(2023, 3, 1), date(2023, 3, 14))]
+    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14))]
 
 
 def test_sec_adapter_outage_fails_the_stream() -> None:
