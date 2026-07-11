@@ -58,7 +58,7 @@ New `_assemble_sliced_output`: build `PlanSynthesisOutput` from the six slice ou
 
 **Downstream is byte-for-byte today's pipeline**: the assembled output flows into `_run_plan_language_rewriter` (already slice-parallel), `_enforce_speculation_cap`, phases 4 / 4.5 / 5, the whole-artifact reader, numeric/coherence gates, and (corrective) the corrections-landed check — all full-artifact, all blind to the slicing. `render.py` re-renders deterministically. No consumer changes.
 
-**Selection + fail-soft.** Flag `ARGOSY_SLICED_SYNTH` (default OFF one release, then ON). Precedence: corrective PATCH (when its flag + verdict fire) > sliced FULL > monolith. Any stage-A/assembly exception degrades to the monolith (log + provenance note) — never a worse outcome than today. A dead slice after retries fails phase 3 as today, but with sub-checkpoints intact for resume.
+**Selection + fail-soft.** Flag `ARGOSY_SLICED_SYNTH` (**default ON** after live acceptance; kill switch `ARGOSY_SLICED_SYNTH=0`). Precedence: corrective PATCH (when its flag + verdict fire) > sliced FULL > monolith. Any stage-A/assembly exception degrades to the monolith (log + provenance note) — never a worse outcome than today. A dead slice after retries fails phase 3 as today, but with sub-checkpoints intact for resume.
 
 ### 2.D Expected benefit (honest)
 

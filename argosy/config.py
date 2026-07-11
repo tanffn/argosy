@@ -267,6 +267,22 @@ class Settings(BaseSettings):
     # additionally requires reconcile=true (the button stays a fast read).
     critique_reconcile: bool = Field(default=True)
 
+    # Corrective PATCH phase-3 path (docs/design/corrective_patch_synthesis.md):
+    # when corrective mode is active AND this flag is on AND the patch-
+    # reachability classifier says PATCH, phase 3 edits implicated slices of
+    # the prior draft instead of regenerating. Default ON after a live
+    # acceptance (clean corrective promotion). Kill switch:
+    # ARGOSY_CORRECTIVE_PATCH=0. Orchestrator also reads the raw env var so
+    # tests can toggle without a settings reload.
+    corrective_patch: bool = Field(default=True)
+
+    # Sliced FULL phase-3 path (docs/design/sliced_full_synthesis.md): stage-A
+    # skeleton + parallel slice expansion instead of a monolith synthesizer
+    # call. Precedence: corrective PATCH > sliced FULL > monolith. Default ON
+    # after the same live-acceptance precondition as corrective_patch. Kill
+    # switch: ARGOSY_SLICED_SYNTH=0.
+    sliced_synth: bool = Field(default=True)
+
     # Daily-news volatility trigger (news_daily Stage-2 gate). When Stage 1
     # ingests ZERO new items, Stage 2 (the LLM analyst) still fires if a HELD
     # single stock moved at least this many percent (absolute, close-over-

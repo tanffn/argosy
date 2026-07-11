@@ -124,7 +124,7 @@ def test_flag_off_never_touches_sliced_path(session, monkeypatch):
     from argosy.orchestrator.flows import plan_synthesis as flow
 
     monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
-    monkeypatch.delenv("ARGOSY_SLICED_SYNTH", raising=False)
+    monkeypatch.setenv("ARGOSY_SLICED_SYNTH", "0")
     monkeypatch.setattr(
         flow, "_run_phase_3_sliced",
         lambda **kw: (_ for _ in ()).throw(

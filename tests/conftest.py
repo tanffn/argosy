@@ -165,6 +165,32 @@ def _guard_lookthrough_gate(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _guard_patch_sliced_synth(monkeypatch):
+    """Keep patch/sliced phase-3 paths OFF by default in tests.
+
+    Production defaults are ON (``corrective_patch`` / ``sliced_synth`` in
+    config — live acceptance met). Unstubbed synthesis tests would otherwise
+    enter the real patch classifier / skeleton fan-out (live claude.exe).
+    Opt in via ``setenv("ARGOSY_CORRECTIVE_PATCH", "1")`` /
+    ``setenv("ARGOSY_SLICED_SYNTH", "1")`` + stubbed dispatchers (same pattern
+    as ``_guard_deployment_author``).
+    """
+    monkeypatch.setenv("ARGOSY_CORRECTIVE_PATCH", "0")
+    monkeypatch.setenv("ARGOSY_SLICED_SYNTH", "0")
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+    yield
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _structlog_isolation():
     """Ensure clean structlog / stdlib-logging state for every test.
 

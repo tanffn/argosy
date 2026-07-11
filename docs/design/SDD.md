@@ -1264,9 +1264,15 @@ per-trade `decision_flow` of §3 / §10):
 1. Analyst reports (parallel, ~3-5 min) — 10 specialists run concurrently (13 with `ARGOSY_PHASE5_AGENTS`, default on — §3.1)
 2. Researcher debate (per-horizon, ~5 min) — bull/bear/facilitator argue
  theses (long/medium/short) in parallel
-3. Synthesizer (Opus, ~1-2 min) — produces three `HorizonSection` drafts
+3. Synthesizer (Opus, ~1-2 min) — produces three `HorizonSection` drafts.
+   Phase-3 path selection (fail-soft; any patch/sliced exception degrades to
+   the next path, never a worse outcome than monolith): corrective **PATCH**
+   (`ARGOSY_CORRECTIVE_PATCH`, **default ON** — kill switch `=0`) when
+   corrective mode + patch-reachability says PATCH; else sliced **FULL**
+   (`ARGOSY_SLICED_SYNTH`, **default ON** — kill switch `=0`); else monolith.
+   Settings: `argosy/config.py::corrective_patch` / `sliced_synth`.
 4. Risk team review (parallel, ~2 min) — aggressive/neutral/conservative
- plan-level verdicts + facilitator merge
+   plan-level verdicts + facilitator merge
 5. Fund manager integrity check (~1 min) — green-lights as `role='draft'`
 
 Between phases 4 and 5 a **codex (gpt-5.5) second-opinion reviewer** runs as an

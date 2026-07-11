@@ -180,7 +180,7 @@ def test_flag_off_never_touches_patch_path(session, monkeypatch):
     from argosy.quality import patch_reachability as pr
 
     monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
-    monkeypatch.delenv("ARGOSY_CORRECTIVE_PATCH", raising=False)
+    monkeypatch.setenv("ARGOSY_CORRECTIVE_PATCH", "0")
 
     def _boom(**kw):
         raise AssertionError("classifier must not run when the flag is off")
@@ -670,7 +670,7 @@ def test_delta_framing_absent_on_non_patch_run(session, monkeypatch):
 
     _add_reviewed_current_plan(session)
     monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
-    monkeypatch.delenv("ARGOSY_CORRECTIVE_PATCH", raising=False)
+    monkeypatch.setenv("ARGOSY_CORRECTIVE_PATCH", "0")
     ctx = _make_ctx(corrections=[_fx_correction(wrong="9.99")])
     monkeypatch.setattr(flow, "build_corrective_context", lambda *a, **k: ctx)
     _stub_phases(flow, monkeypatch)
@@ -747,7 +747,7 @@ def test_no_escalation_when_full_path_was_used(session, monkeypatch):
     from argosy.orchestrator.flows import plan_synthesis as flow
 
     monkeypatch.setenv("ARGOSY_DERIVED_FACTS", "0")
-    monkeypatch.delenv("ARGOSY_CORRECTIVE_PATCH", raising=False)
+    monkeypatch.setenv("ARGOSY_CORRECTIVE_PATCH", "0")
     ctx = _make_ctx(corrections=[_fx_correction(wrong="3.00")])
     monkeypatch.setattr(flow, "build_corrective_context", lambda *a, **k: ctx)
 

@@ -48,7 +48,7 @@ Directives (adjudicated verdicts, apply-verbatim) classify the same way; a direc
 
 ### 2.C Part B — patch-mode phase 3
 
-New orchestrator branch `_run_phase_3_patch` selected when: corrective mode is active AND `ARGOSY_CORRECTIVE_PATCH=1` (default OFF for one release, then ON) AND the classifier verdict is PATCH. Fail-soft: any exception in the patch path logs and degrades to the shipped full corrective regeneration — never a worse outcome than today.
+New orchestrator branch `_run_phase_3_patch` selected when: corrective mode is active AND `ARGOSY_CORRECTIVE_PATCH` is on (**default ON** after live acceptance; kill switch `ARGOSY_CORRECTIVE_PATCH=0`) AND the classifier verdict is PATCH. Fail-soft: any exception in the patch path logs and degrades to the shipped full corrective regeneration — never a worse outcome than today.
 
 **Prompting.** New `PlanPatchSynthesizerAgent` (`agent_role = "plan_synthesizer"` model resolution — same Opus class; a distinct agent class, not a mode flag, so the prompt stays single-purpose). One call per implicated slice, run in parallel (mirror `_rewrite_output_parallel`'s thread fan-out). Per-call input:
 

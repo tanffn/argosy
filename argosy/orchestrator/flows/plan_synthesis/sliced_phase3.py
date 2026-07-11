@@ -22,7 +22,7 @@ reader, gates, corrections-check) is byte-for-byte today's pipeline and is
 never told the artifact was sliced.
 
 Selection lives in ``run_synthesis``: precedence corrective-PATCH >
-sliced-FULL (``ARGOSY_SLICED_SYNTH=1``, default OFF) > monolith; any
+sliced-FULL (``ARGOSY_SLICED_SYNTH``, **default ON**; kill switch ``=0``) > monolith; any
 stage-A/assembly exception degrades to the monolith; a dead slice after
 retries fails phase 3 as today (``SliceExpansionError`` propagates) with
 sub-checkpoints intact for resume.

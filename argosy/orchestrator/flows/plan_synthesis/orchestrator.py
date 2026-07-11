@@ -62,6 +62,30 @@ from argosy.state.queries import get_active_baseline, get_current_plan, get_pend
 log = get_logger(__name__)
 
 
+def _env_flag_on(env_name: str, *, settings_attr: str, default: bool = True) -> bool:
+    """Resolve a synthesis kill-switch: explicit env wins, else Settings, else default.
+
+    Truthy: 1/true/yes/on (case-insensitive). Used for ARGOSY_CORRECTIVE_PATCH
+    and ARGOSY_SLICED_SYNTH (both default ON after live acceptance).
+    """
+    import os
+
+    env = os.environ.get(env_name)
+    if env is not None:
+        return str(env).strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from argosy.config import get_settings
+
+        val = getattr(get_settings(), settings_attr, None)
+    except Exception:  # noqa: BLE001 — settings optional
+        val = None
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Prime directive injected into the coherence arbitrator/panel when the
 # deliberation reconcile path settles a goal/framing tension (mirrors the
 # project prime directive in CLAUDE.md / auto-memory).
@@ -678,14 +702,15 @@ def run_synthesis(
 
     # Phase 3: synthesize.
     # CORRECTIVE PATCH MODE (docs/design/corrective_patch_synthesis.md):
-    # when corrective mode is active AND ARGOSY_CORRECTIVE_PATCH=1 (default
-    # OFF for one release) AND the pure patch-reachability classifier says
-    # PATCH, phase 3 EDITS the prior draft's structured artifact per-slice
-    # instead of regenerating it. Fail-soft: ANY exception in the patch
-    # path (classifier, slice agents, merge, patched-slice rewriter) logs
-    # and degrades to the shipped full corrective regeneration — never a
-    # worse outcome than today. Gates/phases 4-4.5-5/reader/corrections-
-    # check are UNCHANGED and full-artifact (blindness preserved).
+    # when corrective mode is active AND ARGOSY_CORRECTIVE_PATCH is on
+    # (default ON after live acceptance; kill switch =0) AND the pure
+    # patch-reachability classifier says PATCH, phase 3 EDITS the prior
+    # draft's structured artifact per-slice instead of regenerating it.
+    # Fail-soft: ANY exception in the patch path (classifier, slice
+    # agents, merge, patched-slice rewriter) logs and degrades to the
+    # shipped full corrective regeneration — never a worse outcome than
+    # today. Gates/phases 4-4.5-5/reader/corrections-check are UNCHANGED
+    # and full-artifact (blindness preserved).
     _patch_used = False
     _patch_provenance: dict | None = None
     _patch_classifier_payload: dict | None = None
@@ -693,7 +718,7 @@ def run_synthesis(
     # skeleton + gate + 6-way expansion provenance, persisted to
     # ``synthesis_inputs_json.sliced`` after the draft lands. None when the
     # flag is off / patch mode won / phase 3 was resumed — the flag-OFF
-    # path stays byte-identical to today.
+    # path stays byte-identical to the monolith.
     _sliced_used = False
     _sliced_provenance: dict | None = None
     # Set True when the reader-reconcile loop's full re-synth replaced the
@@ -713,7 +738,11 @@ def run_synthesis(
         _phase_3_started_at = datetime.now(timezone.utc)
         if (
             _corrective_ctx is not None
-            and _os.environ.get("ARGOSY_CORRECTIVE_PATCH", "0") == "1"
+            and _pkg._env_flag_on(
+                "ARGOSY_CORRECTIVE_PATCH",
+                settings_attr="corrective_patch",
+                default=True,
+            )
         ):
             try:
                 from argosy.quality import patch_reachability as _pr
@@ -794,8 +823,8 @@ def run_synthesis(
                 )
         # SLICED FULL phase 3 (docs/design/sliced_full_synthesis.md).
         # Precedence: corrective PATCH (above, strictly cheaper) >
-        # sliced FULL > monolith. Flag ARGOSY_SLICED_SYNTH default OFF —
-        # OFF is byte-identical to today. Fail-soft: any stage-A
+        # sliced FULL > monolith. Flag ARGOSY_SLICED_SYNTH default ON
+        # after live acceptance (kill switch =0). Fail-soft: any stage-A
         # (skeleton/gate) or assembly exception degrades to the monolith
         # (logged + provenance note) — never a worse outcome than today.
         # A dead SLICE after its retry envelope is the ONE exception that
@@ -804,7 +833,11 @@ def run_synthesis(
         # the dead slices.
         if (
             not _patch_used
-            and _os.environ.get("ARGOSY_SLICED_SYNTH", "0") == "1"
+            and _pkg._env_flag_on(
+                "ARGOSY_SLICED_SYNTH",
+                settings_attr="sliced_synth",
+                default=True,
+            )
         ):
             try:
                 output, _phase_3_reports, _sliced_provenance = (
