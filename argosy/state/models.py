@@ -4549,3 +4549,78 @@ class PositionStance(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", name="uq_position_stances_user_symbol"),
     )
+
+
+class Verdict(Base):
+    """Settled fleet verdict — defended until a falsifier/trigger fires.
+
+    Item B (2026-07-11): pushback never reopens a verdict by itself. A
+    re-run on a settled subject must cite a NEW fact hitting a recorded
+    falsifier or typed revisit trigger; else the entry point returns this
+    standing row (DEFENDED) without spawning agents.
+
+    ``falsifiers_json``: prose list of "what new fact would change this".
+    ``revisit_triggers_json``: typed triggers the daily checker evaluates
+    cheaply (price_below / price_above / metric_condition / dated_event).
+
+    At most one ``settled=True`` row per (user_id, subject). Supersession
+    clears ``settled`` on the prior row and points ``superseded_by`` at the
+    new id.
+
+    Migration: alembic 0087.
+    """
+
+    __tablename__ = "verdicts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    # BUY | ADD | HOLD | TRIM | SELL | WAIT
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    # HIGH | MED | LOW
+    conviction: Mapped[str] = mapped_column(String(16), nullable=False)
+    falsifiers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revisit_triggers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_validation: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_decision_run_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("decision_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    settled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=_sa_text("1")
+    )
+    superseded_by: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("verdicts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reasoning_md: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_verdicts_user_subject_settled",
+            "user_id",
+            "subject",
+            "settled",
+        ),
+    )
