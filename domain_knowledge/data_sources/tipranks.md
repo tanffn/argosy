@@ -1,11 +1,11 @@
 ---
 topic: tipranks_analyst_aggregator
 jurisdiction: us
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.tipranks.com
-    retrieved: 2026-07-10
+    retrieved: 2026-07-11
     tier: 2
   - url: https://www.tipranks.com/about
     retrieved: 2026-05-02

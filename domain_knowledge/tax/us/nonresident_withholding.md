@@ -1,7 +1,7 @@
 ---
 topic: us_nonresident_alien_withholding
 jurisdiction: us
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.irs.gov/individuals/international-taxpayers/nonresident-aliens

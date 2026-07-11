@@ -4,7 +4,7 @@ topic: israel_section_102_rsu_taxation
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual_with_employer_equity
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 verified_by: per-lot §102 ledger reconciliation vs trustee simulation report (2026-07-09) + Amendment 147 statutory check; SUPERSEDES the 2026-07-08 web-search verification on the holding-clock rule (see correction trail in the holding-period section)
 next_refresh_due: 2027-01-31
 source_urls:
@@ -14,7 +14,7 @@ source_urls:
   - https://taxsummaries.pwc.com/israel/individual/income-determination
 sources:
   - url: https://www.naspp.com/blog/hiring-in-israel--how-section-102-shapes-equity-compensation
-    retrieved: 2026-07-10
+    retrieved: 2026-07-11
     tier: 1
   - url: https://www.vestingstrategy.com/guides/israel-equity-compensation-tax-guide
     retrieved: 2026-06-02
@@ -23,7 +23,7 @@ sources:
     retrieved: 2026-06-02
     tier: 2
   - url: https://taxsummaries.pwc.com/israel/individual/income-determination
-    retrieved: 2026-07-10
+    retrieved: 2026-07-11
     tier: 1
 ---
 
