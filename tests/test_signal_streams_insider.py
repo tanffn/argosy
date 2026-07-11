@@ -1048,26 +1048,16 @@ def _potential_prefilter_rows() -> list[dict[str, Any]]:
                 accession="uuuu-2",
                 filer_cik="7302",
             ),
-            {
-                **_row(
-                    ticker="WRAP",
-                    accession="wrap-joint",
-                    filer_cik="7401",
-                    value_usd=100_000,
-                ),
-                "reporting_owners": [
-                    {
-                        "filer_cik": "7401",
-                        "filer_name": "Wrap Director",
-                        "role": "director",
-                    },
-                    {
-                        "filer_cik": "7402",
-                        "filer_name": "Wrap Officer",
-                        "role": "officer (CEO)",
-                    },
-                ],
-            },
+            _row(
+                ticker="WRAP",
+                accession="wrap-1",
+                filer_cik="7401",
+            ),
+            _second_buyer(
+                ticker="WRAP",
+                accession="wrap-2",
+                filer_cik="7402",
+            ),
             _row(
                 ticker="PALI",
                 accession="pali-1",
@@ -1375,7 +1365,7 @@ def _official_schw_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def test_joint_filing_counts_distinct_owners_without_double_counting_value() -> None:
+def test_joint_filing_is_one_reporting_group_not_two_independent_buyers() -> None:
     base = """<?xml version="1.0" encoding="UTF-8"?>
 <ownershipDocument>
   <documentType>4</documentType>
@@ -1441,13 +1431,31 @@ def test_joint_filing_counts_distinct_owners_without_double_counting_value() -> 
     assert {
         owner["filer_cik"] for owner in rows[0]["reporting_owners"]
     } == {"0000001001", "0000001002"}
-    assert len(nominations) == 1
-    assert nominations[0].evidence["distinct_insider_count"] == 2
-    assert nominations[0].evidence["aggregate_value_usd"] == 105_000
-    assert len(nominations[0].evidence["transactions"]) == 1
-    assert len(
-        nominations[0].evidence["transactions"][0]["reporting_owners"]
-    ) == 2
+    assert nominations == []
+
+
+def test_joint_c_suite_sale_fails_closed_without_owner_attribution() -> None:
+    joint_sale = _seller(
+        filer=9001,
+        role="officer (CEO)",
+        shares=300,
+        post_holdings=700,
+        accession="joint-sale",
+    )
+    joint_sale["reporting_owners"] = [
+        {
+            "filer_cik": "9001",
+            "filer_name": "Joint CEO",
+            "role": "officer (CEO)",
+        },
+        {
+            "filer_cik": "9002",
+            "filer_name": "Joint CFO",
+            "role": "officer (CFO)",
+        },
+    ]
+
+    assert _classify([joint_sale]) == []
 
 
 def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:

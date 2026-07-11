@@ -244,12 +244,20 @@ def _qualifying_owner_keys(
     *,
     role_predicate: Callable[[str], bool],
 ) -> set[tuple[str, str]]:
-    return {
-        key
-        for owner in _reporting_owners(row)
-        if role_predicate(owner["role"])
-        and (key := _owner_key(owner)) is not None
-    }
+    owners = _reporting_owners(row)
+    if not any(role_predicate(owner["role"]) for owner in owners):
+        return set()
+    owner_keys = sorted(
+        {
+            f"{kind}:{value}"
+            for owner in owners
+            if (key := _owner_key(owner)) is not None
+            for kind, value in [key]
+        }
+    )
+    if not owner_keys:
+        return set()
+    return {("owners", "|".join(owner_keys))}
 
 
 def _transaction_identity(row: Mapping[str, Any]) -> str | None:

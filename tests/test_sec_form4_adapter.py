@@ -18,6 +18,12 @@ from argosy.adapters.data.sec_form4_adapter import (
     _parse_ticker_map,
 )
 
+
+@pytest.fixture(autouse=True)
+def _declared_sec_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "tests@example.com")
+
+
 # ----------------------------------------------------------------------
 # Fixture XML / atom payloads
 # ----------------------------------------------------------------------

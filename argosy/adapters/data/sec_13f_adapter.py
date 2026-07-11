@@ -92,7 +92,6 @@ EDGAR_BROWSE_URL = f"{EDGAR_BASE}/cgi-bin/browse-edgar"
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_TTL_SECONDS = 60 * 60 * 24 * 90  # 90 days
 
-ARGOSY_CONTACT_EMAIL = "admin@argosy.local"
 SEC_CONTACT_EMAIL_ENV = "ARGOSY_SEC_CONTACT_EMAIL"
 
 
@@ -100,13 +99,21 @@ def _user_agent() -> str:
     """Polite, SEC-required User-Agent identifying Argosy + contact."""
     from argosy import __version__
 
-    configured = os.environ.get(SEC_CONTACT_EMAIL_ENV)
-    contact_email = (
-        ARGOSY_CONTACT_EMAIL if configured is None else configured.strip()
+    contact_email = os.environ.get(SEC_CONTACT_EMAIL_ENV, "").strip()
+    domain = (
+        contact_email.rsplit("@", 1)[1].casefold()
+        if "@" in contact_email
+        else ""
     )
-    if not contact_email:
+    if (
+        not contact_email
+        or not domain
+        or domain == "local"
+        or domain.endswith(".local")
+    ):
         raise ValueError(
-            f"{SEC_CONTACT_EMAIL_ENV} must contain a nonempty SEC contact email"
+            f"{SEC_CONTACT_EMAIL_ENV} must be set to a non-local SEC "
+            "contact email before any EDGAR request"
         )
     return f"Argosy/{__version__} {contact_email}"
 
@@ -762,7 +769,6 @@ _ = json
 
 
 __all__ = [
-    "ARGOSY_CONTACT_EMAIL",
     "DEFAULT_TIMEOUT",
     "DEFAULT_TTL_SECONDS",
     "EDGAR_BASE",

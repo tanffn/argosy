@@ -12,6 +12,12 @@ import pytest
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data import sec_form4_adapter as sec
 
+
+@pytest.fixture(autouse=True)
+def _declared_sec_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "tests@example.com")
+
+
 _TICKERS_JSON = json.dumps(
     {
         "0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
@@ -80,6 +86,7 @@ def _form4_xml(
     unrelated_footnote: str = "",
     remarks: str = "",
     issuer_cik: str = "0001045810",
+    issuer_ticker: str = "NVDA",
     owner_cik: str = "0001234567",
     owner_name: str = "TEST INSIDER",
     period_of_report: str = "2026-07-10",
@@ -137,7 +144,7 @@ def _form4_xml(
   <issuer>
     <issuerCik>{issuer_cik}</issuerCik>
     <issuerName>NVIDIA CORP</issuerName>
-    <issuerTradingSymbol>NVDA</issuerTradingSymbol>
+    <issuerTradingSymbol>{issuer_ticker}</issuerTradingSymbol>
   </issuer>
   <reportingOwner>
     <reportingOwnerId>
@@ -349,6 +356,119 @@ def test_parse_daily_form_index_extracts_form4_and_amendments_only() -> None:
     assert rows[1]["accession"] == "0001045810-26-000111-amend"
 
 
+def test_ticker_maps_preserve_all_share_classes_per_issuer() -> None:
+    ticker_to_cik, cik_to_tickers = sec._parse_ticker_maps(
+        json.dumps(
+            {
+                "0": {"cik_str": 1652044, "ticker": "GOOG"},
+                "1": {"cik_str": 1652044, "ticker": "GOOGL"},
+            }
+        )
+    )
+
+    assert ticker_to_cik == {
+        "GOOG": "0001652044",
+        "GOOGL": "0001652044",
+    }
+    assert cik_to_tickers == {
+        "0001652044": ("GOOG", "GOOGL"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_global_collector_uses_exact_parsed_multi_class_symbol(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    cik = "1652044"
+    accession = "0001652044-26-000111"
+    tickers = json.dumps(
+        {
+            "0": {"cik_str": 1652044, "ticker": "GOOG"},
+            "1": {"cik_str": 1652044, "ticker": "GOOGL"},
+        }
+    )
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=tickers),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "ALPHABET INC.",
+                        cik,
+                        day.isoformat(),
+                        f"edgar/data/{cik}/{accession}.txt",
+                    )
+                )
+            ),
+            accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik=cik,
+                        issuer_ticker="GOOGL",
+                    )
+                )
+            ),
+        }
+    )
+
+    rows = await _adapter(http).get_form4_for_date_range(
+        day,
+        day,
+        ttl_seconds=0,
+    )
+
+    assert {row["ticker"] for row in rows} == {"GOOGL"}
+
+
+@pytest.mark.asyncio
+async def test_global_collector_skips_ambiguous_multi_class_without_symbol(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    cik = "1652044"
+    accession = "0001652044-26-000112"
+    tickers = json.dumps(
+        {
+            "0": {"cik_str": 1652044, "ticker": "GOOG"},
+            "1": {"cik_str": 1652044, "ticker": "GOOGL"},
+        }
+    )
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=tickers),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "ALPHABET INC.",
+                        cik,
+                        day.isoformat(),
+                        f"edgar/data/{cik}/{accession}.txt",
+                    )
+                )
+            ),
+            accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik=cik,
+                        issuer_ticker="",
+                    )
+                )
+            ),
+        }
+    )
+
+    rows = await _adapter(http).get_form4_for_date_range(
+        day,
+        day,
+        ttl_seconds=0,
+    )
+
+    assert rows == []
+
+
 def test_parse_official_two_line_daily_index_and_normalize_compact_dates() -> None:
     rows = sec._parse_daily_form_index(_OFFICIAL_FORM_INDEX_2026_07_09)
 
@@ -364,10 +484,10 @@ def test_parse_daily_form_index_rejects_malformed_response() -> None:
 
 
 def test_parse_ticker_maps_builds_both_directions() -> None:
-    ticker_to_cik, cik_to_ticker = sec._parse_ticker_maps(_TICKERS_JSON)
+    ticker_to_cik, cik_to_tickers = sec._parse_ticker_maps(_TICKERS_JSON)
 
     assert ticker_to_cik["NVDA"] == "0001045810"
-    assert cik_to_ticker["0001045810"] == "NVDA"
+    assert cik_to_tickers["0001045810"] == ("NVDA",)
 
 
 def test_parse_form4_xml_carries_document_owner_and_transaction_fields() -> None:
@@ -558,6 +678,7 @@ async def test_official_index_cik_is_issuer_while_xml_cik_is_owner(
                 text=_full_submission(
                     _form4_xml(
                         issuer_cik="1321655",
+                            issuer_ticker="PLTR",
                         owner_cik="1234567",
                     )
                 )
@@ -567,6 +688,7 @@ async def test_official_index_cik_is_issuer_while_xml_cik_is_owner(
                     _form4_xml(
                         document_type="4/A",
                         issuer_cik="1321655",
+                            issuer_ticker="PLTR",
                         owner_cik="7654321",
                         date_of_original_submission="2026-07-09",
                     )
@@ -716,6 +838,7 @@ async def test_index_reporting_owner_cik_resolves_parsed_public_issuer(
                 text=_full_submission(
                     _form4_xml(
                         issuer_cik="1726711",
+                            issuer_ticker="PUB",
                         owner_cik="70858",
                     )
                 )
@@ -938,6 +1061,30 @@ async def test_form4_requests_use_runtime_sec_contact(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contact",
+    [None, "   ", "ops@argosy.local"],
+)
+async def test_form4_request_refuses_invalid_sec_contact_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+    contact: str | None,
+) -> None:
+    if contact is None:
+        monkeypatch.delenv("ARGOSY_SEC_CONTACT_EMAIL", raising=False)
+    else:
+        monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", contact)
+    http = _Http({"/one": _FakeResp(text="ok")})
+
+    with pytest.raises(
+        (ValueError, MissingDataSourceError),
+        match="ARGOSY_SEC_CONTACT_EMAIL",
+    ):
+        await _adapter(http)._fetch_text("https://www.sec.gov/one")
+
+    assert http.calls == []
+
+
+@pytest.mark.asyncio
 async def test_default_through_avoids_current_unpublished_index(engine: None) -> None:
     today = date(2026, 7, 13)
     http = _Http(
@@ -1125,7 +1272,7 @@ async def test_distinct_nonamended_same_day_accessions_remain_distinct(
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_amendment_excludes_originals_and_marks_evidence(
+async def test_ambiguous_amendment_marks_amendment_and_originals_ineligible(
     engine: None,
 ) -> None:
     day_one = date(2026, 7, 10)
@@ -1207,15 +1354,18 @@ async def test_ambiguous_amendment_excludes_originals_and_marks_evidence(
         ttl_seconds=0,
     )
 
-    assert len(rows) == 1
-    assert rows[0]["accession"] == amendment
-    assert rows[0]["filing_identity"] == amendment
-    assert rows[0]["cluster_eligible"] is False
-    assert rows[0]["amendment_match_status"] == "ambiguous"
-    assert rows[0]["amendment_ambiguity_evidence"] == [
+    assert {row["accession"] for row in rows} == {
         original_one,
         original_two,
-    ]
+        amendment,
+    }
+    assert all(row["cluster_eligible"] is False for row in rows)
+    assert all(row["amendment_match_status"] == "ambiguous" for row in rows)
+    assert all(
+        row["amendment_ambiguity_evidence"]
+        == [original_one, original_two]
+        for row in rows
+    )
 
 
 def test_unmatched_amendment_uses_own_explicit_ineligible_identity() -> None:
@@ -1250,6 +1400,193 @@ def test_unmatched_amendment_uses_own_explicit_ineligible_identity() -> None:
     assert rows[0]["amendment_match_status"] == "unmatched"
     assert rows[0]["cluster_eligible"] is False
     assert rows[0]["source_urls"] == [filing_url]
+
+
+@pytest.mark.parametrize("original_date", ["", "not-a-date"])
+def test_unusable_amendment_date_taints_same_owner_original_only(
+    original_date: str,
+) -> None:
+    issuer_cik = "0001045810"
+
+    def filing(
+        accession: str,
+        *,
+        owner_cik: str,
+        is_amendment: bool,
+        filed_at: str,
+    ) -> dict[str, Any]:
+        row = sec._parse_form4_xml(
+            _form4_xml(
+                document_type="4/A" if is_amendment else "4",
+                issuer_cik=issuer_cik,
+                owner_cik=owner_cik,
+                date_of_original_submission=(
+                    original_date if is_amendment else ""
+                ),
+            ),
+            accession=accession,
+        )[0]
+        filing_url = f"https://www.sec.gov/Archives/{accession}.txt"
+        row.update({"filed_at": filed_at, "filing_url": filing_url})
+        return {
+            "accession": accession,
+            "filed_at": filed_at,
+            "filing_url": filing_url,
+            "is_amendment": is_amendment,
+            "issuer_cik": issuer_cik,
+            "filer_cik": row["filer_cik"],
+            "filer_name": row["filer_name"],
+            "reporting_owners": row["reporting_owners"],
+            "date_of_original_submission": (
+                original_date if is_amendment else ""
+            ),
+            "rows": [row],
+        }
+
+    affected = filing(
+        "0001234567-26-000501",
+        owner_cik="0001234567",
+        is_amendment=False,
+        filed_at="2026-07-10",
+    )
+    unrelated = filing(
+        "0007654321-26-000502",
+        owner_cik="0007654321",
+        is_amendment=False,
+        filed_at="2026-07-10",
+    )
+    amendment = filing(
+        "0001234567-26-000503",
+        owner_cik="0001234567",
+        is_amendment=True,
+        filed_at="2026-07-13",
+    )
+
+    rows = sec._select_filing_versions([affected, unrelated, amendment])
+    by_accession = {row["accession"]: row for row in rows}
+
+    for accession in (affected["accession"], amendment["accession"]):
+        assert by_accession[accession]["cluster_eligible"] is False
+        assert by_accession[accession]["amendment_match_status"] == (
+            "ambiguous"
+        )
+        assert by_accession[accession][
+            "amendment_ambiguity_evidence"
+        ] == [affected["accession"]]
+    assert by_accession[unrelated["accession"]]["cluster_eligible"] is True
+    assert by_accession[unrelated["accession"]][
+        "amendment_match_status"
+    ] == "not_amendment"
+
+
+@pytest.mark.parametrize(
+    ("amendment_owners", "original_owner_sets", "affected_accessions"),
+    [
+        (
+            ("A",),
+            (("A", "B"), ("C",)),
+            ["original-1"],
+        ),
+        (
+            ("A", "B"),
+            (("A",), ("B",), ("C",)),
+            ["original-1", "original-2"],
+        ),
+    ],
+)
+def test_ambiguous_amendment_taints_any_overlapping_owner_originals(
+    amendment_owners: tuple[str, ...],
+    original_owner_sets: tuple[tuple[str, ...], ...],
+    affected_accessions: list[str],
+) -> None:
+    issuer_cik = "0001045810"
+
+    def filing(
+        accession: str,
+        *,
+        owners: tuple[str, ...],
+        is_amendment: bool,
+    ) -> dict[str, Any]:
+        owner_records = [
+            {
+                "filer_cik": f"{index + 1:010d}",
+                "filer_name": owner,
+                "role": "director",
+            }
+            for index, owner in enumerate(("A", "B", "C"))
+            if owner in owners
+        ]
+        row = sec._parse_form4_xml(
+            _form4_xml(
+                document_type="4/A" if is_amendment else "4",
+                issuer_cik=issuer_cik,
+                owner_cik=owner_records[0]["filer_cik"],
+                owner_name=owner_records[0]["filer_name"],
+                date_of_original_submission=(
+                    "2026-07-10" if is_amendment else ""
+                ),
+            ),
+            accession=accession,
+        )[0]
+        row["reporting_owners"] = owner_records
+        filing_url = f"https://www.sec.gov/Archives/{accession}.txt"
+        row.update(
+            {
+                "filed_at": "2026-07-13" if is_amendment else "2026-07-10",
+                "filing_url": filing_url,
+            }
+        )
+        return {
+            "accession": accession,
+            "filed_at": row["filed_at"],
+            "filing_url": filing_url,
+            "is_amendment": is_amendment,
+            "issuer_cik": issuer_cik,
+            "filer_cik": row["filer_cik"],
+            "filer_name": row["filer_name"],
+            "reporting_owners": owner_records,
+            "date_of_original_submission": (
+                "2026-07-10" if is_amendment else ""
+            ),
+            "rows": [row],
+        }
+
+    originals = [
+        filing(
+            f"original-{index}",
+            owners=owners,
+            is_amendment=False,
+        )
+        for index, owners in enumerate(original_owner_sets, start=1)
+    ]
+    amendment = filing(
+        "amendment-1",
+        owners=amendment_owners,
+        is_amendment=True,
+    )
+
+    rows = sec._select_filing_versions([*originals, amendment])
+    by_accession = {row["accession"]: row for row in rows}
+
+    assert by_accession["amendment-1"]["amendment_match_status"] == "ambiguous"
+    assert (
+        by_accession["amendment-1"]["amendment_ambiguity_evidence"]
+        == affected_accessions
+    )
+    for accession in affected_accessions:
+        assert by_accession[accession]["cluster_eligible"] is False
+        assert by_accession[accession]["amendment_match_status"] == "ambiguous"
+        assert (
+            by_accession[accession]["amendment_ambiguity_evidence"]
+            == affected_accessions
+        )
+    unrelated = {
+        original["accession"]
+        for original in originals
+        if original["accession"] not in affected_accessions
+    }
+    assert unrelated
+    assert all(by_accession[accession]["cluster_eligible"] for accession in unrelated)
 
 
 @pytest.mark.asyncio

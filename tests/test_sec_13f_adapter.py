@@ -29,6 +29,12 @@ from argosy.services.adapter_outcomes import (
     reset_outcomes,
 )
 
+
+@pytest.fixture(autouse=True)
+def _declared_sec_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "tests@example.com")
+
+
 # ----------------------------------------------------------------------
 # Fixture payloads
 # ----------------------------------------------------------------------
@@ -211,10 +217,18 @@ def test_sec_user_agent_reads_declared_contact_at_request_time(
     assert first.startswith("Argosy/")
 
 
-def test_sec_user_agent_rejects_empty_runtime_contact(
+@pytest.mark.parametrize(
+    "contact",
+    [None, "   ", "ops@argosy.local"],
+)
+def test_sec_user_agent_rejects_invalid_runtime_contact(
     monkeypatch: pytest.MonkeyPatch,
+    contact: str | None,
 ) -> None:
-    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "   ")
+    if contact is None:
+        monkeypatch.delenv("ARGOSY_SEC_CONTACT_EMAIL", raising=False)
+    else:
+        monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", contact)
 
     with pytest.raises(ValueError, match="ARGOSY_SEC_CONTACT_EMAIL"):
         sec_13f._default_headers()

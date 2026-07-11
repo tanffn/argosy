@@ -276,7 +276,9 @@ class SecForm4Adapter:
 
         async def _fetch() -> list[dict[str, Any]]:
             map_ttl = 0 if ttl_seconds == 0 else TICKER_TTL_SECONDS
-            _, cik_to_ticker = await self._get_ticker_maps(ttl_seconds=map_ttl)
+            ticker_to_cik, cik_to_tickers = await self._get_ticker_maps(
+                ttl_seconds=map_ttl
+            )
             indexed_filings: list[dict[str, Any]] = []
             for current in business_days:
                 indexed_filings.extend(
@@ -306,15 +308,29 @@ class SecForm4Adapter:
                     parsed_issuer_cik = _ownership_document_issuer_cik(
                         xml_text
                     )
-                    ticker = cik_to_ticker.get(parsed_issuer_cik)
-                    if ticker is None:
-                        continue
                     parsed = _parse_form4_xml(
                         xml_text,
                         accession=str(filing["accession"]),
                     )
                     if not parsed:
                         continue
+                    parsed_symbol = str(
+                        parsed[0].get("ticker") or ""
+                    ).strip().upper()
+                    if parsed_symbol:
+                        if (
+                            ticker_to_cik.get(parsed_symbol)
+                            != parsed_issuer_cik
+                        ):
+                            continue
+                        ticker = parsed_symbol
+                    else:
+                        issuer_tickers = tuple(
+                            cik_to_tickers.get(parsed_issuer_cik, ())
+                        )
+                        if len(issuer_tickers) != 1:
+                            continue
+                        ticker = issuer_tickers[0]
                     for row in parsed:
                         document_type = (
                             str(row.get("document_type") or "")
@@ -405,23 +421,26 @@ class SecForm4Adapter:
 
     async def _get_ticker_maps(
         self, *, ttl_seconds: int = TICKER_TTL_SECONDS
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        async def _fetch_maps() -> dict[str, dict[str, str]]:
+    ) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+        async def _fetch_maps() -> dict[str, Any]:
             text = await self._fetch_text(SEC_TICKERS_URL)
-            ticker_to_cik, cik_to_ticker = _parse_ticker_maps(text)
+            ticker_to_cik, cik_to_tickers = _parse_ticker_maps(text)
             return {
                 "ticker_to_cik": ticker_to_cik,
-                "cik_to_ticker": cik_to_ticker,
+                "cik_to_tickers": cik_to_tickers,
             }
 
-        payload: dict[str, dict[str, str]] = await cached_call(
+        payload: dict[str, Any] = await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
-            key="ticker_maps",
+            key="ticker_maps:v2",
             ttl_seconds=ttl_seconds,
             fetch=_fetch_maps,
         )
-        return payload["ticker_to_cik"], payload["cik_to_ticker"]
+        return payload["ticker_to_cik"], {
+            cik: tuple(tickers)
+            for cik, tickers in payload["cik_to_tickers"].items()
+        }
 
     async def _resolve_cik_for_ticker(
         self, ticker: str, *, ttl_seconds: int
@@ -659,8 +678,10 @@ def _ownership_document_issuer_cik(xml_text: str) -> str:
     return _normalize_cik(_ft(root, "issuerCik"))
 
 
-def _parse_ticker_maps(text: str) -> tuple[dict[str, str], dict[str, str]]:
-    """Parse SEC company tickers into TICKER→CIK and CIK→TICKER maps.
+def _parse_ticker_maps(
+    text: str,
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """Parse SEC tickers into TICKER→CIK and CIK→all-tickers maps.
 
     Expected shape: ``{"0": {"cik_str": ..., "ticker": ..., "title": ...}, ...}``
     """
@@ -673,7 +694,7 @@ def _parse_ticker_maps(text: str) -> tuple[dict[str, str], dict[str, str]]:
             f"SEC company_tickers.json malformed: {exc!s}"
         ) from exc
     ticker_to_cik: dict[str, str] = {}
-    cik_to_ticker: dict[str, str] = {}
+    tickers_by_cik: dict[str, set[str]] = {}
     entries: Any = []
     if isinstance(data, dict):
         entries = data.values()
@@ -687,8 +708,11 @@ def _parse_ticker_maps(text: str) -> tuple[dict[str, str], dict[str, str]]:
         if ticker and cik_value is not None:
             cik = str(cik_value).lstrip("0").zfill(10)
             ticker_to_cik[ticker] = cik
-            cik_to_ticker.setdefault(cik, ticker)
-    return ticker_to_cik, cik_to_ticker
+            tickers_by_cik.setdefault(cik, set()).add(ticker)
+    return ticker_to_cik, {
+        cik: tuple(sorted(tickers))
+        for cik, tickers in sorted(tickers_by_cik.items())
+    }
 
 
 def _parse_ticker_map(text: str) -> dict[str, str]:
@@ -1162,16 +1186,16 @@ def _parse_reporting_owner(owner: Any) -> dict[str, str]:
     }
 
 
-def _normalized_owner_key(filing: dict[str, Any]) -> tuple[str, str]:
+def _owner_identity_set(filing: dict[str, Any]) -> frozenset[str]:
     reporting_owners = filing.get("reporting_owners")
     if isinstance(reporting_owners, list) and reporting_owners:
-        owner_keys = []
+        owner_keys: set[str] = set()
         for owner in reporting_owners:
             if not isinstance(owner, dict):
                 continue
             cik = str(owner.get("filer_cik") or "").lstrip("0")
             if cik:
-                owner_keys.append(f"cik:{cik}")
+                owner_keys.add(f"cik:{cik}")
                 continue
             name = re.sub(
                 r"[^a-z0-9]+",
@@ -1179,18 +1203,22 @@ def _normalized_owner_key(filing: dict[str, Any]) -> tuple[str, str]:
                 str(owner.get("filer_name") or "").casefold(),
             ).strip()
             if name:
-                owner_keys.append(f"name:{name}")
+                owner_keys.add(f"name:{name}")
         if owner_keys:
-            return ("owners", "|".join(sorted(set(owner_keys))))
+            return frozenset(owner_keys)
     filer_cik = str(filing.get("filer_cik") or "")
     if filer_cik:
-        return ("cik", filer_cik.lstrip("0"))
+        return frozenset({f"cik:{filer_cik.lstrip('0')}"})
     owner_name = re.sub(
         r"[^a-z0-9]+",
         " ",
         str(filing.get("filer_name") or "").casefold(),
     ).strip()
-    return ("name", owner_name)
+    return frozenset({f"name:{owner_name}"}) if owner_name else frozenset()
+
+
+def _normalized_owner_key(filing: dict[str, Any]) -> tuple[str, str]:
+    return ("owners", "|".join(sorted(_owner_identity_set(filing))))
 
 
 def _amendment_match_key(
@@ -1210,6 +1238,24 @@ def _amendment_match_key(
     )
 
 
+def _usable_iso_date(value: Any) -> str | None:
+    candidate = str(value or "")[:10]
+    try:
+        date.fromisoformat(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _amendment_owner_scope(
+    filing: dict[str, Any],
+) -> tuple[str, tuple[str, str]]:
+    return (
+        str(filing.get("issuer_cik") or "").lstrip("0"),
+        _normalized_owner_key(filing),
+    )
+
+
 def _select_filing_versions(
     filings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1221,19 +1267,29 @@ def _select_filing_versions(
             _amendment_match_key(filing, original=True),
             [],
         ).append(filing)
-    amendments_by_key: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    amendments_by_key: dict[
+        tuple[tuple[str, tuple[str, str]], str | None],
+        list[dict[str, Any]],
+    ] = {}
     for filing in amendments:
         amendments_by_key.setdefault(
-            _amendment_match_key(filing, original=False),
+            (
+                _amendment_owner_scope(filing),
+                _usable_iso_date(
+                    filing.get("date_of_original_submission")
+                ),
+            ),
             [],
         ).append(filing)
 
     excluded_original_accessions: set[str] = set()
     selected_filings: list[dict[str, Any]] = []
-    for key, versions in amendments_by_key.items():
-        candidates = originals_by_key.get(key, [])
-        excluded_original_accessions.update(
-            str(candidate["accession"]) for candidate in candidates
+    for (owner_scope, original_date), versions in amendments_by_key.items():
+        exact_key = (*owner_scope, original_date)
+        candidates = (
+            originals_by_key.get(exact_key, [])
+            if original_date is not None
+            else []
         )
         latest = max(
             versions,
@@ -1246,21 +1302,35 @@ def _select_filing_versions(
             match_status = "matched"
             cluster_eligible = True
             filing_identity = str(candidates[0]["accession"])
-        elif len(candidates) > 1:
-            match_status = "ambiguous"
-            cluster_eligible = False
-            filing_identity = str(latest["accession"])
+            affected_originals = candidates
+            excluded_original_accessions.add(filing_identity)
         else:
-            match_status = "unmatched"
+            amendment_owner_identities = _owner_identity_set(latest)
+            affected_originals = [
+                original
+                for original in originals
+                if (
+                    str(original.get("issuer_cik") or "").lstrip("0")
+                    == owner_scope[0]
+                    and bool(
+                        amendment_owner_identities.intersection(
+                            _owner_identity_set(original)
+                        )
+                    )
+                )
+            ]
+            match_status = (
+                "ambiguous" if affected_originals else "unmatched"
+            )
             cluster_eligible = False
             filing_identity = str(latest["accession"])
         evidence = sorted(
-            str(candidate["accession"]) for candidate in candidates
+            str(candidate["accession"]) for candidate in affected_originals
         )
         source_urls = sorted(
             {
                 str(filing["filing_url"])
-                for filing in [*candidates, *versions]
+                for filing in [*affected_originals, *versions]
                 if filing.get("filing_url")
             }
         )
@@ -1276,6 +1346,20 @@ def _select_filing_versions(
                     "source_urls": source_urls,
                 }
             )
+        if match_status == "ambiguous":
+            for original in affected_originals:
+                for row in original["rows"]:
+                    row.update(
+                        {
+                            "amendment_match_status": "ambiguous",
+                            "amendment_ambiguity_evidence": evidence,
+                            "filing_identity": str(
+                                original["accession"]
+                            ),
+                            "cluster_eligible": False,
+                            "source_urls": source_urls,
+                        }
+                    )
         selected_filings.append(latest)
 
     selected_filings.extend(
@@ -1287,6 +1371,8 @@ def _select_filing_versions(
         if filing["is_amendment"]:
             continue
         for row in filing["rows"]:
+            if row.get("amendment_match_status") == "ambiguous":
+                continue
             row.update(
                 {
                     "amendment_match_status": "not_amendment",
