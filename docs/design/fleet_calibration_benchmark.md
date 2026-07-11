@@ -95,6 +95,29 @@ Freeze dates below are DERIVED per the freeze-point rule; evidence in the append
 Category D is the counterweight to C: a fleet that passes C by selling everything that falls
 fails D. Calibration = passing BOTH, which is only possible by judging falsifiers, not price.
 
+## 2a. Suite workflow — five INDEPENDENT agents (owner-specified, 2026-07-11)
+
+Each stage is a separate agent so failures decorrelate (the re-derive-blind doctrine):
+1. **Classifier + data-sourcing agent** — picks the case's category/time points, gathers
+   period-accurate facts with per-fact source dates.
+2. **Sanitizer agent** (independent of stage 1) — applies the §1 decontamination and signs off
+   that no real name/absolute figure/calendar date/macro-event survives.
+3. **Fleet test** — the production trader agent judges the packet (the system under test).
+4. **Review agent** (independent) — audits the run: output cleanliness (no references OR
+   re-identification patterns of the real symbol), tool/workflow correctness (did the runner
+   feed exactly the packet; anything skipped), and a workflow + chain-of-thought score
+   (was the reasoning grounded in packet facts step by step).
+5. **Grading agent** — scores verdicts vs expected classes + the acted-on-it P&L, and writes
+   the §2b table.
+STATUS (2026-07-11): stages 1+2 ran as one builder agent with a separate verifier; stage 4 ran
+as inline audit scripts + one mid-run verification pass. The full replay trail (packet +
+rendered constraints + raw output, persisted per point since the same date) is what makes a
+true stage-4/5 agent pass possible post-hoc — build the separated pipeline with the next case
+batch. **Ownership blindness (owner rule):** the fleet must never know whether the client
+holds the name — category A/B packets use a NEUTRAL synthetic portfolio ("no existing
+position…, budget ~1-2%"); category C/D carry only an anonymized "the sleeve holds N @ basis"
+context, no owner identity. (Already practiced in the 2026-07-11 packets; now binding.)
+
 ## 2b. Per-case report format (owner-specified, 2026-07-10 — every suite run reports this table)
 
 One row per symbol per time point, three columns, none optional:
