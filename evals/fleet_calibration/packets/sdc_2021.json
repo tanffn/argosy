@@ -67,14 +67,14 @@
           "revenue_usd_m": 1051,
           "revenue_growth_pct": 77.3,
           "net_income_usd_m": -753,
-          "note": "GAAP consolidated net loss (FY2019)"
+          "note": "GAAP consolidated net loss (FY-2)"
         },
         {
           "fy": "FY-1",
           "revenue_usd_m": 919,
           "revenue_growth_pct": -12.5,
           "net_income_usd_m": -390,
-          "note": "GAAP consolidated net loss (FY2020)"
+          "note": "GAAP consolidated net loss (FY-1)"
         }
       ],
       "latest_quarter": {
@@ -112,7 +112,11 @@
   "changelog": [
     {
       "date": "2026-07-11",
-      "fix": "block-2b FAIL rebuild: FY-2 growth corrected to 77.3% (FY2019 YoY); FY-2 NI set to GAAP consolidated -537.8×1.4 and labeled."
+      "fix": "block-2b FAIL rebuild: FY-2 growth corrected to 77.3% (FY2019 YoY); FY-2 NI set to GAAP consolidated -537.8x1.4 and labeled."
+    },
+    {
+      "date": "2026-07-11",
+      "fix": "sanitizer catch on live suite: annual_income_statement notes FY2019/FY2020 -> relative FY-2/FY-1 (calendar-year leak)."
     }
   ]
 }
