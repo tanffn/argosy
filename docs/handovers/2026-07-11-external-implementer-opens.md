@@ -319,6 +319,34 @@ prompt ready (migrations start 0086 — 0085 is stream B's).
   keys) make the plan render numbers live — after that, the plan touches are annual/structural
   only, as intended.
 
+## 5e. FINAL WRAP (2026-07-11 late night — supersedes 5d where they differ)
+
+- **Synthesis-aftermath block REVIEWED + MERGED (master `ea36949`, pushed).** 246 tests green;
+  deep review: 3 PASS, 1 CONCERN. **Follow-up mini-block for the aftermath agent:**
+  (1) `_preserve_unimplicated_sections` drops MODEL-NEW sections (orchestrator.py:5190-5220) —
+  LIVE issue: v89 is 16/18 (healthcare/insurance missing) and can never regain them; union
+  model-new sections + dedupe by (section_id,horizon) + tests for duplicates/implicated;
+  (2) wrap `_persist_accept_gate_reject` call (plan.py:3573) in try/except (JSON/DB error
+  turns the 422 into a 500); (3) accept-gate blob re-feeds one redundant cycle until accept
+  (known, converges); (4) pre-existing: plan_narrative_auto_regen worker threads outlive
+  tests (hygiene). NOTE: the agent's first 5 commits landed interleaved UNDER the reviewer's
+  b04c0cb and reached origin pre-review (second silent-interleave incident — implementers:
+  announce pushes).
+- **Discovery verdicts (all DEFENDED, registry seeds): OKLO HOLD** (clock: July-2026 first
+  criticality — fires THIS MONTH), **RKLB HOLD** (two make-or-break events), **ASTS HOLD**
+  (next launch/data-integrity checkpoint), + ORCL HOLD (5d). **Ariel decided: monitor-only
+  on all four; the half-starter-before-event option was offered and declined for now.**
+- **CMPS: Ariel approved buying.** Proposal 15 was shadow=1 (funnel calibration mode → no
+  Approve button in /inbox — the bug he hit). UN-SHADOWED with proposals_history note;
+  T2, no TOTP; he clicks Approve; card expires 07-13 15:30. VOR (16) left shadow to expire.
+  QUEUE: design a proper funnel-proposal graduation mechanism (shadow → approvable after
+  calibration; benchmark 28/29 + 4/5 supports it).
+- **ITEM B green-lit for the freed stream-B agent** (prompt in the 2026-07-11 session log /
+  re-issue from §3.B + tracking extension): verdicts registry + pushback gate + deterministic
+  trigger checker; migrations 0087; zero live LLM; runs PARALLEL to the aftermath follow-up
+  mini-block (0086 lane).
+- Dirty domain stamps (tax/* + sec_13f.md) — commit as chore next session.
+
 ## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
 
 You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
