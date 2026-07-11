@@ -1,0 +1,134 @@
+{
+  "case_id": "nflx_2013_f2",
+  "alias": "SMC",
+  "category": "A",
+  "grading": "F2_strict",
+  "real": "NFLX @ 2013-02-01 ($2.35 adj; F2 per spec appendix — immediately after the confirming Q4-2012 print of 2013-01-23, early parabola)",
+  "freeze_date": "2013-02-01",
+  "rescale_factor": 4.1,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in SMC. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 61,
+  "contamination_terms": [
+    "Netflix",
+    "NFLX",
+    "Hastings",
+    "Qwikster",
+    "House of Cards",
+    "Disney",
+    "HBO",
+    "Amazon",
+    "Starz",
+    "Icahn"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 2.35,
+    "price_at_horizon_real": 33.99,
+    "horizon_label": "6y (2019-02-01)",
+    "benchmark_return_pct": 1344,
+    "note": "yfinance adjusted closes, fetched 2026-07-11. Split basis: divide-by-70 (7:1 2015 + 10:1 2025 splits); contemporaneous unadjusted price ~$164.8. Matches spec-appendix monthly anchor (2013-01 ~2.36 on the 70x basis)."
+  },
+  "sources": [
+    {
+      "fact": "Q4-2012 shareholder letter: home-market streaming +2.05M net adds to 27.15M total, contribution margin 18.5% (up from 10.9% a year earlier); Q4 revenue $945.2M, GAAP net income $7.9M ($0.13 EPS) vs consensus expecting a loss; FY2012 revenue $3,609.3M (+12.6%), net income $17.2M; international 6.12M subs, -$104.8M contribution loss; DVD 8.22M subs, $127.5M contribution profit (50.1% margin); FCF -$51M on front-loaded originals cash; Q1 guidance: net income $0-14M, domestic streaming contribution profit up ~90% YoY and exceeding DVD for the first time; flagship original series (all 13 episodes at once) releasing February 1st; activist investor holds ~10% acquired at ~$58/share; exploring refinancing the $200M notes and raising additional debt",
+      "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528013000005/nflx-0123112xex991.htm",
+      "date": "2013-01-23",
+      "verify": true
+    },
+    {
+      "fact": "Exclusive multi-year premium pay-TV-window output agreement with The Walt Disney Studios announced — first-run theatrical output exclusively to the streamer beginning with titles released three years out, displacing the premium cable incumbent; direct-to-video titles and catalog start immediately",
+      "url": "https://www.prnewswire.com/news-releases/netflix-and-the-walt-disney-studios-announce-multi-year-premium-pay-tv-window-agreement-in-the-united-states-182053971.html",
+      "date": "2012-12-04",
+      "verify": true
+    },
+    {
+      "fact": "Stock closed +42% the day after the Q4 print (heavily shorted — ~13% of shares held short) and rose further the next day; largest one-day gain in the company's history",
+      "url": "https://money.cnn.com/2013/01/24/investing/netflix-stock",
+      "date": "2013-01-24"
+    },
+    {
+      "fact": "FY2011 10-K: FY2011 revenue $3,204.6M, net income $226.1M; FY2010 revenue $2,162.6M, net income $160.9M (pre-debacle earnings power context)",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001065280&type=10-K&dateb=&owner=include&count=10",
+      "date": "2012-02-10"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/SMC",
+      "company": "StreamCo Media (alias SMC)",
+      "as_of": "current",
+      "market_cap_usd_m": 37560,
+      "share_price_usd": 676,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 1190,
+        "short_term_investments_usd_m": 1877,
+        "total_debt_usd_m": 1640,
+        "stockholders_equity_usd_m": 3053,
+        "note": "on-balance-sheet content liabilities ~$10,018M; management is exploring refinancing its notes and raising additional debt to fund the originals ramp — cash needs are front-loaded ahead of the P&L"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 8867,
+          "net_income_usd_m": 659
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 13139,
+          "revenue_growth_pct": 48.2,
+          "net_income_usd_m": 927,
+          "note": "the pre-debacle peak-earnings year; the price restructuring and aborted legacy-segment spinoff hit in its back half"
+        },
+        {
+          "fy": "FY0 (just closed)",
+          "revenue_usd_m": 14798,
+          "revenue_growth_pct": 12.6,
+          "net_income_usd_m": 71,
+          "note": "earnings compressed ~-92% by design: a profitable, margin-expanding home-market streaming segment plus a high-margin disc annuity are funding ~-$1.6B/yr (rescaled) of international launch losses"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0, reported ~1 week ago",
+        "revenue_usd_m": 3875,
+        "revenue_growth_yoy_pct": 7.9,
+        "gaap_net_income_usd_m": 32,
+        "gaap_eps_usd": 0.53,
+        "note": "the confirming print: consensus expected a loss, the company delivered a profit. Home-market streaming added +8.4M net subscribers (vs +0.9M in the debacle quarter five quarters ago) to 111.3M, with contribution margin 18.5% vs 10.9% a year ago — the sixth straight quarter of margin expansion. International losses -$430M as planned. Disc segment held a 50.1% margin. FCF -$209M on front-loaded original-content payments; management says the bulk of remaining originals cash goes out next quarter, then FCF improves."
+      },
+      "guidance": {
+        "next_quarter": "net income guided to $0-57M; home-market streaming contribution profit guided up ~90% YoY, exceeding the disc segment's for the first time ever; streaming subs guided to 116.9-119.7M",
+        "medium_term": "~100bps/quarter home-market streaming margin expansion target intact; no new international launches in the first half, so losses decline sequentially from here"
+      },
+      "valuation": {
+        "ps_trailing": 2.5,
+        "pe_trailing": 533,
+        "pe_note": "trailing GAAP P/E is optically absurd because consolidated earnings are pinned near zero by international investment; on the home-market streaming segment's contribution-profit run-rate (~$1.8B/yr rescaled and compounding at +100bps margin/quarter on a growing base) the multiple is far more ordinary",
+        "peer_context": "the premium cable incumbent monetizes ~120M rescaled-equivalent subscribers at ~30% margins and trades at a low-teens earnings multiple; SMC now has roughly the subscriber scale of that incumbent in its home market alone, with margins one-third of the way there and still expanding",
+        "price_action": "THE EASY MONEY LOOKS MADE: +60% in the six trading days since the print (a violent short squeeze — ~13% of shares were held short), ~3x off the multi-year low of ~4.5 months ago, and back to a level first reached on the way down ~17 months ago. It is still ~-45% below its all-time high of ~18 months ago."
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/SMC",
+      "business_description": "The largest subscription streaming service in the world (over 137M global streaming members), five quarters past a self-inflicted debacle (bungled price restructuring + aborted spinoff of its legacy disc-rental segment) that cost it ~3.3M home-market subscribers and -75% of its market value. The recovery thesis has now printed twice: the entry-era recovery quarter ~3 quarters ago, and a just-reported quarter that beat on subscribers AND profit. The business model is deliberately two-speed: a profitable home-market streaming segment expanding margin ~100bps/quarter plus a melting-but-rich disc annuity, funding heavy international expansion (seven-country footprint spanning ~40 markets) and a new original-content slate.",
+      "recent_developments": [
+        "The confirming print, ~1 week ago: +8.4M home-market streaming net adds (the debacle is now demonstrably behind it), a surprise GAAP profit where the street expected a loss, and home-market streaming contribution margin of 18.5% vs 10.9% a year ago. The stock closed +42% the next day — its biggest one-day gain ever — squeezing a ~13%-of-float short base.",
+        "~2 months ago: an exclusive multi-year output deal with THE major family-entertainment studio — first-run theatrical titles will stream exclusively on SMC in the premium pay-TV window starting with titles released three years out, displacing the premium cable incumbent that had held those rights for over a decade. It is the company's first premium-window output deal with a major studio in its home market; catalog and direct-to-video titles start immediately.",
+        "The company's flagship original series — a big-budget political drama from an A-list film director and A-list lead, all 13 episodes released simultaneously — premieres TODAY across every market. Management calls it 'a defining moment in the development of internet TV'; four more originals follow this year, including the revival of a cult comedy with a built-in fanbase.",
+        "An activist investor disclosed a ~10% stake a quarter ago (cost basis ~65% below the current price) and is publicly pushing for value maximization, including a possible sale to a larger technology or media acquirer.",
+        "Bear case, stated honestly: the stock has already tripled off its low; FCF is negative (-$209M last quarter, rescaled) and worsens next quarter as originals cash goes out the door, with a debt raise planned; the disc annuity (50% margins) is melting; the giant e-commerce rival is spending aggressively on its bundled streaming service and just launched its own original pilots; the premium cable incumbent's streaming app keeps expanding; and per-subscriber content obligations keep ratcheting up (~$10B rescaled on the balance sheet).",
+        "Competitive-overlap datapoint from management: of the service's 200 most-watched titles, 113 appear on none of the three rival streaming services in its home market; management argues the rivals are becoming different services, not substitutes, as everyone pivots to exclusives and originals."
+      ],
+      "macro_context": "Internet-connected TVs, tablets and game consoles continue to proliferate; the holiday quarter saw record device activations, directly feeding streaming sign-ups. Pay-TV cord-cutting is measurable but still early. Equity markets are risk-on; heavily-shorted recovery names are squeezing hard, which cuts both ways for entry timing.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

@@ -1,0 +1,125 @@
+{
+  "case_id": "anet_2016_f1",
+  "alias": "LWN",
+  "category": "A",
+  "grading": "F1_lenient",
+  "real": "ANET @ 2016-06-15 ($4.57 adj; mid-grind, F1 per spec appendix — T_signal = FY2015 10-K cloud-titan concentration disclosure)",
+  "freeze_date": "2016-06-15",
+  "rescale_factor": 2.9,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in LWN. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 62,
+  "contamination_terms": [
+    "Arista",
+    "ANET",
+    "Bechtolsheim",
+    "Ullal",
+    "Duda",
+    "EOS",
+    "Cisco",
+    "CSCO",
+    "Microsoft",
+    "World Wide Technology",
+    "ITC",
+    "7500"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 4.57,
+    "price_at_horizon_real": 22.61,
+    "horizon_label": "5y (2021-06-15)",
+    "benchmark_return_pct": 395,
+    "note": "yfinance adjusted closes, fetched 2026-07-11. Split basis: divide-by-16 (4:1 2021 + 4:1 2024 splits); contemporaneous unadjusted price ~$73.1. The spec appendix quotes ANET on a 4x (single-split) basis (~$16-18 there); numbers here are on the full 16x basis — ratios and returns are identical."
+  },
+  "sources": [
+    {
+      "fact": "FY2015 Form 10-K: revenue $837.6M (+43.4%; $584.1M and $361.2M the two prior years, +61.7% and +86.8%), net income $121.1M, gross profit $543.6M (64.9% GM); revenue CAGR 56.4% over four years; customers include six of the largest cloud services providers by revenue; sales to one hyperscale cloud customer through a fulfillment/channel partner were 12.0% of revenue (14.9% and 21.9% the two prior years — above 10% three years running); cash and equivalents $687.3M; two trade-commission (Section 337) investigations brought by the dominant incumbent are pending, with an administrative law judge's initial determination (dated ~4.5 months before freeze) finding a violation on three patents in the first case, and a limited exclusion order (import ban) plus cease-and-desist order identified as the remedy risk",
+      "url": "https://www.sec.gov/Archives/edgar/data/1596532/000159653216000244/anet20151231-10k.htm",
+      "date": "2016-02-25",
+      "verify": true
+    },
+    {
+      "fact": "Q1-2016 press release: revenue $242.2M, +35.3% YoY and -1.3% QoQ; GAAP gross margin 64.0%; GAAP net income $35.2M ($0.48 diluted); non-GAAP net income $49.1M ($0.68); new routing-capable flagship switch platform introduced",
+      "url": "https://www.sec.gov/Archives/edgar/data/1596532/000159653216000253/ex991q116.htm",
+      "date": "2016-05-05",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/LWN",
+      "company": "LatticeWave Networks (alias LWN)",
+      "as_of": "current",
+      "market_cap_usd_m": 14560,
+      "share_price_usd": 212,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": "1,993",
+        "total_debt_usd_m": 0,
+        "note": "net cash, no material debt; strongly cash-generative — the balance sheet can absorb an adverse litigation remedy, though an import ban would hit the P&L, not the balance sheet"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 1047,
+          "revenue_growth_pct": 86.8,
+          "net_income_usd_m": 123
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 1694,
+          "revenue_growth_pct": 61.7,
+          "net_income_usd_m": 252
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 2429,
+          "revenue_growth_pct": 43.4,
+          "gross_margin_pct": 64.9,
+          "net_income_usd_m": 351,
+          "note": "GAAP-profitable every year on record while growing 40-90%; four-year revenue CAGR 56.4%"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1, reported ~6 weeks ago",
+        "revenue_usd_m": 702,
+        "revenue_growth_yoy_pct": 35.3,
+        "revenue_growth_qoq_pct": -1.3,
+        "gaap_net_income_usd_m": 102,
+        "gaap_eps_usd": 1.39,
+        "note": "first sequential revenue dip as a public company (-1.3% QoQ) — hyperscale customers order in lumpy, purchase-order-driven waves rather than on long-term contracts; gross margin held at 64.0%"
+      },
+      "guidance": {
+        "next_quarter": "management guided continued ~30%+ YoY growth with gross margin in the low-to-mid 60s; no long-term contracts means guidance visibility is one quarter at a time",
+        "medium_term": "no formal multi-year guide; management frames the opportunity as the re-architecture of data-center networks around cloud-scale software"
+      },
+      "valuation": {
+        "ps_trailing": 5.6,
+        "pe_trailing": 38,
+        "pe_note": "~38x trailing GAAP, ~27x trailing non-GAAP, roughly mid-20s on forward consensus — a growth multiple, but earned: this is a profitable ~35-43% grower, not a story stock",
+        "peer_context": "the dominant incumbent (~10x LWN's networking revenue) grows low-single-digits and trades at ~12-14x earnings; the valuation debate is entirely about whether LWN's share gains and growth durability justify ~2x the incumbent's multiple per point of growth, with the litigation tail risk as the discount",
+        "price_action": "dead money by momentum standards: roughly flat over the past year, ~-20% below its high of ~10 months ago, and about +20% off its low of ~5 months ago; the multiple has compressed for six quarters while revenue compounded — the market is paying for the litigation overhang and the growth-deceleration optics (86.8% -> 61.7% -> 43.4% -> 35.3%)"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/LWN",
+      "business_description": "Founder-led designer of high-performance data-center Ethernet switches, built around a single software operating system across every product (one binary image, network-wide state, programmable), sold primarily to the largest cloud operators. Founded and run by a group of legendary networking engineers — the CEO is a highly regarded former senior executive of the dominant incumbent, and the founders effectively invented several generations of the technology at prior companies. Customers include six of the largest cloud services providers by revenue. Its largest end customer — one hyperscale cloud operator buying through a fulfillment partner — was 12.0% of revenue last year and above 10% for three straight years, an anchor-tenant validation of the cloud-titan thesis: cloud operators are abandoning the incumbent's proprietary-hardware model for software-driven switching on merchant silicon.",
+      "recent_developments": [
+        "The thesis signal sits in the latest annual filing: three consecutive years above 10% revenue concentration from a single hyperscale cloud customer, six of the largest cloud providers on the customer list, and 43.4% growth at 64.9% gross margin with GAAP profits — share gains against an incumbent with ~65-70% market share in data-center switching, funded by the cloud capex cycle.",
+        "GENUINE BEAR CASE — litigation with an import-ban tail: the dominant incumbent has sued on multiple patent fronts, including two trade-commission (Section 337) cases. In the first, an administrative law judge's initial determination ~4.5 months ago found a violation on three patents; the commission's FINAL determination is due within weeks. The identified remedy is a limited exclusion order — an outright ban on importing the company's (foreign-manufactured) flagship switches into its largest market — plus a cease-and-desist. Management says it has design-arounds and domestic-manufacturing options prepared, but a disruptive transition period is a real scenario. A second trade-commission case on further patents follows about a year behind.",
+        "Growth optics are decelerating (86.8% -> 61.7% -> 43.4% annual, +35.3% last quarter) and the latest quarter printed the company's first sequential revenue decline, a function of lumpy purchase-order buying by a concentrated customer base with no long-term contracts.",
+        "Product breadth is expanding up-stack: a new flagship platform introduced last quarter adds internet-scale routing capability in hardware, opening a second large market against the same incumbent.",
+        "The incumbent's counter-narrative: it argues the challenger's growth comes from a niche (cloud) that the incumbent can re-enter with its own new operating software and merchant-silicon lines, and that patent remedies will halt the share-gain machine. Skeptics also note the hyperscale customers are famously ruthless about dual-sourcing and could commoditize their suppliers (white-box switching) just as they commoditized servers."
+      ],
+      "macro_context": "Cloud infrastructure capex among the handful of hyperscale operators is growing double-digits annually and is increasingly disclosed as a strategic priority in their filings; enterprise IT spending is flat. Merchant switch silicon keeps improving on a steep cost curve, which favors software-differentiated vendors over vertically integrated hardware incumbents — and, in the bear case, eventually favors no-name white boxes over everyone.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
