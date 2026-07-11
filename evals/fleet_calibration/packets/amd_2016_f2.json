@@ -73,9 +73,9 @@
       "balance_sheet": {
         "cash_and_equivalents_usd_m": 1217,
         "total_debt_usd_m": 3810,
-        "stockholders_equity_usd_m": 442,
+        "stockholders_equity_usd_m": -855,
         "annual_interest_expense_usd_m": 272,
-        "note": "heavily levered; nearest maturities refinanced out 3-10 years; covenant headroom thin"
+        "note": "heavily levered with an equity DEFICIT; nearest maturities refinanced out 3-10 years; covenant headroom thin"
       },
       "annual_income_statement": [
         {
@@ -130,6 +130,7 @@
     }
   ],
   "changelog": [
-    {"date": "2026-07-11", "fix": "temporal audit: 10-K filing date 2016-02-18 CONFIRMED via EDGAR; Q1-2016 PR date 2016-04-21 CONFIRMED, URL pinned to the actual ir.amd.com release (detail/683); Intel 10nm-delay source date corrected 2015-07-15 -> 2015-07-16 (AnandTech publication date; the earnings call itself was 07-15). All facts matched real figures (FY2015 rev $3,991M/-27.5%, NL -$660M; Q1-2016 rev $832M/-19.2%, NL -$109M). verify flags cleared."}
+    {"date": "2026-07-11", "fix": "temporal audit: 10-K filing date 2016-02-18 CONFIRMED via EDGAR; Q1-2016 PR date 2016-04-21 CONFIRMED, URL pinned to the actual ir.amd.com release (detail/683); Intel 10nm-delay source date corrected 2015-07-15 -> 2015-07-16 (AnandTech publication date; the earnings call itself was 07-15). All facts matched real figures (FY2015 rev $3,991M/-27.5%, NL -$660M; Q1-2016 rev $832M/-19.2%, NL -$109M). verify flags cleared."},
+    {"date": "2026-07-11", "fix": "stockholders_equity_usd_m +442 -> -855 (Q1-2016 10-Q deficit -$503M x1.7). Cash 716 and debt 2.24B were already correct. Scored 2026-07-11 run used the wrong-sign equity (trader saw a thin positive cushion instead of a deficit); that run stays immutable — future suite runs use this fix."}
   ]
 }

@@ -52,7 +52,7 @@
       "date": "2015-07-16"
     },
     {
-      "fact": "FY2015 year-end: cash & cash equivalents + marketable securities ; total debt .26B; stockholders equity deficit -; FY2015 interest expense ",
+      "fact": "FY2015 year-end: cash & cash equivalents + marketable securities $785M; total debt $2.26B; stockholders equity deficit -$412M; FY2015 interest expense $160M",
       "url": "https://www.sec.gov/Archives/edgar/data/2488/000000248816000047/amd-123115x10k.htm",
       "date": "2016-02-18"
     }
@@ -127,7 +127,7 @@
   "changelog": [
     {
       "date": "2026-07-11",
-      "fix": "block-2b FAIL rebuild: FY2015 10-K balance sheet (cash 785×1.7=1334.5, debt 2.26B, equity deficit -412); P/S and EV/S recomputed; price-action -70%→~-50%; freeze px .14."
+      "fix": "block-2b FAIL rebuild: FY2015 10-K balance sheet (cash 785x1.7=1334.5, debt 2.26B, equity deficit -412); P/S and EV/S recomputed; price-action -70% to ~-50%; freeze px $2.14."
     }
   ]
 }

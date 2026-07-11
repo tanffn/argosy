@@ -32,12 +32,12 @@
   },
   "sources": [
     {
-      "fact": "Q2-2023: retail units 76,530 (-35% YoY), revenue .968B (-24%); total GPU ,520 (+94% YoY, company record); Adjusted EBITDA + (company record); GAAP net loss -",
+      "fact": "Q2-2023: retail units 76,530 (-35% YoY), revenue $2.968B (-24%); total GPU $6,520 (+94% YoY, company record); Adjusted EBITDA +$155M (company record); GAAP net loss -$105M",
       "url": "https://www.sec.gov/Archives/edgar/data/1690820/000169082023000218/ex99_1q22023.htm",
       "date": "2023-07-19"
     },
     {
-      "fact": "Transaction support agreement with >90% of senior unsecured noteholders: eliminate >83% of 2025/2027 unsecured maturities, cut cash interest >/yr for two years, reduce total debt >.2B; new notes secured by operating + auction-network assets",
+      "fact": "Transaction support agreement with >90% of senior unsecured noteholders: eliminate >83% of 2025/2027 unsecured maturities, cut cash interest >$430M/yr for two years, reduce total debt >$1.2B; new notes secured by operating + auction-network assets",
       "url": "https://investors.carvana.com/news-releases/2023/07-19-2023-113111747",
       "date": "2023-07-19"
     },
@@ -58,7 +58,7 @@
       "report_name": "fundamentals/APO",
       "company": "AutoPort Online (alias APO)",
       "as_of": "current",
-      "market_cap_usd_m": 5998,
+      "market_cap_usd_m": 10652,
       "share_price_usd": 56.48,
       "balance_sheet": {
         "cash_and_equivalents_usd_m": 779,
@@ -91,8 +91,8 @@
         "note": "company-record GPU and Adj EBITDA while deliberately shrinking units; profitability inflection print"
       },
       "valuation": {
-        "ps_trailing": 0.38,
-        "ev_s_trailing": 0.72,
+        "ps_trailing": 0.68,
+        "ev_s_trailing": 1.01,
         "pe_trailing": null,
         "price_action": "stock bounced violently off the restructuring news but remains ~-90% from the prior cycle high; still a small-cap sleeve size"
       },
@@ -105,7 +105,7 @@
       "recent_developments": [
         "Just printed company-record gross profit per unit and first strongly positive Adjusted EBITDA quarter while units fell ~35% YoY — a deliberate profitability-over-growth pivot.",
         "Same day: support agreement with >90% of unsecured noteholders to cut >$1380M of debt, extend maturities, and slash near-term cash interest by >$494M/yr for two years; new paper is secured.",
-        "Cash ~mid-hundreds of millions (rescaled); management guides another positive Adj EBITDA quarter ahead.",
+        "Cash ~mid-hundreds of millions; management guides another positive Adj EBITDA quarter ahead.",
         "Bear case remains: volume was cut to buy survival, used-vehicle demand is soft, and the firm is still highly levered even after the exchange; dilution from equity raises is a real cost.",
         "Bull case: the information set that said survival risk a year ago no longer holds; unit economics finally work; optionality to re-accelerate volume into a repaired balance sheet."
       ],
@@ -116,7 +116,11 @@
   "changelog": [
     {
       "date": "2026-07-11",
-      "fix": "block-2b FAIL rebuild: resolution rebuilt as-traded via ×5 undoing May-2026 FORWARD split (no reverse split); debt/interest prose rescaled ×1.15; retail_units jittered; FY-2 growth set to exact 129.4% (12814/5587); valuation recomputed from packet figures."
+      "fix": "block-2b FAIL rebuild: resolution rebuilt as-traded via x5 undoing May-2026 FORWARD split (no reverse split); debt/interest prose rescaled x1.15; retail_units jittered; FY-2 growth set to exact 129.4% (12814/5587); valuation recomputed from packet figures."
+    },
+    {
+      "date": "2026-07-11",
+      "fix": "mechanical PASS follow-up: deleted trader-visible (rescaled); restored real dollar figures in sources[0]/[1]; mcap aligned to cvna_2022 A+B share-count convention (~189M x price x k = 10652)."
     }
   ]
 }
