@@ -253,6 +253,9 @@ class SecForm4Adapter:
             start_date + timedelta(days=offset)
             for offset in range(day_count)
             if (start_date + timedelta(days=offset)).weekday() < 5
+            and not _is_us_federal_holiday(
+                start_date + timedelta(days=offset)
+            )
         ]
         if not business_days:
             return []
@@ -441,7 +444,7 @@ class SecForm4Adapter:
     async def _fetch_daily_form_index(
         self, filing_date: date
     ) -> list[dict[str, Any]]:
-        if filing_date.weekday() >= 5:
+        if filing_date.weekday() >= 5 or _is_us_federal_holiday(filing_date):
             return []
         quarter = ((filing_date.month - 1) // 3) + 1
         filename = f"form.{filing_date:%Y%m%d}.idx"
@@ -459,6 +462,7 @@ class SecForm4Adapter:
         if text is None:
             raw: bytes = getattr(response, "content", b"")
             text = raw.decode("utf-8", errors="replace")
+        _raise_for_sec_automation_block(text)
         return _parse_daily_form_index(text)
 
     async def _fetch_form4_xml(self, *, cik: str, accession: str) -> str:
@@ -603,11 +607,24 @@ def _parse_ticker_map(text: str) -> dict[str, str]:
 def _parse_daily_form_index(text: str) -> list[dict[str, Any]]:
     """Parse one SEC fixed-width daily Form index."""
     lines = text.splitlines()
-    if not any("Form Type" in line and "File Name" in line for line in lines):
+    header_index: int | None = None
+    for index, line in enumerate(lines):
+        if "Form Type" not in line or "Company Name" not in line or "CIK" not in line:
+            continue
+        continuation = lines[index + 1] if index + 1 < len(lines) else ""
+        if "Date Filed" in line and "File Name" in line:
+            header_index = index
+            break
+        if "Date Filed" in continuation and "File Name" in continuation:
+            header_index = index
+            break
+    if header_index is None:
         raise MissingDataSourceError("SEC EDGAR daily Form index malformed: missing header")
     try:
         separator_index = next(
-            index for index, line in enumerate(lines) if line.startswith("-" * 20)
+            index
+            for index, line in enumerate(lines[header_index + 1 :], header_index + 1)
+            if line.startswith("-" * 20)
         )
     except StopIteration as exc:
         raise MissingDataSourceError(
@@ -625,18 +642,26 @@ def _parse_daily_form_index(text: str) -> list[dict[str, Any]]:
         form_type = raw_line[:12].strip()
         company_name = raw_line[12:74].strip()
         cik_raw = raw_line[74:86].strip()
-        filed_at = raw_line[86:98].strip()
+        filed_at_raw = raw_line[86:98].strip()
         archive_filename = raw_line[98:].strip()
         if (
             not form_type
             or not company_name
             or not cik_raw.isdigit()
-            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", filed_at)
             or not archive_filename
         ):
             raise MissingDataSourceError(
                 "SEC EDGAR daily Form index malformed: invalid columns"
             )
+        try:
+            if re.fullmatch(r"\d{8}", filed_at_raw):
+                filed_at = datetime.strptime(filed_at_raw, "%Y%m%d").date().isoformat()
+            else:
+                filed_at = date.fromisoformat(filed_at_raw).isoformat()
+        except ValueError as exc:
+            raise MissingDataSourceError(
+                "SEC EDGAR daily Form index malformed: invalid filed date"
+            ) from exc
         if form_type not in {"4", "4/A"}:
             continue
         basename = archive_filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]
@@ -656,6 +681,79 @@ def _parse_daily_form_index(text: str) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _raise_for_sec_automation_block(text: str) -> None:
+    normalized = " ".join(text.casefold().split())
+    if (
+        "undeclared automated tool" in normalized
+        or (
+            "declare your traffic" in normalized
+            and "user agent" in normalized
+        )
+    ):
+        raise MissingDataSourceError(
+            "SEC EDGAR automation block response; configure "
+            "ARGOSY_SEC_CONTACT_EMAIL for a declared contact User-Agent"
+        )
+
+
+def _observed_fixed_holiday(actual: date) -> date:
+    if actual.weekday() == 5:
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _nth_weekday(
+    year: int,
+    month: int,
+    weekday: int,
+    occurrence: int,
+) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (occurrence - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    next_month = date(year + (month == 12), (month % 12) + 1, 1)
+    last = next_month - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _is_us_federal_holiday(day: date) -> bool:
+    """Return whether ``day`` is a bounded, deterministic federal closure.
+
+    The list mirrors the recurring US federal holidays relevant to SEC
+    daily-index publication. Fixed-date holidays include Friday/Monday
+    observance when they fall on Saturday/Sunday.
+    """
+    fixed_actual_dates: set[date] = set()
+    for year in (day.year - 1, day.year, day.year + 1):
+        fixed_actual_dates.update(
+            {
+                date(year, 1, 1),
+                date(year, 7, 4),
+                date(year, 11, 11),
+                date(year, 12, 25),
+            }
+        )
+        if year >= 2021:
+            fixed_actual_dates.add(date(year, 6, 19))
+    fixed_dates = fixed_actual_dates | {
+        _observed_fixed_holiday(actual) for actual in fixed_actual_dates
+    }
+    floating_dates = {
+        _nth_weekday(day.year, 1, 0, 3),   # Martin Luther King Jr. Day
+        _nth_weekday(day.year, 2, 0, 3),   # Washington's Birthday
+        _last_weekday(day.year, 5, 0),     # Memorial Day
+        _nth_weekday(day.year, 9, 0, 1),   # Labor Day
+        _nth_weekday(day.year, 10, 0, 2),  # Columbus Day
+        _nth_weekday(day.year, 11, 3, 4),  # Thanksgiving Day
+    }
+    return day in fixed_dates or day in floating_dates
 
 
 def _parse_form4_atom_index(text: str, *, cik: str) -> list[dict[str, Any]]:
@@ -1107,6 +1205,7 @@ __all__ = [
     "TICKER_TTL_SECONDS",
     "TRANSACTION_CODE_MEANING",
     "_filing_within_window",
+    "_is_us_federal_holiday",
     "_parse_daily_form_index",
     "_parse_form4_atom_index",
     "_parse_form4_xml",

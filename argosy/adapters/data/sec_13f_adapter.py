@@ -48,6 +48,7 @@ Test injection:
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -84,13 +85,22 @@ DEFAULT_TIMEOUT = 15.0
 DEFAULT_TTL_SECONDS = 60 * 60 * 24 * 90  # 90 days
 
 ARGOSY_CONTACT_EMAIL = "admin@argosy.local"
+SEC_CONTACT_EMAIL_ENV = "ARGOSY_SEC_CONTACT_EMAIL"
 
 
 def _user_agent() -> str:
     """Polite, SEC-required User-Agent identifying Argosy + contact."""
     from argosy import __version__
 
-    return f"Argosy/{__version__} {ARGOSY_CONTACT_EMAIL}"
+    configured = os.environ.get(SEC_CONTACT_EMAIL_ENV)
+    contact_email = (
+        ARGOSY_CONTACT_EMAIL if configured is None else configured.strip()
+    )
+    if not contact_email:
+        raise ValueError(
+            f"{SEC_CONTACT_EMAIL_ENV} must contain a nonempty SEC contact email"
+        )
+    return f"Argosy/{__version__} {contact_email}"
 
 
 def _default_headers() -> dict[str, str]:
@@ -749,6 +759,7 @@ __all__ = [
     "EDGAR_BASE",
     "EDGAR_BROWSE_URL",
     "EDGAR_FTS_URL",
+    "SEC_CONTACT_EMAIL_ENV",
     "Sec13FAdapter",
     "_accession_dashed",
     "_extract_http_status",

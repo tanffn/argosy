@@ -19,6 +19,32 @@ _TICKERS_JSON = json.dumps(
     }
 )
 
+_REAL_FORM_INDEX_2026_07_09 = (
+    "Description: Daily Index of EDGAR Dissemination Feed\n"
+    "Last Data Received: July  9, 2026\n"
+    "Comments: webmaster@sec.gov\n"
+    "Anonymous FTP: ftp://ftp.sec.gov/edgar/\n"
+    "\n"
+    "Form Type   Company Name                                                  CIK\n"
+    "      Date Filed  File Name\n"
+    "--------------------------------------------------------------------------------"
+    "----------------------\n"
+    "4           PALANTIR TECHNOLOGIES INC.                                    "
+    "1321655     20260709    edgar/data/1321655/0001321655-26-000111.txt\n"
+    "4/A         PALANTIR TECHNOLOGIES INC.                                    "
+    "1321655     20260709    edgar/data/1321655/0001321655-26-000112.txt\n"
+    "8-K         NVIDIA CORP                                                   "
+    "1045810     20260709    edgar/data/1045810/0001045810-26-000222.txt\n"
+)
+
+_SEC_AUTOMATION_BLOCK_HTML = """<!DOCTYPE html>
+<html><head><title>Your Request Originates from an Undeclared Automated Tool</title></head>
+<body>
+<h1>Your Request Originates from an Undeclared Automated Tool</h1>
+<p>Please declare your traffic by updating your user agent to include company specific information.</p>
+</body></html>
+"""
+
 
 def _daily_index(*rows: tuple[str, str, str, str, str]) -> str:
     body = "\n".join(
@@ -153,11 +179,13 @@ class _Http:
     ) -> None:
         self.routes = routes
         self.calls: list[str] = []
+        self.headers: list[dict[str, str]] = []
         self.clock = clock
         self.starts: list[float] = []
 
-    async def get(self, url: str, **_kwargs: Any) -> _FakeResp:
+    async def get(self, url: str, **kwargs: Any) -> _FakeResp:
         self.calls.append(url)
+        self.headers.append(dict(kwargs.get("headers") or {}))
         if self.clock is not None:
             self.starts.append(self.clock())
         for needle, response in self.routes.items():
@@ -227,6 +255,15 @@ def test_parse_daily_form_index_extracts_form4_and_amendments_only() -> None:
     }
     assert rows[1]["is_amendment"] is True
     assert rows[1]["accession"] == "0001045810-26-000111-amend"
+
+
+def test_parse_real_two_line_daily_index_and_normalize_compact_dates() -> None:
+    rows = sec._parse_daily_form_index(_REAL_FORM_INDEX_2026_07_09)
+
+    assert [row["document_type"] for row in rows] == ["4", "4/A"]
+    assert [row["filed_at"] for row in rows] == ["2026-07-09", "2026-07-09"]
+    assert rows[0]["company_name"] == "PALANTIR TECHNOLOGIES INC."
+    assert rows[0]["accession"] == "0001321655-26-000111"
 
 
 def test_parse_daily_form_index_rejects_malformed_response() -> None:
@@ -394,6 +431,30 @@ async def test_global_fetch_skips_weekend_without_http(engine: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_global_fetch_skips_observed_federal_holiday_without_http(
+    engine: None,
+) -> None:
+    observed_independence_day = date(2026, 7, 3)
+    http = _Http({})
+
+    assert (
+        await _adapter(http).get_form4_for_date_range(
+            observed_independence_day,
+            observed_independence_day,
+            ttl_seconds=0,
+        )
+        == []
+    )
+    assert http.calls == []
+
+
+def test_us_federal_holiday_observed_dates_and_regular_day() -> None:
+    assert sec._is_us_federal_holiday(date(2026, 7, 3))  # July 4 is Saturday.
+    assert sec._is_us_federal_holiday(date(2027, 7, 5))  # July 4 is Sunday.
+    assert not sec._is_us_federal_holiday(date(2026, 7, 2))
+
+
+@pytest.mark.asyncio
 async def test_global_fetch_business_day_404_fails_and_is_not_cached(
     engine: None,
 ) -> None:
@@ -411,6 +472,46 @@ async def test_global_fetch_business_day_404_fails_and_is_not_cached(
             await adapter.get_form4_for_date_range(day, day)
 
     assert sum(call.endswith("form.20260710.idx") for call in http.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_global_fetch_business_day_403_fails_loudly(engine: None) -> None:
+    day = date(2026, 7, 9)
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260709.idx": _FakeResp(status=403),
+        }
+    )
+
+    with pytest.raises(MissingDataSourceError, match="HTTP 403"):
+        await _adapter(http).get_form4_for_date_range(day, day, ttl_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_daily_index_detects_sec_automation_block_at_http_200() -> None:
+    day = date(2026, 7, 9)
+    http = _Http(
+        {"form.20260709.idx": _FakeResp(text=_SEC_AUTOMATION_BLOCK_HTML)}
+    )
+
+    with pytest.raises(
+        MissingDataSourceError,
+        match=r"automation block.*contact User-Agent",
+    ):
+        await _adapter(http)._fetch_daily_form_index(day)
+
+
+@pytest.mark.asyncio
+async def test_form4_requests_use_runtime_sec_contact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "sec-contact@example.com")
+    http = _Http({"/one": _FakeResp(text="ok")})
+
+    await _adapter(http)._fetch_text("https://www.sec.gov/one")
+
+    assert http.headers[0]["User-Agent"].endswith(" sec-contact@example.com")
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from argosy.adapters import MissingDataSourceError
+from argosy.adapters.data import sec_13f_adapter as sec_13f
 from argosy.adapters.data.sec_13f_adapter import (
     Sec13FAdapter,
     _accession_dashed,
@@ -172,6 +173,28 @@ class _FailingHttp:
 # ----------------------------------------------------------------------
 # Pure-parsing tests (no DB)
 # ----------------------------------------------------------------------
+
+
+def test_sec_user_agent_reads_declared_contact_at_request_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "sec-ops@example.com")
+    first = sec_13f._default_headers()["User-Agent"]
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "compliance@example.org")
+    second = sec_13f._default_headers()["User-Agent"]
+
+    assert first.endswith(" sec-ops@example.com")
+    assert second.endswith(" compliance@example.org")
+    assert first.startswith("Argosy/")
+
+
+def test_sec_user_agent_rejects_empty_runtime_contact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "   ")
+
+    with pytest.raises(ValueError, match="ARGOSY_SEC_CONTACT_EMAIL"):
+        sec_13f._default_headers()
 
 
 def test_parse_fts_hits_basic() -> None:
