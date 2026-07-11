@@ -204,6 +204,56 @@ Ariel redirected item A's CLOSE-OUT to the reviewer — run 193 in flight, see �
 - The reviewer runs `verify-run` on any live cycle you produce and the calibration benchmark
   on any trader/mandate prompt change you make (SDD §14.6/§14.8 — eval-first is mandatory).
 
+## 5b. LATE-DAY STATE UPDATE (2026-07-11 evening — supersedes stale bullets above)
+
+**Git:** master = `b370b3f` (item-F blocks 1/2a/2b all reviewed + merged; 2b needed one FAIL
+round — 3 packets had fabricated/look-ahead data caught by adversarial audit vs raw sources,
+rebuilt + re-audited, the CVNA price dispute adjudicated in the implementer's favor via the
+2026-05-07 forward 5:1 split; amd_2016_f2 equity-sign error found + fixed on the way).
+**Item-F burns are GO**: receipts for all 7 new packets, live suite on a NEW --out path,
+--dry-run first, §2b table with per-case stage-4 groundedness.
+
+**STREAM B REVIEW VERDICT: FAIL — six blockers, do NOT merge** (full findings in the review
+transcript; hand-back sent). B1: ships `enabled=True` by default (config.py:537 + example
+yaml + SDD line) — would go LIVE on the household DB at the next 15:30 tick after merge; flip
+default off. B2: the BINDING tombstone-TTL follow-up (§3.E) is NOT implemented —
+contracts.py:279-340 still permanent `agent_error`. B3: fix#2 incomplete — collaterally
+tainted sibling groups stay dead after a correction restores only the resolved group
+(live-probed). B4: fix#4 hole — same-pool 10b5-1 SELLS skip without contaminating →
+stake_sale_pct inflates to 100% (false C-suite-panic warnings; live-probed). B5: no
+per-filing failure isolation on the GLOBAL daily path (one malformed filing aborts the day;
+no 429/503 retry). B6: outage-safety is decorative — `fetch` ignores `since`, catch-up knobs
+dead, gap days never ingested. What PASSED: fixes #1/#3/#5 with replay tests, fair-access
+pacer, entry-price-at-write, idempotent rerun, fail-closed identity (not griefable),
+migrations 0084/0085 safe at head, SDD section user-agnostic. Each blocker fix needs a
+replay test at the stream-A bar.
+
+**Item A (reviewer-owned): corrective run 196 IN FLIGHT** (draft 82 superseding). The saga so
+far, for whoever picks this up: draft 80 failed the accept gate (5 violations, 2 checker
+false positives) → proposal 73 bridge (accept-gate 422 is not harvested — filed) → run 193
+draft 81 FM-rejected on `[derivation pending]` leaks (no derived-fact key for the gate's
+shock values — filed) → run 194 draft 82: FM CLEARED the qualitative narrative but the
+whole-artifact reader BLOCKED, misapplying the figure-ban to the machine-rendered FX scenario
+table, + 3 REAL findings (conflicting allocation sets, glide share-count, SGLN guardrail).
+KEY DESIGN FACT: a reader BLOCK is deliberately wired through
+`decision_run.fund_manager_decision='rejected'` and gates /accept (orchestrator.py:1489-1496)
+— never "fix" that column, clear the reader instead. Run 196's harvest leads with a reviewer
+RULING (scenario tables exempt, narrative wording preserved) + the reader's 3 real findings.
+On completion: POST accept (expect clean), re-run guidance-flip (tmp/apply_guidance_flip_convention.py,
+update its version assertion to the new current), verify-run, close item A, then flip
+patch/sliced flags ON (precondition met by the clean promotion).
+HARVESTER LESSON (filed): verdict-feedback re-feeds the CHALLENGER's framing and the
+landed-check suppresses the reviewer's corrected framing unless given a fresh topic —
+cross-reference memory `feedback_verdicts_defended_not_reopened`.
+
+**New implementer findings filed today (fold into item I):** shock-value derived-fact keys;
+accept-gate-422 persistence into corrective harvest; verdict-feedback scope-guard didn't
+harvest draft 81's FM rejection; stale `fund_manager_decision` semantics documented (by
+design, not a bug); headline_numeric_source duration-after-age misparse; history_leak regex
+false positive; Opus synthesizer malformed-JSON retries dominate synthesis wall-time (runs
+192/193 burned 3×8min each) — Fable-5 upgrade candidate, benchmark-gated; reliability trio
+prompt ready (migrations start 0086 — 0085 is stream B's).
+
 ## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
 
 You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
