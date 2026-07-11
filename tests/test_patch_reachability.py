@@ -556,6 +556,41 @@ def test_provenance_rows_and_unpatched_hash_guard():
         )
 
 
+def test_preserve_unimplicated_sections_keeps_prior_coverage():
+    """Full corrective regen emits ~11 of 18 sections — prior sections the
+    model omitted must be restored so section_coverage cannot regress."""
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _preserve_unimplicated_sections,
+    )
+    from argosy.quality.canonical_sections import CANONICAL_SECTION_IDS
+
+    ids = list(CANONICAL_SECTION_IDS.keys())
+    assert len(ids) == 18
+    prior = _prior().model_copy(update={
+        "sections": [
+            _section(sid, "long", f"prior body for {sid}") for sid in ids
+        ],
+    })
+    model_ids = ids[:11]
+    model = _prior().model_copy(update={
+        "sections": [
+            _section(sid, "long", f"MODEL body for {sid}") for sid in model_ids
+        ],
+        "medium": _prior().medium.model_copy(update={
+            "posture": "MODEL POSTURE",
+        }),
+    })
+    merged = _preserve_unimplicated_sections(prior=prior, model=model)
+    assert len(merged.sections) == 18
+    by_key = {(s.section_id, s.horizon): s for s in merged.sections}
+    for sid in model_ids:
+        assert by_key[(sid, "long")].body_md == f"MODEL body for {sid}"
+    for sid in ids[11:]:
+        assert by_key[(sid, "long")].body_md == f"prior body for {sid}"
+    # Horizons stay the model's (full regen owns those).
+    assert merged.medium.posture == "MODEL POSTURE"
+
+
 def test_synthetic_item_id_matches_prior_items_index_slug():
     assert synthetic_item_id("medium", "targets", "NVDA target weight") == (
         "medium.targets.nvda_target_weight"

@@ -870,6 +870,15 @@ def run_synthesis(
                 output, _phase_3_reports = _phase_3_result
             else:
                 output, _phase_3_reports = _phase_3_result, []
+            # Full corrective regen often emits a partial section set
+            # (~11/18). Preserve prior sections the model omitted so
+            # section_coverage cannot silently regress (item 4).
+            if _corrective_ctx is not None:
+                _sec_prior = _pkg._load_patch_base_output(prior_current)
+                if _sec_prior is not None and _sec_prior.sections:
+                    output = _pkg._preserve_unimplicated_sections(
+                        prior=_sec_prior, model=output,
+                    )
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=3, started_at=_phase_3_started_at,
@@ -2178,6 +2187,11 @@ def run_synthesis(
                         output, _esc_reports = _esc_result
                     else:
                         output, _esc_reports = _esc_result, []
+                    _esc_sec_prior = _pkg._load_patch_base_output(prior_current)
+                    if _esc_sec_prior is not None and _esc_sec_prior.sections:
+                        output = _pkg._preserve_unimplicated_sections(
+                            prior=_esc_sec_prior, model=output,
+                        )
                     output = _pkg._run_plan_language_rewriter(
                         output=output, user_id=user_id,
                         decision_run_id=decision_run_id,
@@ -5115,6 +5129,39 @@ def _merge_patched_output(
     # Whole-artifact pydantic re-validation (round-trip, as the resume path
     # does) — a merge bug must fail loud here, not downstream.
     return PlanSynthesisOutput.model_validate(json.loads(merged.model_dump_json()))
+
+
+def _preserve_unimplicated_sections(
+    *,
+    prior: PlanSynthesisOutput,
+    model: PlanSynthesisOutput,
+) -> PlanSynthesisOutput:
+    """Full-corrective section coverage guard (synthesis-aftermath item 4).
+
+    Patch mode already merges via ``_merge_patched_output``; when patch is
+    off/escalated, a full phase-3 regen often emits ~11 of 18 sections and
+    silently drops the rest. Mirror the section loop of
+    ``_merge_patched_output``: keep every prior ``(section_id, horizon)``
+    the model omitted; overwrite only keys the model emitted. Horizons /
+    inputs stay the model's (full regen owns those).
+    """
+    if not prior.sections:
+        return model
+    model_by_key = {(s.section_id, s.horizon): s for s in model.sections}
+    merged_sections = []
+    for s in prior.sections:
+        key = (s.section_id, s.horizon)
+        m = model_by_key.get(key)
+        if m is None:
+            merged_sections.append(s)
+        else:
+            merged_sections.append(m.model_copy(update={
+                "section_id": s.section_id, "horizon": s.horizon,
+            }))
+    merged = model.model_copy(update={"sections": merged_sections})
+    return PlanSynthesisOutput.model_validate(
+        json.loads(merged.model_dump_json())
+    )
 
 
 def _sha256_text(text: str) -> str:
