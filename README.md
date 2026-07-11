@@ -10,6 +10,26 @@ A multi-agent financial advisor system. Python orchestration + Claude Agent SDK 
 - **Diagram sources:** `docs/design/diagrams/*.drawio` (editable in [diagrams.net](https://app.diagrams.net)); SVG exports in `docs/design/diagrams/svg/`.
 - **Reference repos** (cloned to `D:\Projects\financial-advisor-references\`): TradingAgents, FinRobot, TradingGoose. See SDD §16.1.
 
+## Fleet calibration benchmark
+
+The production judgment lens (the trader agent) is scored against a decontaminated
+historical benchmark — known winners, traps, exit cases, and hold-through-drawdown
+cases, each rebuilt from period-accurate filings with aliases, rescaled dollars,
+relative dates, and a temporal-integrity audit (a point whose packet cites any
+source dated after its freeze date does not score). Two fully synthetic control
+cases gate interpretation. Every point persists its full replay trail (packet +
+rendered constraints + raw model output) for independent re-audit.
+
+- Spec + case table: [`docs/design/fleet_calibration_benchmark.md`](docs/design/fleet_calibration_benchmark.md)
+- Harness: `evals/fleet_calibration/` (`run_suite.py`, `score.py`, `packets/`, scored runs under `runs/`)
+- Run it on every fleet-affecting change (model swap, trader/mandate prompt edit):
+
+```bash
+uv run python evals/fleet_calibration/run_suite.py            # all points (real LLM calls)
+uv run python evals/fleet_calibration/run_suite.py --dry-run  # packet audits only
+uv run python evals/fleet_calibration/score.py                # regenerate the report
+```
+
 ## What this is
 
 - Cadence-first Python orchestration shell with TradingAgents-style decision mechanism inside it

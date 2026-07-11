@@ -135,6 +135,13 @@ earns live-money trust.
   logged). New models may have later knowledge cutoffs — the alias+rescale+relative-dates
   protocol is what keeps old cases valid; the synthetic pair is the tripwire if it ever stops
   sufficing (add fresh synthetics, they're cheap).
+- **Case backlog (owner-directed, 2026-07-11):** prioritize OBSCURE small caps over famous
+  names — the less famous the company, the lower the shape-re-identification risk, so obscure
+  cases are the strongest evidence class. Wanted: (a) obscure small-cap failures (the current
+  trap set is all famous busts); (b) trap-SHAPED companies that actually won and winner-SHAPED
+  companies that failed — the adversarial off-diagonal the current table undersamples; (c) the
+  AMD-2016 F1 point and the CVNA-2023 re-entry point already noted; (d) more synthetic pairs
+  (cheap, contamination-proof).
 
 ## Appendix: freeze-point derivations (2026-07-10; yfinance adjusted closes + contemporaneous sources)
 
