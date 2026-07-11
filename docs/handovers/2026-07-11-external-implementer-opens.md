@@ -283,6 +283,42 @@ prompt ready (migrations start 0086 — 0085 is stream B's).
 - **Ariel decisions pending:** CMPS/VOR (cards 15/16) EXPIRE 2026-07-13 15:30 — remind on the
   12th; cards 13/14 (07-17); row 72. July's 62 alpha predictions score from 07-13 (G3).
 
+## 5d. NIGHT CLOSE (2026-07-11 — supersedes §5c where they differ)
+
+- **ITEM A CLOSED — plan v89 CURRENT.** After run 197 (draft 84 FM-rejected on the NVDA
+  triple-endpoint), the close was fully deterministic, zero LLM: v85 = FM's durable-allocation
+  reconciliation (60 values, FM-enumerated set); v86 = 4 lost sections restored from the
+  chain's freshest drafts + capital-sufficiency sentence qualifiers + estate-clause ₪
+  equivalence cue; v87/v88 = remaining unqualified 'reached' sentences fixed via a LOCAL
+  gate-loop (`_run_plan_output_gate` in-process until clean); **v88 accepted 200 (no
+  overrides, warn-only evidence_per_section=3), v89 = guidance-flip re-applied, accepted.**
+  Scripts: tmp/reviewer_close_step3/4*.py. Residual risk (flagged to Ariel): the final
+  qualifier splices are gate-driven, reader never re-blessed those two instances; the weekly
+  critique of v89 is the independent check — READ ITS FIRST RUN. verify-run was skipped
+  (token freeze) — run it when tokens allow.
+- **Stream B pushed** (with master + feat/opens-2026-07-11 to origin). All merged branches
+  deleted; only master + feat/opens remain. `.worktrees/feat-early-signals-a` DIR is
+  file-locked (branch deleted) — manual delete pending.
+- **ORCL verdict recorded (run 198): HOLD/wait** — fair value ~$150 vs ~$140.6 (7% buffer,
+  leverage-discounted), TTM FCF ≈ −$24.5B, D/E ~3.0, OpenAI backlog concentration. Revisit
+  triggers: price ~$110–115 or FCF turns positive with debt stable. DEFENDED verdict — seed
+  row for item B's verdicts registry.
+- **OKLO / RKLB / ASTS discovery evals fired** (sequential, long_hold T2, no thesis seeded)
+  — check decision_runs ≥199 + inbox for verdicts.
+- **Ariel decisions:** CMPS (MEDIUM) — STARTING a position (his call, benchmark-consistent);
+  VOR (LOW) — letting it expire (expiry ≠ verdict; re-eval later if falsifiers stay quiet).
+- **Parallelization (owner question answered):** item B (verdict registry + pushback gate,
+  §3.B) runs IN PARALLEL with the §5b synthesis-aftermath block — disjoint code (decisions/
+  flow + new table vs orchestrator/quality/evals). Give item B to the freed STREAM-B agent
+  (it knows the ledger machinery). MIGRATIONS: aftermath block = 0086, item B = 0087.
+  Seed the registry with: ORCL (run 198), the run-186/187/188 HOLDs (SOFI/BMY/OPEN), VOR
+  post-expiry, and OKLO/RKLB/ASTS verdicts when they land.
+- **PLAN-CADENCE NOTE (Ariel's q, answered):** trades do NOT require plan updates by design
+  (plan=strategy, execution=tactical); today's refresh was needed only because the plan
+  EMBEDS derived numbers as literals. The §5b aftermath items ({{fact:key}} + shock fact
+  keys) make the plan render numbers live — after that, the plan touches are annual/structural
+  only, as intended.
+
 ## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
 
 You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
