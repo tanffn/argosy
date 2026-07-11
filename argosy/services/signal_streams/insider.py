@@ -476,13 +476,9 @@ def _base_cluster_evidence(
     }
 
 
-def _buy_nomination(
-    ticker: str,
+def _buy_cluster_inputs(
     rows: list[dict[str, Any]],
-    *,
-    snapshot: InsiderMarketSnapshot,
-    config: InsiderClusterConfig,
-) -> SignalNomination | None:
+) -> tuple[list[dict[str, Any]], int, float]:
     eligible = [
         row
         for row in rows
@@ -499,10 +495,20 @@ def _buy_nomination(
             role_predicate=_role_is_officer_or_director,
         )
     }
-    distinct_count = len(insiders)
+    aggregate = sum(_valid_transaction_value(row) or 0.0 for row in eligible)
+    return eligible, len(insiders), aggregate
+
+
+def _buy_nomination(
+    ticker: str,
+    rows: list[dict[str, Any]],
+    *,
+    snapshot: InsiderMarketSnapshot,
+    config: InsiderClusterConfig,
+) -> SignalNomination | None:
+    eligible, distinct_count, aggregate = _buy_cluster_inputs(rows)
     if distinct_count < config.min_distinct_buyers:
         return None
-    aggregate = sum(_valid_transaction_value(row) or 0.0 for row in eligible)
     floor = market_cap_floor(float(snapshot.market_cap), config=config)
     if aggregate < floor:
         return None
@@ -739,22 +745,38 @@ def _collapse_overlapping_nominations(
     return representatives
 
 
-def classify_insider_transactions(
+@dataclass(frozen=True)
+class InsiderWindowCandidate:
+    rows: tuple[dict[str, Any], ...]
+    transaction_identities: frozenset[str]
+    window_start: date
+    window_end: date
+    latest_filed_at: date
+
+
+@dataclass(frozen=True)
+class PreparedInsiderWindows:
+    windows_by_ticker: dict[str, tuple[InsiderWindowCandidate, ...]]
+    availability_since: date
+    through: date
+    lookback_days: int
+
+
+def prepare_insider_windows(
     rows: list[dict[str, Any]],
     *,
-    snapshots: Mapping[str, InsiderMarketSnapshot],
     config: InsiderClusterConfig,
     through: date,
-    availability_since: date | None = None,
-) -> list[SignalNomination]:
-    """Purely classify verified Form 4 rows into deterministic clusters."""
-    availability_since = availability_since or (
-        through - timedelta(days=config.lookback_days - 1)
-    )
+    availability_since: date,
+) -> PreparedInsiderWindows:
+    """Prepare deterministic eligible rolling windows exactly once."""
     predecessor_start = availability_since - timedelta(
         days=config.lookback_days - 1
     )
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    grouped: dict[
+        str,
+        list[tuple[date, date, str, dict[str, Any]]],
+    ] = {}
     for row in _deduplicate_rows(rows):
         ticker = str(row.get("ticker") or "").strip().upper()
         if ticker and _base_eligible(
@@ -762,61 +784,141 @@ def classify_insider_transactions(
             window_start=predecessor_start,
             through=through,
         ):
-            grouped.setdefault(ticker, []).append(row)
+            transaction_date = _parse_date(row.get("transaction_date"))
+            filed_at = _parse_date(row.get("filed_at"))
+            identity = _transaction_identity(row)
+            assert transaction_date is not None
+            assert filed_at is not None
+            assert identity is not None
+            grouped.setdefault(ticker, []).append(
+                (transaction_date, filed_at, identity, row)
+            )
 
-    nominations: list[SignalNomination] = []
+    windows_by_ticker: dict[str, tuple[InsiderWindowCandidate, ...]] = {}
     for ticker in sorted(grouped):
+        entries = sorted(
+            grouped[ticker],
+            key=lambda item: (item[0], _row_sort_key(item[3])),
+        )
+        windows: list[InsiderWindowCandidate] = []
+        left = 0
+        right = 0
+        while right < len(entries):
+            window_end = entries[right][0]
+            end_exclusive = right + 1
+            while (
+                end_exclusive < len(entries)
+                and entries[end_exclusive][0] == window_end
+            ):
+                end_exclusive += 1
+            window_start = window_end - timedelta(
+                days=config.lookback_days - 1
+            )
+            while left < end_exclusive and entries[left][0] < window_start:
+                left += 1
+            window_entries = entries[left:end_exclusive]
+            latest_filed_at = max(item[1] for item in window_entries)
+            if latest_filed_at >= availability_since:
+                windows.append(
+                    InsiderWindowCandidate(
+                        rows=tuple(item[3] for item in window_entries),
+                        transaction_identities=frozenset(
+                            item[2] for item in window_entries
+                        ),
+                        window_start=window_start,
+                        window_end=window_end,
+                        latest_filed_at=latest_filed_at,
+                    )
+                )
+            right = end_exclusive
+        if windows:
+            windows_by_ticker[ticker] = tuple(windows)
+    return PreparedInsiderWindows(
+        windows_by_ticker=windows_by_ticker,
+        availability_since=availability_since,
+        through=through,
+        lookback_days=config.lookback_days,
+    )
+
+
+_PREFILTER_SNAPSHOT = InsiderMarketSnapshot(
+    price=1.0,
+    market_cap=1.0,
+    average_volume=1.0,
+    quote_source_url="prefilter://non-market",
+)
+
+
+def _potential_tickers_from_prepared(
+    prepared: PreparedInsiderWindows,
+    *,
+    config: InsiderClusterConfig,
+) -> list[str]:
+    potential: list[str] = []
+    for ticker, windows in prepared.windows_by_ticker.items():
+        could_nominate = False
+        for window in windows:
+            window_rows = list(window.rows)
+            _, distinct_buyers, aggregate_buy_value = _buy_cluster_inputs(
+                window_rows
+            )
+            could_buy = (
+                distinct_buyers >= config.min_distinct_buyers
+                and aggregate_buy_value >= config.min_cluster_value_usd
+            )
+            could_warn = (
+                _sell_nomination(
+                    ticker,
+                    window_rows,
+                    snapshot=_PREFILTER_SNAPSHOT,
+                    config=config,
+                )
+                is not None
+            )
+            if could_buy or could_warn:
+                could_nominate = True
+                break
+        if could_nominate:
+            potential.append(ticker)
+    return potential
+
+
+def potential_insider_nomination_tickers(
+    rows: list[dict[str, Any]],
+    *,
+    config: InsiderClusterConfig,
+    through: date,
+    availability_since: date,
+) -> list[str]:
+    """Return tickers that can qualify before current market data is known."""
+    prepared = prepare_insider_windows(
+        rows,
+        config=config,
+        through=through,
+        availability_since=availability_since,
+    )
+    return _potential_tickers_from_prepared(prepared, config=config)
+
+
+def classify_prepared_insider_windows(
+    prepared: PreparedInsiderWindows,
+    *,
+    snapshots: Mapping[str, InsiderMarketSnapshot],
+    config: InsiderClusterConfig,
+) -> list[SignalNomination]:
+    """Apply market-dependent classification to prepared windows."""
+    availability_since = prepared.availability_since
+    nominations: list[SignalNomination] = []
+    for ticker, windows in prepared.windows_by_ticker.items():
         snapshot = snapshots.get(ticker)
         if snapshot is None or _positive_number(snapshot.price) is None:
             continue
-        ticker_rows = sorted(grouped[ticker], key=_row_sort_key)
         candidates: dict[str, list[SignalNomination]] = {
             "long": [],
             "short": [],
         }
-        window_ends = sorted(
-            {
-                transaction_date
-                for row in ticker_rows
-                if (
-                    transaction_date := _parse_date(
-                        row.get("transaction_date")
-                    )
-                )
-                is not None
-            }
-        )
-        for window_end in window_ends:
-            window_start = window_end - timedelta(
-                days=config.lookback_days - 1
-            )
-            window_rows = [
-                row
-                for row in ticker_rows
-                if (
-                    transaction_date := _parse_date(
-                        row.get("transaction_date")
-                    )
-                )
-                is not None
-                and window_start <= transaction_date <= window_end
-            ]
-            latest_filed_at = max(
-                (
-                    filed_at
-                    for row in window_rows
-                    if (
-                        filed_at := _parse_date(row.get("filed_at"))
-                    )
-                    is not None
-                ),
-                default=None,
-            )
-            if (
-                latest_filed_at is None
-                or latest_filed_at < availability_since
-            ):
-                continue
+        for window in windows:
+            window_rows = list(window.rows)
             window_nominations: list[SignalNomination | None] = []
             if _positive_number(snapshot.market_cap) is not None:
                 window_nominations.append(
@@ -860,6 +962,31 @@ def classify_insider_transactions(
             )
         )
     return nominations
+
+
+def classify_insider_transactions(
+    rows: list[dict[str, Any]],
+    *,
+    snapshots: Mapping[str, InsiderMarketSnapshot],
+    config: InsiderClusterConfig,
+    through: date,
+    availability_since: date | None = None,
+) -> list[SignalNomination]:
+    """Purely classify verified Form 4 rows into deterministic clusters."""
+    availability_since = availability_since or (
+        through - timedelta(days=config.lookback_days - 1)
+    )
+    prepared = prepare_insider_windows(
+        rows,
+        config=config,
+        through=through,
+        availability_since=availability_since,
+    )
+    return classify_prepared_insider_windows(
+        prepared,
+        snapshots=snapshots,
+        config=config,
+    )
 
 
 class YFinanceInsiderMarketProvider:
@@ -921,12 +1048,15 @@ class InsiderClusterStream:
                 through,
             )
         )
-        tickers = sorted(
-            {
-                str(row.get("ticker") or "").strip().upper()
-                for row in rows
-                if str(row.get("ticker") or "").strip()
-            }
+        prepared = prepare_insider_windows(
+            rows,
+            config=self.config,
+            through=through,
+            availability_since=availability_since,
+        )
+        tickers = _potential_tickers_from_prepared(
+            prepared,
+            config=self.config,
         )
         snapshots: dict[str, InsiderMarketSnapshot] = {}
         for ticker in tickers:
@@ -939,12 +1069,10 @@ class InsiderClusterStream:
                     error_type=type(exc).__name__,
                     error=str(exc)[:300],
                 )
-        return classify_insider_transactions(
-            rows,
+        return classify_prepared_insider_windows(
+            prepared,
             snapshots=snapshots,
             config=self.config,
-            through=through,
-            availability_since=availability_since,
         )
 
 
@@ -952,8 +1080,13 @@ __all__ = [
     "InsiderClusterConfig",
     "InsiderClusterStream",
     "InsiderMarketSnapshot",
+    "InsiderWindowCandidate",
+    "PreparedInsiderWindows",
     "YFinanceInsiderMarketProvider",
+    "classify_prepared_insider_windows",
     "classify_insider_transactions",
     "cluster_strength",
     "market_cap_floor",
+    "potential_insider_nomination_tickers",
+    "prepare_insider_windows",
 ]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -989,6 +989,342 @@ def test_missing_market_cap_keeps_sell_warning_but_omits_buy_cluster() -> None:
         )
         == []
     )
+
+
+def _potential_prefilter_rows() -> list[dict[str, Any]]:
+    rows = [
+        _row(
+            ticker=f"NOISE{i:03d}",
+            accession=f"noise-{i}",
+            filer_cik=f"8{i:04d}",
+        )
+        for i in range(200)
+    ]
+    rows.extend(
+        [
+            _row(
+                ticker="GRANT",
+                accession="grant-1",
+                filer_cik="7001",
+                transaction_code="A",
+            ),
+            _second_buyer(
+                ticker="GRANT",
+                accession="grant-2",
+                filer_cik="7002",
+                transaction_code="A",
+            ),
+            _row(
+                ticker="PLAN",
+                accession="plan-1",
+                filer_cik="7101",
+                is_10b5_1=True,
+            ),
+            _second_buyer(
+                ticker="PLAN",
+                accession="plan-2",
+                filer_cik="7102",
+                is_10b5_1=True,
+            ),
+            _row(
+                ticker="BADV",
+                accession="badv-1",
+                filer_cik="7201",
+                value_usd=None,
+            ),
+            _second_buyer(
+                ticker="BADV",
+                accession="badv-2",
+                filer_cik="7202",
+                value_usd=None,
+            ),
+            _row(
+                ticker="UUUU",
+                accession="uuuu-1",
+                filer_cik="7301",
+            ),
+            _second_buyer(
+                ticker="UUUU",
+                accession="uuuu-2",
+                filer_cik="7302",
+            ),
+            {
+                **_row(
+                    ticker="WRAP",
+                    accession="wrap-joint",
+                    filer_cik="7401",
+                    value_usd=100_000,
+                ),
+                "reporting_owners": [
+                    {
+                        "filer_cik": "7401",
+                        "filer_name": "Wrap Director",
+                        "role": "director",
+                    },
+                    {
+                        "filer_cik": "7402",
+                        "filer_name": "Wrap Officer",
+                        "role": "officer (CEO)",
+                    },
+                ],
+            },
+            _row(
+                ticker="PALI",
+                accession="pali-1",
+                filer_cik="7501",
+                acquired_disposed_code=None,
+            ),
+            _second_buyer(
+                ticker="PALI",
+                accession="pali-2",
+                filer_cik="7502",
+                acquired_disposed_code=None,
+            ),
+            _seller(
+                filer=7601,
+                role="officer (CEO)",
+                shares=300,
+                post_holdings=700,
+                accession="sell-1",
+            )
+            | {"ticker": "SELL"},
+            _seller(
+                filer=7602,
+                role="officer (CFO)",
+                shares=300,
+                post_holdings=700,
+                accession="sell-2",
+            )
+            | {"ticker": "SELL"},
+        ]
+    )
+    return rows
+
+
+def test_prefilter_skips_noise_and_keeps_live_candidate_patterns() -> None:
+    from argosy.services.signal_streams.insider import (
+        potential_insider_nomination_tickers,
+    )
+
+    tickers = potential_insider_nomination_tickers(
+        _potential_prefilter_rows(),
+        config=InsiderClusterConfig(),
+        through=date(2026, 7, 10),
+        availability_since=date(2026, 6, 10),
+    )
+
+    assert tickers == ["PALI", "SELL", "UUUU", "WRAP"]
+
+
+def test_prefilter_base_floor_never_applies_market_cap_scaled_floor() -> None:
+    from argosy.services.signal_streams.insider import (
+        potential_insider_nomination_tickers,
+    )
+
+    rows = [
+        _row(ticker="BASE", accession="base-1", filer_cik="7311"),
+        _second_buyer(
+            ticker="BASE",
+            accession="base-2",
+            filer_cik="7312",
+        ),
+    ]
+    tickers = potential_insider_nomination_tickers(
+        rows,
+        config=InsiderClusterConfig(
+            min_cluster_value_market_cap_bps=1_000_000_000_000,
+        ),
+        through=date(2026, 7, 10),
+        availability_since=date(2026, 6, 10),
+    )
+
+    assert tickers == ["BASE"]
+
+
+def test_fetch_snapshots_only_potential_tickers_and_cap_can_still_reject() -> None:
+    rows = _potential_prefilter_rows()
+    rows.extend(
+        [
+            _row(
+                ticker="CAP",
+                accession="cap-1",
+                filer_cik="7701",
+            ),
+            _second_buyer(
+                ticker="CAP",
+                accession="cap-2",
+                filer_cik="7702",
+            ),
+        ]
+    )
+    sec = _FixtureSecAdapter(rows)
+    snapshot_calls: list[str] = []
+
+    def market_snapshot(ticker: str) -> InsiderMarketSnapshot:
+        snapshot_calls.append(ticker)
+        return _snapshot(
+            ticker=ticker,
+            market_cap=4_000_000_000 if ticker == "CAP" else 100_000_000,
+        )
+
+    stream = InsiderClusterStream(
+        sec_adapter=sec,
+        market_snapshot=market_snapshot,
+        today=lambda: date(2026, 7, 12),
+    )
+
+    nominations = stream.fetch(None, since=date(2026, 6, 10))
+
+    assert snapshot_calls == ["CAP", "PALI", "SELL", "UUUU", "WRAP"]
+    assert "CAP" not in {nomination.ticker for nomination in nominations}
+    assert {nomination.ticker for nomination in nominations} == {
+        "PALI",
+        "SELL",
+        "UUUU",
+        "WRAP",
+    }
+
+
+def test_one_potential_ticker_snapshot_failure_keeps_other_candidates() -> None:
+    rows = [
+        _row(ticker="BAD", accession="bad-1", filer_cik="7801"),
+        _second_buyer(
+            ticker="BAD",
+            accession="bad-2",
+            filer_cik="7802",
+        ),
+        _row(ticker="GOOD", accession="good-1", filer_cik="7901"),
+        _second_buyer(
+            ticker="GOOD",
+            accession="good-2",
+            filer_cik="7902",
+        ),
+    ]
+    sec = _FixtureSecAdapter(rows)
+    calls: list[str] = []
+
+    def market_snapshot(ticker: str) -> InsiderMarketSnapshot:
+        calls.append(ticker)
+        if ticker == "BAD":
+            raise TimeoutError("Yahoo timed out")
+        return _snapshot(ticker=ticker)
+
+    stream = InsiderClusterStream(
+        sec_adapter=sec,
+        market_snapshot=market_snapshot,
+        today=lambda: date(2026, 7, 12),
+    )
+
+    nominations = stream.fetch(None, since=date(2026, 6, 10))
+
+    assert calls == ["BAD", "GOOD"]
+    assert [nomination.ticker for nomination in nominations] == ["GOOD"]
+
+
+def test_stream_prepares_windows_once_and_reuses_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argosy.services.signal_streams.insider as insider_mod
+
+    rows = _potential_prefilter_rows()
+    config = InsiderClusterConfig()
+    through = date(2026, 7, 10)
+    availability_since = date(2026, 6, 10)
+    snapshots = {
+        ticker: _snapshot(ticker=ticker)
+        for ticker in ("PALI", "SELL", "UUUU", "WRAP")
+    }
+    expected = classify_insider_transactions(
+        rows,
+        snapshots=snapshots,
+        config=config,
+        through=through,
+        availability_since=availability_since,
+    )
+    prepare_calls = 0
+    original_prepare = insider_mod.prepare_insider_windows
+
+    def recording_prepare(*args, **kwargs):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(
+        insider_mod,
+        "prepare_insider_windows",
+        recording_prepare,
+    )
+    sec = _FixtureSecAdapter(rows)
+    market_calls: list[str] = []
+    stream = InsiderClusterStream(
+        config=config,
+        sec_adapter=sec,
+        market_snapshot=lambda ticker: (
+            market_calls.append(ticker) or snapshots[ticker]
+        ),
+        today=lambda: date(2026, 7, 12),
+    )
+
+    actual = stream.fetch(None, since=availability_since)
+
+    assert prepare_calls == 1
+    assert market_calls == ["PALI", "SELL", "UUUU", "WRAP"]
+    assert [
+        (item.ticker, item.direction, item.as_of, item.dedup_key)
+        for item in actual
+    ] == [
+        (item.ticker, item.direction, item.as_of, item.dedup_key)
+        for item in expected
+    ]
+
+
+def test_dense_ticker_window_preparation_is_single_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argosy.services.signal_streams.insider as insider_mod
+
+    start = date(2026, 7, 1)
+    rows = [
+        _row(
+            ticker="DENSE",
+            accession=f"dense-{index}",
+            filer_cik=f"9{index:05d}",
+            transaction_date=(
+                start + timedelta(days=index % 30)
+            ).isoformat(),
+            filed_at=(
+                start + timedelta(days=index % 30 + 1)
+            ).isoformat(),
+            value_usd=1_000,
+        )
+        for index in range(300)
+    ]
+    parse_calls = 0
+    original_parse = insider_mod._parse_date
+
+    def recording_parse(value):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(value)
+
+    monkeypatch.setattr(insider_mod, "_parse_date", recording_parse)
+
+    prepared = insider_mod.prepare_insider_windows(
+        rows,
+        config=InsiderClusterConfig(),
+        through=date(2026, 8, 1),
+        availability_since=date(2026, 7, 1),
+    )
+
+    assert list(prepared.windows_by_ticker) == ["DENSE"]
+    assert len(prepared.windows_by_ticker["DENSE"]) == 30
+    assert all(
+        candidate.transaction_identities
+        for candidate in prepared.windows_by_ticker["DENSE"]
+    )
+    assert prepared.availability_since == date(2026, 7, 1)
+    assert prepared.through == date(2026, 8, 1)
+    assert parse_calls <= len(rows) * 5
 
 
 class _FixtureSecAdapter:
