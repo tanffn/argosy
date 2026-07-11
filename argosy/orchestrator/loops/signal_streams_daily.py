@@ -17,6 +17,10 @@ from argosy.services.signal_streams.contracts import (
     GovContractsConfig,
     GovContractsStream,
 )
+from argosy.services.signal_streams.insider import (
+    InsiderClusterConfig,
+    InsiderClusterStream,
+)
 from argosy.services.signal_streams.pipeline import process_nominations
 from argosy.state.models import Prediction, SignalStreamCursor
 
@@ -58,17 +62,48 @@ def _default_streams(user_id: str) -> list[SignalStream]:
     cfg = load_signal_streams_config(user_id)
     if not cfg.enabled:
         return []
+    streams: list[SignalStream] = []
     gov = cfg.gov_contracts
-    return [
-        GovContractsStream(
-            config=GovContractsConfig(
-                materiality_threshold=gov.materiality_threshold,
-                lookback_days=gov.lookback_days,
-                recent_scan_days=gov.recent_scan_days,
-                max_pages_per_query=gov.max_pages_per_query,
+    if gov.enabled:
+        streams.append(
+            GovContractsStream(
+                config=GovContractsConfig(
+                    materiality_threshold=gov.materiality_threshold,
+                    lookback_days=gov.lookback_days,
+                    recent_scan_days=gov.recent_scan_days,
+                    max_pages_per_query=gov.max_pages_per_query,
+                    agent_error_ttl_hours=gov.agent_error_ttl_hours,
+                )
             )
         )
-    ]
+    insider = cfg.insider_cluster
+    if insider.enabled:
+        streams.append(
+            InsiderClusterStream(
+                user_id=user_id,
+                config=InsiderClusterConfig(
+                    lookback_days=insider.lookback_days,
+                    recent_scan_days=insider.recent_scan_days,
+                    index_publication_lag_days=(
+                        insider.index_publication_lag_days
+                    ),
+                    daily_pull_days=insider.daily_pull_days,
+                    ledger_horizon_days=insider.ledger_horizon_days,
+                    min_distinct_buyers=insider.min_distinct_buyers,
+                    min_cluster_value_usd=insider.min_cluster_value_usd,
+                    min_cluster_value_market_cap_bps=(
+                        insider.min_cluster_value_market_cap_bps
+                    ),
+                    min_distinct_sellers=insider.min_distinct_sellers,
+                    min_stake_sale_pct=insider.min_stake_sale_pct,
+                    warning_ttl_days=insider.warning_ttl_days,
+                    cursor_max_catchup_days=(
+                        insider.cursor_max_catchup_days
+                    ),
+                )
+            )
+        )
+    return streams
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -85,6 +120,7 @@ def _resolve_since(
     now_dt: datetime,
     lookback_days: int,
     recent_scan_days: int,
+    cursor_max_catchup_days: int,
 ) -> tuple[date, SignalStreamCursor | None]:
     cursor = session.get(
         SignalStreamCursor, {"user_id": user_id, "stream": stream}
@@ -102,9 +138,12 @@ def _resolve_since(
         if anchor is not None:
             anchor = _as_utc(anchor)
 
-    floor = now_dt.date() - timedelta(days=max(0, lookback_days - 1))
     if anchor is None:
+        floor = now_dt.date() - timedelta(days=max(0, lookback_days - 1))
         return floor, cursor
+    floor = now_dt.date() - timedelta(
+        days=max(0, cursor_max_catchup_days - 1)
+    )
     overlapped = anchor.date() - timedelta(
         days=max(0, recent_scan_days - 1)
     )
@@ -154,20 +193,42 @@ class SignalStreamsDailyLoop(CadenceLoop):
                         lookback,
                     )
                 )
-                since, cursor = _resolve_since(
-                    session,
-                    user_id=self.user_id,
-                    stream=name,
-                    now_dt=now_dt,
-                    lookback_days=lookback,
-                    recent_scan_days=recent,
+                cursor_max_catchup = int(
+                    getattr(
+                        getattr(stream, "config", None),
+                        "cursor_max_catchup_days",
+                        lookback,
+                    )
                 )
+                if getattr(stream, "cursor_controls_fetch_range", True):
+                    since, cursor = _resolve_since(
+                        session,
+                        user_id=self.user_id,
+                        stream=name,
+                        now_dt=now_dt,
+                        lookback_days=lookback,
+                        recent_scan_days=recent,
+                        cursor_max_catchup_days=cursor_max_catchup,
+                    )
+                else:
+                    since = now_dt.date()
+                    cursor = session.get(
+                        SignalStreamCursor,
+                        {"user_id": self.user_id, "stream": name},
+                    )
                 nominations = stream.fetch(session, since=since)
                 processed = process_nominations(
                     session,
                     user_id=self.user_id,
                     nominations=nominations,
                     observed_at=now_dt,
+                    warning_ttl_days=int(
+                        getattr(
+                            getattr(stream, "config", None),
+                            "warning_ttl_days",
+                            30,
+                        )
+                    ),
                 )
                 if cursor is None:
                     cursor = SignalStreamCursor(
@@ -185,6 +246,7 @@ class SignalStreamsDailyLoop(CadenceLoop):
                     "status": "ok",
                     "since": since.isoformat(),
                     "cursor_advanced_to": now_dt.isoformat(),
+                    "cursor": now_dt.isoformat(),
                     "nominations": len(nominations),
                     **processed.to_dict(),
                 }

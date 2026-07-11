@@ -4,28 +4,35 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from argosy.services.predictions.writers import write_signal_stream_predictions
 from argosy.services.signal_streams.base import SignalNomination
 from argosy.services.trend_radar import LiquidityFilter, RawSignal, TrendCandidate
-from argosy.state.models import ScanState
+from argosy.state.models import MonitorFlag, ScanState
 
 
 @dataclass
 class NominationProcessSummary:
     active: int = 0
     quarantined: int = 0
+    warning_only: int = 0
     predictions: int = 0
+    monitor_flags_written: int = 0
+    monitor_flags_refreshed: int = 0
     candidates: list[TrendCandidate] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "active": self.active,
             "quarantined": self.quarantined,
+            "warning_only": self.warning_only,
             "predictions": self.predictions,
+            "monitor_flags_written": self.monitor_flags_written,
+            "monitor_flags_refreshed": self.monitor_flags_refreshed,
         }
 
 
@@ -76,6 +83,131 @@ def _candidate_for(
     return candidate, liquidity.passes(raw)
 
 
+def _source_urls(value: object) -> list[str]:
+    urls: set[str] = set()
+
+    def visit(item: object) -> None:
+        if isinstance(item, str):
+            if item.startswith(("https://", "http://")):
+                urls.add(item)
+            return
+        if isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+            return
+        if isinstance(item, (list, tuple, set)):
+            for nested in item:
+                visit(nested)
+
+    visit(value)
+    return sorted(urls)
+
+
+def _bounded_warning_ttl_days(
+    evidence: dict,
+    configured_days: int,
+) -> int:
+    raw = evidence.get("warning_ttl_days", configured_days)
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        parsed = configured_days
+    return max(1, min(parsed, 365))
+
+
+def _write_warning_monitor_flag(
+    session: Session,
+    *,
+    user_id: str,
+    nomination: SignalNomination,
+    observed_at: datetime,
+    warning_ttl_days: int,
+) -> str | None:
+    dedup_key = (
+        f"v1|signal_stream_warning|{user_id}|{nomination.stream}|"
+        f"{nomination.dedup_key}"
+    )
+    existing = list(
+        session.execute(
+            select(MonitorFlag)
+            .where(MonitorFlag.user_id == user_id)
+            .where(MonitorFlag.dedup_key == dedup_key)
+            .order_by(MonitorFlag.id.desc())
+        ).scalars()
+    )
+    if any(
+        row.acknowledged_at is not None or row.status == "acknowledged"
+        for row in existing
+    ):
+        return None
+
+    active = next(
+        (
+            row
+            for row in existing
+            if row.status == "active" and row.acknowledged_at is None
+        ),
+        None,
+    )
+    if existing and active is None:
+        return None
+    if active is not None and active.expires_at is not None:
+        expires_at = active.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= observed_at:
+            return None
+    stream_label = nomination.stream.replace("_", " ")
+    headline = f"{nomination.ticker.upper()}: {stream_label} warning"
+    summary = (
+        f"{nomination.ticker.upper()} generated a {nomination.direction} "
+        f"{stream_label} signal for monitoring."
+    )
+    payload = {
+        "stream": nomination.stream,
+        "ticker": nomination.ticker.upper(),
+        "direction": nomination.direction,
+        "dedup_key": nomination.dedup_key,
+        "headline": headline,
+        "summary": summary,
+        "detail": summary,
+        "source_urls": _source_urls(nomination.evidence),
+        "evidence": nomination.evidence,
+    }
+    payload_json = json.dumps(payload, sort_keys=True, default=str)
+    if active is None:
+        expires_at = observed_at + timedelta(
+            days=_bounded_warning_ttl_days(
+                nomination.evidence,
+                warning_ttl_days,
+            )
+        )
+        session.add(
+            MonitorFlag(
+                user_id=user_id,
+                kind="signal_stream_warning",
+                severity="warning",
+                payload=payload_json,
+                surfaced_at=observed_at,
+                expires_at=expires_at,
+                dedup_key=dedup_key,
+                status="active",
+            )
+        )
+        return "written"
+
+    if (
+        active.payload == payload_json
+        and active.severity == "warning"
+        and active.status == "active"
+    ):
+        return None
+    active.severity = "warning"
+    active.payload = payload_json
+    active.status = "active"
+    return "refreshed"
+
+
 def process_nominations(
     session: Session | None,
     *,
@@ -83,8 +215,9 @@ def process_nominations(
     nominations: Iterable[SignalNomination],
     persist: bool = True,
     observed_at: datetime | None = None,
+    warning_ttl_days: int = 30,
 ) -> NominationProcessSummary:
-    """Apply liquidity, persist radar evidence, and write 30d/180d rows."""
+    """Write predictions, routing only funnel-eligible nominations to radar."""
     observed_at = observed_at or datetime.now(UTC)
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=UTC)
@@ -92,7 +225,51 @@ def process_nominations(
         observed_at = observed_at.astimezone(UTC)
     summary = NominationProcessSummary()
     for nomination in nominations:
-        candidate, liquid = _candidate_for(nomination)
+        candidate_result = (
+            _candidate_for(nomination)
+            if nomination.route_to_funnel
+            else None
+        )
+        if persist:
+            if session is None:
+                raise ValueError("session is required when persist=True")
+            price = nomination.evidence.get("price")
+            if price is None:
+                raise ValueError(
+                    f"{nomination.stream}:{nomination.dedup_key} has no entry price"
+                )
+            write_signal_stream_predictions(
+                session,
+                user_id,
+                stream=nomination.stream,
+                dedup_key=nomination.dedup_key,
+                ticker=nomination.ticker,
+                direction=nomination.direction,  # type: ignore[arg-type]
+                event_at=observed_at,
+                entry_price=float(price),
+                evidence=nomination.evidence,
+            )
+            summary.predictions += 2
+
+        if not nomination.route_to_funnel:
+            summary.warning_only += 1
+            if persist:
+                assert session is not None
+                monitor_result = _write_warning_monitor_flag(
+                    session,
+                    user_id=user_id,
+                    nomination=nomination,
+                    observed_at=observed_at,
+                    warning_ttl_days=warning_ttl_days,
+                )
+                if monitor_result == "written":
+                    summary.monitor_flags_written += 1
+                elif monitor_result == "refreshed":
+                    summary.monitor_flags_refreshed += 1
+            continue
+
+        assert candidate_result is not None
+        candidate, liquid = candidate_result
         if candidate.evidence is not None:
             candidate.evidence["observed_at"] = observed_at.isoformat()
         summary.candidates.append(candidate)
@@ -102,26 +279,7 @@ def process_nominations(
             summary.quarantined += 1
         if not persist:
             continue
-        if session is None:
-            raise ValueError("session is required when persist=True")
-        price = nomination.evidence.get("price")
-        if price is None:
-            raise ValueError(
-                f"{nomination.stream}:{nomination.dedup_key} has no entry price"
-            )
-        write_signal_stream_predictions(
-            session,
-            user_id,
-            stream=nomination.stream,
-            dedup_key=nomination.dedup_key,
-            ticker=nomination.ticker,
-            direction=nomination.direction,  # type: ignore[arg-type]
-            event_at=observed_at,
-            entry_price=float(price),
-            evidence=nomination.evidence,
-        )
-        summary.predictions += 2
-
+        assert session is not None
         row = session.get(
             ScanState, {"user_id": user_id, "ticker": candidate.ticker}
         )

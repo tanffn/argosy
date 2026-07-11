@@ -1943,6 +1943,7 @@ _DISCOVERY_SOURCE_LABELS = {
     "attention": "Attention",
     "growth": "Growth fundamentals",
     "gov_contracts": "Government contracts",
+    "insider_cluster": "Insider clusters",
     "momentum": "Momentum",
 }
 _OPEN_TRADE_PROPOSAL_STATUSES = (

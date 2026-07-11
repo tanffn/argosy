@@ -64,6 +64,45 @@ def _set_signal_streams_enabled(monkeypatch, enabled: bool) -> None:
     )
 
 
+def test_discovery_transparency_lists_only_enabled_signal_streams_with_beta_zero(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from argosy.config import (
+        GovContractsSignalConfig,
+        InsiderClusterSignalConfig,
+        SignalStreamsConfig,
+    )
+
+    engine, _factory = _discovery_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "argosy.config.load_signal_streams_config",
+        lambda user_id: SignalStreamsConfig(
+            gov_contracts=GovContractsSignalConfig(enabled=False),
+            insider_cluster=InsiderClusterSignalConfig(enabled=True),
+        ),
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/portfolio/discovery",
+        params={"user_id": "ariel"},
+    )
+
+    assert response.status_code == 200
+    sources = response.json()["sources"]
+    assert "gov_contracts" not in {source["key"] for source in sources}
+    insider = next(
+        source for source in sources if source["key"] == "insider_cluster"
+    )
+    assert insider["label"] == "Insider clusters"
+    assert insider["scorecard"]["source"] == "signal_stream:insider_cluster"
+    assert insider["scorecard"]["scored_outcomes"] == 0
+    assert insider["scorecard"]["calibration"] == (
+        "uncalibrated (beta — 0 scored over 0 days)"
+    )
+    engine.dispose()
+
+
 def test_get_discovery_reads_cached_state(monkeypatch):
     picks = [FleetPick(ticker="PLTR", conviction="HIGH", thesis_md="AI platform",
                        verdict="BUY", cites=("fundamentals",))]
@@ -272,6 +311,7 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
         if source["key"] == "gov_contracts"
     )
     assert government_scorecard["scored_outcomes"] == 0
+    assert "insider_cluster" not in {source["key"] for source in body["sources"]}
 
     cmps = next(row for row in body["candidates"] if row["ticker"] == "CMPS")
     assert cmps["source_keys"] == ["gov_contracts", "growth", "momentum"]

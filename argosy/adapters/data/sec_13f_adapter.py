@@ -47,8 +47,12 @@ Test injection:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
+import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -56,6 +60,11 @@ import httpx
 
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
+from argosy.adapters.data.sec_rate_limit import (
+    MIN_SEC_REQUEST_INTERVAL_SECONDS,
+    validate_sec_request_interval,
+    wait_for_sec_request_slot,
+)
 from argosy.logging import get_logger
 from argosy.services.adapter_outcomes import track_adapter_call
 
@@ -83,14 +92,30 @@ EDGAR_BROWSE_URL = f"{EDGAR_BASE}/cgi-bin/browse-edgar"
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_TTL_SECONDS = 60 * 60 * 24 * 90  # 90 days
 
-ARGOSY_CONTACT_EMAIL = "admin@argosy.local"
+SEC_CONTACT_EMAIL_ENV = "ARGOSY_SEC_CONTACT_EMAIL"
 
 
 def _user_agent() -> str:
     """Polite, SEC-required User-Agent identifying Argosy + contact."""
     from argosy import __version__
 
-    return f"Argosy/{__version__} {ARGOSY_CONTACT_EMAIL}"
+    contact_email = os.environ.get(SEC_CONTACT_EMAIL_ENV, "").strip()
+    domain = (
+        contact_email.rsplit("@", 1)[1].casefold()
+        if "@" in contact_email
+        else ""
+    )
+    if (
+        not contact_email
+        or not domain
+        or domain == "local"
+        or domain.endswith(".local")
+    ):
+        raise ValueError(
+            f"{SEC_CONTACT_EMAIL_ENV} must be set to a non-local SEC "
+            "contact email before any EDGAR request"
+        )
+    return f"Argosy/{__version__} {contact_email}"
 
 
 def _default_headers() -> dict[str, str]:
@@ -150,9 +175,16 @@ class Sec13FAdapter:
         *,
         http_client: Any | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        request_interval_seconds: float = MIN_SEC_REQUEST_INTERVAL_SECONDS,
     ) -> None:
+        validate_sec_request_interval(request_interval_seconds)
         self._http = http_client
         self._timeout = timeout_seconds
+        self._sleep = sleep
+        self._clock = clock
+        self._request_interval_seconds = request_interval_seconds
 
     # ----- public API -------------------------------------------------
 
@@ -360,20 +392,37 @@ class Sec13FAdapter:
 
     # ----- internals --------------------------------------------------
 
-    async def _fetch_json(self, url: str, *, params: dict[str, str]) -> dict[str, Any]:
+    async def _request(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+    ) -> Any:
         try:
+            await wait_for_sec_request_slot(
+                clock=self._clock,
+                sleep=self._sleep,
+                interval_seconds=self._request_interval_seconds,
+            )
             if self._http is None:
                 async with httpx.AsyncClient(
-                    timeout=self._timeout, headers=_default_headers()
+                    timeout=self._timeout,
+                    headers=_default_headers(),
                 ) as client:
-                    resp = await client.get(url, params=params)
-            else:
-                resp = await self._http.get(url, headers=_default_headers(), params=params)
+                    return await client.get(url, params=params or {})
+            return await self._http.get(
+                url,
+                headers=_default_headers(),
+                params=params or {},
+            )
         except Exception as exc:
             _log.warning("sec_13f.fetch_failed", url=url, reason=str(exc))
             raise MissingDataSourceError(
                 f"SEC EDGAR unreachable ({exc!s}); url={url}"
             ) from exc
+
+    async def _fetch_json(self, url: str, *, params: dict[str, str]) -> dict[str, Any]:
+        resp = await self._request(url, params=params)
 
         status = getattr(resp, "status_code", 0)
         if status != 200:
@@ -394,19 +443,7 @@ class Sec13FAdapter:
         return data
 
     async def _fetch_text(self, url: str, *, params: dict[str, str]) -> str:
-        try:
-            if self._http is None:
-                async with httpx.AsyncClient(
-                    timeout=self._timeout, headers=_default_headers()
-                ) as client:
-                    resp = await client.get(url, params=params)
-            else:
-                resp = await self._http.get(url, headers=_default_headers(), params=params)
-        except Exception as exc:
-            _log.warning("sec_13f.fetch_failed", url=url, reason=str(exc))
-            raise MissingDataSourceError(
-                f"SEC EDGAR unreachable ({exc!s}); url={url}"
-            ) from exc
+        resp = await self._request(url, params=params)
 
         status = getattr(resp, "status_code", 0)
         if status != 200:
@@ -436,18 +473,7 @@ class Sec13FAdapter:
         cik = nodash[:10].lstrip("0") or "0"
 
         index_url = f"{EDGAR_BASE}/Archives/edgar/data/{cik}/{nodash}/index.json"
-        try:
-            if self._http is None:
-                async with httpx.AsyncClient(
-                    timeout=self._timeout, headers=_default_headers()
-                ) as client:
-                    idx_resp = await client.get(index_url)
-            else:
-                idx_resp = await self._http.get(index_url, headers=_default_headers())
-        except Exception as exc:
-            raise MissingDataSourceError(
-                f"SEC EDGAR unreachable ({exc!s}); url={index_url}"
-            ) from exc
+        idx_resp = await self._request(index_url)
 
         if getattr(idx_resp, "status_code", 0) != 200:
             raise MissingDataSourceError(
@@ -743,12 +769,12 @@ _ = json
 
 
 __all__ = [
-    "ARGOSY_CONTACT_EMAIL",
     "DEFAULT_TIMEOUT",
     "DEFAULT_TTL_SECONDS",
     "EDGAR_BASE",
     "EDGAR_BROWSE_URL",
     "EDGAR_FTS_URL",
+    "SEC_CONTACT_EMAIL_ENV",
     "Sec13FAdapter",
     "_accession_dashed",
     "_extract_http_status",

@@ -32,9 +32,12 @@ Test injection:
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 import xml.etree.ElementTree as ET
-from datetime import date, datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -46,8 +49,14 @@ from argosy.adapters.data.sec_13f_adapter import (
     EDGAR_BROWSE_URL,
     _default_headers,
 )
+from argosy.adapters.data.sec_rate_limit import (
+    MIN_SEC_REQUEST_INTERVAL_SECONDS,
+    validate_sec_request_interval,
+    wait_for_sec_request_slot,
+)
 from argosy.logging import get_logger
 from argosy.services.adapter_outcomes import track_adapter_call
+from argosy.services.ticker_aliases import equivalent_class_symbols
 
 
 def _approx_size_bytes(payload: Any) -> int:
@@ -63,10 +72,14 @@ _log = get_logger("argosy.adapters.sec_form4")
 
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_DAILY_INDEX_BASE = f"{EDGAR_BASE}/Archives/edgar/daily-index"
 DEFAULT_TIMEOUT = 15.0
 TICKER_TTL_SECONDS = 60 * 60 * 24 * 7   # 7 days; ticker→CIK map is stable
 FORM4_TTL_SECONDS = 60 * 60 * 24        # 24h
-
+MAX_GLOBAL_DATE_RANGE_DAYS = 45
+MIN_REQUEST_INTERVAL_SECONDS = MIN_SEC_REQUEST_INTERVAL_SECONDS
+DEFAULT_MAX_CONCURRENT_FILING_FETCHES = 8
+MAX_CONCURRENT_FILING_FETCHES = 32
 
 # Codes per SEC Form 4 spec — ``transaction_code`` column. Most common:
 #   P = open-market or private purchase
@@ -107,9 +120,35 @@ class SecForm4Adapter:
         *,
         http_client: Any | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        today: Callable[[], date] = date.today,
+        request_interval_seconds: float = MIN_REQUEST_INTERVAL_SECONDS,
+        max_concurrent_filing_fetches: int = (
+            DEFAULT_MAX_CONCURRENT_FILING_FETCHES
+        ),
     ) -> None:
+        validate_sec_request_interval(request_interval_seconds)
+        if (
+            isinstance(max_concurrent_filing_fetches, bool)
+            or not isinstance(max_concurrent_filing_fetches, int)
+            or not 1
+            <= max_concurrent_filing_fetches
+            <= MAX_CONCURRENT_FILING_FETCHES
+        ):
+            raise ValueError(
+                "max_concurrent_filing_fetches must be an integer between "
+                f"1 and {MAX_CONCURRENT_FILING_FETCHES}"
+            )
         self._http = http_client
         self._timeout = timeout_seconds
+        self._sleep = sleep
+        self._clock = clock
+        self._today = today
+        self._request_interval_seconds = request_interval_seconds
+        self._max_concurrent_filing_fetches = (
+            max_concurrent_filing_fetches
+        )
 
     # ----- public API -------------------------------------------------
 
@@ -140,7 +179,7 @@ class SecForm4Adapter:
         with track_adapter_call("sec_form4", target=ticker_norm) as _outcome:
             # Resolve CIK via cached ticker map.
             cik = await self._resolve_cik_for_ticker(ticker_norm, ttl_seconds=ttl_seconds)
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+            cutoff = (datetime.now(UTC) - timedelta(days=days)).date()
 
             async def _fetch() -> list[dict[str, Any]]:
                 return await self._collect_form4_rows(
@@ -181,7 +220,7 @@ class SecForm4Adapter:
         if days <= 0:
             raise ValueError(f"days must be positive; got {days}")
         cik_padded = str(cik).strip().lstrip("0").zfill(10)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).date()
 
         async def _fetch() -> list[dict[str, Any]]:
             return await self._collect_form4_rows(
@@ -198,7 +237,289 @@ class SecForm4Adapter:
             fetch=_fetch,
         )
 
+    async def get_form4_for_date_range(
+        self,
+        start_date: date,
+        through: date | None = None,
+        *,
+        ttl_seconds: int = FORM4_TTL_SECONDS,
+    ) -> list[dict[str, Any]]:
+        """Collect public-issuer Form 4 transactions from daily indexes.
+
+        The range is inclusive and deliberately bounded. Daily indexes are
+        fetched and processed sequentially so one caller cannot create
+        unbounded SEC request fanout.
+        """
+        explicit_through = through is not None
+        effective_through = through or (self._today() - timedelta(days=1))
+        if effective_through < start_date and not explicit_through:
+            return []
+        if effective_through < start_date:
+            raise ValueError("start_date must be on or before end_date")
+        day_count = (effective_through - start_date).days + 1
+        if day_count > MAX_GLOBAL_DATE_RANGE_DAYS:
+            raise ValueError(
+                "date range must contain at most "
+                f"{MAX_GLOBAL_DATE_RANGE_DAYS} days; got {day_count}"
+            )
+        if ttl_seconds < 0:
+            raise ValueError("ttl_seconds must be non-negative")
+        business_days = [
+            start_date + timedelta(days=offset)
+            for offset in range(day_count)
+            if (start_date + timedelta(days=offset)).weekday() < 5
+            and not _is_us_federal_holiday(
+                start_date + timedelta(days=offset)
+            )
+        ]
+        if not business_days:
+            return []
+
+        async def _fetch() -> list[dict[str, Any]]:
+            map_ttl = 0 if ttl_seconds == 0 else TICKER_TTL_SECONDS
+            ticker_to_cik, cik_to_tickers = await self._get_ticker_maps(
+                ttl_seconds=map_ttl
+            )
+            indexed_filings: list[dict[str, Any]] = []
+            for current in business_days:
+                indexed_filings.extend(
+                    await self._fetch_daily_form_index(current)
+                )
+
+            selected = indexed_filings
+            if not selected:
+                return []
+
+            day_summaries: dict[str, dict[str, int | dict[str, int]]] = {}
+            for current in business_days:
+                day_summaries[current.isoformat()] = {
+                    "seen": 0,
+                    "parsed": 0,
+                    "dropped": {},
+                }
+            for filing in selected:
+                filed_at = str(filing.get("filed_at") or "")
+                summary = day_summaries.get(filed_at)
+                if summary is not None:
+                    summary["seen"] = int(summary["seen"]) + 1
+
+            collected_filings: list[dict[str, Any] | None] = [
+                None
+            ] * len(selected)
+            pending = iter(enumerate(selected))
+
+            def _drop(filed_at: str, reason: str) -> None:
+                summary = day_summaries.get(filed_at)
+                if summary is None:
+                    return
+                dropped = summary["dropped"]
+                assert isinstance(dropped, dict)
+                dropped[reason] = int(dropped.get(reason, 0)) + 1
+
+            async def _worker() -> None:
+                for selected_index, filing in pending:
+                    filed_at = str(filing["filed_at"])
+                    accession = str(filing["accession"])
+                    try:
+                        index_cik = str(filing["cik"]).zfill(10)
+                        archive_filename = str(
+                            filing["archive_filename"]
+                        ).lstrip("/")
+                        filing_url = (
+                            f"{EDGAR_BASE}/Archives/{archive_filename}"
+                        )
+                        try:
+                            submission = await self._fetch_text(filing_url)
+                        except MissingDataSourceError as exc:
+                            _log.warning(
+                                "sec_form4.filing_skip",
+                                accession=accession,
+                                reason=str(exc)[:300],
+                            )
+                            _drop(filed_at, "fetch_failed")
+                            continue
+                        try:
+                            xml_text = _extract_ownership_document(submission)
+                            parsed_issuer_cik = _ownership_document_issuer_cik(
+                                xml_text
+                            )
+                            parsed = _parse_form4_xml(
+                                xml_text,
+                                accession=accession,
+                            )
+                        except MissingDataSourceError as exc:
+                            _log.warning(
+                                "sec_form4.parse_skip",
+                                accession=accession,
+                                reason=str(exc)[:300],
+                            )
+                            _drop(filed_at, "xml_malformed")
+                            continue
+                        except Exception as exc:  # noqa: BLE001 - isolate filing
+                            _log.warning(
+                                "sec_form4.parse_skip",
+                                accession=accession,
+                                reason=str(exc)[:300],
+                            )
+                            _drop(filed_at, "xml_malformed")
+                            continue
+                        if not parsed:
+                            _drop(filed_at, "empty_parse")
+                            continue
+                        parsed_symbol = str(
+                            parsed[0].get("ticker") or ""
+                        ).strip().upper()
+                        if parsed_symbol:
+                            official_symbols = [
+                                symbol
+                                for symbol in equivalent_class_symbols(
+                                    parsed_symbol
+                                )
+                                if ticker_to_cik.get(symbol) == parsed_issuer_cik
+                            ]
+                            if len(official_symbols) != 1:
+                                _drop(filed_at, "ticker_ambiguous")
+                                continue
+                            ticker = official_symbols[0]
+                        else:
+                            issuer_tickers = tuple(
+                                cik_to_tickers.get(parsed_issuer_cik, ())
+                            )
+                            if len(issuer_tickers) != 1:
+                                _drop(filed_at, "ticker_ambiguous")
+                                continue
+                            ticker = issuer_tickers[0]
+                        for row in parsed:
+                            document_type = (
+                                str(row.get("document_type") or "")
+                                or str(filing["document_type"])
+                            )
+                            row.update(
+                                {
+                                    "filing_url": filing_url,
+                                    "filed_at": filed_at,
+                                    "accession": accession,
+                                    "index_cik": index_cik,
+                                    "issuer_cik": parsed_issuer_cik,
+                                    "issuer_name": str(
+                                        row.get("issuer_name")
+                                        or filing["company_name"]
+                                    ),
+                                    "ticker": ticker,
+                                    "reported_ticker": parsed_symbol,
+                                    "document_type": document_type,
+                                    "is_amendment": bool(
+                                        filing["is_amendment"]
+                                        or row.get("is_amendment")
+                                    ),
+                                    "source_urls": [filing_url],
+                                }
+                            )
+                        collected_filings[selected_index] = {
+                            "accession": accession,
+                            "filed_at": filed_at,
+                            "filing_url": filing_url,
+                            "is_amendment": bool(
+                                filing["is_amendment"]
+                                or parsed[0].get("is_amendment")
+                            ),
+                            "index_cik": index_cik,
+                            "issuer_cik": parsed_issuer_cik,
+                            "filer_cik": str(
+                                parsed[0].get("filer_cik") or ""
+                            ),
+                            "filer_name": str(
+                                parsed[0].get("filer_name") or ""
+                            ),
+                            "reporting_owners": list(
+                                parsed[0].get("reporting_owners") or []
+                            ),
+                            "date_of_original_submission": str(
+                                parsed[0].get("date_of_original_submission")
+                                or ""
+                            ),
+                            "rows": parsed,
+                        }
+                        summary = day_summaries.get(filed_at)
+                        if summary is not None:
+                            summary["parsed"] = int(summary["parsed"]) + 1
+                    except Exception as exc:  # noqa: BLE001 - never abort the day
+                        _log.warning(
+                            "sec_form4.filing_skip",
+                            accession=accession,
+                            reason=str(exc)[:300],
+                        )
+                        _drop(filed_at, "unexpected_error")
+
+            workers = [
+                asyncio.create_task(_worker())
+                for _ in range(
+                    min(
+                        self._max_concurrent_filing_fetches,
+                        len(selected),
+                    )
+                )
+            ]
+            try:
+                await asyncio.gather(*workers)
+            except BaseException:
+                for worker in workers:
+                    worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+                raise
+            for day_key, summary in sorted(day_summaries.items()):
+                if int(summary["seen"]) == 0 and int(summary["parsed"]) == 0:
+                    continue
+                _log.info(
+                    "sec_form4.daily_index_summary",
+                    date=day_key,
+                    seen=int(summary["seen"]),
+                    parsed=int(summary["parsed"]),
+                    dropped=dict(summary["dropped"]),
+                )
+            return _select_filing_versions(
+                [
+                    filing
+                    for filing in collected_filings
+                    if filing is not None
+                ]
+            )
+
+        return await cached_call(
+            kind=CacheKind.PRICES,
+            provider=self.PROVIDER,
+            key=(
+                f"global:{start_date.isoformat()}:"
+                f"{effective_through.isoformat()}"
+            ),
+            ttl_seconds=ttl_seconds,
+            fetch=_fetch,
+        )
+
     # ----- internals --------------------------------------------------
+
+    async def _get_ticker_maps(
+        self, *, ttl_seconds: int = TICKER_TTL_SECONDS
+    ) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+        async def _fetch_maps() -> dict[str, Any]:
+            text = await self._fetch_text(SEC_TICKERS_URL)
+            ticker_to_cik, cik_to_tickers = _parse_ticker_maps(text)
+            return {
+                "ticker_to_cik": ticker_to_cik,
+                "cik_to_tickers": cik_to_tickers,
+            }
+
+        payload: dict[str, Any] = await cached_call(
+            kind=CacheKind.PRICES,
+            provider=self.PROVIDER,
+            key="ticker_maps:v2",
+            ttl_seconds=ttl_seconds,
+            fetch=_fetch_maps,
+        )
+        return payload["ticker_to_cik"], {
+            cik: tuple(tickers)
+            for cik, tickers in payload["cik_to_tickers"].items()
+        }
 
     async def _resolve_cik_for_ticker(
         self, ticker: str, *, ttl_seconds: int
@@ -208,16 +529,8 @@ class SecForm4Adapter:
         Cached for 7 days; ticker→CIK is essentially stable.
         """
 
-        async def _fetch_map() -> dict[str, str]:
-            text = await self._fetch_text(SEC_TICKERS_URL)
-            return _parse_ticker_map(text)
-
-        ticker_map: dict[str, str] = await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key="ticker_map",
-            ttl_seconds=TICKER_TTL_SECONDS,
-            fetch=_fetch_map,
+        ticker_map, _ = await self._get_ticker_maps(
+            ttl_seconds=0 if ttl_seconds == 0 else TICKER_TTL_SECONDS
         )
         cik = ticker_map.get(ticker.upper())
         if not cik:
@@ -277,8 +590,40 @@ class SecForm4Adapter:
             for row in parsed:
                 if only_ticker and (row.get("ticker") or "").upper() != only_ticker:
                     continue
+                filing_url = str(filing.get("document_url") or "")
+                row.update(
+                    {
+                        "filed_at": filed_at,
+                        "filing_url": filing_url,
+                        "source_urls": [filing_url] if filing_url else [],
+                    }
+                )
                 rows.append(row)
         return rows
+
+    async def _fetch_daily_form_index(
+        self, filing_date: date
+    ) -> list[dict[str, Any]]:
+        if filing_date.weekday() >= 5 or _is_us_federal_holiday(filing_date):
+            return []
+        quarter = ((filing_date.month - 1) // 3) + 1
+        filename = f"form.{filing_date:%Y%m%d}.idx"
+        url = (
+            f"{SEC_DAILY_INDEX_BASE}/{filing_date.year}/"
+            f"QTR{quarter}/{filename}"
+        )
+        response = await self._request_with_retry(url)
+        status = getattr(response, "status_code", 0)
+        if status != 200:
+            raise MissingDataSourceError(
+                f"SEC EDGAR returned HTTP {status or '?'} for {url}"
+            )
+        text = getattr(response, "text", None)
+        if text is None:
+            raw: bytes = getattr(response, "content", b"")
+            text = raw.decode("utf-8", errors="replace")
+        _raise_for_sec_automation_block(text)
+        return _parse_daily_form_index(text)
 
     async def _fetch_form4_xml(self, *, cik: str, accession: str) -> str:
         """Resolve a Form 4 filing's XML doc by accession.
@@ -322,22 +667,7 @@ class SecForm4Adapter:
     async def _fetch_text(
         self, url: str, *, params: dict[str, str] | None = None
     ) -> str:
-        try:
-            if self._http is None:
-                async with httpx.AsyncClient(
-                    timeout=self._timeout, headers=_default_headers()
-                ) as client:
-                    resp = await client.get(url, params=params or {})
-            else:
-                resp = await self._http.get(
-                    url, headers=_default_headers(), params=params or {}
-                )
-        except Exception as exc:
-            _log.warning("sec_form4.fetch_failed", url=url, reason=str(exc))
-            raise MissingDataSourceError(
-                f"SEC EDGAR unreachable ({exc!s}); url={url}"
-            ) from exc
-
+        resp = await self._request_with_retry(url, params=params)
         if getattr(resp, "status_code", 0) != 200:
             raise MissingDataSourceError(
                 f"SEC EDGAR returned HTTP {getattr(resp, 'status_code', '?')} for {url}"
@@ -348,20 +678,42 @@ class SecForm4Adapter:
             text = raw.decode("utf-8", errors="replace")
         return text
 
-    async def _fetch_json(self, url: str) -> dict[str, Any]:
+    async def _request_with_retry(
+        self, url: str, *, params: dict[str, str] | None = None
+    ) -> Any:
+        """One retry with backoff on transient SEC HTTP 429/503."""
+        resp = await self._request(url, params=params)
+        status = getattr(resp, "status_code", 0)
+        if status in {429, 503}:
+            await self._sleep(1.0)
+            resp = await self._request(url, params=params)
+        return resp
+
+    async def _request(
+        self, url: str, *, params: dict[str, str] | None = None
+    ) -> Any:
         try:
+            await wait_for_sec_request_slot(
+                clock=self._clock,
+                sleep=self._sleep,
+                interval_seconds=self._request_interval_seconds,
+            )
             if self._http is None:
                 async with httpx.AsyncClient(
                     timeout=self._timeout, headers=_default_headers()
                 ) as client:
-                    resp = await client.get(url)
-            else:
-                resp = await self._http.get(url, headers=_default_headers())
+                    return await client.get(url, params=params or {})
+            return await self._http.get(
+                url, headers=_default_headers(), params=params or {}
+            )
         except Exception as exc:
+            _log.warning("sec_form4.fetch_failed", url=url, reason=str(exc))
             raise MissingDataSourceError(
                 f"SEC EDGAR unreachable ({exc!s}); url={url}"
             ) from exc
 
+    async def _fetch_json(self, url: str) -> dict[str, Any]:
+        resp = await self._request_with_retry(url)
         if getattr(resp, "status_code", 0) != 200:
             raise MissingDataSourceError(
                 f"SEC EDGAR returned HTTP {getattr(resp, 'status_code', '?')} for {url}"
@@ -379,8 +731,47 @@ class SecForm4Adapter:
 # ----------------------------------------------------------------------
 
 
-def _parse_ticker_map(text: str) -> dict[str, str]:
-    """Parse SEC's company-tickers JSON into a TICKER → CIK map.
+def _extract_ownership_document(submission_text: str) -> str:
+    """Extract exactly one ownershipDocument XML element from a filing."""
+    starts = [
+        match.start()
+        for match in re.finditer(
+            r"<ownershipDocument(?:\s|>)",
+            submission_text,
+        )
+    ]
+    closing_tag = "</ownershipDocument>"
+    closes = [
+        match.start()
+        for match in re.finditer(
+            re.escape(closing_tag),
+            submission_text,
+        )
+    ]
+    if len(starts) != 1 or len(closes) != 1 or closes[0] < starts[0]:
+        raise MissingDataSourceError(
+            "SEC full submission must contain exactly one complete "
+            "<ownershipDocument> XML element"
+        )
+    return submission_text[
+        starts[0] : closes[0] + len(closing_tag)
+    ]
+
+
+def _ownership_document_issuer_cik(xml_text: str) -> str:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise MissingDataSourceError(
+            f"Form 4 ownershipDocument XML malformed: {exc!s}"
+        ) from exc
+    return _normalize_cik(_ft(root, "issuerCik"))
+
+
+def _parse_ticker_maps(
+    text: str,
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """Parse SEC tickers into TICKER→CIK and CIK→all-tickers maps.
 
     Expected shape: ``{"0": {"cik_str": ..., "ticker": ..., "title": ...}, ...}``
     """
@@ -392,30 +783,205 @@ def _parse_ticker_map(text: str) -> dict[str, str]:
         raise MissingDataSourceError(
             f"SEC company_tickers.json malformed: {exc!s}"
         ) from exc
-    out: dict[str, str] = {}
+    ticker_to_cik: dict[str, str] = {}
+    tickers_by_cik: dict[str, set[str]] = {}
+    entries: Any = []
     if isinstance(data, dict):
-        # Could be the index-keyed dict (most common) or a flat list.
-        iterator: Any
-        if all(k.isdigit() for k in (data.keys() if data else [])):
-            iterator = data.values()
-        else:
-            iterator = data.values() if data else []
-        for entry in iterator:
-            if not isinstance(entry, dict):
-                continue
-            t = (entry.get("ticker") or "").upper().strip()
-            cik = entry.get("cik_str") or entry.get("cik")
-            if t and cik is not None:
-                out[t] = str(cik).lstrip("0").zfill(10)
+        entries = data.values()
     elif isinstance(data, list):
-        for entry in data:
-            if not isinstance(entry, dict):
+        entries = data
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        ticker = (entry.get("ticker") or "").upper().strip()
+        cik_value = entry.get("cik_str") or entry.get("cik")
+        if ticker and cik_value is not None:
+            cik = str(cik_value).lstrip("0").zfill(10)
+            ticker_to_cik[ticker] = cik
+            tickers_by_cik.setdefault(cik, set()).add(ticker)
+    return ticker_to_cik, {
+        cik: tuple(sorted(tickers))
+        for cik, tickers in sorted(tickers_by_cik.items())
+    }
+
+
+def _parse_ticker_map(text: str) -> dict[str, str]:
+    """Backward-compatible TICKER → CIK view of company-tickers JSON."""
+    return _parse_ticker_maps(text)[0]
+
+
+def _parse_daily_form_index(text: str) -> list[dict[str, Any]]:
+    """Parse one SEC fixed-width daily Form index."""
+    lines = text.splitlines()
+    header_index: int | None = None
+    for index, line in enumerate(lines):
+        if "Form Type" not in line or "Company Name" not in line or "CIK" not in line:
+            continue
+        continuation = lines[index + 1] if index + 1 < len(lines) else ""
+        if "Date Filed" in line and "File Name" in line:
+            header_index = index
+            break
+        if "Date Filed" in continuation and "File Name" in continuation:
+            header_index = index
+            break
+    if header_index is None:
+        raise MissingDataSourceError("SEC EDGAR daily Form index malformed: missing header")
+    try:
+        separator_index = next(
+            index
+            for index, line in enumerate(lines[header_index + 1 :], header_index + 1)
+            if line.startswith("-" * 20)
+        )
+    except StopIteration as exc:
+        raise MissingDataSourceError(
+            "SEC EDGAR daily Form index malformed: missing separator"
+        ) from exc
+
+    rows: list[dict[str, Any]] = []
+    for raw_line in lines[separator_index + 1 :]:
+        if not raw_line.strip():
+            continue
+        parsed_columns: tuple[str, str, str, str, str] | None = None
+        # Current SEC form.idx contract, observed 2026-07-09.
+        # The legacy offsets remain solely for historical fixture compatibility.
+        for form_end, company_end, cik_end, date_end in (
+            (17, 79, 91, 103),
+            (12, 74, 86, 98),
+        ):
+            if len(raw_line) <= date_end:
                 continue
-            t = (entry.get("ticker") or "").upper().strip()
-            cik = entry.get("cik_str") or entry.get("cik")
-            if t and cik is not None:
-                out[t] = str(cik).lstrip("0").zfill(10)
-    return out
+            form_type = raw_line[:form_end].strip()
+            company_name = raw_line[form_end:company_end].strip()
+            cik_raw = raw_line[company_end:cik_end].strip()
+            filed_at_raw = raw_line[cik_end:date_end].strip()
+            archive_filename = raw_line[date_end:].strip()
+            if (
+                not form_type
+                or not company_name
+                or not cik_raw.isdigit()
+                or not archive_filename
+            ):
+                continue
+            try:
+                if re.fullmatch(r"\d{8}", filed_at_raw):
+                    filed_at = (
+                        datetime.strptime(filed_at_raw, "%Y%m%d")
+                        .date()
+                        .isoformat()
+                    )
+                else:
+                    filed_at = date.fromisoformat(filed_at_raw).isoformat()
+            except ValueError as exc:
+                raise MissingDataSourceError(
+                    "SEC EDGAR daily Form index malformed: invalid filed date"
+                ) from exc
+            parsed_columns = (
+                form_type,
+                company_name,
+                cik_raw,
+                filed_at,
+                archive_filename,
+            )
+            break
+        if parsed_columns is None:
+            raise MissingDataSourceError(
+                "SEC EDGAR daily Form index malformed: invalid columns"
+            )
+        form_type, company_name, cik_raw, filed_at, archive_filename = (
+            parsed_columns
+        )
+        if form_type not in {"4", "4/A"}:
+            continue
+        basename = archive_filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        if not re.fullmatch(r"\d{10}-\d{2}-\d{6}(?:-[A-Za-z0-9]+)?", basename):
+            raise MissingDataSourceError(
+                "SEC EDGAR daily Form index malformed: invalid Form 4 accession"
+            )
+        rows.append(
+            {
+                "cik": cik_raw.lstrip("0").zfill(10),
+                "company_name": company_name,
+                "filed_at": filed_at,
+                "archive_filename": archive_filename,
+                "accession": basename,
+                "document_type": form_type,
+                "is_amendment": form_type == "4/A",
+            }
+        )
+    return rows
+
+
+def _raise_for_sec_automation_block(text: str) -> None:
+    normalized = " ".join(text.casefold().split())
+    if (
+        "undeclared automated tool" in normalized
+        or (
+            "declare your traffic" in normalized
+            and "user agent" in normalized
+        )
+    ):
+        raise MissingDataSourceError(
+            "SEC EDGAR automation block response; configure "
+            "ARGOSY_SEC_CONTACT_EMAIL for a declared contact User-Agent"
+        )
+
+
+def _observed_fixed_holiday(actual: date) -> date:
+    if actual.weekday() == 5:
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _nth_weekday(
+    year: int,
+    month: int,
+    weekday: int,
+    occurrence: int,
+) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (occurrence - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    next_month = date(year + (month == 12), (month % 12) + 1, 1)
+    last = next_month - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _is_us_federal_holiday(day: date) -> bool:
+    """Return whether ``day`` is a bounded, deterministic federal closure.
+
+    The list mirrors the recurring US federal holidays relevant to SEC
+    daily-index publication. Fixed-date holidays include Friday/Monday
+    observance when they fall on Saturday/Sunday.
+    """
+    fixed_actual_dates: set[date] = set()
+    for year in (day.year - 1, day.year, day.year + 1):
+        fixed_actual_dates.update(
+            {
+                date(year, 1, 1),
+                date(year, 7, 4),
+                date(year, 11, 11),
+                date(year, 12, 25),
+            }
+        )
+        if year >= 2021:
+            fixed_actual_dates.add(date(year, 6, 19))
+    fixed_dates = fixed_actual_dates | {
+        _observed_fixed_holiday(actual) for actual in fixed_actual_dates
+    }
+    floating_dates = {
+        _nth_weekday(day.year, 1, 0, 3),   # Martin Luther King Jr. Day
+        _nth_weekday(day.year, 2, 0, 3),   # Washington's Birthday
+        _last_weekday(day.year, 5, 0),     # Memorial Day
+        _nth_weekday(day.year, 9, 0, 1),   # Labor Day
+        _nth_weekday(day.year, 10, 0, 2),  # Columbus Day
+        _nth_weekday(day.year, 11, 3, 4),  # Thanksgiving Day
+    }
+    return day in fixed_dates or day in floating_dates
 
 
 def _parse_form4_atom_index(text: str, *, cik: str) -> list[dict[str, Any]]:
@@ -470,45 +1036,106 @@ def _parse_form4_xml(xml_text: str, *, accession: str = "") -> list[dict[str, An
             f"Form 4 XML malformed: {exc!s}"
         ) from exc
 
+    document_type = _ft(root, "documentType")
+    is_amendment = document_type.upper() == "4/A"
+    period_of_report = _ft(root, "periodOfReport")
+    date_of_original_submission = _ft(root, "dateOfOriginalSubmission")
+    document_checkbox_10b5 = _is_true(_ft(root, "aff10b5One"))
+    remarks = _ft(root, "remarks")
+    issuer_cik = _normalize_cik(_ft(root, "issuerCik"))
     issuer_name = _ft(root, "issuerName")
     issuer_ticker = _ft(root, "issuerTradingSymbol")
-    # Reporting owner — name + role flags.
-    owner_name = _ft(root, "rptOwnerName")
-    is_director = (_ft(root, "isDirector") or "").lower() in ("1", "true")
-    is_officer = (_ft(root, "isOfficer") or "").lower() in ("1", "true")
-    is_ten_percent_owner = (_ft(root, "isTenPercentOwner") or "").lower() in ("1", "true")
-    officer_title = _ft(root, "officerTitle")
-    role_parts: list[str] = []
-    if is_director:
-        role_parts.append("director")
-    if is_officer:
-        role_parts.append("officer" + (f" ({officer_title})" if officer_title else ""))
-    if is_ten_percent_owner:
-        role_parts.append("10pct_owner")
-    role = ", ".join(role_parts) or "unknown"
+    reporting_owners = [
+        _parse_reporting_owner(owner)
+        for owner in _iter_local(root, "reportingOwner")
+    ]
+    primary_owner = (
+        reporting_owners[0]
+        if reporting_owners
+        else {"filer_cik": "", "filer_name": "", "role": "unknown"}
+    )
+    owner_cik = str(primary_owner["filer_cik"])
+    owner_name = str(primary_owner["filer_name"])
+    role = str(primary_owner["role"])
+
+    footnotes: dict[str, str] = {}
+    for footnote in _iter_local(root, "footnote"):
+        footnote_id = str(footnote.attrib.get("id") or "").strip()
+        if footnote_id:
+            footnotes[footnote_id] = " ".join(
+                part.strip() for part in footnote.itertext() if part.strip()
+            )
+
+    referenced_10b5_footnotes = {
+        str(element.attrib.get("id") or "").strip()
+        for transaction_name in (
+            "nonDerivativeTransaction",
+            "derivativeTransaction",
+        )
+        for transaction in _iter_local(root, transaction_name)
+        for element in transaction.iter()
+        if _local_name(element.tag) == "footnoteId"
+        and _contains_10b5_1(
+            footnotes.get(str(element.attrib.get("id") or "").strip(), "")
+        )
+    }
+    document_evidence: list[str] = []
+    if document_checkbox_10b5:
+        document_evidence.append("document:aff10b5One")
+    if remarks and _contains_10b5_1(remarks):
+        document_evidence.append(f"remarks:{remarks}")
+    for footnote_id in sorted(referenced_10b5_footnotes):
+        document_evidence.append(
+            f"linked_footnote:{footnote_id}:{footnotes[footnote_id]}"
+        )
+    document_has_10b5 = bool(document_evidence)
 
     rows: list[dict[str, Any]] = []
     # Non-derivative transactions (common stock buys/sells).
-    for tx in _iter_local(root, "nonDerivativeTransaction"):
+    for transaction_index, tx in enumerate(
+        _iter_local(root, "nonDerivativeTransaction")
+    ):
         row = _form4_tx_to_row(
             tx,
+            document_type=document_type,
+            is_amendment=is_amendment,
+            period_of_report=period_of_report,
+            date_of_original_submission=date_of_original_submission,
+            document_has_10b5=document_has_10b5,
+            document_evidence=document_evidence,
+            footnotes=footnotes,
+            issuer_cik=issuer_cik,
             issuer_ticker=issuer_ticker,
             issuer_name=issuer_name,
+            owner_cik=owner_cik,
             owner_name=owner_name,
             role=role,
+            reporting_owners=reporting_owners,
             accession=accession,
+            transaction_index=transaction_index,
         )
         if row is not None:
             rows.append(row)
     # Optional: derivative transactions (options exercises etc.).
-    for tx in _iter_local(root, "derivativeTransaction"):
+    for transaction_index, tx in enumerate(_iter_local(root, "derivativeTransaction")):
         row = _form4_tx_to_row(
             tx,
+            document_type=document_type,
+            is_amendment=is_amendment,
+            period_of_report=period_of_report,
+            date_of_original_submission=date_of_original_submission,
+            document_has_10b5=document_has_10b5,
+            document_evidence=document_evidence,
+            footnotes=footnotes,
+            issuer_cik=issuer_cik,
             issuer_ticker=issuer_ticker,
             issuer_name=issuer_name,
+            owner_cik=owner_cik,
             owner_name=owner_name,
             role=role,
+            reporting_owners=reporting_owners,
             accession=accession,
+            transaction_index=transaction_index,
             derivative=True,
         )
         if row is not None:
@@ -519,15 +1146,30 @@ def _parse_form4_xml(xml_text: str, *, accession: str = "") -> list[dict[str, An
 def _form4_tx_to_row(
     tx: Any,
     *,
+    document_type: str,
+    is_amendment: bool,
+    period_of_report: str,
+    date_of_original_submission: str,
+    document_has_10b5: bool,
+    document_evidence: list[str],
+    footnotes: dict[str, str],
+    issuer_cik: str,
     issuer_ticker: str,
     issuer_name: str,
+    owner_cik: str,
     owner_name: str,
     role: str,
+    reporting_owners: list[dict[str, str]],
     accession: str,
+    transaction_index: int,
     derivative: bool = False,
 ) -> dict[str, Any] | None:
     code = _ft(tx, "transactionCode")
     tx_date = _ft(tx, "transactionDate")
+    security_title = _ft(tx, "securityTitle")
+    direct_or_indirect_ownership = _ft(tx, "directOrIndirectOwnership")
+    nature_of_ownership = _ft(tx, "natureOfOwnership")
+    acquired_disposed_code = _ft(tx, "transactionAcquiredDisposedCode")
     shares_str = _ft(tx, "transactionShares")
     price_str = _ft(tx, "transactionPricePerShare")
     post_str = _ft(tx, "sharesOwnedFollowingTransaction")
@@ -551,21 +1193,296 @@ def _form4_tx_to_row(
     if shares is not None and price is not None:
         value_usd = shares * price
 
+    tenb5_evidence: list[str] = []
+    referenced_footnotes = {
+        str(el.attrib.get("id") or "").strip()
+        for el in tx.iter()
+        if _local_name(el.tag) == "footnoteId"
+        and str(el.attrib.get("id") or "").strip()
+    }
+    for footnote_id in sorted(referenced_footnotes):
+        text = footnotes.get(footnote_id, "")
+        if text and _contains_10b5_1(text):
+            tenb5_evidence.append(f"footnote:{footnote_id}:{text}")
+
     return {
         "accession": accession,
+        "document_type": document_type,
+        "is_amendment": is_amendment,
+        "period_of_report": period_of_report,
+        "date_of_original_submission": date_of_original_submission,
+        "filer_cik": owner_cik,
         "filer_name": owner_name,
         "role": role,
+        "reporting_owners": [
+            dict(owner) for owner in reporting_owners
+        ],
+        "issuer_cik": issuer_cik,
         "issuer_name": issuer_name,
         "ticker": issuer_ticker,
+        "transaction_index": transaction_index,
         "transaction_date": tx_date,
         "transaction_code": code,
         "transaction_kind": TRANSACTION_CODE_MEANING.get(code, "unknown"),
+        "security_title": security_title,
+        "direct_or_indirect_ownership": direct_or_indirect_ownership,
+        "nature_of_ownership": nature_of_ownership,
+        "acquired_disposed_code": acquired_disposed_code,
         "shares": shares,
         "price_per_share": price,
         "value_usd": value_usd,
         "post_transaction_holdings": post_holdings,
         "is_derivative": derivative,
+        "document_has_10b5_1": document_has_10b5,
+        "document_10b5_1_evidence": list(document_evidence),
+        "is_10b5_1": True if tenb5_evidence else (None if document_has_10b5 else False),
+        "tenb5_1_evidence": tenb5_evidence,
     }
+
+
+def _contains_10b5_1(text: str) -> bool:
+    return re.search(r"\b10b5(?:[\s\W_])*1\b", text, flags=re.IGNORECASE) is not None
+
+
+def _is_true(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _normalize_cik(value: str) -> str:
+    normalized = value.strip().lstrip("0")
+    return normalized.zfill(10) if normalized else ""
+
+
+def _parse_reporting_owner(owner: Any) -> dict[str, str]:
+    owner_cik = _normalize_cik(_ft(owner, "rptOwnerCik"))
+    owner_name = _ft(owner, "rptOwnerName")
+    is_director = _is_true(_ft(owner, "isDirector"))
+    is_officer = _is_true(_ft(owner, "isOfficer"))
+    is_ten_percent_owner = _is_true(_ft(owner, "isTenPercentOwner"))
+    officer_title = _ft(owner, "officerTitle")
+    role_parts: list[str] = []
+    if is_director:
+        role_parts.append("director")
+    if is_officer:
+        role_parts.append(
+            "officer" + (f" ({officer_title})" if officer_title else "")
+        )
+    if is_ten_percent_owner:
+        role_parts.append("10pct_owner")
+    return {
+        "filer_cik": owner_cik,
+        "filer_name": owner_name,
+        "role": ", ".join(role_parts) or "unknown",
+    }
+
+
+def _owner_identity_set(filing: dict[str, Any]) -> frozenset[str]:
+    reporting_owners = filing.get("reporting_owners")
+    if isinstance(reporting_owners, list) and reporting_owners:
+        owner_keys: set[str] = set()
+        for owner in reporting_owners:
+            if not isinstance(owner, dict):
+                continue
+            cik = str(owner.get("filer_cik") or "").lstrip("0")
+            if cik:
+                owner_keys.add(f"cik:{cik}")
+                continue
+            name = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                str(owner.get("filer_name") or "").casefold(),
+            ).strip()
+            if name:
+                owner_keys.add(f"name:{name}")
+        if owner_keys:
+            return frozenset(owner_keys)
+    filer_cik = str(filing.get("filer_cik") or "")
+    if filer_cik:
+        return frozenset({f"cik:{filer_cik.lstrip('0')}"})
+    owner_name = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        str(filing.get("filer_name") or "").casefold(),
+    ).strip()
+    return frozenset({f"name:{owner_name}"}) if owner_name else frozenset()
+
+
+def _normalized_owner_key(filing: dict[str, Any]) -> tuple[str, str]:
+    return ("owners", "|".join(sorted(_owner_identity_set(filing))))
+
+
+def _amendment_match_key(
+    filing: dict[str, Any],
+    *,
+    original: bool,
+) -> tuple[Any, ...]:
+    original_submission_date = (
+        str(filing.get("filed_at") or "")[:10]
+        if original
+        else str(filing.get("date_of_original_submission") or "")[:10]
+    )
+    return (
+        str(filing.get("issuer_cik") or "").lstrip("0"),
+        _normalized_owner_key(filing),
+        original_submission_date,
+    )
+
+
+def _usable_iso_date(value: Any) -> str | None:
+    candidate = str(value or "")[:10]
+    try:
+        date.fromisoformat(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _amendment_owner_scope(
+    filing: dict[str, Any],
+) -> tuple[str, tuple[str, str]]:
+    return (
+        str(filing.get("issuer_cik") or "").lstrip("0"),
+        _normalized_owner_key(filing),
+    )
+
+
+def _select_filing_versions(
+    filings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    originals = [filing for filing in filings if not filing["is_amendment"]]
+    amendments = [filing for filing in filings if filing["is_amendment"]]
+    originals_by_key: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for filing in originals:
+        originals_by_key.setdefault(
+            _amendment_match_key(filing, original=True),
+            [],
+        ).append(filing)
+    amendments_by_key: dict[
+        tuple[tuple[str, tuple[str, str]], str | None],
+        list[dict[str, Any]],
+    ] = {}
+    for filing in amendments:
+        amendments_by_key.setdefault(
+            (
+                _amendment_owner_scope(filing),
+                _usable_iso_date(
+                    filing.get("date_of_original_submission")
+                ),
+            ),
+            [],
+        ).append(filing)
+
+    excluded_original_accessions: set[str] = set()
+    selected_filings: list[dict[str, Any]] = []
+    for (owner_scope, original_date), versions in amendments_by_key.items():
+        exact_key = (*owner_scope, original_date)
+        candidates = (
+            originals_by_key.get(exact_key, [])
+            if original_date is not None
+            else []
+        )
+        latest = max(
+            versions,
+            key=lambda filing: (
+                str(filing.get("filed_at") or ""),
+                str(filing.get("accession") or ""),
+            ),
+        )
+        if len(candidates) == 1:
+            match_status = "matched"
+            cluster_eligible = True
+            filing_identity = str(candidates[0]["accession"])
+            affected_originals = candidates
+            excluded_original_accessions.add(filing_identity)
+        else:
+            amendment_owner_identities = _owner_identity_set(latest)
+            affected_originals = [
+                original
+                for original in originals
+                if (
+                    str(original.get("issuer_cik") or "").lstrip("0")
+                    == owner_scope[0]
+                    and bool(
+                        amendment_owner_identities.intersection(
+                            _owner_identity_set(original)
+                        )
+                    )
+                )
+            ]
+            match_status = (
+                "ambiguous" if affected_originals else "unmatched"
+            )
+            cluster_eligible = False
+            filing_identity = str(latest["accession"])
+        evidence = sorted(
+            str(candidate["accession"]) for candidate in affected_originals
+        )
+        source_urls = sorted(
+            {
+                str(filing["filing_url"])
+                for filing in [*affected_originals, *versions]
+                if filing.get("filing_url")
+            }
+        )
+        for row in latest["rows"]:
+            row.update(
+                {
+                    "amendment_match_status": match_status,
+                    "amendment_ambiguity_evidence": (
+                        evidence if match_status == "ambiguous" else []
+                    ),
+                    "filing_identity": filing_identity,
+                    "cluster_eligible": cluster_eligible,
+                    "source_urls": source_urls,
+                }
+            )
+        if match_status == "ambiguous":
+            for original in affected_originals:
+                for row in original["rows"]:
+                    row.update(
+                        {
+                            "amendment_match_status": "ambiguous",
+                            "amendment_ambiguity_evidence": evidence,
+                            "filing_identity": str(
+                                original["accession"]
+                            ),
+                            "cluster_eligible": False,
+                            "source_urls": source_urls,
+                        }
+                    )
+        selected_filings.append(latest)
+
+    selected_filings.extend(
+        filing
+        for filing in originals
+        if str(filing["accession"]) not in excluded_original_accessions
+    )
+    for filing in selected_filings:
+        if filing["is_amendment"]:
+            continue
+        for row in filing["rows"]:
+            if row.get("amendment_match_status") == "ambiguous":
+                continue
+            row.update(
+                {
+                    "amendment_match_status": "not_amendment",
+                    "amendment_ambiguity_evidence": [],
+                    "filing_identity": str(filing["accession"]),
+                    "cluster_eligible": True,
+                    "source_urls": [filing["filing_url"]],
+                }
+            )
+
+    selected_filings.sort(
+        key=lambda filing: (
+            str(filing.get("filed_at") or ""),
+            str(filing.get("accession") or ""),
+        )
+    )
+    result: list[dict[str, Any]] = []
+    for filing in selected_filings:
+        result.extend(filing["rows"])
+    return result
 
 
 def _filing_within_window(filed_at: str, *, cutoff: date) -> bool:
@@ -614,13 +1531,22 @@ def _local_name(tag: str) -> str:
 
 
 __all__ = [
+    "DEFAULT_MAX_CONCURRENT_FILING_FETCHES",
     "FORM4_TTL_SECONDS",
+    "MAX_CONCURRENT_FILING_FETCHES",
+    "MAX_GLOBAL_DATE_RANGE_DAYS",
+    "MIN_REQUEST_INTERVAL_SECONDS",
+    "SEC_DAILY_INDEX_BASE",
     "SEC_TICKERS_URL",
     "SecForm4Adapter",
     "TICKER_TTL_SECONDS",
     "TRANSACTION_CODE_MEANING",
     "_filing_within_window",
+    "_extract_ownership_document",
+    "_is_us_federal_holiday",
+    "_parse_daily_form_index",
     "_parse_form4_atom_index",
     "_parse_form4_xml",
     "_parse_ticker_map",
+    "_parse_ticker_maps",
 ]

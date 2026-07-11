@@ -361,10 +361,11 @@ def _insert_prediction(
     """INSERT one prediction row with per-source idempotency.
 
     Idempotency: the partial-unique index
-    ``ix_predictions_source_messageid`` on ``(source, message_id)``
-    enforces dedup at the DB layer. On ``IntegrityError`` we rollback
-    the failed INSERT and re-SELECT the existing row, returning it
-    unchanged. The caller never sees a duplicate row OR an exception.
+    ``ix_predictions_source_messageid`` on
+    ``(user_id, source, message_id)`` enforces tenant-scoped dedup at
+    the DB layer. On ``IntegrityError`` we rollback the failed INSERT
+    and re-SELECT the existing row, returning it unchanged. The caller
+    never sees a duplicate row OR an exception.
 
     Method selection: ``_choose_method_and_window`` is consulted to
     pre-compute ``evaluation_method`` + ``evaluation_due_at`` so the
@@ -415,14 +416,17 @@ def _insert_prediction(
     # on; in single-writer Argosy there's no race window worth
     # mitigating between SELECT and INSERT.
     existing_stmt = select(Prediction).where(
+        Prediction.user_id == user_id,
         Prediction.source == source,
         Prediction.message_id == message_id,
     )
     existing = session.execute(existing_stmt).scalar_one_or_none()
     if existing is not None:
         logger.debug(
-            "predictions.writers: dedup hit for (source=%s, message_id=%s) — "
+            "predictions.writers: dedup hit for "
+            "(user_id=%s, source=%s, message_id=%s) — "
             "returning existing row id=%s",
+            user_id,
             source,
             message_id,
             existing.id,
@@ -453,8 +457,12 @@ def _insert_prediction(
         if existing is not None:
             logger.debug(
                 "predictions.writers: race-loser dedup hit for "
-                "(source=%s, message_id=%s) — returning existing row id=%s",
-                source, message_id, existing.id,
+                "(user_id=%s, source=%s, message_id=%s) — "
+                "returning existing row id=%s",
+                user_id,
+                source,
+                message_id,
+                existing.id,
             )
             return existing
         # Not a dedup race — re-raise the original IntegrityError so

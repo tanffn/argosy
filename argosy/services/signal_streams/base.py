@@ -15,6 +15,7 @@ class SignalNomination:
     as_of: date
     evidence: dict[str, Any]
     dedup_key: str
+    route_to_funnel: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.ticker, str) or not self.ticker.strip():
@@ -31,6 +32,8 @@ class SignalNomination:
             raise TypeError("evidence must be a dict")
         if not isinstance(self.dedup_key, str) or not self.dedup_key.strip():
             raise ValueError("dedup_key must be non-empty")
+        if not isinstance(self.route_to_funnel, bool):
+            raise TypeError("route_to_funnel must be a bool")
 
 
 @runtime_checkable

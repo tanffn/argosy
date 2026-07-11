@@ -19,7 +19,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - we require 3.12+ but keep the fallback
     import tomli as tomllib
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -528,16 +528,49 @@ def get_user_agent_settings(user_id: str) -> dict:
 
 
 class GovContractsSignalConfig(BaseModel):
+    enabled: bool = Field(default=True, strict=True)
     materiality_threshold: float = Field(default=0.05, gt=0, le=1)
     lookback_days: int = Field(default=90, gt=0)
     recent_scan_days: int = Field(default=2, gt=0)
     max_pages_per_query: int = Field(default=10, gt=0)
+    agent_error_ttl_hours: int = Field(default=24, gt=0, le=168)
+
+
+class InsiderClusterSignalConfig(BaseModel):
+    enabled: bool = Field(default=False, strict=True)
+    lookback_days: int = Field(default=14, gt=0)
+    recent_scan_days: int = Field(default=2, gt=0)
+    index_publication_lag_days: int = Field(default=2, ge=1, strict=True)
+    daily_pull_days: int = Field(default=1, ge=1, le=1, strict=True)
+    ledger_horizon_days: int = Field(default=45, ge=1, le=45, strict=True)
+    min_distinct_buyers: int = Field(default=2, ge=2)
+    min_cluster_value_usd: float = Field(default=100_000, gt=0)
+    min_cluster_value_market_cap_bps: float = Field(default=0.5, ge=0)
+    min_distinct_sellers: int = Field(default=2, ge=2)
+    min_stake_sale_pct: float = Field(default=20, gt=0, lt=100)
+    warning_ttl_days: int = Field(default=30, gt=0, le=365)
+    cursor_max_catchup_days: int = Field(default=31, gt=0, le=31)
+
+    @model_validator(mode="after")
+    def validate_scan_window(self) -> InsiderClusterSignalConfig:
+        if self.recent_scan_days > self.lookback_days:
+            raise ValueError(
+                "recent_scan_days must be no greater than lookback_days"
+            )
+        if self.ledger_horizon_days < self.lookback_days:
+            raise ValueError(
+                "ledger_horizon_days must be no less than lookback_days"
+            )
+        return self
 
 
 class SignalStreamsConfig(BaseModel):
     enabled: bool = True
     gov_contracts: GovContractsSignalConfig = Field(
         default_factory=GovContractsSignalConfig
+    )
+    insider_cluster: InsiderClusterSignalConfig = Field(
+        default_factory=InsiderClusterSignalConfig
     )
 
 

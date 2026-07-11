@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -19,6 +19,11 @@ from argosy.adapters.data.sec_form4_adapter import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _declared_sec_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGOSY_SEC_CONTACT_EMAIL", "tests@example.com")
+
+
 # ----------------------------------------------------------------------
 # Fixture XML / atom payloads
 # ----------------------------------------------------------------------
@@ -32,27 +37,26 @@ _TICKERS_JSON = json.dumps(
 )
 
 
-_FORM4_ATOM = """<?xml version="1.0" encoding="UTF-8"?>
+_FORM4_ATOM = f"""<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
     <title>4 - HUANG JEN HSUN (0001045810)</title>
-    <updated>{recent_date}T16:30:00-04:00</updated>
+    <updated>{(date.today() - timedelta(days=2)).isoformat()}T16:30:00-04:00</updated>
     <link href="https://www.sec.gov/Archives/edgar/data/1045810/0001045810-26-000001-index.htm"/>
   </entry>
   <entry>
     <title>4 - SOMEONE ELSE (0001045810)</title>
-    <updated>{old_date}T16:30:00-04:00</updated>
+    <updated>{(date.today() - timedelta(days=400)).isoformat()}T16:30:00-04:00</updated>
     <link href="https://www.sec.gov/Archives/edgar/data/1045810/0001045810-25-000123-index.htm"/>
   </entry>
 </feed>
-""".format(
-    recent_date=(date.today() - timedelta(days=2)).isoformat(),
-    old_date=(date.today() - timedelta(days=400)).isoformat(),
-)
+"""
 
 
 _FORM4_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <ownershipDocument>
+  <documentType>4</documentType>
+  <periodOfReport>2026-04-16</periodOfReport>
   <issuer>
     <issuerCik>0001045810</issuerCik>
     <issuerName>NVIDIA CORP</issuerName>
@@ -60,6 +64,7 @@ _FORM4_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </issuer>
   <reportingOwner>
     <reportingOwnerId>
+      <rptOwnerCik>0001234567</rptOwnerCik>
       <rptOwnerName>HUANG JEN HSUN</rptOwnerName>
     </reportingOwnerId>
     <reportingOwnerRelationship>
@@ -232,6 +237,10 @@ async def test_get_recent_form4_for_ticker_happy_path(engine: None) -> None:
     rows = await adapter.get_recent_form4_for_ticker("NVDA", days=30)
     assert len(rows) == 2  # Only the recent atom-entry filing within window
     assert all(r["ticker"] == "NVDA" for r in rows)
+    assert all(r["issuer_cik"] == "0001045810" for r in rows)
+    assert all(r["filer_cik"] == "0001234567" for r in rows)
+    assert all(r["filed_at"] for r in rows)
+    assert all(r["filing_url"].endswith("-index.htm") for r in rows)
 
 
 @pytest.mark.asyncio

@@ -3008,9 +3008,9 @@ class Prediction(Base):
     * ``ix_predictions_ticker_event`` on ``(ticker, event_at DESC)``
       partial ``WHERE ticker IS NOT NULL`` — per-ticker historical
       lookup.
-    * ``ix_predictions_source_messageid`` UNIQUE on ``(source,
+    * ``ix_predictions_source_messageid`` UNIQUE on ``(user_id, source,
       message_id)`` partial ``WHERE message_id IS NOT NULL`` —
-      per-source dedup; writer computes
+      per-user/per-source dedup; writer computes
       ``v1|predictions|<source>|<entity-id>`` per §2.2.
     * ``ix_predictions_due_at`` on ``(evaluation_due_at)`` partial
       ``WHERE archived = 0`` — evaluator hot-path.
@@ -3888,6 +3888,93 @@ class SignalStreamCursor(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+
+class SignalStreamEvent(Base):
+    """Tenant-scoped raw public event retained for local signal windows."""
+
+    __tablename__ = "signal_stream_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stream: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_key: Mapped[str] = mapped_column(Text, nullable=False)
+    event_group_key: Mapped[str] = mapped_column(Text, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_at: Mapped[date] = mapped_column(Date, nullable=False)
+    available_at: Mapped[date] = mapped_column(Date, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_urls_json: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=_sa_text("1"),
+    )
+    evaluation_pending: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=3,
+        server_default=_sa_text("3"),
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "json_valid(payload_json)",
+            name="ck_signal_stream_events_payload_json",
+        ),
+        CheckConstraint(
+            "json_valid(source_urls_json)",
+            name="ck_signal_stream_events_source_urls_json",
+        ),
+        CheckConstraint(
+            "active IN (0, 1)",
+            name="ck_signal_stream_events_active",
+        ),
+        CheckConstraint(
+            "evaluation_pending IN (0, 1, 2, 3)",
+            name="ck_signal_stream_events_evaluation_pending",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "stream",
+            "event_key",
+            name="uq_signal_stream_events_user_stream_event",
+        ),
+        Index(
+            "ix_signal_events_user_stream_available",
+            "user_id",
+            "stream",
+            "available_at",
+        ),
+        Index(
+            "ix_signal_events_user_stream_ticker_event",
+            "user_id",
+            "stream",
+            "ticker",
+            "event_at",
+        ),
+        Index(
+            "ix_signal_events_user_stream_group",
+            "user_id",
+            "stream",
+            "event_group_key",
+        ),
     )
 
 

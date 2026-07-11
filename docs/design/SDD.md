@@ -4045,7 +4045,13 @@ The client-facing inbox is backed by `action_proposals`. The table's `kind` CHEC
 
 **Cadence and recovery.** `SignalStreamsDailyLoop` runs at 15:30 Asia/Jerusalem, before the 16:00 discovery funnel. It opens one transaction per stream so one adapter failure never rolls back another stream. `signal_stream_cursors` (**migration 0083**) stores the last successful timestamp per `(user_id, stream)`. The next query overlaps the cursor by the stream's configured recent-scan window and clamps to its maximum lookback; successful zero-nomination cycles advance the cursor, while a failed cycle rolls back both writes and cursor. Existing observation-time predictions provide the one-time fallback watermark when introducing cursors to an already-populated ledger.
 
-**Government-contract adapter.** `signal_streams/contracts.py` queries USAspending prime contract awards (award type codes A–D) and uses obligated award amounts, never IDIQ ceilings. A bounded recent global query discovers unknown recipients; recipient-specific lookbacks rebuild materiality for mapped public contractors without deep global pagination. `signal_recipient_resolutions` (**migration 0082**) persists curated, fuzzy, LLM-selected, or unresolved recipient mappings exactly once. The LLM may choose only from plausible public-company candidates; malformed, failed, or non-candidate answers remain unresolved and cannot blank independent nominations. A ticker nominates only when trailing obligated awards are material relative to trailing-twelve-month revenue from the existing fundamentals path. Current quote, market capitalization, and volume come through the cached market-data adapter. The ordinary radar price/capitalization/dollar-volume gates still decide whether the name becomes active or quarantined.
+**Government-contract adapter.** `signal_streams/contracts.py` queries USAspending prime contract awards (award type codes A–D) and uses obligated award amounts, never IDIQ ceilings. A bounded recent global query discovers unknown recipients; recipient-specific lookbacks rebuild materiality for mapped public contractors without deep global pagination. `signal_recipient_resolutions` (**migration 0082**) persists curated, fuzzy, LLM-selected, or unresolved recipient mappings. The LLM may choose only from plausible public-company candidates. Transient LLM failures write an `agent_error` tombstone that expires after the configured TTL (default 24h) and is then retried; confirmed non-public recipients write a permanent `not_public` tombstone. Malformed or non-candidate answers cannot blank independent nominations. A ticker nominates only when trailing obligated awards are material relative to trailing-twelve-month revenue from the existing fundamentals path. Current quote, market capitalization, and volume come through the cached market-data adapter. The ordinary radar price/capitalization/dollar-volume gates still decide whether the name becomes active or quarantined.
+
+**Insider-cluster adapter.** `signal_streams/insider.py` consumes the SEC EDGAR daily Form index through the existing `SecForm4Adapter`. Stream B is **opt-in** (`insider_cluster.enabled` defaults false). Steady-state runs pull the latest completed publication day; after an outage the durable cursor + `cursor_max_catchup_days` expand the network range so missed index days are recovered. Each indexed full submission is fetched once (per-filing isolation: one malformed filing cannot abort the day; HTTP 429/503 get one retry with backoff), extracts the embedded ownership XML, and resolves the public ticker from the parsed issuer CIK (the index CIK is retained only as filing provenance). Normalized transactions persist in the tenant-scoped `signal_stream_events` raw-event ledger (**migration 0085**); the rolling 14-day cluster is derived from active local events. Filing-group replacement handles amendments; ambiguous/ownerless amendments recompute live taint each run so collaterally tainted siblings restore when the ambiguity clears. Incomplete market enrichment remains directionally pending for a later retry. Network reads finish before ORM changes are staged, preserving one atomic commit for events, predictions, monitor flags, and cursor without blocking cache writers.
+
+The SEC adapter processes filings with bounded concurrency under the process-global fair-access pacer shared with the 13F adapter. SEC traffic requires the runtime `ARGOSY_SEC_CONTACT_EMAIL`; no placeholder network identity exists. Undeclared-automation HTML returned with HTTP 200 is detected and fails loudly. Daily-index parsing supports the official two-line header/compact date layout, skips deterministic federal closures, and queries only completed publication days using a configured lag.
+
+Purchase nominations require at least the configured number of distinct officers/directors making non-derivative code-P acquisitions within the rolling window, with transaction-level 10b5-1 status explicitly false and aggregate disclosed value above the greater of the base dollar floor and market-cap-scaled floor. Form 4/A filings supersede their uniquely matched original filing under a stable event identity; ambiguous amendments are cluster-ineligible. Warning-only sell clusters require distinct C-suite sellers whose aggregate sale within one security/ownership pool is strictly above the configured fraction of pre-sale holdings. They write short predictions and one generic `signal_stream_warning` monitor flag but never create a radar candidate. `monitor_flags.kind` admits this generic sink and prediction uniqueness is tenant-scoped under **migration 0084**. Warning reruns do not extend the original TTL or resurface acknowledged/expired events.
 
 **Ledger and outcome methods.** Every nomination writes two idempotent `predictions` rows under `source='signal_stream:<stream>'`: 30 calendar days and 180 calendar days. Both snapshot entry price and `event_at` when Argosy observes/writes the nomination; the underlying event date remains in source evidence. The method registry contains true `fixed_lookahead_180d` and entry-backfilled supersession methods, so thesis-horizon outcomes are not collapsed into the legacy 30-day cap. The daily evaluator runs ordinary scoring, recoverable-row re-evaluation, and retention in one transaction. Reliability queries select one outcome per prediction/method family using the highest **active** method version.
 
@@ -4110,6 +4116,20 @@ signal_streams:
   lookback_days: 90
   recent_scan_days: 2
   max_pages_per_query: 10
+  agent_error_ttl_hours: 24 # agent_error tombstones retry after TTL; not_public is permanent
+ insider_cluster:
+  enabled: false # opt-in by default
+  lookback_days: 14
+  recent_scan_days: 2
+  index_publication_lag_days: 2
+  daily_pull_days: 1
+  cursor_max_catchup_days: 31
+  min_distinct_buyers: 2
+  min_cluster_value_usd: 100000
+  min_cluster_value_market_cap_bps: 0.5
+  min_distinct_sellers: 2
+  min_stake_sale_pct: 20
+  warning_ttl_days: 30
 
 # Tier thresholds
 tiers:
