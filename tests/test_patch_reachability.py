@@ -591,6 +591,90 @@ def test_preserve_unimplicated_sections_keeps_prior_coverage():
     assert merged.medium.posture == "MODEL POSTURE"
 
 
+def test_preserve_unimplicated_sections_keeps_model_new():
+    """Model-new sections (e.g. healthcare/insurance missing from a short
+    prior) must survive the merge — otherwise they can never regenerate."""
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _preserve_unimplicated_sections,
+    )
+
+    prior = _prior().model_copy(update={
+        "sections": [_section("concentration", "long", "prior concentration")],
+    })
+    model = _prior().model_copy(update={
+        "sections": [
+            _section("concentration", "long", "MODEL concentration"),
+            _section("healthcare", "long", "MODEL healthcare"),
+            _section("insurance", "medium", "MODEL insurance"),
+        ],
+    })
+    merged = _preserve_unimplicated_sections(prior=prior, model=model)
+    by_key = {(s.section_id, s.horizon): s for s in merged.sections}
+    assert set(by_key) == {
+        ("concentration", "long"),
+        ("healthcare", "long"),
+        ("insurance", "medium"),
+    }
+    assert by_key[("healthcare", "long")].body_md == "MODEL healthcare"
+    assert by_key[("insurance", "medium")].body_md == "MODEL insurance"
+    assert by_key[("concentration", "long")].body_md == "MODEL concentration"
+
+
+def test_preserve_unimplicated_sections_dedupes_duplicate_keys():
+    """July-11 chain carried concentration twice — merge collapses by key."""
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _preserve_unimplicated_sections,
+    )
+
+    prior = _prior().model_copy(update={
+        "sections": [
+            _section("concentration", "long", "prior A"),
+            _section("concentration", "long", "prior B duplicate"),
+            _section("tax_plan", "long", "prior tax"),
+        ],
+    })
+    model = _prior().model_copy(update={
+        "sections": [
+            _section("concentration", "long", "MODEL first"),
+            _section("concentration", "long", "MODEL second wins"),
+        ],
+    })
+    merged = _preserve_unimplicated_sections(prior=prior, model=model)
+    keys = [(s.section_id, s.horizon) for s in merged.sections]
+    assert keys.count(("concentration", "long")) == 1
+    assert ("tax_plan", "long") in keys
+    by_key = {(s.section_id, s.horizon): s for s in merged.sections}
+    assert by_key[("concentration", "long")].body_md == "MODEL second wins"
+    assert by_key[("tax_plan", "long")].body_md == "prior tax"
+
+
+def test_preserve_unimplicated_sections_skips_implicated_prior():
+    """An implicated stale prior section the model omitted is NOT restored."""
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _preserve_unimplicated_sections,
+    )
+
+    prior = _prior().model_copy(update={
+        "sections": [
+            _section("concentration", "long", "STALE implicated concentration"),
+            _section("healthcare", "long", "prior healthcare"),
+        ],
+    })
+    model = _prior().model_copy(update={
+        "sections": [
+            _section("insurance", "long", "MODEL insurance new"),
+        ],
+    })
+    merged = _preserve_unimplicated_sections(
+        prior=prior, model=model,
+        implicated_sections={("concentration", "long")},
+    )
+    by_key = {(s.section_id, s.horizon): s for s in merged.sections}
+    assert ("concentration", "long") not in by_key
+    assert by_key[("healthcare", "long")].body_md == "prior healthcare"
+    assert by_key[("insurance", "long")].body_md == "MODEL insurance new"
+
+
 def test_synthetic_item_id_matches_prior_items_index_slug():
     assert synthetic_item_id("medium", "targets", "NVDA target weight") == (
         "medium.targets.nvda_target_weight"

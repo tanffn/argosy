@@ -872,12 +872,16 @@ def run_synthesis(
                 output, _phase_3_reports = _phase_3_result, []
             # Full corrective regen often emits a partial section set
             # (~11/18). Preserve prior sections the model omitted so
-            # section_coverage cannot silently regress (item 4).
+            # section_coverage cannot silently regress (item 4); union
+            # model-new sections and never restore implicated stale ones.
             if _corrective_ctx is not None:
                 _sec_prior = _pkg._load_patch_base_output(prior_current)
                 if _sec_prior is not None and _sec_prior.sections:
                     output = _pkg._preserve_unimplicated_sections(
                         prior=_sec_prior, model=output,
+                        implicated_sections=_pkg._implicated_section_keys(
+                            prior=_sec_prior, corrective_ctx=_corrective_ctx,
+                        ),
                     )
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
@@ -2222,6 +2226,10 @@ def run_synthesis(
                     if _esc_sec_prior is not None and _esc_sec_prior.sections:
                         output = _pkg._preserve_unimplicated_sections(
                             prior=_esc_sec_prior, model=output,
+                            implicated_sections=_pkg._implicated_section_keys(
+                                prior=_esc_sec_prior,
+                                corrective_ctx=_corrective_ctx,
+                            ),
                         )
                     output = _pkg._run_plan_language_rewriter(
                         output=output, user_id=user_id,
@@ -5187,33 +5195,79 @@ def _merge_patched_output(
     return PlanSynthesisOutput.model_validate(json.loads(merged.model_dump_json()))
 
 
+def _implicated_section_keys(
+    *,
+    prior: PlanSynthesisOutput,
+    corrective_ctx: object | None,
+) -> set[tuple[str, str]]:
+    """``(section_id, horizon)`` keys a corrective context implicates.
+
+    Used by ``_preserve_unimplicated_sections`` so a full regen that omits
+    an implicated section does not silently restore the stale prior body
+    over the intended fix (July-11 concentration double-carry class).
+    """
+    if corrective_ctx is None or not prior.sections:
+        return set()
+    from argosy.quality.patch_reachability import parse_plan_item_ref
+
+    candidates: set[str] = set()
+    for c in getattr(corrective_ctx, "corrections", None) or ():
+        ref = str(getattr(c, "plan_item_ref", "") or "")
+        parsed = parse_plan_item_ref(ref)
+        if parsed.section_id:
+            candidates.add(parsed.section_id)
+        topic = str(getattr(c, "topic", "") or "").strip()
+        if topic:
+            candidates.add(topic)
+    if not candidates:
+        return set()
+    return {
+        (s.section_id, s.horizon)
+        for s in prior.sections
+        if s.section_id in candidates
+    }
+
+
 def _preserve_unimplicated_sections(
     *,
     prior: PlanSynthesisOutput,
     model: PlanSynthesisOutput,
+    implicated_sections: set[tuple[str, str]] | frozenset | None = None,
 ) -> PlanSynthesisOutput:
     """Full-corrective section coverage guard (synthesis-aftermath item 4).
 
     Patch mode already merges via ``_merge_patched_output``; when patch is
     off/escalated, a full phase-3 regen often emits ~11 of 18 sections and
-    silently drops the rest. Mirror the section loop of
-    ``_merge_patched_output``: keep every prior ``(section_id, horizon)``
-    the model omitted; overwrite only keys the model emitted. Horizons /
-    inputs stay the model's (full regen owns those).
+    silently drops the rest. Union rules (dedupe by ``(section_id, horizon)``):
+
+    * model-emitted keys win (including MODEL-NEW sections the prior lacked —
+      otherwise missing canonical ids can never regenerate);
+    * prior keys the model omitted are restored ONLY when unimplicated —
+      an implicated stale section must not be blindly restored over a fix;
+    * duplicate keys inside either input collapse to one entry.
+    Horizons / inputs stay the model's (full regen owns those).
     """
-    if not prior.sections:
-        return model
-    model_by_key = {(s.section_id, s.horizon): s for s in model.sections}
-    merged_sections = []
-    for s in prior.sections:
+    implicated = set(implicated_sections or ())
+    # Model first (order-preserving, last-wins for internal duplicates).
+    by_key: dict[tuple[str, str], object] = {}
+    model_order: list[tuple[str, str]] = []
+    for s in model.sections or []:
         key = (s.section_id, s.horizon)
-        m = model_by_key.get(key)
-        if m is None:
-            merged_sections.append(s)
-        else:
-            merged_sections.append(m.model_copy(update={
-                "section_id": s.section_id, "horizon": s.horizon,
-            }))
+        if key not in by_key:
+            model_order.append(key)
+        by_key[key] = s
+    prior_only_order: list[tuple[str, str]] = []
+    for s in prior.sections or []:
+        key = (s.section_id, s.horizon)
+        if key in by_key:
+            continue  # model already owns this key
+        if key in implicated:
+            continue  # do not restore a stale implicated prior section
+        by_key[key] = s
+        prior_only_order.append(key)
+    if not by_key:
+        return model
+    merged_sections = [by_key[k] for k in model_order + prior_only_order]
     merged = model.model_copy(update={"sections": merged_sections})
     return PlanSynthesisOutput.model_validate(
         json.loads(merged.model_dump_json())
