@@ -914,6 +914,31 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # VerdictTriggerDailyLoop (Item B, 2026-07-11) — cheap deterministic
+        # settled-verdict trigger checker. 07:00 IDT daily. Fired triggers
+        # write unlock inbox rows; never spawn agents.
+        try:
+            from argosy.orchestrator.loops.verdict_trigger_daily import (  # noqa: PLC0415
+                VerdictTriggerDailyLoop,
+                verdict_trigger_daily_metadata,
+            )
+
+            vtrig_loop = VerdictTriggerDailyLoop(
+                enabled=True,
+                user_id="ariel",
+            )
+            scheduler.register_loop(vtrig_loop)
+            registry.register(
+                job=vtrig_loop,
+                metadata=verdict_trigger_daily_metadata(),
+            )
+            log.info("scheduler.verdict_trigger_daily_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.verdict_trigger_daily_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Adopt every scheduler loop the registry doesn't know yet.
         # RegisteredScheduler._fire_once fails fast for registry-unknown
         # loops (the lock/audit single-writer contract), so a loop
