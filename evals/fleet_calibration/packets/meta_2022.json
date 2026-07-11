@@ -1,0 +1,137 @@
+{
+  "case_id": "meta_2022",
+  "alias": "NSG",
+  "category": "D",
+  "grading": "hold_drawdown",
+  "real": "META @ 2022-11-04 (~$90.79; post-Q3 capex panic)",
+  "freeze_date": "2022-11-04",
+  "rescale_factor": 0.44,
+  "synthetic": false,
+  "expected_classes": [
+    "hold",
+    "buy"
+  ],
+  "positioned": true,
+  "positions": "The growth sleeve HOLDS NSG from an entry ~5 quarters ago at $156.20/share (a full-size core-sleeve position at entry). Current price $39.95 -> unrealized P&L -74%. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 20,
+  "contamination_terms": [
+    "Meta",
+    "Facebook",
+    "Zuckerberg",
+    "Instagram",
+    "WhatsApp",
+    "Reels",
+    "TikTok",
+    "metaverse",
+    "Reality Labs",
+    "Apple",
+    "ATT",
+    "Gerstner",
+    "Altimeter"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 90.0,
+    "price_at_horizon_real": 557.47,
+    "horizon_label": "2024-11-04 (2y)",
+    "benchmark_return_pct": 519.4,
+    "note": "yfinance adjusted closes fetched 2026-07-11; buy-and-hold freeze->horizon"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2022 results (2022-10-26): revenue $27.71B (-4% YoY, second consecutive YoY decline; $1.79B FX headwind), net income $4.40B (-52% YoY), total costs $22.05B (+19%); immersive-hardware division revenue $285M with an operating loss of $3.67B in the quarter; next-year capex guided $34-39B; family monthly users 3.71B (+4%); $6.55B repurchased in the quarter, $17.78B authorization remaining",
+      "url": "https://www.prnewswire.com/news-releases/meta-reports-third-quarter-2022-results-301660429.html",
+      "date": "2022-10-26",
+      "verify": true
+    },
+    {
+      "fact": "Stock fell ~25% on the print to ~$97, then drifted to ~$90 by 2022-11-04; sell-side focus = capex discipline and the moonshot division's losses 'growing significantly next year'",
+      "url": "https://www.cnbc.com/2022/10/26/facebook-parent-meta-earnings-q3-2022.html",
+      "date": "2022-10-26",
+      "verify": true
+    },
+    {
+      "fact": "Prominent shareholder (Altimeter's Brad Gerstner) open letter 2022-10-24: cut headcount expense 20%, cap the immersive-computing investment at $5B/yr; notes capex doubled from ~$15B to ~$30B/yr while the stock lagged peers",
+      "url": "https://medium.com/@alt.cap/time-to-get-fit-an-open-letter-from-altimeter-to-mark-zuckerberg-and-the-meta-board-of-392d94e80a18",
+      "date": "2022-10-24",
+      "verify": true
+    },
+    {
+      "fact": "Company quantified the dominant mobile-OS vendor's app-tracking privacy change as a ~$10B revenue headwind for the year",
+      "url": "https://www.cnbc.com/2022/02/02/facebook-says-apple-ios-privacy-change-will-cost-10-billion-this-year.html",
+      "date": "2022-02-02",
+      "verify": true
+    },
+    {
+      "fact": "FY2021 10-K: revenue $117.9B (+37%), net income $39.4B, free cash flow ~$39B — the last full year before the capex surge",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001326801&type=10-K",
+      "date": "2022-02-03",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/NSG",
+      "company": "Nexus Social Group (alias NSG)",
+      "as_of": "current",
+      "market_cap_usd_m": 106000,
+      "share_price_usd": 39.95,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 18380,
+        "total_debt_usd_m": 4360,
+        "note": "large net-cash position; first-ever bond issue placed a quarter ago at investment-grade terms; repurchased ~2,880 of stock last quarter with ~7,820 of authorization remaining under an aggressive buyback expanded ~a year ago"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 51890,
+          "revenue_growth_pct": 37,
+          "net_income_usd_m": 17320,
+          "free_cash_flow_usd_m": 17200,
+          "note": "the last full year before the capex surge; ad business at scale with industry-leading margins"
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 37820,
+          "revenue_growth_pct": 22,
+          "net_income_usd_m": 12820
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q3 of the current FY, reported ~9 days ago",
+        "revenue_usd_m": 12190,
+        "revenue_growth_yoy_pct": -4,
+        "net_income_usd_m": "~1,934 (roughly halved YoY)",
+        "note": "SECOND consecutive YoY revenue decline (the first in company history was last quarter); a ~788 currency headwind explains most of the drop — constant-currency revenue was ~+2%; net income roughly HALVED YoY as total costs rose +19% to ~9,700; the core apps segment still earned a ~34% operating margin this quarter (was 40%+ over the trailing year) while the immersive-computing moonshot division lost ~1,620 on ~125 of revenue"
+      },
+      "guidance": {
+        "q_plus_1_revenue_usd_m": "13,200-14,300 (below consensus; continued FX headwind)",
+        "capex_next_fy_usd_m": "15,000-17,200, up from ~14,300 this year — largely AI compute infrastructure plus the immersive-computing moonshot; management says moonshot operating losses will 'grow significantly' next year",
+        "note": "management defends the spend as long-horizon; no commitment yet to the cost discipline investors are demanding"
+      },
+      "valuation": {
+        "pe_trailing": 8.3,
+        "pe_trailing_core_ex_moonshot": "~6-7x if the moonshot division's losses are excluded from earnings",
+        "price_action": "stock -74% vs the sleeve's entry and ~-75% from its all-time high ~14 months ago; fell ~25% on the Q3 print alone; trades at a discount to the broad market and to every mega-cap peer"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/NSG",
+      "business_description": "Dominant global social-networking and messaging platform family (~3.71B monthly users, +4% YoY; daily users ~2.93B and still growing) monetized via targeted advertising. Entry thesis (~5 quarters ago): dominant ad platform with a network-effect moat across multiple billion-user apps, best-in-class ad-targeting infrastructure, and monetization optionality (short-video format, messaging commerce, AI-driven ranking). Falsifiers set at entry: (a) user decline across the family, (b) structural collapse of core ad-segment operating margins, (c) capital allocation without discipline persisting indefinitely.",
+      "recent_developments": [
+        "Q0 showed the second consecutive YoY revenue decline (-4%), but ~all of it is currency: constant-currency growth was ~+2%, and the digital-ad market is in a cyclical downturn hitting all ad-funded platforms.",
+        "The dominant mobile-OS vendor's privacy change degraded ad targeting/attribution — management quantified it earlier this year as a ~10,000 (scaled) annual revenue headwind; the company is rebuilding targeting with on-platform AI signals.",
+        "A short-video competitor is taking engagement share among younger users; the company's own short-video format is growing fast but monetizes at a lower rate than feed ads for now ('monetization-efficiency gap' management says will close).",
+        "The bear case is loud and credible: total costs +19% YoY into declining revenue, headcount +28% YoY, capex guided UP again for next year, and the immersive-computing moonshot division is losing ~1,620 per quarter with losses guided to grow — a prominent shareholder published an open letter ~10 days ago demanding 20% headcount-expense cuts and a hard cap on the moonshot spend.",
+        "Founder-controlled dual-class structure means outside shareholders cannot force the cost discipline; the founder reiterated conviction in the moonshot on the earnings call, though he acknowledged the discipline message and announced a hiring freeze in the prior quarter.",
+        "Against that: users are still GROWING across the family, the core apps segment still ran a ~34% operating margin this quarter (40%+ trailing-year), the balance sheet is net cash, free cash flow ran ~17,200 in the last pre-surge year, and the buyback is being executed aggressively at ~8x trailing earnings."
+      ],
+      "macro_context": "Aggressive central-bank tightening into multi-decade-high inflation; digital-ad spend cyclically weak; a very strong home currency creating reported-revenue headwinds for all global platforms; high-multiple tech broadly de-rated 50-75% from highs over the past year.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

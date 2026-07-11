@@ -1,0 +1,126 @@
+{
+  "case_id": "ttcf_t4",
+  "alias": "PVF",
+  "category": "C",
+  "grading": "exit",
+  "real": "TTCF @ 2023-03-15 (~$1.20); going-concern, delisting risk",
+  "freeze_date": "2023-03-15",
+  "rescale_factor": 3.7,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $4.44 -> unrealized P&L -94%. Entered nine quarters ago; held through the entire decline. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 35,
+  "contamination_terms": [
+    "Tattooed Chef",
+    "TTCF",
+    "Ittella",
+    "Galletti",
+    "Forum Merger",
+    "Costco",
+    "Walmart",
+    "Sam's Club",
+    "Club Foods",
+    "Kroger",
+    "Karsten",
+    "New Mexico Food"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 1.2,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+    "benchmark_return_pct": -100,
+    "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2022 10-Q (filed 2022-11-17, a week late after an NT 10-Q on 2022-11-10): going-concern substantial doubt first disclosed, plus credit-facility covenant non-compliance as of quarter-end; Nasdaq non-compliance notice for the late filing received 2022-11-16, cured on filing",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000162828022030219/ttcf-20220930.htm",
+      "date": "2022-11-17"
+    },
+    {
+      "fact": "Cost-reduction plan announced: ~$30M annual expense savings targeted by next year-end, aiming for positive EBITDA and operating cash flow by mid-next-year; the Q3 results PR (2022-11-15) added that the company intends to raise additional debt or equity capital",
+      "url": "https://www.globenewswire.com/news-release/2022/11/10/2553884/0/en/Tattooed-Chef-Updates-2022-Financial-Outlook-and-Announces-Cost-Reduction-Initiatives.html",
+      "date": "2022-11-10"
+    },
+    {
+      "fact": "NT 10-K late-filing notice for FY-2022 — ACTUALLY FILED 2023-03-17, TWO DAYS AFTER THE FREEZE (the packet previously carried a best-guess 2023-03-14 'filed this week'). Post-freeze source; disqualified together with the FY-2022 10-K entry below.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000162828023008504/ttcf-20221231xnt10k.htm",
+      "date": "2023-03-17"
+    },
+    {
+      "fact": "FY-2022 FINAL figures used in packet (revenue $230.9M +8.2%, GROSS LOSS -5.8% GM, net ~-$141.5M, adj-EBITDA -$91.6M, cash ~$6M, covenant breach) — from the FY-2022 10-K, FILED AFTER THE FREEZE on 2023-05-15. Kept on record as the temporal audit's first catch (spec section 2 TTCF row); the point stays disqualified.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000162828023018266/ttcf-20221231.htm",
+      "date": "2023-05-15"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/PVF",
+      "company": "Provida Foods (alias PVF)",
+      "as_of": "current",
+      "market_cap_usd_m": 390,
+      "share_price_usd": 4.44,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 22,
+        "note": "cash ~22 at FY-end vs ~342 two years ago; the company breached the minimum-EBITDA covenant on its credit facility at FY-end; funding now hinges on asset sales, a dilutive raise, or a rescue investor"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-0 (just ended; preliminary — the annual report has not yet been filed and the filing track record is broken)",
+          "revenue_usd_m": 854,
+          "revenue_growth_pct": 8,
+          "gross_margin_pct": -5.8,
+          "gross_profit_usd_m": -50,
+          "net_income_usd_m": -524,
+          "adj_ebitda_usd_m": -339,
+          "note": "GROSS LOSS for the full year — the company loses money before any operating cost; Q4 alone had a gross loss of ~-47"
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 790,
+          "revenue_growth_pct": 43.7,
+          "gross_margin_pct": 10.4,
+          "net_income_usd_m": -323
+        }
+      ],
+      "going_concern": {
+        "disclosed": true,
+        "note": "'substantial doubt about the ability to continue as a going concern' first appeared in the Q3 quarterly filing (itself filed a week late, drawing an exchange non-compliance notice that was cured on filing); listing risk persists if further filings slip, and the annual-report deadline is imminent"
+      },
+      "restructuring": {
+        "note": "cost-reduction plan announced last quarter: ~110 of targeted annual expense savings by next year-end, aiming for positive EBITDA and operating cash flow by the middle of next year; management has also stated it intends to raise additional debt or equity capital"
+      },
+      "valuation": {
+        "ps_trailing": 0.46,
+        "pe_trailing": null,
+        "price_action": "stock -96% vs the sleeve's entry (-98% from all-time high); trades like an option on rescue financing"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/PVF",
+      "business_description": "Plant-forward frozen-food brand, family-founded. Entry thesis (nine quarters ago) is fully falsified on profitability: margins went 15% -> 10% -> NEGATIVE; the company sells product below cost. Revenue growth has also stalled (+11% and decelerating; the brand line is being rationalized). Auditor/going-concern language is on the record and the filings are late.",
+      "recent_developments": [
+        "Formal going-concern disclosure on the record since the Q3 filing; that report was itself filed a week late, drawing an exchange non-compliance notice (cured on filing); the annual-report deadline is imminent with the filing track record broken.",
+        "Covenant breach on the credit facility at FY-end; cash down to ~22 against a ~-339 adjusted-EBITDA year.",
+        "Management pivots: a cost-reduction program (~110 of annualized savings targeted by next year-end) aiming for positive EBITDA and cash flow by the middle of next year, plus a stated intent to raise additional debt or equity capital (widely read as needing rescue financing at current prices).",
+        "The plant-based frozen category is in outright decline; peers have filed for bankruptcy protection this year.",
+        "Any financing at this market cap would be massively dilutive; bankruptcy of the equity is an explicitly discussed scenario in sell-side and press coverage."
+      ],
+      "macro_context": "High rates; risk capital scarce; several small-cap consumer names have recently gone through Chapter-11 processes in which common equity recovered nothing.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: Q3 10-Q date corrected 2023-01-30 -> 2022-11-17 (EDGAR; NT 10-Q 2022-11-10); going-concern substantial doubt CONFIRMED first disclosed in that filing, plus covenant non-compliance as of quarter-end; Nasdaq notice was a single one (2022-11-16, cured on filing 11-17), NOT 'notices outstanding' at the freeze — going_concern note and news bullet corrected; the 'share price below continued-listing thresholds' claim removed (real price ~$1.20 at freeze, above the $1 bid-price rule)."},
+    {"date": "2026-07-11", "fix": "FACTUAL FIX: the restructuring source claimed 'exit private label, headcount cuts, plant sale exploration, strategic alternatives' dated 2023-02-14 — none of that was public by the 2023-03-15 freeze. The real pre-freeze announcement is the 2022-11-10 cost-reduction PR (~$30M annual savings by next year-end, positive EBITDA/OCF by mid-next-year) plus the Q3 PR's stated intent to raise additional debt/equity capital. Source, fundamentals restructuring note, and news bullet rewritten to that record (private-label exit / plant sale / strategic-alternatives language only emerged post-freeze)."},
+    {"date": "2026-07-11", "fix": "NT 10-K date corrected 2023-03-14 -> 2023-03-17 (EDGAR): it is POST-freeze by two days, so the 'a formal late-filing notice was filed this week' line was temporally impossible — analyst-report FY-0 label reworded to 'annual report has not yet been filed'; the source stays on record marked disqualified together with the FY-2022 10-K."},
+    {"date": "2026-07-11", "fix": "FY-2022 10-K actual filing date corrected 2023-06-15 -> 2023-05-15 (EDGAR); FY-2022 revenue growth corrected +11% -> +8.2% ($230.9M vs $213.4M; analyst-report growth field 11 -> 8) and net loss ~-$141.5M; the point remains INTENTIONALLY disqualified as the audit's recorded catch. verify flags cleared."}
+  ]
+}

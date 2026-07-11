@@ -1,0 +1,134 @@
+{
+  "case_id": "nflx_2022",
+  "alias": "SMC",
+  "category": "D",
+  "grading": "hold_drawdown",
+  "real": "NFLX @ 2022-06-15 (~$180 adj; post-subscriber-loss panic)",
+  "freeze_date": "2022-06-15",
+  "rescale_factor": 2.2,
+  "synthetic": false,
+  "expected_classes": [
+    "hold",
+    "buy"
+  ],
+  "positioned": true,
+  "positions": "The growth sleeve HOLDS SMC from an entry ~4 quarters ago at $1,166/share (a full-size core-sleeve position at entry). Current price $396 -> unrealized P&L -66%. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 21,
+  "contamination_terms": [
+    "Netflix",
+    "NFLX",
+    "Hastings",
+    "Sarandos",
+    "Squid Game",
+    "Disney",
+    "HBO",
+    "Hulu"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 18.01,
+    "price_at_horizon_real": 66.94,
+    "horizon_label": "2024-06-15 (2y)",
+    "benchmark_return_pct": 271.7,
+    "note": "yfinance adjusted closes fetched 2026-07-11 (split-adjusted; ~$180 in contemporaneous terms); buy-and-hold freeze->horizon"
+  },
+  "sources": [
+    {
+      "fact": "Q1-2022 shareholder letter (2022-04-19): FIRST paid-subscriber decline in over a decade (-200k, including a -700k one-time hit from suspending service in one overseas market; ex-that, +500k), Q2 guide -2M subs; ~222M paying households PLUS an estimated 100M+ additional households sharing passwords; revenue $7.87B (+9.8%), operating margin 25.1% in the quarter; management announced intent to introduce a lower-priced ad-supported tier over the next 1-2 years",
+      "url": "https://s22.q4cdn.com/959853165/files/doc_financials/2022/q1/FINAL-Q1-22-Shareholder-Letter.pdf",
+      "date": "2022-04-19",
+      "verify": true
+    },
+    {
+      "fact": "Stock fell ~35% the day after the Q1 print; competition, saturation and password sharing cited",
+      "url": "https://www.cnbc.com/2022/04/19/netflix-nflx-earnings-q1-2022.html",
+      "date": "2022-04-19",
+      "verify": true
+    },
+    {
+      "fact": "Paid-sharing monetization test launched in three Latin American markets (~$2-3/mo per extra household) — announced 2022-03-16",
+      "url": "https://www.npr.org/2022/03/17/1087133199/netflix-plans-to-start-charging-for-password-sharing-and-customers-arent-happy",
+      "date": "2022-03-17",
+      "verify": true
+    },
+    {
+      "fact": "~150 employees laid off (~2% of workforce) 2022-05-17; content-spend growth moderating",
+      "url": "https://variety.com/2022/digital/news/netflix-layoffs-150-employees-1235269678/",
+      "date": "2022-05-17",
+      "verify": true
+    },
+    {
+      "fact": "FY2021 results (letter 2022-01-20): revenue $29.70B (+19%), operating margin 20.9%, net income $5.1B",
+      "url": "https://s22.q4cdn.com/959853165/files/doc_financials/2021/q4/FINAL-Q4-21-Shareholder-Letter.pdf",
+      "date": "2022-01-20",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/SMC",
+      "company": "StreamCo Media (alias SMC)",
+      "as_of": "current",
+      "market_cap_usd_m": 176100,
+      "share_price_usd": 396.0,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 13200,
+        "total_debt_usd_m": 32100,
+        "note": "gross debt is inside management's stated leverage target; no near-term maturities of concern; the company is past peak cash content-spend intensity and guides POSITIVE free cash flow for the full year (~2,200) after years of debt-funded content investment"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 65340,
+          "revenue_growth_pct": 19,
+          "operating_margin_pct": 20.9,
+          "net_income_usd_m": 11260
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 54990,
+          "revenue_growth_pct": 24,
+          "operating_margin_pct": 18.3
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q1 of the current FY, reported ~2 months ago",
+        "revenue_usd_m": 17310,
+        "revenue_growth_yoy_pct": 9.8,
+        "operating_income_usd_m": 4340,
+        "operating_margin_pct": 25.1,
+        "net_income_usd_m": 3510,
+        "note": "FIRST paid-subscriber decline in over a decade: -0.2M paid households (vs +2.5M guided), of which -0.7M was a one-time suspension of service in one overseas market for geopolitical reasons — ex-that, +0.5M; still ~222M paying households; revenue grew and the quarter was solidly profitable"
+      },
+      "guidance": {
+        "q_plus_1_revenue_usd_m": "17,710 (+9.7%)",
+        "q_plus_1_paid_net_adds_m": -2.0,
+        "fy_operating_margin_pct": "19-20 at current FX (down from 20.9 last FY, mostly currency)",
+        "note": "management guides a second consecutive quarter of paid-sub decline while the two new monetization levers (ad tier, paid sharing) are built; cash content spend is plateauing at ~37,400/yr"
+      },
+      "valuation": {
+        "pe_trailing": 15.5,
+        "ps_trailing": 2.6,
+        "price_action": "stock -66% vs the sleeve's entry and ~-72% from its all-time high ~7 months ago; the de-rating took the multiple from ~55x to ~15x trailing earnings"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/SMC",
+      "business_description": "Global subscription video-streaming category leader (~222M paying households across 190 countries) with a fully-owned global content studio. Entry thesis (~4 quarters ago): streaming category winner with pricing power, a global content flywheel (local-language originals amortized across a global base), and a long runway converting linear-TV hours. Falsifiers set at entry: (a) sustained subscriber decline ACROSS regions, (b) structural operating-margin compression, (c) failure of new monetization levers (advertising, sharing monetization).",
+      "recent_developments": [
+        "Q0 delivered the first paid-subscriber decline in over a decade (-0.2M, incl. a -0.7M one-time overseas service suspension; guide is -2M more next quarter) — the growth narrative that supported a ~55x multiple broke, and the stock fell ~35% in a day.",
+        "Management acknowledged for the first time that ~100M+ additional households WATCH without paying via shared passwords — reframed as a monetization asset: a paid-sharing product is already live in three test markets (~$2-3/mo per extra household) with a broader rollout planned.",
+        "Management reversed a decade-old stance and announced a lower-priced AD-SUPPORTED tier, targeted within ~1-2 years — sell-side estimates it opens a meaningful new ARPU/TAM layer in mature markets.",
+        "Bear case: the incumbent studios have all launched competing services and are bidding up content; mature-market penetration looks saturated; pandemic-era demand pull-forward is unwinding; inflation-squeezed consumers are auditing subscriptions; two rounds of layoffs and slowing content-spend growth signal a company adjusting to slower growth.",
+        "Against that: revenue still grew ~10% YoY, the quarter ran a 25% operating margin, FY free cash flow is guided POSITIVE for the first sustained stretch (~2,200), engagement share of TV time is still rising in the largest market, and the content slate for H2 is the strongest in several years.",
+        "Competitive check: every major competitor's streaming unit LOSES money at scale; SMC is the only one at a ~20% operating margin, and the price war is pushing weaker entrants toward consolidation."
+      ],
+      "macro_context": "Central banks tightening into multi-decade-high inflation; high-multiple growth names down 50-75% from highs; consumer-discretionary subscription spending under pressure; a geopolitical energy shock has pushed one large overseas region off-limits for Western consumer services.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

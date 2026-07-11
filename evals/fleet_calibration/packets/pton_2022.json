@@ -1,0 +1,149 @@
+{
+  "case_id": "pton_2022",
+  "alias": "HSF",
+  "category": "C",
+  "grading": "exit",
+  "real": "PTON @ 2022-02-10 (~$37; post-guidance-collapse, inventory writedowns, CEO out)",
+  "freeze_date": "2022-02-10",
+  "rescale_factor": 0.61,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS HSF from an earlier entry at $57.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $22.85 -> unrealized P&L -61%. Entered ~6 quarters ago, near the peak of the demand surge. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 50,
+  "contamination_terms": [
+    "Peloton",
+    "PTON",
+    "Foley",
+    "McCarthy",
+    "Tread",
+    "Bike+",
+    "Blackwells"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 37.46,
+    "price_at_horizon_real": 4.55,
+    "horizon_label": "freeze+24m (2024-02-09 adjusted close)",
+    "benchmark_return_pct": -87.9,
+    "note": "yfinance adjusted closes fetched 2026-07-11; freeze 2022-02-10 close 37.46, horizon 2024-02-09 close 4.55 (buy-and-hold -87.9%)"
+  },
+  "sources": [
+    {
+      "fact": "Q1-FY22 print: earnings miss and FY22 revenue guidance slashed to $4.4-4.8B from ~$5.4B on softening demand and supply-chain costs; stock fell ~35% next day",
+      "url": "https://www.globenewswire.com/news-release/2021/11/04/2328010/0/en/Peloton-Interactive-Inc-Reports-First-Quarter-Fiscal-2022-Financial-Results.html",
+      "date": "2021-11-04",
+      "verify": true
+    },
+    {
+      "fact": "Priced a public offering of 27.17M Class A shares at $46.00 (~$1.2B net proceeds), weeks after management said it saw no need for additional capital",
+      "url": "https://investor.onepeloton.com/news-releases/news-release-details/peloton-interactive-inc-announces-pricing-public-offering-class",
+      "date": "2021-11-16",
+      "verify": true
+    },
+    {
+      "fact": "CNBC report (internal documents): company temporarily halting production of its flagship bike for two months and its treadmill for six weeks on a 'significant reduction' in demand; shares -24% on the report; company disputed some specifics",
+      "url": "https://www.cnbc.com/2022/01/20/peloton-to-pause-production-of-its-bikes-treadmills-as-demand-wanes.html",
+      "date": "2022-01-20",
+      "verify": true
+    },
+    {
+      "fact": "Activist investor (stake <5%) sent an open letter to the board demanding the CEO's removal and initiation of a sale process, citing repeated demand-forecasting failures",
+      "url": "https://www.businesswire.com/news/home/20220124005269/en/Blackwells-Sends-Letter-to-Peloton-Board-of-Directors-Calling-for-New-Leadership-and-Initiation-of-Strategic-Alternatives",
+      "date": "2022-01-24",
+      "verify": true
+    },
+    {
+      "fact": "Q2-FY22 print + restructuring: FY22 revenue guide cut AGAIN to $3.7-3.8B (from $4.4-4.8B); founder-CEO replaced by a veteran subscription-media executive; ~2,800 corporate jobs (~20%) cut; ~$800M annual cost-reduction program; binding commitment letter with two major banks for $750M of 5-year term debt; Q2 revenue $1.13B (+6%), GAAP net loss -$439M, connected-fitness subscriptions 2.77M (+66%), monthly churn 0.79%, inventory ~$1.5B",
+      "url": "https://www.sec.gov/Archives/edgar/data/1639825/000163982522000007/shareholderletter2022q2.htm",
+      "date": "2022-02-08",
+      "verify": true
+    },
+    {
+      "fact": "CEO replacement + 2,800 layoffs coverage; revised FY guidance $3.7-3.8B confirmed",
+      "url": "https://www.cnbc.com/2022/02/08/peloton-ceo-john-foley-to-step-down-transition-to-executive-chair-as-company-cuts-2800-jobs-says-report.html",
+      "date": "2022-02-08",
+      "verify": true
+    },
+    {
+      "fact": "Press reports that a mega-cap e-commerce platform (and separately a global sportswear brand) explored potential bids; stock bounced ~50% over two sessions into the print",
+      "url": "https://www.wsj.com/articles/amazon-approached-peloton-about-potential-deal-11644011050",
+      "date": "2022-02-04",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/HSF",
+      "company": "HomeStride Fitness (alias HSF)",
+      "as_of": "current",
+      "market_cap_usd_m": 7600,
+      "share_price_usd": 22.85,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 975,
+        "total_debt_usd_m": 610,
+        "inventory_usd_m": 915,
+        "note": "debt is a zero-coupon convertible. Inventory (~915) now nearly equals cash — roughly a full YEAR of hardware sales at the guided run rate sits in warehouses and on ships. The company raised ~760 in fresh equity ~3 months ago (priced ~2x the current share price), WEEKS after management said it saw no need for additional capital, and has now signed a commitment for ~460 of 5-year term debt from two major banks. Free cash flow was about -335 in the latest quarter alone."
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1 (ended ~7 months ago; June fiscal year-end)",
+          "revenue_usd_m": 2453,
+          "revenue_growth_pct": 120,
+          "gross_margin_pct": 35.7,
+          "net_income_usd_m": -115,
+          "note": "the demand-surge year; hardware gross margin already compressing from price cuts"
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 1114,
+          "revenue_growth_pct": 100,
+          "gross_margin_pct": 46.8,
+          "note": "pre-surge baseline year: doubled revenue at a ~47% gross margin"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q2 of the current FY (December-end quarter), reported ~2 days ago",
+        "revenue_usd_m": 692,
+        "revenue_growth_yoy_pct": 6,
+        "gaap_net_loss_usd_m": -268,
+        "free_cash_flow_usd_m": -335,
+        "connected_subscriptions_m": 1.69,
+        "subscriptions_growth_yoy_pct": 66,
+        "avg_monthly_churn_pct": 0.79,
+        "hardware_gross_margin_pct": 6.4,
+        "note": "growth collapsed from triple digits to +6%; hardware gross margin fell to single digits (price cuts + freight + promotions to move inventory); the subscription base is still growing at +66% with churn under 1%/month"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "2255-2320 — cut for the SECOND time (prior cut was to 2685-2930, from the original ~3295); the new guide implies the first annual revenue DECLINE in company history",
+        "restructuring": "founder-CEO replaced by a veteran subscription-media executive; ~20% of corporate workforce cut; ~490/yr cost-reduction program; planned capex cut by ~90",
+        "cited": "demand normalizing well below the surge-era base, price sensitivity, competitor activity, and freight/logistics inflation"
+      },
+      "valuation": {
+        "ps_on_fy_guide": 3.3,
+        "pe_trailing": null,
+        "price_action": "stock -78% from its all-time high and -61% vs the sleeve's entry, but it BOUNCED ~50% in the two sessions before this snapshot on takeover speculation and the CEO change"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/HSF",
+      "business_description": "Connected-fitness category creator: premium at-home exercise hardware with an attached high-margin content subscription. The entry thesis (~6 quarters ago, mid-demand-surge): category creator with a subscription flywheel (each hardware sale annuitizes into a sticky sub with <1% monthly churn), and the surge in at-home fitness demand from a global demand shock would prove structurally durable rather than pulled-forward. Milestones: (a) demand holding near the elevated base after reopening, (b) hardware margins funding subscriber acquisition at breakeven or better, (c) subscription revenue mix rising. Falsifiers recorded at entry: demand normalizing BELOW the elevated base (visible as guidance cuts), unit economics breaking (price cuts plus heavy marketing needed to move hardware), and an inventory/cash-burn spiral.",
+      "recent_developments": [
+        "The demand falsifier has now fired REPEATEDLY: the FY revenue guide has been cut twice in three months (original ~3295 -> 2685-2930 -> 2255-2320, now implying an outright annual decline), and a leaked internal presentation reported by a business-news outlet showed the company halting production of its flagship bike for two months and its treadmill for six weeks (management disputed some specifics but conceded it is 'right-sizing' production).",
+        "Unit economics have broken: hardware gross margin is down to single digits after price cuts, and free cash flow is running about -335 per quarter; the company raised emergency equity weeks after saying it needed no capital, and has now lined up ~460 of bank term debt.",
+        "Inventory has ballooned to ~915 — close to a full year of sales at the guided run rate — creating writedown and further-discounting risk.",
+        "Governance reset: an activist letter demanded the founder-CEO's firing and a sale of the company; days later the founder moved to executive chair, a well-regarded subscription-media veteran took over as CEO, and ~20% of corporate staff were cut in a ~490/yr cost program.",
+        "Takeover speculation is live: press reports say a mega-cap e-commerce platform and a global sportswear brand have each explored bids; the stock bounced ~50% in two sessions on those reports plus the CEO news — part of any strategic premium is arguably already in the price.",
+        "The bull case is real: the subscription base is still GROWING +66% with churn under 1%/month, engagement per subscriber remains best-in-class, the brand is still the category's default name, and the new CEO has a credible subscription playbook."
+      ],
+      "macro_context": "Consumer demand rotating hard away from at-home categories as the external shock fades; an aggressive rate-tightening cycle is beginning; the shock-beneficiary cohort of stocks has de-rated 50-80% from highs.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

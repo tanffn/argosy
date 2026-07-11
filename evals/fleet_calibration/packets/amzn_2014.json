@@ -1,0 +1,141 @@
+{
+  "case_id": "amzn_2014",
+  "alias": "EVC",
+  "category": "D",
+  "grading": "hold_drawdown",
+  "real": "AMZN @ 2014-11-15 (~$16.4 split-adj; loss headlines, AWS not yet broken out)",
+  "freeze_date": "2014-11-15",
+  "rescale_factor": 1.6,
+  "synthetic": false,
+  "expected_classes": [
+    "hold",
+    "buy"
+  ],
+  "positioned": true,
+  "positions": "The growth sleeve HOLDS EVC from an entry ~4 quarters ago at $31.84/share (a full-size core-sleeve position at entry). Current price $26.22 -> unrealized P&L -18%, in a year when the broad market is UP ~10%. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 22,
+  "contamination_terms": [
+    "Amazon",
+    "AMZN",
+    "Bezos",
+    "AWS",
+    "Prime",
+    "Fire Phone",
+    "Kindle",
+    "Alexa",
+    "Gartner"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 16.39,
+    "price_at_horizon_real": 56.33,
+    "horizon_label": "2017-11-15 (3y)",
+    "benchmark_return_pct": 243.7,
+    "note": "yfinance adjusted closes fetched 2026-07-11 (split-adjusted; ~$328 in contemporaneous terms); buy-and-hold freeze->horizon"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2014 results (2014-10-23): net sales $20.58B (+20% YoY), operating loss -$544M, net LOSS -$437M (largest in ~14 years), including a ~$170M charge primarily for inventory valuation and supplier commitments on a failed smartphone launch; TTM operating cash flow $5.71B (+15%); Q4 guide: net sales $27.3-30.3B (+7-18%), operating result -$570M to +$430M (a full-year loss possible)",
+      "url": "https://www.sec.gov/Archives/edgar/data/0001018724/000101872414000053/amzn-20140930xex991.htm",
+      "date": "2014-10-23",
+      "verify": true
+    },
+    {
+      "fact": "Press narrative on the print: 'growth without profit is a broken model'; the smartphone flop framed as evidence of capital indiscipline; stock fell ~8% next day and sat ~-20% YTD in an up market",
+      "url": "https://www.engadget.com/2014/10/23/amazon-q3-2014-earnings",
+      "date": "2014-10-23",
+      "verify": true
+    },
+    {
+      "fact": "Cloud-infrastructure business not separately disclosed — buried in the 'Other' revenue line of the home segment, ~$1.34B in Q3 growing ~40% YoY (10-Q)",
+      "url": "https://www.sec.gov/Archives/edgar/data/0001018724/000101872414000055/amzn-20140930x10q.htm",
+      "date": "2014-10-24",
+      "verify": true
+    },
+    {
+      "fact": "Industry analyst magic-quadrant report (2014): the company's cloud-infrastructure unit rated the clear LEADER for the 5th straight year, with ~5x the compute capacity of the other 14 rated vendors combined; report also flags 'unyielding price wars' in cloud infrastructure",
+      "url": "https://blogs.gartner.com/lydia_leong/2014/05/30/the-2014-cloud-iaas-magic-quadrant",
+      "date": "2014-05-30",
+      "verify": true
+    },
+    {
+      "fact": "Cloud price war: the company cut cloud-infrastructure prices ~30-60% across core services (its ~42nd price reduction) one day after a large search-engine rival's deep cuts",
+      "url": "https://www.reuters.com/article/us-amazon-web-services-pricing",
+      "date": "2014-03-26",
+      "verify": true
+    },
+    {
+      "fact": "Founder's shareholder letters (from the first, filed 1998, reiterated annually): explicit long-term free-cash-flow-per-share objective and a documented philosophy of deliberately reinvesting margin into growth and scale economies",
+      "url": "https://www.sec.gov/Archives/edgar/data/1018724/0000891020-98-000448.txt",
+      "date": "1998-03-30",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/EVC",
+      "company": "Everport Commerce (alias EVC)",
+      "as_of": "current",
+      "market_cap_usd_m": 242400,
+      "share_price_usd": 26.22,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 11100,
+        "total_debt_usd_m": 4960,
+        "note": "net cash; funds heavy fulfillment + data-center capex internally from operating cash flow"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 119120,
+          "revenue_growth_pct": 22,
+          "net_income_usd_m": 438,
+          "note": "profitable but razor-thin by design — management states it reinvests gross profit into capacity, logistics and the cloud-infrastructure buildout"
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 97740,
+          "revenue_growth_pct": 27,
+          "net_income_usd_m": -62
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q3 of the current FY, reported ~3 weeks ago",
+        "revenue_usd_m": 32930,
+        "revenue_growth_yoy_pct": 20,
+        "operating_income_usd_m": -870,
+        "net_income_usd_m": -699,
+        "note": "largest net loss in ~14 years, INCLUDING a ~272 charge (inventory valuation + supplier commitments) on a failed smartphone launch that was discontinued within months; trailing-12-month operating cash flow 9,140 (+15% YoY) and growing; TTM free cash flow ~1,730 after very heavy capex",
+        "hidden_segment_note": "the cloud-infrastructure rental business is NOT separately disclosed — it sits inside the home segment's 'Other' line, ~2,140/quarter and growing ~40%+ YoY at (per third-party estimates) structurally higher margins than retail"
+      },
+      "guidance": {
+        "q_plus_1_revenue_usd_m": "43,680-48,480 (+7-18%)",
+        "q_plus_1_operating_result_usd_m": "-912 to +688 — management concedes a full-year GAAP loss is possible",
+        "note": "no margin guidance beyond next quarter; management refuses to manage to quarterly profitability and points investors to long-term cash-flow per share"
+      },
+      "valuation": {
+        "pe_trailing": null,
+        "ps_trailing": 2.7,
+        "ev_to_ttm_operating_cash_flow": 25,
+        "price_action": "stock ~-20% YTD while the broad market is up ~10%; -18% below the sleeve's entry; the 'profitless growth' narrative dominates coverage"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/EVC",
+      "business_description": "The dominant online general-merchandise retailer in its home market (revenue growing ~20%+ for years), vertically integrated into logistics/fulfillment, with a paid membership program (fee raised ~25% earlier this year with minimal churn) and an emerging cloud-infrastructure rental business it does not yet report separately. Founder-led and founder-controlled in practice. Entry thesis (~4 quarters ago): e-commerce scale economies compounding behind a widening fulfillment moat, plus an emerging infrastructure-rental business with structural margin upside that the consolidated P&L hides. Falsifiers set at entry: (a) operating-cash-flow growth stalling, (b) share losses in the core retail franchise, (c) cloud-infrastructure competition compressing prices below unit economics.",
+      "recent_developments": [
+        "Q0 headline: revenue +20% but the largest net LOSS in ~14 years (-699), including a ~272 writedown on a failed smartphone — press coverage runs 'growth without profit is a broken model' and cites the phone flop as evidence of capital indiscipline; guidance concedes a possible full-year loss.",
+        "The stock is ~-20% YTD in an UP market; several sell-side downgrades demand the company 'show the margin' and cut the experimental spending.",
+        "Beneath the GAAP loss: trailing-12-month operating cash flow is 9,140, +15% YoY and growing every quarter; the loss is concentrated in deliberate capex/expensed investment plus the one-time phone charge.",
+        "The cloud-infrastructure unit — still buried in an 'Other' revenue line at ~2,140/quarter, growing ~40%+ — was rated the clear market LEADER by the major industry analyst firm this year, with ~5x the compute capacity of the other 14 rated vendors combined.",
+        "The genuine cloud worry: a brutal price war — the company cut cloud prices ~30-60% (its ~42nd reduction) a day after a large search-engine rival's deep cuts, and two deep-pocketed platform rivals are investing aggressively; bears argue infrastructure rental will be commoditized below economics.",
+        "Management/founder is explicit and consistent (documented in shareholder letters since the company's first): margin is deliberately reinvested; the objective is long-term free-cash-flow per share, not quarterly EPS — the market is currently pricing that philosophy as a bug."
+      ],
+      "macro_context": "Slow-but-steady economic expansion; rates near historic lows; the broad equity market is up ~10% YTD while 'profitless growth' names are being punished; e-commerce is still a low-teens share of retail and gaining every year.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

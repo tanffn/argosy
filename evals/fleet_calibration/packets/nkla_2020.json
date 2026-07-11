@@ -1,0 +1,139 @@
+{
+  "case_id": "nkla_2020",
+  "alias": "HHM",
+  "category": "B",
+  "grading": "trap",
+  "real": "NKLA @ 2020-07-15 ($54.58; SPAC hype peak era, pre-fraud-report)",
+  "freeze_date": "2020-07-15",
+  "rescale_factor": 0.7,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in HHM. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 40,
+  "contamination_terms": [
+    "Nikola",
+    "NKLA",
+    "Milton",
+    "Badger",
+    "Tre",
+    "GM",
+    "General Motors",
+    "Hindenburg"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 54.58,
+    "price_at_horizon_real": 5.41,
+    "horizon_label": "2y (2022-07-15)",
+    "benchmark_return_pct": -90,
+    "note": "closes taken from archived Yahoo Finance history pages (Wayback captures 2020-11-28 and 2022-10-05), fetched 2026-07-11 - yfinance no longer serves the delisted ticker. Terminal context: short-seller fraud report 2020-09-10, founder convicted of fraud, 1:30 reverse split 2024-06, Chapter 11 2025-02 - ride-to-terminal is effectively ~-100%."
+  },
+  "sources": [
+    {
+      "fact": "SPAC business combination completed 2020-06-03; NKLA began trading on Nasdaq 2020-06-04; ~$700M+ gross proceeds to the balance sheet ($525M PIPE at $10.00 + trust)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1731289/000110465920070923/tm2021982d1_ex99-1.htm",
+      "date": "2020-06-04",
+      "verify": true
+    },
+    {
+      "fact": "Market cap peaked at ~$28.8B on 2020-06-09, briefly exceeding Ford's $28.79B, on zero product revenue; company claims >$10B in potential pre-order revenue including Anheuser-Busch's order of up to 800 hydrogen trucks; first revenue not expected until 2021",
+      "url": "https://www.cnbc.com/2020/06/09/meet-nikola-the-speculative-electric-vehicle-stock-that-traders-believe-is-as-valuable-as-ford.html",
+      "date": "2020-06-09",
+      "verify": true
+    },
+    {
+      "fact": "CNH Industrial led the $250M Series D (pre-money $3B) and announced a strategic partnership: Iveco/FPT contribute engineering and a European production line for the BEV truck via a European JV",
+      "url": "https://www.globenewswire.com/news-release/2019/09/03/1909804/0/en/",
+      "date": "2019-09-03",
+      "verify": true
+    },
+    {
+      "fact": "Resale S-1 financials: FY2019 revenue $0.48M (entirely small solar-installation projects), FY2019 net loss $88.7M; Q1-2020 net loss ~$33M; no truck revenue to date; >14,000 non-binding Nikola Two/Tre reservations claimed worth >$10B potential revenue",
+      "url": "https://www.sec.gov/Archives/edgar/data/1731289/000104746920004147/a2241967zs-1.htm",
+      "date": "2020-06-15",
+      "verify": true
+    },
+    {
+      "fact": "Founder announced the pickup-truck (Badger) reservation date on Twitter; stock rallied sharply on the announcement",
+      "url": "https://insideevs.com/news/427606/reserve-nikola-badger-june-29-on/",
+      "date": "2020-06-08",
+      "verify": true
+    },
+    {
+      "fact": "Pickup reservations opened 2020-06-29 with deposits of $250-$5,000; the truck's OEM manufacturing partner was not yet named; deliveries targeted for 2022",
+      "url": "https://www.forbes.com/sites/alanohnsman/2020/06/29/hydrogen-truckmaker-nikola-opens-badger-pickup-reservationsahead-of-production-plans/",
+      "date": "2020-06-29",
+      "verify": true
+    },
+    {
+      "fact": "Groundbreaking on the company's own greenfield factory (Coolidge, AZ; ~$600M capex, eventual ~35,000 trucks/yr) scheduled for 2020-07-23",
+      "url": "https://insideevs.com/news/430098/nikola-coolidge-factory-break-ground-july-23/",
+      "date": "2020-06-22",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/HHM",
+      "company": "HydroHaul Motors (alias HHM)",
+      "as_of": "current",
+      "market_cap_usd_m": 13800,
+      "share_price_usd": 38.2,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 490,
+        "total_debt_usd_m": 0,
+        "note": "flush from the recent listing transaction (~490 gross proceeds: a large private placement plus the blank-check trust); essentially no debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 0.1,
+          "net_income_usd_m": -45,
+          "note": "revenue is residual small-scale solar-installation work, NOT trucks"
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 0.3,
+          "net_income_usd_m": -62,
+          "note": "still zero product (truck) revenue; the company has never sold a vehicle"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1 of FY-0, disclosed in the listing-transaction registration statement (~4 weeks ago); the company has not yet reported a quarter as a public company",
+        "revenue_usd_m": 0.0,
+        "gaap_net_income_usd_m": -23,
+        "note": "revenue de minimis (residual solar work); R&D and SG&A ramping ahead of any product"
+      },
+      "guidance": {
+        "next_fy": "management targets first battery-electric truck deliveries NEXT YEAR, built on the European OEM partner's production line (badge-engineered off the partner's existing diesel platform); own-factory volume production ~2 years out; hydrogen-fuel-cell trucks and a nationwide hydrogen-station network further out",
+        "long_term": "management claims >9,800 non-binding reservations for its hydrogen class-8 trucks representing >7,000 of potential revenue (trucks bundled with multi-year hydrogen fuel contracts)"
+      },
+      "valuation": {
+        "ps_trailing": null,
+        "note": "not meaningful: ~13,800 market cap on ~0.3 trailing revenue (~40,000x sales); valuation rests entirely on the reservation book and the founder's long-range claims",
+        "price_action": "listed via a blank-check merger ~6 weeks ago at a ~7.0 reference price; roughly 8x that within days - the session it briefly became worth more than one of the century-old Big-Three automakers - and now sits ~32% below that peak but still ~5.5x the listing price"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/HHM",
+      "business_description": "Pre-revenue designer of hydrogen-fuel-cell and battery-electric class-8 semi trucks, plus a planned proprietary hydrogen fueling network (the business model bundles truck leases with multi-year fuel contracts, which is where most of the claimed reservation value sits). Founder/executive chairman is a charismatic serial promoter with voting control and a very active social-media presence; he announces product plans and reservation windows directly to retail followers. Came public ~6 weeks ago by merging with a blank-check vehicle. The company has never manufactured or delivered a vehicle and has no working production line of its own.",
+      "recent_developments": [
+        "Reservation book is the bull centerpiece: >9,800 non-binding reservations for hydrogen class-8 trucks that management values at >7,000 of potential revenue, anchored by a leading brewer's order of up to 560 trucks with fuel bundled. None of these are binding purchase commitments.",
+        "Real industrial partner: one of the world's largest commercial-truck OEMs led a 175 investment round and is contributing engineering plus a European production line - the battery-electric semi is effectively a badge-engineered variant of the partner's existing truck platform, targeted to start production next year.",
+        "Consumer pickup tease: paid reservations (small refundable deposits) for an electric/hydrogen pickup opened ~2.5 weeks ago; the OEM that would actually build it has not been named; the stock rallied hard around the founder's reservation-window tweets.",
+        "Groundbreaking on its own greenfield factory in the American Southwest is scheduled for NEXT WEEK (~420 planned capex, eventual ~24,500 trucks/yr); today truck production capacity is zero.",
+        "The bear case is checkable: zero product revenue in the company's history (FY-1 revenue of 0.3 was residual solar-install work), no vehicle ever delivered, valuation ~40,000x trailing sales, and the entire commercial thesis rests on non-binding reservations plus founder claims (600-mile hydrogen range, sub-$3/kg hydrogen, a station network that does not yet exist).",
+        "Retail enthusiasm is extreme: among the most-held names on retail brokerages; short interest and borrow costs elevated; sell-side coverage is split between TAM-driven buys and valuation-based neutrals."
+      ],
+      "macro_context": "Zero rates and record retail speculative flows; blank-check listings are booming; electric-vehicle names are the market's hottest theme after the category leader's parabolic re-rating. Skeptics note a wave of pre-revenue EV startups racing to list via blank-check mergers.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

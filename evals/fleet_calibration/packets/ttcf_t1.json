@@ -1,0 +1,144 @@
+{
+  "case_id": "ttcf_t1",
+  "alias": "PVF",
+  "category": "B",
+  "grading": "trap",
+  "real": "TTCF @ 2020-12-15 (~$20.26); post-SPAC hype",
+  "freeze_date": "2020-12-15",
+  "rescale_factor": 3.7,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in PVF. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": "exit_rule",
+  "run_order": 32,
+  "contamination_terms": [
+    "Tattooed Chef",
+    "TTCF",
+    "Ittella",
+    "Galletti",
+    "Forum Merger",
+    "Costco",
+    "Walmart",
+    "Sam's Club",
+    "Club Foods",
+    "Kroger",
+    "Karsten",
+    "New Mexico Food"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 20.26,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+    "benchmark_return_pct": -100,
+    "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2020 results: revenue $41.0M (+65.3% YoY); branded line drove nearly all growth (branded revenue +288% YoY to a record $22.6M). The ~$148M FY2020 target originates in the merger materials and stood unretracted; the analyst-day FY2021 guide (+49% off a ~$149M base) implies it was maintained",
+      "url": "https://www.globenewswire.com/news-release/2020/11/09/2123180/0/en/Tattooed-Chef-Reports-Third-Quarter-2020-Financial-Results.html",
+      "date": "2020-11-09"
+    },
+    {
+      "fact": "Listing via SPAC merger completed ~2 months earlier; ~$95M cash to the balance sheet at closing, with deeply in-the-money public warrants adding further cash as exercised",
+      "url": "https://www.globenewswire.com/news-release/2020/10/15/2109457/0/en/Ittella-International-and-Forum-Merger-II-Corporation-Complete-Business-Combination-to-Form-Tattooed-Chef-Inc.html",
+      "date": "2020-10-15"
+    },
+    {
+      "fact": "Investor/analyst day (held on the freeze date, announced 2020-12-01): FY2021 guide ~$222M (+49%); long-term ~$1B revenue target by year 5-6; plant-based meat line announced",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390020042725/ea131652-8k_tattooedchef.htm",
+      "date": "2020-12-15"
+    },
+    {
+      "fact": "Short-seller critical report (Kerrisdale Capital) on private-label economics, extreme customer concentration (>70% of branded sales to one club chain), rotational club placements, and valuation (~7.5x FY2020 revenue; 'worth less than half its current price')",
+      "url": "https://www.kerrisdalecap.com/wp-content/uploads/2020/11/Tattooed-Chef-Inc.-TTCF.pdf",
+      "date": "2020-11-19"
+    },
+    {
+      "fact": "FY2019 revenue $84.9M (+57%), NI ~$5.5M as private family business (per merger proxy financials)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390020029421/defm14a0920_forummerger2.htm",
+      "date": "2020-10-01"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/PVF",
+      "company": "Provida Foods (alias PVF)",
+      "as_of": "current",
+      "market_cap_usd_m": 4750,
+      "share_price_usd": 74.95,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 480,
+        "total_debt_usd_m": 8,
+        "note": "flush with cash from the recent listing transaction; essentially no debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 314,
+          "revenue_growth_pct": 57,
+          "net_income_usd_m": 20,
+          "note": "profitable as a private family-run business"
+        },
+        {
+          "fy": "FY-0 (ending in ~2 weeks)",
+          "revenue_usd_m": "management reiterates 'meet or exceed' 548",
+          "revenue_growth_pct": 75,
+          "gross_margin_pct": 15.5,
+          "adj_ebitda_usd_m": 63,
+          "note": "'meet or exceed' target set in the listing materials and maintained by management through the analyst day; GM mid-teens (private-label food manufacturer economics)"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q3 of FY-0, reported ~5 weeks ago",
+        "revenue_usd_m": 152,
+        "revenue_growth_yoy_pct": 65.3,
+        "note": "branded-product line drove nearly all of the growth; company is transitioning from private-label manufacturer to consumer brand"
+      },
+      "guidance": {
+        "next_fy_revenue_usd_m": "~821 (+49%)",
+        "long_term": "management analyst-day target this week: ~3,700 revenue within 5-6 years (≈7x today)"
+      },
+      "customer_concentration": {
+        "top_3_customers_pct_of_revenue": 88,
+        "split_pct": [
+          39,
+          32,
+          17
+        ],
+        "note": "three warehouse-club / mass-market retail chains; largest single customer ~39% of revenue"
+      },
+      "valuation": {
+        "ps_on_current_fy_revenue": 8.7,
+        "ps_on_next_fy_guide": 5.8,
+        "pe_trailing": null,
+        "price_action": "stock roughly QUADRUPLED since the listing vehicle's early days; +50% this month alone around the analyst day; ~5% below its all-time high",
+        "peer_context": "conventional frozen-food incumbents trade ~1-2.5x sales with low-single-digit growth; the hottest plant-based pure-play brand trades ~15-20x sales"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/PVF",
+      "business_description": "Family-founded maker of plant-forward frozen meals and snacks (riced-vegetable bowls, cauliflower-crust items, smoothie packs), listed two months ago via a merger with a blank-check acquisition vehicle. Founder-CEO ran it for decades as a private-label vegetable processor; his daughter created the company's in-house lifestyle brand identity, which now fronts the branded line. Vertically integrated (owns growing/processing in two countries). Nearly all revenue flows through three warehouse-club / mass-retail chains, mostly rotational placements rather than permanent shelf space.",
+      "recent_developments": [
+        "Branded revenue growing triple digits as the company converts private-label club-store volume to its own brand.",
+        "Analyst day THIS WEEK: management laid out a path to ~7x revenue in 5-6 years via mass-retail door expansion (from ~4k to ~65k points of distribution), new product categories (plant-based meat analogues just announced), and possible acquisitions.",
+        "The plant-based food theme is one of the market's hottest: the category's pure-play leader IPO'd to enormous acclaim and retail investors are hunting for 'the next one'.",
+        "A short-seller published a critical report a few weeks ago arguing the valuation ignores private-label economics, customer concentration, and rotational (non-permanent) club placements; the stock shrugged it off.",
+        "Elevated at-home food consumption has boosted the whole frozen-food category this year; how much of the growth is pull-forward is debated."
+      ],
+      "macro_context": "Exceptionally speculative market for newly listed consumer-theme names; blank-check listings are booming and retail flows chase story stocks. Rates near zero.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: Q3-2020 PR date corrected 2020-11-10 -> 2020-11-09 (GlobeNewswire), URL pinned; the PR does NOT contain a '$148M meet-or-exceed' reiteration — fact and fundamentals note reworded to attribute the ~$148M FY2020 target to the merger/listing materials (where it demonstrably lived), maintained through the analyst day (+49% FY2021 guide off a ~$149M base)."},
+    {"date": "2026-07-11", "fix": "SPAC completion 2020-10-15 CONFIRMED, URL pinned; '~$130M net cash to balance sheet' corrected to ~$95M cash at closing (per post-closing disclosure) with in-the-money warrants adding cash as exercised — the fundamentals card's ~$130M-equivalent cash level is retained as the current in-world estimate after ~2 months of warrant exercises."},
+    {"date": "2026-07-11", "fix": "Analyst-day date corrected 2020-12-10 -> 2020-12-15 (held ON the freeze date, 10am PT; announced 2020-12-01) — still admissible (published on-or-before freeze); FY2021 ~$222M guide and ~$1B long-term target CONFIRMED as analyst-day content; URL pinned to the same-day 8-K."},
+    {"date": "2026-07-11", "fix": "Short-seller report VERIFIED REAL: Kerrisdale Capital, published 2020-11-19 (pre-freeze) — the analyst_reports news bullet stands unchanged; URL pinned to the Kerrisdale PDF; fact wording aligned to what the report actually argues. FY2019 figures source pinned to the DEFM14A merger proxy (filed 2020-10-01, EDGAR-confirmed). verify flags cleared."}
+  ]
+}

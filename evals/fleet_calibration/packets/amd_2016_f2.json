@@ -1,0 +1,135 @@
+{
+  "case_id": "amd_2016_f2",
+  "alias": "CVM",
+  "category": "A",
+  "grading": "F2_strict",
+  "real": "AMD @ 2016-06-01 ($4.43 adj); F2 per spec appendix (post Q1-2016 igniting print)",
+  "freeze_date": "2016-06-01",
+  "rescale_factor": 1.7,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in CVM. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 30,
+  "contamination_terms": [
+    "AMD",
+    "Advanced Micro Devices",
+    "Ryzen",
+    "Zen core",
+    "EPYC",
+    "Lisa Su",
+    "Radeon",
+    "Intel",
+    "THATIC",
+    "GlobalFoundries",
+    "PlayStation",
+    "Xbox"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 4.43,
+    "price_at_horizon_real": 101.22,
+    "horizon_label": "6y (2022-06-01)",
+    "benchmark_return_pct": 2185,
+    "note": "yfinance adjusted closes, fetched 2026-07-11"
+  },
+  "sources": [
+    {
+      "fact": "FY2015 revenue $3,991M (-27.5%), net loss -$660M, GM depressed by inventory write-downs; console semi-custom annuity scale",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000002488&type=10-K&dateb=20170101&owner=include&count=10",
+      "date": "2016-02-18"
+    },
+    {
+      "fact": "Q1-2016 results: revenue $832M (-19.2% YoY), net loss -$109M; fourth consecutive quarterly loss",
+      "url": "https://ir.amd.com/news-events/press-releases/detail/683/amd-reports-2016-first-quarter-results",
+      "date": "2016-04-21"
+    },
+    {
+      "fact": "THATIC China x86 server JV, ~$293M licensing up-front + royalties",
+      "url": "https://www.forbes.com/sites/patrickmoorhead/2016/04/21/amd-forms-china-x86-server-soc-jv-and-gets-293-million-to-start/",
+      "date": "2016-04-21"
+    },
+    {
+      "fact": "2015 Financial Analyst Day: clean-sheet Zen core roadmap, up to +40% IPC + SMT",
+      "url": "https://ir.amd.com/news-events/press-releases/detail/611/amd-outlines-sharpened-focus-at-2015-financial-analyst-day",
+      "date": "2015-05-06"
+    },
+    {
+      "fact": "Incumbent's process-node cadence slip (10nm volume production pushed from late 2016 to H2-2017, disclosed on the Q2-2015 earnings call of 2015-07-15; Kaby Lake added as a third 14nm generation)",
+      "url": "https://www.anandtech.com/show/9447/intel-10nm-and-kaby-lake",
+      "date": "2015-07-16"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/CVM",
+      "company": "Corvid Microsystems (alias CVM)",
+      "as_of": "current",
+      "market_cap_usd_m": 6000,
+      "share_price_usd": 12.6,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 1217,
+        "total_debt_usd_m": 3810,
+        "stockholders_equity_usd_m": 442,
+        "annual_interest_expense_usd_m": 272,
+        "note": "heavily levered; nearest maturities refinanced out 3-10 years; covenant headroom thin"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 9008,
+          "net_income_usd_m": -141
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 9360,
+          "revenue_growth_pct": 3.9,
+          "net_income_usd_m": -685
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 6785,
+          "revenue_growth_pct": -27.5,
+          "gross_margin_pct": 27,
+          "net_income_usd_m": -1122,
+          "note": "gross margin depressed by inventory write-downs; structural GM nearer ~32%"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1, reported ~6 weeks ago",
+        "revenue_usd_m": 1414,
+        "revenue_growth_yoy_pct": -19.2,
+        "gaap_net_income_usd_m": -185,
+        "note": "fourth consecutive quarterly loss; opex cut ~30% over two years"
+      },
+      "valuation": {
+        "ps_trailing": 0.88,
+        "ev_s_trailing": 1.27,
+        "pe_trailing": null,
+        "ebitda": "approximately breakeven to slightly negative",
+        "price_action": "stock is -60% over two years but has nearly TRIPLED off its multi-year low a few months ago on turnaround hopes"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/CVM",
+      "business_description": "Fabless designer of PC/server CPUs and discrete GPUs — the #2 player in BOTH markets against dominant incumbents (~80%+ CPU share and ~70-80% discrete-GPU share respectively). Revenue nearly halved over four years as it lost PC share and collapsed to <1% server share (from ~25% a decade ago). The business is kept alive by semi-custom silicon: its chips power BOTH major game consoles under long-term contracts (~$1.6B/yr of stable revenue at scale shown). A respected chip-engineer CEO took over two years ago, cut opex ~30%, refinanced the debt stack, and bet the company on one product.",
+      "recent_developments": [
+        "The company is 12-18 months from launching a CLEAN-SHEET CPU core; management claims ~40% instructions-per-clock uplift vs its current core in internal benchmarks. If real, it would be the first competitive product in a decade. If it slips or underdelivers, the balance sheet leaves little room for another attempt.",
+        "Just signed a ~$500M up-front IP-licensing joint venture licensing its server-CPU technology in a large Asian market — non-dilutive cash plus a future royalty stream.",
+        "The dominant CPU incumbent's manufacturing lead has visibly slipped — it just delayed its next process-node transition again, the first crack in a decades-long cadence.",
+        "Its GPU line is designed into upcoming console refreshes and mid-range VR-capable cards; GPU attach to gaming is growing.",
+        "Analyst consensus is deeply skeptical: most sell-side models assume the new CPU core gains little share and value the equity primarily on the console annuity."
+      ],
+      "macro_context": "PC market shrinking mid-single-digits annually; server demand growing steadily with cloud buildouts; semiconductor cycle bottoming after an inventory correction.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: 10-K filing date 2016-02-18 CONFIRMED via EDGAR; Q1-2016 PR date 2016-04-21 CONFIRMED, URL pinned to the actual ir.amd.com release (detail/683); Intel 10nm-delay source date corrected 2015-07-15 -> 2015-07-16 (AnandTech publication date; the earnings call itself was 07-15). All facts matched real figures (FY2015 rev $3,991M/-27.5%, NL -$660M; Q1-2016 rev $832M/-19.2%, NL -$109M). verify flags cleared."}
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "case_id": "pton_2021",
+  "alias": "HSF",
+  "category": "B",
+  "grading": "trap",
+  "real": "PTON @ 2021-11-01 ($92.83; days before the guidance-collapse print of 2021-11-04)",
+  "freeze_date": "2021-11-01",
+  "rescale_factor": 0.61,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in HSF. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 43,
+  "contamination_terms": [
+    "Peloton",
+    "PTON",
+    "Foley",
+    "Tread",
+    "Bike+"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 92.83,
+    "price_at_horizon_real": 4.81,
+    "horizon_label": "2y (2023-11-01)",
+    "benchmark_return_pct": -94.8,
+    "note": "yfinance adjusted closes fetched 2026-07-11. The guidance-collapse print (FY guide slashed to $4.4-4.8B from ~$5.4B) came 3 days after the freeze; stock -35% the next day. Companion exit-point fixture: pton_2022."
+  },
+  "sources": [
+    {
+      "fact": "Q4-FY2021 shareholder letter/press release: FY2021 revenue $4.02B (+120%), Q4 revenue $936.9M (+54%, sharp deceleration); Q4 GAAP net loss $313.2M; connected-fitness subscriptions 2.33M (+114%), average net monthly churn 0.73%, digital subs +176%; FY2022 guidance ~$5.4B (+34%); inventory ~$937M (roughly doubled YoY)",
+      "url": "https://investor.onepeloton.com/news-releases/news-release-details/peloton-interactive-inc-reports-fourth-quarter-and-full-year-0",
+      "date": "2021-08-26",
+      "verify": true
+    },
+    {
+      "fact": "Announced alongside the Q4 print: flagship bike price cut ~21% ($1,895 -> $1,495), framed by management as TAM expansion; Q1-FY22 (Sept-end) guided to ~$800M, only ~+6% YoY - the slowest quarter since going public",
+      "url": "https://www.cnbc.com/2021/08/26/",
+      "date": "2021-08-26",
+      "verify": true
+    },
+    {
+      "fact": "CPSC-mandated recall of 125,000 Tread+ treadmills after one child death and ~70 incidents (company initially resisted, then apologized); company estimated ~$165M revenue impact",
+      "url": "https://www.cpsc.gov/Newsroom/News-Releases/2021/CPSC-and-Peloton-Announce-Recall-of-Tread-Plus-Treadmills-After-One-Child-Death-and-70-Incidents-Recall-of-Tread-Treadmills-Due-to-Risk-of-Injury",
+      "date": "2021-05-05",
+      "verify": true
+    },
+    {
+      "fact": "Company announced a ~$400M first US factory build ('Output Park') to add domestic capacity, on top of a recently acquired hardware manufacturer - major fixed-cost commitments premised on the elevated demand base persisting",
+      "url": "https://www.prnewswire.com/news-releases/peloton-to-build-first-us-factory-in-ohio-301297626.html",
+      "date": "2021-05-24",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/HSF",
+      "company": "HomeStride Fitness (alias HSF)",
+      "as_of": "current",
+      "market_cap_usd_m": 17000,
+      "share_price_usd": 56.63,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 975,
+        "total_debt_usd_m": 610,
+        "inventory_usd_m": 572,
+        "note": "debt is a zero-coupon convertible issued near the stock's peak. Inventory roughly DOUBLED year-over-year to 572 as the company bought ahead of demand; it has also committed to a ~244 domestic factory build and acquired a hardware manufacturer - fixed-cost bets that the elevated demand base persists"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 558,
+          "revenue_growth_pct": 110
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 1114,
+          "revenue_growth_pct": 100,
+          "gross_margin_pct": 46.8,
+          "net_income_usd_m": -44,
+          "note": "pre-surge baseline: doubling revenue at a ~47% gross margin"
+        },
+        {
+          "fy": "FY-0 (June fiscal year-end, ended ~4 months ago)",
+          "revenue_usd_m": 2453,
+          "revenue_growth_pct": 120,
+          "gross_margin_pct": 35.7,
+          "net_income_usd_m": -115,
+          "note": "the demand-surge year: revenue +120%, but gross margin compressed ~11 points (price cuts, recall costs, freight inflation) and the company swung to a larger loss"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q4 of FY-0, reported ~9 weeks ago; the Q1 print of the new fiscal year is due within days (the company historically reports the September-end quarter in early November)",
+        "revenue_usd_m": 571,
+        "revenue_growth_yoy_pct": 54,
+        "gaap_net_income_usd_m": -191,
+        "connected_subscriptions_m": 1.42,
+        "subscriptions_growth_yoy_pct": 114,
+        "avg_monthly_churn_pct": 0.73,
+        "note": "growth decelerated sharply (+54% vs +141% the prior quarter); hardware gross margin compressed hard on recall costs, expedited freight, and the price cut; subscription base still compounding with churn under 1%/month"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "~3294 (+34%) - MAINTAINED at the last print; but Q1 (the quarter reporting within days) was guided to only ~488, ~+6% YoY, the slowest growth since going public",
+        "note": "management frames the deceleration as tough comps and the ~21% flagship-bike price cut as offensive TAM expansion; the guide assumes demand re-accelerates through the year off the elevated base"
+      },
+      "valuation": {
+        "ps_trailing": 6.9,
+        "ps_on_fy_guide": 5.2,
+        "pe_trailing": null,
+        "peer_context": "premium consumer-hardware brands trade ~3-5x sales; subscription/content platforms ~8-15x - the multiple debate is which one this is",
+        "price_action": "-45% from its all-time high ~10 months ago and -19% since the last print; bulls call it cheap versus a year ago, bears note every leg down has been demand data, not multiple compression alone"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/HSF",
+      "business_description": "Connected-fitness category creator: premium at-home exercise hardware (bike, treadmill) with an attached high-margin content subscription (~65% subscription gross margin, <1% monthly churn). A global demand shock made it one of the market's iconic winners - revenue grew +120% to 2453 in the fiscal year just ended - and management has committed capital (factory build, hardware-manufacturer acquisition, big content deals) on the thesis that at-home fitness demand has permanently step-changed rather than been pulled forward.",
+      "recent_developments": [
+        "The bull case is genuine: 1.42M connected subscribers growing +114% with 0.73% monthly churn (best-in-class retention), digital subs +176%, engagement per subscriber at record highs, the category's default brand, international expansion and a treadmill relaunch underway - and the stock is already -45% from its high, so a lot of froth has burned off.",
+        "Deceleration is visible in the reported numbers: Q4 revenue growth halved versus Q3 (+54% vs +141%), and the September-end quarter now reporting within days was guided to just ~+6% YoY - management maintained the +34% full-year guide, implying a back-half re-acceleration it has not yet evidenced.",
+        "The flagship bike's price was cut ~21% at the last print. Management frames it as TAM expansion from strength; skeptics read a price cut on your hero product weeks into a fiscal year as a demand signal - and it mechanically compresses hardware gross margin, which is already down ~11 points for the year.",
+        "Earlier this year a regulator forced a recall of the company's treadmill line after a child fatality (~100 revenue impact plus brand damage); the relaunch at a lower price point is just beginning.",
+        "Costs and inventory are set for the old growth curve: inventory doubled YoY to 572 (a writedown/discounting risk if demand normalizes), a ~244 domestic factory is being built, and marketing spend is ramping into the holiday quarter.",
+        "The core analytical question: how much of the surge-era demand was pull-forward? Gyms and travel have fully reopened, engagement cohorts acquired during lockdowns are untested through a normal year, and the whole at-home-winner cohort of stocks has been de-rating for two quarters."
+      ],
+      "macro_context": "The economy has reopened - gyms, travel and out-of-home leisure are recovering strongly; the shock-beneficiary stock cohort is de-rating 40-70% from highs; rate-hike expectations are building into year-end. Retail sentiment on the name remains loyal; sell-side is split between 'category winner on sale' and 'pull-forward unwind just beginning'.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

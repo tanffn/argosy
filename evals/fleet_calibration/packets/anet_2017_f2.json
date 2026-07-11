@@ -1,0 +1,143 @@
+{
+  "case_id": "anet_2017_f2",
+  "alias": "LWN",
+  "category": "A",
+  "grading": "F2_strict",
+  "real": "ANET @ 2017-03-15 ($8.02 adj; F2 per spec appendix — immediately after the confirming Q4-2016 print of 2017-02-16, early in the only parabola-qualifying leg)",
+  "freeze_date": "2017-03-15",
+  "rescale_factor": 2.9,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in LWN. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 63,
+  "contamination_terms": [
+    "Arista",
+    "ANET",
+    "Bechtolsheim",
+    "Ullal",
+    "Duda",
+    "EOS",
+    "Cisco",
+    "CSCO",
+    "Microsoft",
+    "World Wide Technology",
+    "ITC",
+    "7500"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 8.02,
+    "price_at_horizon_real": 30.29,
+    "horizon_label": "5y (2022-03-15)",
+    "benchmark_return_pct": 278,
+    "note": "yfinance adjusted closes, fetched 2026-07-11. Split basis: divide-by-16 (4:1 2021 + 4:1 2024 splits); contemporaneous unadjusted price ~$128.3. The spec appendix quotes ANET on a 4x (single-split) basis; numbers here are on the full 16x basis — ratios and returns are identical. Buy-and-hold to the 5y horizon is ~3.8x; the task-brief's ~10x+ figure corresponds to the later 2021+ highs / longer holds, not this fixed horizon."
+  },
+  "sources": [
+    {
+      "fact": "Q4-2016 press release ('Cloud Networking Pace Drives Stellar Revenue and Record EPS'): revenue $328.0M, +33.6% YoY and +13.0% QoQ; GAAP gross margin 64.1%; GAAP net income $58.8M ($0.79 diluted, a record); non-GAAP net income $77.5M ($1.04); FY revenue $1,129.2M (+34.8%), FY GAAP net income $184.2M; crossed $1B in annual sales within two years of the IPO; Q1 guidance $320-330M revenue (implying ~32-36% YoY) with ~27% non-GAAP operating margin; balance sheet cash $567.9M + marketable securities $299.9M",
+      "url": "https://www.sec.gov/Archives/edgar/data/1596532/000159653217000017/ex991-earningsxfy16.htm",
+      "date": "2017-02-16",
+      "verify": true
+    },
+    {
+      "fact": "FY2016 Form 10-K: full litigation status — first trade-commission case's limited exclusion order and cease-and-desist in effect since ~7 months before freeze (three patents); company shipped redesigned software/products and stood up US domestic manufacturing to keep supplying its home market; Customs cleared the redesigns ~4 months before freeze, then REVOKED that clearance ~2 months before freeze at the incumbent's urging, pending further proceedings; in the second trade-commission case, an administrative law judge's initial determination ~3 months before freeze found infringement of two further patents, with the commission's final determination expected ~2 months after freeze",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001596532&type=10-K&dateb=&owner=include&count=10",
+      "date": "2017-02-17",
+      "verify": true
+    },
+    {
+      "fact": "Trade commission's final determination in the first (944) investigation: violation on three patents (limited exclusion order + cease-and-desist), NO violation found on two others; remedies took effect after the presidential review period ended in August of that year",
+      "url": "https://www.businesswire.com/news/home/20160623006370/en/ITC-Issues-Final-Determination-%E2%80%98944-Investigation",
+      "date": "2016-06-23",
+      "verify": true
+    },
+    {
+      "fact": "Customs (CBP) revoked its November finding that the redesigned products do not infringe, at the incumbent's request — the redesign-clearance fight is live at the freeze date",
+      "url": "https://blogs.cisco.com/news/protecting-innovation-cbp-revokes-approval-of-arista-redesign",
+      "date": "2017-01-14",
+      "verify": true
+    },
+    {
+      "fact": "FY2015 Form 10-K: revenue history $361.2M / $584.1M / $837.6M (+86.8% / +61.7% / +43.4%), hyperscale-customer concentration 21.9% / 14.9% / 12.0% via a fulfillment partner, customers include six of the largest cloud providers",
+      "url": "https://www.sec.gov/Archives/edgar/data/1596532/000159653216000244/anet20151231-10k.htm",
+      "date": "2016-02-25"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/LWN",
+      "company": "LatticeWave Networks (alias LWN)",
+      "as_of": "current",
+      "market_cap_usd_m": 26410,
+      "share_price_usd": 372,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 2517,
+        "total_debt_usd_m": 0,
+        "note": "cash + marketable securities, net cash, no material debt; litigation defense and the domestic-manufacturing transition are being funded comfortably out of operating cash flow"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 1694,
+          "revenue_growth_pct": 61.7,
+          "net_income_usd_m": 252
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 2429,
+          "revenue_growth_pct": 43.4,
+          "gross_margin_pct": 64.9,
+          "net_income_usd_m": 351
+        },
+        {
+          "fy": "FY0 (just closed)",
+          "revenue_usd_m": 3275,
+          "revenue_growth_pct": 34.8,
+          "gross_margin_pct": 64.0,
+          "net_income_usd_m": 534,
+          "note": "crossed the billion-dollar-revenue mark (rescaled: >$3B) within two years of its IPO; GAAP-profitable every year on record, and grew through an import-ban year on redesigns plus domestic manufacturing"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0, reported ~4 weeks ago",
+        "revenue_usd_m": 951,
+        "revenue_growth_yoy_pct": 33.6,
+        "revenue_growth_qoq_pct": 13.0,
+        "gaap_net_income_usd_m": 171,
+        "gaap_eps_usd": 2.29,
+        "note": "the confirming print: +13.0% sequential on top of +33.6% YoY — no deceleration despite a full quarter under the import-ban remedies — with record GAAP EPS and gross margin steady at 64.1%. Management titled the release around the pace of cloud-networking adoption."
+      },
+      "guidance": {
+        "next_quarter": "revenue guided to $928-957M (~32-36% YoY — the guide itself implies growth is NOT decelerating), ~27% non-GAAP operating margin",
+        "medium_term": "no formal multi-year guide; management reiterates the cloud re-architecture framing and is expanding into routing use-cases against the incumbent's most profitable line"
+      },
+      "valuation": {
+        "ps_trailing": 8.1,
+        "pe_trailing": 49,
+        "pe_note": "~49x trailing GAAP, ~38x trailing non-GAAP, roughly high-20s to ~30x forward consensus for a GAAP-profitable ~34% grower with net cash; the multiple has re-rated with the print",
+        "peer_context": "the dominant incumbent still trades at ~12-14x earnings with flat revenue; LWN's premium is the price of growth plus the belief that the litigation tail is a toll, not a wall. A full adverse outcome across both trade cases plus a customs reversal would put the premium in question",
+        "price_action": "THE EASY MONEY LOOKS MADE: roughly +35% in the four weeks since the print, ~+75% over the trailing year, and at all-time highs — the first sustained momentum leg since the IPO. Buying here means paying a fresh re-rating for confirmation you could have had 20% cheaper a month ago."
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/LWN",
+      "business_description": "Founder-led designer of software-driven data-center switches (one operating system across every product), selling to the largest cloud operators — six of the largest cloud providers are customers, and its biggest hyperscale end customer has been >10% of revenue for years (buying through a fulfillment partner). It has just closed its first year above $3B rescaled revenue (+34.8%) with record profits, DESPITE spending that entire year under an import ban won by the dominant incumbent in the first of two trade-commission patent cases. The share-gain thesis (cloud titans re-architecting away from the incumbent's proprietary-hardware model) has now survived its designed kill-shot: the company redesigned its software, stood up domestic manufacturing, and kept growing >30% with 64% gross margins.",
+      "recent_developments": [
+        "The confirming print ~4 weeks ago: revenue +33.6% YoY with +13.0% sequential acceleration, record GAAP EPS, and a next-quarter guide (~32-36% YoY) that implies no deceleration — delivered with the import-ban remedies in force the whole quarter. The stock has run ~+35% since.",
+        "Cloud-titan capex is inflecting upward: the handful of hyperscale operators that anchor LWN's revenue have each publicly guided infrastructure capex up for the coming year, and LWN's routing-capable flagship platform (launched ~4 quarters ago) is landing in exactly those buildouts, opening a second product line against the incumbent's most profitable franchise.",
+        "Litigation workarounds are SHIPPING: after the first trade case ended in a limited exclusion order and cease-and-desist on three patents (~9 months ago; two other patents were cleared), the company launched redesigned software releases and a domestic manufacturing line. Customs cleared the redesigns ~4 months ago and imports resumed.",
+        "GENUINE BEAR CASE, live at the freeze: ~2 months ago, at the incumbent's urging, Customs REVOKED that redesign clearance pending further review — re-freezing imports and forcing reliance on the newer domestic line. And in the SECOND trade case, a judge's initial determination ~3 months ago found infringement of two further patents, with the commission's final ruling due in ~2 months; an adverse result would add another exclusion order on top. The incumbent's litigation machine is explicitly trying to tax the challenger into slower share gains.",
+        "The incumbent has also begun responding on product: new merchant-silicon-friendly lines and a software push aimed at the same cloud buyers, plus continued pricing pressure. Skeptics add the standing white-box argument: the hyperscalers that made LWN could commoditize it next, the same way they commoditized servers."
+      ],
+      "macro_context": "Hyperscale cloud capex guides for the coming year are up double-digits across the major operators, and data-center networking is taking a growing slice of that spend; enterprise networking is flat. Rates are low, equity markets are risk-on, and high-growth infrastructure names are re-rating — momentum is a tailwind and a valuation hazard simultaneously.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

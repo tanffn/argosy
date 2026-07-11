@@ -21,7 +21,7 @@ sources:
     retrieved: 2026-06-02
     tier: 1
   - url: https://taxsummaries.pwc.com/israel/corporate/withholding-taxes
-    retrieved: 2026-07-09
+    retrieved: 2026-07-10
     tier: 1
   - url: https://www.irs.gov/instructions/iw8ben
     retrieved: 2026-07-10

@@ -7,7 +7,7 @@ canonical_location: domain_knowledge/tax/israel/section_102.md
 note: This file is superseded by the canonical refreshed version at the path above. Retained for backwards-compatibility with any agent that imports the `retirement/` path. See the canonical file for 2026 rates, sources, and the holding-period rule — 24 months FROM GRANT (allotment) DATE per Amendment 147 (2006); an earlier refresh note here wrongly asserted end-of-grant-tax-year (corrected 2026-07-09, see the canonical file's correction trail).
 sources:
   - url: https://www.naspp.com/blog/hiring-in-israel--how-section-102-shapes-equity-compensation
-    retrieved: 2026-06-02
+    retrieved: 2026-07-10
     tier: 1
   - url: https://www.vestingstrategy.com/guides/israel-equity-compensation-tax-guide
     retrieved: 2026-06-02

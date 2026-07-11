@@ -1,0 +1,83 @@
+{
+  "case_id": "srl_synthetic",
+  "alias": "SRL",
+  "category": "synthetic",
+  "grading": "synthetic_trap",
+  "real": "SYNTHETIC trap-shape (no real company)",
+  "freeze_date": null,
+  "rescale_factor": null,
+  "synthetic": true,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in SRL. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 2,
+  "contamination_terms": [],
+  "resolution": null,
+  "sources": [],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/SRL",
+      "company": "Solarium Robotics (alias SRL)",
+      "as_of": "current",
+      "market_cap_usd_m": 5100,
+      "share_price_usd": 41.2,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 1850,
+        "total_debt_usd_m": 0,
+        "note": "cash funds ~4 years of burn at the current rate"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 410,
+          "revenue_growth_pct": 21.0,
+          "net_income_usd_m": -160
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 570,
+          "revenue_growth_pct": 39.0,
+          "gross_margin_pct": 71.2,
+          "operating_income_usd_m": -430,
+          "net_income_usd_m": -415
+        },
+        {
+          "fy": "FY-0 (just ended)",
+          "revenue_usd_m": 610,
+          "revenue_growth_pct": 7.0,
+          "gross_margin_pct": 63.8,
+          "operating_income_usd_m": -640,
+          "net_income_usd_m": -595,
+          "free_cash_flow_usd_m": -420,
+          "note": "net loss ≈ 98% of revenue; gross margin falling"
+        }
+      ],
+      "valuation": {
+        "ps_trailing": 8.4,
+        "ev_s_trailing": 5.3,
+        "pe_trailing": null,
+        "price_action": "stock up ~110% year-to-date on robotics/automation theme enthusiasm; was -75% from its listing-era high before that"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/SRL",
+      "business_description": "Vendor of software-orchestrated warehouse robotics ('robotics-as-a-service') for mid-size logistics and retail distribution customers. Founder-CEO is a charismatic serial entrepreneur with one prior billion-dollar exit. The company rebranded two years ago to emphasize 'autonomous AI robotics'. Stock-based compensation runs ~70% of revenue.",
+      "recent_developments": [
+        "Revenue growth collapsed from +39% to +7% in one year, coinciding with a switch from upfront-license to per-pick consumption pricing (management frames the deceleration as a temporary transition artifact).",
+        "A single third-party-logistics joint-venture partner has historically accounted for ~28% of revenue; disclosed 'deployments' definitions have been questioned by analysts.",
+        "A short-seller report this year alleged that a large unbilled receivable from a related-party integrator overstates revenue; the company denies wrongdoing and its auditor signed the accounts.",
+        "Management announced a new 'foundation-model-driven autonomy' product suite; the stock more than doubled year-to-date as investors sought pure-play automation exposure.",
+        "Management withdrew its prior 'non-GAAP profitable by FY-end' target; guidance implies continued heavy losses."
+      ],
+      "macro_context": "Post-tightening de-rating in unprofitable tech, with a violent year-to-date rally in anything automation/AI branded.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

@@ -1,0 +1,134 @@
+{
+  "case_id": "amd_owner_t2",
+  "alias": "VRS",
+  "category": "D",
+  "grading": "hold_drawdown",
+  "real": "AMD @ 2025-04-30 ($97.35 month close; -57% from Mar-2024 peak); fresh MI308 export-control 8-K, thesis intact",
+  "freeze_date": "2025-04-30",
+  "rescale_factor": 1.35,
+  "synthetic": false,
+  "expected_classes": [
+    "hold",
+    "buy"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS VRS from an earlier entry at $95.85/share (~1-2% of portfolio at entry). Current price $131.40 -> unrealized P&L +37%. Entered ~nine quarters ago; the stock peaked ~13 months ago at roughly 2.3x today's price (the position was briefly ~+220%) and has since drawn down -57% from that high. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 16,
+  "contamination_terms": [
+    "AMD",
+    "Advanced Micro Devices",
+    "Lisa Su",
+    "Ryzen",
+    "EPYC",
+    "Instinct",
+    "MI300",
+    "MI308",
+    "MI350",
+    "MI400",
+    "Xilinx",
+    "Radeon",
+    "OpenAI",
+    "Altman",
+    "Nvidia",
+    "Intel",
+    "Genoa",
+    "CES"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 97.35,
+    "price_at_horizon_real": 580.91,
+    "horizon_label": "2026-06-30 (14 months)",
+    "benchmark_return_pct": 497,
+    "note": "yfinance adjusted closes, fetched 2026-07-11; buy-and-hold freeze->horizon"
+  },
+  "sources": [
+    {
+      "fact": "Q4-2024 / FY2024 results (2025-02-04): Q4 revenue record $7.66B +24% YoY, Q4 Data Center record $3.9B +69%; FY2024 revenue record $25.8B +14%, FY Data Center $12.6B +94%; >$5B of Instinct accelerator revenue in 2024 (first full ramp year); Client FY $7.1B +52%; Q1-2025 guide ~$7.1B +/-$0.3B (~+30% YoY); cash+ST investments $5.1B, total debt $1.7B at FY end",
+      "url": "https://www.globenewswire.com/news-release/2025/02/04/3020802/0/en/amd-reports-fourth-quarter-and-full-year-2024-financial-results.html",
+      "date": "2025-02-04",
+      "verify": true
+    },
+    {
+      "fact": "8-K (filed 2025-04-16): new US export-license requirement for MI308 datacenter accelerator sales to China (incl. HK/Macau, D:5); expected charges up to ~$800M in inventory, purchase commitments and related reserves; company will apply for licenses with no assurance of grant",
+      "url": "https://ir.amd.com/financial-information/sec-filings/content/0000002488-25-000039/amd-20250415.htm",
+      "date": "2025-04-16",
+      "verify": true
+    },
+    {
+      "fact": "Category leader's FY (ended Jan-2025) datacenter revenue $115.2B — roughly 9-10x this company's DC segment, and it grew faster in dollar terms",
+      "url": "https://nvidianews.nvidia.com/news/nvidia-announces-financial-results-for-fourth-quarter-and-fiscal-2025",
+      "date": "2025-02-26",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/VRS",
+      "company": "Vireon Semiconductor (alias VRS)",
+      "as_of": "current",
+      "market_cap_usd_m": 213300,
+      "share_price_usd": 131.4,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 6885,
+        "total_debt_usd_m": 2295,
+        "note": "net cash (as of the FY close ~4 months ago); the fresh export-control charge (below) is an inventory/commitment write-down, not a liquidity event"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 30618,
+          "revenue_growth_pct": -4,
+          "net_income_usd_m": 1153,
+          "note": "post-PC-correction trough year; the datacenter AI accelerator launched at the very end of it"
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 34830,
+          "revenue_growth_pct": 14,
+          "gross_margin_pct": 49,
+          "net_income_usd_m": 2214,
+          "note": "Data Center segment 17010 (+94% YoY, record); FIRST FULL YEAR of the datacenter AI accelerator delivered >6750 of accelerator revenue — from zero two years ago; Client rebounded +52%"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q4 of FY-1, reported ~12 weeks ago (Q1 of the new FY reports in ~1 week)",
+        "revenue_usd_m": 10341,
+        "revenue_growth_yoy_pct": 24,
+        "gross_margin_pct": 51,
+        "gaap_net_income_usd_m": 651,
+        "segment_note": "Data Center record 5265 (+69% YoY) on server-CPU share gains plus the accelerator ramp",
+        "note": "records across the board; GAAP net income still burdened by acquisition amortization (non-cash)"
+      },
+      "guidance": {
+        "q1_revenue_usd_m": "~9585 +/- 405 (~+30% YoY, ~-7% sequentially) — guided BEFORE the export-control disclosure",
+        "new_event": "8-K ~2 weeks ago: a NEW export-license requirement now applies to the company's China-market datacenter accelerator; expected charges up to ~1080 (inventory, purchase commitments, reserves). Management will apply for licenses; no assurance any are granted. Sell-side estimates the walled-off China accelerator opportunity at very roughly 1350-2,000+ of annual revenue.",
+        "note": "next-generation accelerator family stated on track for a mid-year launch, with a rack-scale successor generation next year"
+      },
+      "valuation": {
+        "pe_trailing_adjusted": 29,
+        "pe_trailing_gaap": 96,
+        "ps_trailing": 6.1,
+        "price_action": "stock -57% from its all-time high ~13 months ago (the AI-accelerator euphoria peak), -5% this month on the export news; still +37% vs the sleeve's entry ~9 quarters ago; it has massively underperformed the category leader over the past year"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/VRS",
+      "business_description": "Fabless #2 x86 CPU + GPU designer (see prior coverage). ENTRY THESIS (~9 quarters ago): (1) server-CPU share gains against a slipping incumbent continue; (2) the then-unlaunched datacenter AI accelerator (CPU+GPU+stacked-memory package) turns the AI-compute inflection into a second growth engine; (3) the PC collapse was cyclical, not structural. Recorded falsifiers at entry: the accelerator fails to win hyperscaler deployments at scale; server share stalls; balance-sheet stress. MILESTONE STATUS: (1) ON TRACK — Data Center segment at record levels, share still climbing; (2) LANDED — the accelerator did >6750 of revenue in its FIRST full year (from zero), with multiple top hyperscalers deploying; (3) LANDED — Client rebounded +52% last FY.",
+      "recent_developments": [
+        "FRESH BAD NEWS (~2 weeks ago): a new export-license requirement effectively walls off the China market for its datacenter accelerator line — up to ~1080 of inventory/commitment charges disclosed by 8-K, and a meaningful chunk of this year's expected accelerator growth was China-bound. Licenses will be applied for; grants are uncertain.",
+        "The stock is in a DEEP drawdown: -57% from its high ~13 months ago. The de-rating has been driven by decelerating accelerator momentum vs sky-high expectations, the export walls, and a market rotation out of AI names this quarter — not by falsifier-class business deterioration: the latest print was record revenue +24% with Data Center +69%.",
+        "The gap to the category leader has WIDENED, not narrowed: the leader's datacenter revenue is roughly TEN TIMES this company's DC segment and grew faster in absolute dollars last year; its software ecosystem remains the industry default. Several large cloud customers are also scaling their own in-house custom AI silicon, squeezing the merchant #2 from both sides.",
+        "Roadmap intact: management reiterated the next-gen accelerator family launches mid-year, with a rack-scale successor next year; hyperscaler adoption is broadening beyond the initial anchor customers.",
+        "Near-term margin pressure: the export charge lands in the current quarter's gross margin; bears argue the accelerator business is structurally lower-margin than the leader's and that the company is a perpetual price-taker in AI compute.",
+        "Sell-side is split: bulls see a franchise compounding server share with a real second product cycle at ~29x adjusted earnings; bears see an AI also-ran whose China leg was just amputated and whose consumer half faces tariff-driven demand risk."
+      ],
+      "macro_context": "A sweeping tariff announcement whipsawed markets this month and raised recession odds; export-control escalation between the two largest economies is hitting semiconductor names directly; overall AI-infrastructure capex plans at the hyperscalers remain at record levels.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

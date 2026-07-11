@@ -1,0 +1,152 @@
+{
+  "case_id": "pltr_2023_f1",
+  "alias": "MDS",
+  "category": "A",
+  "grading": "F1_lenient",
+  "real": "PLTR @ 2023-03-01 (~$8.0x)",
+  "freeze_date": "2023-03-01",
+  "rescale_factor": 3.0,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in MDS. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 10,
+  "contamination_terms": [
+    "Palantir",
+    "PLTR",
+    "Karp",
+    "Thiel",
+    "AIP",
+    "Gotham",
+    "Foundry",
+    "Apollo",
+    "Denver",
+    "in-Q-Tel",
+    "Shyam Sankar",
+    "Artificial Intelligence Platform"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 7.69,
+    "price_at_horizon_real": 84.92,
+    "horizon_label": "2y (2025-03-01)",
+    "benchmark_return_pct": 1004,
+    "note": "yfinance adjusted closes, fetched 2026-07-11"
+  },
+  "sources": [
+    {
+      "fact": "Q4-2022 results (reported 2023-02-13): revenue $508.6M (+17.5% YoY); FIRST quarter of positive GAAP net income in company history ($30.9M attributable, EPS $0.01); FY2022 revenue $1,905.9M (+24%); FY2022 loss from operations -$161.2M (-8% margin, +1,900bps YoY); FY2022 adjusted FCF $203M; FY2022 SBC $564.8M; cash & equivalents $2,598.5M + $35.1M marketable securities, no debt; FY2023 guidance: revenue $2,180-2,230M, adjusted income from operations $481-531M, GAAP net income (full year)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1321655/000132165523000005/a2022q4ex991pressrelease.htm",
+      "date": "2023-02-13",
+      "verify": true
+    },
+    {
+      "fact": "CEO letter/coverage of the Q4-2022 print: company expects its first profitable YEAR in history in the current fiscal year; US commercial customer count 80 -> 143 (+79% YoY)",
+      "url": "https://www.cnbc.com/2023/02/13/palantir-q4-earnings-2022.html",
+      "date": "2023-02-13",
+      "verify": true
+    },
+    {
+      "fact": "FY2021 results: revenue $1,541.9M (+41%); government revenue $897M (+47%); loss from operations -$411.0M; net loss -$520.4M; adjusted FCF +$424.1M (28% margin); FY2021 SBC $778.2M",
+      "url": "https://www.sec.gov/Archives/edgar/data/1321655/000119312522044821/d317188dex991.htm",
+      "date": "2022-02-17",
+      "verify": true
+    },
+    {
+      "fact": "FY2020 results: revenue $1,092.7M (+47%); GAAP net loss -$1,166M (direct-listing year, large one-off SBC)",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001321655&type=8-K&dateb=20210301&owner=include&count=10",
+      "date": "2021-02-16",
+      "verify": true
+    },
+    {
+      "fact": "~$450M invested since 2021 in ~two dozen ex-blank-check startups that promised to buy the company's software; portfolio down ~75% (~$333M of realized+unrealized losses) by end of Q3-2022; program discontinued",
+      "url": "https://www.bloomberg.com/opinion/articles/2022-11-29/palantir-failed-to-spot-pattern-in-spac-debacle",
+      "date": "2022-11-29"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/MDS",
+      "company": "Meridian Data Systems (alias MDS)",
+      "as_of": "current",
+      "market_cap_usd_m": 48500,
+      "share_price_usd": 23.1,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 7796,
+        "marketable_securities_usd_m": 105,
+        "total_debt_usd_m": 0,
+        "note": "large net-cash position, no debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 3278,
+          "revenue_growth_pct": 47.0,
+          "net_income_usd_m": -3499,
+          "note": "public-listing year; enormous one-off stock-based compensation"
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 4626,
+          "revenue_growth_pct": 41.1,
+          "gross_margin_pct": 78.0,
+          "operating_income_usd_m": -1233,
+          "net_income_usd_m": -1561,
+          "adjusted_free_cash_flow_usd_m": 1272,
+          "note": "adjusted FCF positive (28% margin) despite the GAAP loss"
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 5718,
+          "revenue_growth_pct": 23.6,
+          "gross_margin_pct": 78.6,
+          "operating_income_usd_m": -484,
+          "net_income_usd_m": -1121,
+          "adjusted_free_cash_flow_usd_m": 609,
+          "stock_based_comp_usd_m": 1694,
+          "note": "operating-loss margin improved ~19pts YoY; SBC ~30% of revenue but declining in absolute terms; the GAAP net loss includes large non-operating losses on a speculative investment portfolio (see news)"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q4 of FY-1, reported ~2.5 weeks ago",
+        "revenue_usd_m": 1526,
+        "revenue_growth_yoy_pct": 17.5,
+        "gaap_net_income_usd_m": 93,
+        "note": "FIRST GAAP-profitable quarter in company history; GAAP operating loss nearly closed (-4% margin, +1,000bps YoY)"
+      },
+      "guidance": {
+        "next_fy_revenue_usd_m": "6540-6690 (+~15-17%)",
+        "next_fy_adjusted_operating_income_usd_m": "1443-1593",
+        "note": "management guides GAAP net income for the FULL new fiscal year — would be the first profitable year in company history"
+      },
+      "valuation": {
+        "ps_trailing": 8.5,
+        "ev_s_trailing": 7.1,
+        "pe_trailing": null,
+        "price_vs_2y_ago_high_pct": -80,
+        "peer_context": "high-growth infrastructure software peers trade ~6-12x trailing sales after the rate-driven de-rating",
+        "price_action": "roughly flat since the profit print; the stock is ~-80% from its high two years ago and has chopped sideways near multi-year lows for over a year"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/MDS",
+      "business_description": "Twenty-year-old data-integration and analytics software vendor. ~55% of revenue from government / defense / intelligence agencies on multi-year contracts with very high switching costs and security-accreditation moats; the rest is commercial enterprise. Software is deployed against the customer's own sensitive data (ontology / pipeline layer), sold top-down, and usage expands within accounts over years. Founder-led, dual-class shares, famously mission-driven/contrarian culture. Heavy stock-based compensation is the main shareholder complaint.",
+      "recent_developments": [
+        "First GAAP-profitable quarter in company history just reported (net income 93 on 1526 revenue); management guided the company's first full profitable YEAR for the new fiscal year, with GAAP profit guided alongside a 22%-margin adjusted-operating-income outlook.",
+        "Growth has DECELERATED for eight straight quarters (from ~49% to ~18% YoY) as large one-off government contracts lapped and commercial slowed with the macro; the next-FY revenue guide implies further deceleration to ~15-17%.",
+        "US commercial customer count grew 79% YoY off a small base (80 -> 143), but US commercial REVENUE grew only ~12% YoY in the latest quarter — the new-customer cohort has not yet converted into large revenue.",
+        "Government business remains the anchor: trailing-twelve-month government revenue is growing ~20% and defense/intelligence budgets in its home market are rising; the company is embedded in several allied-government programs.",
+        "Bear case: stock comp is ~30% of revenue and the share count is up ~35% since listing ~2.5 years ago; separately, ~1,350 invested in ~two dozen small speculative newly-listed companies that promised to buy its software is down ~75% (~1,000 of cumulative losses), the program has been discontinued, and some of that customer cohort's revenue is at risk.",
+        "Sell-side consensus is skeptical: at ~8.5x trailing sales with teens growth, most models see the multiple as still above the de-rated peer median and treat the profit print as an expense-management artifact rather than an inflection."
+      ],
+      "macro_context": "The past year saw the fastest central-bank tightening cycle in decades; unprofitable/high-multiple software de-rated 60-80% from highs; the market currently pays up only for profitable growth.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

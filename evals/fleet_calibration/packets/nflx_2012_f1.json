@@ -1,0 +1,134 @@
+{
+  "case_id": "nflx_2012_f1",
+  "alias": "SMC",
+  "category": "A",
+  "grading": "F1_lenient",
+  "real": "NFLX @ 2012-06-15 ($0.94 adj; post-collapse lows, F1 per spec appendix — T_signal = Q1-2012 recovery print 2012-04-23)",
+  "freeze_date": "2012-06-15",
+  "rescale_factor": 4.1,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in SMC. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 60,
+  "contamination_terms": [
+    "Netflix",
+    "NFLX",
+    "Hastings",
+    "Qwikster",
+    "House of Cards",
+    "Disney",
+    "HBO",
+    "Amazon",
+    "Starz",
+    "Icahn"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 0.94,
+    "price_at_horizon_real": 39.2,
+    "horizon_label": "6y (2018-06-15)",
+    "benchmark_return_pct": 4070,
+    "note": "yfinance adjusted closes, fetched 2026-07-11. Split basis: divide-by-70 (7:1 2015 + 10:1 2025 splits); contemporaneous unadjusted price ~$65.8. Matches spec-appendix monthly anchors (2012-06 ~0.98 on the older 70x basis)."
+  },
+  "sources": [
+    {
+      "fact": "Q1-2012 shareholder letter: domestic streaming +1.74M net adds to 23.41M total (22.02M paid); domestic streaming revenue $507M, contribution profit $67M (13.2% margin, above the ~11% target); international streaming 3.07M subs, contribution loss -$103M; DVD 10.09M subs, revenue $320M, contribution profit $146M (45.6% margin); Q1 global revenue $869.8M (+21% YoY), net loss -$4.6M (-$0.08 EPS); FCF +$2M; $805M cash+short-term investments; Q2 guidance net income -$6M to +$8M with domestic streaming margin ~15%; originals framed as a strategic expansion capped near ~5% of content spend; the premium-network movie-output deal expired in February with no discernible churn change",
+      "url": "https://www.sec.gov/Archives/edgar/data/1065280/000144530512001133/nflx-033112xex991.htm",
+      "date": "2012-04-23",
+      "verify": true
+    },
+    {
+      "fact": "FY2011 10-K: FY2011 revenue $3,204.6M (+48.2%), net income $226.1M; FY2010 revenue $2,162.6M (+29.5%), net income $160.9M; FY2009 revenue $1,670.3M, net income $115.9M; $400M long-term debt",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001065280&type=10-K&dateb=&owner=include&count=10",
+      "date": "2012-02-10",
+      "verify": true
+    },
+    {
+      "fact": "Q3-2011 shareholder letter: lost ~800k US subscribers in the quarter after the July price restructuring and the announced-then-aborted spinoff of the DVD segment; CEO: 'we've hurt our hard-earned reputation and stalled our domestic growth'",
+      "url": "https://www.sec.gov/Archives/edgar/data/0001065280/000119312511278716/d246709dex991.htm",
+      "date": "2011-10-24",
+      "verify": true
+    },
+    {
+      "fact": "Contemporaneous coverage: stock lost more than a quarter of its value on the Q3-2011 subscriber-loss report, extending a collapse from ~$300 to well under $100 within months",
+      "url": "https://www.nbcnews.com/id/wbna45023556",
+      "date": "2011-10-25"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/SMC",
+      "company": "StreamCo Media (alias SMC)",
+      "as_of": "current",
+      "market_cap_usd_m": 14980,
+      "share_price_usd": 270,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 1624,
+        "short_term_investments_usd_m": 1675,
+        "total_debt_usd_m": 1640,
+        "stockholders_equity_usd_m": 2720,
+        "note": "on-balance-sheet content licensing liabilities of ~$8,495M (current + non-current) dwarf the debt; content is paid for ahead of the P&L expense, so cash conversion lags earnings as the library ramps"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 6848,
+          "net_income_usd_m": 475
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 8867,
+          "revenue_growth_pct": 29.5,
+          "net_income_usd_m": 659
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 13139,
+          "revenue_growth_pct": 48.2,
+          "net_income_usd_m": 927,
+          "note": "the annual P&L hides a mid-year break: after a bungled price restructuring and an aborted spinoff of the legacy disc-rental segment ~3 quarters ago, the company lost ~3.3M home-market subscribers in one quarter and Q4 net income fell -26% YoY"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0, reported ~7 weeks ago",
+        "revenue_usd_m": 3566,
+        "revenue_growth_yoy_pct": 21.0,
+        "gaap_net_income_usd_m": -19,
+        "gaap_eps_usd": -0.33,
+        "note": "first quarterly loss in years, driven entirely by international expansion: home-market streaming contribution profit $273M (13.2% margin, above target) and disc-rental contribution profit $599M (45.6% margin) were swamped by a -$421M international contribution loss. Home-market streaming added +7.1M net subscribers — the first clean recovery print since the debacle — reaching 96.0M total (quarterly segment revenue ~$2,079M). Free cash flow was barely positive (+$8M) and management says original-content payments will push it negative later this year."
+      },
+      "guidance": {
+        "next_quarter": "global net income guided to -$25M to +$33M (return to profitability at the midpoint); home-market streaming contribution margin guided to ~15%, targeting ~100bps expansion per quarter thereafter; full-year home-market streaming net adds guided to ~29M, but with sharply higher quarterly seasonality (Q2 net adds will look weak by construction — management published a mathematical appendix defending this)",
+        "medium_term": "each new international market is expected to take longer than 8 quarters to reach sustained profit; management intends to keep re-investing home-market profits into new market launches, so consolidated earnings will stay depressed while the home-market segment compounds"
+      },
+      "valuation": {
+        "ps_trailing": 1.1,
+        "pe_trailing": 16.2,
+        "pe_note": "P/E on FY-1 earnings; on current-year consensus the multiple is meaningless (earnings guided to roughly breakeven while international losses run ~$400M/quarter rescaled)",
+        "peer_context": "premium cable networks with comparable content budgets trade at 3-4x EV/S with stable ~30% margins; the disc-rental annuity alone (contribution profit ~$2.4B/yr run-rate) covers most of the enterprise value if you assign it a low-single-digit multiple, but it is melting at ~-10% subscribers per quarter",
+        "price_action": "stock is -78% from its all-time high of ~11 months ago. It briefly rallied ~50% on the Q0 recovery print, then gave essentially all of it back over the following seven weeks on the weak Q2 net-adds guidance and market-wide risk-off — it now sits within a few percent of its post-collapse lows"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/SMC",
+      "business_description": "The dominant subscription home-entertainment company in a very large developed market, in mid-transition from its legacy disc-by-mail rental business (still the profit engine, ~46% contribution margin, melting ~-10% subs/quarter) to internet streaming. ~3 quarters ago management bungled a price restructuring and announced, then aborted, a spinoff of the legacy segment; mass cancellations followed (~3.3M subscribers in one quarter), the brand took visible damage, and the stock collapsed ~-78%. The streaming subscriber base has since returned to growth: the most recent quarter was the first clean recovery print, with +7.1M home-market streaming net adds to 96.0M members and record per-member viewing hours. International expansion (five markets launched in ~18 months) is deliberately loss-making (~-$421M contribution loss last quarter) and fully masks a profitable, margin-expanding home-market streaming segment.",
+      "recent_developments": [
+        "First clean post-debacle recovery print: +7.1M home-market streaming net adds last quarter, home-market streaming contribution margin 13.2% and guided to ~15% next quarter with ~100bps/quarter expansion targeted thereafter; management guided a return to consolidated profitability next quarter.",
+        "Original programming was just elevated from 'strategic experiment' to 'strategic expansion': the company's first commissioned original series (a big-budget political drama from an A-list film director, ordered straight-to-series ~15 months ago) arrives next year, its first foreign co-produced original is already live and performing in line with licensed premium content on cost-per-viewing-hour, and a second and third original have been commissioned. Originals are capped near ~5% of content spend for now; the cash cost front-loads into the next few quarters.",
+        "Content risk is real and priced in the narrative: a premium cable network's movie-output deal (a large chunk of the premium film catalog) expired in February after renewal talks failed — management reports no discernible churn or viewing impact, with viewing shifting to serialized TV; skeptics read the non-renewal as the studios starting to withhold content from a company they now see as a competitor.",
+        "Competition fear is the consensus bear case: a giant e-commerce company is bundling streaming video into its shipping-subscription program and building a content library, the largest premium cable network is pushing its own streaming app onto game consoles, and the incumbent pay-TV distributors are launching 'watch anywhere' apps. Management's rebuttal: it has ~10x the paid streaming members of the nearest pure-play rival and added over 3x more net subscribers than that rival last quarter.",
+        "International expansion is going better than planned in the newest market (a large English-speaking country pair) — the best 90-day launch to date — and the first market launched abroad turns profitable next quarter, a quarter early. Management committed to launching another market in Q4, which will push consolidated breakeven out again.",
+        "The legacy disc segment lost ~4.4M subscribers last quarter (to a 41.4M base) but retains a ~46% contribution margin; management expects the decline to slow and the segment to remain a large cash annuity funding the transition."
+      ],
+      "macro_context": "Consumer discretionary spending in the home market is stable; broadband and internet-connected-TV penetration are rising steadily, and connected devices (game consoles, tablets, smart TVs) are proliferating — the structural tailwind for streaming. Equity markets are in a risk-off stretch on sovereign-debt worries abroad, punishing story stocks with near-term earnings air-pockets.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

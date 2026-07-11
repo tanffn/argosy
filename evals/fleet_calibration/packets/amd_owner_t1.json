@@ -1,0 +1,154 @@
+{
+  "case_id": "amd_owner_t1",
+  "alias": "VRS",
+  "category": "A",
+  "grading": "entry",
+  "real": "AMD @ 2023-01-17 (~$71); post-crash base entry test (2022-12 close $64.77, ~-55% from prior peak)",
+  "freeze_date": "2023-01-17",
+  "rescale_factor": 1.35,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in VRS. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 15,
+  "contamination_terms": [
+    "AMD",
+    "Advanced Micro Devices",
+    "Lisa Su",
+    "Ryzen",
+    "EPYC",
+    "Instinct",
+    "MI300",
+    "MI308",
+    "MI350",
+    "MI400",
+    "Xilinx",
+    "Radeon",
+    "OpenAI",
+    "Altman",
+    "Nvidia",
+    "Intel",
+    "Genoa",
+    "CES"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 71.59,
+    "price_at_horizon_real": 580.91,
+    "horizon_label": "2026-06-30 (~3.5y)",
+    "benchmark_return_pct": 711,
+    "note": "yfinance adjusted closes, fetched 2026-07-11; buy-and-hold freeze->horizon"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2022 results (2022-11-01): revenue $5.6B +29% YoY; GAAP GM 42% (-610bps, primarily Xilinx-acquisition intangible amortization), GAAP operating loss -$64M; Data Center $1.6B +45%, Client $1.0B -40%, Gaming $1.6B +14%, Embedded $1.3B (from the acquisition); cash+ST investments $5.6B, total debt $2.5B; Q4 guide ~$5.5B +/-$0.3B (~flat sequentially, ~+14% YoY)",
+      "url": "https://ir.amd.com/news-events/press-releases/detail/1098/amd-reports-third-quarter-2022-financial-results",
+      "date": "2022-11-01",
+      "verify": true
+    },
+    {
+      "fact": "Preliminary Q3-2022 announcement: revenue ~$5.6B vs prior guidance ~$6.7B +/-$0.2B — a ~$1.1B cut driven by weaker-than-expected Client/PC demand and inventory correction",
+      "url": "https://www.globenewswire.com/news-release/2022/10/06/2529946/0/en/AMD-Announces-Preliminary-Third-Quarter-2022-Financial-Results.html",
+      "date": "2022-10-06",
+      "verify": true
+    },
+    {
+      "fact": "4th Gen EPYC (Genoa) general availability: up to 96 5nm cores, ~14% IPC uplift, DDR5/PCIe5/CXL",
+      "url": "https://ir.amd.com/news-events/press-releases/detail/1100/offering-unmatched-performance-leadership-energy-efficiency-and-next-generation-architecture-amd-brings-4th-gen-amd-epyc-processors-to-the-modern-data-center",
+      "date": "2022-11-10",
+      "verify": true
+    },
+    {
+      "fact": "CES 2023 keynote (2023-01-04/05): Instinct MI300 datacenter AI APU previewed silicon-in-hand — 146B transistors, 13 chiplets, CPU (24 Zen4 cores) + GPU + 128GB HBM3 on one package, sampling now, shipping H2-2023",
+      "url": "https://www.anandtech.com/show/18721/ces-2023-amd-instinct-mi300-data-center-apu-silicon-in-hand-146b-transistors-shipping-h223",
+      "date": "2023-01-05",
+      "verify": true
+    },
+    {
+      "fact": "FY2021 results: record revenue $16.4B +68%, GAAP net income $3.2B (organic, pre-Xilinx); FY2020 revenue $9.76B +45%, net income $2.49B (flattered by a one-time tax-asset release)",
+      "url": "https://ir.amd.com/news-events/press-releases/detail/1044/amd-reports-fourth-quarter-and-full-year-2021-financial-results",
+      "date": "2022-02-01",
+      "verify": true
+    },
+    {
+      "fact": "Xilinx acquisition (largest semiconductor deal to date, all-stock) closed 2022-02-14",
+      "url": "https://www.amd.com/en/newsroom/press-releases/2022-2-14-amd-completes-acquisition-of-xilinx.html",
+      "date": "2022-02-14"
+    },
+    {
+      "fact": "Public launch of a consumer generative-AI chatbot (2022-11-30) that went viral within weeks — the demand signal behind rising AI-compute interest",
+      "url": "https://openai.com/blog/chatgpt",
+      "date": "2022-11-30"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/VRS",
+      "company": "Vireon Semiconductor (alias VRS)",
+      "as_of": "current",
+      "market_cap_usd_m": 155800,
+      "share_price_usd": 96.65,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 7560,
+        "total_debt_usd_m": 3375,
+        "note": "net-cash balance sheet; debt termed out; investment-grade. A very large all-stock acquisition of the leading FPGA maker closed ~11 months ago — the dilution is in the share count, not the debt stack."
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 13180,
+          "revenue_growth_pct": 45,
+          "net_income_usd_m": 3362,
+          "note": "net income flattered by a one-time tax-asset release"
+        },
+        {
+          "fy": "FY-1 (latest full year reported)",
+          "revenue_usd_m": 22186,
+          "revenue_growth_pct": 68,
+          "gross_margin_pct": 48,
+          "net_income_usd_m": 4269,
+          "note": "record year, entirely organic (the FPGA acquisition closed after this FY ended)"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q3 of the just-ended FY, reported ~11 weeks ago (Q4 closed ~2.5 weeks ago, report due in ~2 weeks)",
+        "revenue_usd_m": 7513,
+        "revenue_growth_yoy_pct": 29,
+        "gross_margin_pct": 42,
+        "gaap_operating_loss_usd_m": -86,
+        "segment_note": "Data Center 2160 (+45% YoY) on server-CPU share gains; Client 1350 (-40%, PC collapse); Gaming 2160 (+14%, console semi-custom); Embedded 1755 (scaled up from near-zero via the FPGA acquisition). GAAP GM -610bps YoY and the operating loss are primarily acquisition-intangible amortization (non-cash); adjusted GM ~50%.",
+        "note": "this quarter was PRE-ANNOUNCED as a miss ~3.5 weeks before the print: revenue came in ~1,485 BELOW the original ~9,045 guidance on the PC inventory correction"
+      },
+      "guidance": {
+        "q4_revenue_usd_m": "~7425 +/- 405 (~flat sequentially, ~+14% YoY)",
+        "note": "management frames the PC correction as undershipping end demand for 1-2 more quarters; server and embedded expected to keep growing"
+      },
+      "valuation": {
+        "pe_trailing_gaap": 50,
+        "pe_trailing_adjusted": 19,
+        "ps_trailing": 5.1,
+        "price_action": "stock is ~-56% from its all-time high ~14 months ago, but ~+31% off its multi-year low ~3 months ago; the whole semiconductor complex de-rated through the rate-tightening year"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/VRS",
+      "business_description": "Fabless designer of PC and server CPUs and discrete GPUs — the #2 x86 CPU designer, five years into taking server-CPU share (from ~1% back toward ~20% unit share) from a dominant incumbent whose manufacturing-process cadence has repeatedly slipped. Eleven months ago it closed an industry-record all-stock acquisition of the leading FPGA maker, adding a high-margin embedded/adaptive-silicon franchise. Consumer exposure (PC client + gaming/console) is still roughly half of revenue and is in a deep downcycle.",
+      "recent_developments": [
+        "Q3 was pre-announced as a big miss (~-16% vs original guidance) on a collapsing PC market and a violent inventory correction; the Client segment fell 40% YoY and management guided the current quarter only flat. The correction is expected to run another 1-2 quarters.",
+        "Server share gains CONTINUE through the downturn: Data Center grew +45% YoY, and the company just launched its new-generation server CPU (up to 96 leading-node cores, ~14% IPC uplift) to strong reviews, against an incumbent whose competing part has been repeatedly delayed.",
+        "At its keynote at the big consumer-electronics show days ago, the CEO previewed — silicon in hand — a DATACENTER AI ACCELERATOR combining CPU chiplets, GPU chiplets and high-bandwidth stacked memory in a single 146-billion-transistor package; sampling now, shipping second half of this year. This is the company's first credible entry into datacenter AI compute, where its current share is negligible.",
+        "A consumer generative-AI chatbot launched ~7 weeks ago has gone viral (fastest consumer-app adoption on record), and hyperscalers are signaling rising AI-compute investment — but the AI-accelerator market is ~90%+ owned by one GPU rival whose decade-old developer software ecosystem is the real moat; this company's GPU software stack is far behind, and sell-side models give its AI accelerator effectively zero credit.",
+        "GAAP P&L is burdened by acquisition amortization (an operating LOSS last quarter despite +29% revenue); bears also flag integration risk on an industry-record acquisition and the risk that server-CPU share gains stall as the incumbent's roadmap stabilizes.",
+        "Valuation is not distressed: ~19x adjusted trailing earnings and ~5x sales for a company whose consumer half is shrinking hard — the debate is whether the datacenter momentum plus the new AI-accelerator option outweighs a consumer downcycle that is still deepening."
+      ],
+      "macro_context": "Aggressive rate tightening has de-rated growth equities; the semiconductor cycle is in a deep PC-led inventory correction; cloud capex still growing but under scrutiny; interest in AI datacenter compute is inflecting after the viral chatbot launch.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

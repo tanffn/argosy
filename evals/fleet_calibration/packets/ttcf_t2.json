@@ -1,0 +1,132 @@
+{
+  "case_id": "ttcf_t2",
+  "alias": "PVF",
+  "category": "C",
+  "grading": "exit",
+  "real": "TTCF @ 2021-08-16 (~$17.50); Q2-21 miss + guidance cut",
+  "freeze_date": "2021-08-16",
+  "rescale_factor": 3.7,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $64.75 -> unrealized P&L -14%. Entered three quarters ago. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 33,
+  "contamination_terms": [
+    "Tattooed Chef",
+    "TTCF",
+    "Ittella",
+    "Galletti",
+    "Forum Merger",
+    "Costco",
+    "Walmart",
+    "Sam's Club",
+    "Club Foods",
+    "Kroger",
+    "Karsten",
+    "New Mexico Food"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 17.5,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+    "benchmark_return_pct": -100,
+    "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+  },
+  "sources": [
+    {
+      "fact": "Q2-2021 results: revenue $50.7M (+45.9%), GM 15.7%, GAAP net loss -$53.2M incl a one-time non-cash $46.0M deferred-tax valuation allowance; first consensus miss; GM guide CUT to 16-22% from the 20-25% guided at Q1 (2021-05-12 PR); adj-EBITDA guide flipped to negative $14-17M from positive $2-4M",
+      "url": "https://www.globenewswire.com/news-release/2021/08/12/2280137/0/en/Tattooed-Chef-Reports-Second-Quarter-2021-Financial-Results.html",
+      "date": "2021-08-12"
+    },
+    {
+      "fact": "National retail distribution wins: nationwide launch at a top mass retailer (Target, six products, PR 2021-03-10) and ~1,800 stores at the largest US grocer (Kroger, 12 SKUs, PR 2021-07-12)",
+      "url": "https://www.globenewswire.com/news-release/2021/07/12/2261160/0/en/Tattooed-Chef-to-Launch-in-Kroger-Stores-Nationwide.html",
+      "date": "2021-07-12"
+    },
+    {
+      "fact": "Cash acquisitions of food/tortilla plants (New Mexico Food Distributors + Karsten Tortilla Factory, ~$37M total real) for capacity + southwestern line; BOTH closed 2021-05-14, completion PR 2021-05-18",
+      "url": "https://www.globenewswire.com/news-release/2021/05/18/2231349/0/en/Tattooed-Chef-Completes-Acquisition-of-New-Mexico-Food-Distributors-Inc-and-Karsten-Tortilla-Factory-LLC-Reclassifies-Certain-Expenses.html",
+      "date": "2021-05-18"
+    },
+    {
+      "fact": "FY2020 final: revenue $148.5M (+75%), GM 14.6% after reclassifications (reclass detailed in the 2021-05-18 PR)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm",
+      "date": "2021-03-19"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/PVF",
+      "company": "Provida Foods (alias PVF)",
+      "as_of": "current",
+      "market_cap_usd_m": 5300,
+      "share_price_usd": 64.75,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 519,
+        "total_debt_usd_m": 10,
+        "share_count_note": "share count is ~30% higher than at entry (warrant exercises/exchanges from the listing structure)",
+        "note": "still cash-rich; just spent ~137 cash on two tortilla/food-plant acquisitions to add capacity and a southwestern product line"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1 (the entry-year)",
+          "revenue_usd_m": 549,
+          "revenue_growth_pct": 75,
+          "gross_margin_pct": 14.6,
+          "note": "final figures came in slightly below the originally reported 15.9% GM after reclassifications"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q2 of the current FY, reported ~4 days ago",
+        "revenue_usd_m": 188,
+        "revenue_growth_yoy_pct": 45.9,
+        "gross_margin_pct": 15.7,
+        "gaap_net_loss_usd_m": -197,
+        "net_loss_note": "includes a one-time NON-CASH ~170 deferred-tax valuation allowance (the company wrote off its own deferred tax assets — an accounting judgment that future taxable income is not probable); ex-item operating loss ~-27",
+        "note": "FIRST revenue miss vs consensus (~188 vs ~200 expected); stock fell ~15% on the print"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "870-895 maintained (+~59%)",
+        "gross_margin_pct": "CUT to 16-22 from 20-25",
+        "adj_ebitda_usd_m": "CUT to -52 to -63, from +7 to +15 — the year flips from profitable to a meaningful loss",
+        "cited": "freight/logistics cost inflation, outside storage fees, public-company legal/accounting costs, and heavy planned marketing spend for the retail expansion"
+      },
+      "customer_concentration": {
+        "top_2_customers_pct_of_revenue": 71,
+        "split_pct": [
+          39,
+          32
+        ]
+      },
+      "valuation": {
+        "ps_on_fy_guide": 6.0,
+        "pe_trailing": null,
+        "price_action": "stock -14% vs the sleeve's entry, -38% from its all-time high; still up a lot vs the pre-listing price"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/PVF",
+      "business_description": "Plant-forward frozen-food brand (see prior coverage): family-founded, vertically integrated, converting warehouse-club private-label volume into a branded mass-retail rollout. The entry thesis was: category tailwind + 75% growth + brand conversion + cheap-ish vs the category leader, with milestones of (a) branded distribution expansion beyond the club channel, (b) gross-margin expansion toward 20%+ as brand mix rises, (c) reduced customer concentration.",
+      "recent_developments": [
+        "Mass-retail door expansion IS happening: the brand landed a nationwide launch at one of the largest mass-market retailers plus ~1,800 stores of the largest grocery chain, and management says branded products will be in over 12,000 retail stores by the end of next quarter.",
+        "But the P&L is moving AWAY from the thesis: gross margin guidance cut hard (freight, storage, input costs), full-year EBITDA flipped from positive to a sizable loss, and management concedes marketing spend to win the new shelf space will run heavy 'for several quarters'.",
+        "Customer concentration has NOT improved yet (top-2 still ~71%), and much of the club volume remains rotational.",
+        "Two capacity acquisitions (cash) diversify into southwestern/tortilla products — some analysts question the strategic focus of buying low-margin co-packing plants during a brand build-out.",
+        "The plant-based theme has cooled sharply: the category's pure-play leader has repeatedly missed estimates and the whole cohort has de-rated."
+      ],
+      "macro_context": "Reopening economy; freight and food-input inflation squeezing every food manufacturer; speculative listing-vehicle cohort broadly deflating.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": [
+    {"date": "2026-07-11", "fix": "temporal audit: Q2-2021 PR date 2021-08-12 CONFIRMED, URL pinned; net loss corrected -$53.3M -> -$53.2M; prior-guidance baselines VERIFIED against the Q1-2021 PR of 2021-05-12 (GM 20-25%, adj-EBITDA +$2-4M) so the cut/flip framing stands with sources."},
+    {"date": "2026-07-11", "fix": "ACQUISITIONS VERIFIED: both New Mexico Food Distributors AND Karsten Tortilla Factory closed 2021-05-14 for ~$37.0M cash total (completion PR 2021-05-18) — well before the 2021-08-16 freeze; packet 'two acquisitions ~$37M' text stands; source date corrected 2021-05-17 -> 2021-05-18 and URL pinned."},
+    {"date": "2026-07-11", "fix": "FACTUAL FIX: distribution wins were NOT 'two largest mass retailers + drug chain' — pre-freeze reality was Target nationwide (PR 2021-03-10) + Kroger ~1,800 stores (PR 2021-07-12); no Walmart deal and no drug-store chain existed before the freeze (Walmart expansion came a year later). Source fact and news bullet rewritten accordingly (12,000-store quarter-end target from the Q2 PR added, so the expansion story is not weakened). FY2020 10-K date 2021-03-19 CONFIRMED (EDGAR), URL pinned. verify flags cleared."}
+  ]
+}
