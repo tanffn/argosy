@@ -27,7 +27,7 @@ sources:
     retrieved: 2026-07-11
     tier: 1
   - url: https://www.btl.gov.il/English%20Homepage/Insurance/Ratesandamount/Pages/forSalaried.aspx
-    retrieved: 2026-07-10
+    retrieved: 2026-07-11
     tier: 1
 ---
 

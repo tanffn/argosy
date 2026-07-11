@@ -23,7 +23,7 @@ sources:
     retrieved: 2026-07-10
     tier: 2
   - url: https://barlaw.co.il/practice_areas/tax/client_updates/high-income-earners-in-israel-prepare-to-pay-an-additional-surtax/
-    retrieved: 2026-06-02
+    retrieved: 2026-07-11
     tier: 2
 ---
 
