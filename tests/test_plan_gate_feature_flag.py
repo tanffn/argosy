@@ -233,6 +233,40 @@ def test_accept_v20_draft_enforce_mode_returns_422(
         sess.close()
 
 
+def test_accept_gate_persist_failure_still_returns_422(
+    client_with_db, monkeypatch,
+):
+    """A JSON/DB error in accept-gate persist must not turn the 422 into a
+    500 — the violation body is the client contract."""
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    import argosy.api.routes.plan as plan_routes
+
+    reload_settings()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated persist failure")
+
+    monkeypatch.setattr(plan_routes, "_persist_accept_gate_reject", _boom)
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md=_v20_fixture_md("long"),
+        horizon_medium_md=_v20_fixture_md("medium"),
+        horizon_short_md=_v20_fixture_md("short"),
+        horizon_long_json=_v20_fixture_json("long"),
+        horizon_medium_json=_v20_fixture_json("medium"),
+        horizon_short_json=_v20_fixture_json("short"),
+    )
+    r = client_with_db.post(
+        f"/api/plan/draft/{draft_id}/accept?user_id=ariel"
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "plan_output_gate_failed"
+    assert "history_leak" in detail["violations_by_check"]
+    assert "jargon_leak" in detail["violations_by_check"]
+
+
 def test_accept_gate_reject_feeds_corrective_context(
     client_with_db, monkeypatch,
 ):

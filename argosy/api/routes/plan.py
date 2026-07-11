@@ -3569,15 +3569,26 @@ def post_draft_accept(
             }
             # Persist BEFORE the 422 so the next corrective harvest can
             # read the gate (drafts 80-85: response-only 422 meant the
-            # harvester never saw these violations).
-            _persist_accept_gate_reject(
-                db,
-                user_id=user_id,
-                pv=pv,
-                summary=gate_verdict.summary(),
-                violations_by_check=violations_by_check,
-                warned_only=warned_only,
-            )
+            # harvester never saw these violations). Fail-soft: a JSON/DB
+            # error must not turn the intentional 422 into a 500 and lose
+            # the violation body (aftermath follow-up).
+            try:
+                _persist_accept_gate_reject(
+                    db,
+                    user_id=user_id,
+                    pv=pv,
+                    summary=gate_verdict.summary(),
+                    violations_by_check=violations_by_check,
+                    warned_only=warned_only,
+                )
+            except Exception as exc:  # noqa: BLE001 — persist is best-effort
+                logger.warning(
+                    "plan.accept_gate_reject_persist_failed user=%s draft=%s "
+                    "error=%s",
+                    user_id,
+                    draft_id,
+                    str(exc)[:200],
+                )
             raise HTTPException(
                 status_code=422,
                 detail={
