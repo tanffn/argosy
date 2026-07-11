@@ -694,20 +694,30 @@ def test_verdict_feedback_staleness_guard(session):
     assert "VERDICT FEEDBACK" not in ctx.rendered
 
 
-def test_verdict_feedback_not_harvested_when_run_approved(session):
-    """The MOST RECENT corrective draft decides: if its run was approved,
-    older rejected verdicts are superseded history."""
+def test_verdict_feedback_harvest_past_newer_non_rejected(session):
+    """Draft-81 shape: newest corrective is FM-approved (e.g. accept-gate
+    only failed) and must NOT shadow an older FM-rejected corrective —
+    harvest verdict feedback from the newest rejected draft in the chain.
+    """
     from argosy.services.corrective_context import build_corrective_context
 
     old_run = _add_run(session)
-    _add_corrective_draft(session, old_run)
+    old_draft = _add_corrective_draft(session, old_run)
     _add_verdict_report(
         session, old_run, role="fund_manager",
         payload=_fm_rejection([RUN_144_FM_REASON]),
     )
     new_run = _add_run(session, fund_manager_decision="approved")
     _add_corrective_draft(session, new_run)
-    assert build_corrective_context(session, user_id="ariel") is None
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert len(ctx.corrections) == 1
+    c = ctx.corrections[0]
+    assert c.source == "verdict_feedback"
+    assert c.source_draft_id == old_draft.id
+    assert c.source_run_id == old_run.id
+    assert ctx.verdict_fm_rejected is True
+    assert ctx.to_payload()["verdict_feedback"]["draft_id"] == old_draft.id
 
 
 def test_verdict_feedback_dedup_vs_critique_corrections(session):

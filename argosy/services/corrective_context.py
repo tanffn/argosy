@@ -799,12 +799,14 @@ def _verdict_finding(
 def _load_rejected_corrective_draft(
     session: Session, *, user_id: str, current_plan_id: int
 ) -> tuple[PlanVersion, dict[str, Any], DecisionRun] | None:
-    """The user's MOST RECENT corrective draft (superseded or pending), iff
-    its run ended rejected and it belongs to the current-plan lineage.
+    """Newest corrective draft (superseded or pending) whose run ended
+    FM-rejected and that belongs to the current-plan lineage.
 
-    Decides on the most recent corrective draft ONLY: if that draft's run
-    was NOT rejected (promoted / approved), older rejected verdicts are
-    superseded history and must not resurrect — return None.
+    Walks the corrective chain newest-first. A newer non-rejected
+    corrective draft (e.g. FM-approved but accept-gate failed) must NOT
+    abort the harvest — draft-81-class FM rejections were shadowed that
+    way. Lineage mismatches are skipped (keep scanning); only a matching
+    FM-rejected draft is returned.
     """
     rows = session.execute(
         select(PlanVersion)
@@ -825,14 +827,6 @@ def _load_rejected_corrective_draft(
         corrective = si.get("corrective") if isinstance(si, dict) else None
         if not isinstance(corrective, dict):
             continue
-        # Most recent corrective draft found — decide on THIS one only.
-        run = session.get(DecisionRun, pv.decision_run_id)
-        if (
-            run is None
-            or run.user_id != user_id
-            or run.fund_manager_decision != "rejected"
-        ):
-            return None
         if corrective.get("base_plan_id") != current_plan_id:
             _log.info(
                 "corrective_context.verdict_feedback_lineage_mismatch",
@@ -840,7 +834,16 @@ def _load_rejected_corrective_draft(
                 draft_base_plan_id=corrective.get("base_plan_id"),
                 current_plan_id=current_plan_id,
             )
-            return None
+            continue  # other lineage — keep scanning
+        run = session.get(DecisionRun, pv.decision_run_id)
+        if (
+            run is None
+            or run.user_id != user_id
+            or run.fund_manager_decision != "rejected"
+        ):
+            # Newer non-rejected corrective (approved / pending / missing
+            # run) — keep walking for an older FM-rejected draft.
+            continue
         return pv, si, run
     return None
 
