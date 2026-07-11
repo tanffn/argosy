@@ -15,6 +15,7 @@ import {
   api,
   type DiscoveryCandidateDTO,
   type DiscoveryDTO,
+  type DiscoverySourceDTO,
 } from "@/lib/api";
 
 function convictionTone(c: string): "success" | "secondary" | "outline" {
@@ -40,6 +41,47 @@ function plainStatus(value: string): string {
   return value
     .replaceAll("_", " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function fmtRate(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
+}
+
+function fmtPnl(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
+}
+
+function SourceScorecardDetails({ source }: { source: DiscoverySourceDTO }) {
+  const scorecard = source.scorecard;
+  if (!scorecard) return null;
+  const short = scorecard.horizons["30d"];
+  const thesis = scorecard.horizons["180d"];
+  return (
+    <details className="mt-1 max-w-sm rounded border border-border/50 px-2 py-1 text-[10px] text-muted-foreground">
+      <summary className="cursor-pointer select-none text-foreground/80">
+        performance
+      </summary>
+      <div className="mt-1 space-y-0.5">
+        <div>
+          Aggregate: {scorecard.scored_outcomes} scored · win{" "}
+          {fmtRate(scorecard.win_rate)} · avg PnL {fmtPnl(scorecard.avg_pnl_pct)}
+        </div>
+        <div>
+          30d: {short.scored_outcomes} scored · win {fmtRate(short.win_rate)} ·
+          avg PnL {fmtPnl(short.avg_pnl_pct)}
+        </div>
+        <div>
+          180d: {thesis.scored_outcomes} scored · win {fmtRate(thesis.win_rate)}{" "}
+          · avg PnL {fmtPnl(thesis.avg_pnl_pct)} · always-long{" "}
+          {fmtRate(thesis.always_long_same_tickers_win_rate)}
+        </div>
+        {scorecard.kill_reason && (
+          <div className="text-warning">{scorecard.kill_reason}</div>
+        )}
+      </div>
+    </details>
+  );
 }
 
 function CandidateDetails({
@@ -187,20 +229,33 @@ export function DiscoveryCard() {
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {data.sources.length > 0 ? (
                   data.sources.map((source) => (
-                    <Badge
-                      key={source.key}
-                      variant="outline"
-                      className="text-[10px]"
-                      title={`${source.label}: ${source.tracked_count} tracked`}
-                    >
-                      {source.label} · {source.active_count} active
-                      {source.quarantined_count > 0
-                        ? ` · ${source.quarantined_count} filtered`
-                        : ""}
-                      {source.dropped_stale_count > 0
-                        ? ` · ${source.dropped_stale_count} stale`
-                        : ""}
-                    </Badge>
+                    <div key={source.key}>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px]"
+                        title={`${source.label}: ${source.tracked_count} tracked`}
+                      >
+                        {source.label} · {source.active_count} active
+                        {source.scorecard?.calibration.startsWith(
+                          "uncalibrated",
+                        )
+                          ? ` · beta ${source.scorecard.scored_outcomes} scored`
+                          : source.scorecard
+                            ? ` · ${source.scorecard.scored_outcomes} scored`
+                            : ""}
+                        {source.scorecard &&
+                        !source.scorecard.funnel_context_enabled
+                          ? " · funnel voice paused"
+                          : ""}
+                        {source.quarantined_count > 0
+                          ? ` · ${source.quarantined_count} filtered`
+                          : ""}
+                        {source.dropped_stale_count > 0
+                          ? ` · ${source.dropped_stale_count} stale`
+                          : ""}
+                      </Badge>
+                      <SourceScorecardDetails source={source} />
+                    </div>
                   ))
                 ) : (
                   <span className="text-[11px] text-muted-foreground">

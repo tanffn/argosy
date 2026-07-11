@@ -83,7 +83,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
-from argosy.state.models import Prediction
+from argosy.state.models import EvaluationMethod, Prediction, PredictionOutcome
 
 _log = get_logger("argosy.services.predictions.reliability")
 
@@ -179,6 +179,50 @@ class SourceReliability:
     rolling_30d_hit_rate: Optional[float]
     rolling_30d_mean_pnl: Optional[float]
     sample_size_warning: int  # 0 or 1
+
+
+@dataclass(frozen=True)
+class SignalFunnelContextPolicy:
+    """Pure result of the pre-agreed 180d context-privilege policy."""
+
+    funnel_context_enabled: bool
+    calibrated: bool
+    kill_reason: str | None
+
+
+def signal_funnel_context_policy(
+    *,
+    scored_180d: int,
+    win_rate_180d: float | None,
+    always_long_same_tickers_win_rate: float | None,
+) -> SignalFunnelContextPolicy:
+    """Pause only a verified 180d stream that fails its same-ticker baseline."""
+    if (
+        scored_180d < 50
+        or win_rate_180d is None
+        or always_long_same_tickers_win_rate is None
+    ):
+        return SignalFunnelContextPolicy(
+            funnel_context_enabled=True,
+            calibrated=False,
+            kill_reason=None,
+        )
+    if win_rate_180d <= always_long_same_tickers_win_rate:
+        return SignalFunnelContextPolicy(
+            funnel_context_enabled=False,
+            calibrated=True,
+            kill_reason=(
+                f"180d stream win rate {win_rate_180d:.1%} does not beat "
+                "always-long same-tickers benchmark "
+                f"{always_long_same_tickers_win_rate:.1%} "
+                f"(n={scored_180d})"
+            ),
+        )
+    return SignalFunnelContextPolicy(
+        funnel_context_enabled=True,
+        calibrated=True,
+        kill_reason=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -612,12 +656,107 @@ def reliability_annotation(
 
 
 def signal_scorecard_label(*, scored: int, observation_days: int) -> str:
-    if scored < 30:
+    if scored < 50:
         return (
             f"uncalibrated (beta — {scored} scored over "
             f"{observation_days} days)"
         )
     return "calibrated"
+
+
+def _authoritative_signal_outcomes(
+    session: Session,
+    *,
+    user_id: str,
+    source: str,
+) -> list[tuple[Prediction, PredictionOutcome, EvaluationMethod]]:
+    """Select one highest-version outcome per prediction/method family."""
+    rows = session.execute(
+        select(Prediction, PredictionOutcome, EvaluationMethod)
+        .join(
+            PredictionOutcome,
+            PredictionOutcome.prediction_id == Prediction.id,
+        )
+        .join(
+            EvaluationMethod,
+            EvaluationMethod.method_name
+            == PredictionOutcome.evaluation_method,
+        )
+        .where(
+            Prediction.user_id == user_id,
+            Prediction.source == source,
+            Prediction.archived == 0,
+            EvaluationMethod.is_active == 1,
+        )
+    ).all()
+    selected: dict[
+        tuple[int, str],
+        tuple[Prediction, PredictionOutcome, EvaluationMethod],
+    ] = {}
+    for prediction, outcome, method in rows:
+        key = (prediction.id, method.family)
+        current = selected.get(key)
+        rank = (
+            int(method.method_version or 0),
+            outcome.evaluated_at or datetime.min,
+            int(outcome.id or 0),
+        )
+        if current is None:
+            selected[key] = (prediction, outcome, method)
+            continue
+        current_rank = (
+            int(current[2].method_version or 0),
+            current[1].evaluated_at or datetime.min,
+            int(current[1].id or 0),
+        )
+        if rank > current_rank:
+            selected[key] = (prediction, outcome, method)
+    return list(selected.values())
+
+
+def _signal_horizon_slice(
+    rows: list[tuple[Prediction, PredictionOutcome, EvaluationMethod]],
+    *,
+    include_always_long: bool,
+) -> dict[str, object]:
+    scored_rows = [
+        row for row in rows if row[1].outcome_kind != "unparseable"
+    ]
+    scored = len(scored_rows)
+    wins = sum(
+        row[1].outcome_kind in {"hit_target", "expired_positive"}
+        for row in scored_rows
+    )
+    pnl_values = [
+        float(row[1].pnl_pct)
+        for row in scored_rows
+        if row[1].pnl_pct is not None
+    ]
+    result: dict[str, object] = {
+        "scored_outcomes": scored,
+        "win_rate": (wins / scored) if scored else None,
+        "avg_pnl_pct": (
+            sum(pnl_values) / len(pnl_values) if pnl_values else None
+        ),
+    }
+    if include_always_long:
+        raw_long_wins = 0
+        benchmark_verifiable = scored > 0
+        for _prediction, outcome, _method in scored_rows:
+            try:
+                entry = float(outcome.entry_price_used)
+                exit_price = float(outcome.exit_price_used)
+                if entry <= 0:
+                    benchmark_verifiable = False
+                    break
+                raw_long_wins += ((exit_price - entry) / entry) >= 0.01
+            except (TypeError, ValueError, ArithmeticError):
+                benchmark_verifiable = False
+                break
+        result["always_long_same_tickers_win_rate"] = (
+            raw_long_wins / scored if benchmark_verifiable else None
+        )
+    return result
 
 
 def signal_source_scorecard(
@@ -627,15 +766,26 @@ def signal_source_scorecard(
     *,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """Descriptive scorecard for Stage-2 context; never a weight."""
+    """Raw-row signal scorecard and context policy; never an investment verdict."""
     source = f"signal_stream:{stream}"
-    rows = get_source_reliability(session, user_id, source=source)
-    scored = sum(row.scored_predictions for row in rows)
-    weighted_pnl = sum(
-        (row.mean_pnl_pct or 0.0) * row.scored_predictions for row in rows
+    authoritative = _authoritative_signal_outcomes(
+        session, user_id=user_id, source=source
     )
-    hits = sum(
-        (row.hit_rate or 0.0) * row.scored_predictions for row in rows
+    horizon_30d = _signal_horizon_slice(
+        [row for row in authoritative if row[0].timeframe_days == 30],
+        include_always_long=False,
+    )
+    horizon_180d = _signal_horizon_slice(
+        [row for row in authoritative if row[0].timeframe_days == 180],
+        include_always_long=True,
+    )
+    aggregate = _signal_horizon_slice(
+        [
+            row
+            for row in authoritative
+            if row[0].timeframe_days in {30, 180}
+        ],
+        include_always_long=False,
     )
     first_event = session.execute(
         select(func.min(Prediction.event_at)).where(
@@ -643,20 +793,36 @@ def signal_source_scorecard(
             Prediction.source == source,
         )
     ).scalar_one_or_none()
-    now_dt = now or datetime.utcnow()
+    now_dt = now or datetime.now()
     if first_event is None:
         observation_days = 0
     else:
         observation_days = max(0, (now_dt.date() - first_event.date()).days)
+    policy = signal_funnel_context_policy(
+        scored_180d=int(horizon_180d["scored_outcomes"]),
+        win_rate_180d=horizon_180d["win_rate"],  # type: ignore[arg-type]
+        always_long_same_tickers_win_rate=horizon_180d[
+            "always_long_same_tickers_win_rate"
+        ],  # type: ignore[arg-type]
+    )
+    scored = int(aggregate["scored_outcomes"])
     return {
         "source": source,
-        "win_rate": (hits / scored) if scored else None,
+        "win_rate": aggregate["win_rate"],
         "scored_outcomes": scored,
-        "avg_pnl_pct": (weighted_pnl / scored) if scored else None,
+        "avg_pnl_pct": aggregate["avg_pnl_pct"],
         "observation_days": observation_days,
-        "calibration": signal_scorecard_label(
-            scored=scored, observation_days=observation_days
+        "calibration": (
+            "calibrated"
+            if policy.calibrated
+            else (
+                f"uncalibrated (beta — {scored} scored over "
+                f"{observation_days} days)"
+            )
         ),
+        "horizons": {"30d": horizon_30d, "180d": horizon_180d},
+        "funnel_context_enabled": policy.funnel_context_enabled,
+        "kill_reason": policy.kill_reason,
     }
 
 
@@ -665,6 +831,7 @@ __all__ = [
     "FULL_SAMPLE_SIZE",
     "MIN_SAMPLE_SIZE",
     "SourceReliability",
+    "SignalFunnelContextPolicy",
     "WEIGHT_CEIL",
     "WEIGHT_FLOOR",
     "get_source_reliability",
@@ -672,5 +839,6 @@ __all__ = [
     "invalidate_reliability_cache",
     "reliability_annotation",
     "signal_scorecard_label",
+    "signal_funnel_context_policy",
     "signal_source_scorecard",
 ]

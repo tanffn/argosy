@@ -34,6 +34,20 @@ if TYPE_CHECKING:  # pragma: no cover
 _CONVICTION_RANK: dict[str, int] = {"LOW": 1, "MED": 2, "MEDIUM": 2, "HIGH": 3}
 
 
+def _non_signal_radar_families(fingerprint: str | None) -> set[str]:
+    """Return independently corroborating radar families from a fingerprint."""
+    for part in (fingerprint or "").split("|"):
+        if not part.startswith("f="):
+            continue
+        return {
+            family.strip().upper()
+            for family in part[2:].split(",")
+            if family.strip()
+            and not family.strip().upper().startswith("SIGNAL_STREAM:")
+        }
+    return set()
+
+
 def _active_fleet_picks(session: Session, user_id: str):
     """Yield the persisted, still-``active`` FleetPicks for the user. Best-effort:
     a malformed row is skipped, never fatal."""
@@ -104,11 +118,17 @@ def load_discovery_candidates(
                 nomination = json.loads(row.nomination_evidence_json)
                 stream = nomination.get("stream")
                 if stream:
-                    extra["signal_stream"] = stream
-                    extra["signal_nomination"] = nomination
-                    extra["signal_scorecard"] = signal_source_scorecard(
-                        session, user_id, stream
-                    )
+                    scorecard = signal_source_scorecard(session, user_id, stream)
+                    if scorecard.get("funnel_context_enabled", True):
+                        extra["signal_stream"] = stream
+                        extra["signal_nomination"] = nomination
+                        extra["signal_scorecard"] = scorecard
+                    elif not _non_signal_radar_families(
+                        row.radar_fingerprint
+                    ):
+                        continue
+                    else:
+                        extra.pop("grader_cites", None)
             except (TypeError, ValueError):
                 pass
         out.append(

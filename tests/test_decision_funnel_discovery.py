@@ -151,6 +151,115 @@ def test_loader_skips_held_names(sf):
     assert cands == []
 
 
+def _seed_signal_pick(s, ticker: str, *, mixed_radar: bool) -> None:
+    families = (
+        "SIGNAL_STREAM:gov_contracts,GROWTH"
+        if mixed_radar
+        else "SIGNAL_STREAM:gov_contracts"
+    )
+    s.add(
+        ScanState(
+            user_id="ariel",
+            ticker=ticker,
+            status="active",
+            radar_fingerprint=f"s=90|f={families}|l=high",
+            fleet_json=_pick_to_json(
+                FleetPick(
+                    ticker=ticker,
+                    conviction="HIGH",
+                    thesis_md="t",
+                    verdict="BUY",
+                    cites=("10-K",),
+                )
+            ),
+            nomination_evidence_json=json.dumps(
+                {
+                    "stream": "gov_contracts",
+                    "dedup_key": f"award:{ticker}",
+                    "evidence": {"award_url": f"https://example.test/{ticker}"},
+                }
+            ),
+        )
+    )
+
+
+def _killed_scorecard() -> dict:
+    return {
+        "source": "signal_stream:gov_contracts",
+        "scored_outcomes": 100,
+        "win_rate": 0.40,
+        "avg_pnl_pct": -0.02,
+        "observation_days": 200,
+        "calibration": "calibrated",
+        "horizons": {
+            "30d": {
+                "scored_outcomes": 100,
+                "win_rate": 0.45,
+                "avg_pnl_pct": -0.01,
+            },
+            "180d": {
+                "scored_outcomes": 50,
+                "win_rate": 0.40,
+                "avg_pnl_pct": -0.03,
+                "always_long_same_tickers_win_rate": 0.40,
+            },
+        },
+        "funnel_context_enabled": False,
+        "kill_reason": (
+            "180d stream win rate 40.0% does not beat always-long "
+            "same-tickers benchmark 40.0% (n=50)"
+        ),
+    }
+
+
+def test_loader_suppresses_candidate_sourced_only_from_killed_signal(sf, monkeypatch):
+    import argosy.services.decision_funnel.discovery_candidates as dc
+
+    monkeypatch.setattr(
+        dc,
+        "signal_source_scorecard",
+        lambda session, user_id, stream: _killed_scorecard(),
+    )
+    s = sf()
+    _seed_signal_pick(s, "KILL", mixed_radar=False)
+    s.commit()
+
+    candidates = dc.load_discovery_candidates(
+        s, user_id="ariel", held_tickers=set()
+    )
+
+    assert candidates == []
+    assert s.query(ScanState).filter_by(ticker="KILL").one().status == "active"
+    s.close()
+
+
+def test_loader_keeps_mixed_candidate_but_omits_killed_signal_context(sf, monkeypatch):
+    import argosy.services.decision_funnel.discovery_candidates as dc
+
+    monkeypatch.setattr(
+        dc,
+        "signal_source_scorecard",
+        lambda session, user_id, stream: _killed_scorecard(),
+    )
+    s = sf()
+    _seed_signal_pick(s, "MIXED", mixed_radar=True)
+    s.commit()
+
+    candidates = dc.load_discovery_candidates(
+        s, user_id="ariel", held_tickers=set()
+    )
+
+    assert [candidate.subject for candidate in candidates] == ["MIXED"]
+    extra = candidates[0].extra
+    assert "signal_stream" not in extra
+    assert "signal_nomination" not in extra
+    assert "signal_scorecard" not in extra
+    assert "grader_cites" not in extra
+    assert "10-K" not in json.dumps(extra)
+    assert extra["conviction"] == "HIGH"
+    s.close()
+
+
 # --- north star ------------------------------------------------------------
 
 

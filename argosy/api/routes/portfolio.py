@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db
@@ -1851,6 +1851,33 @@ class DiscoveryEstimateDTO(BaseModel):
     one_line: str
 
 
+class SignalHorizonScorecardDTO(BaseModel):
+    scored_outcomes: int
+    win_rate: float | None
+    avg_pnl_pct: float | None
+
+
+class Signal180dScorecardDTO(SignalHorizonScorecardDTO):
+    always_long_same_tickers_win_rate: float | None
+
+
+class SignalHorizonsDTO(BaseModel):
+    short: SignalHorizonScorecardDTO = Field(alias="30d")
+    thesis: Signal180dScorecardDTO = Field(alias="180d")
+
+
+class SignalScorecardDTO(BaseModel):
+    source: str
+    scored_outcomes: int
+    win_rate: float | None
+    avg_pnl_pct: float | None
+    observation_days: int
+    calibration: str
+    horizons: SignalHorizonsDTO
+    funnel_context_enabled: bool
+    kill_reason: str | None
+
+
 class DiscoverySourceDTO(BaseModel):
     key: str
     label: str
@@ -1858,6 +1885,7 @@ class DiscoverySourceDTO(BaseModel):
     active_count: int
     quarantined_count: int
     dropped_stale_count: int
+    scorecard: SignalScorecardDTO | None = None
 
 
 class DiscoveryStagesDTO(BaseModel):
@@ -1923,6 +1951,36 @@ _OPEN_TRADE_PROPOSAL_STATUSES = (
     "awaiting_human",
     "approved",
 )
+
+
+def _enabled_signal_stream_keys(config) -> set[str]:
+    """Discover configured stream fields so future adapters appear generically."""
+    if not getattr(config, "enabled", False):
+        return set()
+    fields = getattr(type(config), "model_fields", None)
+    if fields is None:
+        fields = {
+            key for key in vars(config) if key != "enabled"
+        } or {"gov_contracts"}
+    keys: set[str] = set()
+    for key in fields:
+        if key == "enabled":
+            continue
+        value = getattr(config, key, None)
+        if value is None or getattr(value, "enabled", True):
+            keys.add(key)
+    return keys
+
+
+def _configured_signal_stream_keys(config) -> set[str]:
+    fields = getattr(type(config), "model_fields", None)
+    if fields is None:
+        fields = {
+            key for key in vars(config) if key != "enabled"
+        } or {"gov_contracts"}
+    return {
+        key for key in fields if key != "enabled"
+    }
 
 
 def _discovery_source_ref(value: str) -> tuple[str, str] | None:
@@ -2013,6 +2071,10 @@ def _load_discovery_transparency(user_id: str):
     url = str(get_settings().database_url).replace("+aiosqlite", "")
     factory = sessionmaker(bind=create_engine(
         url, connect_args={"check_same_thread": False}))
+    signal_config = load_signal_streams_config(user_id)
+    configured_signal_keys = _configured_signal_stream_keys(signal_config)
+    enabled_signal_keys = _enabled_signal_stream_keys(signal_config)
+    signal_scorecards: dict[str, dict[str, object]] = {}
     with factory() as db:
         rows = list(db.execute(select(ScanState).where(
             ScanState.user_id == user_id,
@@ -2029,17 +2091,29 @@ def _load_discovery_transparency(user_id: str):
                     Proposal.id.desc(),
                 )
             ).scalars())
+        if enabled_signal_keys:
+            from argosy.services.predictions.reliability import (
+                signal_source_scorecard,
+            )
+
+            signal_scorecards = {
+                key: signal_source_scorecard(db, user_id, key)
+                for key in enabled_signal_keys
+            }
 
     latest_proposal_by_ticker = {}
     for proposal in proposals:
         latest_proposal_by_ticker.setdefault(proposal.ticker.upper(), proposal)
 
-    signal_streams_enabled = load_signal_streams_config(user_id).enabled
     enabled_source_keys = {"attention", "growth", "momentum"}
-    if signal_streams_enabled:
-        enabled_source_keys.add("gov_contracts")
+    enabled_source_keys.update(enabled_signal_keys)
     source_tickers: dict[tuple[str, str], dict[str, set[str]]] = {
-        (key, _DISCOVERY_SOURCE_LABELS[key]): {
+        (
+            key,
+            _DISCOVERY_SOURCE_LABELS.get(
+                key, key.replace("_", " ").capitalize()
+            ),
+        ): {
             "active": set(),
             "quarantined": set(),
             "dropped": set(),
@@ -2061,7 +2135,10 @@ def _load_discovery_transparency(user_id: str):
         refs = _discovery_sources_for_row(row)
         is_active = row.status == "active"
         for ref in refs:
-            if ref[0] == "gov_contracts" and not signal_streams_enabled:
+            if (
+                ref[0] in configured_signal_keys
+                and ref[0] not in enabled_signal_keys
+            ):
                 continue
             counts = source_tickers.setdefault(
                 ref,
@@ -2114,6 +2191,7 @@ def _load_discovery_transparency(user_id: str):
             active_count=len(status_tickers["active"]),
             quarantined_count=len(status_tickers["quarantined"]),
             dropped_stale_count=len(status_tickers["dropped"]),
+            scorecard=signal_scorecards.get(key),
         ))
     statuses = [row.status for row in rows]
     stages = DiscoveryStagesDTO(

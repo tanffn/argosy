@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -19,7 +20,14 @@ from argosy.services.high_potential_funnel import (
     _pick_to_json,
     _verdict_to_json,
 )
-from argosy.state.models import Base, Proposal, ScanState
+from argosy.state.models import (
+    Base,
+    EvaluationMethod,
+    Prediction,
+    PredictionOutcome,
+    Proposal,
+    ScanState,
+)
 
 
 def _empty_transparency():
@@ -216,7 +224,10 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
         "fleet_buy": 1,
         "open_trade_proposals": 1,
     }
-    assert body["sources"] == [
+    assert [
+        {key: value for key, value in source.items() if key != "scorecard"}
+        for source in body["sources"]
+    ] == [
         {
             "key": "attention",
             "label": "Attention",
@@ -250,6 +261,17 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
             "dropped_stale_count": 0,
         },
     ]
+    assert all(
+        source["scorecard"] is None
+        for source in body["sources"]
+        if source["key"] != "gov_contracts"
+    )
+    government_scorecard = next(
+        source["scorecard"]
+        for source in body["sources"]
+        if source["key"] == "gov_contracts"
+    )
+    assert government_scorecard["scored_outcomes"] == 0
 
     cmps = next(row for row in body["candidates"] if row["ticker"] == "CMPS")
     assert cmps["source_keys"] == ["gov_contracts", "growth", "momentum"]
@@ -284,7 +306,11 @@ def test_discovery_lists_enabled_sources_even_with_zero_tracked_tickers(
         params={"user_id": "ariel"},
     )
     assert response.status_code == 200
-    assert response.json()["sources"] == [
+    sources = response.json()["sources"]
+    assert [
+        {key: value for key, value in source.items() if key != "scorecard"}
+        for source in sources
+    ] == [
         {
             "key": "attention",
             "label": "Attention",
@@ -318,6 +344,133 @@ def test_discovery_lists_enabled_sources_even_with_zero_tracked_tickers(
             "dropped_stale_count": 0,
         },
     ]
+    assert next(
+        source for source in sources if source["key"] == "gov_contracts"
+    )["scorecard"]["calibration"] == (
+        "uncalibrated (beta — 0 scored over 0 days)"
+    )
+    assert all(
+        source["scorecard"] is None
+        for source in sources
+        if source["key"] != "gov_contracts"
+    )
+    engine.dispose()
+
+
+def test_discovery_enabled_signal_source_exposes_zero_scored_beta(
+    tmp_path,
+    monkeypatch,
+):
+    engine, factory = _discovery_db(tmp_path, monkeypatch)
+    _set_signal_streams_enabled(monkeypatch, True)
+    event_at = datetime.now(UTC)
+    with factory() as db:
+        for index in range(16):
+            db.add(
+                Prediction(
+                    user_id="ariel",
+                    source="signal_stream:gov_contracts",
+                    source_ref=json.dumps({"award": index}),
+                    ticker=f"T{index}",
+                    direction="long",
+                    entry_price=Decimal("25"),
+                    timeframe_days=30,
+                    message_id=f"zero-outcome:{index}",
+                    event_at=event_at,
+                    evaluation_due_at=event_at,
+                    evaluation_method="fixed_lookahead_30d",
+                )
+            )
+        db.commit()
+
+    response = TestClient(create_app()).get(
+        "/api/portfolio/discovery",
+        params={"user_id": "ariel"},
+    )
+
+    assert response.status_code == 200
+    sources = response.json()["sources"]
+    government = next(source for source in sources if source["key"] == "gov_contracts")
+    assert government["scorecard"]["scored_outcomes"] == 0
+    assert government["scorecard"]["horizons"]["30d"]["scored_outcomes"] == 0
+    assert government["scorecard"]["horizons"]["180d"]["scored_outcomes"] == 0
+    assert government["scorecard"]["calibration"] == (
+        "uncalibrated (beta — 0 scored over 0 days)"
+    )
+    assert government["scorecard"]["funnel_context_enabled"] is True
+    assert all(
+        source["scorecard"] is None
+        for source in sources
+        if source["key"] != "gov_contracts"
+    )
+    engine.dispose()
+
+
+def test_discovery_exposes_killed_signal_scorecard(
+    tmp_path,
+    monkeypatch,
+):
+    engine, factory = _discovery_db(tmp_path, monkeypatch)
+    _set_signal_streams_enabled(monkeypatch, True)
+    event_at = datetime(2025, 12, 1, tzinfo=UTC)
+    with factory() as db:
+        db.add(
+            EvaluationMethod(
+                method_name="fixed_lookahead_180d",
+                family="fixed_lookahead",
+                method_version=1,
+                is_active=1,
+            )
+        )
+        db.flush()
+        for index in range(50):
+            prediction = Prediction(
+                user_id="ariel",
+                source="signal_stream:gov_contracts",
+                source_ref=json.dumps({"award": index}),
+                ticker=f"T{index}",
+                direction="long",
+                entry_price=Decimal("100"),
+                timeframe_days=180,
+                message_id=f"killed:{index}",
+                event_at=event_at,
+                evaluation_due_at=event_at,
+                evaluation_method="fixed_lookahead_180d",
+            )
+            db.add(prediction)
+            db.flush()
+            db.add(
+                PredictionOutcome(
+                    prediction_id=prediction.id,
+                    evaluation_method="fixed_lookahead_180d",
+                    outcome_kind="hit_stop",
+                    pnl_pct=Decimal("-0.01"),
+                    evaluated_at=datetime(2026, 6, 1, tzinfo=UTC),
+                    entry_price_used=Decimal("100"),
+                    exit_price_used=Decimal("99"),
+                )
+            )
+        db.commit()
+
+    response = TestClient(create_app()).get(
+        "/api/portfolio/discovery",
+        params={"user_id": "ariel"},
+    )
+
+    assert response.status_code == 200
+    government = next(
+        source
+        for source in response.json()["sources"]
+        if source["key"] == "gov_contracts"
+    )
+    scorecard = government["scorecard"]
+    assert scorecard["horizons"]["180d"]["scored_outcomes"] == 50
+    assert scorecard["horizons"]["180d"]["win_rate"] == 0.0
+    assert scorecard["horizons"]["180d"][
+        "always_long_same_tickers_win_rate"
+    ] == 0.0
+    assert scorecard["funnel_context_enabled"] is False
+    assert "does not beat always-long" in scorecard["kill_reason"]
     engine.dispose()
 
 
@@ -356,7 +509,9 @@ def test_discovery_counts_quarantined_government_contract_ticker(
     government = next(
         source for source in sources if source["key"] == "gov_contracts"
     )
-    assert government == {
+    assert {
+        key: value for key, value in government.items() if key != "scorecard"
+    } == {
         "key": "gov_contracts",
         "label": "Government contracts",
         "tracked_count": 1,
@@ -364,6 +519,7 @@ def test_discovery_counts_quarantined_government_contract_ticker(
         "quarantined_count": 1,
         "dropped_stale_count": 0,
     }
+    assert government["scorecard"]["scored_outcomes"] == 0
     engine.dispose()
 
 

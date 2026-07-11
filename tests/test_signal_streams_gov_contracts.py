@@ -1007,11 +1007,14 @@ def test_external_nomination_reaches_existing_estimator_and_fleet_path(
     ] == nomination.dedup_key
 
 
-def test_signal_scorecard_label_is_explicitly_uncalibrated_below_30() -> None:
+def test_signal_scorecard_label_is_explicitly_uncalibrated_below_50() -> None:
     assert signal_scorecard_label(scored=7, observation_days=42) == (
         "uncalibrated (beta — 7 scored over 42 days)"
     )
-    assert signal_scorecard_label(scored=30, observation_days=100) == "calibrated"
+    assert signal_scorecard_label(scored=49, observation_days=100) == (
+        "uncalibrated (beta — 49 scored over 100 days)"
+    )
+    assert signal_scorecard_label(scored=50, observation_days=100) == "calibrated"
 
 
 def test_discovery_candidate_and_stage2_prompt_carry_exact_signal_scorecard(

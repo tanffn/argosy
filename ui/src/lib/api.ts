@@ -450,6 +450,28 @@ export interface DiscoveryEstimateDTO {
   one_line: string;
 }
 
+export interface SignalScorecardHorizonDTO {
+  scored_outcomes: number;
+  win_rate: number | null;
+  avg_pnl_pct: number | null;
+  always_long_same_tickers_win_rate?: number | null;
+}
+
+export interface SignalScorecardDTO {
+  source: string;
+  scored_outcomes: number;
+  win_rate: number | null;
+  avg_pnl_pct: number | null;
+  observation_days: number;
+  calibration: string;
+  horizons: {
+    "30d": SignalScorecardHorizonDTO;
+    "180d": SignalScorecardHorizonDTO;
+  };
+  funnel_context_enabled: boolean;
+  kill_reason: string | null;
+}
+
 export interface DiscoverySourceDTO {
   key: string;
   label: string;
@@ -457,6 +479,7 @@ export interface DiscoverySourceDTO {
   active_count: number;
   quarantined_count: number;
   dropped_stale_count: number;
+  scorecard: SignalScorecardDTO | null;
 }
 
 export interface DiscoveryStagesDTO {
