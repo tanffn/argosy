@@ -1,0 +1,103 @@
+{
+  "case_id": "hyln_2021",
+  "alias": "VHS",
+  "category": "B",
+  "grading": "trap",
+  "real": "Hyliion (HYLN) @ 2021-06-01 ($10.61); obscure Class-8 e-powertrain SPAC winner-shape with $0 revenue; -86% by mid-2024",
+  "freeze_date": "2021-06-01",
+  "rescale_factor": 0.85,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in VHS. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 62,
+  "contamination_terms": [
+    "Hyliion",
+    "HYLN",
+    "Hypertruck",
+    "Healy",
+    "Tortoise Acquisition",
+    "Peterbilt"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 10.61,
+    "price_at_horizon_real": 1.48,
+    "horizon_label": "3y (2024-05-31)",
+    "benchmark_return_pct": -86,
+    "note": "yfinance closes fetched 2026-07-11; winner-shaped SPAC narrative that failed to commercialize on the timeline sold."
+  },
+  "sources": [
+    {
+      "fact": "Q1-2021: $0 revenue; net loss -$16.6M; R&D $9.3M; SG&A $7.4M; cash and cash equivalents $335M plus short- and long-term investments (~$297M combined)",
+      "url": "https://www.sec.gov/Archives/edgar/data/1759631/000162828021010423/hyln-20210331.htm",
+      "date": "2021-05-17"
+    },
+    {
+      "fact": "Business update: expects first Hybrid revenue in H2; Hypertruck ERX demo units targeted for fleets toward year-end; ten Hybrid powertrains installed in Q1 (pre-revenue deployments)",
+      "url": "https://investors.hyliion.com/news/news-details/2021/Hyliion-Reports-First-Quarter-2021-Business-Updates/default.aspx",
+      "date": "2021-05-11"
+    },
+    {
+      "fact": "Company restating 2020 financials for SPAC warrant accounting (same class of restatement affecting ~80 SPACs); delayed detailed financial commentary until amended filings",
+      "url": "https://www.ttnews.com/articles/hyliion-q1-results-lack-revenue-product-development-accelerates",
+      "date": "2021-05-19"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/VHS",
+      "company": "VoltHaul Systems (alias VHS)",
+      "as_of": "current",
+      "market_cap_usd_m": 1530,
+      "share_price_usd": 9.02,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 285,
+        "marketable_investments_usd_m": 252,
+        "total_debt_usd_m": 0,
+        "note": "SPAC cash pile funds ~multi-year burn at current rate; no revenue yet"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 0,
+          "net_income_usd_m": -60,
+          "note": "pre-revenue; warrant-accounting restatement in flight"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1, 10-Q filed ~2 weeks ago",
+        "revenue_usd_m": 0,
+        "gaap_net_income_usd_m": -14,
+        "rd_usd_m": 8,
+        "sga_usd_m": 6,
+        "note": "pre-revenue development company; first revenue guided H2"
+      },
+      "valuation": {
+        "ps_trailing": null,
+        "ev_s_trailing": null,
+        "pe_trailing": null,
+        "price_action": "SPAC-era rerating still elevated vs zero sales; stock off the deal-pop high but still prices a multi-year commercialization"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/VHS",
+      "business_description": "Developer of electrified powertrains for Class-8 heavy trucks — a hybrid add-on now and a range-extender electric architecture (natural-gas generator + battery) aimed at long-haul fleets. Went public via a blank-check merger months ago. Charismatic founder-CEO. Winner-shaped narrative: decarbonize trucking without waiting for depot charging.",
+      "recent_developments": [
+        "Still $0 of recognized revenue. Management guides first Hybrid revenue in the back half of the year and year-end demos of the flagship long-haul architecture.",
+        "Ten Hybrid units installed in the latest quarter — deployments, not sold-and-recognized volume.",
+        "Restating prior-year SPAC warrant accounting (industry-wide issue); delayed some financial commentary.",
+        "Bulls: large TAM, fleet advisory council, chassis deliveries for demos, multi-year cash runway, ESG/decarb tailwind.",
+        "Bears: classic pre-revenue SPAC — valuation prices a product that does not yet exist at commercial scale; execution, OEM dependency, and fleet adoption are all unproven."
+      ],
+      "macro_context": "Freight cycle firm; ESG/decarbonization capital abundant; SPAC complex starting to re-rate as warrant accounting and lockups hit.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

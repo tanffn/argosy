@@ -1,0 +1,90 @@
+{
+  "case_id": "nlf_synthetic",
+  "alias": "NLF",
+  "category": "synthetic",
+  "grading": "synthetic_winner",
+  "real": "SYNTHETIC winner-shape (no real company) — obscure industrial-software niche",
+  "freeze_date": null,
+  "rescale_factor": null,
+  "synthetic": true,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in NLF. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 3,
+  "contamination_terms": [],
+  "resolution": null,
+  "sources": [],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/NLF",
+      "company": "Nexus Lattice Fabric (alias NLF)",
+      "as_of": "current",
+      "market_cap_usd_m": 2800,
+      "share_price_usd": 18.4,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 410,
+        "total_debt_usd_m": 90,
+        "note": "net cash; runway not the constraint"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 420,
+          "revenue_growth_pct": 22,
+          "gross_margin_pct": 71,
+          "net_income_usd_m": -35
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 540,
+          "revenue_growth_pct": 28.6,
+          "gross_margin_pct": 73,
+          "net_income_usd_m": -12
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 720,
+          "revenue_growth_pct": 33.3,
+          "gross_margin_pct": 74.5,
+          "net_income_usd_m": 28,
+          "free_cash_flow_usd_m": 55,
+          "note": "first full year of GAAP profit; FCF positive"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 just reported",
+        "revenue_usd_m": 205,
+        "revenue_growth_yoy_pct": 31,
+        "gaap_net_income_usd_m": 14,
+        "net_revenue_retention_pct": 122,
+        "note": "NRR >120% for a third straight quarter"
+      },
+      "valuation": {
+        "ps_trailing": 3.9,
+        "ev_s_trailing": 3.4,
+        "pe_trailing": 55,
+        "price_action": "quiet grind higher off a forgotten SPAC-unrelated listing; -40% from a prior overshoot, now consolidating"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/NLF",
+      "business_description": "Vertical software for industrial-maintenance scheduling and spare-parts forecasting sold to mid-size process manufacturers. High switching costs once embedded in plant workflows. Not a consumer brand; almost no press coverage.",
+      "recent_developments": [
+        "Just crossed into sustained GAAP profitability with NRR still >120% — expansion inside existing plants, not logo-chasing.",
+        "Two new multi-year contracts with regional chemical and pulp customers; neither is a household name.",
+        "Gross margin still expanding as hosted delivery mix rises; stock-based comp is moderate (~8% of revenue).",
+        "Bear case: TAM looks small, sales cycle is slow, and a larger horizontal ERP vendor could bundle a 'good enough' module.",
+        "Bull case: niche depth + retention economics look like a compounder the market has not re-rated because the story is boring."
+      ],
+      "macro_context": "Industrial capex steady; software multiples compressed vs prior cycle.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

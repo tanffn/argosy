@@ -1,0 +1,84 @@
+{
+  "case_id": "omk_synthetic",
+  "alias": "OMK",
+  "category": "synthetic",
+  "grading": "synthetic_trap",
+  "real": "SYNTHETIC trap-shape (no real company) — meal-kit / D2C growth theater",
+  "freeze_date": null,
+  "rescale_factor": null,
+  "synthetic": true,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in OMK. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 4,
+  "contamination_terms": [],
+  "resolution": null,
+  "sources": [],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/OMK",
+      "company": "Orbit Meal Kits (alias OMK)",
+      "as_of": "current",
+      "market_cap_usd_m": 3600,
+      "share_price_usd": 22.7,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 480,
+        "total_debt_usd_m": 620,
+        "note": "cash funds <2 years of current burn if growth spend continues"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 890,
+          "revenue_growth_pct": 62,
+          "gross_margin_pct": 34,
+          "net_income_usd_m": -210
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 1180,
+          "revenue_growth_pct": 32.6,
+          "gross_margin_pct": 31.5,
+          "net_income_usd_m": -340,
+          "free_cash_flow_usd_m": -290,
+          "note": "growth decelerating; GM compressing; losses widening"
+        },
+        {
+          "fy": "FY-0 (just ended)",
+          "revenue_usd_m": 1260,
+          "revenue_growth_pct": 6.8,
+          "gross_margin_pct": 28.2,
+          "net_income_usd_m": -410,
+          "contribution_profit_after_marketing_usd_m": -55,
+          "note": "contribution-negative after marketing; cohort LTV claims contested"
+        }
+      ],
+      "valuation": {
+        "ps_trailing": 2.9,
+        "ev_s_trailing": 3.0,
+        "pe_trailing": null,
+        "price_action": "still +40% YTD on 'consumer platform' rebrand; -65% from listing-era high"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/OMK",
+      "business_description": "Direct-to-consumer prepared-meal and grocery-bundle subscription. Rebranded last year from a meal-kit identity to a 'home food platform'. Charismatic CMO-driven growth story. Heavy reliance on paid social.",
+      "recent_developments": [
+        "Revenue growth collapsed from +63% to +7% in two years while marketing intensity stayed high — classic CAC treadmill.",
+        "Gross margin fell ~600 bps as discounting and shipping inflation hit; contribution profit after marketing is now negative.",
+        "Management highlights 'active customer' definitions that exclude lapsed cohorts; a short note questioned the LTV math.",
+        "Bulls: category still large, brand known among urban professionals, path to 'platform' attach (add-on grocery) could re-accelerate.",
+        "Bears: unit economics never cleared contribution after CAC; rebrand does not fix churn; balance sheet funds the story, not a moat."
+      ],
+      "macro_context": "Consumer subscription fatigue; paid-social CAC inflation; growth-stock de-rating still in force.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

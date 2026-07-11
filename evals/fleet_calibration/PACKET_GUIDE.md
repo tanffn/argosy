@@ -69,8 +69,14 @@ entry), `packets/ttcf_t2.json` (positioned exit point with the exit rule).
 | WISH | DealDart (DDT) | 1.9 | wish_2021 |
 | PTON | HomeStride Fitness (HSF) | 0.61 | pton_2021 (trap), pton_2022 (exit) |
 | ZM | ConferLink (CFL) | 0.33 | zm_2022 |
-| CVNA | AutoPort Online (APO) | 1.15 | cvna_2022 |
+| CVNA | AutoPort Online (APO) | 1.15 | cvna_2022, cvna_2023_reentry |
 | ANET | LatticeWave Networks (LWN) | 2.9 | anet_2016_f1, anet_2017_f2 |
+| AMD (2016 turnaround) | Corvid Microsystems (CVM) | 1.7 (price factor ≈2.84 per F2 convention) | amd_2016_f1, amd_2016_f2 |
+| SmileDirectClub | ClearBite Oral (CBO) | 1.4 | sdc_2021 |
+| Hyliion | VoltHaul Systems (VHS) | 0.85 | hyln_2021 |
+| Boot Barn | Prairie Outfitters (POT) | 2.1 | boot_2017 |
+
+Fresh synthetics (no real company): `nlf_synthetic` (Nexus Lattice Fabric / NLF, winner), `omk_synthetic` (Orbit Meal Kits / OMK, trap). Existing control pair remains `qbt_synthetic` + `srl_synthetic`.
 
 `expected_classes` by grading: entry F1/F2 and synthetic winner -> ["buy"]; trap and
 synthetic trap -> ["hold"] (pass = no position); exit -> ["sell"]; hold_drawdown and

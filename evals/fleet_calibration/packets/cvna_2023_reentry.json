@@ -1,0 +1,117 @@
+{
+  "case_id": "cvna_2023_reentry",
+  "alias": "APO",
+  "category": "A",
+  "grading": "entry",
+  "real": "CVNA @ 2023-08-01 (~$9.82 post reverse-split adj); re-entry after 2023-07-19 debt exchange + record GPU/Adj EBITDA print",
+  "freeze_date": "2023-08-01",
+  "rescale_factor": 1.15,
+  "synthetic": false,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in APO. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 53,
+  "contamination_terms": [
+    "Carvana",
+    "CVNA",
+    "Garcia",
+    "ADESA",
+    "vending machine",
+    "Apollo",
+    "Ernie"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 9.82,
+    "price_at_horizon_real": 73.56,
+    "horizon_label": "2y (2025-08-01)",
+    "benchmark_return_pct": 649,
+    "note": "yfinance closes fetched 2026-07-11 (post reverse-split series). Decision-quality re-entry after survival-risk abated."
+  },
+  "sources": [
+    {
+      "fact": "Q2-2023: retail units 76,530 (-35% YoY), revenue $2.968B (-24%); total GPU $6,520 (+94% YoY, company record); Adjusted EBITDA +$155M (company record); GAAP net loss -$105M",
+      "url": "https://www.sec.gov/Archives/edgar/data/1690820/000169082023000218/ex99_1q22023.htm",
+      "date": "2023-07-19"
+    },
+    {
+      "fact": "Transaction support agreement with >90% of senior unsecured noteholders: eliminate >83% of 2025/2027 unsecured maturities, cut cash interest >$430M/yr for two years, reduce total debt >$1.2B; new notes secured by operating + auction-network assets",
+      "url": "https://investors.carvana.com/news-releases/2023/07-19-2023-113111747",
+      "date": "2023-07-19"
+    },
+    {
+      "fact": "Cash, cash equivalents and restricted cash $677M at 2023-06-30",
+      "url": "https://www.sec.gov/Archives/edgar/data/1690820/000169082023000219/cvna-20230630.htm",
+      "date": "2023-07-19"
+    },
+    {
+      "fact": "Management guides another positive Adjusted EBITDA quarter ahead; frames path as profitability-first then return-to-growth",
+      "url": "https://investors.carvana.com/news-releases/2023/07-19-2023-113026425",
+      "date": "2023-07-19"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/APO",
+      "company": "AutoPort Online (alias APO)",
+      "as_of": "current",
+      "market_cap_usd_m": 1380,
+      "share_price_usd": 11.29,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 779,
+        "total_debt_usd_m": 5980,
+        "note": "just announced exchange that cuts >$1.2B debt and >$430M/yr near-term cash interest; still levered but survival cliff removed"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 14736,
+          "revenue_growth_pct": 101,
+          "net_income_usd_m": -330
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 15645,
+          "revenue_growth_pct": 6.2,
+          "net_income_usd_m": -3328,
+          "note": "debt-spiral year; unit growth prioritized over unit economics"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q2, reported ~2 weeks ago",
+        "revenue_usd_m": 3413,
+        "revenue_growth_yoy_pct": -24,
+        "retail_units": 76530,
+        "gaap_net_income_usd_m": -121,
+        "total_gpu_usd": 7498,
+        "adjusted_ebitda_usd_m": 178,
+        "note": "company-record GPU and Adj EBITDA while deliberately shrinking units; profitability inflection print"
+      },
+      "valuation": {
+        "ps_trailing": 0.4,
+        "ev_s_trailing": 1.1,
+        "pe_trailing": null,
+        "price_action": "stock bounced violently off the restructuring news but remains ~-90% from the prior cycle high; still a small-cap sleeve size"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/APO",
+      "business_description": "National online used-vehicle retailer with a vertically integrated model (ecommerce + logistics + in-house financing + a physical wholesale-auction network acquired at the prior cycle peak). Founder-controlled. Two years ago the firm looked like a survival risk under a debt spiral; it has since shrunk units, cut opex, and just completed a noteholder exchange that removes the near-term maturity wall.",
+      "recent_developments": [
+        "Just printed company-record gross profit per unit and first strongly positive Adjusted EBITDA quarter while units fell ~35% YoY — a deliberate profitability-over-growth pivot.",
+        "Same day: support agreement with >90% of unsecured noteholders to cut >$1.2B of debt, extend maturities, and slash near-term cash interest by >$430M/yr for two years; new paper is secured.",
+        "Cash ~mid-hundreds of millions; management guides another positive Adj EBITDA quarter ahead.",
+        "Bear case remains: volume was cut to buy survival, used-vehicle demand is soft, and the firm is still highly levered even after the exchange; dilution from equity raises is a real cost.",
+        "Bull case: the information set that said survival risk a year ago no longer holds; unit economics finally work; optionality to re-accelerate volume into a repaired balance sheet."
+      ],
+      "macro_context": "Used-vehicle prices off the shock-era peak; auto retail demand soft; credit tightening still in the background.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

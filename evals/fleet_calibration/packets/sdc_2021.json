@@ -1,0 +1,111 @@
+{
+  "case_id": "sdc_2021",
+  "alias": "CBO",
+  "category": "B",
+  "grading": "trap",
+  "real": "SmileDirectClub (SDC) @ 2021-11-15 ($4.05); obscure DTC-aligner trap after Q3 demand cliff; Chapter 11 2023-09",
+  "freeze_date": "2021-11-15",
+  "rescale_factor": 1.4,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in CBO. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 61,
+  "contamination_terms": [
+    "SmileDirectClub",
+    "Smile Direct",
+    "SDC",
+    "SDCCQ",
+    "Katzman",
+    "Invisalign",
+    "Align Technology",
+    "SmileShop"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 4.05,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "ride-to-zero (Ch.11 2023-09)",
+    "benchmark_return_pct": -100,
+    "note": "Yahoo SDCCQ close 2021-11-15=$4.05 fetched 2026-07-11; terminal outcome Chapter 11 Sep-2023 then liquidation — ride-to-zero benchmark."
+  },
+  "sources": [
+    {
+      "fact": "Q3-2021 total revenue $138M (-18.3% YoY); net loss -$89M; marketing and selling $96M (~70% of revenue); initial aligner shipments ~70k",
+      "url": "https://www.sec.gov/Archives/edgar/data/1775625/000177562521000075/sdcearningsrelease-09302021.htm",
+      "date": "2021-11-08"
+    },
+    {
+      "fact": "FY2021 guide cut to $630-650M total revenue; Q4 guide $120-140M vs prior street ~$200M; management cites macro headwinds to core demographic plus digital-ad attribution breakage",
+      "url": "https://www.globenewswire.com/news-release/2021/11/08/2329688/0/en/SmileDirectClub-Reports-Third-Quarter-2021-Financial-Results.html",
+      "date": "2021-11-08"
+    },
+    {
+      "fact": "YTD nine-month revenue $511M (+8.3%) still masks sequential and YoY quarterly contraction; cumulative net loss YTD -$240M",
+      "url": "https://www.sec.gov/Archives/edgar/data/1775625/000177562521000075/sdcearningsrelease-09302021.htm",
+      "date": "2021-11-08"
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/CBO",
+      "company": "ClearBite Oral (alias CBO)",
+      "as_of": "current",
+      "market_cap_usd_m": 2240,
+      "share_price_usd": 5.67,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 308,
+        "total_debt_usd_m": 1050,
+        "note": "still funded but burning; debt stack rising vs shrinking top line"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 1050,
+          "revenue_growth_pct": 40,
+          "net_income_usd_m": -672
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 920,
+          "revenue_growth_pct": -12.4,
+          "net_income_usd_m": -389
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q3, reported ~1 week ago",
+        "revenue_usd_m": 193,
+        "revenue_growth_yoy_pct": -18.3,
+        "gaap_net_income_usd_m": -125,
+        "gross_margin_pct": 71,
+        "marketing_and_selling_usd_m": 134,
+        "note": "marketing spend ≈ 70% of quarterly revenue; CAC not working; guide cut hard"
+      },
+      "valuation": {
+        "ps_trailing": 2.5,
+        "ev_s_trailing": 3.2,
+        "pe_trailing": null,
+        "price_action": "stock -80%+ from IPO-era peak; just sold off again on the Q3 miss"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/CBO",
+      "business_description": "Direct-to-consumer clear dental aligners sold via tele-dentistry and retail kiosks. Pitched as a category-disrupting, lower-cost alternative to chairside orthodontics. Never GAAP-profitable as a public company. Founder-family controls the vote.",
+      "recent_developments": [
+        "Q3 revenue -18% YoY with marketing still consuming most of each sales dollar; CAC/LTV math visibly broken.",
+        "Full-year and Q4 guides slashed; management blames macro pressure on its core demographic plus digital-ad attribution changes.",
+        "Bulls still frame it as a 'disrupted dentistry' platform with millions of cumulative customers and brand awareness.",
+        "Bears note: no path to profitability shown, competitive response from the chairside incumbent, regulatory/clinical pushback risk, and a balance sheet that funds losses rather than a moat.",
+        "Several sell-side models still carry 'optionality' framing on the medtech platform story despite the demand cliff."
+      ],
+      "macro_context": "Consumer discretionary soft for lower-income cohorts; digital advertising attribution disrupted industry-wide.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
