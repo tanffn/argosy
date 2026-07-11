@@ -151,6 +151,36 @@ implementer stalls and Ariel redirects — your work:
 
 ## 5. In flight / coordination
 
+- **Item F block 1 REVIEW: PASS (2026-07-11, reviewer session) — merged to master.** Commit
+  `9413276` (five-agent pipeline). Evidence: focused tests 64 pass (`test_suite_live` correctly
+  `llm_eval`-marked); score.py refactor regression-checked — regenerated report from the
+  immutable scored run is identical in every score + the 28.0/29 headline (only additive
+  `source=` provenance tags); stage 4 provably never sees the answer key; stage-3 payload
+  carries no real name/outcome; immutability now enforced in code; all agents default Opus.
+  **Five follow-ups folded into item F block 2 (fix with the case batch):**
+  (1) sanitizer's source manifest comes from the CLASSIFIER's sourced_facts (stage-1→2
+  correlated-failure channel — give stage 2 raw-source access or an independent manifest);
+  (2) resume on a legacy unreported run stamps `pipeline_version=1` and retroactively
+  disqualifies its OK points at score time; (3) delete/fix dead `build_classifier_receipt`
+  (emits a role string `verify_classifier` rejects); (4) `prepare_classifier.py` hard-raises
+  mid-batch on existing receipts (skip-and-report instead); (5) eval tests aren't collected by
+  the default suite (`testpaths=["tests"]`) — add the path or a collection hook. Plus: add a
+  direct test that stage-3's payload excludes `real`/`expected_classes` (currently enforced by
+  code shape only).
+- **Item A (reviewer-owned close-out, in flight):** draft 80 failed the accept gate on 5
+  violations (2 checker false positives). Reviewer persisted them as proposal 73
+  (`critique_resynth:ariel`) after a dry-verified harvest, launched corrective run 193
+  (phases 1-2 reuse, corrections attached, $60 cap, no backend contention, process-level
+  watcher). Implementer findings filed: (a) accept-gate 422 is not persisted anywhere
+  `build_corrective_context` reads — close the loop; (b) headline_numeric_source misparses
+  duration-after-age phrasing ('...(60): 13 years' → "age 13"); (c) history_leak regex flags
+  legitimate technical usage ("superseded by the operative glide"). Also: run-191 post-mortem
+  = cost-cap kill at $20.95 + two silent backend deaths + 1h47m unmonitored gap → item-I
+  reliability fixes (wrapper/cap-resume/stall-alert) now have hard evidence; patch/sliced
+  flags flip ON once a corrective run promotes clean (193 is the candidate); Opus
+  plan_synthesizer malformed-JSON retries dominate synthesis wall-time (runs 192+193) —
+  Fable-5 upgrade candidate, benchmark-gated.
+
 - **REVIEWER FLAG for item A (2026-07-11 ~13:00, pre-hand-back):** run 191 (plan_revision)
   completed 10:19 → draft 79 (`synth-2026-07-11-1019`), not yet promoted. Its backend log
   (`tmp/uvicorn_detached.item_a_reap.err.log`, 09:40:53Z) shows
