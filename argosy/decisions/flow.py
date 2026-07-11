@@ -372,6 +372,14 @@ class DecisionFlow:
             await self._close_decision_run(
                 decision_run_id, finished_at=clock(), status="hold", fm="hold"
             )
+            # Item B — record DEFENDED HOLD in the verdict registry.
+            await self._record_settled_verdict(
+                ticker=ticker,
+                verdict="HOLD",
+                conviction=getattr(trader_proposal.confidence, "value", "MED"),
+                decision_run_id=decision_run_id,
+                reasoning_md=trader_proposal.rationale_summary or "",
+            )
             return BlockedProposal(
                 reason=f"Trader returned HOLD: {trader_proposal.rationale_summary}",
                 blocked_by="trader_hold",
@@ -400,6 +408,46 @@ class DecisionFlow:
                 debate_outcome=debate_outcome,
                 decision_run_id=decision_run_id,
             )
+
+        # Item B — structural BUY gates (sleeve-fit + blind valuation).
+        if trader_proposal.action in ("buy", "add"):
+            meta = funnel_meta or {}
+            named_sleeve = meta.get("named_sleeve") or meta.get("plan_sleeve")
+            live_val = meta.get("live_valuation") or {}
+            from argosy.services.verdict_registry import (
+                check_sleeve_fit,
+                require_blind_valuation_rederivation,
+            )
+
+            sleeve = check_sleeve_fit(
+                action=trader_proposal.action.upper(),
+                named_sleeve=named_sleeve,
+                subject=ticker,
+            )
+            if not sleeve.ok:
+                await self._close_decision_run(
+                    decision_run_id, finished_at=clock(), status="blocked", fm="block"
+                )
+                return BlockedProposal(
+                    reason=sleeve.reason,
+                    blocked_by="sleeve_fit_invalid",
+                    debate_outcome=debate_outcome,
+                    decision_run_id=decision_run_id,
+                )
+            val = require_blind_valuation_rederivation(
+                action=trader_proposal.action.upper(),
+                live_inputs=live_val if isinstance(live_val, dict) else {},
+            )
+            if not val.ok:
+                await self._close_decision_run(
+                    decision_run_id, finished_at=clock(), status="blocked", fm="block"
+                )
+                return BlockedProposal(
+                    reason=val.reason,
+                    blocked_by="valuation_rederivation_failed",
+                    debate_outcome=debate_outcome,
+                    decision_run_id=decision_run_id,
+                )
 
         # ---------------- Risk team ----------------
         risk_outcome: RiskOutcome | None = None
@@ -636,6 +684,20 @@ class DecisionFlow:
             proposal_id=proposal_id,
         )
 
+        # Item B — settle the actionable verdict in the registry.
+        await self._record_settled_verdict(
+            ticker=ticker,
+            verdict=str(trader_proposal.action).upper(),
+            conviction=(
+                getattr(fm_decision.confidence, "value", None)
+                if fm_decision is not None
+                else getattr(trader_proposal.confidence, "value", "MED")
+            ) or "MED",
+            decision_run_id=decision_run_id,
+            reasoning_md=trader_proposal.rationale_summary or "",
+            named_sleeve=(funnel_meta or {}).get("named_sleeve"),
+        )
+
         try:
             await publish_event(
                 "proposal.created",
@@ -661,6 +723,58 @@ class DecisionFlow:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _record_settled_verdict(
+        self,
+        *,
+        ticker: str,
+        verdict: str,
+        conviction: str,
+        decision_run_id: int,
+        reasoning_md: str = "",
+        named_sleeve: str | None = None,
+        falsifiers: list[str] | None = None,
+        revisit_triggers: list[dict] | None = None,
+    ) -> None:
+        """Best-effort write to the settled-verdict registry (Item B)."""
+        if self.config.skip_persistence:
+            return
+        try:
+            import sqlalchemy as sa
+            from sqlalchemy.orm import sessionmaker
+
+            from argosy.services.verdict_registry import write_verdict
+
+            url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
+            sf = sessionmaker(
+                bind=sa.create_engine(url, connect_args={"check_same_thread": False}),
+                expire_on_commit=False,
+            )
+            sess = sf()
+            try:
+                note = reasoning_md
+                if named_sleeve:
+                    note = f"{note}\n\nplan_sleeve={named_sleeve}".strip()
+                write_verdict(
+                    sess,
+                    user_id=self.user_id,
+                    subject=ticker,
+                    verdict=verdict,
+                    conviction=conviction or "MED",
+                    falsifiers=falsifiers or [],
+                    revisit_triggers=revisit_triggers or [],
+                    source_decision_run_id=decision_run_id or None,
+                    reasoning_md=note,
+                    settled=True,
+                )
+                sess.commit()
+            finally:
+                sess.close()
+        except Exception as exc:  # noqa: BLE001 — registry write must not fail the flow
+            _log.warning(
+                "decision_flow.verdict_registry_write_failed",
+                ticker=ticker, error=str(exc)[:200],
+            )
 
     def _rounds_for(self, tier: Tier) -> int:
         return {

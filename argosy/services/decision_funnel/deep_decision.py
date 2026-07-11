@@ -69,6 +69,49 @@ async def run_deep_decision(
     fleet adjudicates the name against the bounded moonshot sleeve, never as
     a core initiation (time-machine backtest lesson, 2026-07).
     """
+    # Item B pushback gate — BEFORE analyst fan-out / agent spawn.
+    try:
+        import sqlalchemy as sa
+        from sqlalchemy.orm import sessionmaker
+
+        from argosy.services.verdict_registry import check_pushback_gate
+        from argosy.state import db as _db_mod
+
+        _url = str(_db_mod.get_engine().url).replace("+aiosqlite", "")
+        _sf = sessionmaker(
+            bind=sa.create_engine(_url, connect_args={"check_same_thread": False}),
+            expire_on_commit=False,
+        )
+        _sess = _sf()
+        try:
+            _cited = None
+            if funnel_meta and isinstance(funnel_meta.get("cited_new_facts"), list):
+                _cited = funnel_meta["cited_new_facts"]
+            _gate = check_pushback_gate(
+                _sess,
+                user_id=user_id,
+                subject=ticker,
+                cited_new_facts=_cited,
+            )
+        finally:
+            _sess.close()
+        if _gate.defended and _gate.standing is not None:
+            _log.info(
+                "decision_funnel.verdict_defended",
+                ticker=ticker,
+                standing=_gate.standing.verdict,
+                run_id=_gate.standing.source_decision_run_id,
+            )
+            return DeepDecisionOutcome(
+                ticker=ticker,
+                status="blocked",
+                decision_run_id=_gate.standing.source_decision_run_id or 0,
+                blocked_reason=_gate.reason,
+                blocked_by="verdict_defended",
+            )
+    except Exception:  # noqa: BLE001 — gate must not crash stage 3
+        _log.exception("decision_funnel.pushback_gate_failed", ticker=ticker)
+
     # INPUTS fix (SOFI proposal 1, 2026-07-09): the stage-3 fleet must know the
     # client's CURRENT POSITION in the ticker (shares/value/% book/account —
     # a BUY on a held name is a TOP-UP, never an initiation) and every ACTIVE

@@ -79,15 +79,23 @@ class RunRequest(BaseModel):
     # trader weighs thesis fit + fundamentals + dividends, ignores
     # MACD/RSI chart timing and per-ticker FX hedging.
     consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold"
+    # Item B — pushback gate: cited NEW facts that must hit a recorded
+    # falsifier/trigger on a settled subject, else DEFENDED (no agent spawn).
+    cited_new_facts: list[str] = Field(default_factory=list)
+    # Structural BUY gates — hosting plan sleeve + blind valuation inputs.
+    named_sleeve: str | None = None
+    live_valuation: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunResponse(BaseModel):
     decision_run_id: int
-    status: str  # 'approved' | 'blocked'
+    status: str  # 'approved' | 'blocked' | 'defended'
     proposal_id: int | None = None
     blocked_reason: str | None = None
     blocked_by: str | None = None
     tier: str
+    # Present when status='defended' — standing settled verdict returned.
+    standing_verdict: dict[str, Any] | None = None
 
 
 @router.post("/run", response_model=RunResponse)
@@ -96,6 +104,54 @@ class RunResponse(BaseModel):
 @requires_within_quota("monthly_claude_spend_usd")
 async def run_decision_flow(body: RunRequest) -> RunResponse:
     settings = load_agent_settings(body.user_id)
+
+    # Item B pushback gate — BEFORE any agent spawn. Settled subject + no
+    # matching new fact → DEFENDED (standing verdict returned).
+    try:
+        import sqlalchemy as sa
+        from sqlalchemy.orm import sessionmaker
+
+        from argosy.services.verdict_registry import check_pushback_gate
+        from argosy.state import db as _db_mod
+
+        _url = str(_db_mod.get_engine().url).replace("+aiosqlite", "")
+        _sf = sessionmaker(
+            bind=sa.create_engine(_url, connect_args={"check_same_thread": False}),
+            expire_on_commit=False,
+        )
+        _sess = _sf()
+        try:
+            _gate = check_pushback_gate(
+                _sess,
+                user_id=body.user_id,
+                subject=body.ticker,
+                cited_new_facts=body.cited_new_facts or None,
+            )
+        finally:
+            _sess.close()
+        if _gate.defended and _gate.standing is not None:
+            standing = _gate.standing
+            return RunResponse(
+                decision_run_id=standing.source_decision_run_id or 0,
+                status="defended",
+                blocked_reason=_gate.reason,
+                blocked_by="verdict_defended",
+                tier=body.tier if body.tier != "auto" else "T2",
+                standing_verdict={
+                    "subject": standing.subject,
+                    "verdict": standing.verdict,
+                    "conviction": standing.conviction,
+                    "source_decision_run_id": standing.source_decision_run_id,
+                    "falsifiers_json": standing.falsifiers_json,
+                    "revisit_triggers_json": standing.revisit_triggers_json,
+                },
+            )
+    except Exception as _gate_exc:  # noqa: BLE001 — gate must not crash consult
+        _log.warning(
+            "decisions.pushback_gate_failed",
+            error=str(_gate_exc)[:200],
+            ticker=body.ticker,
+        )
 
     if body.tier == "auto":
         ctx = TierContext(
@@ -187,6 +243,11 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
         persist_input_analysts = False
 
     flow = DecisionFlow(user_id=body.user_id, settings=settings)
+    # Thread structural BUY gate inputs via funnel_meta (flow already accepts it).
+    _funnel_meta = {
+        "named_sleeve": body.named_sleeve,
+        "live_valuation": body.live_valuation or {},
+    }
     outcome = await flow.run(
         ticker=body.ticker,
         tier=tier,
@@ -199,6 +260,7 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
         decision_run_id=pre_opened_run_id,
         persist_input_analysts=persist_input_analysts,
         consult_mode=body.consult_mode,
+        funnel_meta=_funnel_meta,
     )
 
     if isinstance(outcome, ApprovedProposal):
