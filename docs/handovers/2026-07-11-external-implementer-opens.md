@@ -347,6 +347,21 @@ prompt ready (migrations start 0086 — 0085 is stream B's).
   mini-block (0086 lane).
 - Dirty domain stamps (tax/* + sec_13f.md) — commit as chore next session.
 
+## 5f. LATE ADDENDUM (post-wrap merges)
+
+- **Item B MERGED + LIVE** (6e25c6b after soft-rollout fix; 0087 applied; 8 seeds incl. OKLO
+  dated trigger 2026-07-31; trigger cron registered; buy gates flag default-OFF).
+  OPEN: tick(now=) signature fix (loop crashes via scheduler — handed back).
+- **Items C + D MERGED** (eb2a805 retract-on-reversal atomic w/ verdict write; 66537d0
+  discovery_reserve subtracted+labeled in deploy-cash, conservation tested).
+- **Aftermath follow-ups MERGED** (8dd635e preserve-merge union/dedupe/implicated-skip;
+  2761f15 422 fail-soft; e0e6eb2 **patch/sliced synthesis DEFAULT-ON** (kill switches, conftest
+  forces OFF in tests); ecbdf2c Source-6 landed-suppression). Next corrective refresh runs
+  PATCHED (~20 min class).
+- Remaining §3: E streams D/C/E · G1/G2 (G3 verifies 07-13) · H (needs tokens) · I tail
+  (reliability trio prompt ready, {{fact:key}}, test_api_phase4 hang, funnel graduation,
+  stream-B non-blocking follow-ups, Fable-5 A/B, sdc/omk re-burns).
+
 ## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
 
 You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
