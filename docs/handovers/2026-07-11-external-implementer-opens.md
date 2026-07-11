@@ -151,6 +151,20 @@ implementer stalls and Ariel redirects — your work:
 
 ## 5. In flight / coordination
 
+- **REVIEWER FLAG for item A (2026-07-11 ~13:00, pre-hand-back):** run 191 (plan_revision)
+  completed 10:19 → draft 79 (`synth-2026-07-11-1019`), not yet promoted. Its backend log
+  (`tmp/uvicorn_detached.item_a_reap.err.log`, 09:40:53Z) shows
+  `nvda_sales_history.shares_sold_from_schwab_csv total: 0` — the detached backend likely
+  started WITHOUT `ARGOSY_EXPENSE_SAMPLES_ROOT`, so the YTD-NVDA-sales input may have been
+  empty. Draft 79's headline "2026 quota remaining: 3,924 sh after YTD sales" must be shown to
+  derive from real Schwab sale rows (YTD sales are known > 0) BEFORE promotion; if the input
+  was empty, restart the backend with the env var set and re-run the corrective refresh.
+  Acceptance for item A now explicitly includes this check.
+- **Observed implementer state (reviewer, 2026-07-11):** item A mid-flight (draft 79 pending
+  gate + promotion + guidance-flip re-apply via `tmp/apply_guidance_flip_convention.py`);
+  item E stream B in progress on `feat/early-signals-b` (9 commits + uncommitted WIP in
+  `.worktrees/feat-early-signals-a`, last commit 12:51). No hand-back yet on either.
+
 - **Stream-A post-merge review** (Claude Code side): code review + live-cycle verify-run on
   master — its verdict may add fix items to §3.E; wait for it before signal-stream work.
 - Hourly domain-refresh job re-stamps `domain_knowledge/*` — commit those stamps as their own
