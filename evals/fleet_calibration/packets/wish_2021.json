@@ -1,0 +1,147 @@
+{
+  "case_id": "wish_2021",
+  "alias": "DDT",
+  "category": "B",
+  "grading": "trap",
+  "real": "WISH @ 2021-02-01 ($31.19, post-IPO retail-wave pop; to ~zero)",
+  "freeze_date": "2021-02-01",
+  "rescale_factor": 1.9,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in DDT. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 42,
+  "contamination_terms": [
+    "Wish",
+    "ContextLogic",
+    "Szulczewski"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 31.19,
+    "price_at_horizon_real": 0.715,
+    "horizon_label": "2y (2023-02-01)",
+    "benchmark_return_pct": -97.7,
+    "note": "as-traded closes derived from the successor ticker LOGC yfinance adjusted series (divided by 30 to undo the later 1:30 reverse split), fetched 2026-07-11. Terminal context: marketplace assets later sold off for a token sum; ride-to-terminal ~-99%+."
+  },
+  "sources": [
+    {
+      "fact": "S-1 'Key Metrics' tables: annual MAUs 21M/30M/49M/73M/90M for FY2014-2018, then DECLINED ~10% to 81M in FY2019, recovering to 108M LTM Sep-2020 on the at-home demand shock; LTM active buyers 64M (2017) -> 62M (2018) -> 60M (2019) -> 68M LTM - buyer counts fell two consecutive pre-shock years despite ~$1.4B+/yr ad spend",
+      "url": "https://www.sec.gov/Archives/edgar/data/1822250/000119312520298630/d82777ds1.htm",
+      "date": "2020-11-20",
+      "verify": true
+    },
+    {
+      "fact": "S-1 MD&A: Q3-2020 logistics delays 'impacted buyer engagement and retention on our platform in the third quarter and led to a lower conversion of monthly active users into buyers compared to the second quarter'; MAU decline attributed to 'intentional moderation of growth' prioritizing the logistics platform over new-user acquisition",
+      "url": "https://www.sec.gov/Archives/edgar/data/1822250/000119312520298630/d82777ds1.htm",
+      "date": "2020-11-20",
+      "verify": true
+    },
+    {
+      "fact": "S-1 financials: FY2018 revenue $1,728M / FY2019 $1,901M (+10%); 9M-2020 revenue $1,747M (+32%) with net loss $176M (vs -$5M 9M-2019); gross margin 84% (2018) -> 77% (2019) -> 65% (9M-2020); FY2019 sales & marketing ~$1.46B (~77% of revenue); ProductBoost merchant-ad revenue -34% YoY in 9M-2020",
+      "url": "https://www.sec.gov/Archives/edgar/data/1822250/000119312520298630/d82777ds1.htm",
+      "date": "2020-11-20",
+      "verify": true
+    },
+    {
+      "fact": "S-1 coverage at filing: 100M+ MAUs in 100+ countries, #1 most-downloaded shopping app three years running, ~90% of activity mobile; margins declining as logistics mix grows",
+      "url": "https://techcrunch.com/2020/11/20/wish-ipo/",
+      "date": "2020-11-20",
+      "verify": true
+    },
+    {
+      "fact": "IPO 2020-12-16 at $24 (raised ~$1.1B): opened at $22.75 and fell 16% on day one - the worst debut for a big US IPO of the year",
+      "url": "https://fortune.com/2020/12/16/wish-ipo-worst-debut-for-big-u-s-ipo-2020/",
+      "date": "2020-12-16",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/DDT",
+      "company": "DealDart (alias DDT)",
+      "as_of": "current",
+      "market_cap_usd_m": 34500,
+      "share_price_usd": 59.3,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 4000,
+        "total_debt_usd_m": 0,
+        "note": "flush from the recent IPO (~2,100 raised) plus prior venture funding; no material debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 3283,
+          "gross_margin_pct": 84,
+          "net_income_usd_m": -395
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 3612,
+          "revenue_growth_pct": 10,
+          "gross_margin_pct": 77,
+          "net_income_usd_m": -245,
+          "note": "growth stalled to +10% when the company moderated ad spend; MAUs and annual buyer counts DECLINED this year (see key metrics)"
+        }
+      ],
+      "latest_quarter": {
+        "which": "nine months of FY-0 (per the listing prospectus; the company has not yet reported a quarter as a public company - its first public print is expected in ~5 weeks)",
+        "revenue_usd_m": 3319,
+        "revenue_growth_yoy_pct": 32,
+        "gross_margin_pct": 65,
+        "gaap_net_income_usd_m": -334,
+        "note": "growth re-accelerated on the external at-home demand shock, but gross margin fell 12 points on logistics mix and the loss widened sharply (9M net loss -334 vs ~-10 a year earlier); merchant-ad (seller promotion) revenue fell 34% YoY"
+      },
+      "key_metrics": {
+        "mau_by_year_m": [
+          40,
+          57,
+          93,
+          139,
+          171,
+          154,
+          205
+        ],
+        "ltm_active_buyers_by_year_m": [
+          34,
+          59,
+          99,
+          122,
+          118,
+          114,
+          129
+        ],
+        "note": "seven columns = FY-6..FY-1 plus LTM. MAUs fell ~10% in FY-1 BEFORE the demand shock; LTM active buyers declined two consecutive years (122 -> 118 -> 114) despite ~2,800/yr of ad spend, and only recovered to 129 with the shock. The prospectus attributes the FY-1 decline to 'intentional moderation of growth' and discloses that Q3 logistics delays hurt buyer retention and MAU-to-buyer conversion vs Q2"
+      },
+      "guidance": {
+        "next_fy": "none given (pre-first-print); prospectus emphasizes logistics-platform investment and next-billion-consumers TAM"
+      },
+      "valuation": {
+        "ps_trailing": 7.9,
+        "pe_trailing": null,
+        "peer_context": "profitable large e-commerce platforms trade ~4-10x sales with growing buyer bases; the closest cross-border value-commerce comps are private",
+        "price_action": "IPO'd ~7 weeks ago at 45.6; fell 16% on day one (the worst large-IPO debut of the year) and traded BELOW the IPO price in 19 of its first 23 sessions (trough ~-27%); a violent retail-speculation wave in the last two weeks has lifted it ~77% off that trough to ~30% ABOVE the IPO price - the stock is a popular name on retail message boards this very week"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/DDT",
+      "business_description": "Mobile-first discovery-commerce marketplace selling ultra-low-priced, mostly unbranded goods (largely shipped direct from overseas merchants) to value-conscious consumers in 100+ countries. The app is an infinite algorithmic feed - shopping as entertainment - rather than search-based; ~90% of usage is mobile and it has been the #1 most-downloaded shopping app for three straight years. Founder-CEO is a machine-learning engineer by background; the platform's core competency is ad-buying and feed personalization. The overwhelming majority of new buyers are acquired through paid digital ads.",
+      "recent_developments": [
+        "Bull case: 205M (scaled) monthly active users, a giant under-served demographic (management frames the TAM as the world's 'next billion' value-conscious consumers - the dollar-store demographic coming online), 9M revenue growth re-accelerated to +32% on the at-home demand shock, and a freshly funded balance sheet (~4,000 cash) to build out logistics.",
+        "The company is investing heavily in its own logistics platform (door-to-door tracking, consolidated cross-border shipping); management says delivery times are improving and frames logistics as a future third revenue leg alongside marketplace and merchant ads.",
+        "Growth quality is the open question: the prospectus's own cohort/key-metrics tables show annual buyer counts DECLINING for the two years before the demand shock and MAUs down ~10% in the latest full year, despite ~2,800/yr of ad spend - retention economics, not reach, look like the binding constraint.",
+        "Product/logistics friction is documented in the prospectus risk factors: long delivery times (weeks), elevated refund and complaint rates, counterfeit/quality issues, and merchant-quality enforcement - the Q3 disclosure explicitly ties worse buyer retention and conversion to these delays.",
+        "Unit economics lean: gross margin has fallen from 84% to 65% in two years as logistics revenue mixes in, while paid acquisition remains the growth engine; ex-marketing the marketplace has never demonstrated self-sustaining buyer growth.",
+        "Flow context: after a failed debut (below IPO price for most of its first six weeks), the stock has been swept up in this week's retail short-squeeze mania; volumes are elevated and moves are sentiment-driven rather than news-driven."
+      ],
+      "macro_context": "Extraordinarily speculative retail-flow environment - heavily shorted and story names are being squeezed violently this very week; rates near zero; the at-home demand shock is still flattering all e-commerce comps, and the market is debating how much of that demand is pull-forward.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

@@ -1,0 +1,146 @@
+{
+  "case_id": "bynd_2019",
+  "alias": "GGF",
+  "category": "B",
+  "grading": "trap",
+  "real": "BYND @ 2019-07-26 ($234.90 all-time-high close; -95%+ eventually)",
+  "freeze_date": "2019-07-26",
+  "rescale_factor": 0.52,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in GGF. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 41,
+  "contamination_terms": [
+    "Beyond Meat",
+    "BYND",
+    "Impossible",
+    "McDonald's",
+    "KFC",
+    "Brown"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 234.9,
+    "price_at_horizon_real": 30.51,
+    "horizon_label": "3y (2022-07-26)",
+    "benchmark_return_pct": -87,
+    "note": "yfinance adjusted closes fetched 2026-07-11; freeze was the all-time closing high. Kept falling after the horizon - ~$0.66 by mid-2026 (~-99.7% ride-to-terminal)."
+  },
+  "sources": [
+    {
+      "fact": "IPO priced at $25 on 2019-05-01; first-day close $65.75 (+163%) on 2019-05-02 - the best debut for a large US listing since the financial crisis era",
+      "url": "https://www.cnbc.com/2019/05/02/beyond-meat-ipo.html",
+      "date": "2019-05-02",
+      "verify": true
+    },
+    {
+      "fact": "IPO prospectus (424B4): FY2016/2017/2018 net revenues $16.2M/$32.6M/$87.9M; FY2018 gross margin 20.0%, net loss $29.9M; 180-day insider lockup on ~85% of shares",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001655210&type=424B4",
+      "date": "2019-05-02",
+      "verify": true
+    },
+    {
+      "fact": "Q1 results (first print as a public company): net revenues $40.2M (+215% YoY), gross margin 26.8%, net loss $6.6M; FY guidance: net revenues to exceed $210M (+140%)",
+      "url": "https://www.globenewswire.com/news-release/2019/06/06/1865635/0/en/Beyond-Meat-Reports-First-Quarter-2019-Financial-Results.html",
+      "date": "2019-06-06",
+      "verify": true
+    },
+    {
+      "fact": "Burger King announced nationwide rollout of the rival Impossible-based Whopper after a successful St. Louis test - the private pure-play competitor winning a top-2 burger chain",
+      "url": "https://www.cnbc.com/2019/04/29/",
+      "date": "2019-04-29",
+      "verify": true
+    },
+    {
+      "fact": "Tyson Foods (largest US meat processor, and a former shareholder that sold its stake pre-IPO) unveiled its own plant-based and blended protein line under the Raised & Rooted brand",
+      "url": "https://www.globenewswire.com/news-release/2019/06/13/1868254/0/en/Tyson-Foods-Unveils-Alternative-Protein-Products-and-New-Raised-Rooted-Brand.html",
+      "date": "2019-06-13",
+      "verify": true
+    },
+    {
+      "fact": "Dunkin' launched a Beyond-based breakfast sausage sandwich across Manhattan with stated national ambitions",
+      "url": "https://www.prnewswire.com/news-releases/great-taste-plant-based-dunkin-partners-with-beyond-meat-to-introduce-new-beyond-sausage-breakfast-sandwich-in-manhattan-300890005.html",
+      "date": "2019-07-24",
+      "verify": true
+    },
+    {
+      "fact": "Stock closed at the all-time high of $234.90 on 2019-07-26 (~9.4x the IPO price in under 3 months) ahead of the Q2 print; short interest and borrow costs among the highest in the market",
+      "url": "https://www.cnbc.com/2019/07/26/",
+      "date": "2019-07-26",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/GGF",
+      "company": "GreenGrain Foods (alias GGF)",
+      "as_of": "current",
+      "market_cap_usd_m": 7360,
+      "share_price_usd": 122.1,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 150,
+        "total_debt_usd_m": 15,
+        "note": "freshly capitalized from the listing proceeds ~12 weeks ago; minimal debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 8.4
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 17.0,
+          "revenue_growth_pct": 101
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 45.7,
+          "revenue_growth_pct": 170,
+          "gross_margin_pct": 20.0,
+          "net_income_usd_m": -15.5,
+          "note": "hyper-growth but food-manufacturing economics: 20% gross margin, loss-making"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1, reported ~7 weeks ago (first print as a public company)",
+        "revenue_usd_m": 20.9,
+        "revenue_growth_yoy_pct": 215,
+        "gross_margin_pct": 26.8,
+        "gaap_net_income_usd_m": -3.4,
+        "note": "demand outstripping production capacity; co-manufacturing capacity expansion underway"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "exceed 109 (+140% YoY)",
+        "note": "first-ever guidance, given at the Q1 print; Q2 report is scheduled for ~3 days from now"
+      },
+      "valuation": {
+        "ps_trailing": 123,
+        "ps_on_fy_guide": 67,
+        "pe_trailing": null,
+        "peer_context": "packaged-food incumbents trade ~1-3x sales with low-single-digit growth; even the fastest-growing premium food brands have historically peaked below ~10x sales",
+        "price_action": "closed at an all-time high TODAY: ~9.4x the IPO price in under 3 months, +257% above the first-day close; public float is a small fraction (~17%) of shares outstanding, short interest is extreme (borrow among the costliest in the market), and the 180-day insider lockup on ~85% of shares expires in ~3 months"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/GGF",
+      "business_description": "Category-defining plant-based meat brand (pea-protein burgers, sausages) positioned as meat for meat-eaters, sold through mainstream grocery meat cases and a fast-growing restaurant/food-service channel. Strong brand halo with high-profile celebrity and athlete backers. The company IPO'd ~12 weeks ago in the most successful large debut in over a decade and is the only public pure-play on the plant-based protein theme - which is currently the market's hottest consumer narrative.",
+      "recent_developments": [
+        "Fundamental momentum is real: Q1 revenue +215% YoY, grocery velocity data strong, demand exceeding supply, first FY guide calls for +140%; management frames the TAM as a meaningful share of the ~730 (billions, scaled) global meat category.",
+        "Restaurant-channel wins keep landing: a national coffee-and-donuts chain launched its breakfast sausage across a flagship city TWO DAYS ago with national ambitions; a major Canadian coffee chain and two national burger/taco chains are already piloting or rolling out its products.",
+        "Competition wave forming: the largest US meat processor (a former shareholder) launched its own plant-based line ~6 weeks ago; the world's largest food company has announced a competing burger for the fall; the category's other pure-play (private, venture-backed, capacity-constrained) just won a nationwide rollout with a top-2 burger chain.",
+        "Commoditization question: the core input (pea protein isolate) is a commodity agricultural product, there is no patent moat on the formulation, retailers are developing private-label versions, and the ~2x price premium over conventional beef must compress for the mass-market thesis to work - likely compressing gross margins that are already food-manufacturing-grade (20-27%).",
+        "Supply/flow dynamics have amplified the move: tiny float, extreme short interest (a persistent squeeze), and a looming lockup expiry in ~3 months that will multiply the tradable supply; the Q2 print is ~3 days away.",
+        "Sell-side is split: growth desks defend the multiple on category-creation grounds; skeptics note the stock now trades at ~123x trailing sales - far beyond any food-brand precedent - so flawless execution for years is already priced in."
+      ],
+      "macro_context": "Healthy consumer economy; growth and story stocks strongly in favor; sustainability/alternative-protein is the consumer theme of the year. No macro headwind - the debate is purely valuation vs. category economics.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
