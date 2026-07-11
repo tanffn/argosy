@@ -122,8 +122,10 @@ adjudication → inbox row).
 ## 4. CLAUDE CODE REVIEWER SESSION — your side (fresh-session start here)
 
 You are the RESIDENT session: Ariel's interface + the reviewer of the external implementer's
-hand-backs. HEAD at writing: `0ba86c2`. You do NOT execute items A-I yourself unless the
-implementer stalls and Ariel redirects — your work:
+hand-backs. HEAD at this section's last update: `49cf456` (= master; item-F block 1 merged,
+domain stamps, reviewer flags — see §5 for the live state of items A and F). You do NOT
+execute items A-I yourself unless the implementer stalls and Ariel redirects (2026-07-11:
+Ariel redirected item A's CLOSE-OUT to the reviewer — run 193 in flight, see §5) — your work:
 
 1. **Review each hand-back on `feat/opens-2026-07-11`** against the §3 acceptance criteria:
    code review (spec compliance, no gate overrides, migrations additive + numbering — 0083 is
@@ -201,3 +203,50 @@ implementer stalls and Ariel redirects — your work:
   chore commit if they land in your tree; never mix them into feature commits.
 - The reviewer runs `verify-run` on any live cycle you produce and the calibration benchmark
   on any trader/mandate prompt change you make (SDD §14.6/§14.8 — eval-first is mandatory).
+
+## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
+
+You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
+(HEAD at writing `49cf456`), hand back per block, NEVER merge — the resident Claude Code
+session reviews and merges. §0 (read-first list) and §1 (environment discipline) apply to you
+in full. Then read: `docs/design/fleet_calibration_benchmark.md` (§1 decontamination protocol,
+§2a five-agent pipeline, §2b report format, §3 recorded scoring calls),
+`evals/fleet_calibration/PACKET_GUIDE.md` (alias/k registry, protocol checklist),
+`evals/fleet_calibration/README.md`, and §5 below (block-1 review verdict — your inherited
+follow-ups).
+
+**Block 2a — pipeline follow-ups first (from the block-1 review, §5):**
+1. Sanitizer source-manifest decorrelation: stage 2 currently anchors its
+   `absolute_figure_rescaling` proof on the CLASSIFIER's `sourced_facts`
+   (`agent_pipeline.py::build_sanitizer_input`) — a stage-1→2 correlated-failure channel.
+   Give stage 2 an independent verification path (raw-source access or an independently
+   constructed manifest).
+2. Legacy-resume regime bug: resume stamps `pipeline_version=1` on pre-pipeline unreported
+   runs, retroactively disqualifying their OK points at score time. Preserve the legacy
+   regime for legacy files.
+3. Delete or fix dead `build_classifier_receipt` (emits an agent_role string
+   `verify_classifier` rejects — can never pass).
+4. `prepare_classifier.py` hard-raises mid-batch on an existing receipt (even in --dry-run);
+   skip-and-report instead. Receipts stay write-once.
+5. Eval tests aren't collected by the default suite (`testpaths=["tests"]`) — add collection.
+6. Add a direct test that stage-3's trader payload excludes `real`/`expected_classes`
+   (currently enforced by code shape only).
+
+**Block 2b — the case batch, built THROUGH the five-agent pipeline (stage 1 sources, stage 2
+signs off; never hand-build packets):**
+- Named cases: AMD-2016 F1, CVNA-2023 re-entry.
+- Categories: obscure small-cap failures, trap-shaped winners, winner-shaped failures,
+  fresh synthetics.
+- **BINDING acceptance (owner emphasis 2026-07-11):** a MAJORITY of new cases must be
+  OBSCURE — names with no famous narrative arc (the scored run proved names aren't the only
+  fingerprint: scrubbed scar narratives reproduced in 3/29 points). Include synthetics
+  (unmemorizable by construction). Prioritize HARD cases — the suite sits at 28/29 and only
+  regains discriminating power through winner-shaped failures and trap-shaped winners. The
+  stage-4 groundedness score (packet-facts vs imported story knowledge) must be reported
+  PER NEW CASE in the §2b table.
+- Ownership blindness per §2a is binding (neutral synthetic portfolio for A/B; anonymized
+  sleeve context for C/D).
+
+**Cost discipline:** real-LLM scoring points are `llm_eval`-class — coordinate with the
+reviewer session BEFORE burning calls; `--dry-run` first, always. Scored runs are immutable
+(now enforced in code) — new runs take a NEW `--out` path. Commit per logical block.
