@@ -128,6 +128,11 @@ def test_classifier_input_has_source_manifest_but_no_outcome_answer_key() -> Non
     assert payload["subject"] == "Secret Corp"
     assert payload["freeze_date"] == "2020-01-01"
     assert payload["source_manifest"] == _packet()["sources"]
+    assert payload["frozen_taxonomy"] == {
+        "category": _packet()["category"],
+        "grading": _packet()["grading"],
+        "freeze_date": _packet()["freeze_date"],
+    }
     assert "expected_classes" not in encoded
     assert "benchmark_return_pct" not in encoded
     assert "$10" not in encoded
@@ -724,7 +729,11 @@ async def test_classifier_preparation_persists_before_returning(
         classifier_runner=classifier_runner,
     )
 
-    assert prepared == {"prepared": ["masked_case"], "skipped_existing": []}
+    assert prepared == {
+        "prepared": ["masked_case"],
+        "skipped_existing": [],
+        "rejected": [],
+    }
     persisted = json.loads(
         (tmp_path / "masked_case.json").read_text(encoding="utf-8")
     )
@@ -747,7 +756,11 @@ async def test_classifier_preparation_dry_run_is_call_and_write_free(
         classifier_runner=classifier_runner,
     )
 
-    assert prepared == {"prepared": ["masked_case"], "skipped_existing": []}
+    assert prepared == {
+        "prepared": ["masked_case"],
+        "skipped_existing": [],
+        "rejected": [],
+    }
     assert list(tmp_path.iterdir()) == []
 
 
@@ -772,7 +785,11 @@ async def test_classifier_preparation_skips_existing_receipts(
         dry_run=False,
         classifier_runner=classifier_runner,
     )
-    assert result == {"prepared": [], "skipped_existing": ["masked_case"]}
+    assert result == {
+        "prepared": [],
+        "skipped_existing": ["masked_case"],
+        "rejected": [],
+    }
     assert calls == []
     assert existing.read_text(encoding="utf-8") == '{"stage": 1}'
 
@@ -783,7 +800,11 @@ async def test_classifier_preparation_skips_existing_receipts(
         dry_run=True,
         classifier_runner=classifier_runner,
     )
-    assert dry == {"prepared": [], "skipped_existing": ["masked_case"]}
+    assert dry == {
+        "prepared": [],
+        "skipped_existing": ["masked_case"],
+        "rejected": [],
+    }
     assert calls == []
 
 

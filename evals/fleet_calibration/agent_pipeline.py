@@ -85,7 +85,7 @@ class CalibrationGradingOutput(BaseModel):
 def build_classifier_input(packet: dict[str, Any]) -> dict[str, Any]:
     """Expose construction evidence without the expected verdict or outcome."""
     subject = str(packet.get("real") or packet["case_id"]).split("@", 1)[0].strip()
-    return {
+    brief: dict[str, Any] = {
         "case_id": packet["case_id"],
         "subject": subject,
         "freeze_date": packet.get("freeze_date"),
@@ -95,6 +95,21 @@ def build_classifier_input(packet: dict[str, Any]) -> dict[str, Any]:
             "taxonomy and select its grading mode using only pre-freeze evidence."
         ),
     }
+    # Reconstruction burns for already-frozen packets: lock taxonomy so the
+    # agent sources facts for the frozen classification rather than
+    # re-litigating hard foresight entries that look trap-like at the print.
+    if packet.get("category") is not None and packet.get("grading") is not None:
+        brief["frozen_taxonomy"] = {
+            "category": packet.get("category"),
+            "grading": packet.get("grading"),
+            "freeze_date": packet.get("freeze_date"),
+        }
+        brief["candidate_question"] = (
+            "This packet is already frozen. Emit frozen_taxonomy exactly "
+            "(category/grading/freeze_date) and gather period-accurate "
+            "sourced_facts that support that freeze. Do not re-select taxonomy."
+        )
+    return brief
 
 
 def independent_source_manifest(packet: dict[str, Any]) -> list[dict[str, Any]]:
@@ -359,13 +374,24 @@ class CalibrationClassifierSourcingAgent(
     def build_prompt(self, *, case_brief: dict[str, Any]) -> tuple[str, str]:
         system = (
             "You are the classifier and period-accurate data-sourcing agent for "
-            "a historical time-machine benchmark. Select the category, grading "
-            "mode, and freeze date before packet construction. Gather every "
-            "load-bearing fact from a primary source where available, recording "
-            "the source URL and its publication date. No source may postdate the "
-            "freeze date. Do not use retrospective 'why it moved' articles, do "
-            "not sanitize the packet, and do not use the eventual outcome to "
-            "choose the category or freeze point."
+            "a historical time-machine benchmark. Gather every load-bearing "
+            "fact from a primary source where available, recording the source "
+            "URL and its publication date. No source may postdate the freeze "
+            "date. Do not use retrospective 'why it moved' articles, do not "
+            "sanitize the packet, and do not use the eventual outcome as "
+            "evidence.\n"
+            "Taxonomy: A=entry (should BUY; includes hard foresight / "
+            "trap-shaped winners where the contemporaneous print looks soft), "
+            "B=trap (should PASS / no position), C=exit (positioned, should "
+            "SELL on fired falsifiers), D=hold-through-drawdown, "
+            "synthetic=fictional control. Grading modes pair with those "
+            "buckets (entry/F1_lenient/F2_strict; trap; exit; "
+            "hold_drawdown/rederive; synthetic_winner/synthetic_trap).\n"
+            "When the brief includes frozen_taxonomy, this is a reconstruction "
+            "burn: emit category/grading/freeze_date EXACTLY as "
+            "frozen_taxonomy states and focus on sourced_facts. Do not "
+            "re-litigate the taxonomy. When frozen_taxonomy is absent, select "
+            "category, grading, and freeze date from pre-freeze evidence only."
         )
         return system, "CASE CONSTRUCTION BRIEF:\n" + _render(case_brief)
 

@@ -44,10 +44,12 @@ async def prepare_classifier_receipts(
     """Create one immutable receipt per packet; dry-run is call/write free.
 
     Existing receipts are skip-and-report (never overwritten). Returns
-    ``{"prepared": [...], "skipped_existing": [...]}``.
+    ``{"prepared": [...], "skipped_existing": [...], "rejected": [...]}``.
+    Rejected burns (verification failed) are not written.
     """
     prepared: list[str] = []
     skipped_existing: list[str] = []
+    rejected: list[str] = []
     if not dry_run:
         receipts_dir.mkdir(parents=True, exist_ok=True)
     for packet in packets:
@@ -61,6 +63,14 @@ async def prepare_classifier_receipts(
             continue
         receipt = await classifier_runner(packet)
         receipt["verification"] = verify_classifier(packet, receipt)
+        if not receipt["verification"]["ok"]:
+            rejected.append(case_id)
+            print(
+                f"{case_id}: REJECTED verification "
+                f"{receipt['verification']['mismatches']}",
+                flush=True,
+            )
+            continue
         tmp_path = out_path.with_suffix(".json.tmp")
         tmp_path.write_text(
             json.dumps(receipt, indent=2, ensure_ascii=False),
@@ -68,7 +78,11 @@ async def prepare_classifier_receipts(
         )
         tmp_path.replace(out_path)
         prepared.append(case_id)
-    return {"prepared": prepared, "skipped_existing": skipped_existing}
+    return {
+        "prepared": prepared,
+        "skipped_existing": skipped_existing,
+        "rejected": rejected,
+    }
 
 
 async def main() -> None:
@@ -102,6 +116,10 @@ async def main() -> None:
         print(f"{case_id}: classifier receipt {mode}", flush=True)
     for case_id in result["skipped_existing"]:
         print(f"{case_id}: skipped existing receipt (immutable)", flush=True)
+    for case_id in result.get("rejected") or []:
+        print(f"{case_id}: classifier receipt rejected (not written)", flush=True)
+    if result.get("rejected"):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
