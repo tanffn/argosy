@@ -49,6 +49,13 @@ def _discovery_db(tmp_path, monkeypatch):
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def _set_signal_streams_enabled(monkeypatch, enabled: bool) -> None:
+    monkeypatch.setattr(
+        "argosy.config.load_signal_streams_config",
+        lambda user_id: SimpleNamespace(enabled=enabled),
+    )
+
+
 def test_get_discovery_reads_cached_state(monkeypatch):
     picks = [FleetPick(ticker="PLTR", conviction="HIGH", thesis_md="AI platform",
                        verdict="BUY", cites=("fundamentals",))]
@@ -210,18 +217,38 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
         "open_trade_proposals": 1,
     }
     assert body["sources"] == [
-        {"key": "attention", "label": "Attention", "active_count": 1},
+        {
+            "key": "attention",
+            "label": "Attention",
+            "tracked_count": 2,
+            "active_count": 1,
+            "quarantined_count": 1,
+            "dropped_stale_count": 0,
+        },
         {
             "key": "gov_contracts",
             "label": "Government contracts",
+            "tracked_count": 1,
             "active_count": 1,
+            "quarantined_count": 0,
+            "dropped_stale_count": 0,
         },
         {
             "key": "growth",
             "label": "Growth fundamentals",
+            "tracked_count": 2,
             "active_count": 1,
+            "quarantined_count": 0,
+            "dropped_stale_count": 1,
         },
-        {"key": "momentum", "label": "Momentum", "active_count": 2},
+        {
+            "key": "momentum",
+            "label": "Momentum",
+            "tracked_count": 2,
+            "active_count": 2,
+            "quarantined_count": 0,
+            "dropped_stale_count": 0,
+        },
     ]
 
     cmps = next(row for row in body["candidates"] if row["ticker"] == "CMPS")
@@ -242,6 +269,133 @@ def test_discovery_reports_persisted_sources_stages_and_ticker_provenance(
         "decision_run_id": 41,
         "created_at": "2026-07-11T06:00:00",
     }
+    engine.dispose()
+
+
+def test_discovery_lists_enabled_sources_even_with_zero_tracked_tickers(
+    tmp_path,
+    monkeypatch,
+):
+    engine, _factory = _discovery_db(tmp_path, monkeypatch)
+    _set_signal_streams_enabled(monkeypatch, True)
+
+    response = TestClient(create_app()).get(
+        "/api/portfolio/discovery",
+        params={"user_id": "ariel"},
+    )
+    assert response.status_code == 200
+    assert response.json()["sources"] == [
+        {
+            "key": "attention",
+            "label": "Attention",
+            "tracked_count": 0,
+            "active_count": 0,
+            "quarantined_count": 0,
+            "dropped_stale_count": 0,
+        },
+        {
+            "key": "gov_contracts",
+            "label": "Government contracts",
+            "tracked_count": 0,
+            "active_count": 0,
+            "quarantined_count": 0,
+            "dropped_stale_count": 0,
+        },
+        {
+            "key": "growth",
+            "label": "Growth fundamentals",
+            "tracked_count": 0,
+            "active_count": 0,
+            "quarantined_count": 0,
+            "dropped_stale_count": 0,
+        },
+        {
+            "key": "momentum",
+            "label": "Momentum",
+            "tracked_count": 0,
+            "active_count": 0,
+            "quarantined_count": 0,
+            "dropped_stale_count": 0,
+        },
+    ]
+    engine.dispose()
+
+
+def test_discovery_counts_quarantined_government_contract_ticker(
+    tmp_path,
+    monkeypatch,
+):
+    engine, factory = _discovery_db(tmp_path, monkeypatch)
+    _set_signal_streams_enabled(monkeypatch, True)
+    with factory() as db:
+        db.add(ScanState(
+            user_id="ariel",
+            ticker="PLTR",
+            status="quarantined",
+            quarantine_reason="failed-liquidity",
+            nomination_evidence_json=json.dumps({
+                "stream": "gov_contracts",
+                "dedup_key": "usaspending:PLTR",
+                "evidence": {"market_cap": 250_000_000_000},
+            }),
+        ))
+        db.commit()
+
+    response = TestClient(create_app()).get(
+        "/api/portfolio/discovery",
+        params={"user_id": "ariel"},
+    )
+    assert response.status_code == 200
+    sources = response.json()["sources"]
+    assert [source["key"] for source in sources] == [
+        "attention",
+        "gov_contracts",
+        "growth",
+        "momentum",
+    ]
+    government = next(
+        source for source in sources if source["key"] == "gov_contracts"
+    )
+    assert government == {
+        "key": "gov_contracts",
+        "label": "Government contracts",
+        "tracked_count": 1,
+        "active_count": 0,
+        "quarantined_count": 1,
+        "dropped_stale_count": 0,
+    }
+    engine.dispose()
+
+
+def test_discovery_omits_disabled_government_contract_source(
+    tmp_path,
+    monkeypatch,
+):
+    engine, factory = _discovery_db(tmp_path, monkeypatch)
+    _set_signal_streams_enabled(monkeypatch, False)
+    with factory() as db:
+        db.add(ScanState(
+            user_id="ariel",
+            ticker="PLTR",
+            status="quarantined",
+            nomination_evidence_json=json.dumps({
+                "stream": "gov_contracts",
+                "dedup_key": "usaspending:PLTR",
+                "evidence": {},
+            }),
+        ))
+        db.commit()
+
+    response = TestClient(create_app()).get(
+        "/api/portfolio/discovery",
+        params={"user_id": "ariel"},
+    )
+    assert response.status_code == 200
+    assert [source["key"] for source in response.json()["sources"]] == [
+        "attention",
+        "growth",
+        "momentum",
+    ]
     engine.dispose()
 
 

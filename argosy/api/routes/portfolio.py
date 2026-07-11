@@ -1854,7 +1854,10 @@ class DiscoveryEstimateDTO(BaseModel):
 class DiscoverySourceDTO(BaseModel):
     key: str
     label: str
+    tracked_count: int
     active_count: int
+    quarantined_count: int
+    dropped_stale_count: int
 
 
 class DiscoveryStagesDTO(BaseModel):
@@ -2004,6 +2007,7 @@ def _load_discovery_transparency(user_id: str):
     from sqlalchemy import create_engine, func, select
     from sqlalchemy.orm import sessionmaker
 
+    from argosy.config import load_signal_streams_config
     from argosy.state.models import Proposal, ScanState
 
     url = str(get_settings().database_url).replace("+aiosqlite", "")
@@ -2030,7 +2034,18 @@ def _load_discovery_transparency(user_id: str):
     for proposal in proposals:
         latest_proposal_by_ticker.setdefault(proposal.ticker.upper(), proposal)
 
-    source_tickers: dict[tuple[str, str], set[str]] = {}
+    signal_streams_enabled = load_signal_streams_config(user_id).enabled
+    enabled_source_keys = {"attention", "growth", "momentum"}
+    if signal_streams_enabled:
+        enabled_source_keys.add("gov_contracts")
+    source_tickers: dict[tuple[str, str], dict[str, set[str]]] = {
+        (key, _DISCOVERY_SOURCE_LABELS[key]): {
+            "active": set(),
+            "quarantined": set(),
+            "dropped": set(),
+        }
+        for key in enabled_source_keys
+    }
     candidates: list[DiscoveryCandidateDTO] = []
     estimated = estimator_go = fleet_graded = fleet_buy = 0
     status_order = {"active": 0, "quarantined": 1, "dropped": 2}
@@ -2045,9 +2060,15 @@ def _load_discovery_transparency(user_id: str):
     ):
         refs = _discovery_sources_for_row(row)
         is_active = row.status == "active"
-        if is_active:
-            for ref in refs:
-                source_tickers.setdefault(ref, set()).add(row.ticker.upper())
+        for ref in refs:
+            if ref[0] == "gov_contracts" and not signal_streams_enabled:
+                continue
+            counts = source_tickers.setdefault(
+                ref,
+                {"active": set(), "quarantined": set(), "dropped": set()},
+            )
+            if row.status in counts:
+                counts[row.status].add(row.ticker.upper())
 
         estimate = _discovery_estimate(row.estimator_json)
         pick = _discovery_pick(row.fleet_json)
@@ -2080,17 +2101,20 @@ def _load_discovery_transparency(user_id: str):
             latest_trade_proposal=proposal_dto,
         ))
 
-    sources = [
-        DiscoverySourceDTO(
+    sources = []
+    for (key, label), status_tickers in sorted(
+        source_tickers.items(),
+        key=lambda item: item[0][0],
+    ):
+        tracked_tickers = set().union(*status_tickers.values())
+        sources.append(DiscoverySourceDTO(
             key=key,
             label=label,
-            active_count=len(active_tickers),
-        )
-        for (key, label), active_tickers in sorted(
-            source_tickers.items(),
-            key=lambda item: item[0][0],
-        )
-    ]
+            tracked_count=len(tracked_tickers),
+            active_count=len(status_tickers["active"]),
+            quarantined_count=len(status_tickers["quarantined"]),
+            dropped_stale_count=len(status_tickers["dropped"]),
+        ))
     statuses = [row.status for row in rows]
     stages = DiscoveryStagesDTO(
         tracked=len(rows),

@@ -432,8 +432,8 @@ export interface RealEstateEquityDTO {
   note: string;
 }
 
-// Combined high-potential discovery (Slice 2) — fleet-graded picks + the cheap
-// estimator shortlist. CONVICTION-only (no dollar sizing); smart refresh.
+// Combined high-potential discovery — persisted source/filter/estimator/research/
+// trade stages. Research asymmetry and trade confidence remain distinct.
 export interface DiscoveryPickDTO {
   ticker: string;
   conviction: string;
@@ -453,7 +453,10 @@ export interface DiscoveryEstimateDTO {
 export interface DiscoverySourceDTO {
   key: string;
   label: string;
+  tracked_count: number;
   active_count: number;
+  quarantined_count: number;
+  dropped_stale_count: number;
 }
 
 export interface DiscoveryStagesDTO {

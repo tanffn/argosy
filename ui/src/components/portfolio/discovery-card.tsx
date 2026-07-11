@@ -187,14 +187,24 @@ export function DiscoveryCard() {
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {data.sources.length > 0 ? (
                   data.sources.map((source) => (
-                    <Badge key={source.key} variant="outline" className="text-[10px]">
-                      {source.label} · {source.active_count} active{" "}
-                      {source.active_count === 1 ? "name" : "names"}
+                    <Badge
+                      key={source.key}
+                      variant="outline"
+                      className="text-[10px]"
+                      title={`${source.label}: ${source.tracked_count} tracked`}
+                    >
+                      {source.label} · {source.active_count} active
+                      {source.quarantined_count > 0
+                        ? ` · ${source.quarantined_count} filtered`
+                        : ""}
+                      {source.dropped_stale_count > 0
+                        ? ` · ${source.dropped_stale_count} stale`
+                        : ""}
                     </Badge>
                   ))
                 ) : (
                   <span className="text-[11px] text-muted-foreground">
-                    No active persisted sources.
+                    No enabled discovery sources.
                   </span>
                 )}
               </div>
