@@ -1,0 +1,132 @@
+{
+  "case_id": "ttcf_t2",
+  "alias": "PVF",
+  "category": "C",
+  "grading": "exit",
+  "real": "TTCF @ 2021-08-16 (~$17.50); Q2-21 miss + guidance cut",
+  "freeze_date": "2021-08-16",
+  "rescale_factor": 3.7,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $64.75 -> unrealized P&L -14%. Entered three quarters ago. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 33,
+  "contamination_terms": [
+    "Tattooed Chef",
+    "TTCF",
+    "Ittella",
+    "Galletti",
+    "Forum Merger",
+    "Costco",
+    "Walmart",
+    "Sam's Club",
+    "Club Foods",
+    "Kroger",
+    "Karsten",
+    "New Mexico Food"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 17.5,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+    "benchmark_return_pct": -100,
+    "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+  },
+  "sources": [
+    {
+      "fact": "Q2-2021 results: revenue $50.7M (+45.9%), GM 15.7%, GAAP net loss -$53.3M incl ~$46M non-cash deferred-tax valuation allowance; first consensus miss; GM guide CUT to 16-22 from 20-25; adj-EBITDA guide flipped to loss",
+      "url": "https://www.globenewswire.com/",
+      "date": "2021-08-12",
+      "verify": true
+    },
+    {
+      "fact": "National mass-retail distribution wins (two largest mass retailers + drug chain)",
+      "url": "https://www.globenewswire.com/",
+      "date": "2021-07-15",
+      "verify": true
+    },
+    {
+      "fact": "Cash acquisitions of food/tortilla plants (~$37M total real) for capacity + southwestern line",
+      "url": "https://www.globenewswire.com/",
+      "date": "2021-05-17",
+      "verify": true
+    },
+    {
+      "fact": "FY2020 final: revenue $148.5M (+75%), GM 14.6% after reclassifications",
+      "url": "https://www.sec.gov/",
+      "date": "2021-03-19",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/PVF",
+      "company": "Provida Foods (alias PVF)",
+      "as_of": "current",
+      "market_cap_usd_m": 5300,
+      "share_price_usd": 64.75,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 519,
+        "total_debt_usd_m": 10,
+        "share_count_note": "share count is ~30% higher than at entry (warrant exercises/exchanges from the listing structure)",
+        "note": "still cash-rich; just spent ~137 cash on two tortilla/food-plant acquisitions to add capacity and a southwestern product line"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1 (the entry-year)",
+          "revenue_usd_m": 549,
+          "revenue_growth_pct": 75,
+          "gross_margin_pct": 14.6,
+          "note": "final figures came in slightly below the originally reported 15.9% GM after reclassifications"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q2 of the current FY, reported ~4 days ago",
+        "revenue_usd_m": 188,
+        "revenue_growth_yoy_pct": 45.9,
+        "gross_margin_pct": 15.7,
+        "gaap_net_loss_usd_m": -197,
+        "net_loss_note": "includes a one-time NON-CASH ~170 deferred-tax valuation allowance (the company wrote off its own deferred tax assets — an accounting judgment that future taxable income is not probable); ex-item operating loss ~-27",
+        "note": "FIRST revenue miss vs consensus (~188 vs ~200 expected); stock fell ~15% on the print"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "870-895 maintained (+~59%)",
+        "gross_margin_pct": "CUT to 16-22 from 20-25",
+        "adj_ebitda_usd_m": "CUT to -52 to -63, from +7 to +15 — the year flips from profitable to a meaningful loss",
+        "cited": "freight/logistics cost inflation, outside storage fees, public-company legal/accounting costs, and heavy planned marketing spend for the retail expansion"
+      },
+      "customer_concentration": {
+        "top_2_customers_pct_of_revenue": 71,
+        "split_pct": [
+          39,
+          32
+        ]
+      },
+      "valuation": {
+        "ps_on_fy_guide": 6.0,
+        "pe_trailing": null,
+        "price_action": "stock -14% vs the sleeve's entry, -38% from its all-time high; still up a lot vs the pre-listing price"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/PVF",
+      "business_description": "Plant-forward frozen-food brand (see prior coverage): family-founded, vertically integrated, converting warehouse-club private-label volume into a branded mass-retail rollout. The entry thesis was: category tailwind + 75% growth + brand conversion + cheap-ish vs the category leader, with milestones of (a) branded distribution expansion beyond the club channel, (b) gross-margin expansion toward 20%+ as brand mix rises, (c) reduced customer concentration.",
+      "recent_developments": [
+        "Mass-retail door expansion IS happening: the brand landed national placements at two of the largest mass retailers (thousands of new stores) plus a drug-store chain.",
+        "But the P&L is moving AWAY from the thesis: gross margin guidance cut hard (freight, storage, input costs), full-year EBITDA flipped from positive to a sizable loss, and management concedes marketing spend to win the new shelf space will run heavy 'for several quarters'.",
+        "Customer concentration has NOT improved yet (top-2 still ~71%), and much of the club volume remains rotational.",
+        "Two capacity acquisitions (cash) diversify into southwestern/tortilla products — some analysts question the strategic focus of buying low-margin co-packing plants during a brand build-out.",
+        "The plant-based theme has cooled sharply: the category's pure-play leader has repeatedly missed estimates and the whole cohort has de-rated."
+      ],
+      "macro_context": "Reopening economy; freight and food-input inflation squeezing every food manufacturer; speculative listing-vehicle cohort broadly deflating.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

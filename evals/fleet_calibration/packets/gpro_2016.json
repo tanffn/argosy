@@ -1,0 +1,125 @@
+{
+  "case_id": "gpro_2016",
+  "alias": "VOP",
+  "category": "B",
+  "grading": "trap",
+  "real": "GPRO @ 2016-06-01 ($10.32); post-collapse 'value' trap",
+  "freeze_date": "2016-06-01",
+  "rescale_factor": 0.85,
+  "synthetic": false,
+  "expected_classes": [
+    "hold"
+  ],
+  "positioned": false,
+  "positions": "No existing position in VOP. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 31,
+  "contamination_terms": [
+    "GoPro",
+    "GPRO",
+    "Hero",
+    "Karma",
+    "Woodman",
+    "DJI",
+    "Quik"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 10.32,
+    "price_at_horizon_real": 4.34,
+    "horizon_label": "3.5y (2019-12-31)",
+    "benchmark_return_pct": -58,
+    "note": "yfinance adjusted closes fetched 2026-07-11; kept falling to ~$2.3 in 2020 (~-78%)"
+  },
+  "sources": [
+    {
+      "fact": "FY2015 revenue $1,620M (+16.2%), NI $36M; profitable every prior year",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001500435&type=10-K",
+      "date": "2016-02-29",
+      "verify": true
+    },
+    {
+      "fact": "Q1-2016 results: revenue $183.5M (-49.5% YoY), first quarterly loss as a public company, GM 32.5%, 7% workforce cut",
+      "url": "https://investor.gopro.com/press-releases",
+      "date": "2016-05-05",
+      "verify": true
+    },
+    {
+      "fact": "Flagship (HERO4 Session) priced too high, cut twice within months; channel inventory glut",
+      "url": "https://investor.gopro.com/press-releases",
+      "date": "2015-12-08",
+      "verify": true
+    },
+    {
+      "fact": "First drone (Karma) targeted for later in the year into an entrenched competitive market",
+      "url": "https://investor.gopro.com/press-releases",
+      "date": "2016-05-05",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/VOP",
+      "company": "Vantage Optics (alias VOP)",
+      "as_of": "current",
+      "market_cap_usd_m": 1220,
+      "share_price_usd": 18.2,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 403,
+        "total_debt_usd_m": 0,
+        "note": "~1/3 of market cap in cash, no debt"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 838,
+          "net_income_usd_m": 51
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 1185,
+          "revenue_growth_pct": 41.4,
+          "net_income_usd_m": 109
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 1377,
+          "revenue_growth_pct": 16.2,
+          "gross_margin_pct": 41.6,
+          "net_income_usd_m": 31,
+          "note": "profitable every year since inception until now"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1, reported ~5 weeks ago",
+        "revenue_usd_m": 156,
+        "revenue_growth_yoy_pct": -49.5,
+        "gaap_net_income_usd_m": -91,
+        "gross_margin_pct": 32.5,
+        "note": "first quarterly loss as a public company; channel inventory glut forced two price cuts on the flagship product; 7% workforce reduction announced"
+      },
+      "valuation": {
+        "ps_trailing": 0.75,
+        "ev_s_trailing": 0.59,
+        "pe_trailing": 39,
+        "note": "P/E on collapsing trailing earnings; optically cheap on sales",
+        "price_action": "stock -85% from its post-IPO high 20 months ago"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/VOP",
+      "business_description": "Category-defining consumer-hardware brand (rugged point-of-view cameras) with a passionate user community and strong brand awareness. Revenue tripled in the three years around its IPO, then demand hit a wall: the core enthusiast market appears saturated, upgrade cycles are lengthening, and smartphone cameras keep improving. Founder-CEO controls the vote. ~100% of revenue is still hardware despite a stated ambition to become a 'media platform' (content + software subscriptions).",
+      "recent_developments": [
+        "Botched flagship launch: priced too high, cut twice within months, retailer inventory glut, Q1 revenue -50% YoY.",
+        "Two hoped-for catalysts later this year: the company's first drone (entering an already crowded, price-competitive market against an entrenched leader) and a next-generation flagship camera.",
+        "Management reiterates the media-platform strategy but monetization remains undefined.",
+        "Several sell-side analysts have moved to 'value' framing: brand + cash pile + optionality at ~0.6x EV/sales."
+      ],
+      "macro_context": "Healthy consumer economy; no macro excuse — the demand problem is category-specific.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

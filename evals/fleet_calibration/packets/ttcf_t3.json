@@ -1,0 +1,123 @@
+{
+  "case_id": "ttcf_t3",
+  "alias": "PVF",
+  "category": "C",
+  "grading": "exit",
+  "real": "TTCF @ 2022-05-16 (~$7.00); GM ~11%, heavy burn, -75% from ATH",
+  "freeze_date": "2022-05-16",
+  "rescale_factor": 3.7,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $25.90 -> unrealized P&L -65%. Entered six quarters ago; held through the guidance cut. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 34,
+  "contamination_terms": [
+    "Tattooed Chef",
+    "TTCF",
+    "Ittella",
+    "Galletti",
+    "Forum Merger",
+    "Costco",
+    "Walmart",
+    "Sam's Club",
+    "Club Foods",
+    "Kroger",
+    "Karsten",
+    "New Mexico Food"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 7.0,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+    "benchmark_return_pct": -100,
+    "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+  },
+  "sources": [
+    {
+      "fact": "Q1-2022 results: revenue $72.2M (+37.3%), GM 11.3%, net loss -$17.7M, operating cash flow ~-$26M; FY guide $280-285M reiterated, GM guide 10-12%",
+      "url": "https://www.globenewswire.com/",
+      "date": "2022-05-11",
+      "verify": true
+    },
+    {
+      "fact": "FY2021 10-K: revenue $213.4M (+43.7%), GM 10.4%, net loss -$87.4M, operating cash flow ~-$51M; freight +70% YoY",
+      "url": "https://www.sec.gov/",
+      "date": "2022-03-11",
+      "verify": true
+    },
+    {
+      "fact": "Plant-based category demand slowing industry-wide; category leader revenue shrinking YoY",
+      "url": "https://www.wsj.com/",
+      "date": "2022-05-06",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/PVF",
+      "company": "Provida Foods (alias PVF)",
+      "as_of": "current",
+      "market_cap_usd_m": 2130,
+      "share_price_usd": 25.9,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 212,
+        "total_debt_usd_m": 3,
+        "note": "cash is down from ~519 three quarters ago (operating burn + the two plant acquisitions); at the last-quarter burn rate the runway is roughly 2-3 quarters without new financing or a sharp working-capital reversal"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-1 (just closed, final)",
+          "revenue_usd_m": 790,
+          "revenue_growth_pct": 43.7,
+          "gross_margin_pct": 10.4,
+          "net_income_usd_m": -323,
+          "operating_cash_flow_usd_m": -190,
+          "note": "GM 10.4% vs 14.6% the year before and vs the 20-25% originally guided; freight alone +70% YoY; net loss includes ~-177 non-cash tax allowance"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q0 = Q1 of the new FY, reported ~1 week ago",
+        "revenue_usd_m": 267,
+        "revenue_growth_yoy_pct": 37.3,
+        "gross_margin_pct": 11.3,
+        "gaap_net_loss_usd_m": -65,
+        "operating_cash_flow_usd_m": -98,
+        "note": "of the -98 operating outflow, ~-79 was a receivables build management attributes to timing; GM fell again sequentially despite pricing actions"
+      },
+      "guidance": {
+        "fy_revenue_usd_m": "1036-1055 reiterated (+~31%)",
+        "gross_margin_pct": "10-12 (the former 20-25% ambition is gone from the narrative)",
+        "note": "management now frames FY as an 'investment year' and points to margin recovery NEXT year"
+      },
+      "dilution": {
+        "share_count_vs_entry_pct": "+30",
+        "note": "no new equity raise yet, but at this burn rate and price a raise would be heavily dilutive"
+      },
+      "valuation": {
+        "ps_trailing": 2.5,
+        "pe_trailing": null,
+        "price_action": "stock -75% from its all-time high, -65% vs the sleeve's entry; broke to new all-time lows this month"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/PVF",
+      "business_description": "Plant-forward frozen-food brand, family-founded, vertically integrated. Entry thesis (six quarters ago): category tailwind + brand conversion + margin expansion toward 20%+ + concentration reduction. Status: revenue milestones are landing (distribution expanded to tens of thousands of mass-retail doors; growth +37%), but every PROFITABILITY milestone has failed for four consecutive quarters and the original margin framework has been abandoned by management.",
+      "recent_developments": [
+        "Gross margin has now printed ~10-11% for four straight quarters vs the 20-25% the thesis required; management blames freight/commodity inflation but competitors' margins have compressed far less.",
+        "Operating cash burn is severe (about -190 last FY, -98 last quarter alone); cash cover has fallen from 'years' to quarters.",
+        "The mass-retail expansion is REVENUE-successful but margin-dilutive: heavy slotting/promo spend, and the new doors reorder more slowly than club channels.",
+        "Plant-based category demand is now visibly slowing industry-wide; the category leader's revenue is SHRINKING YoY and several peers have issued going-concern or restructuring announcements.",
+        "Management insists no equity raise is imminent and points to inventory/receivable normalization as the cash fix; sell-side is split between 'deep value on sales' and 'uninvestable until the burn stops'."
+      ],
+      "macro_context": "Aggressive central-bank tightening underway; speculative growth and listing-vehicle names down 70-90%; food inflation at multi-decade highs squeezing low-margin manufacturers hardest.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

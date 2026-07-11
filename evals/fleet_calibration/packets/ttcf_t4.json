@@ -1,0 +1,125 @@
+{
+  "case_id": "ttcf_t4",
+  "alias": "PVF",
+  "category": "C",
+  "grading": "exit",
+  "real": "TTCF @ 2023-03-15 (~$1.20); going-concern, delisting risk",
+  "freeze_date": "2023-03-15",
+  "rescale_factor": 3.7,
+  "synthetic": false,
+  "expected_classes": [
+    "sell"
+  ],
+  "positioned": true,
+  "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $4.44 -> unrealized P&L -94%. Entered nine quarters ago; held through the entire decline. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+  "constraints_extra": "exit_rule",
+  "run_order": 35,
+  "contamination_terms": [
+    "Tattooed Chef",
+    "TTCF",
+    "Ittella",
+    "Galletti",
+    "Forum Merger",
+    "Costco",
+    "Walmart",
+    "Sam's Club",
+    "Club Foods",
+    "Kroger",
+    "Karsten",
+    "New Mexico Food"
+  ],
+  "resolution": {
+    "price_at_freeze_real": 1.2,
+    "price_at_horizon_real": 0.0,
+    "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+    "benchmark_return_pct": -100,
+    "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+  },
+  "sources": [
+    {
+      "fact": "Q3-2022 10-Q (filed late): going-concern substantial doubt first disclosed; exchange non-compliance notices",
+      "url": "https://www.sec.gov/",
+      "date": "2023-01-30",
+      "verify": true
+    },
+    {
+      "fact": "Cost-reduction/restructuring plan: exit private label, headcount cuts, plant sale exploration, 'strategic alternatives'",
+      "url": "https://www.globenewswire.com/",
+      "date": "2023-02-14",
+      "verify": true
+    },
+    {
+      "fact": "NT 10-K late-filing notice for FY-2022",
+      "url": "https://www.sec.gov/",
+      "date": "2023-03-14",
+      "verify": true
+    },
+    {
+      "fact": "FY-2022 FINAL figures used in packet (revenue $230.9M +11%, GROSS LOSS -5.8% GM, net -$141.7M, adj-EBITDA -$91.6M, cash ~$6M, covenant breach) — from the FY-2022 10-K, FILED AFTER THE FREEZE. Kept on record as the temporal audit's first catch (spec section 2 TTCF row); the point stays disqualified.",
+      "url": "https://www.sec.gov/",
+      "date": "2023-06-15",
+      "verify": true
+    }
+  ],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/PVF",
+      "company": "Provida Foods (alias PVF)",
+      "as_of": "current",
+      "market_cap_usd_m": 390,
+      "share_price_usd": 4.44,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 22,
+        "note": "cash ~22 at FY-end vs ~342 two years ago; the company breached the minimum-EBITDA covenant on its credit facility at FY-end; funding now hinges on asset sales, a dilutive raise, or a rescue investor"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-0 (just ended; preliminary — the annual report is LATE, a formal late-filing notice was filed this week)",
+          "revenue_usd_m": 854,
+          "revenue_growth_pct": 11,
+          "gross_margin_pct": -5.8,
+          "gross_profit_usd_m": -50,
+          "net_income_usd_m": -524,
+          "adj_ebitda_usd_m": -339,
+          "note": "GROSS LOSS for the full year — the company loses money before any operating cost; Q4 alone had a gross loss of ~-47"
+        },
+        {
+          "fy": "FY-1",
+          "revenue_usd_m": 790,
+          "revenue_growth_pct": 43.7,
+          "gross_margin_pct": 10.4,
+          "net_income_usd_m": -323
+        }
+      ],
+      "going_concern": {
+        "disclosed": true,
+        "note": "'substantial doubt about the ability to continue as a going concern' first appeared in the Q3 quarterly filing (itself filed late); the exchange has issued non-compliance notices for the late filings and the share price sits below continued-listing thresholds"
+      },
+      "restructuring": {
+        "note": "cost-reduction plan announced: exiting unprofitable private-label lines, headcount cuts, trying to sell one of the acquired plants; management is 'exploring strategic alternatives'"
+      },
+      "valuation": {
+        "ps_trailing": 0.46,
+        "pe_trailing": null,
+        "price_action": "stock -96% vs the sleeve's entry (-98% from all-time high); trades like an option on rescue financing"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/PVF",
+      "business_description": "Plant-forward frozen-food brand, family-founded. Entry thesis (nine quarters ago) is fully falsified on profitability: margins went 15% -> 10% -> NEGATIVE; the company sells product below cost. Revenue growth has also stalled (+11% and decelerating; the brand line is being rationalized). Auditor/going-concern language is on the record and the filings are late.",
+      "recent_developments": [
+        "Formal going-concern disclosure; annual report late with a filed extension notice; exchange non-compliance notices outstanding.",
+        "Covenant breach on the credit facility at FY-end; cash down to ~22 against a ~-339 adjusted-EBITDA year.",
+        "Management pivots: exiting private-label, cutting brand SKUs, seeking to sell a plant, 'exploring strategic alternatives' (widely read as seeking a buyer or rescue capital).",
+        "The plant-based frozen category is in outright decline; peers have filed for bankruptcy protection this year.",
+        "Any financing at this market cap would be massively dilutive; bankruptcy of the equity is an explicitly discussed scenario in sell-side and press coverage."
+      ],
+      "macro_context": "High rates; risk capital scarce; several small-cap consumer names have recently gone through Chapter-11 processes in which common equity recovered nothing.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}

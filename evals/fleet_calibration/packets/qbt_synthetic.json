@@ -1,0 +1,88 @@
+{
+  "case_id": "qbt_synthetic",
+  "alias": "QBT",
+  "category": "synthetic",
+  "grading": "synthetic_winner",
+  "real": "SYNTHETIC winner-shape (no real company)",
+  "freeze_date": null,
+  "rescale_factor": null,
+  "synthetic": true,
+  "expected_classes": [
+    "buy"
+  ],
+  "positioned": false,
+  "positions": "No existing position in QBT. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "constraints_extra": null,
+  "run_order": 1,
+  "contamination_terms": [],
+  "resolution": null,
+  "sources": [],
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/QBT",
+      "company": "Quantex Biotools (alias QBT)",
+      "as_of": "current",
+      "market_cap_usd_m": 4200,
+      "share_price_usd": 27.8,
+      "balance_sheet": {
+        "cash_and_equivalents_usd_m": 810,
+        "total_debt_usd_m": 2350,
+        "stockholders_equity_usd_m": 390,
+        "annual_interest_expense_usd_m": 168,
+        "note": "levered; maturities refinanced out 4-9 years, covenant headroom thin"
+      },
+      "annual_income_statement": [
+        {
+          "fy": "FY-3",
+          "revenue_usd_m": 5900,
+          "net_income_usd_m": -95
+        },
+        {
+          "fy": "FY-2",
+          "revenue_usd_m": 6100,
+          "revenue_growth_pct": 3.4,
+          "net_income_usd_m": -470
+        },
+        {
+          "fy": "FY-1 (latest full year)",
+          "revenue_usd_m": 4450,
+          "revenue_growth_pct": -27.0,
+          "gross_margin_pct": 29,
+          "net_income_usd_m": -740,
+          "note": "gross margin depressed by write-downs; structural GM nearer ~34%"
+        }
+      ],
+      "latest_quarter": {
+        "which": "Q1, reported ~6 weeks ago",
+        "revenue_usd_m": 940,
+        "revenue_growth_yoy_pct": -18,
+        "gaap_net_income_usd_m": -120,
+        "note": "fourth consecutive quarterly loss; opex cut ~28% over two years"
+      },
+      "valuation": {
+        "ps_trailing": 0.94,
+        "ev_s_trailing": 1.29,
+        "pe_trailing": null,
+        "ebitda": "approximately breakeven",
+        "price_action": "stock -58% over two years but up ~160% off its multi-year low a few months ago"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/QBT",
+      "business_description": "Designer of automated laboratory instrumentation and the consumable reagent cartridges they run — the #2 player in both instruments and consumables against a dominant incumbent (~75-85% share in each). Revenue fell by a quarter over four years as it lost placements in clinical labs and collapsed to ~2% share of the hospital-network segment (from ~20% a decade ago). The business is kept alive by an annuity: it is the sole instrument supplier to TWO national reference-lab chains under long-term contracts (~$1.1B/yr, stable). A respected instrumentation engineer became CEO two years ago, cut opex ~28%, refinanced the debt, and bet the company on one platform.",
+      "recent_developments": [
+        "The company is 12-18 months from launching a CLEAN-SHEET analyzer platform; management claims ~40% throughput and cost-per-test advantage vs its current platform in internal validation. If real, first competitive product in a decade; if it slips, the balance sheet leaves little room for another attempt.",
+        "Just signed a ~$380M up-front technology-licensing joint venture in a large overseas market — non-dilutive cash plus a future royalty stream.",
+        "The dominant incumbent's product cadence has visibly slipped — it delayed its own next-generation platform for the second time, the first crack in a decades-long execution record.",
+        "The consumables line attached to upcoming reference-lab contract renewals is growing.",
+        "Sell-side consensus is deeply skeptical: most models assume the new platform gains little share and value the equity primarily on the reference-lab annuity."
+      ],
+      "macro_context": "Core clinical-lab instrument market flat to slightly declining; testing volumes growing steadily; sector inventory correction bottoming.",
+      "confidence": "HIGH"
+    }
+  ],
+  "changelog": []
+}
