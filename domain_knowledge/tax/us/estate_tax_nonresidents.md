@@ -8,7 +8,7 @@ sources:
     retrieved: 2026-07-11
     tier: 1
   - url: https://www.irs.gov/forms-pubs/about-form-706-na
-    retrieved: 2026-07-10
+    retrieved: 2026-07-11
     tier: 1
   - url: https://www.irs.gov/pub/irs-pdf/i706na.pdf
     retrieved: 2026-07-11
