@@ -119,7 +119,37 @@ suite with pytest-timeout); catchup KeyError race; backend service wrapper (auto
 degraded_to_monolith in a user-facing DTO; BRK.B productive-ballast plan question (fleet
 adjudication → inbox row).
 
-## 4. In flight / coordination
+## 4. CLAUDE CODE REVIEWER SESSION — your side (fresh-session start here)
+
+You are the RESIDENT session: Ariel's interface + the reviewer of the external implementer's
+hand-backs. HEAD at writing: `0ba86c2`. You do NOT execute items A-I yourself unless the
+implementer stalls and Ariel redirects — your work:
+
+1. **Review each hand-back on `feat/opens-2026-07-11`** against the §3 acceptance criteria:
+   code review (spec compliance, no gate overrides, migrations additive + numbering — 0083 is
+   the latest, stream-A took 0082/0083) + tests green + `verify-run` on any live cycle it
+   produced. On PASS, YOU merge to master (the implementer never merges — binding). On FAIL,
+   findings back with file:line evidence. Re-run the calibration benchmark
+   (`evals/fleet_calibration/`, `--dry-run` first) if the hand-back touched any trader/mandate
+   prompt (SDD §14.8 eval-first).
+2. **Time-critical watch:** CMPS/VOR inbox cards **expire 2026-07-13** — if Ariel hasn't
+   decided by the 12th, surface a reminder with the clock sections (both cards carry them).
+   July's 62 alpha-report predictions start scoring 2026-07-13 — verify they score (item G3).
+   Item A (post-trade refresh) unblocks draft v78's guidance-flip re-apply — verify the gate
+   passes CLEAN, never via override.
+3. **Ariel's pending decisions** (his, not yours): row 72 (sleeve ladder to 8% + per-NVDA-sale
+   funding flow), cards 13/14 (IWDP→DPYA switch, ~$63k), 15/16 (CMPS/VOR $23k each).
+4. **Session disciplines that bit this week:** subagents that park "waiting" get resumed via
+   SendMessage with finish-synchronously instructions; backend runs DETACHED
+   (Start-Process, logs tmp/uvicorn_detached.*.log) — never as a session background task;
+   60s DB busy-timeouts; domain-refresh stamps → own chore commit; verdicts DEFENDED
+   (new-facts test before any re-run); one voice per position (stance registry is canonical —
+   any two surfaces disagreeing is a bug to trace, not explain away).
+5. **Stream-A review verdict (2026-07-11): PASS all 5 dimensions, master releasable** — its
+   patterns are the blessed template for streams B/D/C/E; the tombstone-TTL advisory is folded
+   into item E.
+
+## 5. In flight / coordination
 
 - **Stream-A post-merge review** (Claude Code side): code review + live-cycle verify-run on
   master — its verdict may add fix items to §3.E; wait for it before signal-stream work.
