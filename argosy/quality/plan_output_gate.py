@@ -678,6 +678,17 @@ def gate_plan_output(
                 )
             )
 
+    # Whole-surface FI-shock plan_text: horizons + section body_md (item 3).
+    # Other prose gates stay horizon-scoped.
+    plan_text = "\n\n".join(t for t in horizon_text.values() if t)
+    fi_shock_plan_text = plan_text
+    if synth is not None:
+        from argosy.quality.fi_shock_qualifier import section_bodies_plan_text
+
+        _sec = section_bodies_plan_text(synth)
+        if _sec:
+            fi_shock_plan_text = (plan_text + "\n\n" + _sec).strip()
+
     # Task 4 — FI-sufficiency-under-NVDA-shock. Composes the synth's
     # sufficiency claim with the NVDA concentration tail. Runs only when the
     # resolver supplies all four shock inputs as RESOLVED values; any missing
@@ -691,10 +702,9 @@ def gate_plan_output(
                 )
 
                 shock_result = fi_sufficiency_under_shock(**shock_inputs)
-                plan_text = "\n\n".join(t for t in horizon_text.values() if t)
                 verdict.extend(
                     check_fi_sufficiency_under_shock(
-                        shock_result=shock_result, plan_text=plan_text
+                        shock_result=shock_result, plan_text=fi_shock_plan_text
                     )
                 )
         except Exception as exc:  # noqa: BLE001 — a gate must not crash synthesis
@@ -714,7 +724,7 @@ def gate_plan_output(
     # Stale-date output + cap-derivation: both read the joined horizon prose
     # (same construction as the FI-shock wiring). Each runs only when its
     # required input is present, so existing gate_plan_output tests are unchanged.
-    plan_text = "\n\n".join(t for t in horizon_text.values() if t)
+    # ``plan_text`` was built above (horizons only).
 
     # Stale-date output — needs `today` to know what is overdue.
     if today is not None and plan_text:
@@ -789,7 +799,8 @@ def gate_plan_output(
                 fx_shock_result = fi_sufficiency_under_fx_shock(**fx_inputs)
                 verdict.extend(
                     check_fi_sufficiency_under_fx_shock(
-                        fx_shock_result=fx_shock_result, plan_text=plan_text
+                        fx_shock_result=fx_shock_result,
+                        plan_text=fi_shock_plan_text,
                     )
                 )
         except Exception as exc:  # noqa: BLE001 — a gate must not crash synthesis

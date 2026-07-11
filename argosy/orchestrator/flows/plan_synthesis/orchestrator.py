@@ -1747,10 +1747,30 @@ def run_synthesis(
                     # Persist the surgically-corrected bodies in place so the next
                     # assemble re-reads the reconciled prose (one commit; no graph
                     # write, so there is no partial-state hazard).
+                    _own_bodies_dirty = False
+                    _sec_qualified = False
+                    _n = 0
                     if _own.prose_edits:
                         draft.horizon_long_md = _own.bodies["long"]
                         draft.horizon_medium_md = _own.bodies["medium"]
                         draft.horizon_short_md = _own.bodies["short"]
+                        _own_bodies_dirty = True
+                    # Section body_md is outside the horizon bodies dict —
+                    # apply FI-shock qualifier even when horizon prose needed
+                    # no edit (horizon already qualified; sections not).
+                    if _own_resolved is not None and draft.sections_json:
+                        from argosy.quality.fi_shock_qualifier import (
+                            qualify_sections_json_from_resolved,
+                        )
+
+                        _sj, _n = qualify_sections_json_from_resolved(
+                            draft.sections_json, _own_resolved,
+                        )
+                        if _n:
+                            draft.sections_json = _sj
+                            _own_bodies_dirty = True
+                            _sec_qualified = True
+                    if _own_bodies_dirty:
                         session.commit()
                     _pkg._record_phase_completion(
                         user_id=user_id, decision_run_id=decision_run_id,
@@ -1760,10 +1780,11 @@ def run_synthesis(
                             f"{len(_own.value_change_requests)} figure changes surfaced, "
                             f"{len(_own.declines)} declines, "
                             f"{len(_own.unaddressed)} unaddressed, {len(_own.unowned)} unowned"
+                            + (f", {_n} sections FI-qualified" if _sec_qualified else "")
                         ),
                         agent_report_rows=[],
                     )
-                    if _own.made_progress:
+                    if _own.made_progress or _sec_qualified:
                         _reader_verdict, _reader_row = _assemble_and_read()
                         # Iterate (or exit clean): the while condition re-checks BLOCK
                         # and the round bound; never fall through to a full re-synth
@@ -1963,6 +1984,16 @@ def run_synthesis(
                         draft.horizon_long_md = _surg.corrected_bodies["long"]
                         draft.horizon_medium_md = _surg.corrected_bodies["medium"]
                         draft.horizon_short_md = _surg.corrected_bodies["short"]
+                        if _surg_resolved is not None and draft.sections_json:
+                            from argosy.quality.fi_shock_qualifier import (
+                                qualify_sections_json_from_resolved,
+                            )
+
+                            _sj, _n = qualify_sections_json_from_resolved(
+                                draft.sections_json, _surg_resolved,
+                            )
+                            if _n:
+                                draft.sections_json = _sj
                         session.commit()
                         _reader_verdict, _reader_row = _assemble_and_read()
                         if getattr(_reader_verdict, "overall_assessment", "") != "BLOCK":
@@ -4700,6 +4731,7 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     # resolver manifest so a synth-fabricated/stale figure never reaches the
     # body. Best-effort: a resolver failure leaves it unscrubbed (the /accept
     # gate is the backstop).
+    _manifest = None
     try:
         from argosy.quality.numeric_source_gate import (
             scrub_headline_numeric_source,
@@ -4771,6 +4803,30 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
         _medium_md = _leftover.sub(_PENDING, _medium_md)
         _short_md = _leftover.sub(_PENDING, _short_md)
         _sections_json = _leftover.sub(_PENDING, _sections_json)
+
+    # Whole-surface FI-shock qualifier on section body_md (item 3). Horizon
+    # MD is owned by owner-routed / surgical reconcile; sections_json is not
+    # in that bodies dict, so qualify it here on every assemble.
+    if _manifest is not None and _sections_json:
+        try:
+            from argosy.quality.fi_shock_qualifier import (
+                qualify_sections_json_from_resolved,
+            )
+
+            _sections_json, _sec_q = qualify_sections_json_from_resolved(
+                _sections_json, _manifest,
+            )
+            if _sec_q:
+                log.info(
+                    "plan_synthesis.section_fi_claims_qualified",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    sections_edited=_sec_q,
+                )
+        except Exception as exc:  # noqa: BLE001 — never break assemble
+            log.warning(
+                "plan_synthesis.section_fi_qualifier_failed",
+                user_id=user_id, error=str(exc),
+            )
 
     # De-jargon then strip history leaks over the FULL assembled body (the
     # appendix is included). Order: jargon → history, matching the prior inline.
