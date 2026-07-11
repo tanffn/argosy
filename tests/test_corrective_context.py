@@ -1623,3 +1623,141 @@ def test_migration_admits_executed_status(session):
     session.commit()  # raises IntegrityError if the CHECK still rejects it
     session.refresh(row)
     assert row.status == "executed"
+
+
+# ---------------------------------------------------------------------------
+# Source 6 — accept-gate reject harvest
+# ---------------------------------------------------------------------------
+
+
+def _add_accept_gate_draft(
+    session,
+    *,
+    base_plan_id=None,
+    violations_by_check=None,
+    rejected_at=None,
+    role="draft",
+    decision_run_id=None,
+):
+    if base_plan_id is None:
+        base_plan_id = session.query(PlanVersion).filter_by(
+            user_id="ariel", role="current"
+        ).one().id
+    if rejected_at is None:
+        rejected_at = datetime.now(timezone.utc)
+    if isinstance(rejected_at, datetime):
+        rejected_at_s = (
+            rejected_at.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    else:
+        rejected_at_s = rejected_at
+    si = {
+        "accept_gate_reject": {
+            "draft_id": None,  # filled after insert
+            "decision_run_id": decision_run_id,
+            "base_plan_id": base_plan_id,
+            "rejected_at": rejected_at_s,
+            "summary": "GATE FAIL — headline_numeric_source=1",
+            "violations_by_check": violations_by_check or {
+                "headline_numeric_source": [
+                    {
+                        "detail": "headline 'age 13' untraced",
+                        "locator": "medium:fi_timeline",
+                    }
+                ],
+            },
+            "warned_only": {},
+        },
+    }
+    pv = PlanVersion(
+        user_id="ariel", role=role, version_label="gate-reject-draft",
+        raw_markdown="", decision_run_id=decision_run_id,
+        synthesis_inputs_json=json.dumps(si),
+        derived_from_id=base_plan_id,
+    )
+    session.add(pv)
+    session.commit()
+    # Stamp draft_id into the blob (mirrors post_draft_accept write shape).
+    si["accept_gate_reject"]["draft_id"] = pv.id
+    pv.synthesis_inputs_json = json.dumps(si)
+    session.commit()
+    return pv
+
+
+def test_accept_gate_reject_harvested(session):
+    """Source 6: persisted accept_gate_reject violations become corrections."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    draft = _add_accept_gate_draft(session)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert len(ctx.corrections) == 1
+    c = ctx.corrections[0]
+    assert c.source == "accept_gate_reject"
+    assert c.reconcile_status == "accept_gate_reject"
+    assert c.topic == "headline_numeric_source"
+    assert c.plan_item_ref == "medium:fi_timeline"
+    assert "age 13" in c.summary
+    assert c.source_draft_id == draft.id
+    assert ctx.accept_gate_reject_draft_id == draft.id
+    assert "accept-gate rejects" in ctx.rendered
+    assert ctx.to_payload()["accept_gate_reject"]["draft_id"] == draft.id
+
+
+def test_accept_gate_reject_alone_makes_run_corrective(session):
+    """Gate violations alone (no critique / FM rejection) make a corrective run."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _add_accept_gate_draft(session)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert all(c.source == "accept_gate_reject" for c in ctx.corrections)
+    assert ctx.source_critique_id is None
+    assert ctx.verdict_feedback_draft_id is None
+
+
+def test_accept_gate_reject_staleness_guard(session):
+    """A gate reject older than the latest critique is not harvested."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    old = datetime.now(timezone.utc) - timedelta(days=2)
+    _add_accept_gate_draft(session, rejected_at=old)
+    # Critique with no open findings — still stamps created_at newer than reject.
+    _add_critique(session, [], finding_status=[])
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is None
+
+
+def test_accept_gate_reject_lineage_guard(session):
+    """Gate reject on a different base_plan_id is skipped."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    _add_accept_gate_draft(session, base_plan_id=999999)
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is None
+
+
+def test_accept_gate_reject_dedup_vs_critique(session):
+    """Same subject already in critique corrections is not duplicated."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    f = _finding(
+        "headline_numeric_source",
+        "medium:fi_timeline",
+        "headline 'age 13' untraced",
+    )
+    _add_critique(session, [f], finding_status=["escalated"])
+    _add_accept_gate_draft(
+        session,
+        violations_by_check={
+            "headline_numeric_source": [
+                {"detail": "headline 'age 13' untraced", "locator": "medium:fi_timeline"},
+            ],
+        },
+    )
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    assert len(ctx.corrections) == 1
+    assert ctx.corrections[0].source == "critique"

@@ -45,6 +45,14 @@ Sources (all already persisted; no new state):
    corrections via ``findings_match``. Items the prior corrective run
    resolved that the verdicts did NOT re-flag render as a do-not-reopen
    list.
+6. ACCEPT-GATE REJECT — a draft whose ``POST /accept`` failed the
+   deterministic plan-output gate (persisted as
+   ``synthesis_inputs_json.accept_gate_reject`` by ``post_draft_accept``
+   before the 422). Each blocking ``violations_by_check`` entry becomes a
+   ``source='accept_gate_reject'`` correction. Without this source, gate
+   failures that never flipped ``fund_manager_decision`` (drafts 80-85)
+   were invisible to the next corrective cycle. Same lineage + staleness
+   guards as source 5; deduped against critique + verdict-feedback.
 
 Fail-soft by contract: the orchestrator wraps the call; any exception here
 degrades the run to today's behavior (the part-C gate is the backstop).
@@ -119,11 +127,13 @@ class Correction:
     # the patch-reachability classifier admits it under rule 2 even without
     # numeric canonical/wrong pairs. Pure observations stay "" → FULL.
     required_statement: str = ""
-    # Provenance (source 5, verdict feedback): 'critique' for reconcile-loop
-    # findings; 'verdict_feedback' for corrections harvested from a prior
-    # corrective draft's FM rejection / reader block. Verdict-feedback
-    # corrections also carry which agent produced the verdict and the
-    # source run/draft ids so payloads + rendering can distinguish them.
+    # Provenance (source 5/6): 'critique' for reconcile-loop findings;
+    # 'verdict_feedback' for corrections harvested from a prior corrective
+    # draft's FM rejection / reader block; 'accept_gate_reject' for
+    # deterministic plan-output-gate 422s persisted on the draft.
+    # Verdict-feedback corrections also carry which agent produced the
+    # verdict and the source run/draft ids so payloads + rendering can
+    # distinguish them.
     source: str = "critique"
     verdict_agent: str = ""  # 'fund_manager' | 'whole_artifact_reader'
     source_run_id: int | None = None
@@ -253,6 +263,10 @@ class CorrectiveContext:
     # [{"topic", "plan_item_ref"}, ...] — corrections the prior corrective
     # draft resolved that the FM/reader did NOT re-flag.
     verdict_confirmed_resolved: list[dict[str, Any]] = field(default_factory=list)
+    # Accept-gate reject provenance (source 6): the draft whose /accept
+    # 422 was harvested into corrections.
+    accept_gate_reject_draft_id: int | None = None
+    accept_gate_reject_run_id: int | None = None
     # FIX 1 provenance: critique findings the builder SUPPRESSED because the
     # most recent corrective draft's corrections-landed floor verified them
     # landed (and no newer verdict re-flagged them), + the draft that landed
@@ -287,6 +301,14 @@ class CorrectiveContext:
             "landed_suppressed": [dict(i) for i in self.landed_suppressed],
             "landed_source_draft_id": self.landed_source_draft_id,
             "settled_values": [dict(s) for s in self.settled_values],
+            "accept_gate_reject": (
+                {
+                    "draft_id": self.accept_gate_reject_draft_id,
+                    "run_id": self.accept_gate_reject_run_id,
+                }
+                if self.accept_gate_reject_draft_id is not None
+                else None
+            ),
             "verdict_feedback": (
                 {
                     "draft_id": self.verdict_feedback_draft_id,
@@ -1061,6 +1083,106 @@ def _harvest_verdict_feedback(
     }
 
 
+def _parse_iso_utc_naive(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp (with or without trailing Z) to naive UTC."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        return _as_utc_naive(datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
+def _harvest_accept_gate_reject(
+    session: Session,
+    *,
+    user_id: str,
+    current_plan_id: int,
+    critique_created_at: datetime | None,
+) -> dict[str, Any] | None:
+    """Source 6: structured gate-violation findings from a draft whose
+    ``/accept`` failed the deterministic plan-output gate.
+
+    Returns ``{"draft_id", "run_id", "findings", "summary"}`` or None.
+    """
+    rows = session.execute(
+        select(PlanVersion)
+        .where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role.in_(("draft", "superseded")),
+            PlanVersion.synthesis_inputs_json.is_not(None),
+        )
+        .order_by(PlanVersion.id.desc())
+        .limit(25)
+    ).scalars().all()
+    crit = _as_utc_naive(critique_created_at)
+    for pv in rows:
+        try:
+            si = json.loads(pv.synthesis_inputs_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(si, dict):
+            continue
+        blob = si.get("accept_gate_reject")
+        if not isinstance(blob, dict):
+            continue
+        base = blob.get("base_plan_id")
+        if base != current_plan_id and pv.derived_from_id != current_plan_id:
+            continue  # other lineage — keep scanning
+        rejected_at = (
+            _parse_iso_utc_naive(blob.get("rejected_at"))
+            or _as_utc_naive(pv.imported_at)
+        )
+        if crit is not None and (rejected_at is None or rejected_at <= crit):
+            _log.info(
+                "corrective_context.accept_gate_reject_stale_skipped",
+                user_id=user_id,
+                draft_id=pv.id,
+                rejected_at=rejected_at.isoformat() if rejected_at else None,
+                critique_created_at=crit.isoformat(),
+            )
+            return None
+        findings: list[dict[str, Any]] = []
+        vbc = blob.get("violations_by_check") or {}
+        if isinstance(vbc, dict):
+            for check, viols in vbc.items():
+                if not isinstance(viols, list):
+                    continue
+                for v in viols:
+                    if not isinstance(v, dict):
+                        continue
+                    locator = str(v.get("locator") or "")
+                    detail = str(v.get("detail") or "")
+                    findings.append({
+                        "severity": "RED",
+                        "topic": str(check),
+                        "plan_item_ref": locator,
+                        "summary": detail,
+                        "evidence": [locator] if locator else [],
+                        "source": "accept_gate_reject",
+                        "source_draft_id": pv.id,
+                    })
+        if not findings:
+            continue
+        run_id = blob.get("decision_run_id") or pv.decision_run_id
+        _log.info(
+            "corrective_context.accept_gate_reject_harvested",
+            user_id=user_id,
+            draft_id=pv.id,
+            run_id=run_id,
+            findings=len(findings),
+            summary=str(blob.get("summary") or "")[:120],
+        )
+        return {
+            "draft_id": pv.id,
+            "run_id": run_id,
+            "findings": findings,
+            "summary": str(blob.get("summary") or ""),
+        }
+    return None
+
+
 def _as_utc_naive(dt: datetime | None) -> datetime | None:
     """Normalize to naive-UTC for comparison (SQLite drops tzinfo; the
     project convention is naive == UTC)."""
@@ -1205,18 +1327,28 @@ def _render_block(ctx: CorrectiveContext) -> str:
             if s.get("statement"):
                 entry += f" — {s['statement']}"
             lines.append(entry)
-    critique_corrections = [
+    non_verdict = [
         c for c in ctx.corrections if c.source != "verdict_feedback"
     ]
     verdict_corrections = [
         c for c in ctx.corrections if c.source == "verdict_feedback"
     ]
-    if critique_corrections:
-        lines.append(
+    accept_gate_corrections = [
+        c for c in ctx.corrections if c.source == "accept_gate_reject"
+    ]
+    if non_verdict:
+        header = (
             "\nCORRECTIONS (each must be resolved; the post-run verifier "
             "checks each one):"
         )
-        for c in critique_corrections:
+        if accept_gate_corrections:
+            header = (
+                "\nCORRECTIONS (incl. accept-gate rejects from draft "
+                f"#{ctx.accept_gate_reject_draft_id}; each must be resolved; "
+                "the post-run verifier checks each one):"
+            )
+        lines.append(header)
+        for c in non_verdict:
             evidence = "; ".join(c.evidence) if c.evidence else "(none)"
             canon = (
                 "; ".join(
@@ -1413,6 +1545,24 @@ def build_corrective_context(
                 user_id=user_id, error=str(exc)[:200],
             )
 
+    # ---- Source 6: accept-gate 422 violations persisted on a draft --------
+    accept_gate_findings: list[dict[str, Any]] = []
+    accept_gate_harvest: dict[str, Any] | None = None
+    if current is not None:
+        try:
+            accept_gate_harvest = _harvest_accept_gate_reject(
+                session,
+                user_id=user_id,
+                current_plan_id=current.id,
+                critique_created_at=critique_created_at,
+            )
+        except Exception as exc:  # noqa: BLE001 — source 6 is best-effort
+            accept_gate_harvest = None
+            _log.warning(
+                "corrective_context.accept_gate_reject_failed",
+                user_id=user_id, error=str(exc)[:200],
+            )
+
     # FIX 1 (Ariel 2026-07-08) — suppress verified-landed corrections. The
     # critique row never refreshes after a corrective draft lands its
     # corrections, so the same findings re-attach every pass (live: run 150
@@ -1442,7 +1592,8 @@ def build_corrective_context(
             )
         if landed:
             harvest_findings = (
-                verdict_harvest["findings"] if verdict_harvest else []
+                (verdict_harvest["findings"] if verdict_harvest else [])
+                + (accept_gate_harvest["findings"] if accept_gate_harvest else [])
             )
             kept: list[tuple[dict[str, Any], str]] = []
             suppressed: list[dict[str, Any]] = []
@@ -1493,6 +1644,19 @@ def build_corrective_context(
                 verdict_harvest["confirmed_resolved"]
             )
 
+    if accept_gate_harvest is not None:
+        for f in accept_gate_harvest["findings"]:
+            if any(findings_match(f, sf) for sf, _ in selected):
+                continue
+            if any(findings_match(f, vf) for vf in verdict_findings):
+                continue
+            if any(findings_match(f, af) for af in accept_gate_findings):
+                continue
+            accept_gate_findings.append(f)
+        if accept_gate_findings:
+            ctx.accept_gate_reject_draft_id = accept_gate_harvest["draft_id"]
+            ctx.accept_gate_reject_run_id = accept_gate_harvest.get("run_id")
+
     # ---- Source 3: accepted adjudication proposals → directives ----------
     for i, p in enumerate(_load_directive_proposals(session, user_id=user_id), 1):
         detail = (p.rationale_md or "").strip()
@@ -1538,7 +1702,7 @@ def build_corrective_context(
         )
         ctx.proposal_ids.append(p.id)
 
-    if not selected and not verdict_findings and not ctx.directives:
+    if not selected and not verdict_findings and not accept_gate_findings and not ctx.directives:
         return None
 
     # ---- Source 4: derived-fact join --------------------------------------
@@ -1605,6 +1769,24 @@ def build_corrective_context(
             )
         )
 
+    # Accept-gate reject corrections (source 6) — deterministic gate
+    # violations; no figure extraction (detail/locator are the content).
+    for j, f in enumerate(accept_gate_findings, len(ctx.corrections) + 1):
+        ctx.corrections.append(
+            Correction(
+                index=j,
+                severity=str(f["severity"]),
+                topic=str(f["topic"]),
+                plan_item_ref=str(f["plan_item_ref"]),
+                summary=str(f["summary"]),
+                evidence=[str(e) for e in f.get("evidence") or []],
+                reconcile_status="accept_gate_reject",
+                source="accept_gate_reject",
+                source_run_id=ctx.accept_gate_reject_run_id,
+                source_draft_id=ctx.accept_gate_reject_draft_id,
+            )
+        )
+
     # Zigzag-settled values — applied AFTER every correction (critique +
     # verdict feedback) is assembled so the settled figure overrides any
     # stale echo either source carried. Best-effort: a settlement loader
@@ -1652,6 +1834,7 @@ def build_corrective_context(
         source_critique_id=ctx.source_critique_id,
         verdict_feedback_draft_id=ctx.verdict_feedback_draft_id,
         verdict_feedback_run_id=ctx.verdict_feedback_run_id,
+        accept_gate_reject_draft_id=ctx.accept_gate_reject_draft_id,
     )
     return ctx
 

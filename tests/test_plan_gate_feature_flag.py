@@ -14,6 +14,7 @@ into ``POST /api/plan/draft/{draft_id}/accept``:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -215,12 +216,66 @@ def test_accept_v20_draft_enforce_mode_returns_422(
     assert "jargon_leak" in detail["violations_by_check"]
     assert "hint" in detail
 
-    # Draft remains in 'draft' role — not promoted.
+    # Draft remains in 'draft' role — not promoted — but the 422 detail
+    # must persist for the next corrective harvest (source 6).
     sess = client_with_db.app.state.session_factory()
     try:
         pv = sess.get(PlanVersion, draft_id)
         assert pv.role == "draft"
         assert pv.accepted_at is None
+        si = json.loads(pv.synthesis_inputs_json or "{}")
+        blob = si["accept_gate_reject"]
+        assert blob["draft_id"] == draft_id
+        assert "history_leak" in blob["violations_by_check"]
+        assert "jargon_leak" in blob["violations_by_check"]
+        assert blob["summary"] == detail["summary"]
+    finally:
+        sess.close()
+
+
+def test_accept_gate_reject_feeds_corrective_context(
+    client_with_db, monkeypatch,
+):
+    """End-to-end: /accept 422 → build_corrective_context sees Source 6."""
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    from argosy.services.corrective_context import build_corrective_context
+
+    reload_settings()
+    # Current plan required for lineage + harvest (source 6).
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.add(PlanVersion(
+            user_id="ariel", role="current", version_label="v77",
+            raw_markdown="", horizon_long_md="# Long",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md=_v20_fixture_md("long"),
+        horizon_medium_md=_v20_fixture_md("medium"),
+        horizon_short_md=_v20_fixture_md("short"),
+        horizon_long_json=_v20_fixture_json("long"),
+        horizon_medium_json=_v20_fixture_json("medium"),
+        horizon_short_json=_v20_fixture_json("short"),
+    )
+    r = client_with_db.post(
+        f"/api/plan/draft/{draft_id}/accept?user_id=ariel"
+    )
+    assert r.status_code == 422, r.text
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        ctx = build_corrective_context(sess, user_id="ariel")
+        assert ctx is not None
+        assert ctx.accept_gate_reject_draft_id == draft_id
+        topics = {c.topic for c in ctx.corrections if c.source == "accept_gate_reject"}
+        assert "history_leak" in topics or "jargon_leak" in topics
     finally:
         sess.close()
 

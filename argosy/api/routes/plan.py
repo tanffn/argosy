@@ -3557,21 +3557,34 @@ def post_draft_accept(
                 },
             )
         elif blocking and get_settings().plan_gate_enforce:
+            violations_by_check = {
+                check.value: [
+                    {"detail": v.detail, "locator": v.locator}
+                    for v in viols
+                ]
+                for check, viols in blocking.items()
+            }
+            warned_only = {
+                check.value: len(viols) for check, viols in warned.items()
+            }
+            # Persist BEFORE the 422 so the next corrective harvest can
+            # read the gate (drafts 80-85: response-only 422 meant the
+            # harvester never saw these violations).
+            _persist_accept_gate_reject(
+                db,
+                user_id=user_id,
+                pv=pv,
+                summary=gate_verdict.summary(),
+                violations_by_check=violations_by_check,
+                warned_only=warned_only,
+            )
             raise HTTPException(
                 status_code=422,
                 detail={
                     "error": "plan_output_gate_failed",
                     "summary": gate_verdict.summary(),
-                    "violations_by_check": {
-                        check.value: [
-                            {"detail": v.detail, "locator": v.locator}
-                            for v in viols
-                        ]
-                        for check, viols in blocking.items()
-                    },
-                    "warned_only": {
-                        check.value: len(viols) for check, viols in warned.items()
-                    },
+                    "violations_by_check": violations_by_check,
+                    "warned_only": warned_only,
                     "hint": (
                         "Re-run synthesis after addressing the violations, "
                         "or pass ?override_gate=true to force-accept "
@@ -4050,6 +4063,69 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
         if gate_verdict.violations[check] and check not in blocking
     }
     return blocking, warned
+
+
+def _persist_accept_gate_reject(
+    db: "Session",
+    *,
+    user_id: str,
+    pv: "PlanVersion",
+    summary: str,
+    violations_by_check: dict[str, list[dict[str, Any]]],
+    warned_only: dict[str, int],
+) -> None:
+    """Write accept-gate 422 detail onto the draft for corrective harvest.
+
+    ``build_corrective_context`` Source 6 reads ``synthesis_inputs_json
+    .accept_gate_reject``. Without this write the HTTP 422 body is the
+    only copy of the violations and the next corrective cycle cannot
+    converge on them (drafts 80-85 today). Does not flip
+    ``fund_manager_decision`` — deterministic gate is a different
+    authority from FM/reader rejection.
+    """
+    try:
+        inputs = json.loads(pv.synthesis_inputs_json) if pv.synthesis_inputs_json else {}
+        if not isinstance(inputs, dict):
+            inputs = {}
+    except (TypeError, ValueError):
+        inputs = {}
+
+    base_plan_id: int | None = None
+    corrective = inputs.get("corrective")
+    if isinstance(corrective, dict) and corrective.get("base_plan_id") is not None:
+        try:
+            base_plan_id = int(corrective["base_plan_id"])
+        except (TypeError, ValueError):
+            base_plan_id = None
+    if base_plan_id is None and pv.derived_from_id is not None:
+        base_plan_id = int(pv.derived_from_id)
+    if base_plan_id is None:
+        from argosy.state.queries import get_current_plan
+
+        current = get_current_plan(db, user_id)
+        if current is not None:
+            base_plan_id = current.id
+
+    inputs["accept_gate_reject"] = {
+        "draft_id": pv.id,
+        "decision_run_id": pv.decision_run_id,
+        "base_plan_id": base_plan_id,
+        "rejected_at": datetime.now(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "summary": summary,
+        "violations_by_check": violations_by_check,
+        "warned_only": warned_only,
+    }
+    pv.synthesis_inputs_json = json.dumps(inputs)
+    db.commit()
+    logger.info(
+        "plan.accept_gate_reject_persisted user=%s draft=%s summary=%s checks=%s",
+        user_id,
+        pv.id,
+        summary,
+        sorted(violations_by_check.keys()),
+    )
 
 
 def _nearest_ancestor_decision_run_id(
