@@ -16,6 +16,8 @@ _RESOLVED = {
     "concentration.nvda_cap_pct": 0.13,
     "portfolio.liquid_net_worth_nis": 11687925.80,
     "retirement.fi_total_capital_nis": 11836133.33,
+    "retirement.fi_shock_net_worth_nis": 9_912_041.0,
+    "retirement.fi_fx_shock_net_worth_nis": 10_754_153.0,
 }
 
 
@@ -46,6 +48,19 @@ def test_build_derives_locked_numbers(monkeypatch):
     assert facts["nvda_sell_sh"] == 11471 - expected_target
     assert facts["nvda_cap_breach_x"] == 4.81
     assert round(facts["fi_margin_liquid_nis"]) == -148208
+    assert facts["fi_shock_net_worth_nis"] == 9_912_041.0
+    assert facts["fi_fx_shock_net_worth_nis"] == 10_754_153.0
+
+
+def test_render_guidance_includes_shock_net_worths():
+    facts = {
+        "fi_margin_liquid_nis": -148208.0,
+        "fi_shock_net_worth_nis": 9_912_041.0,
+        "fi_fx_shock_net_worth_nis": 10_754_153.0,
+    }
+    g = df.render_derived_facts_guidance(facts)
+    assert "9,912,041" in g and "−30% NVDA" in g
+    assert "10,754,153" in g and "−10% adverse FX" in g
 
 
 def test_render_guidance_forbids_inherited_and_states_derived():

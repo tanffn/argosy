@@ -87,6 +87,16 @@ def build_derived_facts(session, *, user_id: str, decision_run_id=None) -> dict 
         facts["fi_margin_liquid_nis"] = derive_fi_margin_liquid(
             liquid_nw_nis=liquid, fi_total_capital_nis=fi_total,
         ).value
+    # Gate shock rows as locked facts — same keys the synth display publishes
+    # (draft 81: prose cited shocked NW with no manifest entry → [derivation pending]).
+    for key in (
+        "retirement.fi_shock_net_worth_nis",
+        "retirement.fi_fx_shock_net_worth_nis",
+    ):
+        v = _resolved_value(resolved, key)
+        if v is not None:
+            short = key.rsplit(".", 1)[-1]
+            facts[short] = v
     # Lot-level Section-102 eligibility from the latest ingested tax-simulation report —
     # turns the deconcentration horizon from an ASSUMPTION into data (how many shares are
     # capital-track-eligible NOW). Best-effort; absent => the policy horizon stands.
@@ -148,5 +158,17 @@ def render_derived_facts_guidance(facts: dict | None) -> str:
             f"- FI sufficiency (HONEST liquid basis): margin = {m:,.0f} NIS -> FI "
             f"{'MET' if m >= 0 else 'NOT met'}. Use the LIQUID basis, never the investable "
             "basis (which overstates FI). Do NOT claim FI reached if the margin is negative."
+        )
+    if "fi_shock_net_worth_nis" in facts:
+        lines.append(
+            f"- FI under −30% NVDA shock: net worth = "
+            f"{facts['fi_shock_net_worth_nis']:,.0f} NIS "
+            "(cite this exact figure — do NOT invent a shocked NW)."
+        )
+    if "fi_fx_shock_net_worth_nis" in facts:
+        lines.append(
+            f"- FI under −10% adverse FX: net worth = "
+            f"{facts['fi_fx_shock_net_worth_nis']:,.0f} NIS "
+            "(cite this exact figure — do NOT invent an FX-shocked NW)."
         )
     return "\n".join(lines)

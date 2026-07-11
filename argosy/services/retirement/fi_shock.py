@@ -12,6 +12,87 @@ breaks. Pure arithmetic; no I/O.
 """
 from __future__ import annotations
 
+from typing import Any, Protocol
+
+
+# Primary shocks the promote gate + synthesizer cite (must stay in lockstep).
+PRIMARY_NVDA_SHOCK = 0.30
+PRIMARY_FX_SHOCK = 0.10
+
+
+class _ResolvedLike(Protocol):
+    def get(self, key: str) -> Any: ...
+
+
+def _resolved_float(resolved: _ResolvedLike, key: str) -> float | None:
+    rv = resolved.get(key)
+    if rv is None:
+        return None
+    status = getattr(rv, "status", "resolved")
+    value = getattr(rv, "value", rv if not hasattr(rv, "value") else rv.value)
+    if status != "resolved" or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def derive_nvda_shock_inputs(resolved: _ResolvedLike) -> dict[str, float] | None:
+    """Gate/synth shared inputs for ``fi_sufficiency_under_shock``.
+
+    Returns kwargs when every required value is RESOLVED, else None.
+    ``nvda_value_nis`` = net_worth × nvda fraction (no ÷100).
+    """
+    net_worth = _resolved_float(resolved, "portfolio.net_worth_nis")
+    perpetuity_base = _resolved_float(resolved, "retirement.fi_target_nis")
+    fi_total = _resolved_float(resolved, "retirement.fi_total_capital_nis")
+    nvda_frac = _resolved_float(resolved, "concentration.nvda_current_pct")
+    if None in (net_worth, perpetuity_base, fi_total, nvda_frac):
+        return None
+    return {
+        "net_worth_nis": net_worth,
+        "nvda_value_nis": net_worth * nvda_frac,
+        "perpetuity_base_nis": perpetuity_base,
+        "fi_total_nis": fi_total,
+    }
+
+
+def derive_fx_shock_inputs(resolved: _ResolvedLike) -> dict[str, float] | None:
+    """Gate/synth shared inputs for ``fi_sufficiency_under_fx_shock``."""
+    net_worth = _resolved_float(resolved, "portfolio.net_worth_nis")
+    perpetuity_base = _resolved_float(resolved, "retirement.fi_target_nis")
+    fi_total = _resolved_float(resolved, "retirement.fi_total_capital_nis")
+    usd_exposure = _resolved_float(resolved, "portfolio.usd_exposure_nis")
+    if None in (net_worth, perpetuity_base, fi_total, usd_exposure):
+        return None
+    return {
+        "net_worth_nis": net_worth,
+        "usd_exposure_nis": usd_exposure,
+        "perpetuity_base_nis": perpetuity_base,
+        "fi_total_nis": fi_total,
+    }
+
+
+def primary_nvda_shock_net_worth_nis(
+    *,
+    net_worth_nis: float,
+    nvda_value_nis: float,
+    shock: float = PRIMARY_NVDA_SHOCK,
+) -> float:
+    """Net worth after the primary NVDA mark-down (gate row ``shock_0.30``)."""
+    return round(net_worth_nis - shock * nvda_value_nis, 2)
+
+
+def primary_fx_shock_net_worth_nis(
+    *,
+    net_worth_nis: float,
+    usd_exposure_nis: float,
+    fx_shock: float = PRIMARY_FX_SHOCK,
+) -> float:
+    """Net worth after the primary adverse FX move (gate row ``fx_shock_-0.10``)."""
+    return round(net_worth_nis - fx_shock * usd_exposure_nis, 2)
+
 
 def fi_sufficiency_under_shock(
     *,

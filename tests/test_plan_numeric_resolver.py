@@ -391,6 +391,55 @@ def test_fi_margin_signed_is_single_sourced(session):
     assert "liquid_net_worth" in margin.formula and "fi_total" in margin.formula
 
 
+def test_fi_shock_net_worth_keys_match_gate_rows():
+    """Shock keys equal the gate's primary shock_0.30 / fx_shock_-0.10 NW."""
+    from argosy.services.plan_numeric_resolver import (
+        ResolvedValue,
+        _apply_fi_shock_net_worths,
+    )
+    from argosy.services.retirement.fi_shock import (
+        fi_sufficiency_under_fx_shock,
+        fi_sufficiency_under_shock,
+    )
+
+    values = {
+        "portfolio.net_worth_nis": ResolvedValue(
+            key="portfolio.net_worth_nis", value=12_000_000.0, unit="nis",
+            status="resolved", source_locator="t",
+        ),
+        "retirement.fi_target_nis": ResolvedValue(
+            key="retirement.fi_target_nis", value=10_000_000.0, unit="nis",
+            status="resolved", source_locator="t",
+        ),
+        "retirement.fi_total_capital_nis": ResolvedValue(
+            key="retirement.fi_total_capital_nis", value=11_000_000.0, unit="nis",
+            status="resolved", source_locator="t",
+        ),
+        "concentration.nvda_current_pct": ResolvedValue(
+            key="concentration.nvda_current_pct", value=0.50, unit="pct",
+            status="resolved", source_locator="t",
+        ),
+        "portfolio.usd_exposure_nis": ResolvedValue(
+            key="portfolio.usd_exposure_nis", value=9_000_000.0, unit="nis",
+            status="resolved", source_locator="t",
+        ),
+    }
+    _apply_fi_shock_net_worths(values)
+    nvda = values["retirement.fi_shock_net_worth_nis"]
+    fx = values["retirement.fi_fx_shock_net_worth_nis"]
+    assert nvda.status == "resolved" and fx.status == "resolved"
+    gate = fi_sufficiency_under_shock(
+        net_worth_nis=12_000_000.0, nvda_value_nis=6_000_000.0,
+        perpetuity_base_nis=10_000_000.0, fi_total_nis=11_000_000.0,
+    )
+    assert nvda.value == gate["shock_0.30"]["net_worth_nis"]
+    fx_gate = fi_sufficiency_under_fx_shock(
+        net_worth_nis=12_000_000.0, usd_exposure_nis=9_000_000.0,
+        perpetuity_base_nis=10_000_000.0, fi_total_nis=11_000_000.0,
+    )
+    assert fx.value == fx_gate["fx_shock_-0.10"]["net_worth_nis"]
+
+
 def test_equity_scenario_disagreement_downgrades_confidence(session):
     _seed_snapshot(session)
     _seed_report(

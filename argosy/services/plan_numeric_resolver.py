@@ -141,6 +141,8 @@ _KEY_UNITS: dict[str, str] = {
     "retirement.liquidity_reserve_nis": "nis",
     "retirement.fi_total_capital_nis": "nis",
     "retirement.fi_margin_signed_nis": "nis",
+    "retirement.fi_shock_net_worth_nis": "nis",
+    "retirement.fi_fx_shock_net_worth_nis": "nis",
     "retirement.fi_crossing_year": "year",
     "retirement.pension_unlock_age": "age",
     "retirement.mc_horizon_age": "age",
@@ -1050,6 +1052,10 @@ def resolve_plan_numbers(
     # reached/not-reached sign can never diverge across surfaces again.
     _apply_fi_margin(values)
 
+    # Shocked net-worth figures the promote gate already computes — publish so
+    # prose can cite them without [derivation pending] (draft 81 FM rejection).
+    _apply_fi_shock_net_worths(values)
+
     # ONE canonical FI-crossing year, derived from the resolver's own figures and
     # reconciled with the FI-margin verdict by construction (margin >= 0 => current
     # year; margin < 0 => strictly future). Called AFTER _apply_fi_margin so the
@@ -1563,6 +1569,85 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
     )
 
 
+def _apply_fi_shock_net_worths(values: dict[str, ResolvedValue]) -> None:
+    """Publish the gate's primary shocked net-worth figures as resolvable keys.
+
+    Same arithmetic as ``plan_output_gate`` / ``fi_shock`` — so the synthesizer
+    can cite ``retirement.fi_shock_net_worth_nis`` / ``fi_fx_shock_net_worth_nis``
+    instead of writing ``[derivation pending]``.
+    """
+    from argosy.services.retirement.fi_shock import (
+        PRIMARY_FX_SHOCK,
+        PRIMARY_NVDA_SHOCK,
+        derive_fx_shock_inputs,
+        derive_nvda_shock_inputs,
+        primary_fx_shock_net_worth_nis,
+        primary_nvda_shock_net_worth_nis,
+    )
+
+    class _DictResolved:
+        def get(self, key: str):
+            return values.get(key)
+
+    resolved = _DictResolved()
+    nvda_key = "retirement.fi_shock_net_worth_nis"
+    fx_key = "retirement.fi_fx_shock_net_worth_nis"
+
+    nvda_inputs = derive_nvda_shock_inputs(resolved)
+    if nvda_inputs is None:
+        values[nvda_key] = ResolvedValue.pending(
+            nvda_key, "nis", "NVDA-shock inputs pending",
+        )
+    else:
+        nw = primary_nvda_shock_net_worth_nis(
+            net_worth_nis=nvda_inputs["net_worth_nis"],
+            nvda_value_nis=nvda_inputs["nvda_value_nis"],
+            shock=PRIMARY_NVDA_SHOCK,
+        )
+        values[nvda_key] = ResolvedValue(
+            key=nvda_key,
+            value=nw,
+            unit="nis",
+            status="resolved",
+            source_locator=(
+                f"portfolio.net_worth_nis − {PRIMARY_NVDA_SHOCK:.0%}×NVDA"
+            ),
+            agent_report_id=None,
+            confidence="HIGH",
+            formula=(
+                f"net_worth − {PRIMARY_NVDA_SHOCK:.0%} × "
+                "(net_worth × nvda_current_pct) — gate shock_0.30 row"
+            ),
+        )
+
+    fx_inputs = derive_fx_shock_inputs(resolved)
+    if fx_inputs is None:
+        values[fx_key] = ResolvedValue.pending(
+            fx_key, "nis", "FX-shock inputs pending",
+        )
+    else:
+        nw = primary_fx_shock_net_worth_nis(
+            net_worth_nis=fx_inputs["net_worth_nis"],
+            usd_exposure_nis=fx_inputs["usd_exposure_nis"],
+            fx_shock=PRIMARY_FX_SHOCK,
+        )
+        values[fx_key] = ResolvedValue(
+            key=fx_key,
+            value=nw,
+            unit="nis",
+            status="resolved",
+            source_locator=(
+                f"portfolio.net_worth_nis − {PRIMARY_FX_SHOCK:.0%}×USD exposure"
+            ),
+            agent_report_id=None,
+            confidence="HIGH",
+            formula=(
+                f"net_worth − {PRIMARY_FX_SHOCK:.0%} × usd_exposure_nis — "
+                "gate fx_shock_-0.10 row"
+            ),
+        )
+
+
 def _apply_fi_crossing_year(values):
     """Publish retirement.fi_crossing_year from already-resolved figures.
     Reconciled with the FI margin by construction (the money-math returns the
@@ -1905,6 +1990,8 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.fi_margin_signed_nis", "FI sufficiency margin (LIQUID net worth − total target; >0 => reached; if <0, FI is NOT reached — do not claim funded)"),
+    ("retirement.fi_shock_net_worth_nis", "Net worth after −30% NVDA shock (gate shock_0.30; cite this — never invent a shocked NW)"),
+    ("retirement.fi_fx_shock_net_worth_nis", "Net worth after −10% adverse FX move on USD exposure (gate fx_shock_-0.10; cite this — never invent)"),
     # The sleeve pct is interpolated from the engine constant so these labels
     # can never drift from the cap-derived target (the "12% sleeve ghost").
     # NOTE: keep the word "cap" OUT of these labels — the pace fallback's

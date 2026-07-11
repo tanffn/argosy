@@ -801,35 +801,12 @@ def gate_plan_output(
 def _derive_shock_inputs(resolved: "ResolvedPlanNumbers") -> dict | None:
     """Derive the four ``fi_sufficiency_under_shock`` inputs from the resolver.
 
-    Returns a kwargs dict (``net_worth_nis``, ``nvda_value_nis``,
-    ``perpetuity_base_nis``, ``fi_total_nis``) when every required value is
-    RESOLVED, else None (the check is then skipped — never crashes).
-
-    Units:
-      - ``portfolio.net_worth_nis`` / ``retirement.fi_target_nis`` (the
-        perpetuity base) / ``retirement.fi_total_capital_nis`` are NIS.
-      - ``concentration.nvda_current_pct`` is a FRACTION (0–1), so NVDA market
-        value = net_worth × fraction directly (no ÷100).
+    Thin wrapper over ``fi_shock.derive_nvda_shock_inputs`` so the gate and
+    the synthesizer manifest share one derivation.
     """
+    from argosy.services.retirement.fi_shock import derive_nvda_shock_inputs
 
-    def _resolved(key: str) -> float | None:
-        rv = resolved.get(key)
-        if rv is None or rv.status != "resolved" or rv.value is None:
-            return None
-        return float(rv.value)
-
-    net_worth = _resolved("portfolio.net_worth_nis")
-    perpetuity_base = _resolved("retirement.fi_target_nis")
-    fi_total = _resolved("retirement.fi_total_capital_nis")
-    nvda_frac = _resolved("concentration.nvda_current_pct")
-    if None in (net_worth, perpetuity_base, fi_total, nvda_frac):
-        return None
-    return {
-        "net_worth_nis": net_worth,
-        "nvda_value_nis": net_worth * nvda_frac,  # fraction → no ÷100
-        "perpetuity_base_nis": perpetuity_base,
-        "fi_total_nis": fi_total,
-    }
+    return derive_nvda_shock_inputs(resolved)
 
 
 def _resolved_value(resolved: "ResolvedPlanNumbers", key: str) -> float | None:
@@ -867,25 +844,10 @@ def _derive_retirement_ages(resolved: "ResolvedPlanNumbers") -> dict:
 def _derive_fx_shock_inputs(resolved: "ResolvedPlanNumbers") -> dict | None:
     """Derive the ``fi_sufficiency_under_fx_shock`` inputs from the resolver.
 
-    Returns a kwargs dict when every required value is RESOLVED, else None (the
-    FX-shock check is then skipped — never crashes).
-
-    METHODOLOGY (codex FX-shock review 2026-06-16): the FX-sensitive base is the
-    NIS value of USD-DENOMINATED assets, derived by the resolver as
-    ``portfolio.usd_exposure_nis`` (sum of USD-currency positions × BOI rate).
-    This deliberately replaces the earlier ``us_situs_estate_exposure_nis`` proxy,
-    which excluded USD cash + Irish USD UCITS and so UNDERSTATED FX exposure — the
-    unsafe (under-firing) direction for a fail-loud gate.
+    Thin wrapper over ``fi_shock.derive_fx_shock_inputs`` (shared with the
+    synthesizer manifest). METHODOLOGY: FX-sensitive base is
+    ``portfolio.usd_exposure_nis`` (codex FX-shock review 2026-06-16).
     """
-    net_worth = _resolved_value(resolved, "portfolio.net_worth_nis")
-    perpetuity_base = _resolved_value(resolved, "retirement.fi_target_nis")
-    fi_total = _resolved_value(resolved, "retirement.fi_total_capital_nis")
-    usd_exposure = _resolved_value(resolved, "portfolio.usd_exposure_nis")
-    if None in (net_worth, perpetuity_base, fi_total, usd_exposure):
-        return None
-    return {
-        "net_worth_nis": net_worth,
-        "usd_exposure_nis": usd_exposure,
-        "perpetuity_base_nis": perpetuity_base,
-        "fi_total_nis": fi_total,
-    }
+    from argosy.services.retirement.fi_shock import derive_fx_shock_inputs
+
+    return derive_fx_shock_inputs(resolved)
