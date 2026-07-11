@@ -67,7 +67,7 @@
         "ps_trailing": 3.9,
         "ev_s_trailing": 3.4,
         "pe_trailing": 55,
-        "price_action": "quiet grind higher off a forgotten SPAC-unrelated listing; -40% from a prior overshoot, now consolidating"
+        "price_action": "quiet grind higher off a forgotten ordinary listing; -40% from a prior overshoot, now consolidating"
       },
       "confidence": "HIGH"
     },
@@ -86,5 +86,10 @@
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-07-11",
+      "fix": "block-2b FAIL rebuild: removed blank-check/SPAC-class wording per nkla_2020 convention."
+    }
+  ]
 }

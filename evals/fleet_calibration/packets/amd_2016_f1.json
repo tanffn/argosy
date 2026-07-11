@@ -3,7 +3,7 @@
   "alias": "CVM",
   "category": "A",
   "grading": "F1_lenient",
-  "real": "AMD @ 2016-02-29 ($2.00 adj); F1 per spec appendix (post FY2015 10-K, before T_parabola / THATIC)",
+  "real": "AMD @ 2016-02-29 ($2.14 adj); F1 per spec appendix (post FY2015 10-K, before T_parabola / THATIC)",
   "freeze_date": "2016-02-29",
   "rescale_factor": 1.7,
   "synthetic": false,
@@ -29,11 +29,11 @@
     "Xbox"
   ],
   "resolution": {
-    "price_at_freeze_real": 2.0,
+    "price_at_freeze_real": 2.14,
     "price_at_horizon_real": 116.78,
     "horizon_label": "6y (2022-02-01)",
-    "benchmark_return_pct": 5739,
-    "note": "yfinance adjusted closes fetched 2026-07-11; freeze uses 2016-02-29 close ~$2.00 (post FY2015 10-K filed 2016-02-18)"
+    "benchmark_return_pct": 5357.0,
+    "note": "yfinance adjusted closes fetched 2026-07-11; freeze 2016-02-29 close $2.14 (post FY2015 10-K filed 2016-02-18)"
   },
   "sources": [
     {
@@ -52,7 +52,7 @@
       "date": "2015-07-16"
     },
     {
-      "fact": "Balance sheet still heavily levered entering 2016; equity thin vs debt stack; turnaround depends on the unproven clean-sheet core",
+      "fact": "FY2015 year-end: cash & cash equivalents + marketable securities ; total debt .26B; stockholders equity deficit -; FY2015 interest expense ",
       "url": "https://www.sec.gov/Archives/edgar/data/2488/000000248816000047/amd-123115x10k.htm",
       "date": "2016-02-18"
     }
@@ -63,14 +63,14 @@
       "report_name": "fundamentals/CVM",
       "company": "Corvid Microsystems (alias CVM)",
       "as_of": "current",
-      "market_cap_usd_m": 2709,
-      "share_price_usd": 5.7,
+      "market_cap_usd_m": 2898,
+      "share_price_usd": 6.1,
       "balance_sheet": {
-        "cash_and_equivalents_usd_m": 1217,
-        "total_debt_usd_m": 3810,
-        "stockholders_equity_usd_m": 442,
+        "cash_and_equivalents_usd_m": 1334.5,
+        "total_debt_usd_m": 3842,
+        "stockholders_equity_usd_m": -700,
         "annual_interest_expense_usd_m": 272,
-        "note": "heavily levered; covenant headroom thin; turnaround must work"
+        "note": "heavily levered with an equity DEFICIT; covenant headroom thin; turnaround must work"
       },
       "annual_income_statement": [
         {
@@ -101,11 +101,11 @@
         "note": "full-year loss; no quarterly igniting print yet; console annuity is the floor"
       },
       "valuation": {
-        "ps_trailing": 0.7,
-        "ev_s_trailing": 1.1,
+        "ps_trailing": 0.43,
+        "ev_s_trailing": 0.8,
         "pe_trailing": null,
         "ebitda": "negative to roughly breakeven",
-        "price_action": "stock near multi-year lows; -70% over ~2 years; no confirming turnaround print yet"
+        "price_action": "stock near multi-year lows; ~-50% over ~2 years; no confirming turnaround print yet"
       },
       "confidence": "HIGH"
     },
@@ -124,5 +124,10 @@
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-07-11",
+      "fix": "block-2b FAIL rebuild: FY2015 10-K balance sheet (cash 785×1.7=1334.5, debt 2.26B, equity deficit -412); P/S and EV/S recomputed; price-action -70%→~-50%; freeze px .14."
+    }
+  ]
 }

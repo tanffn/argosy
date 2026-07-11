@@ -63,7 +63,16 @@
         "pe_trailing": null,
         "price_action": "still +40% YTD on 'consumer platform' rebrand; -65% from listing-era high"
       },
-      "confidence": "HIGH"
+      "confidence": "HIGH",
+      "latest_quarter": {
+        "which": "Q0 just reported",
+        "revenue_usd_m": 310,
+        "revenue_growth_yoy_pct": 4.5,
+        "gaap_net_income_usd_m": -115,
+        "gross_margin_pct": 27.5,
+        "contribution_profit_after_marketing_usd_m": -18,
+        "note": "sequential deceleration continues; still contribution-negative after marketing"
+      }
     },
     {
       "agent_role": "news",
@@ -80,5 +89,10 @@
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-07-11",
+      "fix": "block-2b FAIL rebuild: added required latest_quarter block (PACKET_GUIDE wire shape)."
+    }
+  ]
 }

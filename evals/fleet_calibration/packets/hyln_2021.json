@@ -3,7 +3,7 @@
   "alias": "VHS",
   "category": "B",
   "grading": "trap",
-  "real": "Hyliion (HYLN) @ 2021-06-01 ($10.61); obscure Class-8 e-powertrain SPAC winner-shape with $0 revenue; -86% by mid-2024",
+  "real": "Hyliion (HYLN) @ 2021-06-01 ($10.61); obscure Class-8 e-powertrain blank-check-merger winner-shape with $0 revenue; -86% by mid-2024",
   "freeze_date": "2021-06-01",
   "rescale_factor": 0.85,
   "synthetic": false,
@@ -27,7 +27,7 @@
     "price_at_horizon_real": 1.48,
     "horizon_label": "3y (2024-05-31)",
     "benchmark_return_pct": -86,
-    "note": "yfinance closes fetched 2026-07-11; winner-shaped SPAC narrative that failed to commercialize on the timeline sold."
+    "note": "yfinance closes fetched 2026-07-11; winner-shaped blank-check-merger narrative that failed to commercialize on the timeline sold."
   },
   "sources": [
     {
@@ -41,7 +41,7 @@
       "date": "2021-05-11"
     },
     {
-      "fact": "Company restating 2020 financials for SPAC warrant accounting (same class of restatement affecting ~80 SPACs); delayed detailed financial commentary until amended filings",
+      "fact": "Company restating 2020 financials for blank-check warrant accounting (same class of restatement affecting ~80 blank-check vehicles); delayed detailed financial commentary until amended filings",
       "url": "https://www.ttnews.com/articles/hyliion-q1-results-lack-revenue-product-development-accelerates",
       "date": "2021-05-19"
     }
@@ -58,7 +58,7 @@
         "cash_and_equivalents_usd_m": 285,
         "marketable_investments_usd_m": 252,
         "total_debt_usd_m": 0,
-        "note": "SPAC cash pile funds ~multi-year burn at current rate; no revenue yet"
+        "note": "post-listing cash pile funds ~multi-year burn at current rate; no revenue yet"
       },
       "annual_income_statement": [
         {
@@ -80,7 +80,7 @@
         "ps_trailing": null,
         "ev_s_trailing": null,
         "pe_trailing": null,
-        "price_action": "SPAC-era rerating still elevated vs zero sales; stock off the deal-pop high but still prices a multi-year commercialization"
+        "price_action": "listing-era rerating still elevated vs zero sales; stock off the deal-pop high but still prices a multi-year commercialization"
       },
       "confidence": "HIGH"
     },
@@ -91,13 +91,18 @@
       "recent_developments": [
         "Still $0 of recognized revenue. Management guides first Hybrid revenue in the back half of the year and year-end demos of the flagship long-haul architecture.",
         "Ten Hybrid units installed in the latest quarter — deployments, not sold-and-recognized volume.",
-        "Restating prior-year SPAC warrant accounting (industry-wide issue); delayed some financial commentary.",
+        "Restating prior-year blank-check warrant accounting (industry-wide issue); delayed some financial commentary.",
         "Bulls: large TAM, fleet advisory council, chassis deliveries for demos, multi-year cash runway, ESG/decarb tailwind.",
-        "Bears: classic pre-revenue SPAC — valuation prices a product that does not yet exist at commercial scale; execution, OEM dependency, and fleet adoption are all unproven."
+        "Bears: classic pre-revenue blank-check listing — valuation prices a product that does not yet exist at commercial scale; execution, OEM dependency, and fleet adoption are all unproven."
       ],
-      "macro_context": "Freight cycle firm; ESG/decarbonization capital abundant; SPAC complex starting to re-rate as warrant accounting and lockups hit.",
+      "macro_context": "Freight cycle firm; ESG/decarbonization capital abundant; blank-check complex starting to re-rate as warrant accounting and lockups hit.",
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-07-11",
+      "fix": "block-2b FAIL rebuild: genericized every blank-check occurrence (was SPAC) to blank-check merger/vehicle (nkla_2020 convention)."
+    }
+  ]
 }

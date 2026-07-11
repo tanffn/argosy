@@ -3,7 +3,7 @@
   "alias": "POT",
   "category": "A",
   "grading": "entry",
-  "real": "Boot Barn (BOOT) @ 2017-06-02 ($6.30); obscure western/work retailer during retail-apocalypse narrative; ~20x by mid-2024",
+  "real": "Boot Barn (BOOT) @ 2017-06-02 ($6.30); obscure western/work retailer during the store-based-retail-decline narrative; ~20x by mid-2024",
   "freeze_date": "2017-06-02",
   "rescale_factor": 2.1,
   "synthetic": false,
@@ -36,7 +36,7 @@
       "date": "2017-06-01"
     },
     {
-      "fact": "Q4 SSS -0.9%; Q4 sales $163M missed street; stock sold off ~15% into the mid-$6s on the print; management cited low commodities prices in key markets + soft general retail",
+      "fact": "Q4 SSS -0.9%; Q4 sales  missed street; stock sold off ~15% on the print; management cited low commodities prices in key markets + soft general retail",
       "url": "https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/",
       "date": "2017-06-02"
     },
@@ -84,17 +84,17 @@
         "note": "missed street; soft SSS; guide for next year is flat SSS"
       },
       "valuation": {
-        "ps_trailing": 0.7,
-        "ev_s_trailing": 1.0,
-        "pe_trailing": 14,
-        "price_action": "sold off ~15% on the print into the mid-single-digits; trades like a melting specialty-retail ice cube"
+        "ps_trailing": 0.27,
+        "ev_s_trailing": 0.59,
+        "pe_trailing": 11.9,
+        "price_action": "sold off ~15% on the print; trades like a melting specialty-retail ice cube"
       },
       "confidence": "HIGH"
     },
     {
       "agent_role": "news",
       "report_name": "news/POT",
-      "business_description": "Specialty retailer of western and work footwear, apparel, and accessories — cowboy boots, denim, flame-resistant workwear — sold through physical stores and e-commerce. Category looks culturally niche. The prevailing market narrative is the 'retail apocalypse': malls dying, Amazon winning, specialty chains as value traps.",
+      "business_description": "Specialty retailer of western and work footwear, apparel, and accessories — cowboy boots, denim, flame-resistant workwear — sold through physical stores and e-commerce. Category looks culturally niche. The prevailing market narrative is that store-based specialty retail is structurally impaired: malls dying, large ecommerce platforms winning, specialty chains as value traps.",
       "recent_developments": [
         "Just printed a soft year: sales up on new doors and an extra week, but adjusted earnings down and Q4 SSS negative.",
         "Next-year guide is flat same-store sales — management is not selling a re-acceleration story.",
@@ -102,9 +102,14 @@
         "Bear case (consensus): specialty retail is structurally impaired; commodity-end-market exposure (energy/ag) just hurt them; e-comm share gains by giants will keep compressing the model.",
         "Stock is being treated as a trap — the question is whether the niche moat + full-price selling discipline is being mispriced."
       ],
-      "macro_context": "Broad 'retail apocalypse' de-rating; soft apparel traffic; energy/ag end-markets uneven.",
+      "macro_context": "Broad de-rating of store-based specialty retail; soft apparel traffic; energy/ag end-markets uneven.",
       "confidence": "HIGH"
     }
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-07-11",
+      "fix": "block-2b FAIL rebuild: removed mid-single-digits real-scale leak; genericized Amazon + retail-apocalypse phrasing; P/S EV/S P/E recomputed from packet figures."
+    }
+  ]
 }
