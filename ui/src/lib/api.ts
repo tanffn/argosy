@@ -450,11 +450,54 @@ export interface DiscoveryEstimateDTO {
   one_line: string;
 }
 
+export interface DiscoverySourceDTO {
+  key: string;
+  label: string;
+  active_count: number;
+}
+
+export interface DiscoveryStagesDTO {
+  tracked: number;
+  active: number;
+  quarantined: number;
+  dropped_stale: number;
+  estimated: number;
+  estimator_go: number;
+  fleet_graded: number;
+  fleet_buy: number;
+  open_trade_proposals: number;
+}
+
+export interface DiscoveryTradeProposalDTO {
+  id: number;
+  action: string;
+  confidence: string | null;
+  status: string;
+  decision_run_id: number | null;
+  created_at: string;
+}
+
+export interface DiscoveryCandidateDTO {
+  ticker: string;
+  status: string;
+  rank: number | null;
+  radar_score: number;
+  source_keys: string[];
+  source_labels: string[];
+  quarantine_reason: string;
+  estimator: DiscoveryEstimateDTO | null;
+  fleet: DiscoveryPickDTO | null;
+  latest_trade_proposal: DiscoveryTradeProposalDTO | null;
+}
+
 export interface DiscoveryDTO {
   picks: DiscoveryPickDTO[];
   estimated: DiscoveryEstimateDTO[];
   last_refreshed_at: string | null;
   note: string;
+  sources: DiscoverySourceDTO[];
+  stages: DiscoveryStagesDTO;
+  candidates: DiscoveryCandidateDTO[];
 }
 
 // Speculative-position monitor (S18) — stop-loss / sell signals for the

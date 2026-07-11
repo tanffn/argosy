@@ -58,7 +58,9 @@ function TradeBody({ body }: { body: Record<string, unknown> }) {
       )}
       <div className="flex flex-wrap gap-2">
         {speculative && <Badge variant="outline">Higher-risk idea</Badge>}
-        {conviction && <Badge variant="secondary">{conviction} conviction</Badge>}
+        {conviction && (
+          <Badge variant="secondary">{conviction} trade confidence</Badge>
+        )}
       </div>
       {rationale && <TradeRationale text={rationale} />}
     </div>

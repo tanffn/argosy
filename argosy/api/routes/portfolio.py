@@ -11,6 +11,7 @@ requests serve from the DB (idempotent — see
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from datetime import datetime
@@ -1850,18 +1851,262 @@ class DiscoveryEstimateDTO(BaseModel):
     one_line: str
 
 
+class DiscoverySourceDTO(BaseModel):
+    key: str
+    label: str
+    active_count: int
+
+
+class DiscoveryStagesDTO(BaseModel):
+    tracked: int
+    active: int
+    quarantined: int
+    dropped_stale: int
+    estimated: int
+    estimator_go: int
+    fleet_graded: int
+    fleet_buy: int
+    open_trade_proposals: int
+
+
+class DiscoveryTradeProposalDTO(BaseModel):
+    id: int
+    action: str
+    confidence: str | None
+    status: str
+    decision_run_id: int | None
+    created_at: str
+
+
+class DiscoveryCandidateDTO(BaseModel):
+    ticker: str
+    status: str
+    rank: int | None
+    radar_score: float
+    source_keys: list[str]
+    source_labels: list[str]
+    quarantine_reason: str
+    estimator: DiscoveryEstimateDTO | None
+    fleet: DiscoveryPickDTO | None
+    latest_trade_proposal: DiscoveryTradeProposalDTO | None
+
+
 class DiscoveryDTO(BaseModel):
     picks: list[DiscoveryPickDTO]
     estimated: list[DiscoveryEstimateDTO]
     last_refreshed_at: str | None
     note: str
+    sources: list[DiscoverySourceDTO]
+    stages: DiscoveryStagesDTO
+    candidates: list[DiscoveryCandidateDTO]
 
 
 _DISCOVERY_NOTE = (
-    "Fleet-graded high-potential discovery: radar -> cheap estimator triage -> "
-    "Opus fleet grade. Conviction/verdict only (no dollar sizing). Refresh is "
-    "smart — only new/changed names are re-researched."
+    "Persisted high-potential discovery: active sources -> estimator triage -> "
+    "research fleet grade -> trade proposal. Research asymmetry and trade "
+    "confidence are separate stages; no dollar sizing. Refresh is smart — only "
+    "new/changed names are re-researched."
 )
+
+_DISCOVERY_SOURCE_LABELS = {
+    "attention": "Attention",
+    "growth": "Growth fundamentals",
+    "gov_contracts": "Government contracts",
+    "momentum": "Momentum",
+}
+_OPEN_TRADE_PROPOSAL_STATUSES = (
+    "draft",
+    "cooling",
+    "awaiting_human",
+    "approved",
+)
+
+
+def _discovery_source_ref(value: str) -> tuple[str, str] | None:
+    """Return a stable source key + plain label for one persisted family."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if raw.upper().startswith("SIGNAL_STREAM:"):
+        raw = raw.split(":", 1)[1]
+    key = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    if not key:
+        return None
+    label = _DISCOVERY_SOURCE_LABELS.get(
+        key,
+        key.replace("_", " ").capitalize(),
+    )
+    return key, label
+
+
+def _discovery_sources_for_row(row) -> list[tuple[str, str]]:
+    """Parse source families/evidence without trusting either persisted blob."""
+    refs: set[tuple[str, str]] = set()
+    fingerprint = row.radar_fingerprint or ""
+    try:
+        for part in fingerprint.split("|"):
+            if part.startswith("f="):
+                for family in part[2:].split(","):
+                    ref = _discovery_source_ref(family)
+                    if ref is not None:
+                        refs.add(ref)
+    except (AttributeError, TypeError):
+        pass
+
+    if row.nomination_evidence_json:
+        try:
+            evidence = json.loads(row.nomination_evidence_json)
+            if isinstance(evidence, dict):
+                stream = evidence.get("stream")
+                if isinstance(stream, str):
+                    ref = _discovery_source_ref(stream)
+                    if ref is not None:
+                        refs.add(ref)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return sorted(refs)
+
+
+def _discovery_estimate(blob: str | None) -> DiscoveryEstimateDTO | None:
+    if not blob:
+        return None
+    try:
+        verdict = json.loads(blob)
+        return DiscoveryEstimateDTO(
+            ticker=verdict["ticker"],
+            go=verdict["go"],
+            conviction=verdict["conviction"],
+            sentiment=verdict["sentiment"],
+            one_line=verdict["one_line"],
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _discovery_pick(blob: str | None) -> DiscoveryPickDTO | None:
+    if not blob:
+        return None
+    try:
+        pick = json.loads(blob)
+        return DiscoveryPickDTO(
+            ticker=pick["ticker"],
+            conviction=pick["conviction"],
+            verdict=pick["verdict"],
+            thesis_md=pick["thesis_md"],
+            cites=list(pick.get("cites") or []),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _load_discovery_transparency(user_id: str):
+    """Persisted source/stage/candidate trace. Never performs a live scan."""
+    from sqlalchemy import create_engine, func, select
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import Proposal, ScanState
+
+    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    factory = sessionmaker(bind=create_engine(
+        url, connect_args={"check_same_thread": False}))
+    with factory() as db:
+        rows = list(db.execute(select(ScanState).where(
+            ScanState.user_id == user_id,
+        )).scalars())
+        tickers = {row.ticker.upper() for row in rows}
+        proposals = []
+        if tickers:
+            proposals = list(db.execute(
+                select(Proposal).where(
+                    Proposal.user_id == user_id,
+                    func.upper(Proposal.ticker).in_(tickers),
+                ).order_by(
+                    Proposal.created_at.desc(),
+                    Proposal.id.desc(),
+                )
+            ).scalars())
+
+    latest_proposal_by_ticker = {}
+    for proposal in proposals:
+        latest_proposal_by_ticker.setdefault(proposal.ticker.upper(), proposal)
+
+    source_tickers: dict[tuple[str, str], set[str]] = {}
+    candidates: list[DiscoveryCandidateDTO] = []
+    estimated = estimator_go = fleet_graded = fleet_buy = 0
+    status_order = {"active": 0, "quarantined": 1, "dropped": 2}
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            status_order.get(item.status, 9),
+            item.rank is None,
+            item.rank or 0,
+            item.ticker,
+        ),
+    ):
+        refs = _discovery_sources_for_row(row)
+        is_active = row.status == "active"
+        if is_active:
+            for ref in refs:
+                source_tickers.setdefault(ref, set()).add(row.ticker.upper())
+
+        estimate = _discovery_estimate(row.estimator_json)
+        pick = _discovery_pick(row.fleet_json)
+        estimated += is_active and estimate is not None
+        estimator_go += is_active and estimate is not None and estimate.go
+        fleet_graded += is_active and pick is not None
+        fleet_buy += is_active and pick is not None and pick.verdict.upper() == "BUY"
+
+        proposal = latest_proposal_by_ticker.get(row.ticker.upper())
+        proposal_dto = None
+        if proposal is not None:
+            proposal_dto = DiscoveryTradeProposalDTO(
+                id=proposal.id,
+                action=proposal.action,
+                confidence=proposal.confidence,
+                status=proposal.status,
+                decision_run_id=proposal.decision_run_id,
+                created_at=proposal.created_at.isoformat(),
+            )
+        candidates.append(DiscoveryCandidateDTO(
+            ticker=row.ticker,
+            status=row.status,
+            rank=row.rank,
+            radar_score=row.last_score,
+            source_keys=[key for key, _label in refs],
+            source_labels=[label for _key, label in refs],
+            quarantine_reason=row.quarantine_reason or "",
+            estimator=estimate,
+            fleet=pick,
+            latest_trade_proposal=proposal_dto,
+        ))
+
+    sources = [
+        DiscoverySourceDTO(
+            key=key,
+            label=label,
+            active_count=len(active_tickers),
+        )
+        for (key, label), active_tickers in sorted(
+            source_tickers.items(),
+            key=lambda item: item[0][0],
+        )
+    ]
+    statuses = [row.status for row in rows]
+    stages = DiscoveryStagesDTO(
+        tracked=len(rows),
+        active=statuses.count("active"),
+        quarantined=statuses.count("quarantined"),
+        dropped_stale=statuses.count("dropped"),
+        estimated=estimated,
+        estimator_go=estimator_go,
+        fleet_graded=fleet_graded,
+        fleet_buy=fleet_buy,
+        open_trade_proposals=sum(
+            proposal.status in _OPEN_TRADE_PROPOSAL_STATUSES
+            for proposal in latest_proposal_by_ticker.values()
+        ),
+    )
+    return sources, stages, candidates
 
 
 def _load_discovery_state(user_id: str):
@@ -1895,12 +2140,12 @@ def _load_discovery_state(user_id: str):
             if r.estimator_json:
                 try:
                     estimated.append(_verdict_from_json(r.estimator_json))
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     pass
             if r.fleet_json:
                 try:
                     picks.append(_pick_from_json(r.fleet_json))
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     pass
     return picks, estimated, last
 
@@ -1910,6 +2155,7 @@ def get_discovery(user_id: str = Query("ariel")) -> DiscoveryDTO:
     """Cached discovery highlights (instant): fleet picks + estimator shortlist
     from the persisted ScanState. Use POST /discovery/refresh to re-run."""
     picks, estimated, last = _load_discovery_state(user_id)
+    sources, stages, candidates = _load_discovery_transparency(user_id)
     return DiscoveryDTO(
         picks=[DiscoveryPickDTO(ticker=p.ticker, conviction=p.conviction,
                verdict=p.verdict, thesis_md=p.thesis_md, cites=list(p.cites))
@@ -1917,7 +2163,8 @@ def get_discovery(user_id: str = Query("ariel")) -> DiscoveryDTO:
         estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
                    conviction=v.conviction, sentiment=v.sentiment,
                    one_line=v.one_line) for v in estimated],
-        last_refreshed_at=last, note=_DISCOVERY_NOTE)
+        last_refreshed_at=last, note=_DISCOVERY_NOTE,
+        sources=sources, stages=stages, candidates=candidates)
 
 
 @router.post("/discovery/refresh", response_model=DiscoveryDTO)
@@ -1930,6 +2177,7 @@ async def refresh_discovery(
     from argosy.services.high_potential_funnel import run_funnel
 
     result = await run_funnel(user_id, force=force)
+    sources, stages, candidates = _load_discovery_transparency(user_id)
     return DiscoveryDTO(
         picks=[DiscoveryPickDTO(ticker=p.ticker, conviction=p.conviction,
                verdict=p.verdict, thesis_md=p.thesis_md, cites=list(p.cites))
@@ -1938,6 +2186,7 @@ async def refresh_discovery(
                    conviction=v.conviction, sentiment=v.sentiment,
                    one_line=v.one_line) for v in result.estimated],
         last_refreshed_at=result.last_refreshed_at, note=_DISCOVERY_NOTE,
+        sources=sources, stages=stages, candidates=candidates,
     )
 
 
