@@ -48,6 +48,9 @@ def _form4_xml(
     owner_name: str = "TEST INSIDER",
     period_of_report: str = "2026-07-10",
     date_of_original_submission: str = "",
+    security_title: str = "Common Stock",
+    direct_or_indirect_ownership: str = "D",
+    nature_of_ownership: str = "",
 ) -> str:
     transactions: list[str] = []
     for index, share_count in enumerate(shares):
@@ -59,7 +62,7 @@ def _form4_xml(
         transactions.append(
             f"""
     <nonDerivativeTransaction>
-      <securityTitle><value>Common Stock</value></securityTitle>
+      <securityTitle><value>{security_title}</value></securityTitle>
       <transactionDate><value>2026-07-10</value></transactionDate>
       <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
       <transactionAmounts>
@@ -70,6 +73,10 @@ def _form4_xml(
       <postTransactionAmounts>
         <sharesOwnedFollowingTransaction><value>{share_count + 1000}</value></sharesOwnedFollowingTransaction>
       </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>{direct_or_indirect_ownership}</value></directOrIndirectOwnership>
+        <natureOfOwnership><value>{nature_of_ownership}</value></natureOfOwnership>
+      </ownershipNature>
     </nonDerivativeTransaction>"""
         )
     footnotes: list[str] = []
@@ -235,7 +242,14 @@ def test_parse_ticker_maps_builds_both_directions() -> None:
 
 
 def test_parse_form4_xml_carries_document_owner_and_transaction_fields() -> None:
-    rows = sec._parse_form4_xml(_form4_xml(document_type="4/A"), accession="acc")
+    rows = sec._parse_form4_xml(
+        _form4_xml(
+            document_type="4/A",
+            direct_or_indirect_ownership="I",
+            nature_of_ownership="Family Trust",
+        ),
+        accession="acc",
+    )
 
     assert len(rows) == 1
     row = rows[0]
@@ -248,6 +262,8 @@ def test_parse_form4_xml_carries_document_owner_and_transaction_fields() -> None
     assert row["transaction_index"] == 0
     assert row["period_of_report"] == "2026-07-10"
     assert row["date_of_original_submission"] == ""
+    assert row["direct_or_indirect_ownership"] == "I"
+    assert row["nature_of_ownership"] == "Family Trust"
 
 
 def test_document_level_10b5_makes_unlinked_transactions_unknown() -> None:
@@ -357,6 +373,7 @@ async def test_global_fetch_uses_public_issuers_only(engine: None) -> None:
     )
     assert row["filed_at"] == "2026-07-10"
     assert row["accession"] == public_accession
+    assert row["filing_identity"] == public_accession
     assert row["filer_cik"] == public_filer_cik.zfill(10)
     assert row["issuer_cik"] == "0001045810"
     assert row["issuer_name"] == "NVIDIA CORP"
@@ -517,6 +534,7 @@ async def test_amendment_supersedes_without_collapsing_same_day_positions(
     assert all(row["is_amendment"] is True for row in rows)
     assert all(len(row["source_urls"]) == 2 for row in rows)
     assert all(row["accession"] == amendment_accession for row in rows)
+    assert all(row["filing_identity"] == original_accession for row in rows)
     assert all(row["amendment_match_status"] == "matched" for row in rows)
 
 
@@ -568,6 +586,10 @@ async def test_distinct_nonamended_same_day_accessions_remain_distinct(
 
     assert len(rows) == 2
     assert {row["accession"] for row in rows} == {accession_one, accession_two}
+    assert {row["filing_identity"] for row in rows} == {
+        accession_one,
+        accession_two,
+    }
 
 
 @pytest.mark.asyncio
@@ -648,12 +670,47 @@ async def test_ambiguous_amendment_excludes_originals_and_marks_evidence(
 
     assert len(rows) == 1
     assert rows[0]["accession"] == amendment
+    assert rows[0]["filing_identity"] == amendment
     assert rows[0]["cluster_eligible"] is False
     assert rows[0]["amendment_match_status"] == "ambiguous"
     assert rows[0]["amendment_ambiguity_evidence"] == [
         original_one,
         original_two,
     ]
+
+
+def test_unmatched_amendment_uses_own_explicit_ineligible_identity() -> None:
+    amendment_accession = "0001234567-26-000401"
+    filing_url = f"https://www.sec.gov/Archives/{amendment_accession}.txt"
+    row = sec._parse_form4_xml(
+        _form4_xml(
+            document_type="4/A",
+            date_of_original_submission="2026-07-09",
+        ),
+        accession=amendment_accession,
+    )[0]
+    row.update({"filed_at": "2026-07-13", "filing_url": filing_url})
+    rows = sec._select_filing_versions(
+        [
+            {
+                "accession": amendment_accession,
+                "filed_at": "2026-07-13",
+                "filing_url": filing_url,
+                "is_amendment": True,
+                "issuer_cik": row["issuer_cik"],
+                "filer_cik": row["filer_cik"],
+                "filer_name": row["filer_name"],
+                "date_of_original_submission": "2026-07-09",
+                "rows": [row],
+            }
+        ]
+    )
+
+    assert rows[0]["accession"] == amendment_accession
+    assert rows[0]["filing_identity"] == amendment_accession
+    assert rows[0]["amendment_match_status"] == "unmatched"
+    assert rows[0]["cluster_eligible"] is False
+    assert rows[0]["source_urls"] == [filing_url]
 
 
 @pytest.mark.asyncio

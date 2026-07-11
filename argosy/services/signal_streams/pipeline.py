@@ -18,6 +18,7 @@ from argosy.state.models import ScanState
 class NominationProcessSummary:
     active: int = 0
     quarantined: int = 0
+    warning_only: int = 0
     predictions: int = 0
     candidates: list[TrendCandidate] = field(default_factory=list)
 
@@ -25,6 +26,7 @@ class NominationProcessSummary:
         return {
             "active": self.active,
             "quarantined": self.quarantined,
+            "warning_only": self.warning_only,
             "predictions": self.predictions,
         }
 
@@ -84,7 +86,7 @@ def process_nominations(
     persist: bool = True,
     observed_at: datetime | None = None,
 ) -> NominationProcessSummary:
-    """Apply liquidity, persist radar evidence, and write 30d/180d rows."""
+    """Write predictions, routing only funnel-eligible nominations to radar."""
     observed_at = observed_at or datetime.now(UTC)
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=UTC)
@@ -92,7 +94,38 @@ def process_nominations(
         observed_at = observed_at.astimezone(UTC)
     summary = NominationProcessSummary()
     for nomination in nominations:
-        candidate, liquid = _candidate_for(nomination)
+        candidate_result = (
+            _candidate_for(nomination)
+            if nomination.route_to_funnel
+            else None
+        )
+        if persist:
+            if session is None:
+                raise ValueError("session is required when persist=True")
+            price = nomination.evidence.get("price")
+            if price is None:
+                raise ValueError(
+                    f"{nomination.stream}:{nomination.dedup_key} has no entry price"
+                )
+            write_signal_stream_predictions(
+                session,
+                user_id,
+                stream=nomination.stream,
+                dedup_key=nomination.dedup_key,
+                ticker=nomination.ticker,
+                direction=nomination.direction,  # type: ignore[arg-type]
+                event_at=observed_at,
+                entry_price=float(price),
+                evidence=nomination.evidence,
+            )
+            summary.predictions += 2
+
+        if not nomination.route_to_funnel:
+            summary.warning_only += 1
+            continue
+
+        assert candidate_result is not None
+        candidate, liquid = candidate_result
         if candidate.evidence is not None:
             candidate.evidence["observed_at"] = observed_at.isoformat()
         summary.candidates.append(candidate)
@@ -102,26 +135,7 @@ def process_nominations(
             summary.quarantined += 1
         if not persist:
             continue
-        if session is None:
-            raise ValueError("session is required when persist=True")
-        price = nomination.evidence.get("price")
-        if price is None:
-            raise ValueError(
-                f"{nomination.stream}:{nomination.dedup_key} has no entry price"
-            )
-        write_signal_stream_predictions(
-            session,
-            user_id,
-            stream=nomination.stream,
-            dedup_key=nomination.dedup_key,
-            ticker=nomination.ticker,
-            direction=nomination.direction,  # type: ignore[arg-type]
-            event_at=observed_at,
-            entry_price=float(price),
-            evidence=nomination.evidence,
-        )
-        summary.predictions += 2
-
+        assert session is not None
         row = session.get(
             ScanState, {"user_id": user_id, "ticker": candidate.ticker}
         )

@@ -841,6 +841,8 @@ def _form4_tx_to_row(
     code = _ft(tx, "transactionCode")
     tx_date = _ft(tx, "transactionDate")
     security_title = _ft(tx, "securityTitle")
+    direct_or_indirect_ownership = _ft(tx, "directOrIndirectOwnership")
+    nature_of_ownership = _ft(tx, "natureOfOwnership")
     acquired_disposed_code = _ft(tx, "transactionAcquiredDisposedCode")
     shares_str = _ft(tx, "transactionShares")
     price_str = _ft(tx, "transactionPricePerShare")
@@ -894,6 +896,8 @@ def _form4_tx_to_row(
         "transaction_code": code,
         "transaction_kind": TRANSACTION_CODE_MEANING.get(code, "unknown"),
         "security_title": security_title,
+        "direct_or_indirect_ownership": direct_or_indirect_ownership,
+        "nature_of_ownership": nature_of_ownership,
         "acquired_disposed_code": acquired_disposed_code,
         "shares": shares,
         "price_per_share": price,
@@ -984,12 +988,15 @@ def _select_filing_versions(
         if len(candidates) == 1:
             match_status = "matched"
             cluster_eligible = True
+            filing_identity = str(candidates[0]["accession"])
         elif len(candidates) > 1:
             match_status = "ambiguous"
             cluster_eligible = False
+            filing_identity = str(latest["accession"])
         else:
             match_status = "unmatched"
             cluster_eligible = False
+            filing_identity = str(latest["accession"])
         evidence = sorted(
             str(candidate["accession"]) for candidate in candidates
         )
@@ -1007,6 +1014,7 @@ def _select_filing_versions(
                     "amendment_ambiguity_evidence": (
                         evidence if match_status == "ambiguous" else []
                     ),
+                    "filing_identity": filing_identity,
                     "cluster_eligible": cluster_eligible,
                     "source_urls": source_urls,
                 }
@@ -1026,6 +1034,7 @@ def _select_filing_versions(
                 {
                     "amendment_match_status": "not_amendment",
                     "amendment_ambiguity_evidence": [],
+                    "filing_identity": str(filing["accession"]),
                     "cluster_eligible": True,
                     "source_urls": [filing["filing_url"]],
                 }

@@ -102,6 +102,7 @@ def db_session():
 def test_signal_nomination_contract_is_frozen_and_runtime_checkable() -> None:
     nomination = _nomination()
     assert nomination.ticker == "PLTR"
+    assert nomination.route_to_funnel is True
     assert isinstance(_GoodStream(), SignalStream)
     with pytest.raises((AttributeError, TypeError)):
         nomination.strength = 0.5  # type: ignore[misc]
@@ -887,6 +888,38 @@ def test_nomination_writes_auditable_radar_state_and_true_30_180_predictions(
     db_session.commit()
     rerun = db_session.query(Prediction).order_by(Prediction.timeframe_days).all()
     assert [(row.id, row.entry_price, row.created_at) for row in rerun] == original
+
+
+def test_warning_only_nomination_writes_predictions_without_radar_candidate(
+    db_session,
+) -> None:
+    warning = _market_nomination(
+        stream="insider_cluster",
+        direction="short",
+        route_to_funnel=False,
+        dedup_key="sec-form4:short:SCHW:warning",
+        evidence={
+            **_market_nomination().evidence,
+            "warning_only": True,
+        },
+    )
+
+    summary = process_nominations(
+        db_session,
+        user_id="ariel",
+        nominations=[warning],
+        observed_at=datetime(2026, 7, 10, 14, 30, tzinfo=UTC),
+    )
+    db_session.commit()
+
+    assert summary.warning_only == 1
+    assert summary.predictions == 2
+    assert summary.active == 0
+    assert summary.quarantined == 0
+    assert summary.candidates == []
+    assert summary.to_dict()["warning_only"] == 1
+    assert db_session.query(Prediction).count() == 2
+    assert db_session.query(ScanState).count() == 0
 
 
 def test_180d_prediction_scores_at_the_real_180_day_due_date(
