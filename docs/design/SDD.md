@@ -4047,6 +4047,10 @@ The client-facing inbox is backed by `action_proposals`. The table's `kind` CHEC
 
 **Government-contract adapter.** `signal_streams/contracts.py` queries USAspending prime contract awards (award type codes A–D) and uses obligated award amounts, never IDIQ ceilings. A bounded recent global query discovers unknown recipients; recipient-specific lookbacks rebuild materiality for mapped public contractors without deep global pagination. `signal_recipient_resolutions` (**migration 0082**) persists curated, fuzzy, LLM-selected, or unresolved recipient mappings exactly once. The LLM may choose only from plausible public-company candidates; malformed, failed, or non-candidate answers remain unresolved and cannot blank independent nominations. A ticker nominates only when trailing obligated awards are material relative to trailing-twelve-month revenue from the existing fundamentals path. Current quote, market capitalization, and volume come through the cached market-data adapter. The ordinary radar price/capitalization/dollar-volume gates still decide whether the name becomes active or quarantined.
 
+**Insider-cluster adapter.** `signal_streams/insider.py` consumes the SEC EDGAR daily Form index through the existing `SecForm4Adapter`. The adapter fetches each indexed full submission once, extracts the embedded ownership XML, resolves the public ticker from the parsed issuer CIK (the index CIK is retained only as filing provenance), and processes filings with bounded concurrency under the process-global SEC fair-access pacer shared with the 13F adapter. SEC traffic identifies itself with the runtime `ARGOSY_SEC_CONTACT_EMAIL`; undeclared-automation HTML returned with HTTP 200 is detected and fails loudly. Daily-index parsing supports the official two-line header/compact date layout, skips deterministic federal closures, and queries only completed publication days using a configured lag.
+
+Purchase nominations require at least the configured number of distinct officers/directors making non-derivative code-P acquisitions within the rolling window, with transaction-level 10b5-1 status explicitly false and aggregate disclosed value above the greater of the base dollar floor and market-cap-scaled floor. Form 4/A filings supersede their uniquely matched original filing under a stable event identity; ambiguous amendments are cluster-ineligible. Warning-only sell clusters require distinct C-suite sellers whose aggregate sale within one security/ownership pool is strictly above the configured fraction of pre-sale holdings. They write short predictions and one generic `signal_stream_warning` monitor flag but never create a radar candidate. `monitor_flags.kind` admits this generic sink and prediction uniqueness is tenant-scoped under **migration 0084**. Warning reruns do not extend the original TTL or resurface acknowledged/expired events.
+
 **Ledger and outcome methods.** Every nomination writes two idempotent `predictions` rows under `source='signal_stream:<stream>'`: 30 calendar days and 180 calendar days. Both snapshot entry price and `event_at` when Argosy observes/writes the nomination; the underlying event date remains in source evidence. The method registry contains true `fixed_lookahead_180d` and entry-backfilled supersession methods, so thesis-horizon outcomes are not collapsed into the legacy 30-day cap. The daily evaluator runs ordinary scoring, recoverable-row re-evaluation, and retention in one transaction. Reliability queries select one outcome per prediction/method family using the highest **active** method version.
 
 **Calibration and context privilege.** `signal_source_scorecard` derives aggregate, 30-day, and 180-day counts, win rates, and average PnL directly from prediction/outcome rows. The 180-day slice also re-derives an always-long benchmark over the same tickers and entry/exit rows. Before 50 scored 180-day outcomes the stream is visibly labelled `uncalibrated (beta — N scored over M days)`. At 50 or more, if the stream's 180-day win rate does not beat the same-ticker always-long benchmark, only its **Stage-2 context privilege** pauses: predictions continue accumulating, no history is deleted, and unrelated radar families still route. A signal-only candidate is withheld from Stage 2; a candidate independently supported by another family may route without the paused stream's nomination, scorecard, or citations.
@@ -4110,6 +4114,18 @@ signal_streams:
   lookback_days: 90
   recent_scan_days: 2
   max_pages_per_query: 10
+ insider_cluster:
+  enabled: true
+  lookback_days: 14
+  recent_scan_days: 2
+  index_publication_lag_days: 2
+  cursor_max_catchup_days: 31
+  min_distinct_buyers: 2
+  min_cluster_value_usd: 100000
+  min_cluster_value_market_cap_bps: 0.5
+  min_distinct_sellers: 2
+  min_stake_sale_pct: 20
+  warning_ttl_days: 30
 
 # Tier thresholds
 tiers:

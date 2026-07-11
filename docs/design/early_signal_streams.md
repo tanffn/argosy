@@ -1,7 +1,7 @@
 # Early-Signal Streams — design for the discovery pipeline
 
-**Status:** shared contract, calibration, transparency, and Stream A are implemented;
-Streams B, D, C, and E remain specified for the build order in §6.
+**Status:** shared contract, calibration, transparency, and Streams A and B are
+implemented; Streams D, C, and E remain specified for the build order in §6.
 **Audience:** an implementing agent with no prior session context. Read `docs/design/SDD.md`
 §"Quickstart for new agents" first, then this file. The reviewing agent is whoever holds the
 current session (review = code review + verify-run of the first live cycle per stream).
