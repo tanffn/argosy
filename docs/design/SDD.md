@@ -52,6 +52,7 @@ This document describes Argosy as it stands today. History (per-wave changes, pr
 | The plan action checklist (dated to-dos with how-to + mark-done) | `argosy/api/routes/plan.py` (`_collect_action_items` + the `/action-items` GET + ack routes) + `argosy/services/action_item_guidance.py` (deterministic how-to/done-when mapper) | §20.7; `GET /api/plan/action-items`; migration 0073 (`plan_action_acks`) |
 | Daily decision funnel (the per-stock "act?" agent) | `argosy/services/decision_funnel/` (`orchestrator.py` conducts Stage 0 `stage0_market` → deterministic Stage 1 `stage1_routing`+`policy` → Stage 2 `triage` → Stage 3 `deep_decision` reusing `decisions/flow.py`) + loop `argosy/orchestrator/loops/decision_funnel_loop.py` | §20.8; kill switches `ARGOSY_DECISION_FUNNEL_ENABLED/_SHADOW/_STAGE3/_AUTOACT`; IPS `argosy/services/ips.py`; north-star `decision_funnel/north_star.py`; plan-freshness `decision_funnel/plan_freshness.py` |
 | Decision-funnel trace / "why did it (not) act on X?" | `argosy/services/funnel_trace.py` (writer) + `argosy/services/funnel_view.py` (debug + client narrative) + migration 0075 (`funnel_runs`, `decision_snapshots` immutable, `funnel_stage_rows`) | `GET /api/decisions/funnel/runs`, `/{id}`, `/{id}/narrative`, `/plan-freshness`; `ui/src/components/proposals/funnel-transparency-card.tsx` |
+| Add or inspect an early discovery signal stream | `argosy/services/signal_streams/base.py` (`SignalStream`, `SignalNomination`) + the stream adapter under `signal_streams/` + `argosy/orchestrator/loops/signal_streams_daily.py` | §20.10; prediction writer/evaluator under `argosy/services/predictions/`; transparency in `GET /api/portfolio/discovery` |
 | Add or modify a cadence loop | `argosy/orchestrator/loops/` (`monthly_cycle.py`, `plan_watcher.py`, `daily_brief.py`, …) | §5.1 |
 | Trade-flow per-decision logic | `argosy/decisions/flow.py`, `argosy/decisions/risk_preflight.py`, `argosy/decisions/tiers.py` | §10 |
 | Add a REST endpoint | `argosy/api/routes/<resource>.py`; register in `argosy/api/main.py` | §11.7 (full endpoint inventory) |
@@ -902,10 +903,11 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 | `decision_funnel` | Daily 18:30 IDT | on (master env `ARGOSY_DECISION_FUNNEL_ENABLED`, default ON; shadow mode default ON — §20.8) | The tiered per-stock "act?" funnel (§20.8), after the day's monitors |
 | `period_directive_daily` | Daily 19:00 IDT | on | The proactive "your move" push (§1.6), after the review chain: deterministic triage (idle cash vs plan-target threshold + open-directive staleness ±10%) decides IF there is anything to decide; only then the deployment author (the same fleet-authors path and decision packet `/deploy-cash` uses) composes the allocation and ONE `allocate` inbox proposal is written — refreshed in place per user, auto-superseded when cash falls back under threshold. A quiet skipped day is a success state; an unavailable author writes nothing (no deterministic fallback allocation) |
 | `pending_reevaluation_daily` | Daily 04:00 IDT | on | Sweeps `pending_reevaluations` + re-fires INSUFFICIENT_DATA consults; also expires past-TTL proposals; also sweeps closed-loop expectations (`argosy/services/closed_loop.py::sweep_unverified_expectations`): armed expectations older than 7 days with no real ingest since → ONE dedup'd `note_only` needs-info proposal ("send the current broker export"), auto-superseded when the condition clears. The tick summary carries a `closed_loop` key with the sweep result. Its `tick(now=…)` accepts the scheduler's injected clock (the scheduler calls every loop as `tick(now=self.clock)`) |
-| `predictions_evaluator` | Daily 03:30 IDT | on | Grades outstanding source predictions against outcomes |
+| `predictions_evaluator` | Daily 03:30 IDT | on | Grades due source predictions, re-evaluates recoverable prior rows under the active entry-backfilled method version, then runs retention; invalidates reliability caches after scoring |
 | `inferred_life_event_detector` | Daily 03:00 IDT | on | Detects cashflow-phase changes from expense state |
 | `holistic_rebalance_review` | Quarterly, 10:00 IDT on the 1st of Jan/Apr/Jul/Oct | on | The §20.6 whole-portfolio review |
 | `weekly_email_digest` | Fri 08:00 IDT | on | The weekly digest email |
+| `signal_streams_daily` | Daily 15:30 IDT | on | Fetches early public-data nominations through the shared `SignalStream` contract, writes scoreable predictions, and persists candidates before the 16:00 discovery pass (§20.10); each stream is failure-isolated and advances its durable cursor only on successful commit |
 | `discovery_funnel` | Daily | on | The heavy discovery pass (radar → quick estimator → fleet grading) with its own failure isolation; feeds the high-potential sleeve's cached BUY picks (§20.5) |
 | `speculative_monitor` | Daily | on | Stop-loss / sell-signal sweep over speculative names (cheap yfinance; emits `speculative.monitor_signal`) |
 | `fx_refresh` | Daily | on | USD/NIS cache refresh (BoI fetch) for all consumers |
@@ -4035,6 +4037,20 @@ The client-facing inbox is backed by `action_proposals`. The table's `kind` CHEC
 
 **Team-cleared flags auto-supersede (`supersede_cleared_flags`).** When a deploy run re-reviews a symbol and the team clears it (approved, or dropped from the proposal), any open `deploy_team_flag` row for that symbol is marked `status="superseded"` — the resolved item **leaves the client's checklist** (client-in-the-loop only when Argosy needs info or a decision; a resolved verification never renders as "verified — nothing to do"). The superseded row remains stored for audit.
 
+### 20.10 Early-signal discovery streams — public evidence before price recognition
+
+`argosy/services/signal_streams/` is the adapter boundary for early public-data evidence. Every adapter emits the same frozen `SignalNomination` contract: ticker, stream name, long/short direction, normalized strength, event date, raw evidence with source URLs, and a stable per-event dedup key. A signal **never creates a trade**. It writes an auditable prediction and nominates a ticker into the existing radar → quick estimator → discovery fleet → decision-funnel path, where the LLM team owns the investment judgment.
+
+**Cadence and recovery.** `SignalStreamsDailyLoop` runs at 15:30 Asia/Jerusalem, before the 16:00 discovery funnel. It opens one transaction per stream so one adapter failure never rolls back another stream. `signal_stream_cursors` (**migration 0083**) stores the last successful timestamp per `(user_id, stream)`. The next query overlaps the cursor by the stream's configured recent-scan window and clamps to its maximum lookback; successful zero-nomination cycles advance the cursor, while a failed cycle rolls back both writes and cursor. Existing observation-time predictions provide the one-time fallback watermark when introducing cursors to an already-populated ledger.
+
+**Government-contract adapter.** `signal_streams/contracts.py` queries USAspending prime contract awards (award type codes A–D) and uses obligated award amounts, never IDIQ ceilings. A bounded recent global query discovers unknown recipients; recipient-specific lookbacks rebuild materiality for mapped public contractors without deep global pagination. `signal_recipient_resolutions` (**migration 0082**) persists curated, fuzzy, LLM-selected, or unresolved recipient mappings exactly once. The LLM may choose only from plausible public-company candidates; malformed, failed, or non-candidate answers remain unresolved and cannot blank independent nominations. A ticker nominates only when trailing obligated awards are material relative to trailing-twelve-month revenue from the existing fundamentals path. Current quote, market capitalization, and volume come through the cached market-data adapter. The ordinary radar price/capitalization/dollar-volume gates still decide whether the name becomes active or quarantined.
+
+**Ledger and outcome methods.** Every nomination writes two idempotent `predictions` rows under `source='signal_stream:<stream>'`: 30 calendar days and 180 calendar days. Both snapshot entry price and `event_at` when Argosy observes/writes the nomination; the underlying event date remains in source evidence. The method registry contains true `fixed_lookahead_180d` and entry-backfilled supersession methods, so thesis-horizon outcomes are not collapsed into the legacy 30-day cap. The daily evaluator runs ordinary scoring, recoverable-row re-evaluation, and retention in one transaction. Reliability queries select one outcome per prediction/method family using the highest **active** method version.
+
+**Calibration and context privilege.** `signal_source_scorecard` derives aggregate, 30-day, and 180-day counts, win rates, and average PnL directly from prediction/outcome rows. The 180-day slice also re-derives an always-long benchmark over the same tickers and entry/exit rows. Before 50 scored 180-day outcomes the stream is visibly labelled `uncalibrated (beta — N scored over M days)`. At 50 or more, if the stream's 180-day win rate does not beat the same-ticker always-long benchmark, only its **Stage-2 context privilege** pauses: predictions continue accumulating, no history is deleted, and unrelated radar families still route. A signal-only candidate is withheld from Stage 2; a candidate independently supported by another family may route without the paused stream's nomination, scorecard, or citations.
+
+**Transparency.** `GET /api/portfolio/discovery` is a persisted-state read; it never launches a second radar scan. Alongside existing picks and estimates it returns enabled source-family counts (tracked/active/quarantined/stale), current pipeline-stage counts, per-ticker provenance, latest trade-proposal confidence, and signal scorecards. `ui/src/components/portfolio/discovery-card.tsx` renders this as source badges, a stage flow, and expandable provenance. Discovery's fleet output is labelled **research asymmetry**; the inbox's executable proposal field is labelled **trade confidence**, because they are different decisions made at different stages.
+
 ---
 
 ## Appendix A: Configuration Reference
@@ -4069,7 +4085,7 @@ keychain_key_name = "argosy.anthropic.api_key"
 
 ### A.2 `agent_settings.yaml` (per-user; `configs/<user_id>/agent_settings.yaml`)
 
-The loader is `argosy/agent_settings.py::AgentSettings` — the blocks below (with their real defaults) are exactly what it parses. A `speculation:` block is additionally read from the raw dict by `argosy/config.py::load_speculation_cap` (§6.12). Any other top-level key is ignored.
+The loader is `argosy/agent_settings.py::AgentSettings` — the blocks below (with their real defaults) are exactly what it parses. Raw extension blocks are additionally read by focused loaders, including `speculation:` via `load_speculation_cap` (§6.12) and `signal_streams:` via `load_signal_streams_config` (§20.10). Unrecognized top-level keys are ignored.
 
 ```yaml
 # Execution
@@ -4083,6 +4099,15 @@ limited_account:
  execution_mode: paper # override; can differ from global default
  per_decision_max_pct: 20 # any trade > this % of acct → tier escalation
  daily_loss_limit_pct: 5
+
+# Early public-data discovery. Stream outputs nominate only; they never trade.
+signal_streams:
+ enabled: true
+ gov_contracts:
+  materiality_threshold: 0.05
+  lookback_days: 90
+  recent_scan_days: 2
+  max_pages_per_query: 10
 
 # Tier thresholds
 tiers:
