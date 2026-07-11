@@ -557,6 +557,13 @@ def verify_grading(
 
     def compare(field: str, expected: Any) -> None:
         actual = output.get(field)
+        if field == "acted_return_pct" and expected is None:
+            # Synthetics / null-resolution: grader may emit 0.0 ("no position")
+            # or null — both mean "no realized comparator" (omk_synthetic).
+            if actual is None or (
+                isinstance(actual, (int, float)) and abs(float(actual)) <= 1e-6
+            ):
+                return
         if isinstance(expected, float) and isinstance(actual, (int, float)):
             matches = abs(float(actual) - expected) <= 1e-6
         else:

@@ -280,11 +280,21 @@ def grade_point(result: dict, packet: dict) -> dict:
     grader = pipeline.get("grading") or {}
     if grader and verify_grading(packet, result, grader)["ok"]:
         authored = grader.get("output") or {}
+        acted = authored.get("acted_return_pct")
+        # Null-resolution synthetics: coerce grader 0.0 → None so reports show
+        # n/a (synthetic) rather than +0%.
+        res = packet.get("resolution")
+        if (
+            (res is None or res.get("benchmark_return_pct") is None)
+            and isinstance(acted, (int, float))
+            and abs(float(acted)) <= 1e-6
+        ):
+            acted = None
         return {
             "in_class": bool(authored.get("in_expected_class")),
             "score": float(authored.get("score", 0.0)),
             "notes": [authored["rationale"]] if authored.get("rationale") else [],
-            "acted_return_pct": authored.get("acted_return_pct"),
+            "acted_return_pct": acted,
             "benchmark_return_pct": authored.get("benchmark_return_pct"),
             "falsifiers_snippet": find_snippet(rationale, r"falsifier"),
             "clock_snippet": find_snippet(
@@ -376,11 +386,19 @@ def main() -> None:
             continue
         g = grade_point(r, pkt)
         score_audit = recompute_integrity_audit(r, pkt)["output_audit"]
+        from horizon_calibration import score_row as score_horizon_row
+
+        horizon = score_horizon_row(
+            rationale=r.get("rationale_summary") or "",
+            freeze_date=pkt.get("freeze_date"),
+            packet=pkt,
+        )
         rows.append({
             **r,
             **g,
             "packet": pkt,
             "score_output_audit": score_audit,
+            "horizon_calibration": horizon,
         })
 
     # --- aggregates ---
@@ -438,6 +456,30 @@ def main() -> None:
                 render_disqualified_entry(cid, why, detail, result, packet)
             )
         lines.append("")
+    lines.append("")
+    lines.append("## Horizon calibration (§2b clock band)")
+    hz_counts: dict[str, int] = {}
+    for row in rows:
+        hz = (row.get("horizon_calibration") or {}).get("score") or "no_band"
+        hz_counts[hz] = hz_counts.get(hz, 0) + 1
+    for label in ("inside", "outside", "unestimable_stated", "not_applicable", "no_band"):
+        if label in hz_counts:
+            lines.append(f"- {label}: {hz_counts[label]}")
+    for row in sorted(rows, key=lambda r: (r["category"], r["case_id"])):
+        hz = row.get("horizon_calibration") or {}
+        stated = hz.get("stated")
+        if isinstance(stated, dict):
+            stated_s = (
+                f"{stated.get('low_months')}-{stated.get('high_months')} mo "
+                f"({stated.get('raw')})"
+            )
+        else:
+            stated_s = stated or "none"
+        lines.append(
+            f"- {row['case_id']}: {hz.get('score')} "
+            f"(stated={stated_s}; actual_months={hz.get('actual_months')})"
+        )
+    lines.append("")
     lines.append("## Per-point detail (section 2b three-column + clock)")
     for row in sorted(rows, key=lambda r: (r["category"], r["case_id"])):
         audit = row.get("score_output_audit", {})

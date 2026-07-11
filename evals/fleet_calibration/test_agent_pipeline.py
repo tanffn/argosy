@@ -407,6 +407,64 @@ def test_grading_verifier_catches_answer_key_and_return_mismatch() -> None:
     }
 
 
+def test_grading_verifier_normalizes_null_vs_zero_for_null_resolution() -> None:
+    """omk_synthetic: resolution null → grader may emit 0.0 or null for acted."""
+    from agent_pipeline import verify_grading
+
+    packet = {
+        "expected_classes": ["hold"],
+        "positioned": False,
+        "resolution": None,
+        "synthetic": True,
+        "grading": "synthetic_trap",
+    }
+    replay = {"action": "hold"}
+    receipt = {
+        "stage": 5,
+        "agent_role": "calibration_grader",
+        "output": {
+            "in_expected_class": True,
+            "score": 1.0,
+            "acted_return_pct": 0.0,
+            "benchmark_return_pct": None,
+            "rationale": "No position; returns not computable.",
+            "confidence": "HIGH",
+        },
+    }
+    v = verify_grading(packet, replay, receipt)
+    assert v["ok"] is True
+    assert v["expected_acted_return_pct"] is None
+    assert v["mismatches"] == []
+
+
+def test_grading_verifier_still_flags_zero_when_benchmark_exists() -> None:
+    """Real cases: acted 0.0 must still fail when expected return is non-zero."""
+    from agent_pipeline import verify_grading
+
+    packet = {
+        "expected_classes": ["buy"],
+        "positioned": False,
+        "resolution": {"benchmark_return_pct": 200.0},
+        "grading": "F2_strict",
+    }
+    replay = {"action": "buy"}
+    receipt = {
+        "stage": 5,
+        "agent_role": "calibration_grader",
+        "output": {
+            "in_expected_class": True,
+            "score": 1.0,
+            "acted_return_pct": 0.0,
+            "benchmark_return_pct": 200.0,
+            "rationale": "Buy.",
+            "confidence": "HIGH",
+        },
+    }
+    v = verify_grading(packet, replay, receipt)
+    assert v["ok"] is False
+    assert any(m["field"] == "acted_return_pct" for m in v["mismatches"])
+
+
 def test_grading_verifier_forbids_partial_credit_on_strict_points() -> None:
     from agent_pipeline import verify_grading
 
