@@ -4118,7 +4118,7 @@ signal_streams:
   max_pages_per_query: 10
   agent_error_ttl_hours: 24 # agent_error tombstones retry after TTL; not_public is permanent
  insider_cluster:
-  enabled: false # opt-in until Ariel enables Stream B
+  enabled: false # opt-in by default
   lookback_days: 14
   recent_scan_days: 2
   index_publication_lag_days: 2
