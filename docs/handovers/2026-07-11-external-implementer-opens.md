@@ -254,6 +254,35 @@ false positive; Opus synthesizer malformed-JSON retries dominate synthesis wall-
 192/193 burned 3×8min each) — Fable-5 upgrade candidate, benchmark-gated; reliability trio
 prompt ready (migrations start 0086 — 0085 is stream B's).
 
+## 5c. FINAL STATE (2026-07-11 night — supersedes §5b where they differ)
+
+- **STREAM B MERGED to master (`53820d1`)** — B1-B6 re-review PASS, replay tests at the
+  stream-A bar, default OFF (opt-in), post-merge smoke 142 green. Non-blocking follow-ups
+  carried: (1) `_parse_daily_form_index` hard-raises on malformed non-Form-4 index lines /
+  odd accession basenames — interacts with B6 (a permanently malformed index day can wedge
+  the stream up to 31 days; fail-loud, no bad data, but an availability hole); (2) rare
+  fail-open edge in the ownerless-amendment obsolescence rule (same-issuer same-day sibling
+  originals) — wants a fixture; (3) stale UA example in
+  `domain_knowledge/data_sources/sec_form4.md`; (4) SDD line 305 carries a pre-existing
+  user-agnostic violation (out of stream-B scope). Tombstone TTL default 24h — Ariel accepted.
+- **Item F CLOSED** (blocks 1/2a/2b + burns merged; 4.0/5 scored, boot_2017 = first genuine
+  in-class miss = restored discriminating power). Deferred to a token-flush day: sdc_2021
+  re-burn, omk re-score after null-normalization, Fable-5 A/B (first-wave roles), hard-case
+  pool growth (n>=5 before any doctrine candidate).
+- **Item A NOT closed — deliberately parked (token freeze).** v77 current; draft 85 pending
+  (= draft 84 + the FM's durable-allocation reconciliation, 60 values aligned + '5pp' fix).
+  Draft 85's accept 422 finally exposed the TRUE deterministic residue: section_coverage
+  11/18 (corrective chain silently LOST 6 sections vs v77), unqualified 'reached' sentences
+  on section/short surfaces the corrective loops never touched (the surgical-converge class),
+  and the tax-event currency pin. Close path: land the synthesis-aftermath block (§5b prompt,
+  esp. items 1-4), then ONE corrective run seeded with the 422 list, accept, guidance-flip
+  (tmp/apply_guidance_flip_convention.py, assertion → new current), verify-run, patch/sliced
+  flags ON. Do NOT hand-author plan content to force the close.
+- **Queued on token freeze:** ORCL discovery review (creator thesis as input signal, fleet
+  re-derives blind, one needs-confirm row) — fire only on Ariel's explicit go.
+- **Ariel decisions pending:** CMPS/VOR (cards 15/16) EXPIRE 2026-07-13 15:30 — remind on the
+  12th; cards 13/14 (07-17); row 72. July's 62 alpha predictions score from 07-13 (G3).
+
 ## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
 
 You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
