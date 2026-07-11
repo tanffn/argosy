@@ -25,8 +25,10 @@ import json
 import re
 import sys
 import traceback
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
@@ -34,6 +36,16 @@ sys.path.insert(0, str(REPO))
 
 PACKETS_DIR = HERE / "packets"
 RUNS_DIR = HERE / "runs"
+CLASSIFIER_RECEIPTS_DIR = HERE / "classifier_receipts"
+
+from agent_pipeline import (  # noqa: E402
+    run_grading,
+    run_replay_pipeline,
+    run_review,
+    run_sanitizer,
+    verify_classifier,
+    verify_sanitizer,
+)
 
 # ---------------------------------------------------------------------------
 # Prompt scaffolding — verbatim from the proven harness (tmp/fleet_timemachine)
@@ -194,6 +206,29 @@ def load_packets(only: list[str] | None) -> list[dict]:
     return packets
 
 
+def ensure_output_path_writable(out_path: Path, *, dry_run: bool) -> None:
+    """Refuse to mutate a run once its score report exists."""
+    if dry_run:
+        return
+    report_path = out_path.with_name(out_path.stem + "_report.md")
+    if report_path.exists():
+        raise RuntimeError(
+            f"scored run is immutable: {out_path} has report {report_path.name}; "
+            "choose a new --out path"
+        )
+
+
+def dry_run_exit_code(run_doc: dict[str, Any]) -> int:
+    return (
+        2
+        if any(
+            result.get("status") == "dry_blocked_classifier"
+            for result in run_doc.get("results", [])
+        )
+        else 0
+    )
+
+
 def build_constraints(packet: dict) -> str:
     c = USER_CONSTRAINTS
     if packet.get("constraints_extra") == "exit_rule":
@@ -239,6 +274,158 @@ async def run_point(packet: dict) -> dict:
     }
 
 
+def load_persisted_result(out_path: Path, case_id: str) -> dict[str, Any]:
+    """Reload one result from the durable replay trail."""
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    return next(r for r in reversed(doc["results"]) if r["case_id"] == case_id)
+
+
+def load_classifier_receipt(
+    packet: dict[str, Any],
+    *,
+    receipts_dir: Path = CLASSIFIER_RECEIPTS_DIR,
+) -> dict[str, Any] | None:
+    path = receipts_dir / f"{packet['case_id']}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def classifier_receipt_preflight(
+    packet: dict[str, Any],
+    receipt: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if receipt is None:
+        return {"ok": False, "mismatches": [{"field": "receipt", "actual": "missing"}]}
+    return verify_classifier(packet, receipt)
+
+
+def supersede_prior_attempts(run_doc: dict[str, Any], case_id: str) -> None:
+    """Close failed prior attempts before appending a retry for the same point."""
+    for result in run_doc.get("results", []):
+        if (
+            result.get("case_id") == case_id
+            and result.get("status") not in {
+                "ok",
+                "disqualified_temporal",
+                "superseded_retry",
+            }
+        ):
+            result["superseded_status"] = result.get("status")
+            result["status"] = "superseded_retry"
+
+
+async def execute_live_point(
+    packet: dict[str, Any],
+    base: dict[str, Any],
+    *,
+    run_doc: dict[str, Any],
+    out_path: Path,
+    persist: Callable[[], None],
+    constraints_rendered: str | None = None,
+    classifier_receipt: dict[str, Any] | None = None,
+    sanitizer_runner: Callable[
+        [dict[str, Any], str], Awaitable[dict[str, Any]]
+    ] = run_sanitizer,
+    trader_runner: Callable[
+        [dict[str, Any]], Awaitable[dict[str, Any]]
+    ] = run_point,
+    review_runner: Callable[
+        [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]
+    ] = run_review,
+    grading_runner: Callable[
+        [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]
+    ] = run_grading,
+) -> dict[str, Any]:
+    """Run stages 1-5 with a durable reload at every agent boundary."""
+    rendered = constraints_rendered or build_constraints(packet)
+    base["packet_snapshot"] = {
+        "case_id": packet["case_id"],
+        "alias": packet["alias"],
+        "analyst_reports": packet["analyst_reports"],
+        "positions": packet["positions"],
+        "constraints_rendered": rendered,
+        "freeze_date": packet.get("freeze_date"),
+        "sources": packet.get("sources") or [],
+        "trader_call": {
+            "debate_outcome": {},
+            "tier": "T2",
+            "mode": "long_hold",
+            "ticker": packet["alias"],
+        },
+    }
+    base["agent_pipeline"] = {}
+    classifier = dict(classifier_receipt or {
+        "stage": 1,
+        "agent_role": "calibration_classifier_sourcing",
+        "status": "missing",
+        "output": {},
+    })
+    classifier["verification"] = verify_classifier(packet, classifier)
+    base["agent_pipeline"]["classifier_data_sourcing"] = classifier
+    supersede_prior_attempts(run_doc, packet["case_id"])
+    run_doc["results"].append(base)
+    persist()
+    if not classifier["verification"]["ok"]:
+        base["status"] = "disqualified_classifier"
+        persist()
+        return base
+
+    packet_with_receipt = dict(packet)
+    packet_with_receipt["_classifier_receipt"] = classifier
+    sanitizer = await sanitizer_runner(packet_with_receipt, rendered)
+    sanitizer["verification"] = verify_sanitizer(packet, sanitizer)
+    base["agent_pipeline"]["sanitizer"] = sanitizer
+    persist()
+
+    if not sanitizer["verification"]["ok"]:
+        base["status"] = "disqualified_sanitizer"
+        persist()
+        return base
+
+    result: dict[str, Any] | None = None
+    for attempt in (1, 2):
+        try:
+            result = await trader_runner(packet)
+            break
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "status": "error",
+                "attempt": attempt,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc()[-2000:],
+            }
+    assert result is not None
+    base.update(result)
+    if result.get("status") != "ok":
+        persist()
+        return base
+
+    response_text = result.get("response_raw") or (
+        (result.get("rationale_summary") or "")
+        + " "
+        + " ".join(result.get("cited_sources") or [])
+    )
+    base["output_audit"] = output_audit(packet, response_text)
+    persist()
+
+    def reload_replay() -> dict[str, Any]:
+        return load_persisted_result(out_path, packet["case_id"])
+
+    def persist_stage(stage: str, receipt: dict[str, Any]) -> None:
+        base["agent_pipeline"][stage] = receipt
+        persist()
+
+    await run_replay_pipeline(
+        packet,
+        load_replay=reload_replay,
+        persist_stage=persist_stage,
+        review_runner=review_runner,
+        grading_runner=grading_runner,
+    )
+    return base
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", help="comma-separated case_ids", default=None)
@@ -257,10 +444,16 @@ async def main() -> None:
         if args.out
         else RUNS_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.json"
     )
+    ensure_output_path_writable(out_path, dry_run=args.dry_run)
     RUNS_DIR.mkdir(exist_ok=True)
-    run_doc: dict = {"started": datetime.now(timezone.utc).isoformat(), "results": []}
+    run_doc: dict = {
+        "started": datetime.now(timezone.utc).isoformat(),
+        "pipeline_version": 1,
+        "results": [],
+    }
     if out_path.exists() and not args.dry_run:
         run_doc = json.loads(out_path.read_text(encoding="utf-8"))
+        run_doc.setdefault("pipeline_version", 1)
         done = {r["case_id"] for r in run_doc["results"] if r.get("status") in ("ok", "disqualified_temporal")}
         packets = [p for p in packets if p["case_id"] not in done]
         print(f"resuming: {len(done)} points already in {out_path.name}", flush=True)
@@ -286,6 +479,10 @@ async def main() -> None:
             "temporal_violations": violations,
             "packet_calendar_years": pkt_years,
         }
+        classifier_receipt = load_classifier_receipt(pkt)
+        base["classifier_receipt_available"] = classifier_receipt is not None
+        classifier_preflight = classifier_receipt_preflight(pkt, classifier_receipt)
+        base["classifier_receipt_preflight"] = classifier_preflight
         if violations:
             base["status"] = "disqualified_temporal"
             run_doc["results"].append(base)
@@ -295,33 +492,38 @@ async def main() -> None:
         if pkt_years:
             print(f"{cid}: WARNING calendar years in packet: {pkt_years}", flush=True)
         if args.dry_run:
-            base["status"] = "dry_ok"
+            base["status"] = (
+                "dry_ok" if classifier_preflight["ok"]
+                else "dry_blocked_classifier"
+            )
             run_doc["results"].append(base)
-            print(f"{cid}: audits pass (dry run)", flush=True)
+            suffix = (
+                "audits pass (dry run)"
+                if classifier_preflight["ok"]
+                else "BLOCKED (dry run) - classifier receipt missing or invalid"
+            )
+            print(f"{cid}: {suffix}", flush=True)
             continue
 
         print(f"running {cid} ({pkt['category']}/{pkt.get('grading')})...", flush=True)
-        result: dict | None = None
-        for attempt in (1, 2):  # one retry per spec/job instructions
-            try:
-                result = await run_point(pkt)
-                break
-            except Exception as exc:  # noqa: BLE001
-                result = {
-                    "status": "error",
-                    "attempt": attempt,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "traceback": traceback.format_exc()[-2000:],
-                }
-        assert result is not None
-        base.update(result)
-        if result.get("status") == "ok":
-            resp_text = (result.get("rationale_summary") or "") + " " + " ".join(
-                result.get("cited_sources") or []
+        try:
+            await execute_live_point(
+                pkt,
+                base,
+                run_doc=run_doc,
+                out_path=out_path,
+                persist=persist,
+                classifier_receipt=classifier_receipt,
             )
-            base["output_audit"] = output_audit(pkt, resp_text)
-        run_doc["results"].append(base)
-        persist()  # durable side-effect BEFORE the detail print
+        except Exception as exc:  # noqa: BLE001
+            if not any(r is base for r in run_doc["results"]):
+                run_doc["results"].append(base)
+            base.update({
+                "status": "pipeline_error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc()[-2000:],
+            })
+            persist()
         flag = ""
         if base.get("output_audit", {}).get("contaminated"):
             flag = " [CONTAMINATED]"
@@ -336,6 +538,8 @@ async def main() -> None:
     run_doc["finished"] = datetime.now(timezone.utc).isoformat()
     persist()
     print(f"done -> {out_path}", flush=True)
+    if args.dry_run:
+        raise SystemExit(dry_run_exit_code(run_doc))
 
 
 if __name__ == "__main__":

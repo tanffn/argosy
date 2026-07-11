@@ -29,8 +29,23 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PACKETS_DIR = HERE / "packets"
 
+from agent_pipeline import (  # noqa: E402
+    verify_classifier,
+    verify_grading,
+    verify_review,
+    verify_sanitizer,
+)
+from run_suite import build_constraints, output_audit, temporal_audit  # noqa: E402
+
 LONG_ACTIONS_UNPOSITIONED = {"buy"}
 LONG_ACTIONS_POSITIONED = {"buy", "hold"}
+
+
+def ensure_report_path_writable(report_path: Path) -> None:
+    if report_path.exists():
+        raise RuntimeError(
+            f"score report is immutable: {report_path}; choose an unscored run"
+        )
 
 
 def load_packet_index() -> dict[str, dict]:
@@ -65,12 +80,220 @@ def mentions_falsifiers(rationale: str) -> bool:
     return bool(re.search(r"(?i)falsifier|would kill (the|this) thesis|exit trigger", rationale))
 
 
+def recompute_pipeline_verifications(
+    result: dict, packet: dict
+) -> dict[str, dict]:
+    pipeline = result.get("agent_pipeline") or {}
+    if not pipeline:
+        return {}
+    required = (
+        "classifier_data_sourcing",
+        "sanitizer",
+        "review",
+        "grading",
+    )
+    if any(stage not in pipeline for stage in required):
+        return {}
+    return {
+        "classifier_data_sourcing": verify_classifier(
+            packet, pipeline["classifier_data_sourcing"]
+        ),
+        "sanitizer": verify_sanitizer(packet, pipeline["sanitizer"]),
+        "review": verify_review(pipeline["review"]),
+        "grading": verify_grading(packet, result, pipeline["grading"]),
+    }
+
+
+def packet_snapshot_mismatch(result: dict, packet: dict) -> str | None:
+    expected_constraints = build_constraints(packet)
+    expected = {
+        "case_id": packet["case_id"],
+        "alias": packet["alias"],
+        "analyst_reports": packet["analyst_reports"],
+        "positions": packet["positions"],
+        "constraints_rendered": expected_constraints,
+        "freeze_date": packet.get("freeze_date"),
+        "sources": packet.get("sources") or [],
+        "trader_call": {
+            "debate_outcome": {},
+            "tier": "T2",
+            "mode": "long_hold",
+            "ticker": packet["alias"],
+        },
+    }
+    snapshot = result.get("packet_snapshot") or {}
+    for field, value in expected.items():
+        if snapshot.get(field) != value:
+            return field
+    if result.get("constraints_rendered") != expected_constraints:
+        return "constraints_rendered"
+    return None
+
+
+def pipeline_disqualification(
+    result: dict,
+    packet: dict,
+    *,
+    require_pipeline: bool = False,
+) -> str | None:
+    """Return why a new five-stage result cannot be scored."""
+    pipeline = result.get("agent_pipeline")
+    if not pipeline:
+        return "pipeline missing" if require_pipeline else None
+    for stage in (
+        "classifier_data_sourcing",
+        "sanitizer",
+        "review",
+        "grading",
+    ):
+        if stage not in pipeline:
+            return f"pipeline incomplete: missing {stage}"
+    replay_required = (
+        "packet_snapshot",
+        "constraints_rendered",
+        "response_raw",
+        "output_full",
+    )
+    missing_replay = [field for field in replay_required if not result.get(field)]
+    if missing_replay:
+        return f"replay incomplete: missing {', '.join(missing_replay)}"
+    snapshot_mismatch = packet_snapshot_mismatch(result, packet)
+    if snapshot_mismatch:
+        return f"packet snapshot mismatch: {snapshot_mismatch}"
+    validations = recompute_pipeline_verifications(result, packet)
+    for stage, label in (
+        ("classifier_data_sourcing", "classifier"),
+        ("sanitizer", "sanitizer"),
+        ("review", "review"),
+        ("grading", "grading"),
+    ):
+        verification = validations.get(stage) or {"ok": False}
+        if not verification["ok"]:
+            return f"{label} verification failed"
+    sanitizer = pipeline["sanitizer"].get("output") or {}
+    if not sanitizer.get("safe_to_run", False):
+        return "sanitizer rejected packet"
+    review = pipeline["review"].get("output") or {}
+    for field in ("output_clean", "packet_fidelity", "workflow_correct"):
+        if not review.get(field, False):
+            return f"review failed: {field}"
+    return None
+
+
+def recompute_integrity_audit(result: dict, packet: dict) -> dict:
+    response_text = result.get("response_raw") or (
+        (result.get("rationale_summary") or "")
+        + " "
+        + " ".join(result.get("cited_sources") or [])
+    )
+    return {
+        "temporal_violations": temporal_audit(packet),
+        "output_audit": output_audit(packet, response_text),
+    }
+
+
+def integrity_disqualification(
+    result: dict, packet: dict
+) -> tuple[str, str] | None:
+    audit = recompute_integrity_audit(result, packet)
+    if audit["temporal_violations"]:
+        return "temporal", "; ".join(audit["temporal_violations"])
+    if audit["output_audit"].get("contaminated"):
+        return (
+            "contaminated",
+            ", ".join(audit["output_audit"].get("contamination_hits") or []),
+        )
+    return None
+
+
+def render_pipeline_receipts(
+    result: dict, packet: dict | None = None
+) -> list[str]:
+    pipeline = result.get("agent_pipeline") or {}
+    if not pipeline:
+        return []
+    recomputed = (
+        recompute_pipeline_verifications(result, packet) if packet is not None
+        else {}
+    )
+    lines = ["- **Five-stage structured receipts:**"]
+    for stage in (
+        "classifier_data_sourcing",
+        "sanitizer",
+        "review",
+        "grading",
+    ):
+        receipt = pipeline.get(stage) or {}
+        rendered = {
+            key: receipt.get(key)
+            for key in (
+                "stage",
+                "agent_role",
+                "model",
+                "output",
+                "verification",
+            )
+            if key in receipt
+        }
+        if stage in recomputed:
+            rendered["verification"] = recomputed[stage]
+        lines.extend([
+            f"  - **{stage}:**",
+            "```json",
+            json.dumps(rendered, indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
+        ])
+    return lines
+
+
+def render_disqualified_entry(
+    case_id: str,
+    reason: str,
+    detail: str,
+    result: dict,
+    packet: dict | None = None,
+) -> list[str]:
+    lines = [f"### {case_id}", f"- {reason} — {detail}"]
+    lines.extend(render_pipeline_receipts(result, packet))
+    return lines
+
+
+def select_latest_results(results: list[dict]) -> list[dict]:
+    latest_index = {
+        result["case_id"]: index for index, result in enumerate(results)
+    }
+    return [
+        result
+        for index, result in enumerate(results)
+        if latest_index[result["case_id"]] == index
+    ]
+
+
 def grade_point(result: dict, packet: dict) -> dict:
     action = result.get("action")
     expected = packet.get("expected_classes", [])
     grading = packet.get("grading")
     rationale = result.get("rationale_summary") or ""
     positioned = packet.get("positioned", False)
+
+    pipeline = result.get("agent_pipeline") or {}
+    grader = pipeline.get("grading") or {}
+    if grader and verify_grading(packet, result, grader)["ok"]:
+        authored = grader.get("output") or {}
+        return {
+            "in_class": bool(authored.get("in_expected_class")),
+            "score": float(authored.get("score", 0.0)),
+            "notes": [authored["rationale"]] if authored.get("rationale") else [],
+            "acted_return_pct": authored.get("acted_return_pct"),
+            "benchmark_return_pct": authored.get("benchmark_return_pct"),
+            "falsifiers_snippet": find_snippet(rationale, r"falsifier"),
+            "clock_snippet": find_snippet(
+                rationale,
+                r"THE CLOCK|\bCLOCK\b\s*[:—-]|next validation|validation point",
+            ),
+            "verdict_line": extract_section(rationale, "Verdict"),
+            "grade_source": "calibration_grader",
+        }
 
     in_class = action in expected
     score = 1.0 if in_class else 0.0
@@ -106,6 +329,7 @@ def grade_point(result: dict, packet: dict) -> dict:
             r"THE CLOCK|\bCLOCK\b\s*[:—-]|next validation|validation point",
         ),
         "verdict_line": extract_section(rationale, "Verdict"),
+        "grade_source": "legacy_deterministic",
     }
 
 
@@ -115,25 +339,49 @@ def main() -> None:
         run_path = HERE / run_path
     run_doc = json.loads(run_path.read_text(encoding="utf-8"))
     packets = load_packet_index()
+    require_pipeline = run_doc.get("pipeline_version") == 1
 
     rows = []
     disqualified = []
-    for r in run_doc["results"]:
+    for r in select_latest_results(run_doc["results"]):
         cid = r["case_id"]
         pkt = packets.get(cid)
         status = r.get("status")
         if status == "disqualified_temporal":
-            disqualified.append((cid, "temporal", "; ".join(r.get("temporal_violations", []))))
+            disqualified.append((
+                cid,
+                "temporal",
+                "; ".join(r.get("temporal_violations", [])),
+                r,
+            ))
             continue
-        if status != "ok" or pkt is None:
-            disqualified.append((cid, "error", r.get("error", "packet missing")))
+        if pkt is None:
+            disqualified.append((cid, "error", "packet missing", r))
             continue
-        audit = r.get("output_audit", {})
-        if audit.get("contaminated"):
-            disqualified.append((cid, "contaminated", ", ".join(audit["contamination_hits"])))
+        if status != "ok":
+            disqualified.append((cid, "error", r.get("error", status), r))
+            continue
+        integrity_failure = integrity_disqualification(r, pkt)
+        if integrity_failure:
+            why, detail = integrity_failure
+            disqualified.append((cid, why, detail, r, pkt))
+            continue
+        pipeline_failure = pipeline_disqualification(
+            r, pkt, require_pipeline=require_pipeline
+        )
+        if pipeline_failure:
+            disqualified.append((
+                cid, "agent_pipeline", pipeline_failure, r, pkt
+            ))
             continue
         g = grade_point(r, pkt)
-        rows.append({**r, **g, "packet": pkt})
+        score_audit = recompute_integrity_audit(r, pkt)["output_audit"]
+        rows.append({
+            **r,
+            **g,
+            "packet": pkt,
+            "score_output_audit": score_audit,
+        })
 
     # --- aggregates ---
     by_cat: dict[str, list] = {}
@@ -183,12 +431,16 @@ def main() -> None:
     lines.append("")
     if disqualified:
         lines.append("## Disqualified / not scored")
-        for cid, why, detail in disqualified:
-            lines.append(f"- {cid}: {why} — {detail}")
+        for entry in disqualified:
+            cid, why, detail, result, *packet_tail = entry
+            packet = packet_tail[0] if packet_tail else packets.get(cid)
+            lines.extend(
+                render_disqualified_entry(cid, why, detail, result, packet)
+            )
         lines.append("")
     lines.append("## Per-point detail (section 2b three-column + clock)")
     for row in sorted(rows, key=lambda r: (r["category"], r["case_id"])):
-        audit = row.get("output_audit", {})
+        audit = row.get("score_output_audit", {})
         lines.append(f"### {row['case_id']} — real: {row['real']}")
         lines.append(f"- **Fleet reasoning:** {row['action']} ({row['confidence']}) — {row['verdict_line']}")
         lines.append(f"  - falsifiers: {row['falsifiers_snippet'] or 'NOT RECORDED'}")
@@ -199,14 +451,31 @@ def main() -> None:
             f"suspects: {audit.get('suspect_terms', [])}; "
             f"years in output: {audit.get('calendar_years_in_output', [])}"
         )
+        review = (
+            (row.get("agent_pipeline") or {}).get("review") or {}
+        ).get("output") or {}
+        if review:
+            lines.append(
+                "  - independent replay review: "
+                f"clean={review.get('output_clean')}; "
+                f"packet_fidelity={review.get('packet_fidelity')}; "
+                f"workflow_correct={review.get('workflow_correct')}; "
+                f"visible-reasoning grounding={review.get('reasoning_grounded_score')}/4"
+            )
+        lines.extend(render_pipeline_receipts(row, row["packet"]))
         av = f"{row['acted_return_pct']:+.0f}% vs benchmark {row['benchmark_return_pct']:+.0f}%" \
             if row["acted_return_pct"] is not None else "n/a"
-        lines.append(f"- **Agent score:** {row['score']} ({'in class' if row['in_class'] else 'OUT of class'}); acted {av}")
+        lines.append(
+            f"- **Agent score:** {row['score']} "
+            f"({'in class' if row['in_class'] else 'OUT of class'}); acted {av}; "
+            f"source={row['grade_source']}"
+        )
         if row["notes"]:
             lines.append(f"- notes: {'; '.join(row['notes'])}")
         lines.append("")
 
     report_path = run_path.with_name(run_path.stem + "_report.md")
+    ensure_report_path_writable(report_path)
     report_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"report -> {report_path}")
     print("\n".join(lines[:60]))
