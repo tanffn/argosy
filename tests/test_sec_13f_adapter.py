@@ -5,6 +5,7 @@ We never hit the network; every test patches the adapter's `http_client`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC
 from typing import Any
@@ -22,6 +23,7 @@ from argosy.adapters.data.sec_13f_adapter import (
     _parse_information_table_xml,
     _ticker_query,
 )
+from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
 from argosy.services.adapter_outcomes import (
     collect_outcomes,
     reset_outcomes,
@@ -170,6 +172,27 @@ class _FailingHttp:
         raise OSError(f"DNS failure (simulated) {url}")
 
 
+class _SharedClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    async def sleep(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class _CrossAdapterHttp:
+    def __init__(self, clock: _SharedClock) -> None:
+        self.clock = clock
+        self.starts: list[float] = []
+
+    async def get(self, _url: str, **_kwargs: Any) -> _FakeResp:
+        self.starts.append(self.clock())
+        return _FakeResp(text="ok")
+
+
 # ----------------------------------------------------------------------
 # Pure-parsing tests (no DB)
 # ----------------------------------------------------------------------
@@ -195,6 +218,30 @@ def test_sec_user_agent_rejects_empty_runtime_contact(
 
     with pytest.raises(ValueError, match="ARGOSY_SEC_CONTACT_EMAIL"):
         sec_13f._default_headers()
+
+
+@pytest.mark.asyncio
+async def test_form4_and_13f_share_process_global_request_pacing() -> None:
+    clock = _SharedClock()
+    http = _CrossAdapterHttp(clock)
+    form4 = SecForm4Adapter(
+        http_client=http,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    form13f = Sec13FAdapter(
+        http_client=http,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+
+    await asyncio.gather(
+        form4._fetch_text("https://www.sec.gov/form4"),
+        form13f._fetch_text("https://www.sec.gov/form13f", params={}),
+    )
+
+    assert len(http.starts) == 2
+    assert http.starts[1] - http.starts[0] >= 0.11 - 1e-12
 
 
 def test_parse_fts_hits_basic() -> None:

@@ -16,6 +16,11 @@ _TICKERS_JSON = json.dumps(
     {
         "0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
         "1": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+        "2": {
+            "cik_str": 1321655,
+            "ticker": "PLTR",
+            "title": "PALANTIR TECHNOLOGIES INC.",
+        },
     }
 )
 
@@ -149,6 +154,15 @@ def _form4_xml(
 """
 
 
+def _full_submission(xml: str) -> str:
+    return (
+        "<SEC-DOCUMENT>0000000000-26-000001.txt\n"
+        "<DOCUMENT>\n<TYPE>4\n<SEQUENCE>1\n<FILENAME>form4.xml\n<TEXT>\n"
+        f"{xml}"
+        "\n</TEXT>\n</DOCUMENT>\n</SEC-DOCUMENT>"
+    )
+
+
 class _FakeResp:
     def __init__(
         self,
@@ -194,6 +208,73 @@ class _Http:
         return _FakeResp(status=404, text="not found")
 
 
+class _ConcurrencyHttp(_Http):
+    def __init__(
+        self,
+        routes: dict[str, _FakeResp],
+        *,
+        clock: _FakeClock,
+        delays: dict[str, float],
+    ) -> None:
+        super().__init__(routes, clock=clock)
+        self.delays = delays
+        self.active_filings = 0
+        self.max_active_filings = 0
+
+    async def get(self, url: str, **kwargs: Any) -> _FakeResp:
+        self.calls.append(url)
+        self.headers.append(dict(kwargs.get("headers") or {}))
+        self.starts.append(self.clock())
+        if url.endswith(".txt"):
+            self.active_filings += 1
+            self.max_active_filings = max(
+                self.max_active_filings,
+                self.active_filings,
+            )
+            try:
+                for needle, delay in self.delays.items():
+                    if needle in url:
+                        await asyncio.sleep(delay)
+                        break
+            finally:
+                self.active_filings -= 1
+        for needle, response in self.routes.items():
+            if needle in url:
+                return response
+        return _FakeResp(status=404, text="not found")
+
+
+class _CancellationHttp(_Http):
+    def __init__(
+        self,
+        routes: dict[str, _FakeResp],
+        *,
+        clock: _FakeClock,
+        accessions: list[str],
+    ) -> None:
+        super().__init__(routes, clock=clock)
+        self.accessions = accessions
+        self.blocked_started = asyncio.Event()
+        self.blocked_cancelled = False
+
+    async def get(self, url: str, **kwargs: Any) -> _FakeResp:
+        if self.accessions[0] in url:
+            self.calls.append(url)
+            self.starts.append(self.clock())
+            await self.blocked_started.wait()
+            raise OSError("simulated filing failure")
+        if self.accessions[1] in url:
+            self.calls.append(url)
+            self.starts.append(self.clock())
+            self.blocked_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.blocked_cancelled = True
+                raise
+        return await super().get(url, **kwargs)
+
+
 class _FakeClock:
     def __init__(self) -> None:
         self.value = 0.0
@@ -207,12 +288,18 @@ class _FakeClock:
         self.value += seconds
 
 
-def _adapter(http: _Http, *, clock: _FakeClock | None = None) -> sec.SecForm4Adapter:
+def _adapter(
+    http: _Http,
+    *,
+    clock: _FakeClock | None = None,
+    max_concurrent_filing_fetches: int = 8,
+) -> sec.SecForm4Adapter:
     fake_clock = clock or _FakeClock()
     return sec.SecForm4Adapter(
         http_client=http,
         sleep=fake_clock.sleep,
         clock=fake_clock,
+        max_concurrent_filing_fetches=max_concurrent_filing_fetches,
     )
 
 
@@ -303,6 +390,34 @@ def test_parse_form4_xml_carries_document_owner_and_transaction_fields() -> None
     assert row["nature_of_ownership"] == "Family Trust"
 
 
+def test_extract_ownership_document_from_full_submission() -> None:
+    xml = _form4_xml(owner_cik="0001234567", issuer_cik="0001045810")
+
+    extracted = sec._extract_ownership_document(_full_submission(xml))
+
+    assert extracted.startswith("<ownershipDocument>")
+    assert extracted.endswith("</ownershipDocument>")
+    assert "<rptOwnerCik>0001234567</rptOwnerCik>" in extracted
+
+
+@pytest.mark.parametrize(
+    "submission",
+    [
+        "<SEC-DOCUMENT><DOCUMENT><TYPE>4</DOCUMENT></SEC-DOCUMENT>",
+        "<ownershipDocument><issuer></issuer>",
+        (
+            "<ownershipDocument></ownershipDocument>"
+            "<ownershipDocument></ownershipDocument>"
+        ),
+    ],
+)
+def test_extract_ownership_document_rejects_missing_or_ambiguous_bounds(
+    submission: str,
+) -> None:
+    with pytest.raises(MissingDataSourceError, match="ownershipDocument"):
+        sec._extract_ownership_document(submission)
+
+
 def test_document_level_10b5_makes_unlinked_transactions_unknown() -> None:
     rows = sec._parse_form4_xml(_form4_xml(shares=(100, 200), doc_10b5=True))
 
@@ -352,46 +467,37 @@ def test_remarks_10b5_match_is_case_and_punctuation_tolerant() -> None:
 @pytest.mark.asyncio
 async def test_global_fetch_uses_public_issuers_only(engine: None) -> None:
     day = date(2026, 7, 10)
-    public_filer_cik = "1234567"
-    private_filer_cik = "7654321"
+    public_issuer_cik = "1045810"
+    private_issuer_cik = "9999999"
+    public_owner_cik = "1234567"
     public_accession = "0001234567-26-000111"
     private_accession = "0007654321-26-000222"
     index = _daily_index(
         (
             "4",
-            "TEST INSIDER",
-            public_filer_cik,
+            "NVIDIA CORP",
+            public_issuer_cik,
             day.isoformat(),
-            f"edgar/data/{public_filer_cik}/{public_accession}.txt",
+            f"edgar/data/{public_issuer_cik}/{public_accession}.txt",
         ),
         (
             "4",
-            "PRIVATE INSIDER",
-            private_filer_cik,
+            "PRIVATE ISSUER",
+            private_issuer_cik,
             day.isoformat(),
-            f"edgar/data/{private_filer_cik}/{private_accession}.txt",
+            f"edgar/data/{private_issuer_cik}/{private_accession}.txt",
         ),
     )
     http = _Http(
         {
             "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
             "form.20260710.idx": _FakeResp(text=index),
-            f"/{public_filer_cik}/{public_accession.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "form4.xml"}]}}
-            ),
-            f"/{public_filer_cik}/{public_accession.replace('-', '')}/form4.xml": _FakeResp(
-                text=_form4_xml(
-                    issuer_cik="0001045810",
-                    owner_cik=public_filer_cik,
-                )
-            ),
-            f"/{private_filer_cik}/{private_accession.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "private.xml"}]}}
-            ),
-            f"/{private_filer_cik}/{private_accession.replace('-', '')}/private.xml": _FakeResp(
-                text=_form4_xml(
-                    issuer_cik="0009999999",
-                    owner_cik=private_filer_cik,
+            f"/edgar/data/{public_issuer_cik}/{public_accession}.txt": _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik=public_issuer_cik,
+                        owner_cik=public_owner_cik,
+                    )
                 )
             ),
         }
@@ -406,16 +512,308 @@ async def test_global_fetch_uses_public_issuers_only(engine: None) -> None:
     assert len(rows) == 1
     row = rows[0]
     assert row["filing_url"].endswith(
-        f"/Archives/edgar/data/{public_filer_cik}/{public_accession}.txt"
+        f"/Archives/edgar/data/{public_issuer_cik}/{public_accession}.txt"
     )
     assert row["filed_at"] == "2026-07-10"
     assert row["accession"] == public_accession
     assert row["filing_identity"] == public_accession
-    assert row["filer_cik"] == public_filer_cik.zfill(10)
+    assert row["filer_cik"] == public_owner_cik.zfill(10)
     assert row["issuer_cik"] == "0001045810"
     assert row["issuer_name"] == "NVIDIA CORP"
     assert row["ticker"] == "NVDA"
-    assert any(f"/{private_filer_cik}/" in call for call in http.calls)
+    assert not any(f"/{private_issuer_cik}/" in call for call in http.calls)
+    assert not any("index.json" in call for call in http.calls)
+
+
+@pytest.mark.asyncio
+async def test_official_index_cik_is_issuer_while_xml_cik_is_owner(
+    engine: None,
+) -> None:
+    accessions = [
+        "0001321655-26-000111",
+        "0001321655-26-000112",
+    ]
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260709.idx": _FakeResp(
+                text=_OFFICIAL_FORM_INDEX_2026_07_09
+            ),
+            accessions[0]: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="1321655",
+                        owner_cik="1234567",
+                    )
+                )
+            ),
+            accessions[1]: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        document_type="4/A",
+                        issuer_cik="1321655",
+                        owner_cik="7654321",
+                        date_of_original_submission="2026-07-09",
+                    )
+                )
+            ),
+        }
+    )
+
+    rows = await _adapter(http).get_form4_for_date_range(
+        date(2026, 7, 9),
+        date(2026, 7, 9),
+        min_filings_per_issuer=2,
+        ttl_seconds=0,
+    )
+
+    assert {row["issuer_cik"] for row in rows} == {"0001321655"}
+    assert {row["filer_cik"] for row in rows} == {
+        "0001234567",
+        "0007654321",
+    }
+    assert {row["ticker"] for row in rows} == {"PLTR"}
+
+
+@pytest.mark.asyncio
+async def test_minimum_filings_filter_avoids_single_issuer_filing_request(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    accession = "0001234567-26-000111"
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "NVIDIA CORP",
+                        "1045810",
+                        day.isoformat(),
+                        f"edgar/data/1045810/{accession}.txt",
+                    )
+                )
+            ),
+        }
+    )
+
+    rows = await _adapter(http).get_form4_for_date_range(
+        day,
+        day,
+        min_filings_per_issuer=2,
+        ttl_seconds=0,
+    )
+
+    assert rows == []
+    assert not any(call.endswith(".txt") for call in http.calls)
+
+
+@pytest.mark.asyncio
+async def test_global_fetch_cost_is_one_full_submission_per_selected_filing(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    accessions = [
+        "0001234567-26-000111",
+        "0007654321-26-000222",
+    ]
+    index = _daily_index(
+        *[
+            (
+                "4",
+                "NVIDIA CORP",
+                "1045810",
+                day.isoformat(),
+                f"edgar/data/1045810/{accession}.txt",
+            )
+            for accession in accessions
+        ]
+    )
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260710.idx": _FakeResp(text=index),
+            accessions[0]: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="1045810",
+                        owner_cik="1234567",
+                    )
+                )
+            ),
+            accessions[1]: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="1045810",
+                        owner_cik="7654321",
+                    )
+                )
+            ),
+        }
+    )
+
+    rows = await _adapter(http).get_form4_for_date_range(
+        day,
+        day,
+        min_filings_per_issuer=2,
+        ttl_seconds=0,
+    )
+
+    submission_calls = [call for call in http.calls if call.endswith(".txt")]
+    assert len(submission_calls) == len(accessions)
+    assert not any("index.json" in call for call in http.calls)
+    assert [row["accession"] for row in rows] == accessions
+    assert {row["filer_cik"] for row in rows} == {
+        "0001234567",
+        "0007654321",
+    }
+    assert {row["issuer_cik"] for row in rows} == {"0001045810"}
+    assert {row["ticker"] for row in rows} == {"NVDA"}
+
+
+@pytest.mark.asyncio
+async def test_global_fetch_rejects_index_and_xml_issuer_cik_mismatch(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    accession = "0001234567-26-000111"
+    http = _Http(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260710.idx": _FakeResp(
+                text=_daily_index(
+                    (
+                        "4",
+                        "NVIDIA CORP",
+                        "1045810",
+                        day.isoformat(),
+                        f"edgar/data/1045810/{accession}.txt",
+                    )
+                )
+            ),
+            accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="320193",
+                        owner_cik="1234567",
+                    )
+                )
+            ),
+        }
+    )
+
+    with pytest.raises(
+        MissingDataSourceError,
+        match=r"issuer CIK mismatch.*0001045810.*0000320193.*0001234567-26-000111",
+    ):
+        await _adapter(http).get_form4_for_date_range(
+            day,
+            day,
+            ttl_seconds=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_global_filing_fetches_are_bounded_paced_and_deterministic(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    accessions = [f"0001234567-26-{index:06d}" for index in range(1, 6)]
+    index = _daily_index(
+        *[
+            (
+                "4",
+                "NVIDIA CORP",
+                "1045810",
+                day.isoformat(),
+                f"edgar/data/1045810/{accession}.txt",
+            )
+            for accession in accessions
+        ]
+    )
+    routes = {
+        "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+        "form.20260710.idx": _FakeResp(text=index),
+        **{
+            accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        issuer_cik="1045810",
+                        owner_cik=str(2_000_000 + position),
+                    )
+                )
+            )
+            for position, accession in enumerate(accessions)
+        },
+    }
+    clock = _FakeClock()
+    http = _ConcurrencyHttp(
+        routes,
+        clock=clock,
+        delays={
+            accession: (len(accessions) - position) / 1000
+            for position, accession in enumerate(accessions)
+        },
+    )
+
+    rows = await _adapter(
+        http,
+        clock=clock,
+        max_concurrent_filing_fetches=2,
+    ).get_form4_for_date_range(day, day, ttl_seconds=0)
+
+    assert http.max_active_filings == 2
+    start_gaps = [
+        later - earlier
+        for earlier, later in zip(http.starts, http.starts[1:], strict=False)
+    ]
+    assert all(gap >= 0.11 - 1e-12 for gap in start_gaps), (
+        http.starts,
+        start_gaps,
+    )
+    assert [row["accession"] for row in rows] == accessions
+
+
+@pytest.mark.asyncio
+async def test_global_worker_failure_cancels_siblings_and_stops_new_requests(
+    engine: None,
+) -> None:
+    day = date(2026, 7, 10)
+    accessions = [f"0001234567-26-{index:06d}" for index in range(1, 4)]
+    index = _daily_index(
+        *[
+            (
+                "4",
+                "NVIDIA CORP",
+                "1045810",
+                day.isoformat(),
+                f"edgar/data/1045810/{accession}.txt",
+            )
+            for accession in accessions
+        ]
+    )
+    clock = _FakeClock()
+    http = _CancellationHttp(
+        {
+            "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+            "form.20260710.idx": _FakeResp(text=index),
+        },
+        clock=clock,
+        accessions=accessions,
+    )
+    adapter = _adapter(
+        http,
+        clock=clock,
+        max_concurrent_filing_fetches=2,
+    )
+
+    with pytest.raises(MissingDataSourceError, match="simulated filing failure"):
+        await adapter.get_form4_for_date_range(day, day, ttl_seconds=0)
+
+    await asyncio.sleep(0)
+    assert http.blocked_cancelled is True
+    assert not any(accessions[2] in call for call in http.calls)
 
 
 @pytest.mark.asyncio
@@ -571,6 +969,7 @@ async def test_amendment_supersedes_without_collapsing_same_day_positions(
 ) -> None:
     day_one = date(2026, 7, 10)
     day_two = date(2026, 7, 13)
+    issuer_cik = "1045810"
     filer_cik = "1234567"
     original_accession = "0001234567-26-000111"
     amendment_accession = "0001234567-26-000112"
@@ -581,10 +980,10 @@ async def test_amendment_supersedes_without_collapsing_same_day_positions(
                 text=_daily_index(
                     (
                         "4",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day_one.isoformat(),
-                        f"edgar/data/{filer_cik}/{original_accession}.txt",
+                        f"edgar/data/{issuer_cik}/{original_accession}.txt",
                     )
                 )
             ),
@@ -592,32 +991,32 @@ async def test_amendment_supersedes_without_collapsing_same_day_positions(
                 text=_daily_index(
                     (
                         "4/A",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day_two.isoformat(),
-                        f"edgar/data/{filer_cik}/{amendment_accession}.txt",
+                        f"edgar/data/{issuer_cik}/{amendment_accession}.txt",
                     )
                 )
             ),
-            f"/{original_accession.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "original.xml"}]}}
-            ),
-            f"/{original_accession.replace('-', '')}/original.xml": _FakeResp(
-                text=_form4_xml(
-                    document_type="4",
-                    shares=(100, 200),
-                    owner_cik=filer_cik,
+            original_accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        document_type="4",
+                        shares=(100, 200),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                    )
                 )
             ),
-            f"/{amendment_accession.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "amendment.xml"}]}}
-            ),
-            f"/{amendment_accession.replace('-', '')}/amendment.xml": _FakeResp(
-                text=_form4_xml(
-                    document_type="4/A",
-                    shares=(200, 101),
-                    owner_cik=filer_cik,
-                    date_of_original_submission=day_one.isoformat(),
+            amendment_accession: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        document_type="4/A",
+                        shares=(200, 101),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                        date_of_original_submission=day_one.isoformat(),
+                    )
                 )
             ),
         }
@@ -644,6 +1043,7 @@ async def test_distinct_nonamended_same_day_accessions_remain_distinct(
     engine: None,
 ) -> None:
     day = date(2026, 7, 10)
+    issuer_cik = "1045810"
     filer_cik = "1234567"
     accession_one = "0001234567-26-000201"
     accession_two = "0001234567-26-000202"
@@ -654,31 +1054,37 @@ async def test_distinct_nonamended_same_day_accessions_remain_distinct(
                 text=_daily_index(
                     (
                         "4",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day.isoformat(),
-                        f"edgar/data/{filer_cik}/{accession_one}.txt",
+                        f"edgar/data/{issuer_cik}/{accession_one}.txt",
                     ),
                     (
                         "4",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day.isoformat(),
-                        f"edgar/data/{filer_cik}/{accession_two}.txt",
+                        f"edgar/data/{issuer_cik}/{accession_two}.txt",
                     ),
                 )
             ),
-            f"/{accession_one.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "one.xml"}]}}
+            accession_one: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        shares=(100,),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                    )
+                )
             ),
-            f"/{accession_one.replace('-', '')}/one.xml": _FakeResp(
-                text=_form4_xml(shares=(100,), owner_cik=filer_cik)
-            ),
-            f"/{accession_two.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "two.xml"}]}}
-            ),
-            f"/{accession_two.replace('-', '')}/two.xml": _FakeResp(
-                text=_form4_xml(shares=(200,), owner_cik=filer_cik)
+            accession_two: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        shares=(200,),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                    )
+                )
             ),
         }
     )
@@ -699,6 +1105,7 @@ async def test_ambiguous_amendment_excludes_originals_and_marks_evidence(
 ) -> None:
     day_one = date(2026, 7, 10)
     day_two = date(2026, 7, 13)
+    issuer_cik = "1045810"
     filer_cik = "1234567"
     original_one = "0001234567-26-000301"
     original_two = "0001234567-26-000302"
@@ -710,17 +1117,17 @@ async def test_ambiguous_amendment_excludes_originals_and_marks_evidence(
                 text=_daily_index(
                     (
                         "4",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day_one.isoformat(),
-                        f"edgar/data/{filer_cik}/{original_one}.txt",
+                        f"edgar/data/{issuer_cik}/{original_one}.txt",
                     ),
                     (
                         "4",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day_one.isoformat(),
-                        f"edgar/data/{filer_cik}/{original_two}.txt",
+                        f"edgar/data/{issuer_cik}/{original_two}.txt",
                     ),
                 )
             ),
@@ -728,34 +1135,40 @@ async def test_ambiguous_amendment_excludes_originals_and_marks_evidence(
                 text=_daily_index(
                     (
                         "4/A",
-                        "TEST INSIDER",
-                        filer_cik,
+                        "NVIDIA CORP",
+                        issuer_cik,
                         day_two.isoformat(),
-                        f"edgar/data/{filer_cik}/{amendment}.txt",
+                        f"edgar/data/{issuer_cik}/{amendment}.txt",
                     )
                 )
             ),
-            f"/{original_one.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "one.xml"}]}}
+            original_one: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        shares=(100,),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                    )
+                )
             ),
-            f"/{original_one.replace('-', '')}/one.xml": _FakeResp(
-                text=_form4_xml(shares=(100,), owner_cik=filer_cik)
+            original_two: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        shares=(200,),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                    )
+                )
             ),
-            f"/{original_two.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "two.xml"}]}}
-            ),
-            f"/{original_two.replace('-', '')}/two.xml": _FakeResp(
-                text=_form4_xml(shares=(200,), owner_cik=filer_cik)
-            ),
-            f"/{amendment.replace('-', '')}/index.json": _FakeResp(
-                json_payload={"directory": {"item": [{"name": "amend.xml"}]}}
-            ),
-            f"/{amendment.replace('-', '')}/amend.xml": _FakeResp(
-                text=_form4_xml(
-                    document_type="4/A",
-                    shares=(300,),
-                    owner_cik=filer_cik,
-                    date_of_original_submission=day_one.isoformat(),
+            amendment: _FakeResp(
+                text=_full_submission(
+                    _form4_xml(
+                        document_type="4/A",
+                        shares=(300,),
+                        issuer_cik=issuer_cik,
+                        owner_cik=filer_cik,
+                        date_of_original_submission=day_one.isoformat(),
+                    )
                 )
             ),
             "form.20260711.idx": _FakeResp(status=404),
@@ -847,6 +1260,12 @@ async def test_global_date_range_is_bounded_and_ordered(engine: None) -> None:
     )
     adapter = _adapter(http)
 
+    with pytest.raises(ValueError, match="min_filings_per_issuer"):
+        await adapter.get_form4_for_date_range(
+            start,
+            start,
+            min_filings_per_issuer=0,
+        )
     with pytest.raises(ValueError, match="start_date"):
         await adapter.get_form4_for_date_range(start, start - timedelta(days=1))
     with pytest.raises(ValueError, match="at most"):
@@ -855,3 +1274,9 @@ async def test_global_date_range_is_bounded_and_ordered(engine: None) -> None:
     await adapter.get_form4_for_date_range(start, start + timedelta(days=2), ttl_seconds=0)
     daily_calls = [call for call in http.calls if call.endswith(".idx")]
     assert daily_calls == sorted(daily_calls)
+
+    with pytest.raises(ValueError, match="max_concurrent_filing_fetches"):
+        sec.SecForm4Adapter(
+            http_client=http,
+            max_concurrent_filing_fetches=0,
+        )

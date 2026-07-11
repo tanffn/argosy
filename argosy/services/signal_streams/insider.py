@@ -206,6 +206,52 @@ def _insider_key(row: Mapping[str, Any]) -> tuple[str, str] | None:
     return ("name", name) if name else None
 
 
+def _reporting_owners(
+    row: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    owners = row.get("reporting_owners")
+    if isinstance(owners, list):
+        valid = [
+            {
+                "filer_cik": str(owner.get("filer_cik") or ""),
+                "filer_name": str(owner.get("filer_name") or ""),
+                "role": str(owner.get("role") or "unknown"),
+            }
+            for owner in owners
+            if isinstance(owner, Mapping)
+        ]
+        if valid:
+            return valid
+    return [
+        {
+            "filer_cik": str(row.get("filer_cik") or ""),
+            "filer_name": str(row.get("filer_name") or ""),
+            "role": str(row.get("role") or "unknown"),
+        }
+    ]
+
+
+def _owner_key(owner: Mapping[str, Any]) -> tuple[str, str] | None:
+    cik = str(owner.get("filer_cik") or "").strip().lstrip("0")
+    if cik:
+        return ("cik", cik)
+    name = _normalised_filer_name(owner.get("filer_name"))
+    return ("name", name) if name else None
+
+
+def _qualifying_owner_keys(
+    row: Mapping[str, Any],
+    *,
+    role_predicate: Callable[[str], bool],
+) -> set[tuple[str, str]]:
+    return {
+        key
+        for owner in _reporting_owners(row)
+        if role_predicate(owner["role"])
+        and (key := _owner_key(owner)) is not None
+    }
+
+
 def _transaction_identity(row: Mapping[str, Any]) -> str | None:
     filing_identity = str(row.get("filing_identity") or "").strip()
     index = row.get("transaction_index")
@@ -264,13 +310,20 @@ def _base_eligible(
     )
 
 
-def _is_officer_or_director(row: Mapping[str, Any]) -> bool:
-    role = str(row.get("role") or "").casefold()
+def _role_is_officer_or_director(role: str) -> bool:
+    role = role.casefold()
     return "officer" in role or "director" in role
 
 
-def _is_c_suite(row: Mapping[str, Any]) -> bool:
-    role = str(row.get("role") or "").casefold()
+def _is_officer_or_director(row: Mapping[str, Any]) -> bool:
+    return any(
+        _role_is_officer_or_director(owner["role"])
+        for owner in _reporting_owners(row)
+    )
+
+
+def _role_is_c_suite(role: str) -> bool:
+    role = role.casefold()
     officer_title = re.search(r"\bofficer\s*\(([^)]*)\)", role)
     title = officer_title.group(1) if officer_title else role
     normalized = re.sub(r"[^a-z0-9]+", " ", title).strip()
@@ -279,6 +332,10 @@ def _is_c_suite(row: Mapping[str, Any]) -> bool:
     if _CHIEF_OFFICER_PATTERN.search(normalized):
         return True
     return normalized == "president"
+
+
+def _is_c_suite(row: Mapping[str, Any]) -> bool:
+    return _role_is_c_suite(str(row.get("role") or ""))
 
 
 def _valid_transaction_value(row: Mapping[str, Any]) -> float | None:
@@ -330,6 +387,9 @@ def _evidence_transaction(
         "filer_cik": str(row.get("filer_cik") or ""),
         "filer_name": str(row.get("filer_name") or ""),
         "role": str(row.get("role") or ""),
+        "reporting_owners": [
+            dict(owner) for owner in _reporting_owners(row)
+        ],
         "transaction_date": transaction_date.isoformat() if transaction_date else "",
         "filed_at": filed_at.isoformat() if filed_at else "",
         "filing_lag_days": (
@@ -431,7 +491,14 @@ def _buy_nomination(
         and _is_officer_or_director(row)
         and _valid_transaction_value(row) is not None
     ]
-    insiders = {_insider_key(row) for row in eligible}
+    insiders = {
+        insider
+        for row in eligible
+        for insider in _qualifying_owner_keys(
+            row,
+            role_predicate=_role_is_officer_or_director,
+        )
+    }
     distinct_count = len(insiders)
     if distinct_count < config.min_distinct_buyers:
         return None
@@ -496,11 +563,16 @@ def _sell_nomination(
         list[dict[str, Any]],
     ] = {}
     for row in rows:
-        insider = _insider_key(row)
+        owners = _reporting_owners(row)
+        if len(owners) != 1:
+            # Transaction-to-owner stake attribution is ambiguous in a
+            # joint filing, so sell warnings fail closed.
+            continue
+        insider = _owner_key(owners[0])
         if (
             insider is not None
             and str(row.get("transaction_code") or "").upper() == "S"
-            and _is_c_suite(row)
+            and _role_is_c_suite(owners[0]["role"])
         ):
             pool_key, _ = _ownership_pool(row)
             rows_by_seller_pool.setdefault((insider, pool_key), []).append(row)

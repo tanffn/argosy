@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import threading
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
@@ -49,6 +48,11 @@ from argosy.adapters.data.sec_13f_adapter import (
     EDGAR_BASE,
     EDGAR_BROWSE_URL,
     _default_headers,
+)
+from argosy.adapters.data.sec_rate_limit import (
+    MIN_SEC_REQUEST_INTERVAL_SECONDS,
+    validate_sec_request_interval,
+    wait_for_sec_request_slot,
 )
 from argosy.logging import get_logger
 from argosy.services.adapter_outcomes import track_adapter_call
@@ -72,11 +76,9 @@ DEFAULT_TIMEOUT = 15.0
 TICKER_TTL_SECONDS = 60 * 60 * 24 * 7   # 7 days; ticker→CIK map is stable
 FORM4_TTL_SECONDS = 60 * 60 * 24        # 24h
 MAX_GLOBAL_DATE_RANGE_DAYS = 45
-MIN_REQUEST_INTERVAL_SECONDS = 0.11
-
-_REQUEST_SLOT_LOCK = threading.Lock()
-_NEXT_REQUEST_START_BY_CLOCK: dict[Callable[[], float], float] = {}
-
+MIN_REQUEST_INTERVAL_SECONDS = MIN_SEC_REQUEST_INTERVAL_SECONDS
+DEFAULT_MAX_CONCURRENT_FILING_FETCHES = 8
+MAX_CONCURRENT_FILING_FETCHES = 32
 
 # Codes per SEC Form 4 spec — ``transaction_code`` column. Most common:
 #   P = open-market or private purchase
@@ -121,11 +123,21 @@ class SecForm4Adapter:
         clock: Callable[[], float] = time.monotonic,
         today: Callable[[], date] = date.today,
         request_interval_seconds: float = MIN_REQUEST_INTERVAL_SECONDS,
+        max_concurrent_filing_fetches: int = (
+            DEFAULT_MAX_CONCURRENT_FILING_FETCHES
+        ),
     ) -> None:
-        if request_interval_seconds < MIN_REQUEST_INTERVAL_SECONDS:
+        validate_sec_request_interval(request_interval_seconds)
+        if (
+            isinstance(max_concurrent_filing_fetches, bool)
+            or not isinstance(max_concurrent_filing_fetches, int)
+            or not 1
+            <= max_concurrent_filing_fetches
+            <= MAX_CONCURRENT_FILING_FETCHES
+        ):
             raise ValueError(
-                "request_interval_seconds must be at least "
-                f"{MIN_REQUEST_INTERVAL_SECONDS}"
+                "max_concurrent_filing_fetches must be an integer between "
+                f"1 and {MAX_CONCURRENT_FILING_FETCHES}"
             )
         self._http = http_client
         self._timeout = timeout_seconds
@@ -133,6 +145,9 @@ class SecForm4Adapter:
         self._clock = clock
         self._today = today
         self._request_interval_seconds = request_interval_seconds
+        self._max_concurrent_filing_fetches = (
+            max_concurrent_filing_fetches
+        )
 
     # ----- public API -------------------------------------------------
 
@@ -226,6 +241,7 @@ class SecForm4Adapter:
         start_date: date,
         through: date | None = None,
         *,
+        min_filings_per_issuer: int = 1,
         ttl_seconds: int = FORM4_TTL_SECONDS,
     ) -> list[dict[str, Any]]:
         """Collect public-issuer Form 4 transactions from daily indexes.
@@ -248,6 +264,14 @@ class SecForm4Adapter:
             )
         if ttl_seconds < 0:
             raise ValueError("ttl_seconds must be non-negative")
+        if (
+            isinstance(min_filings_per_issuer, bool)
+            or not isinstance(min_filings_per_issuer, int)
+            or min_filings_per_issuer < 1
+        ):
+            raise ValueError(
+                "min_filings_per_issuer must be an integer of at least 1"
+            )
 
         business_days = [
             start_date + timedelta(days=offset)
@@ -263,27 +287,63 @@ class SecForm4Adapter:
         async def _fetch() -> list[dict[str, Any]]:
             map_ttl = 0 if ttl_seconds == 0 else TICKER_TTL_SECONDS
             _, cik_to_ticker = await self._get_ticker_maps(ttl_seconds=map_ttl)
-            collected_filings: list[dict[str, Any]] = []
+            indexed_filings: list[dict[str, Any]] = []
             for current in business_days:
-                filings = await self._fetch_daily_form_index(current)
-                for filing in filings:
-                    index_cik = str(filing["cik"]).zfill(10)
-                    xml_text = await self._fetch_form4_xml(
-                        cik=index_cik,
-                        accession=str(filing["accession"]),
+                indexed_filings.extend(
+                    await self._fetch_daily_form_index(current)
+                )
+
+            issuer_counts: dict[str, int] = {}
+            for filing in indexed_filings:
+                issuer_cik = str(filing["cik"]).zfill(10)
+                if issuer_cik in cik_to_ticker:
+                    issuer_counts[issuer_cik] = (
+                        issuer_counts.get(issuer_cik, 0) + 1
                     )
+            selected = [
+                filing
+                for filing in indexed_filings
+                if (
+                    issuer_counts.get(str(filing["cik"]).zfill(10), 0)
+                    >= min_filings_per_issuer
+                )
+            ]
+            if not selected:
+                return []
+
+            collected_filings: list[dict[str, Any] | None] = [
+                None
+            ] * len(selected)
+            pending = iter(enumerate(selected))
+
+            async def _worker() -> None:
+                for selected_index, filing in pending:
+                    issuer_cik = str(filing["cik"]).zfill(10)
+                    ticker = cik_to_ticker[issuer_cik]
+                    archive_filename = str(
+                        filing["archive_filename"]
+                    ).lstrip("/")
+                    filing_url = (
+                        f"{EDGAR_BASE}/Archives/{archive_filename}"
+                    )
+                    submission = await self._fetch_text(filing_url)
+                    xml_text = _extract_ownership_document(submission)
+                    parsed_issuer_cik = _ownership_document_issuer_cik(
+                        xml_text
+                    )
+                    if parsed_issuer_cik != issuer_cik:
+                        raise MissingDataSourceError(
+                            "SEC Form 4 issuer CIK mismatch: "
+                            f"index={issuer_cik} parsed={parsed_issuer_cik or '<missing>'} "
+                            f"accession={filing['accession']} "
+                            f"filing_url={filing_url}"
+                        )
                     parsed = _parse_form4_xml(
                         xml_text,
                         accession=str(filing["accession"]),
                     )
                     if not parsed:
                         continue
-                    issuer_cik = str(parsed[0].get("issuer_cik") or "")
-                    ticker = cik_to_ticker.get(issuer_cik)
-                    if ticker is None:
-                        continue
-                    archive_filename = str(filing["archive_filename"]).lstrip("/")
-                    filing_url = f"{EDGAR_BASE}/Archives/{archive_filename}"
                     for row in parsed:
                         document_type = (
                             str(row.get("document_type") or "")
@@ -308,32 +368,62 @@ class SecForm4Adapter:
                                 "source_urls": [filing_url],
                             }
                         )
-                    collected_filings.append(
-                        {
-                            "accession": str(filing["accession"]),
-                            "filed_at": str(filing["filed_at"]),
-                            "filing_url": filing_url,
-                            "is_amendment": bool(
-                                filing["is_amendment"]
-                                or parsed[0].get("is_amendment")
-                            ),
-                            "issuer_cik": issuer_cik,
-                            "filer_cik": str(parsed[0].get("filer_cik") or ""),
-                            "filer_name": str(parsed[0].get("filer_name") or ""),
-                            "date_of_original_submission": str(
-                                parsed[0].get("date_of_original_submission") or ""
-                            ),
-                            "rows": parsed,
-                        }
+                    collected_filings[selected_index] = {
+                        "accession": str(filing["accession"]),
+                        "filed_at": str(filing["filed_at"]),
+                        "filing_url": filing_url,
+                        "is_amendment": bool(
+                            filing["is_amendment"]
+                            or parsed[0].get("is_amendment")
+                        ),
+                        "issuer_cik": issuer_cik,
+                        "filer_cik": str(
+                            parsed[0].get("filer_cik") or ""
+                        ),
+                        "filer_name": str(
+                            parsed[0].get("filer_name") or ""
+                        ),
+                        "reporting_owners": list(
+                            parsed[0].get("reporting_owners") or []
+                        ),
+                        "date_of_original_submission": str(
+                            parsed[0].get("date_of_original_submission")
+                            or ""
+                        ),
+                        "rows": parsed,
+                    }
+
+            workers = [
+                asyncio.create_task(_worker())
+                for _ in range(
+                    min(
+                        self._max_concurrent_filing_fetches,
+                        len(selected),
                     )
-            return _select_filing_versions(collected_filings)
+                )
+            ]
+            try:
+                await asyncio.gather(*workers)
+            except BaseException:
+                for worker in workers:
+                    worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+                raise
+            return _select_filing_versions(
+                [
+                    filing
+                    for filing in collected_filings
+                    if filing is not None
+                ]
+            )
 
         return await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
             key=(
                 f"global:{start_date.isoformat()}:"
-                f"{effective_through.isoformat()}"
+                f"{effective_through.isoformat()}:"
+                f"min_issuer_filings={min_filings_per_issuer}"
             ),
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
@@ -522,18 +612,11 @@ class SecForm4Adapter:
         self, url: str, *, params: dict[str, str] | None = None
     ) -> Any:
         try:
-            now = self._clock()
-            with _REQUEST_SLOT_LOCK:
-                reserved_start = max(
-                    now,
-                    _NEXT_REQUEST_START_BY_CLOCK.get(self._clock, now),
-                )
-                _NEXT_REQUEST_START_BY_CLOCK[self._clock] = (
-                    reserved_start + self._request_interval_seconds
-                )
-            delay = reserved_start - now
-            if delay > 0:
-                await self._sleep(delay)
+            await wait_for_sec_request_slot(
+                clock=self._clock,
+                sleep=self._sleep,
+                interval_seconds=self._request_interval_seconds,
+            )
             if self._http is None:
                 async with httpx.AsyncClient(
                     timeout=self._timeout, headers=_default_headers()
@@ -565,6 +648,43 @@ class SecForm4Adapter:
 # ----------------------------------------------------------------------
 # Parsing helpers — module-level for direct test exercise
 # ----------------------------------------------------------------------
+
+
+def _extract_ownership_document(submission_text: str) -> str:
+    """Extract exactly one ownershipDocument XML element from a filing."""
+    starts = [
+        match.start()
+        for match in re.finditer(
+            r"<ownershipDocument(?:\s|>)",
+            submission_text,
+        )
+    ]
+    closing_tag = "</ownershipDocument>"
+    closes = [
+        match.start()
+        for match in re.finditer(
+            re.escape(closing_tag),
+            submission_text,
+        )
+    ]
+    if len(starts) != 1 or len(closes) != 1 or closes[0] < starts[0]:
+        raise MissingDataSourceError(
+            "SEC full submission must contain exactly one complete "
+            "<ownershipDocument> XML element"
+        )
+    return submission_text[
+        starts[0] : closes[0] + len(closing_tag)
+    ]
+
+
+def _ownership_document_issuer_cik(xml_text: str) -> str:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise MissingDataSourceError(
+            f"Form 4 ownershipDocument XML malformed: {exc!s}"
+        ) from exc
+    return _normalize_cik(_ft(root, "issuerCik"))
 
 
 def _parse_ticker_maps(text: str) -> tuple[dict[str, str], dict[str, str]]:
@@ -839,21 +959,18 @@ def _parse_form4_xml(xml_text: str, *, accession: str = "") -> list[dict[str, An
     issuer_cik = _normalize_cik(_ft(root, "issuerCik"))
     issuer_name = _ft(root, "issuerName")
     issuer_ticker = _ft(root, "issuerTradingSymbol")
-    # Reporting owner — name + role flags.
-    owner_cik = _normalize_cik(_ft(root, "rptOwnerCik"))
-    owner_name = _ft(root, "rptOwnerName")
-    is_director = (_ft(root, "isDirector") or "").lower() in ("1", "true")
-    is_officer = (_ft(root, "isOfficer") or "").lower() in ("1", "true")
-    is_ten_percent_owner = (_ft(root, "isTenPercentOwner") or "").lower() in ("1", "true")
-    officer_title = _ft(root, "officerTitle")
-    role_parts: list[str] = []
-    if is_director:
-        role_parts.append("director")
-    if is_officer:
-        role_parts.append("officer" + (f" ({officer_title})" if officer_title else ""))
-    if is_ten_percent_owner:
-        role_parts.append("10pct_owner")
-    role = ", ".join(role_parts) or "unknown"
+    reporting_owners = [
+        _parse_reporting_owner(owner)
+        for owner in _iter_local(root, "reportingOwner")
+    ]
+    primary_owner = (
+        reporting_owners[0]
+        if reporting_owners
+        else {"filer_cik": "", "filer_name": "", "role": "unknown"}
+    )
+    owner_cik = str(primary_owner["filer_cik"])
+    owner_name = str(primary_owner["filer_name"])
+    role = str(primary_owner["role"])
 
     footnotes: dict[str, str] = {}
     for footnote in _iter_local(root, "footnote"):
@@ -907,6 +1024,7 @@ def _parse_form4_xml(xml_text: str, *, accession: str = "") -> list[dict[str, An
             owner_cik=owner_cik,
             owner_name=owner_name,
             role=role,
+            reporting_owners=reporting_owners,
             accession=accession,
             transaction_index=transaction_index,
         )
@@ -929,6 +1047,7 @@ def _parse_form4_xml(xml_text: str, *, accession: str = "") -> list[dict[str, An
             owner_cik=owner_cik,
             owner_name=owner_name,
             role=role,
+            reporting_owners=reporting_owners,
             accession=accession,
             transaction_index=transaction_index,
             derivative=True,
@@ -954,6 +1073,7 @@ def _form4_tx_to_row(
     owner_cik: str,
     owner_name: str,
     role: str,
+    reporting_owners: list[dict[str, str]],
     accession: str,
     transaction_index: int,
     derivative: bool = False,
@@ -1008,6 +1128,9 @@ def _form4_tx_to_row(
         "filer_cik": owner_cik,
         "filer_name": owner_name,
         "role": role,
+        "reporting_owners": [
+            dict(owner) for owner in reporting_owners
+        ],
         "issuer_cik": issuer_cik,
         "issuer_name": issuer_name,
         "ticker": issuer_ticker,
@@ -1044,7 +1167,49 @@ def _normalize_cik(value: str) -> str:
     return normalized.zfill(10) if normalized else ""
 
 
+def _parse_reporting_owner(owner: Any) -> dict[str, str]:
+    owner_cik = _normalize_cik(_ft(owner, "rptOwnerCik"))
+    owner_name = _ft(owner, "rptOwnerName")
+    is_director = _is_true(_ft(owner, "isDirector"))
+    is_officer = _is_true(_ft(owner, "isOfficer"))
+    is_ten_percent_owner = _is_true(_ft(owner, "isTenPercentOwner"))
+    officer_title = _ft(owner, "officerTitle")
+    role_parts: list[str] = []
+    if is_director:
+        role_parts.append("director")
+    if is_officer:
+        role_parts.append(
+            "officer" + (f" ({officer_title})" if officer_title else "")
+        )
+    if is_ten_percent_owner:
+        role_parts.append("10pct_owner")
+    return {
+        "filer_cik": owner_cik,
+        "filer_name": owner_name,
+        "role": ", ".join(role_parts) or "unknown",
+    }
+
+
 def _normalized_owner_key(filing: dict[str, Any]) -> tuple[str, str]:
+    reporting_owners = filing.get("reporting_owners")
+    if isinstance(reporting_owners, list) and reporting_owners:
+        owner_keys = []
+        for owner in reporting_owners:
+            if not isinstance(owner, dict):
+                continue
+            cik = str(owner.get("filer_cik") or "").lstrip("0")
+            if cik:
+                owner_keys.append(f"cik:{cik}")
+                continue
+            name = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                str(owner.get("filer_name") or "").casefold(),
+            ).strip()
+            if name:
+                owner_keys.append(f"name:{name}")
+        if owner_keys:
+            return ("owners", "|".join(sorted(set(owner_keys))))
     filer_cik = str(filing.get("filer_cik") or "")
     if filer_cik:
         return ("cik", filer_cik.lstrip("0"))
@@ -1218,7 +1383,9 @@ def _local_name(tag: str) -> str:
 
 
 __all__ = [
+    "DEFAULT_MAX_CONCURRENT_FILING_FETCHES",
     "FORM4_TTL_SECONDS",
+    "MAX_CONCURRENT_FILING_FETCHES",
     "MAX_GLOBAL_DATE_RANGE_DAYS",
     "MIN_REQUEST_INTERVAL_SECONDS",
     "SEC_DAILY_INDEX_BASE",
@@ -1227,6 +1394,7 @@ __all__ = [
     "TICKER_TTL_SECONDS",
     "TRANSACTION_CODE_MEANING",
     "_filing_within_window",
+    "_extract_ownership_document",
     "_is_us_federal_holiday",
     "_parse_daily_form_index",
     "_parse_form4_atom_index",

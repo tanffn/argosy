@@ -994,12 +994,16 @@ def test_missing_market_cap_keeps_sell_warning_but_omits_buy_cluster() -> None:
 class _FixtureSecAdapter:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
-        self.calls: list[tuple[date, date | None]] = []
+        self.calls: list[tuple[date, date | None, int]] = []
 
     async def get_form4_for_date_range(
-        self, start_date: date, through: date | None = None
+        self,
+        start_date: date,
+        through: date | None = None,
+        *,
+        min_filings_per_issuer: int = 1,
     ) -> list[dict[str, Any]]:
-        self.calls.append((start_date, through))
+        self.calls.append((start_date, through, min_filings_per_issuer))
         return list(self.rows)
 
 
@@ -1037,6 +1041,81 @@ def _official_schw_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def test_joint_filing_counts_distinct_owners_without_double_counting_value() -> None:
+    base = """<?xml version="1.0" encoding="UTF-8"?>
+<ownershipDocument>
+  <documentType>4</documentType>
+  <periodOfReport>2026-07-10</periodOfReport>
+  <issuer>
+    <issuerCik>0000009999</issuerCik>
+    <issuerName>ACME CORP</issuerName>
+    <issuerTradingSymbol>ACME</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000001001</rptOwnerCik>
+      <rptOwnerName>Alice Joint Buyer</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>1</isDirector>
+      <isOfficer>0</isOfficer>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000001002</rptOwnerCik>
+      <rptOwnerName>Bob Joint Buyer</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>1</isOfficer>
+      <officerTitle>Chief Technology Officer</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>2026-07-10</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>10000</value></transactionShares>
+        <transactionPricePerShare><value>10.5</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>20000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>
+"""
+    rows = _parse_form4_xml(base, accession="joint-1")
+    rows[0].update(
+        {
+            "filed_at": "2026-07-10",
+            "filing_identity": "joint-1",
+            "cluster_eligible": True,
+            "source_urls": ["https://www.sec.gov/Archives/joint-1.txt"],
+            "amendment_match_status": "not_amendment",
+            "amendment_ambiguity_evidence": [],
+        }
+    )
+
+    nominations = _classify(rows)
+
+    assert len(rows) == 1
+    assert {
+        owner["filer_cik"] for owner in rows[0]["reporting_owners"]
+    } == {"0000001001", "0000001002"}
+    assert len(nominations) == 1
+    assert nominations[0].evidence["distinct_insider_count"] == 2
+    assert nominations[0].evidence["aggregate_value_usd"] == 105_000
+    assert len(nominations[0].evidence["transactions"]) == 1
+    assert len(
+        nominations[0].evidence["transactions"][0]["reporting_owners"]
+    ) == 2
+
+
 def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
     sec = _FixtureSecAdapter([])
     stream = InsiderClusterStream(
@@ -1047,7 +1126,7 @@ def test_initial_bootstrap_requests_exact_transaction_lookback() -> None:
 
     assert stream.fetch(None, since=date(2026, 7, 18)) == []
 
-    assert sec.calls == [(date(2026, 7, 5), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 7, 5), date(2026, 7, 29), 1)]
 
 
 def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
@@ -1070,7 +1149,7 @@ def test_publication_lag_keeps_full_predecessor_transaction_window() -> None:
 
     nominations = stream.fetch(None, since=date(2026, 7, 30))
 
-    assert sec.calls == [(date(2026, 7, 15), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 7, 15), date(2026, 7, 29), 1)]
     assert len(nominations) == 1
     assert nominations[0].as_of == date(2026, 7, 28)
     assert nominations[0].evidence["latest_filed_date"] == "2026-07-28"
@@ -1098,7 +1177,7 @@ def test_twenty_day_outage_catches_cluster_filed_during_gap() -> None:
 
     assert [nomination.ticker for nomination in nominations] == ["ACME"]
     assert nominations[0].as_of == date(2026, 7, 12)
-    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 6, 27), date(2026, 7, 29), 1)]
 
 
 def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
@@ -1112,7 +1191,7 @@ def test_insider_fetch_range_is_bounded_to_exact_supported_maximum() -> None:
     stream.fetch(None, since=date(2026, 5, 1))
 
     assert MAX_GLOBAL_DATE_RANGE_DAYS == 45
-    assert sec.calls == [(date(2026, 6, 15), date(2026, 7, 29))]
+    assert sec.calls == [(date(2026, 6, 15), date(2026, 7, 29), 1)]
 
 
 def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
@@ -1148,12 +1227,18 @@ def test_fetch_replays_official_schw_cluster_from_raw_xml() -> None:
         "0001062993-23-006879",
         "0001062993-23-006880",
     }
-    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14))]
+    assert sec.calls == [(date(2023, 2, 28), date(2023, 3, 14), 1)]
 
 
 def test_sec_adapter_outage_fails_the_stream() -> None:
     class FailingSecAdapter:
-        async def get_form4_for_date_range(self, start_date, through=None):
+        async def get_form4_for_date_range(
+            self,
+            start_date,
+            through=None,
+            *,
+            min_filings_per_issuer=1,
+        ):
             raise MissingDataSourceError("SEC unavailable")
 
     stream = InsiderClusterStream(
