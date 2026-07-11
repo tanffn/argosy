@@ -229,12 +229,58 @@ def test_blind_valuation_required_on_buy():
     assert hold.ok is True
 
 
+def test_buy_structural_gates_soft_when_fields_absent():
+    """Default rollout: missing funnel_meta → soft pass + would-block warnings."""
+    from argosy.services.verdict_registry import evaluate_buy_structural_gates
+
+    soft = evaluate_buy_structural_gates(
+        action="BUY",
+        subject="AAPL",
+        named_sleeve=None,
+        live_valuation={},
+        enforce=False,
+    )
+    assert soft.block is False
+    assert soft.reason == "soft_pass"
+    assert any("sleeve_fit_invalid" in w for w in soft.warnings)
+    assert any("valuation_rederivation_failed" in w for w in soft.warnings)
+
+
+def test_buy_structural_gates_enforce_flag_hard_blocks():
+    from argosy.services.verdict_registry import evaluate_buy_structural_gates
+
+    hard = evaluate_buy_structural_gates(
+        action="BUY",
+        subject="AAPL",
+        named_sleeve=None,
+        live_valuation={},
+        enforce=True,
+    )
+    assert hard.block is True
+    assert hard.blocked_by == "sleeve_fit_invalid"
+
+
+def test_buy_structural_gates_supplied_bad_sleeve_blocks_even_when_soft():
+    """Caller-supplied adjacent sleeve still hard-blocks (run-166 class)."""
+    from argosy.services.verdict_registry import evaluate_buy_structural_gates
+
+    bad = evaluate_buy_structural_gates(
+        action="BUY",
+        subject="NOW",
+        named_sleeve="high-potential-ADJACENT",
+        live_valuation={"price": 50.0, "fair_value": 40.0},
+        enforce=False,
+    )
+    assert bad.block is True
+    assert bad.blocked_by == "sleeve_fit_invalid"
+    assert "run-166" in bad.reason
+
+
 def test_run166_now_failure_class_replays_blocked(session):
     """Standing SELL + pushback without falsifier hit + adjacent sleeve → blocked."""
     from argosy.services.verdict_registry import (
         check_pushback_gate,
-        check_sleeve_fit,
-        require_blind_valuation_rederivation,
+        evaluate_buy_structural_gates,
         write_verdict,
     )
 
@@ -253,15 +299,16 @@ def test_run166_now_failure_class_replays_blocked(session):
     )
     assert gate.defended is True
 
-    # Even if somehow allowed, sleeve-fit + valuation still block the BUY.
-    sleeve = check_sleeve_fit(
-        action="BUY", named_sleeve="high-potential-ADJACENT", subject="NOW",
+    # Adjacent sleeve + incomplete valuation → structural block when fields supplied.
+    structural = evaluate_buy_structural_gates(
+        action="BUY",
+        subject="NOW",
+        named_sleeve="high-potential-ADJACENT",
+        live_valuation={"price": 50.0},
+        enforce=False,
     )
-    assert sleeve.ok is False
-    val = require_blind_valuation_rederivation(
-        action="BUY", live_inputs={"price": 50.0},  # no fair value
-    )
-    assert val.ok is False
+    assert structural.block is True
+    assert structural.blocked_by == "sleeve_fit_invalid"
 
 
 def test_seed_catalog_covers_required_subjects():

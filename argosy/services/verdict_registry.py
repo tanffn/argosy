@@ -534,6 +534,81 @@ class SleeveFitResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class BuyStructuralGateResult:
+    """Outcome of the additive BUY sleeve/valuation structural gate.
+
+    ``block`` is True only when enforcement is active for that check
+    (caller supplied the field, or ``enforce=True``). When soft, failures
+    land in ``warnings`` for calibration logging — never hard-block.
+    """
+
+    block: bool
+    blocked_by: str | None = None
+    reason: str = ""
+    warnings: tuple[str, ...] = ()
+
+
+def evaluate_buy_structural_gates(
+    *,
+    action: str,
+    subject: str | None,
+    named_sleeve: str | None,
+    live_valuation: dict[str, Any] | None,
+    enforce: bool = False,
+) -> BuyStructuralGateResult:
+    """Additive sleeve-fit + blind-valuation gate for BUY/ADD.
+
+    Hard-blocks only when ``enforce`` is True OR the caller supplied the
+    corresponding field. Otherwise returns ``block=False`` with
+    ``warnings`` describing what would have blocked (calibration path
+    while production callers still omit ``funnel_meta``).
+    """
+    act = (action or "").strip().upper()
+    if act not in ("BUY", "ADD"):
+        return BuyStructuralGateResult(block=False, reason="not_a_buy")
+
+    sleeve_supplied = bool((named_sleeve or "").strip())
+    val = live_valuation if isinstance(live_valuation, dict) else {}
+    val_supplied = bool(val)
+
+    sleeve = check_sleeve_fit(
+        action=act, named_sleeve=named_sleeve, subject=subject,
+    )
+    valuation = require_blind_valuation_rederivation(
+        action=act, live_inputs=val,
+    )
+
+    warnings: list[str] = []
+
+    if not sleeve.ok:
+        if enforce or sleeve_supplied:
+            return BuyStructuralGateResult(
+                block=True,
+                blocked_by="sleeve_fit_invalid",
+                reason=sleeve.reason,
+            )
+        warnings.append(f"would_block:sleeve_fit_invalid:{sleeve.reason}")
+
+    if not valuation.ok:
+        if enforce or val_supplied:
+            return BuyStructuralGateResult(
+                block=True,
+                blocked_by="valuation_rederivation_failed",
+                reason=valuation.reason,
+                warnings=tuple(warnings),
+            )
+        warnings.append(
+            f"would_block:valuation_rederivation_failed:{valuation.reason}"
+        )
+
+    return BuyStructuralGateResult(
+        block=False,
+        reason="ok" if not warnings else "soft_pass",
+        warnings=tuple(warnings),
+    )
+
+
 def check_sleeve_fit(
     *,
     action: str,

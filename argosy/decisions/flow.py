@@ -103,6 +103,8 @@ class FlowConfig:
     debate_rounds_t3: int = 2
     cooling_off_hours: int | None = None  # None → read from agent_settings.tiers.cooling_off_hours_t3
     skip_persistence: bool = False  # tests may set True
+    # None → AgentSettings.verdict_buy_gates_enforce (default False).
+    verdict_buy_gates_enforce: bool | None = None
 
     def resolve_cooling_off_hours(self, user_id: str, fallback: int = 24) -> int:
         """Resolved cooling-off hours, preferring agent_settings over default."""
@@ -115,6 +117,17 @@ class FlowConfig:
             return int(settings.tiers.cooling_off_hours_t3)
         except Exception:
             return fallback
+
+    def resolve_buy_gates_enforce(self, user_id: str) -> bool:
+        """Whether BUY sleeve/valuation gates hard-block without supplied fields."""
+        if self.verdict_buy_gates_enforce is not None:
+            return bool(self.verdict_buy_gates_enforce)
+        try:
+            from argosy.agent_settings import load_agent_settings
+
+            return bool(load_agent_settings(user_id).verdict_buy_gates_enforce)
+        except Exception:
+            return False
 
 
 # ----------------------------------------------------------------------
@@ -409,46 +422,6 @@ class DecisionFlow:
                 decision_run_id=decision_run_id,
             )
 
-        # Item B — structural BUY gates (sleeve-fit + blind valuation).
-        if trader_proposal.action in ("buy", "add"):
-            meta = funnel_meta or {}
-            named_sleeve = meta.get("named_sleeve") or meta.get("plan_sleeve")
-            live_val = meta.get("live_valuation") or {}
-            from argosy.services.verdict_registry import (
-                check_sleeve_fit,
-                require_blind_valuation_rederivation,
-            )
-
-            sleeve = check_sleeve_fit(
-                action=trader_proposal.action.upper(),
-                named_sleeve=named_sleeve,
-                subject=ticker,
-            )
-            if not sleeve.ok:
-                await self._close_decision_run(
-                    decision_run_id, finished_at=clock(), status="blocked", fm="block"
-                )
-                return BlockedProposal(
-                    reason=sleeve.reason,
-                    blocked_by="sleeve_fit_invalid",
-                    debate_outcome=debate_outcome,
-                    decision_run_id=decision_run_id,
-                )
-            val = require_blind_valuation_rederivation(
-                action=trader_proposal.action.upper(),
-                live_inputs=live_val if isinstance(live_val, dict) else {},
-            )
-            if not val.ok:
-                await self._close_decision_run(
-                    decision_run_id, finished_at=clock(), status="blocked", fm="block"
-                )
-                return BlockedProposal(
-                    reason=val.reason,
-                    blocked_by="valuation_rederivation_failed",
-                    debate_outcome=debate_outcome,
-                    decision_run_id=decision_run_id,
-                )
-
         # ---------------- Risk team ----------------
         risk_outcome: RiskOutcome | None = None
         if tier == Tier.T0:
@@ -592,6 +565,46 @@ class DecisionFlow:
                 return BlockedProposal(
                     reason=fm_decision.reason,
                     blocked_by="fund_manager",
+                    fund_manager=fm_decision,
+                    risk_outcome=risk_outcome,
+                    debate_outcome=debate_outcome,
+                    decision_run_id=decision_run_id,
+                )
+
+        # Item B — structural BUY gates AFTER the existing gate chain so
+        # risk_team / plan_critique_red / fund_manager keep blocked_by
+        # attribution. Additive: hard-block only when enforce flag is on
+        # OR the caller supplied named_sleeve / live_valuation; else
+        # warn-log would-have-blocked for calibration.
+        if trader_proposal.action in ("buy", "add"):
+            meta = funnel_meta or {}
+            named_sleeve = meta.get("named_sleeve") or meta.get("plan_sleeve")
+            live_val = meta.get("live_valuation") or {}
+            from argosy.services.verdict_registry import (
+                evaluate_buy_structural_gates,
+            )
+
+            buy_gate = evaluate_buy_structural_gates(
+                action=trader_proposal.action.upper(),
+                subject=ticker,
+                named_sleeve=named_sleeve,
+                live_valuation=live_val if isinstance(live_val, dict) else {},
+                enforce=self.config.resolve_buy_gates_enforce(self.user_id),
+            )
+            for w in buy_gate.warnings:
+                _log.warning(
+                    "decision_flow.buy_structural_gate_soft",
+                    ticker=ticker,
+                    detail=w,
+                    decision_run_id=decision_run_id,
+                )
+            if buy_gate.block:
+                await self._close_decision_run(
+                    decision_run_id, finished_at=clock(), status="blocked", fm="block"
+                )
+                return BlockedProposal(
+                    reason=buy_gate.reason,
+                    blocked_by=buy_gate.blocked_by or "sleeve_fit_invalid",
                     fund_manager=fm_decision,
                     risk_outcome=risk_outcome,
                     debate_outcome=debate_outcome,

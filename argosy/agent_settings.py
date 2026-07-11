@@ -294,6 +294,11 @@ class AgentSettings(BaseModel):
     job_runs_retention: JobRunsRetentionConfig = Field(
         default_factory=JobRunsRetentionConfig
     )
+    # Item B additive rollout: when False (default), BUY sleeve-fit /
+    # blind-valuation hard-blocks only if the caller supplied the fields;
+    # otherwise warn-log would-have-blocked for calibration. Flip True
+    # once production callers populate funnel_meta.
+    verdict_buy_gates_enforce: bool = False
 
     def model_for_role(self, role: str) -> str | None:
         """Resolve the configured model for an agent role.
@@ -411,6 +416,11 @@ alerts:
 job_runs_retention:
   retention_days_ok: 30
   stale_running_hours: 24
+
+# Item B — BUY structural gates (sleeve-fit + blind valuation). Default
+# OFF: hard-block only when caller supplies named_sleeve / live_valuation;
+# otherwise warn-log would-have-blocked. Flip true after funnel_meta wiring.
+verdict_buy_gates_enforce: false
 """
 
 
