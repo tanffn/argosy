@@ -48,6 +48,8 @@ ActionIntent = Literal[
     "review_cash",
     "customize",
     "view_reasoning",
+    "accept",
+    "accept_choice",
 ]
 
 
@@ -86,20 +88,25 @@ class InboxAction:
     ``intent`` is the verb the client maps to a handler; ``label`` is the
     plain-English button text; ``style`` drives emphasis. ``requires_confirmation``
     asks the client to confirm before firing (used for money-moving / execute).
+    ``choice_key`` (multi-option cards) is the option id persisted on accept.
     """
 
     intent: ActionIntent
     label: str
     style: ActionStyle = "secondary"
     requires_confirmation: bool = False
+    choice_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "intent": self.intent,
             "label": self.label,
             "style": self.style,
             "requires_confirmation": self.requires_confirmation,
         }
+        if self.choice_key is not None:
+            d["choice_key"] = self.choice_key
+        return d
 
 
 @dataclass(frozen=True)

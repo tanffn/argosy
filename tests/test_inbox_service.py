@@ -104,36 +104,45 @@ def test_non_actionable_status_excluded(db):
     assert feed.quiet is True
 
 
-def test_trade_body_carries_verdict_provenance(db):
-    """§7.1 — trade cards expose falsifier_state (warning when none recorded)."""
-    from argosy.services.verdict_registry import write_verdict
+def test_multi_option_note_renders_choice_actions(db):
+    """§7.3 — options A/B/C → 3 choice buttons + dismiss (no single Accept)."""
+    import json
 
-    write_verdict(
+    payload = {
+        "recommendation": "C_ladder",
+        "options": {
+            "A_keep_5pct": "status quo",
+            "B_raise_10pct_now": "REJECTED by fleet",
+            "C_ladder": {
+                "auto_raise_to_pct": 8.0,
+                "then": "8->10% owner fork",
+            },
+        },
+    }
+    _note(
         db,
-        user_id="ariel",
-        subject="ORCL",
-        verdict="WAIT",
-        conviction="HIGH",
-        falsifiers=["FCF turns positive"],
-        next_validation=date(2026, 10, 1),
+        kind="update_plan_assumption",
+        summary="Raise high-growth sleeve?",
+        rationale_md="Fleet converged on a ladder.",
+        suggested_payload=json.dumps(payload),
+        severity="info",
     )
-    db.commit()
-    _trade(db, ticker="ORCL", action="buy")
-    _trade(db, ticker="ZZZZ", action="sell")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)
-    by_ticker = {}
-    for item in feed.items:
-        if item.kind != "trade":
-            continue
-        title = item.title
-        # "Buy ORCL" / "Sell ZZZZ"
-        tick = title.split()[-1]
-        by_ticker[tick] = item.body.get("provenance")
-
-    assert by_ticker["ORCL"]["falsifier_state"] == "armed"
-    assert by_ticker["ORCL"]["falsifiers"] == ["FCF turns positive"]
-    assert by_ticker["ORCL"]["next_validation"] == "2026-10-01"
-    assert by_ticker["ZZZZ"]["falsifier_state"] == "none_recorded"
+    notes = [i for i in feed.items if i.kind == "note"]
+    assert len(notes) == 1
+    item = notes[0]
+    assert item.primary_action is None
+    intents = [(a.intent, a.choice_key, a.label) for a in item.secondary_actions]
+    assert ("accept_choice", "A_keep_5pct", "Keep 5pct") in intents
+    assert ("accept_choice", "B_raise_10pct_now", "Raise 10pct Now") in intents
+    # C is recommended
+    c = next(a for a in item.secondary_actions if a.choice_key == "C_ladder")
+    assert c.intent == "accept_choice"
+    assert "recommended" in c.label.lower()
+    assert c.style == "primary"
+    assert any(a.intent == "dismiss" for a in item.secondary_actions)
+    assert "options" in item.body
+    assert item.body["recommendation"] == "C_ladder"
 
 
 

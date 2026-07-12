@@ -211,14 +211,15 @@ def accept_action_proposal(
     *,
     user_id: str | None = None,
     custom_payload: dict[str, Any] | None = None,
+    choice_key: str | None = None,
     now: datetime | None = None,
 ) -> ActionProposal:
     """Mark a proposal accepted.
 
-    Two paths:
+    Three paths:
 
-      * **Plain Accept** (``custom_payload=None``) — the user accepts
-        the LLM's suggested_payload unchanged.
+      * **Plain Accept** (``custom_payload=None``, ``choice_key=None``) —
+        the user accepts the LLM's suggested_payload unchanged.
       * **Customize Accept** (``custom_payload`` supplied) — the user
         edited the form before clicking Accept; the edited payload is
         persisted in place of the original. The original is NOT
@@ -226,8 +227,12 @@ def accept_action_proposal(
         column lands in a future migration); a structured
         ``decided_by_user_note='customized: <json>'`` records the
         edit for audit.
+      * **Choice Accept** (``choice_key`` — multi-option cards, §7.3) —
+        persist ``suggested_payload.decision = choice_key`` and
+        ``decided_by_user_note = choice_key`` so the corrective
+        directive feed carries the CHOSEN option, not the recommendation.
 
-    In both paths:
+    In all paths:
 
       * ``status`` flips to ``'accepted'`` — the partial-unique dedup
         slot is released so the proposer can re-fire if the situation
@@ -250,7 +255,25 @@ def accept_action_proposal(
     row = get_action_proposal(session, proposal_id, user_id=user_id)
     _assert_open(row)
 
-    if custom_payload is not None:
+    if choice_key is not None:
+        key = str(choice_key).strip()
+        if not key:
+            raise ValueError("choice_key must be a non-empty string")
+        try:
+            payload = json.loads(row.suggested_payload or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        options = payload.get("options")
+        if isinstance(options, dict) and options and key not in options:
+            raise ValueError(
+                f"choice_key {key!r} not in options {sorted(options)}"
+            )
+        payload["decision"] = key
+        row.suggested_payload = json.dumps(payload, default=str)
+        row.decided_by_user_note = key
+    elif custom_payload is not None:
         # Persist the edited payload in place. Round-trip through json
         # so a non-serializable value blows up at the API surface
         # rather than at SQLite write time.
@@ -276,6 +299,7 @@ def accept_action_proposal(
             "user_id": row.user_id,
             "kind": row.kind,
             "customized": custom_payload is not None,
+            "choice_key": choice_key,
         },
     )
     return row

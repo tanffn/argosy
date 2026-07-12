@@ -145,10 +145,42 @@ function NoteBody({ body }: { body: Record<string, unknown> }) {
   // rationales an unreadable block.
   const detail = typeof body.detail === "string" ? body.detail : "";
   const provenance = provenanceFromBody(body);
-  if (!detail && !provenance) return null;
+  const options =
+    body.options && typeof body.options === "object"
+      ? (body.options as Record<string, { label?: string; detail?: string }>)
+      : null;
+  const recommendation =
+    typeof body.recommendation === "string" ? body.recommendation : null;
+  if (!detail && !provenance && !options) return null;
   return (
     <div className="space-y-2">
       {provenance && <VerdictProvenanceStrip provenance={provenance} />}
+      {options && (
+        <div className="space-y-1.5 text-sm">
+          <p className="text-xs font-medium text-muted-foreground">Options</p>
+          <ul className="space-y-1">
+            {Object.entries(options).map(([key, opt]) => (
+              <li
+                key={key}
+                className="rounded border border-border/50 px-2 py-1.5 text-xs"
+              >
+                <span className="font-medium">
+                  {opt.label ?? key}
+                  {recommendation &&
+                  (recommendation === key ||
+                    key.includes(recommendation) ||
+                    recommendation.includes(key))
+                    ? " · recommended"
+                    : ""}
+                </span>
+                {opt.detail && (
+                  <p className="mt-0.5 text-muted-foreground">{opt.detail}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {detail && (
         <div className="prose prose-sm max-w-none text-sm">
           <Markdown>{detail}</Markdown>
@@ -236,7 +268,7 @@ export function InboxItemCard({ item, busy, onAction }: Props) {
           )}
           {item.secondary_actions.map((a) => (
             <Button
-              key={a.intent}
+              key={`${a.intent}:${a.choice_key ?? a.label}`}
               size="sm"
               variant={styleToVariant(a.style)}
               disabled={busy}

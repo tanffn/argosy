@@ -104,10 +104,15 @@ class AcceptRequest(BaseModel):
     place; the original is logged via ``decided_by_user_note``. When
     absent (plain Accept) the proposal is accepted with the
     suggested_payload unchanged.
+
+    ``choice_key`` (multi-option cards, §7.3) selects one key from
+    ``suggested_payload.options`` and persists it as
+    ``suggested_payload.decision`` + ``decided_by_user_note``.
     """
 
     user_id: str = "ariel"
     custom_payload: dict[str, Any] | None = None
+    choice_key: str | None = None
 
 
 class DeferRequest(BaseModel):
@@ -231,11 +236,14 @@ def accept_action(
             proposal_id,
             user_id=body.user_id,
             custom_payload=body.custom_payload,
+            choice_key=body.choice_key,
         )
     except ProposalNotFoundError as exc:
         raise _resolve_not_found(exc) from exc
     except InvalidProposalStateError as exc:
         raise _resolve_conflict(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     view = to_view(row)
     return ActionProposalActionResponse(status="ok", proposal=_view_to_dto(view))
 

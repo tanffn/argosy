@@ -180,6 +180,56 @@ def _ticker_from_action_payload(payload: Any) -> str | None:
     return None
 
 
+def _humanize_option_key(key: str) -> str:
+    """A_keep_5pct → Keep 5pct; C_ladder → Ladder."""
+    parts = [p for p in (key or "").replace("-", "_").split("_") if p]
+    if parts and len(parts[0]) == 1 and parts[0].isalpha():
+        parts = parts[1:]
+    if not parts:
+        return key
+    return " ".join(p.capitalize() for p in parts)
+
+
+def _option_button_label(key: str, value: Any) -> str:
+    """Short button label for an options entry (row-72 shape)."""
+    human = _humanize_option_key(key)
+    if isinstance(value, str) and value.strip():
+        # Prefer the humanized key for the button; long prose lives in Details.
+        return human
+    if isinstance(value, dict):
+        if isinstance(value.get("label"), str) and value["label"].strip():
+            return str(value["label"]).strip()[:60]
+        pct = value.get("auto_raise_to_pct") or value.get("target_pct")
+        if pct is not None:
+            return f"{human} ({pct}%)"
+    return human
+
+
+def _option_detail_text(key: str, value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        if isinstance(value.get("label"), str):
+            return str(value["label"]).strip()
+        bits: list[str] = []
+        if value.get("auto_raise_to_pct") is not None:
+            bits.append(f"raise to {value['auto_raise_to_pct']}%")
+        if isinstance(value.get("then"), str):
+            bits.append(value["then"])
+        if isinstance(value.get("conditions_all"), list):
+            bits.append(
+                "if: " + "; ".join(str(c) for c in value["conditions_all"][:4])
+            )
+        return " — ".join(bits) if bits else _humanize_option_key(key)
+    return _humanize_option_key(key)
+
+
+def _normalize_options(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if str(k).strip()}
+
+
 def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
     import json as _json
 
@@ -227,17 +277,56 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
             if prov is not None:
                 body["provenance"] = prov.to_dict()
                 body["ticker"] = ticker
+
+        options = _normalize_options(payload.get("options") if isinstance(payload, dict) else None)
+        multi = len(options) >= 2
+        if multi:
+            # Row-72 shape: each option is a selectable action; dismiss remains.
+            rec = payload.get("recommendation") if isinstance(payload, dict) else None
+            body["options"] = {
+                k: {
+                    "label": _option_button_label(k, val),
+                    "detail": _option_detail_text(k, val),
+                }
+                for k, val in options.items()
+            }
+            if isinstance(rec, str) and rec.strip():
+                body["recommendation"] = rec.strip()
+            choice_actions: list[InboxAction] = []
+            for k, val in options.items():
+                is_rec = isinstance(rec, str) and (
+                    rec == k or k in rec or rec in k
+                )
+                label = _option_button_label(k, val)
+                if is_rec:
+                    label = f"{label} (recommended)"
+                choice_actions.append(
+                    InboxAction(
+                        "accept_choice",
+                        label,
+                        "primary" if is_rec else "secondary",
+                        choice_key=k,
+                    )
+                )
+            primary = None
+            secondary = choice_actions + [
+                InboxAction("dismiss", "Dismiss", "danger"),
+            ]
+        else:
+            primary = InboxAction("accept", "Accept", "primary")
+            secondary = [
+                InboxAction("defer", "Defer", "secondary"),
+                InboxAction("dismiss", "Dismiss", "secondary"),
+            ]
+
         items.append(
             InboxItem(
                 id=f"note:{v.id}",
                 kind="note",
                 title=v.summary or "Something to look at",
                 why_now=_trim(_plain(v.rationale_md)) or "Argosy flagged this while watching your portfolio.",
-                primary_action=InboxAction("accept", "Accept", "primary"),
-                secondary_actions=[
-                    InboxAction("defer", "Defer", "secondary"),
-                    InboxAction("dismiss", "Dismiss", "secondary"),
-                ],
+                primary_action=primary,
+                secondary_actions=secondary,
                 body=body,
                 expires_at=v.expires_at or None,
                 source_refs=[SourceRef("action_proposal", str(v.id))],
@@ -247,6 +336,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                     "risk_kind": risk_kind,
                     "is_cash_note": _CASH_NOTE_HINT in kind_lc,
                     "decision_required": decision_required,
+                    "multi_option": multi,
                 },
             )
         )

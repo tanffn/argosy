@@ -2117,6 +2117,8 @@ export interface InboxActionDTO {
   label: string;
   style: "primary" | "secondary" | "danger";
   requires_confirmation: boolean;
+  /** Multi-option cards (§7.3) — option key persisted on accept_choice. */
+  choice_key?: string | null;
 }
 
 export interface InboxSourceRefDTO {
@@ -3998,13 +4000,18 @@ export const api = {
   },
   acceptActionProposal: (
     id: number,
-    opts?: { userId?: string; customPayload?: Record<string, unknown> },
+    opts?: {
+      userId?: string;
+      customPayload?: Record<string, unknown>;
+      choiceKey?: string;
+    },
   ): Promise<ActionProposalActionResponse> =>
     postJSON<ActionProposalActionResponse>(
       `/api/proposals/actions/${id}/accept`,
       {
         user_id: opts?.userId ?? "ariel",
         custom_payload: opts?.customPayload ?? null,
+        choice_key: opts?.choiceKey ?? null,
       },
     ),
   deferActionProposal: (

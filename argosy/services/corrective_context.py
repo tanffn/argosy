@@ -1698,6 +1698,7 @@ def build_corrective_context(
         # the full tier.
         target_refs: list[str] = []
         superseded_values: list[Any] = []
+        summary = (p.summary or "").strip()
         try:
             p_payload = json.loads(p.suggested_payload or "{}")
             if isinstance(p_payload, dict):
@@ -1713,6 +1714,34 @@ def build_corrective_context(
                 )
                 if isinstance(raw_super, list):
                     superseded_values = [v for v in raw_super if v is not None]
+                # Multi-option cards (§7.3): directive carries the CHOSEN
+                # option, never the fleet recommendation.
+                options = p_payload.get("options")
+                if isinstance(options, dict) and options:
+                    chosen = p_payload.get("decision") or p.decided_by_user_note
+                    if isinstance(chosen, str):
+                        chosen = chosen.strip()
+                    else:
+                        chosen = None
+                    if chosen and chosen in options:
+                        opt_val = options[chosen]
+                        if isinstance(opt_val, str):
+                            choice_detail = opt_val.strip()
+                        elif isinstance(opt_val, dict):
+                            choice_detail = json.dumps(opt_val, default=str)
+                        else:
+                            choice_detail = str(opt_val)
+                        summary = f"Owner chose {chosen}"
+                        detail = (
+                            f"CHOSEN OPTION `{chosen}` (not the recommendation"
+                            f" `{p_payload.get('recommendation')}`):\n"
+                            f"{choice_detail}"
+                        )
+                        if (p.rationale_md or "").strip():
+                            detail += (
+                                "\n\n— original rationale —\n"
+                                + (p.rationale_md or "").strip()[:1200]
+                            )
         except (TypeError, ValueError):
             pass
         ctx.directives.append(
@@ -1720,7 +1749,7 @@ def build_corrective_context(
                 index=i,
                 proposal_id=p.id,
                 kind=p.kind,
-                summary=(p.summary or "").strip(),
+                summary=summary,
                 detail=detail,
                 target_refs=target_refs,
                 superseded_values=superseded_values,

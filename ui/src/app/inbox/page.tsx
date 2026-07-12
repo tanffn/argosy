@@ -210,9 +210,21 @@ export default function InboxPage() {
             await api.proposalReject(id, USER_ID, "Dismissed from inbox");
         } else if (ref?.source === "action_proposal") {
           const id = Number(ref.ref_id);
-          if (intent === "accept") await api.acceptActionProposal(id, { userId: USER_ID });
-          else if (intent === "dismiss")
-            await api.rejectActionProposal(id, { userId: USER_ID, reason: "Dismissed from inbox" });
+          if (intent === "accept")
+            await api.acceptActionProposal(id, { userId: USER_ID });
+          else if (intent === "accept_choice") {
+            const choiceKey =
+              typeof action.choice_key === "string" ? action.choice_key : "";
+            if (!choiceKey) throw new Error("Missing choice for this option");
+            await api.acceptActionProposal(id, {
+              userId: USER_ID,
+              choiceKey,
+            });
+          } else if (intent === "dismiss")
+            await api.rejectActionProposal(id, {
+              userId: USER_ID,
+              reason: "Dismissed from inbox",
+            });
         } else if (ref?.source === "plan_action_item") {
           const fingerprint =
             typeof item.body.content_fingerprint === "string"
