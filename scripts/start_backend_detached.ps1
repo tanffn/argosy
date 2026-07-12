@@ -1,4 +1,5 @@
-"""Start the Argosy backend under the auto-restart supervisor (detached).
+<#
+Start the Argosy backend under the auto-restart supervisor (detached).
 
 Preserves Start-Process semantics from the handovers: the supervisor survives
 session cleanup; uvicorn is a supervised child. Logs land in tmp/.
@@ -6,7 +7,10 @@ session cleanup; uvicorn is a supervised child. Logs land in tmp/.
 Usage (PowerShell):
   .\scripts\start_backend_detached.ps1
   .\scripts\start_backend_detached.ps1 -Port 8000 -LogStem uvicorn_detached
-"""
+
+(param() must be the first statement — a leading string literal is an
+expression and breaks the param block; keep this header a comment.)
+#>
 param(
     [string]$HostAddr = "127.0.0.1",
     [int]$Port = 8000,
