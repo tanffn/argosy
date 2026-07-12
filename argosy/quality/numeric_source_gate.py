@@ -257,7 +257,9 @@ def check_fact_literal_should_be_token(
     Under the placeholder protocol a headline figure that HAS a matching
     ``FACT_DISPLAY`` key must be emitted as ``{{fact:key}}``, not typed as
     digits. A literal whose display form equals a resolved fact's rendering
-    is a protocol violation. Warn-only by default
+    is a protocol violation (``GateCheck.FACT_PLACEHOLDER_PROTOCOL``) —
+    intentionally separate from ``HEADLINE_NUMERIC_SOURCE`` so a grounded
+    matching literal still clears rederivation. Warn-only by default
     (``fact_literal_gate_enforce``); the caller decides severity.
     """
     from argosy.quality.fact_registry import (
@@ -313,7 +315,7 @@ def check_fact_literal_should_be_token(
                 continue
             key = matched_keys[0]
             violations.append(GateViolation(
-                check=GateCheck.HEADLINE_NUMERIC_SOURCE,
+                check=GateCheck.FACT_PLACEHOLDER_PROTOCOL,
                 detail=(
                     f"literal {viol.kind} `{token}` matches registry fact "
                     f"`{key}` — emit {{{{fact:{key}}}}} instead of typing "

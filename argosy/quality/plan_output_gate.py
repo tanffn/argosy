@@ -657,11 +657,10 @@ def gate_plan_output(
     if resolved is not None:
         verdict.extend(check_headline_numeric_source(horizon_text, resolved))
         # Item I — literal that matches a registry fact should have been a
-        # token. Warn-only by default (config ``fact_literal_gate_enforce``);
-        # when enforce is off we still RECORD the findings on the verdict so
-        # calibration can see them, but demote them to non-blocking via the
-        # gate's warn path in the caller. Here we always attach; the route
-        # decides block vs warn from settings.
+        # token. Emitted as FACT_PLACEHOLDER_PROTOCOL (NOT
+        # HEADLINE_NUMERIC_SOURCE) so rederivation still clears on grounded
+        # matching literals. Warn-only by default
+        # (``fact_literal_gate_enforce``); the route decides block vs warn.
         from argosy.quality.numeric_source_gate import (
             check_fact_literal_should_be_token,
         )

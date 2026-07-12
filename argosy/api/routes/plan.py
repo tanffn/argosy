@@ -4131,9 +4131,10 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
     WARN during the evidence-hardening transition; SECTION_COVERAGE is demoted
     when the row has no persisted structured sections (it can't run).
 
-    Fact-literal-should-be-token findings (detail contains ``placeholder
-    protocol``) are warn-only until ``fact_literal_gate_enforce`` is on —
-    calibration for the ``{{fact:key}}`` synthesizer contract.
+    ``FACT_PLACEHOLDER_PROTOCOL`` is warn-only until
+    ``fact_literal_gate_enforce`` is on — calibration for ``{{fact:key}}``.
+    It is intentionally NOT folded into ``HEADLINE_NUMERIC_SOURCE`` so the
+    rederivation authority still clears on grounded matching literals.
     """
     from argosy.config import get_settings
     from argosy.quality.gate_types import GateCheck
@@ -4144,37 +4145,22 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
         GateCheck.EVIDENCE_PER_SECTION,
         GateCheck.DISTILLATE_SECTION_BINDING,
     }
+    if not get_settings().fact_literal_gate_enforce:
+        _EVIDENCE_WARN = _EVIDENCE_WARN | {GateCheck.FACT_PLACEHOLDER_PROTOCOL}
     sections_present = bool(getattr(pv, "sections_json", None))
     blocking_checks = set(GateCheck) - _EVIDENCE_WARN
     if not sections_present:
         blocking_checks.discard(GateCheck.SECTION_COVERAGE)
-
-    def _is_fact_literal(v) -> bool:
-        return "placeholder protocol" in (getattr(v, "detail", "") or "")
-
-    demote_literals = not get_settings().fact_literal_gate_enforce
-    blocking: dict = {}
-    warned: dict = {}
-    for check in GateCheck:
-        viols = gate_verdict.for_check(check)
-        if not viols:
-            continue
-        if demote_literals and check is GateCheck.HEADLINE_NUMERIC_SOURCE:
-            keep = [v for v in viols if not _is_fact_literal(v)]
-            demoted = [v for v in viols if _is_fact_literal(v)]
-            if keep and check in blocking_checks:
-                blocking[check] = keep
-            if demoted:
-                warned[check] = demoted + (
-                    warned.get(check) or []
-                )
-            elif check not in blocking_checks:
-                warned[check] = viols
-            continue
-        if check in blocking_checks:
-            blocking[check] = viols
-        else:
-            warned[check] = viols
+    blocking = {
+        check: gate_verdict.for_check(check)
+        for check in blocking_checks
+        if gate_verdict.violations[check]
+    }
+    warned = {
+        check: gate_verdict.for_check(check)
+        for check in gate_verdict.violations
+        if gate_verdict.violations[check] and check not in blocking
+    }
     return blocking, warned
 
 

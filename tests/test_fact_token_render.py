@@ -229,7 +229,7 @@ def test_literal_matching_fact_is_violation():
     md = {"long": "FI target is **₪17.30M** on the derived path."}
     viols = check_fact_literal_should_be_token(md, resolved)
     assert viols, "literal matching a registry fact must violate"
-    assert all(v.check is GateCheck.HEADLINE_NUMERIC_SOURCE for v in viols)
+    assert all(v.check is GateCheck.FACT_PLACEHOLDER_PROTOCOL for v in viols)
     assert any("placeholder protocol" in v.detail for v in viols)
     assert any("retirement.fi_target_nis" in v.detail for v in viols)
 
@@ -252,7 +252,7 @@ def test_fact_literal_demoted_to_warn_when_enforce_off(monkeypatch):
     get_settings.cache_clear()
     try:
         v = GateViolation(
-            check=GateCheck.HEADLINE_NUMERIC_SOURCE,
+            check=GateCheck.FACT_PLACEHOLDER_PROTOCOL,
             detail=(
                 "literal nis `₪17.30M` matches registry fact "
                 "`retirement.fi_target_nis` — emit {{fact:retirement.fi_target_nis}} "
@@ -261,13 +261,16 @@ def test_fact_literal_demoted_to_warn_when_enforce_off(monkeypatch):
             locator="horizon=long",
         )
         viol_map = {c: [] for c in GateCheck}
-        viol_map[GateCheck.HEADLINE_NUMERIC_SOURCE] = [v]
+        viol_map[GateCheck.FACT_PLACEHOLDER_PROTOCOL] = [v]
         gv = GateVerdict(violations=viol_map)
         blocking, warned = _gate_blocking_checks(
             gv, SimpleNamespace(sections_json=None),
         )
+        assert GateCheck.FACT_PLACEHOLDER_PROTOCOL not in blocking
+        assert GateCheck.FACT_PLACEHOLDER_PROTOCOL in warned
+        # Grounding check stays clean — rederivation input undisturbed.
         assert GateCheck.HEADLINE_NUMERIC_SOURCE not in blocking
-        assert GateCheck.HEADLINE_NUMERIC_SOURCE in warned
+        assert GateCheck.HEADLINE_NUMERIC_SOURCE not in warned
     finally:
         get_settings.cache_clear()
 
@@ -282,7 +285,7 @@ def test_fact_literal_blocks_when_enforce_on(monkeypatch):
     get_settings.cache_clear()
     try:
         v = GateViolation(
-            check=GateCheck.HEADLINE_NUMERIC_SOURCE,
+            check=GateCheck.FACT_PLACEHOLDER_PROTOCOL,
             detail=(
                 "literal nis `₪17.30M` matches registry fact "
                 "`retirement.fi_target_nis` — emit {{fact:...}} "
@@ -291,16 +294,41 @@ def test_fact_literal_blocks_when_enforce_on(monkeypatch):
             locator="horizon=long",
         )
         viol_map = {c: [] for c in GateCheck}
-        viol_map[GateCheck.HEADLINE_NUMERIC_SOURCE] = [v]
+        viol_map[GateCheck.FACT_PLACEHOLDER_PROTOCOL] = [v]
         gv = GateVerdict(violations=viol_map)
         blocking, warned = _gate_blocking_checks(
             gv, SimpleNamespace(sections_json="[]"),
         )
-        assert GateCheck.HEADLINE_NUMERIC_SOURCE in blocking
-        assert GateCheck.HEADLINE_NUMERIC_SOURCE not in warned
+        assert GateCheck.FACT_PLACEHOLDER_PROTOCOL in blocking
+        assert GateCheck.FACT_PLACEHOLDER_PROTOCOL not in warned
     finally:
         monkeypatch.delenv("ARGOSY_FACT_LITERAL_GATE_ENFORCE", raising=False)
         get_settings.cache_clear()
+
+
+def test_matching_literal_keeps_headline_numeric_clean_for_rederivation():
+    """Regression 96dff85: grounded matching literals must NOT dirty HNS.
+
+    Rederivation clears on HEADLINE_NUMERIC_SOURCE alone. Folding the
+    placeholder-protocol finding into that check blocked /accept on v89-style
+    literal bodies that still match the resolver.
+    """
+    from argosy.quality.numeric_source_gate import check_headline_numeric_source
+
+    resolved = _resolved(
+        **{
+            "retirement.fi_target_nis": 17_300_000.0,
+            "retirement.fi_age": 49.0,
+        }
+    )
+    md = {
+        "long": "Derived FI target: **₪17.30M**; you could retire at age 49.\n",
+    }
+    assert check_headline_numeric_source(md, resolved) == []
+    lit = check_fact_literal_should_be_token(md, resolved)
+    assert lit
+    assert all(v.check is GateCheck.FACT_PLACEHOLDER_PROTOCOL for v in lit)
+
 
 
 # ---------------------------------------------------------------------------

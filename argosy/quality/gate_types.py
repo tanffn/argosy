@@ -21,7 +21,13 @@ class GateCheck(str, Enum):
     # #24 — every user-facing headline number must trace to a RESOLVED
     # value from the deterministic resolver, or be rendered
     # "[derivation pending]". Kills the synth-fabricated-number reject.
+    # Rederivation authority clears on THIS check alone (grounding).
     HEADLINE_NUMERIC_SOURCE = "headline_numeric_source"
+    # Item I — a literal that matches a registry fact should have been
+    # emitted as ``{{fact:key}}``. Separate from HEADLINE_NUMERIC_SOURCE so
+    # a grounded matching literal still clears rederivation; warn-only until
+    # ``fact_literal_gate_enforce`` (calibration for the token protocol).
+    FACT_PLACEHOLDER_PROTOCOL = "fact_placeholder_protocol"
     # S18 — the canonical instruments must not add US-situs estate exposure for
     # a non-US-person (the missing check behind the US-domiciled-ETF ship). RED =
     # a non-sanctioned US-domiciled primary; blocks promotion. Runs on the
