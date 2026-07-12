@@ -103,12 +103,30 @@ def parse(path: Path) -> ParseResult:
             m_charge = m
             break
 
-    # ── Header row: scan col 0 for 'תאריך רכישה' ────────────────────────────
+    # ── Header row ──────────────────────────────────────────────────────────
+    # 2026-07 format adds a PENDING mini-table ('עסקאות שטרם נקלטו') BEFORE the
+    # charged table, with its own 'תאריך רכישה' header — a decoy that made the
+    # old first-match scan parse 1 row of 16 (live bug, 1266_07_2026.xlsx).
+    # Anchor on the charged-table TITLE ('עסקאות למועד חיוב', present in every
+    # observed format) and take the next header row. Pending rows are SKIPPED
+    # BY DESIGN: they re-appear on next month's statement (double-count risk)
+    # and the declared totals cover the charged table only (conservation).
     header_idx: int | None = None
-    for i in range(8, min(20, len(df))):
-        if "תאריך רכישה" in str(df.iat[i, 0]):
-            header_idx = i
-            break
+    title_idx = next(
+        (i for i in range(len(df))
+         if str(df.iat[i, 0]).strip().startswith("עסקאות למועד חיוב")),
+        None,
+    )
+    if title_idx is not None:
+        for i in range(title_idx + 1, min(title_idx + 4, len(df))):
+            if "תאריך רכישה" in str(df.iat[i, 0]):
+                header_idx = i
+                break
+    if header_idx is None:  # legacy fallback: single-table files
+        for i in range(8, len(df)):
+            if "תאריך רכישה" in str(df.iat[i, 0]):
+                header_idx = i
+                break
     if header_idx is None:
         raise ValueError(f"Isracard parser: header row not found in {path}")
 

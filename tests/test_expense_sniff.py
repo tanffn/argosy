@@ -67,7 +67,10 @@ def test_sniff_leumi_nis_live_fixture_stays_osh():
     # Filter to Osh files (exclude usd.xls)
     candidates = [
         p for p in samples.glob("**/Leumi/leumi_*.xls")
-        if p.is_file() and p.name != "usd.xls"
+        if p.is_file() and "usd" not in p.name.lower()
+        # portfolio/holdings exports are SpreadsheetML, not statements —
+        # they belong to the TSV workflow, not the ingest sniffer.
+        and "protfolio" not in p.name and "portfolio" not in p.name
     ]
     if not candidates:
         pytest.skip("no Leumi NIS samples present")

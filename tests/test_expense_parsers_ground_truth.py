@@ -37,7 +37,11 @@ def _all_existing(*patterns) -> list[Path]:
 
 @pytest.fixture(scope="module")
 def leumi_samples():
-    paths = _all_existing("**/Leumi/leumi_*.xls")
+    paths = [p for p in _all_existing("**/Leumi/leumi_*.xls")
+             # portfolio/holdings exports are a different artifact (no HTML
+             # tables; the TSV workflow consumes them) — not bank statements.
+             if "protfolio" not in p.name and "portfolio" not in p.name
+             and "_usd" not in p.name]  # USD exports have their own oracle/test
     if not paths:
         pytest.skip("no Leumi samples present")
     return paths

@@ -116,9 +116,17 @@ def isracard_oracle(path: Path) -> GroundTruth:
     # Locate the header row dynamically — col 0 == 'תאריך רכישה'. Hardcoding
     # row 13 silently dropped the first transaction in files where the header
     # sat at row 11.
+    # Anchor on the charged-table title (2026-07 format adds a pending
+    # mini-table with a decoy header before it — see isracard.py).
+    title_idx = next(
+        (i for i in range(len(df))
+         if str(df.iat[i, 0]).strip().startswith("עסקאות למועד חיוב")),
+        None,
+    )
+    scan = (range(title_idx + 1, min(title_idx + 4, len(df)))
+            if title_idx is not None else range(min(20, len(df))))
     header_idx = next(
-        (i for i in range(min(20, len(df)))
-         if str(df.iat[i, 0]).strip() == "תאריך רכישה"),
+        (i for i in scan if str(df.iat[i, 0]).strip() == "תאריך רכישה"),
         None,
     )
     if header_idx is None:
@@ -197,6 +205,34 @@ def max_oracle(path: Path) -> GroundTruth:
     a sentence like "...654.88 ₪". Row 3 is the header; rows 4+ are data.
     """
     xl = pd.ExcelFile(path)
+    if "פירוט עסקאות וזיכויים" in xl.sheet_names:
+        # Cal rolling last-90-days export (parsed by the max-format module):
+        # header at row 1; data rows 2+ (date-shaped col 0); col 2 = NIS amount.
+        df = pd.read_excel(path, sheet_name="פירוט עסקאות וזיכויים", header=None)
+        data = df.iloc[2:].copy()
+        data = data[data[0].apply(
+            lambda v: pd.notna(v) and not isinstance(v, str) or
+            (isinstance(v, str) and bool(pd.notna(pd.to_datetime(v, errors="coerce"))))
+        )]
+        data = data[data[0].notna()]
+        debits = credits = 0.0
+        n = 0
+        for _, row in data.iterrows():
+            try:
+                if pd.isna(pd.to_datetime(row[0], errors="coerce")):
+                    continue
+            except Exception:
+                continue
+            amt = _to_float(row[2])
+            n += 1
+            if amt < 0:
+                credits += abs(amt)
+            else:
+                debits += abs(amt)
+        return GroundTruth(
+            row_count=n, sum_debits_nis=round(debits, 2),
+            sum_credits_nis=round(credits, 2), declared_total_nis=None,
+        )
     sheet = next(s for s in xl.sheet_names if s.startswith("לאומי לישראל"))
     df = pd.read_excel(path, sheet_name=sheet, header=None)
     header_row_idx = 3
