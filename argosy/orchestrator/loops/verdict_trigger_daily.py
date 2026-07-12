@@ -117,7 +117,16 @@ class VerdictTriggerDailyLoop(CadenceLoop):
         self._quotes_fn = quotes_fn or _fetch_quotes_for_subjects
         self._today = today
 
-    async def tick(self) -> dict[str, Any]:
+    async def tick(
+        self, *, now: Callable[[], datetime] | None = None
+    ) -> dict[str, Any]:
+        # Base-class contract (base.py::CadenceLoop.tick): the scheduler
+        # passes its clock as ``now=``. A constructor-injected ``today``
+        # is an explicit pin (tests) and wins; otherwise the scheduler
+        # clock supplies the as-of date for dated triggers.
+        today = self._today if self._today is not None else (
+            now().date() if now is not None else None
+        )
         factory = self._session_factory or _default_session_factory()
         sess = factory()
         try:
@@ -138,7 +147,7 @@ class VerdictTriggerDailyLoop(CadenceLoop):
                 sess,
                 user_id=self.user_id,
                 quotes=quotes,
-                today=self._today,
+                today=today,
             )
             ids = write_unlock_inbox_rows(
                 sess, user_id=self.user_id, fired=fired,

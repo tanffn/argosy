@@ -102,3 +102,52 @@ async def test_verdict_trigger_loop_writes_unlock_row(session):
         assert "revisit unlocked: ORCL" in prop.summary
     finally:
         s2.close()
+
+
+@pytest.mark.asyncio
+async def test_verdict_trigger_loop_accepts_scheduler_clock(session):
+    """Regression (live-smoke 2026-07-11): the scheduler drives every loop as
+    ``await loop.tick(now=self.clock)`` — the loop crashed on its first real
+    fire because tick() lacked the kwarg. Drive the loop with the scheduler's
+    calling convention and verify a dated trigger fires off that clock (no
+    constructor ``today`` pin)."""
+    from datetime import datetime, timezone
+
+    from argosy.orchestrator.loops.verdict_trigger_daily import VerdictTriggerDailyLoop
+    from argosy.services.verdict_registry import write_verdict
+
+    write_verdict(
+        session, user_id="ariel", subject="OKLO",
+        verdict="HOLD", conviction="MEDIUM",
+        revisit_triggers=[{
+            "kind": "dated_event", "date": "2026-07-31",
+            "label": "July-2026 first criticality",
+        }],
+        source_decision_run_id=199,
+    )
+    session.commit()
+
+    SessionLocal = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    loop = VerdictTriggerDailyLoop(
+        enabled=True,
+        user_id="ariel",
+        session_factory=SessionLocal,
+        quotes_fn=lambda sess, user_id, subjects: {},
+        # No ``today`` pin — the scheduler clock must supply the as-of date.
+    )
+
+    def _clock() -> datetime:
+        return datetime(2026, 8, 1, 7, 0, tzinfo=timezone.utc)
+
+    out = await loop.tick(now=_clock)  # the scheduler's exact convention
+    assert "error" not in out
+    assert out.get("fired") == 1
+    assert out.get("unlock_proposal_ids")
+
+    # Before the dated event, the same convention fires nothing.
+    def _early() -> datetime:
+        return datetime(2026, 7, 20, 7, 0, tzinfo=timezone.utc)
+
+    out2 = await loop.tick(now=_early)
+    assert "error" not in out2
+    assert out2.get("fired") == 0
