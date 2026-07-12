@@ -68,7 +68,9 @@ def detect_format(path: Path) -> ParserName:
         # Cal rolling last-90-days export (card 6225; parsed by the max-format module).
         if "פירוט עסקאות וזיכויים" in sheets:
             return ParserName.MAX
-        # Discount Bank Mastercard: sheet 'עסקאות במועד החיוב' + 'עסקאות חו"ל ומט"ח'
+        # 'עסקאות במועד החיוב' format (parser family 'discount'; observed on the
+        # MAX-branded card 2923 — owner-corrected 2026-07-12. Format name is
+        # historical; sources carry the true brand).
         if "עסקאות במועד החיוב" in sheets:
             return ParserName.DISCOUNT
         raise UnknownFormatError(
