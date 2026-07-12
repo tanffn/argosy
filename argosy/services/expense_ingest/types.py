@@ -72,6 +72,9 @@ class ParseResult(BaseModel):
     statement: StatementMeta
     transactions: list[NormalizedTransaction]
     source_hint: SourceHint | None = None       # None for parsers that can't infer
+    # Rolling exports (e.g. Max 90-day 'last transactions') overlap prior
+    # monthly statements — persistence must dedup SOURCE-wide, not per-statement.
+    rolling: bool = False
 
 
 class GroundTruth(BaseModel):

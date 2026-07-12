@@ -80,9 +80,18 @@ def persist_transactions(
     source_id: int,
     user_id: str,
     txs: list[NormalizedTransaction],
+    dedup_scope: str = "statement",
 ) -> int:
     """Insert transactions for a statement; skip rows whose content hash
     already exists. Returns the count of newly-inserted rows.
+
+    dedup_scope:
+      - "statement" (default): idempotent re-ingest of the SAME statement.
+      - "source": for ROLLING exports whose window overlaps prior monthly
+        statements — a row matching (source_id, occurred_on, merchant_raw,
+        amount) in ANY statement of the source is skipped. Reference is
+        deliberately ignored (rolling exports don't carry one, monthly rows
+        may) so the same purchase dedups across formats.
     """
     inserted = 0
     seen_keys = set()
@@ -93,10 +102,16 @@ def persist_transactions(
         seen_keys.add(key)
         # Dedup query: foreign rows have amount_nis IS NULL — match on
         # (amount_orig, currency_orig) instead so re-ingest is idempotent.
-        q = session.query(ExpenseTransaction).filter_by(
-            statement_id=stmt.id, occurred_on=tx.occurred_on,
-            merchant_raw=tx.merchant_raw,
-        ).filter(ExpenseTransaction.reference == tx.reference)
+        if dedup_scope == "source":
+            q = session.query(ExpenseTransaction).filter_by(
+                source_id=source_id, occurred_on=tx.occurred_on,
+                merchant_raw=tx.merchant_raw,
+            )
+        else:
+            q = session.query(ExpenseTransaction).filter_by(
+                statement_id=stmt.id, occurred_on=tx.occurred_on,
+                merchant_raw=tx.merchant_raw,
+            ).filter(ExpenseTransaction.reference == tx.reference)
         if tx.amount_nis is not None:
             q = q.filter(
                 ExpenseTransaction.amount_nis == Decimal(str(tx.amount_nis))

@@ -60,6 +60,8 @@ def _to_float(x) -> float:
 
 def parse(path: Path, *, last4_hint: str | None = None) -> ParseResult:
     xl = pd.ExcelFile(path)
+    if "פירוט עסקאות וזיכויים" in xl.sheet_names:
+        return _parse_rolling(path, last4_hint=last4_hint)
     sheet = next((s for s in xl.sheet_names
                   if s.startswith("לאומי לישראל")), None)
     if sheet is None:
@@ -173,4 +175,104 @@ def parse(path: Path, *, last4_hint: str | None = None) -> ParseResult:
             kind="card", issuer="max", external_id=last4,
             cardholder_name=None,        # Max sheet doesn't carry cardholder
         ),
+    )
+
+
+_ROLLING_SHEET = "פירוט עסקאות וזיכויים"
+# Filename convention observed for rolling exports: '<last4>_YYYY_Mon_DD.xlsx'.
+_ROLLING_FNAME_RE = re.compile(r"^(\d{4})_")
+
+
+def _parse_rolling(path: Path, *, last4_hint: str | None = None) -> ParseResult:
+    """Max rolling last-90-days export (observed 2026-07).
+
+    Layout: row 1 title ('פירוט עסקאות ל<שם>'), row 2 header —
+    תאריך עסקה | שם בית עסק | סכום בש"ח | מועד חיוב | סוג עסקה |
+    מזהה כרטיס בארנק דיגיטלי | הערות — rows 3+ transactions, newest first.
+    All amounts are NIS. The window OVERLAPS prior monthly statements, so the
+    result is marked ``rolling=True`` and persistence dedups source-wide.
+    """
+    df = pd.read_excel(path, sheet_name=_ROLLING_SHEET, header=None)
+    header = [str(df.iat[1, j]).replace(chr(10), "").replace(" ", "")
+              if not pd.isna(df.iat[1, j]) else "" for j in range(5)]
+    expected = ["תאריךעסקה", "שםביתעסק", 'סכוםבש"ח', "מועדחיוב", "סוגעסקה"]
+    if header != expected:
+        raise ValueError(f"Max rolling parser: unexpected header {header}")
+
+    last4 = last4_hint
+    if last4 is None:
+        m = _ROLLING_FNAME_RE.match(path.name)
+        if m:
+            last4 = m.group(1)
+    if last4 is None:
+        raise ValueError(
+            "Max rolling parser: card last-4 unavailable (no hint, filename "
+            f"'{path.name}' lacks the '<last4>_' prefix)")
+
+    txs: list[NormalizedTransaction] = []
+    for i in range(2, len(df)):
+        row = df.iloc[i]
+        date_cell = row[0]
+        if pd.isna(date_cell):
+            continue
+        if isinstance(date_cell, (datetime, pd.Timestamp)):
+            d = date_cell.date() if isinstance(date_cell, datetime) else date_cell
+        else:
+            try:
+                d = pd.to_datetime(date_cell).date()
+            except Exception:
+                continue  # trailing disclaimer rows
+        merchant_raw = str(row[1]).strip()
+        amount = _to_float(row[2])
+        posted = row[3]
+        posted_on = None
+        if not pd.isna(posted):
+            try:
+                posted_on = pd.to_datetime(posted).date()
+            except Exception:
+                posted_on = None
+        tx_type_he = str(row[4]).strip() if not pd.isna(row[4]) else ""
+        tx_type = _TX_TYPE_MAP.get(tx_type_he, "regular")
+        is_refund = tx_type == "refund" or amount < 0
+        if is_refund:
+            tx_type = "refund"
+            direction = "credit"
+        else:
+            direction = "debit"
+        txs.append(NormalizedTransaction(
+            occurred_on=d,
+            posted_on=posted_on,
+            merchant_raw=merchant_raw,
+            merchant_normalized=normalize(merchant_raw),
+            amount_nis=abs(amount),
+            direction=direction,
+            tx_type=tx_type,
+            reference=None,
+            issuer_category=None,   # rolling export carries no ענף column
+            raw_row={
+                "date": str(date_cell), "merchant": merchant_raw,
+                "amount": amount, "posted": str(posted),
+                "tx_type_he": tx_type_he,
+            },
+        ))
+    if not txs:
+        raise ValueError(f"Max rolling parser: 0 rows in {path}")
+
+    parsed_total = sum(
+        t.amount_nis * (-1 if t.direction == "credit" else 1) for t in txs
+    )
+    return ParseResult(
+        statement=StatementMeta(
+            period_start=min(t.occurred_on for t in txs),
+            period_end=max(t.occurred_on for t in txs),
+            charge_date=None,                 # rolling window, no single charge date
+            declared_total_nis=None,          # no issuer footer total
+            parsed_total_nis=parsed_total,
+        ),
+        transactions=txs,
+        source_hint=SourceHint(
+            kind="card", issuer="max", external_id=last4,
+            cardholder_name=None,
+        ),
+        rolling=True,
     )

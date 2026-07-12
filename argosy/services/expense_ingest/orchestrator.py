@@ -242,7 +242,9 @@ def ingest_user_file(
         parser_name, PARSER_VERSIONS.get(parser_name, "0.0.0"),
     )
     inserted = persist_transactions(
-        session, stmt, src.id, user_id, result.transactions
+        session, stmt, src.id, user_id, result.transactions,
+        dedup_scope="source" if getattr(result, "rolling", False) else "statement"
+
     )
 
     # Statement-merge reconciliation for bank statements (Osh / USD): dedup
