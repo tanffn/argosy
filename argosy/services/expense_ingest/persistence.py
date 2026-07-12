@@ -102,11 +102,18 @@ def persist_transactions(
         seen_keys.add(key)
         # Dedup query: foreign rows have amount_nis IS NULL — match on
         # (amount_orig, currency_orig) instead so re-ingest is idempotent.
-        if dedup_scope == "source":
+        # Installment rows legitimately REPEAT across statements with the
+        # same (occurred_on, merchant, amount) — the purchase date is carried
+        # on every monthly charge — so they must never be source-wide deduped.
+        if dedup_scope == "source" and tx.tx_type != "installment":
             q = session.query(ExpenseTransaction).filter_by(
                 source_id=source_id, occurred_on=tx.occurred_on,
                 merchant_raw=tx.merchant_raw,
             )
+            # When the row carries a unique issuer reference (bank exports),
+            # use it — precise dedup that never collides distinct rows.
+            if tx.reference:
+                q = q.filter(ExpenseTransaction.reference == tx.reference)
         else:
             q = session.query(ExpenseTransaction).filter_by(
                 statement_id=stmt.id, occurred_on=tx.occurred_on,

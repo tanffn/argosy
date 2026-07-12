@@ -157,6 +157,7 @@ def parse(path: Path) -> ParseResult:
         t.amount_nis for t in txs if t.direction == "debit"
     )
     return ParseResult(
+        rolling=True,  # bank exports are arbitrary date ranges - windows overlap
         statement=StatementMeta(
             period_start=min(t.occurred_on for t in txs),
             period_end=max(t.occurred_on for t in txs),

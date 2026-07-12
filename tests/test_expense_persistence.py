@@ -165,3 +165,50 @@ def test_rolling_export_dedupes_source_wide(alembic_engine_at_head):
         assert persist_transactions(
             s, stmt_r, src.id, "ariel", rolling.transactions,
             dedup_scope="source") == 0
+
+
+def test_source_dedup_skips_by_reference_and_spares_installments(alembic_engine_at_head):
+    """Bank range-exports (Leumi) overlap arbitrarily: reference-carrying rows
+    dedup source-wide precisely. Installment rows repeat legitimately across
+    statements (same purchase date/amount on every monthly charge) and must
+    NOT be source-wide deduped."""
+    with Session(alembic_engine_at_head) as s:
+        file_id = _seed(s)
+        src = register_or_get_source(s, "ariel", SourceHint(
+            kind="bank", issuer="leumi", external_id="123-456"))
+        s.commit()
+
+        first = NormalizedTransaction(
+            occurred_on=date(2026, 6, 1), merchant_raw="TRANSFER",
+            merchant_normalized="transfer", amount_nis=500, direction="debit",
+            tx_type="regular", reference="R1",
+        )
+        inst = NormalizedTransaction(
+            occurred_on=date(2026, 3, 1), merchant_raw="FURNITURE",
+            merchant_normalized="furniture", amount_nis=300, direction="debit",
+            tx_type="installment", reference=None,
+        )
+        r1 = _rolling_result([first, inst])
+        st1 = persist_statement(s, "ariel", src.id, file_id, r1,
+                                ParserName.LEUMI_OSH, "0.1.0")
+        s.commit()
+        assert persist_transactions(s, st1, src.id, "ariel", r1.transactions,
+                                    dedup_scope="source") == 2
+        s.commit()
+
+        # Overlapping export: same transfer (same ref), same-looking
+        # installment (NEXT month's charge — must insert), one distinct
+        # transfer that shares date/merchant/amount but has a NEW reference
+        # (must insert — reference disambiguates).
+        same_ref = first.model_copy()
+        next_installment = inst.model_copy()
+        new_ref = first.model_copy(update={"reference": "R2"})
+        r2 = _rolling_result([same_ref, next_installment, new_ref])
+        r2.statement.period_end = date(2026, 7, 1)
+        st2 = persist_statement(s, "ariel", src.id, file_id, r2,
+                                ParserName.LEUMI_OSH, "0.1.0")
+        s.commit()
+        inserted = persist_transactions(s, st2, src.id, "ariel",
+                                        r2.transactions, dedup_scope="source")
+        s.commit()
+        assert inserted == 2, "R1 skipped; installment + R2 inserted"
