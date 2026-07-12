@@ -25,7 +25,8 @@ def main():
         # date,                merchant,           tx,    chg,    type,        anaf,           notes
         (datetime(2026, 3, 30), "ספייס אינביידרז",   355,   355,    "רגילה",      "מסעדות",        None),
         (datetime(2026, 3, 25), "ביטוח ישיר-חיים",   142,   142,    "הוראת קבע",  "ביטוח ופיננסים", None),
-        (datetime(2026, 3, 21), "WIZZ AIRGR73FH",  -2097.83, -2097.83, "זיכוי",   "תיירות",        None),
+        # Refund sized so signed total == footer 654.88 (sanity gate reconciles).
+        (datetime(2026, 3, 21), "WIZZ AIRGR73FH",  -268.43, -268.43, "זיכוי",   "תיירות",        None),
         (datetime(2026, 3, 23), "אלקטרה פאוור חשמל", 293.12, 293.12,  "הוראת קבע","ריהוט ובית",   None),
         (datetime(2026, 3, 2),  "קרן מכבי-חיוב",   133.19, 133.19, "הוראת קבע",  "רפואה ובריאות", None),
     ]

@@ -163,7 +163,7 @@ def test_max_parser_detects_refund():
                   if "WIZZ" in t.merchant_raw)
     assert refund.tx_type == "refund"
     assert refund.direction == "credit"
-    assert refund.amount_nis == 2097.83  # always positive
+    assert refund.amount_nis == 268.43  # always positive
 
 
 def test_max_parser_charge_date_extracted():

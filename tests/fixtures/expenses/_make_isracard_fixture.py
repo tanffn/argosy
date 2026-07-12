@@ -15,13 +15,13 @@ def main():
     ws.title = "פירוט עסקאות"
     # Layout (rows 1-indexed in openpyxl):
     # row 5  col 1: card header line
-    # row 5  col 8: total NIS  ('₪ 250.00')
+    # row 5  col 8: total NIS  ('₪ 163.08' = NIS signed sum of rows below)
     # row 6  col 1: 'על שם אריאל יעקב'
     # row 7  col 8: 'לחיוב ב-15.04'
     # row 13 col 1..8: header row
     # rows 14+: transactions
     ws.cell(row=5, column=1, value="פלטינה מסטרקארד - 1266")
-    ws.cell(row=5, column=8, value="₪ 250.00")
+    ws.cell(row=5, column=8, value="₪ 163.08")
     ws.cell(row=6, column=1, value="על שם אריאל יעקב")
     ws.cell(row=7, column=8, value="לחיוב ב-15.04")
     headers = ["תאריך רכישה", "שם בית עסק", "סכום עסקה", "מטבע עסקה",

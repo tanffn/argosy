@@ -653,6 +653,23 @@ class ExpensesParsersConfig(BaseModel):
     discount: bool = True   # Discount Bank Mastercard — fully implemented
 
 
+class ExpensesIngestSanityConfig(BaseModel):
+    """Post-parse hard/soft checks before any statement or tx row is written.
+
+    Format-agnostic: same thresholds for every issuer. Hard violations raise
+    ``ParseSanityError`` (no persist); soft findings become warnings that
+    still allow persist.
+    """
+
+    row_amount_cap_nis: float = 250_000
+    date_past_months: int = 14
+    date_future_days: int = 45
+    blank_merchant_pct: float = 10.0
+    mojibake_pct: float = 20.0
+    total_tolerance_nis: float = 50.0
+    total_tolerance_pct: float = 1.0
+
+
 class ExpensesConfig(BaseModel):
     enabled: bool = True
     parsers: ExpensesParsersConfig = Field(default_factory=ExpensesParsersConfig)
@@ -666,6 +683,9 @@ class ExpensesConfig(BaseModel):
         default_factory=ExpensesRefundMatcherConfig
     )
     anomaly: ExpensesAnomalyConfig = Field(default_factory=ExpensesAnomalyConfig)
+    ingest_sanity: ExpensesIngestSanityConfig = Field(
+        default_factory=ExpensesIngestSanityConfig
+    )
 
 
 def load_expenses_config(user_id: str) -> ExpensesConfig:

@@ -27,6 +27,10 @@ from argosy.services.expense_ingest.category_resolver import (
     resolve_categories_for_user,
 )
 from argosy.services.expense_ingest.correlator import correlate_for_user
+from argosy.services.expense_ingest.parse_sanity import (
+    ParseSanityError,
+    check_parse_sanity,
+)
 from argosy.services.expense_ingest.parsers import (
     leumi_osh as p_leumi, leumi_usd as p_leumi_usd,
     isracard as p_isra, max as p_max,
@@ -210,18 +214,29 @@ def ingest_user_file(
 
     parser_name = detect_format(Path(file.storage_path))
     parser_fn = PARSER_DISPATCH[parser_name]
+    sanity_warnings: list[str] = []
     try:
         if parser_name == ParserName.MAX:
             result = parser_fn(Path(file.storage_path), last4_hint=last4_hint)
         else:
             result = parser_fn(Path(file.storage_path))
+        # Deterministic post-parse gate: hard violations raise ParseSanityError
+        # BEFORE any source/statement/tx row is written (same failure path as
+        # a parser exception — no persist, event published, UI shows reason).
+        from argosy.config import load_expenses_config
+        sanity_cfg = load_expenses_config(user_id).ingest_sanity
+        sanity_warnings = check_parse_sanity(result, config=sanity_cfg).warnings
     except Exception as e:
         try:
             from argosy.api.events import publish_event_threadsafe
-            publish_event_threadsafe(
-                "expense.statement.failed",
-                {"user_id": user_id, "file_id": file.id, "parse_error": str(e)},
-            )
+            payload: dict = {
+                "user_id": user_id,
+                "file_id": file.id,
+                "parse_error": str(e),
+            }
+            if isinstance(e, ParseSanityError):
+                payload["violations"] = list(e.violations)
+            publish_event_threadsafe("expense.statement.failed", payload)
         except Exception:
             pass
         raise
@@ -253,7 +268,7 @@ def ingest_user_file(
     # and flag a date gap that the running balance can't reconcile. Best-effort —
     # reconciliation must NEVER break ingest. Cards are excluded: they carry no
     # running balance, so a monthly cycle "gap" would be false-flag noise.
-    reconciliation_warnings: list[str] = []
+    reconciliation_warnings: list[str] = list(sanity_warnings)
     overlap_removed = 0
     if src.kind == "bank":
         try:
@@ -268,7 +283,7 @@ def ingest_user_file(
                 receipt = reconcile_statement(
                     session, user_id=user_id, source_id=src.id, statement_id=stmt.id,
                 )
-            reconciliation_warnings = receipt.warnings
+            reconciliation_warnings = list(sanity_warnings) + list(receipt.warnings)
             overlap_removed = receipt.overlap_duplicates_removed
             if receipt.warnings:
                 logging.getLogger(__name__).warning(

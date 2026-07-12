@@ -16,6 +16,8 @@ def test_load_expenses_config_returns_defaults_when_missing(tmp_path, monkeypatc
     assert cfg.correlation.amount_tolerance_nis == 50
     assert cfg.refund_matcher.lookback_days == 90
     assert cfg.anomaly.mom_category_factor == 1.5
+    assert cfg.ingest_sanity.row_amount_cap_nis == 250_000
+    assert cfg.ingest_sanity.date_past_months == 14
 
 
 def test_load_expenses_config_respects_user_overrides(tmp_path, monkeypatch):
