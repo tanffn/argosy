@@ -1376,6 +1376,8 @@ class ExpenseSource(Base):
     external_id: Mapped[str] = mapped_column(String(64), nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     cardholder_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Issuer login page for pulling fresh statements (0090; tenant data).
+    login_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False

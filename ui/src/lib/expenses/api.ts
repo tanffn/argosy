@@ -280,6 +280,8 @@ export interface SourceOut {
   external_id: string;
   display_name: string;
   cardholder_name: string | null;
+  /** Issuer login page for pulling fresh statements (0090; tenant data). */
+  login_url: string | null;
   active: boolean;
 }
 

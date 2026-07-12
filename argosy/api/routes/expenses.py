@@ -172,6 +172,7 @@ class SourceOut(BaseModel):
     external_id: str
     display_name: str
     cardholder_name: str | None
+    login_url: str | None = None
     active: bool
 
 
@@ -186,7 +187,7 @@ def list_sources(user_id: str,
         user_id=user_id, active=True
     ).order_by(ExpenseSource.created_at).all()
     return SourcesResponse(sources=[
-        SourceOut(id=r.id, kind=r.kind, issuer=r.issuer,
+        SourceOut(id=r.id, kind=r.kind, issuer=r.issuer, login_url=r.login_url,
                   external_id=r.external_id, display_name=r.display_name,
                   cardholder_name=r.cardholder_name, active=r.active)
         for r in rows

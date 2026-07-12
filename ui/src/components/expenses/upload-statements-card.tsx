@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import {
   expensesApi,
+  type SourceOut,
   type UploadFileResult,
   type UploadStatementsResponse,
 } from "@/lib/expenses/api";
@@ -38,6 +39,21 @@ export function UploadStatementsCard({ userId, onUploadComplete }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<UploadFileResult[] | null>(null);
+  const [sources, setSources] = useState<SourceOut[]>([]);
+
+  // Issuer quick-links (login pages) — best-effort; the card works without.
+  useEffect(() => {
+    let alive = true;
+    expensesApi
+      .sources(userId)
+      .then((r) => {
+        if (alive) setSources(r.sources.filter((s) => s.login_url));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [userId]);
   const [cardLast4, setCardLast4] = useState<string>("");
   // Show the card-last4 input once a Max failure surfaces. The user can
   // re-try after typing the hint; we don't surface this input upfront
@@ -230,6 +246,24 @@ export function UploadStatementsCard({ userId, onUploadComplete }: Props) {
             </ul>
           </div>
         ) : null}
+        {sources.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono text-muted-foreground">
+            <span className="opacity-70">Get statements:</span>
+            {sources.map((s) => (
+              <a
+                key={s.id}
+                href={s.login_url ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                title={s.display_name}
+              >
+                {s.cardholder_name ? `${s.cardholder_name} · ` : ""}
+                {s.display_name} ↗
+              </a>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
