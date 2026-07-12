@@ -23,6 +23,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Markdown } from "@/components/markdown";
 import { TradeRationale } from "@/components/inbox/TradeRationale";
+import {
+  VerdictProvenanceStrip,
+  provenanceFromBody,
+} from "@/components/verdict-provenance";
 import type { InboxActionDTO, InboxItemDTO } from "@/lib/api";
 
 function styleToVariant(style: InboxActionDTO["style"]) {
@@ -47,6 +51,7 @@ function TradeBody({ body }: { body: Record<string, unknown> }) {
   const instrument = typeof body.instrument === "string" ? body.instrument : "";
   const speculative = body.speculative === true;
   const conviction = typeof body.conviction === "string" ? body.conviction : null;
+  const provenance = provenanceFromBody(body);
   return (
     <div className="space-y-2 text-sm">
       {(orderLine || instrument) && (
@@ -62,6 +67,7 @@ function TradeBody({ body }: { body: Record<string, unknown> }) {
           <Badge variant="secondary">{conviction} trade confidence</Badge>
         )}
       </div>
+      {provenance && <VerdictProvenanceStrip provenance={provenance} />}
       {rationale && <TradeRationale text={rationale} />}
     </div>
   );
@@ -138,10 +144,16 @@ function NoteBody({ body }: { body: Record<string, unknown> }) {
   // bold leads, lists). Rendering it as one <p> made long decision
   // rationales an unreadable block.
   const detail = typeof body.detail === "string" ? body.detail : "";
-  if (!detail) return null;
+  const provenance = provenanceFromBody(body);
+  if (!detail && !provenance) return null;
   return (
-    <div className="prose prose-sm max-w-none text-sm">
-      <Markdown>{detail}</Markdown>
+    <div className="space-y-2">
+      {provenance && <VerdictProvenanceStrip provenance={provenance} />}
+      {detail && (
+        <div className="prose prose-sm max-w-none text-sm">
+          <Markdown>{detail}</Markdown>
+        </div>
+      )}
     </div>
   );
 }

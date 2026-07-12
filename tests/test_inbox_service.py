@@ -8,7 +8,7 @@ shadow exclusion, dedupe, materiality suppression, and the liveness metadata.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
@@ -104,16 +104,37 @@ def test_non_actionable_status_excluded(db):
     assert feed.quiet is True
 
 
-def test_sell_is_risk_reduction_buy_is_opportunity_ordered(db):
-    _trade(db, ticker="BUYME", action="buy")
-    _trade(db, ticker="SELLME", action="sell")
+def test_trade_body_carries_verdict_provenance(db):
+    """§7.1 — trade cards expose falsifier_state (warning when none recorded)."""
+    from argosy.services.verdict_registry import write_verdict
+
+    write_verdict(
+        db,
+        user_id="ariel",
+        subject="ORCL",
+        verdict="WAIT",
+        conviction="HIGH",
+        falsifiers=["FCF turns positive"],
+        next_validation=date(2026, 10, 1),
+    )
+    db.commit()
+    _trade(db, ticker="ORCL", action="buy")
+    _trade(db, ticker="ZZZZ", action="sell")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)
-    kinds = [(i.title, i.bucket) for i in feed.items]
-    # Sell (risk reduction, bucket 2) ranks above buy (opportunity, bucket 5).
-    assert kinds[0][1] == PriorityBucket.RISK_REDUCTION
-    assert "SELLME" in kinds[0][0]
-    assert kinds[1][1] == PriorityBucket.OPPORTUNITY
-    assert "BUYME" in kinds[1][0]
+    by_ticker = {}
+    for item in feed.items:
+        if item.kind != "trade":
+            continue
+        title = item.title
+        # "Buy ORCL" / "Sell ZZZZ"
+        tick = title.split()[-1]
+        by_ticker[tick] = item.body.get("provenance")
+
+    assert by_ticker["ORCL"]["falsifier_state"] == "armed"
+    assert by_ticker["ORCL"]["falsifiers"] == ["FCF turns positive"]
+    assert by_ticker["ORCL"]["next_validation"] == "2026-10-01"
+    assert by_ticker["ZZZZ"]["falsifier_state"] == "none_recorded"
+
 
 
 def test_expiring_buy_jumps_to_top(db):

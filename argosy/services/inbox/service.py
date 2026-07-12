@@ -83,6 +83,7 @@ def _plain(md: str) -> str:
 
 
 def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
+    from argosy.services.verdict_registry import provenance_for_subjects
     from argosy.state.models import Proposal as ProposalRow
 
     # Shadow proposals are hidden — EXCEPT the decision funnel, which per the
@@ -99,6 +100,11 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
         .order_by(ProposalRow.created_at.desc())
     )
     rows = db.execute(stmt).scalars().all()
+    prov_map = provenance_for_subjects(
+        db,
+        user_id=user_id,
+        subjects=[(r.ticker or "") for r in rows],
+    )
     items: list[InboxItem] = []
     for r in rows:
         speculative = r.account_class == "limited"
@@ -134,6 +140,9 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
         }
         if r.confidence:
             body["conviction"] = r.confidence
+        prov = prov_map.get((r.ticker or "").upper())
+        if prov is not None:
+            body["provenance"] = prov.to_dict()
 
         items.append(
             InboxItem(
@@ -161,16 +170,44 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
     return items
 
 
+def _ticker_from_action_payload(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("ticker", "symbol", "subject"):
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().upper()
+    return None
+
+
 def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
+    import json as _json
+
     from argosy.services.action_proposals import (
         DECISION_PROPOSAL_KINDS,
         list_open_action_proposals,
         to_view,
     )
+    from argosy.services.verdict_registry import provenance_for_subjects
 
     rows = list_open_action_proposals(db, user_id)
-    items: list[InboxItem] = []
+    parsed_payloads: list[Any] = []
+    tickers: list[str] = []
     for row in rows:
+        raw = getattr(row, "suggested_payload", None) or "{}"
+        try:
+            payload = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (TypeError, ValueError):
+            payload = {}
+        parsed_payloads.append(payload)
+        t = _ticker_from_action_payload(payload)
+        if t:
+            tickers.append(t)
+
+    prov_map = provenance_for_subjects(db, user_id=user_id, subjects=tickers)
+
+    items: list[InboxItem] = []
+    for row, payload in zip(rows, parsed_payloads, strict=True):
         v = to_view(row)
         kind_lc = (v.kind or "").lower()
         risk_kind = any(h in kind_lc for h in _RISK_NOTE_HINTS)
@@ -183,6 +220,13 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
         decision_required = kind_lc in DECISION_PROPOSAL_KINDS and (
             "flagsig:" not in (getattr(row, "dedup_key", None) or "")
         )
+        body: dict[str, Any] = {"detail": v.rationale_md or ""}
+        ticker = _ticker_from_action_payload(payload)
+        if ticker:
+            prov = prov_map.get(ticker)
+            if prov is not None:
+                body["provenance"] = prov.to_dict()
+                body["ticker"] = ticker
         items.append(
             InboxItem(
                 id=f"note:{v.id}",
@@ -194,7 +238,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                     InboxAction("defer", "Defer", "secondary"),
                     InboxAction("dismiss", "Dismiss", "secondary"),
                 ],
-                body={"detail": v.rationale_md or ""},
+                body=body,
                 expires_at=v.expires_at or None,
                 source_refs=[SourceRef("action_proposal", str(v.id))],
                 signals={

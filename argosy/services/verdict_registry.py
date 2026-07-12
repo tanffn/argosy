@@ -18,11 +18,19 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
-from argosy.state.models import ActionProposal, Verdict
+from argosy.state.models import (
+    ActionProposal,
+    DecisionRun,
+    HoldingReview,
+    PositionStance,
+    Proposal,
+    Verdict,
+)
 
 _log = get_logger("argosy.services.verdict_registry")
 
@@ -709,3 +717,235 @@ def require_blind_valuation_rederivation(
             except (TypeError, ValueError):
                 derived[k] = inputs[k]
     return ValuationRederivationResult(ok=True, reason="ok", derived=derived)
+
+
+# ---------------------------------------------------------------------------
+# Provenance projection (UX §7 item 1 — additive DTO fields)
+# ---------------------------------------------------------------------------
+
+FalsifierState = Literal["armed", "fired", "none_recorded"]
+
+
+@dataclass(frozen=True)
+class VerdictProvenance:
+    """Wire-safe provenance block for judgment surfaces.
+
+    ``falsifier_state``:
+      * ``armed`` — falsifiers recorded; none have unlocked a revisit
+      * ``fired`` — an open unlock inbox row exists for this subject
+      * ``none_recorded`` — no falsifiers on the standing verdict (WARNING)
+    """
+
+    falsifier_state: FalsifierState
+    falsifiers: tuple[str, ...] = ()
+    next_validation: str | None = None
+    last_fleet_check_at: str | None = None
+    verdict_id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "falsifier_state": self.falsifier_state,
+            "falsifiers": list(self.falsifiers),
+            "next_validation": self.next_validation,
+            "last_fleet_check_at": self.last_fleet_check_at,
+            "verdict_id": self.verdict_id,
+        }
+
+
+_NONE_PROVENANCE = VerdictProvenance(falsifier_state="none_recorded")
+
+
+def _iso_dt(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _iso_date(value: date | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _max_iso(*candidates: str | None) -> str | None:
+    present = [c for c in candidates if c]
+    return max(present) if present else None
+
+
+def provenance_for_subjects(
+    session: Session,
+    *,
+    user_id: str,
+    subjects: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, VerdictProvenance]:
+    """Batch provenance for judgment surfaces (positions / inbox / watch).
+
+    Always returns an entry per requested subject. Missing registry rows
+    still emit ``falsifier_state="none_recorded"`` so the UI never blanks
+    the warning — acceptance: "none-recorded is a visible WARNING, not blank."
+    """
+    wanted = sorted({_norm_subject(s) for s in subjects if _norm_subject(s)})
+    if not wanted:
+        return {}
+
+    verdicts = list(
+        session.execute(
+            select(Verdict).where(
+                Verdict.user_id == user_id,
+                Verdict.subject.in_(wanted),
+                Verdict.settled.is_(True),
+            )
+        ).scalars()
+    )
+    by_subject: dict[str, Verdict] = {}
+    for row in verdicts:
+        prior = by_subject.get(row.subject)
+        if prior is None or (row.id or 0) > (prior.id or 0):
+            by_subject[row.subject] = row
+
+    run_ids = {
+        v.source_decision_run_id
+        for v in by_subject.values()
+        if v.source_decision_run_id is not None
+    }
+    finished_by_run: dict[int, datetime] = {}
+    if run_ids:
+        for run in session.execute(
+            select(DecisionRun).where(DecisionRun.id.in_(run_ids))
+        ).scalars():
+            if run.finished_at is not None:
+                finished_by_run[run.id] = run.finished_at
+
+    # Open unlock rows → falsifier_state=fired
+    fired_subjects: set[str] = set()
+    unlock_rows = list(
+        session.execute(
+            select(ActionProposal).where(
+                ActionProposal.user_id == user_id,
+                ActionProposal.status == "open",
+                ActionProposal.dedup_key.like(f"{UNLOCK_DEDUP_PREFIX}:%"),
+            )
+        ).scalars()
+    )
+    for row in unlock_rows:
+        key = row.dedup_key or ""
+        # verdict_revisit_unlocked:{SUBJECT}:{verdict_id}
+        parts = key.split(":")
+        if len(parts) >= 2:
+            subj = _norm_subject(parts[1])
+            if subj in wanted:
+                fired_subjects.add(subj)
+
+    # Fallback last-check: latest holding_reviews.reviewed_at per symbol
+    review_at: dict[str, datetime] = {}
+    for sym, reviewed_at in session.execute(
+        select(HoldingReview.symbol, sa_func.max(HoldingReview.reviewed_at)).where(
+            HoldingReview.user_id == user_id,
+            HoldingReview.symbol.in_(wanted),
+        ).group_by(HoldingReview.symbol)
+    ).all():
+        if reviewed_at is not None:
+            review_at[_norm_subject(str(sym))] = reviewed_at
+
+    # Fallback: stance falsifiers_json (usually NULL until registry backfills)
+    stance_falsifiers: dict[str, list[str]] = {}
+    stance_built: dict[str, datetime] = {}
+    for stance in session.execute(
+        select(PositionStance).where(
+            PositionStance.user_id == user_id,
+            PositionStance.symbol.in_(wanted),
+        )
+    ).scalars():
+        sym = _norm_subject(stance.symbol)
+        stance_falsifiers[sym] = [
+            str(x) for x in _loads_list(stance.falsifiers_json) if str(x).strip()
+        ]
+        if stance.built_at is not None:
+            stance_built[sym] = stance.built_at
+
+    # Fallback: latest proposal → decision_run.finished_at for the ticker
+    proposal_check: dict[str, datetime] = {}
+    proposal_rows = list(
+        session.execute(
+            select(Proposal).where(
+                Proposal.user_id == user_id,
+                Proposal.ticker.in_(wanted),
+                Proposal.decision_run_id.is_not(None),
+            )
+        ).scalars()
+    )
+    prop_run_ids = {
+        p.decision_run_id for p in proposal_rows if p.decision_run_id is not None
+    }
+    prop_finished: dict[int, datetime] = {}
+    if prop_run_ids:
+        for run in session.execute(
+            select(DecisionRun).where(DecisionRun.id.in_(prop_run_ids))
+        ).scalars():
+            if run.finished_at is not None:
+                prop_finished[run.id] = run.finished_at
+    for p in proposal_rows:
+        sym = _norm_subject(p.ticker)
+        fin = prop_finished.get(p.decision_run_id) if p.decision_run_id else None
+        if fin is None:
+            continue
+        prior = proposal_check.get(sym)
+        if prior is None or fin > prior:
+            proposal_check[sym] = fin
+
+    out: dict[str, VerdictProvenance] = {}
+    for subj in wanted:
+        row = by_subject.get(subj)
+        falsifiers: list[str] = []
+        next_val: str | None = None
+        verdict_id: int | None = None
+        last_check: str | None = None
+
+        if row is not None:
+            falsifiers = [
+                str(x) for x in _loads_list(row.falsifiers_json) if str(x).strip()
+            ]
+            next_val = _iso_date(row.next_validation)
+            verdict_id = row.id
+            if row.source_decision_run_id is not None:
+                last_check = _iso_dt(finished_by_run.get(row.source_decision_run_id))
+            if last_check is None:
+                last_check = _iso_dt(row.updated_at) or _iso_dt(row.created_at)
+        elif stance_falsifiers.get(subj):
+            falsifiers = list(stance_falsifiers[subj])
+
+        last_check = _max_iso(
+            last_check,
+            _iso_dt(review_at.get(subj)),
+            _iso_dt(proposal_check.get(subj)),
+            _iso_dt(stance_built.get(subj)),
+        )
+
+        if not falsifiers:
+            state: FalsifierState = "none_recorded"
+        elif subj in fired_subjects:
+            state = "fired"
+        else:
+            state = "armed"
+
+        out[subj] = VerdictProvenance(
+            falsifier_state=state,
+            falsifiers=tuple(falsifiers),
+            next_validation=next_val,
+            last_fleet_check_at=last_check,
+            verdict_id=verdict_id,
+        )
+    return out
+
+
+def provenance_for_subject(
+    session: Session, *, user_id: str, subject: str
+) -> VerdictProvenance:
+    """Single-subject convenience wrapper around :func:`provenance_for_subjects`."""
+    subj = _norm_subject(subject)
+    if not subj:
+        return _NONE_PROVENANCE
+    return provenance_for_subjects(
+        session, user_id=user_id, subjects=[subj]
+    ).get(subj, _NONE_PROVENANCE)
+

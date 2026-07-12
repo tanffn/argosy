@@ -1847,6 +1847,41 @@ class DiscoveryPickDTO(BaseModel):
     verdict: str
     thesis_md: str
     cites: list[str] = []
+    # Additive provenance (2026-07-12 §7.1) — same shape as PositionThesisDTO
+    falsifier_state: str = "none_recorded"
+    falsifiers: list[str] = []
+    next_validation: str | None = None
+    last_fleet_check_at: str | None = None
+
+
+def _attach_pick_provenance(
+    db: Session, user_id: str, picks: list[DiscoveryPickDTO]
+) -> list[DiscoveryPickDTO]:
+    """Overlay verdict-registry provenance onto discovery pick DTOs."""
+    if not picks:
+        return picks
+    from argosy.services.verdict_registry import provenance_for_subjects
+
+    prov_map = provenance_for_subjects(
+        db, user_id=user_id, subjects=[p.ticker for p in picks]
+    )
+    out: list[DiscoveryPickDTO] = []
+    for p in picks:
+        prov = prov_map.get((p.ticker or "").upper())
+        if prov is None:
+            out.append(p)
+            continue
+        out.append(
+            p.model_copy(
+                update={
+                    "falsifier_state": prov.falsifier_state,
+                    "falsifiers": list(prov.falsifiers),
+                    "next_validation": prov.next_validation,
+                    "last_fleet_check_at": prov.last_fleet_check_at,
+                }
+            )
+        )
+    return out
 
 
 class DiscoveryEstimateDTO(BaseModel):
@@ -2260,15 +2295,30 @@ def _load_discovery_state(user_id: str):
 
 
 @router.get("/discovery", response_model=DiscoveryDTO)
-def get_discovery(user_id: str = Query("ariel")) -> DiscoveryDTO:
+def get_discovery(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> DiscoveryDTO:
     """Cached discovery highlights (instant): fleet picks + estimator shortlist
     from the persisted ScanState. Use POST /discovery/refresh to re-run."""
     picks, estimated, last = _load_discovery_state(user_id)
     sources, stages, candidates = _load_discovery_transparency(user_id)
+    pick_dtos = _attach_pick_provenance(
+        db,
+        user_id,
+        [
+            DiscoveryPickDTO(
+                ticker=p.ticker,
+                conviction=p.conviction,
+                verdict=p.verdict,
+                thesis_md=p.thesis_md,
+                cites=list(p.cites),
+            )
+            for p in picks
+        ],
+    )
     return DiscoveryDTO(
-        picks=[DiscoveryPickDTO(ticker=p.ticker, conviction=p.conviction,
-               verdict=p.verdict, thesis_md=p.thesis_md, cites=list(p.cites))
-               for p in picks],
+        picks=pick_dtos,
         estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
                    conviction=v.conviction, sentiment=v.sentiment,
                    one_line=v.one_line) for v in estimated],
@@ -2280,6 +2330,7 @@ def get_discovery(user_id: str = Query("ariel")) -> DiscoveryDTO:
 async def refresh_discovery(
     user_id: str = Query("ariel"),
     force: bool = Query(False),
+    db: Session = Depends(get_db),
 ) -> DiscoveryDTO:
     """Run the discovery funnel (smart by default; ``force=true`` re-researches
     everything) and return the refreshed highlights."""
@@ -2287,10 +2338,22 @@ async def refresh_discovery(
 
     result = await run_funnel(user_id, force=force)
     sources, stages, candidates = _load_discovery_transparency(user_id)
+    pick_dtos = _attach_pick_provenance(
+        db,
+        user_id,
+        [
+            DiscoveryPickDTO(
+                ticker=p.ticker,
+                conviction=p.conviction,
+                verdict=p.verdict,
+                thesis_md=p.thesis_md,
+                cites=list(p.cites),
+            )
+            for p in result.picks
+        ],
+    )
     return DiscoveryDTO(
-        picks=[DiscoveryPickDTO(ticker=p.ticker, conviction=p.conviction,
-               verdict=p.verdict, thesis_md=p.thesis_md, cites=list(p.cites))
-               for p in result.picks],
+        picks=pick_dtos,
         estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
                    conviction=v.conviction, sentiment=v.sentiment,
                    one_line=v.one_line) for v in result.estimated],

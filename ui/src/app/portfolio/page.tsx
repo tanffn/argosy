@@ -415,11 +415,19 @@ export default function PortfolioPage() {
                           <Link
                             href="/positions"
                             title={
-                              `Conviction: ${thesis.conviction} — ${thesis.reasoning_md.slice(0, 200)}`
+                              `Conviction: ${thesis.conviction}` +
+                              (thesis.falsifier_state === "none_recorded"
+                                ? " · ⚠ no falsifiers recorded"
+                                : ` · falsifiers ${thesis.falsifier_state}`) +
+                              (thesis.last_fleet_check_at
+                                ? ` · last check ${thesis.last_fleet_check_at}`
+                                : "") +
+                              ` — ${thesis.reasoning_md.slice(0, 160)}`
                             }
                             className={`inline-block px-2 py-0.5 rounded border text-[10px] font-medium tabular-nums hover:opacity-80 transition-opacity ${VERDICT_CLASS[thesis.verdict]}`}
                           >
                             {thesis.verdict}
+                            {thesis.falsifier_state === "none_recorded" ? " ⚠" : ""}
                           </Link>
                         ) : (
                           <span className="text-muted-foreground/60">—</span>

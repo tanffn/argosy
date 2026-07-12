@@ -320,7 +320,9 @@ def test_projection_maps_stance_onto_dto(monkeypatch):
     assert by["SPCX"]["verdict"] == "SELL"
     assert "Pending decision" in by["SPCX"]["reasoning_md"]
     assert by["AMD"]["verdict"] == "HOLD"
-    # Wire DTO validates unchanged.
+    # Wire DTO validates unchanged (+ additive provenance defaults).
     for d in dtos:
-        positions.PositionThesisDTO(**d)
+        dto = positions.PositionThesisDTO(**d)
+        assert dto.falsifier_state in ("armed", "fired", "none_recorded")
+        assert isinstance(dto.falsifiers, list)
     s.close()

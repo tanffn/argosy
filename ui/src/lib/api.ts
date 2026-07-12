@@ -440,6 +440,11 @@ export interface DiscoveryPickDTO {
   verdict: string;
   thesis_md: string;
   cites: string[];
+  /** Additive provenance (§7.1) */
+  falsifier_state?: "armed" | "fired" | "none_recorded" | string;
+  falsifiers?: string[];
+  next_validation?: string | null;
+  last_fleet_check_at?: string | null;
 }
 
 export interface DiscoveryEstimateDTO {
@@ -1760,6 +1765,11 @@ export interface PositionThesisDTO {
   cited_sources: string[];
   target_weight_pct: number | null;
   target_shares: number | null;
+  /** Additive provenance (§7.1) — armed | fired | none_recorded */
+  falsifier_state?: "armed" | "fired" | "none_recorded" | string;
+  falsifiers?: string[];
+  next_validation?: string | null;
+  last_fleet_check_at?: string | null;
 }
 
 // ----------------------------------------------------------------------

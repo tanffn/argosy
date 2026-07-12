@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { VerdictProvenanceStrip } from "@/components/verdict-provenance";
 import { friendlySourceLabel } from "@/lib/plain-english-labels";
 import { cn } from "@/lib/utils";
 
@@ -128,6 +129,14 @@ export function PositionCard({ thesis }: PositionCardProps) {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        <VerdictProvenanceStrip
+          provenance={{
+            falsifier_state: thesis.falsifier_state ?? "none_recorded",
+            falsifiers: thesis.falsifiers ?? [],
+            next_validation: thesis.next_validation ?? null,
+            last_fleet_check_at: thesis.last_fleet_check_at ?? null,
+          }}
+        />
         {(thesis.target_weight_pct !== null ||
           thesis.target_shares !== null) && (
           <div className="text-xs font-mono text-muted-foreground">

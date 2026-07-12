@@ -511,6 +511,14 @@ def project_thesis_dtos(
     }
     theses = _plan_theses(db, user_id, pv, snapshot)
 
+    from argosy.services.verdict_registry import provenance_for_subjects
+
+    prov_map = provenance_for_subjects(
+        db,
+        user_id=user_id,
+        subjects=[(card.ticker or "") for card in theses],
+    )
+
     out: list[dict[str, Any]] = []
     for card in theses:
         d = card.to_dict()
@@ -519,6 +527,19 @@ def project_thesis_dtos(
         if s is not None:
             d["verdict"] = s.stance
             d["reasoning_md"] = s.reasoning_md
+            if s.conviction:
+                d["conviction"] = s.conviction
+        prov = prov_map.get((card.ticker or "").upper())
+        if prov is not None:
+            d["falsifier_state"] = prov.falsifier_state
+            d["falsifiers"] = list(prov.falsifiers)
+            d["next_validation"] = prov.next_validation
+            d["last_fleet_check_at"] = prov.last_fleet_check_at
+        else:
+            d["falsifier_state"] = "none_recorded"
+            d["falsifiers"] = []
+            d["next_validation"] = None
+            d["last_fleet_check_at"] = None
         out.append(d)
     return out
 

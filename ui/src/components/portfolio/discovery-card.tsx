@@ -17,6 +17,7 @@ import {
   type DiscoveryDTO,
   type DiscoverySourceDTO,
 } from "@/lib/api";
+import { VerdictProvenanceStrip } from "@/components/verdict-provenance";
 
 function convictionTone(c: string): "success" | "secondary" | "outline" {
   if (c === "HIGH") return "success";
@@ -331,7 +332,15 @@ export function DiscoveryCard() {
               </span>
             </div>
             {open === p.ticker && (
-              <div className="mt-2 whitespace-pre-wrap text-muted-foreground">
+              <div className="mt-2 space-y-2 whitespace-pre-wrap text-muted-foreground">
+                <VerdictProvenanceStrip
+                  provenance={{
+                    falsifier_state: p.falsifier_state ?? "none_recorded",
+                    falsifiers: p.falsifiers ?? [],
+                    next_validation: p.next_validation ?? null,
+                    last_fleet_check_at: p.last_fleet_check_at ?? null,
+                  }}
+                />
                 {p.thesis_md}
                 {p.cites.length > 0 && (
                   <div className="mt-1 text-[10px]">

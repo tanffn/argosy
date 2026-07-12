@@ -38,6 +38,10 @@ class PositionThesisDTO(BaseModel):
 
     Kept as an explicit pydantic model (rather than reusing the
     dataclass) so the FastAPI OpenAPI schema captures the contract.
+
+    Additive provenance fields (2026-07-12 §7.1): falsifier_state /
+    falsifiers / next_validation / last_fleet_check_at — sourced from
+    the verdicts registry (+ holding_reviews / decision_runs fallbacks).
     """
 
     ticker: str
@@ -50,6 +54,11 @@ class PositionThesisDTO(BaseModel):
     cited_sources: list[str] = []
     target_weight_pct: float | None = None
     target_shares: int | None = None
+    # Provenance (additive — never break older clients that ignore them)
+    falsifier_state: str = "none_recorded"  # armed | fired | none_recorded
+    falsifiers: list[str] = []
+    next_validation: str | None = None  # ISO date
+    last_fleet_check_at: str | None = None  # ISO datetime
 
 
 @router.get("/thesis", response_model=list[PositionThesisDTO])
