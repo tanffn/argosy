@@ -362,6 +362,56 @@ prompt ready (migrations start 0086 — 0085 is stream B's).
   (reliability trio prompt ready, {{fact:key}}, test_api_phase4 hang, funnel graduation,
   stream-B non-blocking follow-ups, Fable-5 A/B, sdc/omk re-burns).
 
+## 5g. 2026-07-12 SESSION CLOSE (supersedes 5f where they differ)
+
+Git: master = origin = branch (check `git log --oneline -5`; last functional commits: Fable A/B
+`79a894a`, verdict-loop live fixes `85902d4`, tick fix `5cc0cca`). Backend runs under the
+supervisor (`scripts/start_backend_detached.ps1`). Migrations at 0089.
+
+- **Plan v91 CURRENT.** v90 = high-growth sleeve 5→8% (owner decision, row 72 closed
+  'executed' w/ note; funded pro-rata core/intl/dividend per the fleet cap-max path, sigma
+  0.1800; flow-funded via NVDA-sale slices; 8→10% fork reserved for Ariel). v91 = NVDA
+  2026-quota tranche restored to PACED "[2026-07 through 2026-12]" (owner decision; the
+  corrective chain had collapsed it to point-date [2026-07-31], which made the home
+  Deconcentration chart show a cliff — chart was faithful, the date was the regression).
+- **Fable-5 A/B DONE (owner decided: keep Opus for now).** Trader-only A/B, hard six:
+  Fable 5.0/6 vs Opus 4/6 — Fable CAUGHT boot_2017 (+1855% trap-shaped winner Opus missed),
+  kept both trap holds, same ttcf_t2 miss (guidance-flip case; packet predates the
+  convention). CMPS live replay: agreement (buy MEDIUM, ~$19k vs $23k). Evidence:
+  runs/2026-07-12-fable-ab* + tmp/cmps_fable_ab.py; --trader-model flag in run_suite.
+- **CMPS**: Ariel approving via /inbox (card un-shadowed; expires 07-13 15:30). VOR expiring
+  by choice. OKLO/RKLB/ASTS/ORCL: monitor-only, registry-armed.
+- Known-stale surface: home greeting bakes on daily crons (14:00/16:00 UTC) — see §7 item 2.
+
+## 7. UX WORK ORDER — decision-surface trust items (owner-specified 2026-07-12)
+
+For an implementing agent (UI + small API): branch feat/opens-2026-07-11, hand back per
+block, never merge, zero live LLM. UI dev: cd ui ; npm run lint ; npm run typecheck ;
+tests. Read SDD quickstart + ui/AGENTS.md first.
+
+1. **Verdict provenance on cards + positions.** Wherever a fleet judgment surfaces (inbox
+   trade cards, /positions rows, watch cards), render: falsifier state (armed / fired /
+   none-recorded — none-recorded is a visible WARNING, not blank), next-validation due date
+   (the clock), and DATE OF LAST FLEET CHECK. Data sources: verdicts table (0087),
+   position_stances, decision_runs.finished_at. API: extend the relevant DTOs (inbox
+   service, positions/thesis projection) — additive fields only. Acceptance: a card with no
+   recorded falsifiers shows the warning state; dates render relative ("checked 2d ago").
+2. **Home greeting dirty-flag.** Mark the greeting DIRTY on material events (plan_versions
+   role flip, proposal status change, verdict write, monitor flag) via a cheap kv/state
+   touch; on Home visit, if dirty → regenerate before render (or render stale + async
+   refresh), else serve the baked one. Trigger points already exist as code seams (accept
+   endpoint, proposal transitions, verdict writer, flag writer). Acceptance: promote a plan
+   → next Home visit reflects it without waiting for the daily cron.
+3. **Multi-option decision cards.** kind=update_plan_assumption proposals whose payload
+   carries an `options` object (see row 72's payload shape: A/B/C with labels) must render
+   the options as selectable actions, each mapping to accept-with-choice (persist chosen
+   option key in decided_by_user_note + suggested_payload.decision). Single-option payloads
+   keep today's accept/dismiss. Acceptance: a seeded 3-option proposal renders 3 buttons +
+   dismiss; choice lands in the DB row; the corrective directive feed carries the CHOSEN
+   option, not the recommendation.
+Also carried: funnel-proposal graduation design (shadow → approvable after calibration);
+jobs run-now route not mounted; greeting needs_you overdue items (07-08 queue).
+
 ## 6. ITEM F BLOCK 2 WORK ORDER — case backlog (fresh implementing agent starts HERE)
 
 You are a NEW external implementing agent closing item F. Branch `feat/opens-2026-07-11`
