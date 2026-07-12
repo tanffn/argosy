@@ -201,15 +201,25 @@ def _parse_rolling(path: Path, *, last4_hint: str | None = None) -> ParseResult:
     if header != expected:
         raise ValueError(f"Max rolling parser: unexpected header {header}")
 
-    last4 = last4_hint
+    # The rolling export is SELF-IDENTIFYING: the title cell carries
+    # '...לכרטיס מאסטרקארד 6225' (owner-observed 2026-07-12). Title wins,
+    # then caller hint, then the '<last4>_' filename convention.
+    last4 = None
+    title = str(df.iat[0, 0]) if not pd.isna(df.iat[0, 0]) else ""
+    m_title = re.search(r"לכרטיס\s+\S+\s+(\d{4})", title)
+    if m_title:
+        last4 = m_title.group(1)
+    if last4 is None:
+        last4 = last4_hint
     if last4 is None:
         m = _ROLLING_FNAME_RE.match(path.name)
         if m:
             last4 = m.group(1)
     if last4 is None:
         raise ValueError(
-            "Max rolling parser: card last-4 unavailable (no hint, filename "
-            f"'{path.name}' lacks the '<last4>_' prefix)")
+            "rolling-format parser: card last-4 unavailable (title carries "
+            f"no card token, no hint, filename '{path.name}' lacks the "
+            "'<last4>_' prefix)")
 
     txs: list[NormalizedTransaction] = []
     for i in range(2, len(df)):

@@ -119,8 +119,25 @@ def check_parse_sanity(
     if not txs:
         raise ParseSanityError(["0 transactions after parse"])
 
-    past_floor = _add_months(today, -cfg.date_past_months)
+    # Date plausibility (reviewer redesign 2026-07-12): anchoring the past
+    # window on TODAY fatals legitimate backfills of old statements (live:
+    # the 2025 Leumi sample). Garbage (shifted columns) shows up as absurd
+    # absolute years or an impossible SPAN, not as honest age:
+    #   - absolute floor 2000-01-01 (column-shift dates land in 1900/2093)
+    #   - future ceiling today + date_future_days (real rows can't be ahead)
+    #   - span cap: newest-oldest <= date_past_months (covers 12-month
+    #     installment carryover inside one statement window)
+    past_floor = date(2000, 1, 1)
     future_ceil = today + timedelta(days=cfg.date_future_days)
+    # The span cap encodes STATEMENT-WINDOW semantics (one billing cycle +
+    # installment carryover). Rolling/range exports (result.rolling: bank
+    # ranges, 90-day card pulls) have arbitrary honest spans — a full-year
+    # Leumi export is legitimate — so they get floor+ceiling only.
+    if result.rolling:
+        span_floor = past_floor
+    else:
+        _dates = [tx.occurred_on for tx in result.transactions]
+        span_floor = _add_months(max(_dates), -cfg.date_past_months)
 
     blank_n = 0
     mojibake_n = 0
@@ -129,10 +146,12 @@ def check_parse_sanity(
     date_hits: list[str] = []
 
     for i, tx in enumerate(txs):
-        if tx.occurred_on < past_floor or tx.occurred_on > future_ceil:
+        if (tx.occurred_on < past_floor or tx.occurred_on > future_ceil
+                or tx.occurred_on < span_floor):
+            lo = max(past_floor, span_floor)
             date_hits.append(
                 f"row[{i}] occurred_on={tx.occurred_on.isoformat()} "
-                f"outside [{past_floor.isoformat()}, {future_ceil.isoformat()}]"
+                f"outside [{lo.isoformat()}, {future_ceil.isoformat()}]"
             )
 
         for field_name, amt in (("amount_nis", tx.amount_nis),

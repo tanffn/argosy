@@ -103,11 +103,20 @@ def upload_statements(
             from pathlib import Path as _P
             detected = detect_format(_P(user_file.storage_path))
             if detected == ParserName.MAX and not card_last4:
-                results.append(UploadFileResult(
-                    filename=upload.filename, status="failed",
-                    error="card_last4 required for Max uploads",
-                ))
-                continue
+                # The ROLLING variant is self-identifying (card last-4 in the
+                # title cell) — only the MONTHLY export needs the hint (its
+                # sheet name carries the bank account, not the card).
+                import pandas as _pd
+                _sheets = _pd.ExcelFile(user_file.storage_path).sheet_names
+                if "פירוט עסקאות וזיכויים" not in _sheets:
+                    results.append(UploadFileResult(
+                        filename=upload.filename, status="failed",
+                        error=("card_last4 required for this Max-format "
+                               "monthly export (the file carries the bank "
+                               "account, not the card number) — enter the "
+                               "card's last 4 digits and re-upload"),
+                    ))
+                    continue
         except Exception:
             # Sniff failures will be re-raised by ingest_user_file with a
             # clearer error; don't swallow them silently here.

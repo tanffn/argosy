@@ -170,12 +170,36 @@ def test_hard_far_future_date():
     assert any("date out of range" in v for v in ei.value.violations)
 
 
-def test_hard_far_past_date():
-    # 14 months before 2026-07-12 = 2025-05-12; one day earlier is fatal
-    bad = _result([_tx(occurred_on=date(2025, 5, 11))])
+def test_hard_pre2000_garbage_date():
+    # Column-shift garbage lands in absurd absolute years — below the
+    # absolute floor (2000-01-01) is fatal regardless of anchor.
+    bad = _result([_tx(occurred_on=date(1999, 12, 31))])
     with pytest.raises(ParseSanityError) as ei:
         check_parse_sanity(bad, today=TODAY)
     assert any("date out of range" in v for v in ei.value.violations)
+
+
+def test_hard_impossible_span():
+    # A statement whose rows span more than date_past_months (14) is
+    # garbage-shaped: newest 2026-07 with a 2024-01 stray row.
+    bad = _result([
+        _tx(occurred_on=date(2026, 7, 1)),
+        _tx(occurred_on=date(2024, 1, 5)),
+    ])
+    with pytest.raises(ParseSanityError) as ei:
+        check_parse_sanity(bad, today=TODAY)
+    assert any("date out of range" in v for v in ei.value.violations)
+
+
+def test_backfill_of_old_statement_is_sane():
+    # Reviewer redesign 2026-07-12: an honestly OLD statement (backfill —
+    # live case: the 2025 Leumi sample) must pass; age is not garbage.
+    old_stmt = _result([
+        _tx(occurred_on=date(2025, 3, 3)),
+        _tx(occurred_on=date(2025, 4, 20)),
+    ])
+    rep = check_parse_sanity(old_stmt, today=TODAY)
+    assert rep is not None
 
 
 def test_hard_zero_transactions():
