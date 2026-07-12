@@ -248,6 +248,82 @@ def check_headline_numeric_source(
     return violations
 
 
+def check_fact_literal_should_be_token(
+    horizon_text: dict[str, str],
+    resolved: "ResolvedPlanNumbers",
+) -> list[GateViolation]:
+    """Warn/block when a raw financial magnitude matches a registry fact.
+
+    Under the placeholder protocol a headline figure that HAS a matching
+    ``FACT_DISPLAY`` key must be emitted as ``{{fact:key}}``, not typed as
+    digits. A literal whose display form equals a resolved fact's rendering
+    is a protocol violation. Warn-only by default
+    (``fact_literal_gate_enforce``); the caller decides severity.
+    """
+    from argosy.quality.fact_registry import (
+        FACT_DISPLAY,
+        FACT_SOURCE_ALIAS,
+        format_fact,
+        find_unauthorized_numbers,
+    )
+
+    # Build display-form → keys for every resolved registered fact.
+    display_to_keys: dict[str, list[str]] = {}
+    for key, display in FACT_DISPLAY.items():
+        source_key = FACT_SOURCE_ALIAS.get(key, key)
+        rv = resolved.get(source_key)
+        if (
+            rv is None
+            or getattr(rv, "status", None) != "resolved"
+            or getattr(rv, "value", None) is None
+        ):
+            continue
+        try:
+            rendered = format_fact(
+                rv.value, getattr(rv, "unit", ""), display=display,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        display_to_keys.setdefault(rendered, []).append(key)
+        # Also index bare digits without currency/age prefix for loose match.
+        bare = rendered.replace("₪", "").replace(",", "").strip()
+        if bare and bare != rendered:
+            display_to_keys.setdefault(bare, []).append(key)
+
+    violations: list[GateViolation] = []
+    for horizon_name, text in horizon_text.items():
+        if not text or "{{fact:" in text:
+            # Bodies that still carry tokens are mid-protocol; only flag
+            # pure-literal bodies (or scan the non-token spans).
+            pass
+        for viol in find_unauthorized_numbers(text or ""):
+            token = viol.token
+            # Normalize for lookup
+            candidates = [token, token.replace(" ", "")]
+            if token.startswith("₪"):
+                candidates.append(token.replace(",", ""))
+            matched_keys: list[str] = []
+            for c in candidates:
+                matched_keys.extend(display_to_keys.get(c, []))
+            if not matched_keys:
+                # Try pct without space: "12.0%" vs "12.0 %"
+                compact = token.replace(" ", "")
+                matched_keys.extend(display_to_keys.get(compact, []))
+            if not matched_keys:
+                continue
+            key = matched_keys[0]
+            violations.append(GateViolation(
+                check=GateCheck.HEADLINE_NUMERIC_SOURCE,
+                detail=(
+                    f"literal {viol.kind} `{token}` matches registry fact "
+                    f"`{key}` — emit {{{{fact:{key}}}}} instead of typing "
+                    f"the digits (placeholder protocol)"
+                ),
+                locator=f"horizon={horizon_name} pos={viol.pos}",
+            ))
+    return violations
+
+
 def _violation(
     horizon: str, line_no: int, kind: str, token: str, why: str
 ) -> GateViolation:
@@ -652,6 +728,7 @@ def scrub_headline_numeric_source(
 
 __all__ = [
     "check_headline_numeric_source",
+    "check_fact_literal_should_be_token",
     "scrub_headline_numeric_source",
     "PENDING_LABEL",
 ]

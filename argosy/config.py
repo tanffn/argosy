@@ -283,6 +283,19 @@ class Settings(BaseSettings):
     # switch: ARGOSY_SLICED_SYNTH=0.
     sliced_synth: bool = Field(default=True)
 
+    # Canonical fact placeholders (item I / 2026-07-12): synthesizer emits
+    # ``{{fact:key}}`` tokens instead of hand-typed headline digits; READ-time
+    # rendering fills them from the live resolver so a trade updates numbers
+    # without rewriting the plan. Default ON. Kill switch:
+    # ARGOSY_FACT_PLACEHOLDERS=0. First LIVE synthesis under the new contract
+    # is token-gated (coordinate with reviewer — do not burn casually).
+    fact_placeholders: bool = Field(default=True)
+
+    # Warn-only (default) gate: a literal headline number that HAS a matching
+    # registry fact key should have been a ``{{fact:key}}`` token. Set
+    # ARGOSY_FACT_LITERAL_GATE_ENFORCE=true to promote to blocking.
+    fact_literal_gate_enforce: bool = Field(default=False)
+
     # Daily-news volatility trigger (news_daily Stage-2 gate). When Stage 1
     # ingests ZERO new items, Stage 2 (the LLM analyst) still fires if a HELD
     # single stock moved at least this many percent (absolute, close-over-

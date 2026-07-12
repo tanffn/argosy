@@ -2060,22 +2060,33 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
         f"`{PENDING_LABEL}`, write that literal string instead of a number.",
         "",
     ]
-    # Fact-placeholder protocol (default OFF — ARGOSY_FACT_PLACEHOLDERS=1). When
-    # on, the synthesizer must EMIT the {{fact:key}} token verbatim wherever it
-    # would state a headline figure, instead of typing the digits. A renderer
-    # then fills the token from THIS manifest, so the body's numbers ARE the
-    # canonical ones (no hand-typed drift — the root cause of headline_numeric_source).
+    # Fact-placeholder protocol (default ON — ARGOSY_FACT_PLACEHOLDERS=0 to
+    # kill). When on, the synthesizer must EMIT the {{fact:key}} token
+    # verbatim wherever it would state a headline figure, instead of typing
+    # the digits. READ-time rendering fills the token from the live manifest
+    # so a trade updates numbers without rewriting the plan.
     import os as _os
     from argosy.quality.fact_registry import FACT_DISPLAY as _FACT_DISPLAY
-    _placeholders_on = _os.environ.get("ARGOSY_FACT_PLACEHOLDERS", "0") == "1"
-    if _placeholders_on:
+
+    def _placeholders_on() -> bool:
+        env = _os.environ.get("ARGOSY_FACT_PLACEHOLDERS")
+        if env is not None:
+            return str(env).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            from argosy.config import get_settings
+            return bool(get_settings().fact_placeholders)
+        except Exception:  # noqa: BLE001
+            return True
+
+    if _placeholders_on():
         lines.append(
             "PLACEHOLDER PROTOCOL (MANDATORY): for every headline figure below, "
             "write its `{{fact:<key>}}` token VERBATIM in the plan body instead of "
             "typing the number. Do NOT type the digits for these facts — a renderer "
-            "substitutes the canonical value and a gate rejects a hand-typed headline "
-            "number. Narrative numbers that are NOT in this list (e.g. a 30% surtax "
-            "rate, 90% MC solvency) are typed normally."
+            "substitutes the canonical value at READ time and a gate rejects a "
+            "hand-typed headline number that has a matching fact key. Narrative "
+            "numbers that are NOT in this list (e.g. a 30% surtax rate, 90% MC "
+            "solvency) are typed normally."
         )
         lines.append("")
     for key, label in _SYNTH_DISPLAY:
@@ -2083,7 +2094,7 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
         disp = _display_value(rv)
         src = rv.source_locator if rv.status == "resolved" else "no approved source"
         conf = f"; conf {rv.confidence}" if rv.confidence else ""
-        if _placeholders_on and key in _FACT_DISPLAY and rv.status == "resolved":
+        if _placeholders_on() and key in _FACT_DISPLAY and rv.status == "resolved":
             # Present the token as bracketed metadata, NOT as a copyable "EMIT AS:"
             # instruction — the model was reproducing that verb verbatim in prose. A
             # render-time sanitizer (fact_registry.strip_emission_scaffolding) strips any

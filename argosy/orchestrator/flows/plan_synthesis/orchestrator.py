@@ -86,6 +86,15 @@ def _env_flag_on(env_name: str, *, settings_attr: str, default: bool = True) -> 
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _fact_placeholders_enabled() -> bool:
+    """ARGOSY_FACT_PLACEHOLDERS — default ON (item I / 2026-07-12)."""
+    return _env_flag_on(
+        "ARGOSY_FACT_PLACEHOLDERS",
+        settings_attr="fact_placeholders",
+        default=True,
+    )
+
+
 # Prime directive injected into the coherence arbitrator/panel when the
 # deliberation reconcile path settles a goal/framing tension (mirrors the
 # project prime directive in CLAUDE.md / auto-memory).
@@ -4802,33 +4811,31 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
                     user_id=user_id, decision_run_id=decision_run_id,
                     count=len(_scrub_log), tokens=_scrub_log[:20],
                 )
-            # Canonical fact placeholders (default OFF — ARGOSY_FACT_PLACEHOLDERS=1).
-            # When the synthesizer emits {{fact:key}} tokens, render them from the
-            # SAME resolver manifest so the body's numbers ARE the canonical ones
-            # (no LLM-typed drift). No-op on current output (no placeholders).
-            # Non-strict here: an unresolved token is left for the gate to surface
-            # rather than aborting this best-effort block.
-            if _os.environ.get("ARGOSY_FACT_PLACEHOLDERS", "0") == "1":
+            # Canonical fact placeholders (default ON). When ON we PERSIST
+            # tokens verbatim — READ-time ``fact_token_render`` fills them
+            # from the live book so a trade updates numbers without rewriting
+            # the plan. Write-time bake is the LEGACY path (flag OFF).
+            if not _fact_placeholders_enabled():
                 from argosy.quality.fact_registry import render_placeholders
                 _long_md = render_placeholders(_long_md, _manifest, strict=False)
                 _medium_md = render_placeholders(_medium_md, _manifest, strict=False)
                 _short_md = render_placeholders(_short_md, _manifest, strict=False)
-                # The rendered values (₪11.69M, 12.0%, age 46) carry no JSON-special
-                # characters, so substituting tokens inside the serialized JSON
-                # string keeps it valid JSON while single-sourcing the section bodies.
-                _sections_json = render_placeholders(_sections_json, _manifest, strict=False)
+                _sections_json = render_placeholders(
+                    _sections_json, _manifest, strict=False,
+                )
     except Exception as exc:  # noqa: BLE001 — scrub is defense-in-depth
         log.warning(
             "plan_synthesis.headline_scrub_failed",
             user_id=user_id, error=str(exc),
         )
 
-    # Fail-safe: a raw {{fact:key}} token must NEVER reach the client body. If the
-    # render above was skipped (a failure in the try-block) or a key was genuinely
-    # unresolved, downgrade any surviving placeholder to the sanctioned pending
-    # literal rather than ship literal braces. Runs unconditionally so it cannot be
-    # bypassed by an exception in the render path (the bug that leaked 77 tokens).
-    if "{{fact:" in (_long_md + _medium_md + _short_md + _sections_json):
+    # Fail-safe: only when placeholders are OFF (legacy bake-digits path).
+    # When ON, raw ``{{fact:key}}`` tokens MUST survive into the DB for
+    # READ-time rendering — replacing them here would defeat the mechanism.
+    if (
+        not _fact_placeholders_enabled()
+        and "{{fact:" in (_long_md + _medium_md + _short_md + _sections_json)
+    ):
         import re as _re
         from argosy.quality.fact_registry import PENDING_LABEL as _PENDING
         _leftover = _re.compile(r"\{\{fact:[A-Za-z0-9_.]+\}\}")

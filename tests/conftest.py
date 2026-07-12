@@ -165,6 +165,29 @@ def _guard_lookthrough_gate(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _guard_fact_placeholders(monkeypatch):
+    """Keep fact-placeholder protocol OFF by default in tests.
+
+    Production default is ON (``fact_placeholders`` — READ-time render).
+    Unstubbed synthesis/assemble tests would otherwise persist tokens and
+    change leakage/gate expectations. Opt in via
+    ``setenv("ARGOSY_FACT_PLACEHOLDERS", "1")``.
+    """
+    monkeypatch.setenv("ARGOSY_FACT_PLACEHOLDERS", "0")
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+    yield
+    try:
+        from argosy.config import get_settings
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _guard_patch_sliced_synth(monkeypatch):
     """Keep patch/sliced phase-3 paths OFF by default in tests.
 

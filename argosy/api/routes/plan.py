@@ -566,6 +566,16 @@ def _pace_status(sold: int, target: int) -> str:
     return "on"
 
 
+class FactRenderMeta(BaseModel):
+    """READ-time ``{{fact:key}}`` render provenance (item I)."""
+
+    snapshot_id: int | None = None
+    provenance: dict[str, dict] = {}
+    pending_keys: list[str] = []
+    plan_logic_stale: bool = False
+    staleness_details: list[str] = []
+
+
 class DraftResponse(BaseModel):
     plan_version_id: int
     version_label: str | None
@@ -600,6 +610,9 @@ class DraftResponse(BaseModel):
     # docs/design/corrective_patch_synthesis.md §2.C). ``None`` for
     # non-corrective drafts and legacy rows.
     corrective: dict | None = None
+    # READ-time fact-token render meta (item I). ``None`` when the plan
+    # surfaces carry no ``{{fact:}}`` tokens (legacy literal bodies).
+    fact_render: FactRenderMeta | None = None
 
 
 class AcceptResponse(BaseModel):
@@ -929,6 +942,54 @@ def _build_synthesis_health(
     )
 
 
+def _apply_fact_token_render(
+    db: Session,
+    *,
+    user_id: str,
+    pv: PlanVersion,
+    horizon_long_md: str | None,
+    horizon_medium_md: str | None,
+    horizon_short_md: str | None,
+) -> tuple[str | None, str | None, str | None, FactRenderMeta | None]:
+    """READ-time ``{{fact:key}}`` pass (item I). No-op when no tokens."""
+    surfaces = (
+        horizon_long_md or "",
+        horizon_medium_md or "",
+        horizon_short_md or "",
+        getattr(pv, "sections_json", None) or "",
+        getattr(pv, "narrative_json", None) or "",
+    )
+    if not any("{{fact:" in s for s in surfaces):
+        return horizon_long_md, horizon_medium_md, horizon_short_md, None
+    try:
+        from argosy.services.fact_token_render import render_plan_facts
+
+        bundle = render_plan_facts(
+            db, user_id=user_id, plan_version=pv, write_staleness_flag=True,
+        )
+        meta = FactRenderMeta(
+            snapshot_id=bundle.snapshot_id,
+            provenance=bundle.provenance,
+            pending_keys=list(bundle.pending_keys),
+            plan_logic_stale=bool(bundle.staleness),
+            staleness_details=[f.detail for f in bundle.staleness],
+        )
+        return (
+            bundle.horizon_long_md,
+            bundle.horizon_medium_md,
+            bundle.horizon_short_md,
+            meta,
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the plan surface
+        logger.warning(
+            "plan.fact_token_render_failed user=%s plan=%s error=%s",
+            user_id,
+            getattr(pv, "id", None),
+            str(exc)[:200],
+        )
+        return horizon_long_md, horizon_medium_md, horizon_short_md, None
+
+
 def _read_corrective_provenance(pv: PlanVersion) -> dict | None:
     """Display-only read of ``synthesis_inputs_json.corrective`` (the
     corrective run's structured provenance, including patch-synthesis
@@ -1002,6 +1063,14 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
             if pv is None:
                 raise HTTPException(status_code=404, detail="no draft for user")
             effective_role = pv.role or "superseded"
+    long_md, med_md, short_md, fact_meta = _apply_fact_token_render(
+        db,
+        user_id=user_id,
+        pv=pv,
+        horizon_long_md=pv.horizon_long_md,
+        horizon_medium_md=pv.horizon_medium_md,
+        horizon_short_md=pv.horizon_short_md,
+    )
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
@@ -1011,13 +1080,14 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_long=_horizon_view(pv.horizon_long_json),
         horizon_medium=_horizon_view(pv.horizon_medium_json),
         horizon_short=_horizon_view(pv.horizon_short_json),
-        horizon_long_md=pv.horizon_long_md,
-        horizon_medium_md=pv.horizon_medium_md,
-        horizon_short_md=pv.horizon_short_md,
+        horizon_long_md=long_md,
+        horizon_medium_md=med_md,
+        horizon_short_md=short_md,
         synthesis_health=_build_synthesis_health(db, pv.decision_run_id),
         nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
         effective_role=effective_role,
         corrective=_read_corrective_provenance(pv),
+        fact_render=fact_meta,
     )
 
 
@@ -3355,6 +3425,14 @@ def get_current_structured(
     pv = get_current_plan(db, user_id)
     if pv is None:
         return None
+    long_md, med_md, short_md, fact_meta = _apply_fact_token_render(
+        db,
+        user_id=user_id,
+        pv=pv,
+        horizon_long_md=pv.horizon_long_md,
+        horizon_medium_md=pv.horizon_medium_md,
+        horizon_short_md=pv.horizon_short_md,
+    )
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
@@ -3364,10 +3442,11 @@ def get_current_structured(
         horizon_long=_horizon_view(pv.horizon_long_json),
         horizon_medium=_horizon_view(pv.horizon_medium_json),
         horizon_short=_horizon_view(pv.horizon_short_json),
-        horizon_long_md=pv.horizon_long_md,
-        horizon_medium_md=pv.horizon_medium_md,
-        horizon_short_md=pv.horizon_short_md,
+        horizon_long_md=long_md,
+        horizon_medium_md=med_md,
+        horizon_short_md=short_md,
         nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
+        fact_render=fact_meta,
     )
 
 
@@ -4050,7 +4129,13 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
 
     The trust-contract CORE checks always BLOCK; the per-section EVIDENCE checks
     WARN during the evidence-hardening transition; SECTION_COVERAGE is demoted
-    when the row has no persisted structured sections (it can't run)."""
+    when the row has no persisted structured sections (it can't run).
+
+    Fact-literal-should-be-token findings (detail contains ``placeholder
+    protocol``) are warn-only until ``fact_literal_gate_enforce`` is on —
+    calibration for the ``{{fact:key}}`` synthesizer contract.
+    """
+    from argosy.config import get_settings
     from argosy.quality.gate_types import GateCheck
 
     if gate_verdict is None or gate_verdict.passes:
@@ -4063,16 +4148,33 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
     blocking_checks = set(GateCheck) - _EVIDENCE_WARN
     if not sections_present:
         blocking_checks.discard(GateCheck.SECTION_COVERAGE)
-    blocking = {
-        check: gate_verdict.for_check(check)
-        for check in blocking_checks
-        if gate_verdict.violations[check]
-    }
-    warned = {
-        check: gate_verdict.for_check(check)
-        for check in gate_verdict.violations
-        if gate_verdict.violations[check] and check not in blocking
-    }
+
+    def _is_fact_literal(v) -> bool:
+        return "placeholder protocol" in (getattr(v, "detail", "") or "")
+
+    demote_literals = not get_settings().fact_literal_gate_enforce
+    blocking: dict = {}
+    warned: dict = {}
+    for check in GateCheck:
+        viols = gate_verdict.for_check(check)
+        if not viols:
+            continue
+        if demote_literals and check is GateCheck.HEADLINE_NUMERIC_SOURCE:
+            keep = [v for v in viols if not _is_fact_literal(v)]
+            demoted = [v for v in viols if _is_fact_literal(v)]
+            if keep and check in blocking_checks:
+                blocking[check] = keep
+            if demoted:
+                warned[check] = demoted + (
+                    warned.get(check) or []
+                )
+            elif check not in blocking_checks:
+                warned[check] = viols
+            continue
+        if check in blocking_checks:
+            blocking[check] = viols
+        else:
+            warned[check] = viols
     return blocking, warned
 
 
