@@ -185,6 +185,12 @@ def write_verdict(
             existing_same_run.settled = True
             existing_same_run.updated_at = _utcnow()
             session.flush()
+            try:
+                from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+                mark_home_greeting_dirty(user_id, session=session)
+            except Exception:  # noqa: BLE001
+                pass
             return existing_same_run
 
     prior = get_settled_verdict(session, user_id=user_id, subject=subj) if settled else None
@@ -225,6 +231,12 @@ def write_verdict(
         run_id=source_decision_run_id,
         superseded_prior=prior.id if prior is not None else None,
     )
+    try:
+        from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+        mark_home_greeting_dirty(user_id, session=session)
+    except Exception:  # noqa: BLE001
+        pass
     return row
 
 

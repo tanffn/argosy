@@ -590,6 +590,14 @@ def write_observer_flags(
                 exc_info=True,
             )
 
+    if written_count > 0:
+        try:
+            from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+            mark_home_greeting_dirty(user_id, session=session, commit=True)
+        except Exception:  # noqa: BLE001
+            pass
+
     return WriteSummary(
         written_count=written_count,
         deduplicated_count=deduplicated_count,

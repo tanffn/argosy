@@ -212,11 +212,20 @@ def invalidate_home_brief(user_id: str) -> None:
     route would return: draft created, accepted, rejected, or per-delta
     edits.  Cache-purge failure is logged at WARNING but never propagated
     — the primary write must succeed regardless of cache state.
+
+    Also marks the FM home greeting dirty (§7.2) so the next Home visit
+    regenerates instead of serving a pre-promote bake.
     """
     try:
         purge_cache_entry("advisor_home_brief", f"user:{user_id}")
     except Exception:  # noqa: BLE001
         _log.warning("home_brief.cache_purge_failed", user_id=user_id)
+    try:
+        from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+        mark_home_greeting_dirty(user_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("home_greeting.dirty_from_brief_failed", user_id=user_id)
 
 
 __all__ = ["CacheKind", "cached_call", "invalidate_home_brief", "purge_cache_entry"]

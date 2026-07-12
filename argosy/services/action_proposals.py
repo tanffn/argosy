@@ -263,6 +263,12 @@ def accept_action_proposal(
     row.decided_at = now
     session.flush()
     session.commit()
+    try:
+        from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+        mark_home_greeting_dirty(row.user_id, session=session, commit=True)
+    except Exception:  # noqa: BLE001
+        pass
     _log.info(
         "action_proposals.accept",
         extra={
@@ -335,6 +341,12 @@ def defer_action_proposal(
     # execution_state stays at 'proposed' — defer is not consent.
     session.flush()
     session.commit()
+    try:
+        from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+        mark_home_greeting_dirty(row.user_id, session=session, commit=True)
+    except Exception:  # noqa: BLE001
+        pass
     _log.info(
         "action_proposals.defer",
         extra={
@@ -374,6 +386,12 @@ def reject_action_proposal(
     row.decided_by_user_note = reason or None
     session.flush()
     session.commit()
+    try:
+        from argosy.services.home_greeting_cache import mark_home_greeting_dirty
+
+        mark_home_greeting_dirty(row.user_id, session=session, commit=True)
+    except Exception:  # noqa: BLE001
+        pass
     _log.info(
         "action_proposals.reject",
         extra={

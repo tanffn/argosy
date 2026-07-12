@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db
-from argosy.services.home_greeting import build_greeting
+from argosy.services.home_greeting_cache import get_or_refresh_greeting
 
 router = APIRouter(prefix="/home", tags=["home"])
 
@@ -78,5 +78,10 @@ def get_greeting(
     db: Session = Depends(get_db),
 ) -> GreetingResponse:
     """The FM's first greeting — assembled server-side so the UI renders
-    one payload with zero client-side triage."""
-    return GreetingResponse(**build_greeting(db, user_id))
+    one payload with zero client-side triage.
+
+    Serves a bake when fresh; regenerates when dirty (plan promote,
+    proposal/verdict/flag writes) so Home reflects material events
+    without waiting for the daily cron (§7.2).
+    """
+    return GreetingResponse(**get_or_refresh_greeting(db, user_id))
