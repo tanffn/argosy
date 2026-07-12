@@ -260,6 +260,14 @@ def run_synthesis(
     # Kept separate so the agent_reports audit trail has a human-readable ref.
     decision_audit_token: str = f"plan-synth-{decision_run_id}"
 
+    # Item I — per-attempt cost accounting. On resume, archive the prior trail
+    # so a re-run phase cannot double-count against ARGOSY_SYNTHESIS_COST_CAP_USD.
+    from argosy.services.synthesis_cost_cap import begin_attempt as _begin_cost_attempt
+
+    _begin_cost_attempt(
+        decision_audit_token, resume_from_phase=max(1, int(resume_from_phase or 1)),
+    )
+
     log.info(
         "plan_synthesis.start",
         user_id=user_id,
@@ -3269,8 +3277,13 @@ def _persist_agent_reports(
 
     try:
         with trail_path.open("a", encoding="utf-8") as f:
+            from argosy.services.synthesis_cost_cap import stamp_attempt_on_row
+
             for r in reports:
-                row = _agent_report_to_row_dict(r)
+                row = stamp_attempt_on_row(
+                    _agent_report_to_row_dict(r),
+                    token=str(decision_audit_token),
+                )
                 f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         log.info(
             "plan_synthesis.trail_appended",
@@ -3886,16 +3899,20 @@ def _check_cost_cap(
     phase: str,
     user_id: str,
 ) -> None:
-    """Raise RuntimeError if cumulative agent cost exceeds the soft cap.
+    """Raise RuntimeError if this attempt's agent cost exceeds the soft cap.
 
-    Reads from the JSONL forensic trail rather than the DB so the check
-    works mid-synthesis (the DB ingest is deferred to end-of-run per
-    W1.C-v4). Fires AFTER each phase completes — by design we don't
-    interrupt mid-phase to avoid orphaning Opus calls that were already
-    going to charge anyway. Emits a WS event ``plan_synthesis.cost_update``
-    on every check so a UI can render the running spend.
+    Item I (run-191): spend is per-attempt — a resume archives the prior
+    trail so re-running the in-flight phase cannot double-count. Cap kills
+    notify via inbox + monitor flag (never log-only). Fires AFTER each
+    phase completes. Emits WS ``plan_synthesis.cost_update`` on every check.
     """
-    spent = _read_synthesis_trail_costs(decision_audit_token)
+    from argosy.services.synthesis_cost_cap import (
+        CostCapExceeded,
+        check_cost_cap as _svc_check_cap,
+        current_attempt_spend,
+    )
+
+    spent = current_attempt_spend(decision_audit_token)
     _emit_event(
         "plan_synthesis.cost_update",
         {
@@ -3914,30 +3931,56 @@ def _check_cost_cap(
         cost_usd_so_far=spent,
         cost_cap_usd=cost_cap_usd,
     )
-    if spent > cost_cap_usd:
-        log.error(
-            "plan_synthesis.cost_cap_exceeded",
-            user_id=user_id,
-            decision_audit_token=decision_audit_token,
-            phase=phase,
-            cost_usd_so_far=spent,
-            cost_cap_usd=cost_cap_usd,
-        )
+    try:
+        # Resolve decision_run_id from token for inbox notification.
+        _run_id: int | None = None
+        if decision_audit_token.startswith("plan-synth-"):
+            try:
+                _run_id = int(decision_audit_token.rsplit("-", 1)[-1])
+            except ValueError:
+                _run_id = None
+        _sess = None
+        if _run_id is not None:
+            try:
+                from argosy.state import db as _db_mod
+                from sqlalchemy.orm import sessionmaker as _sm
+                import sqlalchemy as _sa
+
+                _url = str(_db_mod.get_engine().url).replace("+aiosqlite", "")
+                _sf = _sm(
+                    bind=_sa.create_engine(
+                        _url, connect_args={"check_same_thread": False}
+                    ),
+                    expire_on_commit=False,
+                )
+                _sess = _sf()
+            except Exception:  # noqa: BLE001
+                _sess = None
+        try:
+            _svc_check_cap(
+                decision_audit_token=decision_audit_token,
+                cost_cap_usd=cost_cap_usd,
+                phase=phase,
+                user_id=user_id,
+                notify=True,
+                decision_run_id=_run_id,
+                session=_sess,
+            )
+        finally:
+            if _sess is not None:
+                _sess.close()
+    except CostCapExceeded as exc:
         _emit_event(
             "plan_synthesis.cost_cap_exceeded",
             {
                 "user_id": user_id,
                 "decision_audit_token": decision_audit_token,
                 "phase": phase,
-                "cost_usd_so_far": spent,
-                "cost_cap_usd": cost_cap_usd,
+                "cost_usd_so_far": exc.spent_usd,
+                "cost_cap_usd": exc.cost_cap_usd,
             },
         )
-        raise RuntimeError(
-            f"cost_cap_exceeded: spent ${spent:.2f} > cap ${cost_cap_usd:.2f} "
-            f"after {phase}. Bump ARGOSY_SYNTHESIS_COST_CAP_USD or "
-            f"investigate runaway agent."
-        )
+        raise RuntimeError(str(exc)) from exc
 
 
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
