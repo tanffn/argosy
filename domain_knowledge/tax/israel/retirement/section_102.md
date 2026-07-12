@@ -13,7 +13,7 @@ sources:
     retrieved: 2026-07-11
     tier: 2
   - url: https://taxsummaries.pwc.com/israel/individual/income-determination
-    retrieved: 2026-07-11
+    retrieved: 2026-07-12
     tier: 1
 ---
 

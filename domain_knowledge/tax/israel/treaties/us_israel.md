@@ -18,7 +18,7 @@ sources:
     retrieved: 2026-07-12
     tier: 1
   - url: https://www.irs.gov/businesses/international-businesses/israel-tax-treaty-documents
-    retrieved: 2026-06-02
+    retrieved: 2026-07-12
     tier: 1
   - url: https://taxsummaries.pwc.com/israel/corporate/withholding-taxes
     retrieved: 2026-07-12
