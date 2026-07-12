@@ -939,6 +939,30 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # SynthesisStallAlertLoop (Item I, 2026-07-12) — every 5 min, alert
+        # when a plan_revision run is in flight with no phase heartbeat.
+        try:
+            from argosy.orchestrator.loops.synthesis_stall_alert import (  # noqa: PLC0415
+                SynthesisStallAlertLoop,
+                synthesis_stall_alert_metadata,
+            )
+
+            stall_loop = SynthesisStallAlertLoop(
+                enabled=True,
+                user_id="ariel",
+            )
+            scheduler.register_loop(stall_loop)
+            registry.register(
+                job=stall_loop,
+                metadata=synthesis_stall_alert_metadata(),
+            )
+            log.info("scheduler.synthesis_stall_alert_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.synthesis_stall_alert_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Adopt every scheduler loop the registry doesn't know yet.
         # RegisteredScheduler._fire_once fails fast for registry-unknown
         # loops (the lock/audit single-writer contract), so a loop
