@@ -184,7 +184,9 @@ _ROLLING_FNAME_RE = re.compile(r"^(\d{4})_")
 
 
 def _parse_rolling(path: Path, *, last4_hint: str | None = None) -> ParseResult:
-    """Max rolling last-90-days export (observed 2026-07).
+    """CAL rolling last-90-days export (owner-corrected 2026-07-12: card 6225
+    is Visa Cal, not Max — it lives in this module because its MONTHLY export
+    uses the Max-format 'לאומי לישראל' sheet and both route here by format).
 
     Layout: row 1 title ('פירוט עסקאות ל<שם>'), row 2 header —
     תאריך עסקה | שם בית עסק | סכום בש"ח | מועד חיוב | סוג עסקה |
@@ -271,7 +273,7 @@ def _parse_rolling(path: Path, *, last4_hint: str | None = None) -> ParseResult:
         ),
         transactions=txs,
         source_hint=SourceHint(
-            kind="card", issuer="max", external_id=last4,
+            kind="card", issuer="cal", external_id=last4,
             cardholder_name=None,
         ),
         rolling=True,

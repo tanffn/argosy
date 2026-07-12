@@ -65,7 +65,7 @@ def detect_format(path: Path) -> ParserName:
             return ParserName.ISRACARD
         if any(s.startswith("לאומי לישראל") for s in sheets):
             return ParserName.MAX
-        # Max rolling last-90-days export (observed 2026-07: card 6225).
+        # Cal rolling last-90-days export (card 6225; parsed by the max-format module).
         if "פירוט עסקאות וזיכויים" in sheets:
             return ParserName.MAX
         # Discount Bank Mastercard: sheet 'עסקאות במועד החיוב' + 'עסקאות חו"ל ומט"ח'
