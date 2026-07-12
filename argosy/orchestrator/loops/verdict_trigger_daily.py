@@ -142,7 +142,16 @@ class VerdictTriggerDailyLoop(CadenceLoop):
                     )
                 ).scalars().all()
             )
-            quotes = self._quotes_fn(sess, self.user_id, subjects)
+            # The injectable contract is positional (session, user_id,
+            # subjects) — tests rely on it; the module default takes
+            # keyword-only args. Bridge here so BOTH work (live-smoke
+            # 2026-07-12: the default path had never been exercised).
+            if self._quotes_fn is _fetch_quotes_for_subjects:
+                quotes = _fetch_quotes_for_subjects(
+                    sess, user_id=self.user_id, subjects=subjects
+                )
+            else:
+                quotes = self._quotes_fn(sess, self.user_id, subjects)
             fired = evaluate_triggers(
                 sess,
                 user_id=self.user_id,

@@ -151,3 +151,30 @@ async def test_verdict_trigger_loop_accepts_scheduler_clock(session):
     out2 = await loop.tick(now=_early)
     assert "error" not in out2
     assert out2.get("fired") == 0
+
+
+@pytest.mark.asyncio
+async def test_verdict_trigger_loop_default_quotes_path(session):
+    """Live-smoke 2026-07-12: every prior test injected quotes_fn, so the
+    module-default fetcher's signature mismatch was never caught. Run the
+    loop WITHOUT injecting quotes_fn (default path) — it must not error."""
+    from argosy.orchestrator.loops.verdict_trigger_daily import VerdictTriggerDailyLoop
+    from argosy.services.verdict_registry import write_verdict
+
+    write_verdict(
+        session, user_id="ariel", subject="ORCL",
+        verdict="WAIT", conviction="HIGH",
+        revisit_triggers=[{"kind": "price_below", "price": 115.0}],
+        source_decision_run_id=198,
+    )
+    session.commit()
+
+    SessionLocal = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    loop = VerdictTriggerDailyLoop(
+        enabled=True, user_id="ariel", session_factory=SessionLocal,
+        today=date(2026, 7, 12),
+        # no quotes_fn — exercise the module default
+    )
+    out = await loop.tick()
+    assert "error" not in out, out
+    assert out.get("subjects") == 1
