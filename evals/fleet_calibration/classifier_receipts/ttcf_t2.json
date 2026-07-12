@@ -1,0 +1,41 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-4-8",
+  "tokens_in": 1150,
+  "tokens_out": 4505,
+  "response_raw": "{\"category\": \"C\", \"grading\": \"exit\", \"freeze_date\": \"2021-08-16\", \"classification_rationale\": \"Frozen reconstruction burn: frozen_taxonomy present, so category=C / grading=exit / freeze_date=2021-08-16 are emitted verbatim without re-litigation. The packet describes a positioned name (TTCF) whose falsifiers fired at the 2021-08-12 Q2 print, four calendar days before the 2021-08-16 freeze — supporting an exit (SELL) call rather than a hold. The load-bearing exit evidence: first-ever consensus miss, gross-margin FY guide CUT to 16-22% (from the 20-25% guided at Q1 on 2021-05-12), and adjusted-EBITDA FY guide flipped to negative $14-17M (from positive $2-4M), i.e., unit economics structurally deteriorating despite still-rapid top-line growth. The distribution wins (Target nationwide six products; Kroger ~1,800 stores / 12 SKUs) and the ~$37M cash plant acquisitions are contemporaneous bull-facing facts included to keep the packet un-sanitized: the contemporaneous print still looks like a growth story, but the margin/EBITDA guide-down are the fired falsifiers that justify the exit. All four sources predate the freeze date; none is a retrospective 'why it moved' article. Corroboration: web search confirmed the GM guide cut 16-22% from 20-25%, the negative adj-EBITDA guide, and the Kroger 1,800-store / 12-SKU detail; primary-source pages could not be fetched directly (WebFetch unavailable), so confidence is MEDIUM rather than HIGH.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"Q2-2021 results: revenue $50.7M (+45.9% YoY), gross margin 15.7%, GAAP net loss -$53.2M including a one-time non-cash $46.0M deferred-tax valuation allowance; first consensus miss. FY gross-margin guidance CUT to 16-22% from the 20-25% guided at Q1 (2021-05-12 PR); adjusted-EBITDA FY guidance flipped to negative $14-17M from positive $2-4M. These fired falsifiers (margin/EBITDA guide-down) are the load-bearing exit trigger.\", \"url\": \"https://www.globenewswire.com/news-release/2021/08/12/2280137/0/en/Tattooed-Chef-Reports-Second-Quarter-2021-Financial-Results.html\", \"publication_date\": \"2021-08-12\"}, {\"fact\": \"National retail distribution wins (contemporaneous bull evidence, not sanitized out): nationwide launch at a top mass retailer (Target, six products, per 2021-03-10 PR) and expansion into ~1,800 stores at the largest US grocer (Kroger, 12 SKUs rolled out nationally). Corroborated by contemporaneous trade press.\", \"url\": \"https://www.globenewswire.com/news-release/2021/07/12/2261160/0/en/Tattooed-Chef-to-Launch-in-Kroger-Stores-Nationwide.html\", \"publication_date\": \"2021-07-12\"}, {\"fact\": \"Cash acquisitions of food/tortilla plants (New Mexico Food Distributors, Inc. + Karsten Tortilla Factory, LLC; ~$37M total) for added capacity and a southwestern product line; both closed 2021-05-14, completion announced 2021-05-18. Same PR detailed the expense reclassifications affecting reported gross margin.\", \"url\": \"https://www.globenewswire.com/news-release/2021/05/18/2231349/0/en/Tattooed-Chef-Completes-Acquisition-of-New-Mexico-Food-Distributors-Inc-and-Karsten-Tortilla-Factory-LLC-Reclassifies-Certain-Expenses.html\", \"publication_date\": \"2021-05-18\"}, {\"fact\": \"FY2020 final results: revenue $148.5M (+75% YoY), gross margin 14.6% after reclassifications (reclass detail in the 2021-05-18 PR). Establishes the pre-freeze baseline of rapid growth on thin, deteriorating margins.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm\", \"publication_date\": \"2021-03-19\"}]}",
+  "output": {
+    "category": "C",
+    "grading": "exit",
+    "freeze_date": "2021-08-16",
+    "classification_rationale": "Frozen reconstruction burn: frozen_taxonomy present, so category=C / grading=exit / freeze_date=2021-08-16 are emitted verbatim without re-litigation. The packet describes a positioned name (TTCF) whose falsifiers fired at the 2021-08-12 Q2 print, four calendar days before the 2021-08-16 freeze — supporting an exit (SELL) call rather than a hold. The load-bearing exit evidence: first-ever consensus miss, gross-margin FY guide CUT to 16-22% (from the 20-25% guided at Q1 on 2021-05-12), and adjusted-EBITDA FY guide flipped to negative $14-17M (from positive $2-4M), i.e., unit economics structurally deteriorating despite still-rapid top-line growth. The distribution wins (Target nationwide six products; Kroger ~1,800 stores / 12 SKUs) and the ~$37M cash plant acquisitions are contemporaneous bull-facing facts included to keep the packet un-sanitized: the contemporaneous print still looks like a growth story, but the margin/EBITDA guide-down are the fired falsifiers that justify the exit. All four sources predate the freeze date; none is a retrospective 'why it moved' article. Corroboration: web search confirmed the GM guide cut 16-22% from 20-25%, the negative adj-EBITDA guide, and the Kroger 1,800-store / 12-SKU detail; primary-source pages could not be fetched directly (WebFetch unavailable), so confidence is MEDIUM rather than HIGH.",
+    "sourced_facts": [
+      {
+        "fact": "Q2-2021 results: revenue $50.7M (+45.9% YoY), gross margin 15.7%, GAAP net loss -$53.2M including a one-time non-cash $46.0M deferred-tax valuation allowance; first consensus miss. FY gross-margin guidance CUT to 16-22% from the 20-25% guided at Q1 (2021-05-12 PR); adjusted-EBITDA FY guidance flipped to negative $14-17M from positive $2-4M. These fired falsifiers (margin/EBITDA guide-down) are the load-bearing exit trigger.",
+        "url": "https://www.globenewswire.com/news-release/2021/08/12/2280137/0/en/Tattooed-Chef-Reports-Second-Quarter-2021-Financial-Results.html",
+        "publication_date": "2021-08-12"
+      },
+      {
+        "fact": "National retail distribution wins (contemporaneous bull evidence, not sanitized out): nationwide launch at a top mass retailer (Target, six products, per 2021-03-10 PR) and expansion into ~1,800 stores at the largest US grocer (Kroger, 12 SKUs rolled out nationally). Corroborated by contemporaneous trade press.",
+        "url": "https://www.globenewswire.com/news-release/2021/07/12/2261160/0/en/Tattooed-Chef-to-Launch-in-Kroger-Stores-Nationwide.html",
+        "publication_date": "2021-07-12"
+      },
+      {
+        "fact": "Cash acquisitions of food/tortilla plants (New Mexico Food Distributors, Inc. + Karsten Tortilla Factory, LLC; ~$37M total) for added capacity and a southwestern product line; both closed 2021-05-14, completion announced 2021-05-18. Same PR detailed the expense reclassifications affecting reported gross margin.",
+        "url": "https://www.globenewswire.com/news-release/2021/05/18/2231349/0/en/Tattooed-Chef-Completes-Acquisition-of-New-Mexico-Food-Distributors-Inc-and-Karsten-Tortilla-Factory-LLC-Reclassifies-Certain-Expenses.html",
+        "publication_date": "2021-05-18"
+      },
+      {
+        "fact": "FY2020 final results: revenue $148.5M (+75% YoY), gross margin 14.6% after reclassifications (reclass detail in the 2021-05-18 PR). Establishes the pre-freeze baseline of rapid growth on thin, deteriorating margins.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm",
+        "publication_date": "2021-03-19"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

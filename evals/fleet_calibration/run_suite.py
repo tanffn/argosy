@@ -264,10 +264,10 @@ def resume_run_doc(existing: dict) -> dict:
     return existing
 
 
-async def run_point(packet: dict) -> dict:
+async def run_point(packet: dict, trader_model: str | None = None) -> dict:
     from argosy.agents.trader import TraderAgent  # deferred: import cost
 
-    agent = TraderAgent(user_id="ariel", tier="T2")
+    agent = TraderAgent(user_id="ariel", tier="T2", model=trader_model)
     report = await agent.run(**build_trader_inputs(packet))
     out = report.output.model_dump()
     return {
@@ -349,6 +349,7 @@ async def execute_live_point(
     trader_runner: Callable[
         [dict[str, Any]], Awaitable[dict[str, Any]]
     ] = run_point,
+    trader_model: str | None = None,
     review_runner: Callable[
         [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]
     ] = run_review,
@@ -405,7 +406,11 @@ async def execute_live_point(
     result: dict[str, Any] | None = None
     for attempt in (1, 2):
         try:
-            result = await trader_runner(packet)
+            result = await (
+                run_point(packet, trader_model=trader_model)
+                if trader_runner is run_point
+                else trader_runner(packet)
+            )
             break
         except Exception as exc:  # noqa: BLE001
             result = {
@@ -450,6 +455,7 @@ async def main() -> None:
     ap.add_argument("--only", help="comma-separated case_ids", default=None)
     ap.add_argument("--dry-run", action="store_true", help="audits only, no LLM calls")
     ap.add_argument("--out", default=None, help="runs file path (default runs/<date>.json)")
+    ap.add_argument("--trader-model", default=None, help="stage-3 trader model override (A/B; other stages stay default)")
     args = ap.parse_args()
 
     only = [s.strip() for s in args.only.split(",")] if args.only else None
@@ -535,6 +541,7 @@ async def main() -> None:
                 out_path=out_path,
                 persist=persist,
                 classifier_receipt=classifier_receipt,
+                trader_model=args.trader_model,
             )
         except Exception as exc:  # noqa: BLE001
             if not any(r is base for r in run_doc["results"]):
