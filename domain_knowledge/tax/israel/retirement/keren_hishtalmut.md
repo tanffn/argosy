@@ -1,7 +1,7 @@
 ---
 topic: israel_keren_hishtalmut
 jurisdiction: israel
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.taxes.gov.il/Pages/default.aspx
