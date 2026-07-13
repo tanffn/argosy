@@ -137,6 +137,12 @@ SLEEVE_LABEL_ALIASES: dict[str, str] = {
     US_GROWTH_LEGACY_LABEL: GLOBAL_QUALITY_GROWTH_LABEL,
 }
 
+CASH_LABEL = "Cash & T-bills (incl. ILS tranche)"
+SHORT_DURATION_IG_LABEL = "Short-duration IG bonds"  # retired; fold-only
+RETIRED_SLEEVE_FOLD_INTO: dict[str, str] = {
+    SHORT_DURATION_IG_LABEL: CASH_LABEL,
+}
+
 
 def normalize_sleeve_label(label: str) -> str:
     """Map a (possibly legacy) sleeve label to its current canonical label."""
@@ -155,6 +161,11 @@ def normalize_override_labels(overrides: dict[str, float]) -> dict[str, float]:
     out: dict[str, float] = {}
     for k, v in {**legacy, **current}.items():
         out[SLEEVE_LABEL_ALIASES.get(k, k)] = v
+    for retired, target in RETIRED_SLEEVE_FOLD_INTO.items():
+        if retired not in out:
+            continue
+        retired_pct = float(out.pop(retired))
+        out[target] = float(out.get(target, 0.0)) + retired_pct
     return out
 
 
@@ -1159,6 +1170,9 @@ __all__ = [
     "GLOBAL_QUALITY_GROWTH_LABEL",
     "US_GROWTH_LEGACY_LABEL",
     "SLEEVE_LABEL_ALIASES",
+    "CASH_LABEL",
+    "SHORT_DURATION_IG_LABEL",
+    "RETIRED_SLEEVE_FOLD_INTO",
     "normalize_sleeve_label",
     "normalize_override_labels",
     "build_target_allocation",
