@@ -72,7 +72,12 @@ def test_leumi_parser_conservation(leumi_samples):
 
 @pytest.fixture(scope="module")
 def leumi_usd_samples():
-    paths = _all_existing("**/Leumi/usd.xls")
+    # Prefer the canonical usd.xls plus dated exports (leumi_*_usd.xls).
+    # Exclude portfolio/protfolio SpreadsheetML artifacts.
+    paths = [
+        p for p in _all_existing("**/Leumi/*usd*.xls")
+        if "protfolio" not in p.name.lower() and "portfolio" not in p.name.lower()
+    ]
     if not paths:
         pytest.skip("no Leumi USD samples present")
     return paths
@@ -172,10 +177,22 @@ def test_max_parser_conservation(max_samples):
 
 @pytest.fixture(scope="module")
 def discount_samples():
-    paths = _all_existing("**/2923/transaction-details_export_*.xlsx")
-    if not paths:
+    # Monthly exports (05_2026.xlsx) AND rolling transaction-details dumps.
+    paths = (
+        _all_existing("**/2923/transaction-details_export_*.xlsx")
+        + _all_existing("**/2923/*.xlsx")
+    )
+    # Dedup while preserving order.
+    seen: set[Path] = set()
+    uniq: list[Path] = []
+    for p in paths:
+        if p in seen:
+            continue
+        seen.add(p)
+        uniq.append(p)
+    if not uniq:
         pytest.skip("no Discount samples present")
-    return paths
+    return uniq
 
 
 def test_discount_parser_conservation(discount_samples):
