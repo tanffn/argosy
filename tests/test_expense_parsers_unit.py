@@ -262,3 +262,58 @@ def test_leumi_usd_parser_extended_description_in_raw_row():
         "debit_usd", "credit_usd", "balance_usd",
     }
     assert expected_keys.issubset(sample.keys())
+
+
+# ---------------------------------------------------------------------------
+# Custody-view rejection: the securities sub-account export shares the cash
+# ledger's header + top account number but lists value-date clearing pairs.
+# Ingesting it double-counts booked trades (live incident 2026-07-13).
+# ---------------------------------------------------------------------------
+
+_CUSTODY_HTML = """<HTML dir="RTL"><head><META http-equiv="Content-Type" content="text/html; charset=utf-8"></head>
+<body>
+<span>בנק לאומי - תנועות בחשבון מט"ח</span>
+<span>חשבון:</span><span>‏ל"וחב םירחסנ ע"ינ‏ ‎447452/00 968‎ דולר ארה"ב</span>
+<table>
+<tr><td>תאריך</td><td>תיאור</td><td>תאור מורחב</td><td>אסמכתא</td><td>חובה</td><td>זכות</td><td>יתרה</td></tr>
+<tr><td>16/06/26</td><td>נ"ע-פעולה</td><td></td><td>813322</td><td></td><td>5,499.90</td><td>-48,418.00</td></tr>
+<tr><td>16/06/26</td><td>נ"ע בבורסה (ת.ערך: 17/06/26)</td><td></td><td>813355</td><td>5,499.90</td><td></td><td>-53,917.90</td></tr>
+</table>
+</body></HTML>"""
+
+_CASHLIKE_HTML = _CUSTODY_HTML.replace(
+    '‏ל"וחב םירחסנ ע"ינ‏ ‎447452/00 968‎', '‏פמ"ח יחידים דו...‏ ‎447452/00 094‎'
+)
+
+
+def test_leumi_usd_rejects_custody_view_by_header(tmp_path):
+    from argosy.services.expense_ingest.parsers.leumi_usd import (
+        LeumiCustodyViewError, is_custody_view, parse,
+    )
+    p = tmp_path / "custody.xls"
+    p.write_text(_CUSTODY_HTML, encoding="utf-8")
+    assert is_custody_view(p) is True
+    with pytest.raises(LeumiCustodyViewError):
+        parse(p)
+
+
+def test_leumi_usd_cash_header_is_not_custody(tmp_path):
+    """The פמ"ח cash-ledger header must NOT trip the custody sniff.
+    (Row descriptions are deliberately NOT a discriminator — the real
+    cash ledger also carries 'נ"ע-פעולה' settlement rows.)"""
+    from argosy.services.expense_ingest.parsers.leumi_usd import is_custody_view
+
+    p = tmp_path / "cashlike.xls"
+    p.write_text(_CASHLIKE_HTML, encoding="utf-8")
+    assert is_custody_view(p) is False
+
+
+def test_leumi_usd_format_audit_skips_custody_view(tmp_path):
+    """The samples-walking audit lists a custody export as SKIPPED-by-design,
+    not FAIL — the tripwire stays green when the file is present on disk."""
+    from argosy.services.expense_ingest.format_audit import audit_file
+    p = tmp_path / "leumi_2099_custody_usd.xls"
+    p.write_text(_CUSTODY_HTML, encoding="utf-8")
+    row = audit_file(tmp_path, p)
+    assert row.status == "SKIPPED"
+    assert "custody" in row.skip_reason

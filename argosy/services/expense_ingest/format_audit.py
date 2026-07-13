@@ -334,6 +334,16 @@ def audit_file(root: Path, path: Path) -> AuditRow:
         else:
             result = parse_fn(path)
     except Exception as e:  # noqa: BLE001 — loud failure is the point
+        from argosy.services.expense_ingest.parsers.leumi_usd import (
+            LeumiCustodyViewError,
+        )
+        if isinstance(e, LeumiCustodyViewError):
+            # Rejected BY DESIGN: securities-custody sub-account view, not
+            # a cash ledger — ingesting it double-counts booked trades.
+            return AuditRow(
+                rel_path=rel, status="SKIPPED",
+                skip_reason="securities custody view (rejected by design)",
+            )
         return AuditRow(
             rel_path=rel, status="FAIL", sniffed=sniffed.value,
             notes=f"parse raised {type(e).__name__}: {e}",

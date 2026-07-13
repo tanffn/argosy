@@ -35,7 +35,42 @@ from argosy.services.expense_ingest.types import (
     NormalizedTransaction, ParseResult, SourceHint, StatementMeta,
 )
 
-PARSER_VERSION = "0.1.0"
+PARSER_VERSION = "0.2.0"
+
+
+class LeumiCustodyViewError(ValueError):
+    """The file is the foreign-securities CUSTODY sub-account view
+    ('ני"ע נסחרים בחו"ל'), not the פמ"ח cash ledger.
+
+    Both sub-accounts share the exact same report header ('בנק לאומי -
+    תנועות בחשבון מט"ח') and the same top account number, so the sniffer
+    cannot tell them apart. The custody view lists value-date clearing
+    pairs — every trade appears as a debit plus a mirroring credit
+    netting to zero (clearing legs labelled 'נ"ע-פעולה'), with a
+    pending-obligations counter in the balance column that dips negative.
+    Ingesting it double-counts trades already booked in the cash ledger
+    (live incident 2026-07-13: 20 phantom rows, $215k phantom credits).
+    """
+
+
+# Header discriminator: the account-descriptor cell of the custody view
+# carries 'נסחרים' ("traded [abroad]"); some exports render the label in
+# visual (reversed) Hebrew order, hence the mirrored marker too. The cash
+# view's label carries 'פמ"ח' instead. NOTE: the header is the ONLY valid
+# discriminator — row descriptions are NOT (the real cash ledger also
+# carries 'נ"ע-פעולה' settlement rows, verified against live samples).
+_CUSTODY_HEADER_MARKERS = ("נסחרים", "םירחסנ")
+
+
+def is_custody_view(path: Path) -> bool:
+    """Cheap header sniff: True when this export is the securities-custody
+    sub-account view rather than the פמ"ח cash ledger."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:20_000]
+    except OSError:
+        return False
+    text = _LEUMI_BIDI_MARKS_RE.sub("", text)
+    return any(m in text for m in _CUSTODY_HEADER_MARKERS)
 
 
 # Leumi USD ('פמ"ח') exports place the account digits much further from the
@@ -87,6 +122,15 @@ def parse(path: Path) -> ParseResult:
     header). We iterate each row, skip non-date rows, and emit one
     NormalizedTransaction per data row.
     """
+    if is_custody_view(path):
+        raise LeumiCustodyViewError(
+            f"{path.name} is the foreign-securities custody view "
+            "(ני\"ע נסחרים בחו\"ל) of the Leumi account, not the פמ\"ח cash "
+            "ledger — its rows are value-date clearing pairs that would "
+            "double-count trades already booked in the cash statement. "
+            "Export the פמ\"ח (עו\"ש מט\"ח) sub-account instead."
+        )
+
     tables = pd.read_html(path, encoding="utf-8")
     tx_table = max(tables, key=lambda t: t.shape[0])
 

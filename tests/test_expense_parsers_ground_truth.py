@@ -73,10 +73,15 @@ def test_leumi_parser_conservation(leumi_samples):
 @pytest.fixture(scope="module")
 def leumi_usd_samples():
     # Prefer the canonical usd.xls plus dated exports (leumi_*_usd.xls).
-    # Exclude portfolio/protfolio SpreadsheetML artifacts.
+    # Exclude portfolio/protfolio SpreadsheetML artifacts and custody-view
+    # exports (securities sub-account — the parser rejects them by design).
+    from argosy.services.expense_ingest.parsers.leumi_usd import is_custody_view
+
     paths = [
         p for p in _all_existing("**/Leumi/*usd*.xls")
-        if "protfolio" not in p.name.lower() and "portfolio" not in p.name.lower()
+        if "protfolio" not in p.name.lower()
+        and "portfolio" not in p.name.lower()
+        and not is_custody_view(p)
     ]
     if not paths:
         pytest.skip("no Leumi USD samples present")
