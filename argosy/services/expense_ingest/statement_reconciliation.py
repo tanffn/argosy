@@ -318,10 +318,16 @@ def _check_neighbours(
 
 def reconcile_statement(
     session: "Session", *, user_id: str, source_id: int, statement_id: int,
+    check_continuity: bool = True,
 ) -> ReconciliationReceipt:
     """Reconcile a freshly-ingested statement against the others for the same
     ``(user_id, source_id)``: dedup overlapping duplicates + validate gaps on both
-    sides. Never raises for data reasons; the caller wraps it best-effort."""
+    sides. Never raises for data reasons; the caller wraps it best-effort.
+
+    When ``check_continuity`` is False (rolling card dumps), skip neighbour
+    balance-gap checks — cards have no running balance — but still run overlap
+    dedup.
+    """
     new_stmt = session.get(ExpenseStatement, statement_id)
     if new_stmt is None:
         return ReconciliationReceipt(statement_id, 0, [], [], [])
@@ -344,7 +350,7 @@ def reconcile_statement(
             f"present in statement(s) {overlapping_ids}."
         )
 
-    continuities = _check_neighbours(session, new_stmt, others)
+    continuities = _check_neighbours(session, new_stmt, others) if check_continuity else []
     warnings.extend(c.warning for c in continuities if c.warning)
 
     return ReconciliationReceipt(

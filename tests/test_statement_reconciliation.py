@@ -381,6 +381,64 @@ def test_gap_partially_covered_still_warns(sync_session):
     assert pair[0].warning is not None
 
 
+def test_card_overlap_dedup_without_continuity_noise(sync_session):
+    """Rolling card dumps (Discount/Max range, Cal rolling) need overlap
+    strip but must NOT emit bank-style balance-continuity warnings — cards
+    have no running balance."""
+    db = sync_session
+    f = UserFile(
+        user_id=USER, sha256="d" * 64, original_name="max.xlsx",
+        sanitized_name="max.xlsx", mime_type="application/vnd.ms-excel",
+        kind="other", size_bytes=1, storage_path="/tmp/m",
+        source="expense_statement",
+    )
+    db.add(f)
+    db.flush()
+    src = ExpenseSource(
+        user_id=USER, kind="card", issuer="discount",
+        external_id="2923", display_name="Max 2923",
+    )
+    db.add(src)
+    db.flush()
+    db._file_id = f.id  # type: ignore[attr-defined]
+
+    a = _statement(db, src.id, start=date(2026, 1, 1), end=date(2026, 5, 10))
+    _tx(db, src.id, a, merchant="SUPER", amount=100, occurred_on=date(2026, 3, 15))
+    _tx(db, src.id, a, merchant="CAFE", amount=40, occurred_on=date(2026, 4, 1))
+    b = _statement(db, src.id, start=date(2026, 3, 1), end=date(2026, 6, 10))
+    _tx(db, src.id, b, merchant="SUPER", amount=100, occurred_on=date(2026, 3, 15))  # dup
+    _tx(db, src.id, b, merchant="NEW", amount=55, occurred_on=date(2026, 6, 1))
+    db.commit()
+
+    receipt = reconcile_statement(
+        db, user_id=USER, source_id=src.id, statement_id=b,
+        check_continuity=False,
+    )
+    assert receipt.overlap_duplicates_removed == 1
+    assert _count_txns(db, b) == 1
+    assert _count_txns(db, a) == 2
+    assert receipt.continuities == []
+    assert any("overlap dedup" in w for w in receipt.warnings)
+
+
+def test_check_continuity_false_skips_gap_warnings(sync_session):
+    db = sync_session
+    src = _source(db)
+    a = _statement(db, src, start=date(2026, 1, 1), end=date(2026, 1, 8))
+    _tx(db, src, a, merchant="X", amount=50, occurred_on=date(2026, 1, 8),
+        direction="debit", balance="1000")
+    b = _statement(db, src, start=date(2026, 1, 14), end=date(2026, 1, 16))
+    _tx(db, src, b, merchant="Y", amount=50, occurred_on=date(2026, 1, 14),
+        direction="debit", balance="800")
+    db.commit()
+    receipt = reconcile_statement(
+        db, user_id=USER, source_id=src, statement_id=b,
+        check_continuity=False,
+    )
+    assert receipt.continuities == []
+    assert not any("missing" in (w or "") for w in receipt.warnings)
+
+
 def test_covered_by_others_merges_touching_intervals():
     """Pure-function check: two touching intervals jointly cover the span."""
     from types import SimpleNamespace

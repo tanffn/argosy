@@ -264,15 +264,13 @@ def ingest_user_file(
 
     )
 
-    # Statement-merge reconciliation for bank statements (Osh / USD): dedup
-    # transactions that arrive twice in overlapping dumps (the content hash is
-    # statement-scoped, so cross-statement overlaps would otherwise double-count)
-    # and flag a date gap that the running balance can't reconcile. Best-effort —
-    # reconciliation must NEVER break ingest. Cards are excluded: they carry no
-    # running balance, so a monthly cycle "gap" would be false-flag noise.
+    # Statement-merge reconciliation: banks get full reconcile (overlap dedup +
+    # balance continuity); rolling card dumps get overlap-dedup only (no balance
+    # continuity — cards have no running balance, so cycle "gaps" are noise).
+    # Best-effort — reconciliation must NEVER break ingest.
     reconciliation_warnings: list[str] = list(sanity_warnings)
     overlap_removed = 0
-    if src.kind == "bank":
+    if src.kind == "bank" or getattr(result, "rolling", False):
         try:
             from argosy.services.expense_ingest.statement_reconciliation import (
                 reconcile_statement,
@@ -284,6 +282,7 @@ def ingest_user_file(
             with session.begin_nested():
                 receipt = reconcile_statement(
                     session, user_id=user_id, source_id=src.id, statement_id=stmt.id,
+                    check_continuity=(src.kind == "bank"),
                 )
             reconciliation_warnings = list(sanity_warnings) + list(receipt.warnings)
             overlap_removed = receipt.overlap_duplicates_removed

@@ -196,6 +196,9 @@ def parse(path: Path) -> ParseResult:
         t.amount_nis * (-1 if t.direction == "credit" else 1) for t in txs
     )
     return ParseResult(
+        # Discount/Max range dumps overlap prior uploads — source-wide dedup +
+        # card overlap reconcile apply (same as Leumi/Cal rolling).
+        rolling=True,
         statement=StatementMeta(
             period_start=min(t.occurred_on for t in txs),
             period_end=max(t.occurred_on for t in txs),

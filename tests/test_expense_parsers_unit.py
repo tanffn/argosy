@@ -261,6 +261,15 @@ def test_discount_parser_no_charge_date_metadata():
     assert result.statement.declared_total_nis is None
 
 
+def test_discount_parser_marks_rolling_for_overlap_dedup():
+    """Discount/Max range exports span months and re-upload with overlap.
+    rolling=True drives source-wide persist dedup + card overlap reconcile
+    (same contract as Leumi Osh / Cal rolling)."""
+    from argosy.services.expense_ingest.parsers.discount import parse
+    result = parse(FIXTURES / "discount_minimal.xlsx")
+    assert result.rolling is True
+
+
 # ---------------------------------------------------------------------------
 # Leumi USD parser tests — live-fixture gated (no synthetic fixture yet;
 # the HTML wrapper is large enough that hand-rolling one isn't worthwhile).
