@@ -160,6 +160,22 @@ class RegisteredScheduler(Scheduler):
                  the §1.7 matrix row "close fails, record_tick ok".
         Step 4 — parent's cadence_state pointer write.
         """
+        async with self._mark_inflight(loop.name):
+            await self._fire_once_already_locked_inner(
+                loop,
+                force=force,
+                manual_trigger=manual_trigger,
+                triggered_by=triggered_by,
+            )
+
+    async def _fire_once_already_locked_inner(
+        self,
+        loop: CadenceLoop,
+        *,
+        force: bool,
+        manual_trigger: bool,
+        triggered_by: str,
+    ) -> None:
         try:
             run_id = await self._registry._open_job_run(
                 job_name=loop.name,
