@@ -265,6 +265,32 @@ def _refunded_by_map(
     return out
 
 
+def _amount_nis_converted(
+    r: "ExpenseTransaction",
+    session: Session | None,
+) -> float | None:
+    """NIS-equivalent for display / amount-sort — mirrors the UI column.
+
+    Prefer stored ``amount_nis`` for native NIS rows; FX-convert
+    ``amount_orig`` for foreign settlement. Returns None when no rate.
+    """
+    if r.amount_nis is not None and not r.currency_orig:
+        return float(r.amount_nis)
+    if (session is not None and r.amount_orig is not None
+            and r.currency_orig and r.currency_orig != "ILS"):
+        try:
+            from argosy.services import fx as _fx
+            return float(_fx.convert(
+                session, float(r.amount_orig), r.currency_orig, "ILS",
+                r.occurred_on,
+            ))
+        except Exception:
+            return None
+    if r.amount_orig is not None and r.currency_orig == "ILS":
+        return float(r.amount_orig)
+    return None
+
+
 def _tx_to_out(
     r: "ExpenseTransaction",
     cat_by_id: dict[int, str],
@@ -290,27 +316,6 @@ def _tx_to_out(
     except (ValueError, TypeError):
         raw_row = {}
 
-    # amount_nis_converted: prefer the stored NIS amount; for foreign rows
-    # convert amount_orig → ILS via the BoI rate cache. Silent fallback to
-    # None when the rate can't be resolved (no upstream BoI data for that
-    # date / currency).
-    nis_converted: float | None = None
-    if r.amount_nis is not None and not r.currency_orig:
-        nis_converted = float(r.amount_nis)
-    elif (session is not None and r.amount_orig is not None
-            and r.currency_orig and r.currency_orig != "ILS"):
-        try:
-            from argosy.services import fx as _fx
-            converted = _fx.convert(
-                session, float(r.amount_orig), r.currency_orig, "ILS",
-                r.occurred_on,
-            )
-            nis_converted = float(converted)
-        except Exception:
-            nis_converted = None
-    elif r.amount_orig is not None and r.currency_orig == "ILS":
-        nis_converted = float(r.amount_orig)
-
     return TransactionOut(
         id=r.id, occurred_on=r.occurred_on, merchant_raw=r.merchant_raw,
         merchant_normalized=r.merchant_normalized,
@@ -325,7 +330,7 @@ def _tx_to_out(
         statement_id=r.statement_id,
         tags=_parse_tags(getattr(r, "tags", None)),
         raw_row=raw_row,
-        amount_nis_converted=nis_converted,
+        amount_nis_converted=_amount_nis_converted(r, session),
         refund_of_id=r.refund_of_id,
         refunded_by_id=refunded_by_id,
     )
@@ -384,28 +389,43 @@ def list_transactions(
     sort_key = (sort or "date").strip().lower()
     order_dir = (order or "desc").strip().lower()
     ascending = order_dir == "asc"
-    if sort_key == "merchant":
-        col = ExpenseTransaction.merchant_normalized
-    elif sort_key == "amount":
-        col = ExpenseTransaction.amount_nis
-    elif sort_key == "category":
-        q = q.outerjoin(
-            ExpenseCategory,
-            ExpenseTransaction.category_id == ExpenseCategory.id,
-        )
-        col = ExpenseCategory.slug
-    elif sort_key == "source":
-        col = ExpenseTransaction.source_id
+    # Amount sort must use the same NIS-equivalent the UI shows
+    # (amount_nis_converted). Sorting SQL amount_nis alone puts every
+    # foreign row (NULL) in one block — looks like a flipped Isracard
+    # section under ASC. Cheap at single-user scale (~2k rows).
+    if sort_key == "amount":
+        all_rows = q.all()
+
+        def _amount_sort_key(r: ExpenseTransaction) -> tuple:
+            nis = _amount_nis_converted(r, db)
+            # Unknown FX → last either direction; then by magnitude; id tie-break.
+            null_last = 1 if nis is None else 0
+            mag = 0.0 if nis is None else (nis if ascending else -nis)
+            return (null_last, mag, -int(r.id))
+
+        all_rows.sort(key=_amount_sort_key)
+        rows = all_rows[offset: offset + limit]
     else:
-        col = ExpenseTransaction.occurred_on
-    order_expr = col.asc() if ascending else col.desc()
-    # Stable tie-break so pagination doesn't reshuffle equal keys.
-    rows = (
-        q.order_by(order_expr, ExpenseTransaction.id.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+        if sort_key == "merchant":
+            col = ExpenseTransaction.merchant_normalized
+        elif sort_key == "category":
+            q = q.outerjoin(
+                ExpenseCategory,
+                ExpenseTransaction.category_id == ExpenseCategory.id,
+            )
+            col = ExpenseCategory.slug
+        elif sort_key == "source":
+            col = ExpenseTransaction.source_id
+        else:
+            col = ExpenseTransaction.occurred_on
+        order_expr = col.asc() if ascending else col.desc()
+        # Stable tie-break so pagination doesn't reshuffle equal keys.
+        rows = (
+            q.order_by(order_expr, ExpenseTransaction.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
     cat_by_id = {
         c.id: c.slug for c in db.query(ExpenseCategory).filter_by(
             user_id=user_id

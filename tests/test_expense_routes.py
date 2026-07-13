@@ -113,10 +113,87 @@ def test_list_transactions_sort_by_amount(expense_client):
         "user_id": "ariel", "sort": "amount", "order": "desc",
     })
     assert asc.status_code == 200 and desc.status_code == 200
-    a_amts = [t["amount_nis"] for t in asc.json()["transactions"] if t["amount_nis"] is not None]
-    d_amts = [t["amount_nis"] for t in desc.json()["transactions"] if t["amount_nis"] is not None]
+
+    def _display_amts(payload):
+        out = []
+        for t in payload["transactions"]:
+            v = t.get("amount_nis_converted")
+            if v is None:
+                v = t.get("amount_nis")
+            if v is not None:
+                out.append(v)
+        return out
+
+    a_amts = _display_amts(asc.json())
+    d_amts = _display_amts(desc.json())
     assert a_amts == sorted(a_amts)
     assert d_amts == sorted(d_amts, reverse=True)
+
+
+def test_list_transactions_sort_by_amount_interleaves_foreign_nis(
+    client_with_db,
+):
+    """Amount ASC must order by NIS-equivalent, not raw amount_nis (NULL
+    foreign rows used to clump first — flipped Isracard block in the UI)."""
+    from datetime import date, datetime
+    from decimal import Decimal
+    from argosy.state.models import (
+        ExpenseSource, ExpenseStatement, ExpenseTransaction, FxRate,
+        User, UserFile,
+    )
+
+    SessionFactory = client_with_db.app.state.session_factory
+    with SessionFactory() as s:
+        s.add(User(id="u_amt_sort", plan="free")); s.flush()
+        f = UserFile(
+            user_id="u_amt_sort", sha256="a" * 64, original_name="x",
+            sanitized_name="x", mime_type="x", kind="other", size_bytes=1,
+            storage_path="/tmp/x", source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id="u_amt_sort", kind="card", issuer="isracard",
+            external_id="1266", display_name="Isracard 1266",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id="u_amt_sort", source_id=src.id, file_id=f.id,
+            period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+            parsed_total_nis=Decimal("0"), parser_name="isracard",
+            parser_version="0.1.1", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        s.add(FxRate(
+            currency="USD", date=date(2026, 4, 5), rate=Decimal("3.70"),
+            source="test", fetched_at=datetime(2026, 4, 5),
+        ))
+        # NIS 50 · USD 100 → ₪370 · NIS 1000  → ASC: 50, 370, 1000
+        for merchant, amount_nis, amount_orig, ccy in (
+            ("small-nis", Decimal("50"), None, None),
+            ("foreign-usd", None, Decimal("100"), "USD"),
+            ("large-nis", Decimal("1000"), None, None),
+        ):
+            s.add(ExpenseTransaction(
+                user_id="u_amt_sort", source_id=src.id, statement_id=stmt.id,
+                occurred_on=date(2026, 4, 5),
+                merchant_raw=merchant, merchant_normalized=merchant,
+                amount_nis=amount_nis,
+                amount_orig=amount_orig, currency_orig=ccy,
+                direction="debit", tx_type="regular", raw_row_json="{}",
+            ))
+        s.commit()
+
+    asc = client_with_db.get("/api/expenses/transactions", params={
+        "user_id": "u_amt_sort", "sort": "amount", "order": "asc",
+    })
+    assert asc.status_code == 200
+    txs = asc.json()["transactions"]
+    assert [t["merchant_raw"] for t in txs] == [
+        "small-nis", "foreign-usd", "large-nis",
+    ]
+    assert [t["amount_nis_converted"] for t in txs] == pytest.approx(
+        [50.0, 370.0, 1000.0]
+    )
 
 
 def test_patch_transaction_category_updates_cache(expense_client):
