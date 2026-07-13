@@ -20,7 +20,9 @@ from __future__ import annotations
 # stale 5.11%/0.052 entry understated the plan's NVDA look-through. Set 0.065
 # conservative-high. IWQU is the v65 growth-sleeve primary, so the 13% NVDA cap
 # is verified against this number.
-LOOKTHROUGH_VERSION = 4
+# v5 (2026-07-13): completeness pass for the newly held TA-200 tracker. It is
+# an Israeli equity index with no US or NVDA constituent exposure.
+LOOKTHROUGH_VERSION = 5
 
 LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     # US broad / growth — carry index NVDA weight.
@@ -44,6 +46,7 @@ LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     "XZEW": {"nvda": 0.02, "us": 0.60},   # S&P500 equal-weight ESG — HELD
     "EXUS": {"nvda": 0.00, "us": 0.00},   # World ex-US
     "EIMI": {"nvda": 0.00, "us": 0.00},   # EM
+    'ת"א-200': {"nvda": 0.00, "us": 0.00},  # Israeli TA-200 tracker — HELD
     # iShares Developed Markets Property Yield UCITS (Acc) — plan real-assets
     # sleeve; same FTSE EPRA/NAREIT Dev Div+ index as held IWDP. justETF
     # IE00BFM6T921 as of 2026-05-29: US 63.9%; REIT-only index, NVDA 0.

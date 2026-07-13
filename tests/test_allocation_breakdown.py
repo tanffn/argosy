@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from argosy.services.allocation_breakdown import build_allocation_breakdown
+from argosy.services.allocation_plan import SHORT_DURATION_IG_LABEL
 from argosy.services.instrument_plan_class import (
     UNMAPPED_LABEL,
     ClassificationEntry,
@@ -151,8 +152,8 @@ def test_breakdown_pure_non_us_equity_routes_to_international():
 
 def test_breakdown_sgov_counts_in_cash_and_tbills():
     # SGOV's raw asset_type is "Defensive", but it's a T-bill ETF → the
-    # reference classifies it Cash, so it belongs in "Cash & T-bills", not
-    # "Short-duration IG bonds".
+    # reference classifies it Cash, so it belongs in "Cash & T-bills", not a
+    # retired separate FI row.
     snap = _snap([
         _pos("SGOV", "Defensive", 105.0, details="(...) SGOV"),
         _pos("-", "Cash", 20.0, details="Cash"),
@@ -166,7 +167,7 @@ def test_breakdown_sgov_counts_in_cash_and_tbills():
     assert {h.symbol for h in cash.holdings} >= {"SGOV"}
     # SGOV ($105) + cash ($20) both land here.
     assert round(cash.current_value_k, 1) == 125.0
-    assert "Short-duration IG bonds" not in by
+    assert SHORT_DURATION_IG_LABEL not in by
 
 
 def test_targets_sum_to_100_including_unheld_plan_classes():

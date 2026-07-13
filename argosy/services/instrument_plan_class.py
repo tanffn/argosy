@@ -32,7 +32,7 @@ _SOURCE_RANK = {SOURCE_OWNER: 3, SOURCE_FLEET: 2, SOURCE_PLAN: 1}
 
 # Deterministic known-holdings seed (acceptance gate). Ambiguous names stay
 # Unmapped for owner review — do NOT invent a global-core class the plan lacks.
-# IBTA is NOT here: plan-first keeps it on Short-duration IG bonds (v91).
+# IBTA is NOT here: plan-first keeps it on Cash.
 _DETERMINISTIC_FLEET_SEED: dict[str, tuple[str, str, str]] = {
     # symbol: (plan_class_label, what_it_is, why_held)
     "SCHD": (

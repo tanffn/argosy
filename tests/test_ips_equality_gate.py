@@ -27,10 +27,9 @@ _PLAN_106 = """\
 - International developed 15%
 - Gold 5%
 - REIT 5%
-- Short-duration IG bonds 8%
-- Cash & T-bills 7%
+- Cash & T-bills 15%
 The above sleeves form a 100% partition of the tradeable book.
-"""  # 13+35+18+15+5+5+8+7 = 106
+"""  # 13+35+18+15+5+5+15 = 106
 
 # A clean IPS instrument map summing to exactly 100.
 _PLAN_100 = """\
@@ -41,10 +40,9 @@ _PLAN_100 = """\
 - International developed 12%
 - Gold 5%
 - REIT 5%
-- Short-duration IG bonds 8%
-- Cash & T-bills 7%
+- Cash & T-bills 15%
 The above sleeves form a 100% partition of the tradeable book.
-"""  # 13+35+15+12+5+5+8+7 = 100
+"""  # 13+35+15+12+5+5+15 = 100
 
 
 def _doc(**label_to_pct: float):
@@ -110,8 +108,7 @@ def test_prose_vs_doc_divergence_flags():
         "International developed": 12.0,
         "Gold": 5.0,
         "REIT": 5.0,
-        "Short-duration IG bonds": 8.0,
-        "Cash & T-bills": 7.0,
+        "Cash & T-bills": 15.0,
     })  # doc sums to 100, so check (1) is clean; only the equality check fires
     violations = check_ips_equality(plan_text=_PLAN_100, target_allocation_doc=doc)
     assert violations, "expected an IPS_EQUALITY violation for prose-vs-doc divergence"
@@ -128,8 +125,7 @@ def test_prose_vs_doc_agreement_clean():
         "International developed": 12.0,
         "Gold": 5.0,
         "REIT": 5.0,
-        "Short-duration IG bonds": 8.0,
-        "Cash & T-bills": 7.0,
+        "Cash & T-bills": 15.0,
     })
     assert check_ips_equality(plan_text=_PLAN_100, target_allocation_doc=doc) == []
 

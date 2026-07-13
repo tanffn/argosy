@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from argosy.services.allocation_breakdown import build_allocation_breakdown
 from argosy.services.instrument_plan_class import (
+    CASH_LABEL,
     UNMAPPED_LABEL,
     ClassificationEntry,
     SOURCE_FLEET,
@@ -74,9 +75,9 @@ def test_cash_structural_shortcut():
     assert resolve_sleeve_label("-", asset_type="Cash").startswith("Cash")
 
 
-def test_ibta_plan_first_short_duration():
+def test_ibta_plan_first_cash():
     """Acceptance correction: IBTA stays wherever the plan puts it."""
-    plan = {"IBTA": "Short-duration IG bonds"}
+    plan = {"IBTA": CASH_LABEL}
     cmap = {
         "IBTA": ClassificationEntry(
             "IBTA", "Cash & T-bills (incl. ILS tranche)", SOURCE_FLEET,
@@ -84,7 +85,7 @@ def test_ibta_plan_first_short_duration():
     }
     assert resolve_sleeve_label(
         "IBTA", plan_symbol_labels=plan, classification_map=cmap,
-    ) == "Short-duration IG bonds"
+    ) == CASH_LABEL
 
 
 def test_cross_surface_same_resolve_function():

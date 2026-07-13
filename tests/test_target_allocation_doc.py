@@ -11,6 +11,7 @@ from datetime import date
 
 import pytest
 
+from argosy.services.allocation_plan import CASH_LABEL, SHORT_DURATION_IG_LABEL
 from argosy.services.target_allocation_doc import (
     OTHER_SINGLES_LABEL,
     AllocationClassDoc,
@@ -33,8 +34,7 @@ _TODAY_FULL_BOOK = {
     "US growth tilt (ex-NVDA)": 11.04,
     "US broad-market core": 10.53,
     "Dividend-quality income": 7.01,
-    "Cash & T-bills (incl. ILS tranche)": 4.95,
-    "Short-duration IG bonds": 3.29,
+    CASH_LABEL: 8.24,
     "Real assets (REIT/TIPS)": 1.82,
     "International developed (ex-US)": 0.90,
 }
@@ -205,8 +205,8 @@ def test_derive_full_book_composition_matches_codex_verified() -> None:
     # growth ALONE (10.9 x 0.3514), NOT folded with the other singles
     assert comp["Global quality growth (ex-NVDA-dense)"] == pytest.approx(3.8303, abs=0.001)
     assert comp["US low-volatility equity"] == pytest.approx(1.8083, abs=0.001)
-    assert "Short-duration IG bonds" not in comp
-    assert comp["Cash & T-bills (incl. ILS tranche)"] == pytest.approx(6.6253, abs=0.001)
+    assert SHORT_DURATION_IG_LABEL not in comp
+    assert comp[CASH_LABEL] == pytest.approx(6.6253, abs=0.001)
     assert comp["Real assets (REIT/TIPS)"] == pytest.approx(0.0, abs=0.001)
     # the non-NVDA singles are an honest, distinct redeploy band (-> glides to 0)
     assert comp[OTHER_SINGLES_LABEL] == pytest.approx(6.399, abs=0.001)
@@ -314,7 +314,7 @@ def test_derived_composition_drives_a_two_sided_glide() -> None:
     )
     nvda = "Strategic single-stock (NVDA)"
     # q0 anchors on today's real NVDA weight (64.86%); it then glides toward the
-    # 12 target; the legacy singles band glides to ~0; every quarter sums to 100.
+    # cap-derived target; the legacy singles band glides to ~0; every quarter sums to 100.
     assert doc.glide[0].composition_pct_by_class[nvda] == pytest.approx(64.86, abs=0.01)
     assert doc.glide[0].composition_pct_by_class[nvda] > doc.glide[-1].composition_pct_by_class[nvda]
     assert doc.glide[-1].composition_pct_by_class.get(OTHER_SINGLES_LABEL, 0.0) == pytest.approx(0.0, abs=0.01)

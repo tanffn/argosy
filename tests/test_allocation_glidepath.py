@@ -43,9 +43,8 @@ def _t(
 
 
 # Canonical allocation structure (label, target%, snapshot_category) — exercises
-# the three 229% bugs: the sub-1% real-assets sleeve (×100 scale bug), the
-# "ex-NVDA" growth label (substring mis-route), and two sleeves sharing the
-# "Defensive" snapshot category (shared-anchor double-count). Sums to 100.
+# the sub-1% real-assets sleeve (×100 scale bug), the "ex-NVDA" growth label
+# (substring mis-route), and the post-fold Cash-only FI composition. Sums to 100.
 _CANON = [
     ("US broad-market core", 28.0, "Core Equity"),
     ("Dividend-quality income", 19.0, "Dividend"),
@@ -54,12 +53,11 @@ _CANON = [
     ("US low-volatility equity", 6.0, "Defensive"),
     ("Real assets (REIT/TIPS)", 0.93, "Alternative"),
     ("Strategic single-stock (NVDA)", 12.0, "Individual Stocks"),
-    ("Cash & T-bills", 11.47, "Cash"),
-    ("Short-duration IG bonds", 4.6, "Defensive"),
+    ("Cash & T-bills", 16.07, "Cash"),
 ]
 _CANON_SNAPSHOT = {
     "core equity": 28.0, "dividend": 19.0, "international": 12.0, "growth": 6.0,
-    "defensive": 10.6, "alternative": 0.93, "individual stocks": 12.0, "cash": 11.47,
+    "defensive": 6.0, "alternative": 0.93, "individual stocks": 12.0, "cash": 16.07,
 }
 
 

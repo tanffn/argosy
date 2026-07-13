@@ -80,7 +80,7 @@ def _code_plan_menu_symbols() -> set[str]:
     """Every instrument in the code-level allocation menu (the plan's sleeves)."""
     from argosy.services import allocation_plan as ap
 
-    sleeves = list(ap._EQUITY_SLEEVES) + [ap._NVDA_SLEEVE, ap._FI_CASH, ap._FI_BONDS]
+    sleeves = list(ap._EQUITY_SLEEVES) + [ap._NVDA_SLEEVE, ap._FI_CASH]
     return {
         inst.symbol.upper() for sleeve in sleeves for inst in sleeve.instruments
     }

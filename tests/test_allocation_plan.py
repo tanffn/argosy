@@ -13,7 +13,7 @@ from datetime import date
 import pytest
 
 from argosy.services.allocation_plan import (
-    CASH_FRAC_OF_FI,
+    CASH_LABEL,
     HIGH_GROWTH_DEFAULT_SIGMA,
     HIGH_GROWTH_LABEL,
     NVDA_TARGET_PCT,
@@ -184,8 +184,7 @@ class TestDeriveFiWeight:
             "US low-volatility equity": 6.0,
             "Strategic single-stock (NVDA)": 12.0,
             "Real assets (REIT/TIPS)": 1.0,
-            "Cash & T-bills (incl. ILS tranche)": 16.0 * CASH_FRAC_OF_FI,
-            "Short-duration IG bonds": 16.0 * (1.0 - CASH_FRAC_OF_FI),
+            CASH_LABEL: 16.0,
         }
         assert sigma_from_composition(comp) < SIGMA_DIVERSIFIED
 
@@ -246,8 +245,7 @@ _TODAY_FULL_BOOK = {
     "US growth tilt (ex-NVDA)": 11.04,
     "US broad-market core": 10.53,
     "Dividend-quality income": 7.01,
-    "Cash & T-bills (incl. ILS tranche)": 4.95,
-    "Short-duration IG bonds": 3.29,
+    CASH_LABEL: 8.24,
     "Real assets (REIT/TIPS)": 1.82,
     "International developed (ex-US)": 0.90,
 }
@@ -267,7 +265,7 @@ class TestRedistributionSchedule:
         sched = self._sched()
         nvda = [w for w in sched.waypoints if w.label == "Strategic single-stock (NVDA)"]
         nvda.sort(key=lambda w: w.quarter)
-        # monotone decreasing, ends at the 12% target
+        # monotone decreasing, ends at the cap-derived target
         assert nvda[0].pct < 60.47  # already moving down by Q1
         assert nvda[-1].pct == pytest.approx(NVDA_TARGET_PCT, abs=0.01)
         for a, b in zip(nvda, nvda[1:]):

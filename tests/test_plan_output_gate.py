@@ -769,7 +769,7 @@ def _pct(label: str, value: float) -> Any:
     return SimpleNamespace(label=label, value=value, unit="pct_of_portfolio")
 
 
-# The 11 real allocatable sleeves that sum to exactly 100.0 (draft 39's set).
+# The 10 real allocatable sleeves that sum to exactly 100.0 after the FI fold.
 _CLEAN_SLEEVES = [
     _pct("US broad-market core (CSPX)", 28.5),
     _pct("Dividend-quality (FUSA)", 11.2),
@@ -779,8 +779,7 @@ _CLEAN_SLEEVES = [
     _pct("US low-volatility (SPMV)", 6.1),
     _pct("Real assets (DPYA)", 2.0),
     _pct("Gold (SGLN)", 3.0),
-    _pct("Cash & T-bills", 6.1),
-    _pct("Short-duration IG bonds", 2.6),
+    _pct("Cash & T-bills", 8.7),
     _pct("NVDA IPS sleeve", 12.0),
 ]
 
@@ -792,7 +791,7 @@ def test_ips_sum_passes_at_100():
 
 def test_ips_sum_flags_over_allocation_from_redundant_descriptor():
     """Draft 39's bug: a 'defensive floor 8.0' descriptor on top of the cash
-    + bonds sleeves makes the list sum to 108%."""
+    sleeve makes the list sum to 108%."""
     synth = _synth_with_medium_targets(
         [_pct("Defensive sleeve accumulation-phase floor", 8.0)] + list(_CLEAN_SLEEVES)
     )

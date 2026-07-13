@@ -5,13 +5,15 @@ import json
 import pytest
 
 from argosy.services.allocation_plan import (
+    CASH_LABEL,
+    SHORT_DURATION_IG_LABEL,
     build_target_allocation,
     normalize_override_labels,
 )
 
 
-CASH = "Cash & T-bills (incl. ILS tranche)"
-SHORT = "Short-duration IG bonds"
+CASH = CASH_LABEL
+SHORT = SHORT_DURATION_IG_LABEL
 
 
 def test_fold_short_duration_into_cash_adds_pct_and_drops_key() -> None:
@@ -47,7 +49,6 @@ def test_engine_emits_ibta_under_cash_and_no_short_row() -> None:
     assert syms["IB01"].weight_within_class_pct == pytest.approx(100.0)
     assert "IBTA" in syms and syms["IBTA"].role == "alt"
     assert syms["IBTA"].weight_within_class_pct == pytest.approx(0.0)
-    assert alloc.bonds_pct == pytest.approx(0.0)
     assert alloc.cash_pct == pytest.approx(alloc.fi_pct, abs=0.02)
 
 

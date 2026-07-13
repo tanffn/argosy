@@ -66,7 +66,6 @@ class TestOverridesNoneIsIdentical:
         assert base.fi_pct == with_none.fi_pct
         assert base.nvda_pct == with_none.nvda_pct
         assert base.cash_pct == with_none.cash_pct
-        assert base.bonds_pct == with_none.bonds_pct
 
     def test_none_override_blended_sigma_identical(self) -> None:
         base = build_target_allocation()

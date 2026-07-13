@@ -83,7 +83,6 @@ assert NVDA_TARGET_PCT <= DEFAULT_NVDA_CAP_PCT * 100.0 + 1e-9
 # ILS hedge, the 2-year deconcentration working capital, and the near-term bridge
 # buffer. IB01 is the deployable primary; IBTA remains a zero-weight alternative
 # within the same sleeve.
-CASH_FRAC_OF_FI = 1.0
 
 # --- Alternatives sleeve (TEAM-SOURCED, not hardcoded). ----------------------
 # The Alternatives sleeve's SIZE and INSTRUMENTS are derived by the agent fleet
@@ -521,7 +520,6 @@ class TargetAllocation:
     fi_pct: float
     nvda_pct: float
     cash_pct: float
-    bonds_pct: float
     overall_rationale: str
     residual_disagreements: str
     provenance: str = "multi-agent allocation panel (4 lenses → adversarial critique → synthesis)"
@@ -703,32 +701,8 @@ _FI_CASH = AllocationClass(
             symbol="IBTA", role="alt", weight_within_class_pct=0.0, domicile="IE",
             rationale=(
                 "1-3yr US Treasuries via Irish UCITS IBTA — held alt inside Cash & T-bills "
-                "(owner reclass from retired Short-duration IG bonds). Deploy prefers IB01; "
-                "IBTA remains estate-safe UCITS membership in this sleeve."
-            ),
-        ),
-    ),
-)
-_FI_BONDS = AllocationClass(
-    label="Short-duration IG bonds",
-    target_pct=0.0,
-    sigma_class="bonds",
-    snapshot_category="Defensive",
-    agreement="contested",
-    rationale=(
-        "Short-duration investment-grade bonds (SGOV/short Treasuries) — the "
-        "yield-bearing remainder of the derived FI sleeve, kept short to limit "
-        "real-rate/re-investment risk on the bridge ladder."
-    ),
-    dissent="Part of the contested FI sleeve; weight follows the derived FI total.",
-    instruments=(
-        AllocationInstrument(
-            symbol="IBTA", role="primary", weight_within_class_pct=100.0, domicile="IE",
-            rationale=(
-                "1-3yr US Treasuries via the Irish UCITS IBTA (iShares $ Treasury Bond "
-                "1-3yr, Acc, ~0.07% TER), NOT US-domiciled VGSH. As with the cash sleeve, "
-                "a direct 1-3y Treasury ladder is cleanest for a non-US-person; IBTA is "
-                "the non-US-situs ETF fallback. Cite estate_tax_nonresidents.md."
+                "after the owner reclassification. Deploy prefers IB01; IBTA remains "
+                "estate-safe UCITS membership in this sleeve."
             ),
         ),
     ),
@@ -971,7 +945,6 @@ def build_target_allocation(
         )
     )
     cash_pct = round(weights[CASH_LABEL], 2)
-    bonds_pct = 0.0
     classes.append(AllocationClass(**{**_FI_CASH.__dict__, "target_pct": cash_pct}))
 
     # Derive the reported fi_pct / nvda_pct from the post-override weights so the
@@ -1031,7 +1004,6 @@ def build_target_allocation(
         fi_pct=reported_fi_pct,
         nvda_pct=reported_nvda_pct,
         cash_pct=cash_pct,
-        bonds_pct=bonds_pct,
         overall_rationale=overall,
         residual_disagreements=residual,
         deployable_nis=deployable_nis,
@@ -1169,7 +1141,6 @@ __all__ = [
     "AllocationClass",
     "TargetAllocation",
     "NVDA_TARGET_PCT",
-    "CASH_FRAC_OF_FI",
     "GLOBAL_QUALITY_GROWTH_LABEL",
     "US_GROWTH_LEGACY_LABEL",
     "SLEEVE_LABEL_ALIASES",
