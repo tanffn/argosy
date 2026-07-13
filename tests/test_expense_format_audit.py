@@ -53,16 +53,25 @@ def test_leumi_usd_dated_exports_are_audited():
     """Gap (c): dated ``leumi_*_usd.xls`` files must appear as OK rows,
     not only the canonical ``usd.xls`` the older fixture glob covered.
     """
+    from pathlib import Path
+
     rows = run_audit()
-    usd = [
+    usd_ok = [
         r for r in rows
         if r.status == "OK" and r.sniffed == "leumi_usd"
     ]
-    assert usd, "no Leumi USD statements audited"
-    dated = [r for r in usd if "usd.xls" not in r.rel_path.lower()
-             or r.rel_path.lower().endswith("usd.xls")]
-    # At least one dated export OR the canonical usd.xls — both acceptable;
-    # require the sniff path works for every usd-named statement file.
+    assert usd_ok, "no Leumi USD statements audited"
+
+    # Canonical basename-only usd.xls vs dated exports (…/leumi_*_usd.xls).
+    dated_ok = [
+        r for r in usd_ok
+        if Path(r.rel_path).name.lower() != "usd.xls"
+    ]
+    assert dated_ok, (
+        "expected at least one dated leumi_*_usd.xls OK row "
+        f"(got only: {[r.rel_path for r in usd_ok]})"
+    )
+
     usd_files = [
         r for r in rows
         if "usd" in r.rel_path.lower()
