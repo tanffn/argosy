@@ -82,8 +82,9 @@ DEFAULT_TAXONOMY: list[TaxonomyEntry] = [
     TaxonomyEntry("dining_out.coffee_bars", "Coffee/bars",
                   "בתי קפה ובארים", "dining_out", display_order=25),
 
-    # === TRANSPORTATION ===
-    TaxonomyEntry("transportation", "Transportation", "תחבורה",
+    # === TRANSPORTATION (displayed as "Car" — owner's framing, 2026-07-13;
+    # transit/taxi ride along under it) ===
+    TaxonomyEntry("transportation", "Car", "רכב ותחבורה",
                   display_order=30),
     TaxonomyEntry("transportation.fuel", "Fuel", "דלק", "transportation",
                   display_order=31),
@@ -172,8 +173,8 @@ DEFAULT_TAXONOMY: list[TaxonomyEntry] = [
     TaxonomyEntry("discretionary.charity", "Charity", "צדקה",
                   "discretionary", display_order=86),
 
-    # === TRAVEL ===
-    TaxonomyEntry("travel", "Travel", "נסיעות", display_order=90),
+    # === TRAVEL (displayed as "Vacation" — owner's framing, 2026-07-13) ===
+    TaxonomyEntry("travel", "Vacation", "חופשות", display_order=90),
     TaxonomyEntry("travel.flights", "Flights", "טיסות", "travel",
                   display_order=91),
     TaxonomyEntry("travel.hotels", "Hotels", "מלונות", "travel",

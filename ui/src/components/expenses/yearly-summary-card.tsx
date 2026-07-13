@@ -21,36 +21,45 @@ interface YearlySummaryCardProps {
 
 const COLLAPSED_ROWS = 10;
 
-/** Leaf slugs that roll up under a single "Vacation" parent in the
- *  Bottom-line category list. Hotels are lodging for trips; Vacation
- *  (other) is residual trip spend — both belong under one Vacation line
- *  with Hotels as a visible subcategory. Flights stay separate. */
-const VACATION_CHILD_SLUGS = new Set([
-  "travel.hotels",
-  "travel.vacation_other",
-]);
-
 interface DisplayCategory {
   key: string;
-  /** Leaf slug used for the transactions deep-link; null for the
-   *  synthetic Vacation parent (children keep their own links). */
+  /** Leaf slug used for the transactions deep-link; null for synthetic
+   *  parent rows (children keep their own links). */
   slug: string | null;
   label_en: string;
   total_nis: number;
   transaction_count: number;
   percent: number;
   depth: 0 | 1;
+  /** Set on depth-0 parent rows: keys of the leaves nested under it. */
+  childKeys?: string[];
+  /** Set on depth-1 rows: key of the parent row they belong to. */
+  parentKey?: string;
 }
 
-function foldVacationCategories(
+/** Group leaves under their taxonomy parents (backend-supplied
+ *  parent_slug/parent_label). Parents with 2+ spending leaves become
+ *  collapsible rows summing their children; single-leaf parents stay
+ *  flat (no point folding "Groceries" under "Food"). Leaves without a
+ *  parent render flat. */
+function groupByTaxonomyParent(
   cats: CategorySpend[],
   spendingTotal: number,
 ): DisplayCategory[] {
-  const vacationKids = cats.filter((c) => VACATION_CHILD_SLUGS.has(c.slug));
-  const rest = cats.filter((c) => !VACATION_CHILD_SLUGS.has(c.slug));
   const denom = spendingTotal || 1;
+  const byParent = new Map<string, CategorySpend[]>();
+  const flat: CategorySpend[] = [];
+  for (const c of cats) {
+    if (c.parent_slug) {
+      const group = byParent.get(c.parent_slug) ?? [];
+      group.push(c);
+      byParent.set(c.parent_slug, group);
+    } else {
+      flat.push(c);
+    }
+  }
 
-  const out: DisplayCategory[] = rest.map((c) => ({
+  const topLevel: DisplayCategory[] = flat.map((c) => ({
     key: c.slug,
     slug: c.slug,
     label_en: c.label_en,
@@ -59,45 +68,57 @@ function foldVacationCategories(
     percent: c.percent,
     depth: 0,
   }));
+  const childrenByParent = new Map<string, DisplayCategory[]>();
 
-  if (vacationKids.length > 0) {
-    const total = vacationKids.reduce((s, c) => s + c.total_nis, 0);
-    const count = vacationKids.reduce((s, c) => s + c.transaction_count, 0);
-    out.push({
-      key: "vacation",
+  for (const [parentSlug, kids] of byParent) {
+    if (kids.length === 1) {
+      const c = kids[0];
+      topLevel.push({
+        key: c.slug,
+        slug: c.slug,
+        label_en: c.label_en,
+        total_nis: c.total_nis,
+        transaction_count: c.transaction_count,
+        percent: c.percent,
+        depth: 0,
+      });
+      continue;
+    }
+    const total = kids.reduce((s, c) => s + c.total_nis, 0);
+    const count = kids.reduce((s, c) => s + c.transaction_count, 0);
+    topLevel.push({
+      key: parentSlug,
       slug: null,
-      label_en: "Vacation",
+      label_en: kids[0].parent_label ?? parentSlug,
       total_nis: total,
       transaction_count: count,
       percent: (total / denom) * 100,
       depth: 0,
+      childKeys: kids.map((c) => c.slug),
     });
-    for (const c of [...vacationKids].sort(
-      (a, b) => b.total_nis - a.total_nis,
-    )) {
-      out.push({
-        key: c.slug,
-        slug: c.slug,
-        label_en:
-          c.slug === "travel.vacation_other" ? "Other" : c.label_en,
-        total_nis: c.total_nis,
-        transaction_count: c.transaction_count,
-        percent: (c.total_nis / denom) * 100,
-        depth: 1,
-      });
-    }
+    childrenByParent.set(
+      parentSlug,
+      [...kids]
+        .sort((a, b) => b.total_nis - a.total_nis)
+        .map((c) => ({
+          key: c.slug,
+          slug: c.slug,
+          label_en: c.label_en,
+          total_nis: c.total_nis,
+          transaction_count: c.transaction_count,
+          percent: c.percent,
+          depth: 1 as const,
+          parentKey: parentSlug,
+        })),
+    );
   }
 
-  // Depth-0 by total desc; keep Vacation children immediately under parent.
-  const parents = out.filter((r) => r.depth === 0);
-  parents.sort((a, b) => b.total_nis - a.total_nis);
-  const vacationChildren = out.filter((r) => r.depth === 1);
+  topLevel.sort((a, b) => b.total_nis - a.total_nis);
   const ordered: DisplayCategory[] = [];
-  for (const p of parents) {
+  for (const p of topLevel) {
     ordered.push(p);
-    if (p.key === "vacation") {
-      ordered.push(...vacationChildren);
-    }
+    const kids = childrenByParent.get(p.key);
+    if (kids) ordered.push(...kids);
   }
   return ordered;
 }
@@ -129,8 +150,18 @@ export function YearlySummaryCard({
   onWindowChange,
 }: YearlySummaryCardProps) {
   const [showAll, setShowAll] = useState(false);
-  // Vacation parent row toggles its nested Hotels/Other children.
-  const [vacationOpen, setVacationOpen] = useState(true);
+  // Parent rows toggle their nested children. Default collapsed — the
+  // clustered top-level list is the scannable summary.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleParent = (key: string) =>
+    setExpandedParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   if (data.months_covered === 0) {
     return (
@@ -176,15 +207,12 @@ export function YearlySummaryCard({
     ? lastDayOfMonth(data.window_end_month)
     : null;
 
-  const displayCats = foldVacationCategories(
+  const displayCats = groupByTaxonomyParent(
     data.top_categories_12m,
     data.yearly_spending_total_nis,
   );
   // Collapse counts top-level rows only so "Show top 10" isn't diluted
-  // by Vacation's nested Hotels/Other lines.
-  const topLevelKeys = new Set(
-    displayCats.filter((c) => c.depth === 0).map((c) => c.key),
-  );
+  // by nested children.
   const topLevelOrdered = displayCats.filter((c) => c.depth === 0);
   const visibleTopKeys = new Set(
     (showAll ? topLevelOrdered : topLevelOrdered.slice(0, COLLAPSED_ROWS))
@@ -192,11 +220,15 @@ export function YearlySummaryCard({
   );
   const visibleCats = displayCats.filter((c) => {
     if (c.depth === 0) return visibleTopKeys.has(c.key);
-    // Show Vacation children only when the parent is visible AND expanded.
-    return vacationOpen && visibleTopKeys.has("vacation");
+    // Children show only when their parent is visible AND expanded.
+    return (
+      c.parentKey !== undefined
+      && expandedParents.has(c.parentKey)
+      && visibleTopKeys.has(c.parentKey)
+    );
   });
-  const maxCat = Math.max(1, ...displayCats.filter((c) => c.depth === 0).map((c) => c.total_nis));
-  const topLevelCount = topLevelKeys.size;
+  const maxCat = Math.max(1, ...topLevelOrdered.map((c) => c.total_nis));
+  const topLevelCount = topLevelOrdered.length;
 
   return (
     <Card>
@@ -277,11 +309,11 @@ export function YearlySummaryCard({
                           "capitalize flex-1 min-w-0 truncate"
                           + (c.slug ? " group-hover:underline" : "")
                           + (c.depth === 1 ? " pl-4 text-muted-foreground" : "")
-                          + (c.depth === 0 && c.key === "vacation" ? " font-medium" : "")
+                          + (c.childKeys ? " font-medium" : "")
                         }
                       >
-                        {c.key === "vacation"
-                          ? `${vacationOpen ? "▾" : "▸"} ${c.label_en}`
+                        {c.childKeys
+                          ? `${expandedParents.has(c.key) ? "▾" : "▸"} ${c.label_en}`
                           : c.depth === 1
                             ? `↳ ${c.label_en}`
                             : c.label_en}
@@ -321,11 +353,11 @@ export function YearlySummaryCard({
                     ) : (
                       <button
                         type="button"
-                        onClick={() => setVacationOpen((v) => !v)}
+                        onClick={() => toggleParent(c.key)}
                         title={
-                          vacationOpen
-                            ? "Collapse Vacation subcategories"
-                            : "Expand Vacation subcategories"
+                          expandedParents.has(c.key)
+                            ? `Collapse ${c.label_en} subcategories`
+                            : `Expand ${c.label_en} subcategories`
                         }
                         className="block w-full text-left rounded px-1 -mx-1 py-1 hover:bg-accent/30 cursor-pointer"
                       >

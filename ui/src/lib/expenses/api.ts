@@ -91,6 +91,10 @@ export interface CategorySpend {
   total_nis: number;
   transaction_count: number;
   percent: number;
+  /** Taxonomy parent — populated on the yearly rollup (grouping);
+   *  null/absent elsewhere. */
+  parent_slug?: string | null;
+  parent_label?: string | null;
 }
 
 export interface MerchantSpend {

@@ -730,6 +730,11 @@ class CategorySpend(BaseModel):
     total_nis: float
     transaction_count: int
     percent: float
+    # Taxonomy parent (populated on the yearly rollup so the UI can group
+    # leaves under collapsible parent rows). None for top-level leaves and
+    # on endpoints that don't need grouping (monthly, income, trip).
+    parent_slug: str | None = None
+    parent_label: str | None = None
 
 
 class MerchantSpend(BaseModel):
@@ -1553,6 +1558,22 @@ def dashboard_overview(
         float(r.total or 0) for r in spending_12m_rows
     )
     spending_pct_base = yearly_spending_total_nis or 1.0
+    # Taxonomy parent per leaf slug — the UI groups leaves under
+    # collapsible parent rows (Vacation, Car, Housing, …).
+    cat_rows_all = db.execute(
+        sa_select(
+            ExpenseCategory.id, ExpenseCategory.slug,
+            ExpenseCategory.label_en, ExpenseCategory.parent_id,
+        )
+        # System rows first so user-scoped rows overwrite in parent_by_slug.
+        .order_by(ExpenseCategory.user_id.isnot(None))
+    ).all()
+    cat_by_pk = {c.id: c for c in cat_rows_all}
+    parent_by_slug: dict[str, tuple[str, str]] = {}
+    for c in cat_rows_all:
+        p = cat_by_pk.get(c.parent_id) if c.parent_id is not None else None
+        if p is not None:
+            parent_by_slug[c.slug] = (p.slug, p.label_en)
     # ALL spending categories with a non-zero total — sorted desc by total_nis
     # (the underlying SQL already ORDER BY desc). Frontend may paginate /
     # show-all as desired. Filter zero-totals defensively.
@@ -1562,6 +1583,8 @@ def dashboard_overview(
             total_nis=float(r.total or 0),
             transaction_count=int(r.n or 0),
             percent=float(r.total or 0) / spending_pct_base * 100.0,
+            parent_slug=parent_by_slug.get(r.slug, (None, None))[0],
+            parent_label=parent_by_slug.get(r.slug, (None, None))[1],
         )
         for r in spending_12m_rows
         if float(r.total or 0) > 0
