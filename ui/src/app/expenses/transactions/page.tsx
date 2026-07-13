@@ -5,7 +5,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { LabelEditor } from "@/components/expenses/label-editor";
 import { TagRulesPanel } from "@/components/expenses/tag-rules-panel";
-import { TransactionsTable } from "@/components/expenses/transactions-table";
+import {
+  TransactionsTable,
+  type TxSortKey,
+} from "@/components/expenses/transactions-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +22,18 @@ import {
 
 const USER_ID = "ariel";
 const PAGE_SIZE = 100;
+const SORT_KEYS = new Set<TxSortKey>([
+  "date", "merchant", "amount", "category", "source",
+]);
+
+function parseSortKey(raw: string | null): TxSortKey {
+  if (raw && SORT_KEYS.has(raw as TxSortKey)) return raw as TxSortKey;
+  return "date";
+}
+
+function parseSortDir(raw: string | null): "asc" | "desc" {
+  return raw === "asc" ? "asc" : "desc";
+}
 
 function TransactionsPageInner() {
   const router = useRouter();
@@ -43,6 +58,8 @@ function TransactionsPageInner() {
     to_date: params.get("to_date") ?? undefined,
     include_card_payments: params.get("include_card_payments") === "1",
     tag: params.get("tag") ?? undefined,
+    sort: parseSortKey(params.get("sort")),
+    order: parseSortDir(params.get("order")),
   };
 
   const refresh = useCallback(async () => {
@@ -75,6 +92,19 @@ function TransactionsPageInner() {
     const next = new URLSearchParams(params.toString());
     if (value === null || value === "") next.delete(key);
     else next.set(key, value);
+    router.replace(`/expenses/transactions?${next.toString()}`);
+    setPage(0);
+  }
+
+  function toggleSort(key: TxSortKey) {
+    const next = new URLSearchParams(params.toString());
+    if (filterParams.sort === key) {
+      next.set("order", filterParams.order === "asc" ? "desc" : "asc");
+    } else {
+      next.set("sort", key);
+      // Amount/date default to desc (biggest/newest first); names to asc.
+      next.set("order", key === "merchant" || key === "category" || key === "source" ? "asc" : "desc");
+    }
     router.replace(`/expenses/transactions?${next.toString()}`);
     setPage(0);
   }
@@ -255,6 +285,9 @@ function TransactionsPageInner() {
                 }}
                 selected={selected}
                 onSelectionChange={setSelected}
+                sortKey={filterParams.sort}
+                sortDir={filterParams.order}
+                onSortChange={toggleSort}
               />
               <div className="flex items-center justify-between mt-3 text-sm">
                 <Button

@@ -97,6 +97,28 @@ def test_list_transactions_filters_by_category(expense_client):
     assert any("ספייס" in t["merchant_raw"] for t in body["transactions"])
 
 
+def test_list_transactions_sort_by_amount(expense_client):
+    with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+               return_value=[]):
+        with open(FIXTURES / "max_minimal.xlsx", "rb") as f:
+            expense_client.post("/api/expenses/upload",
+                                 files={"files": ("max_minimal.xlsx", f.read(),
+                                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                                 data={"user_id": "ariel",
+                                       "card_last4": "6225"})
+    asc = expense_client.get("/api/expenses/transactions", params={
+        "user_id": "ariel", "sort": "amount", "order": "asc",
+    })
+    desc = expense_client.get("/api/expenses/transactions", params={
+        "user_id": "ariel", "sort": "amount", "order": "desc",
+    })
+    assert asc.status_code == 200 and desc.status_code == 200
+    a_amts = [t["amount_nis"] for t in asc.json()["transactions"] if t["amount_nis"] is not None]
+    d_amts = [t["amount_nis"] for t in desc.json()["transactions"] if t["amount_nis"] is not None]
+    assert a_amts == sorted(a_amts)
+    assert d_amts == sorted(d_amts, reverse=True)
+
+
 def test_patch_transaction_category_updates_cache(expense_client):
     with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
                return_value=[]):

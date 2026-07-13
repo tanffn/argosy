@@ -345,6 +345,8 @@ def list_transactions(
     search: str | None = None,
     merchant_normalized: str | None = None,
     tag: str | None = None,
+    sort: str = Query(default="date"),
+    order: str = Query(default="desc"),
     limit: int = Query(default=200, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
 ) -> TransactionsResponse:
@@ -378,8 +380,32 @@ def list_transactions(
         q = q.filter(ExpenseTransaction.tags.like(like))
 
     total = q.count()
-    rows = q.order_by(ExpenseTransaction.occurred_on.desc()) \
-            .offset(offset).limit(limit).all()
+
+    sort_key = (sort or "date").strip().lower()
+    order_dir = (order or "desc").strip().lower()
+    ascending = order_dir == "asc"
+    if sort_key == "merchant":
+        col = ExpenseTransaction.merchant_normalized
+    elif sort_key == "amount":
+        col = ExpenseTransaction.amount_nis
+    elif sort_key == "category":
+        q = q.outerjoin(
+            ExpenseCategory,
+            ExpenseTransaction.category_id == ExpenseCategory.id,
+        )
+        col = ExpenseCategory.slug
+    elif sort_key == "source":
+        col = ExpenseTransaction.source_id
+    else:
+        col = ExpenseTransaction.occurred_on
+    order_expr = col.asc() if ascending else col.desc()
+    # Stable tie-break so pagination doesn't reshuffle equal keys.
+    rows = (
+        q.order_by(order_expr, ExpenseTransaction.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     cat_by_id = {
         c.id: c.slug for c in db.query(ExpenseCategory).filter_by(
             user_id=user_id

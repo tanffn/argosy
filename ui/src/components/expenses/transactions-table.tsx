@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { AddSubCategoryDialog } from "@/components/expenses/add-subcategory-dialog";
 import { LabelEditor } from "@/components/expenses/label-editor";
@@ -22,6 +22,8 @@ import { formatCurrency, formatNIS } from "@/lib/expenses/format";
 
 const USER_ID = "ariel";
 
+export type TxSortKey = "date" | "merchant" | "amount" | "category" | "source";
+
 interface TransactionsTableProps {
   transactions: TransactionOut[];
   categories: CategoryOut[];
@@ -30,11 +32,17 @@ interface TransactionsTableProps {
   onTagsChanged?: () => void;
   selected?: Set<number>;
   onSelectionChange?: (next: Set<number>) => void;
+  sortKey?: TxSortKey;
+  sortDir?: "asc" | "desc";
+  onSortChange?: (key: TxSortKey) => void;
 }
 
 export function TransactionsTable({
   transactions, categories, sources, onCategoryChanged, onTagsChanged,
   selected, onSelectionChange,
+  sortKey = "date",
+  sortDir = "desc",
+  onSortChange,
 }: TransactionsTableProps) {
   const sourceById = new Map(sources.map((s) => [s.id, s]));
   const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[]; merchant_normalized: string } | null>(null);
@@ -42,6 +50,42 @@ export function TransactionsTable({
   const [detailsTx, setDetailsTx] = useState<TransactionOut | null>(null);
   const [detailsInitialTab, setDetailsInitialTab] = useState<"details" | "anomaly">("details");
   const [fxMode] = useFxMode();
+
+  function sortMark(key: TxSortKey): string {
+    if (sortKey !== key) return "";
+    return sortDir === "asc" ? " ▲" : " ▼";
+  }
+
+  function SortTh({
+    colKey,
+    children,
+    align = "left",
+  }: {
+    colKey: TxSortKey;
+    children: ReactNode;
+    align?: "left" | "right";
+  }) {
+    const alignCls = align === "right" ? "text-right pl-2" : "text-left pr-2";
+    if (!onSortChange) {
+      return <th className={`${alignCls} py-2 px-2`}>{children}</th>;
+    }
+    return (
+      <th
+        className={`${alignCls} py-2 px-2 cursor-pointer select-none hover:text-foreground`}
+        onClick={() => onSortChange(colKey)}
+        aria-sort={
+          sortKey === colKey
+            ? sortDir === "asc"
+              ? "ascending"
+              : "descending"
+            : "none"
+        }
+      >
+        {children}
+        {sortMark(colKey)}
+      </th>
+    );
+  }
 
   // Sprint #2 commit #11 — batch-fetch the open anomaly rows for every
   // visible txn so we can render the inline badge column to the right of
@@ -122,12 +166,12 @@ export function TransactionsTable({
               />
             </th>
           )}
-          <th className="text-left py-2 pr-2">Date</th>
-          <th className="text-left py-2 px-2">Merchant</th>
-          <th className="text-left py-2 px-2">Category</th>
+          <SortTh colKey="date">Date</SortTh>
+          <SortTh colKey="merchant">Merchant</SortTh>
+          <SortTh colKey="category">Category</SortTh>
           <th className="text-left py-2 px-2">Tags</th>
-          <th className="text-left py-2 px-2">Source</th>
-          <th className="text-right py-2 pl-2">Amount</th>
+          <SortTh colKey="source">Source</SortTh>
+          <SortTh colKey="amount" align="right">Amount</SortTh>
         </tr>
       </thead>
       <tbody>

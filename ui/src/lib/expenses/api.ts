@@ -445,6 +445,8 @@ export const expensesApi = {
     search: string;
     merchant_normalized: string;
     tag: string;
+    sort: "date" | "merchant" | "amount" | "category" | "source";
+    order: "asc" | "desc";
     limit: number;
     offset: number;
   }> = {}) => {
