@@ -27,9 +27,12 @@ account autonomy is Phase 5.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+
+from sqlalchemy import desc, select
 
 from argosy.adapters.brokers.base import BrokerAdapter
 from argosy.adapters.brokers.ibkr import IBKRAdapter
@@ -53,6 +56,7 @@ from argosy.state import db as db_mod
 from argosy.state.models import (
     DailyAccountPnL,
     PendingOrder,
+    PortfolioSnapshotRow,
     Proposal as ProposalRow,
     ProposalHistory,
 )
@@ -129,7 +133,7 @@ class ExecutionRouter:
         self,
         proposal: ProposalRow,
         *,
-        cash_available_usd: float = 0.0,
+        cash_available_usd: float | None = None,
         max_position_usd: float | None = None,
         snapshot_pct: dict[str, float] | None = None,
         plan_targets: dict[str, float] | None = None,
@@ -151,6 +155,45 @@ class ExecutionRouter:
             account_class=proposal.account_class,  # type: ignore[arg-type]
         )
 
+    async def resolve_cash_available_usd(
+        self,
+        session: Any,
+        cash_available_usd: float | None,
+    ) -> tuple[float | None, str]:
+        """Return ``(cash_usd, source)`` for preflight.
+
+        ``source`` is ``"caller"`` when the execute path supplied a figure,
+        ``"snapshot"`` when loaded from the latest portfolio snapshot's
+        ``cash_balances_usd_k``, or ``"unavailable"`` when neither yields a
+        reading. Missing is NEVER coerced to 0.0.
+        """
+        if cash_available_usd is not None:
+            return float(cash_available_usd), "caller"
+        row = (
+            await session.execute(
+                select(PortfolioSnapshotRow)
+                .where(PortfolioSnapshotRow.user_id == self.user_id)
+                .order_by(
+                    desc(PortfolioSnapshotRow.imported_at),
+                    desc(PortfolioSnapshotRow.id),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None, "unavailable"
+        try:
+            totals = json.loads(row.totals_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return None, "unavailable"
+        cash_k = totals.get("cash_balances_usd_k")
+        if cash_k is None:
+            return None, "unavailable"
+        try:
+            return float(cash_k) * 1000.0, "snapshot"
+        except (TypeError, ValueError):
+            return None, "unavailable"
+
     # ------------------------------------------------------------------
     # Drive
     # ------------------------------------------------------------------
@@ -159,7 +202,7 @@ class ExecutionRouter:
         self,
         proposal_id: int,
         *,
-        cash_available_usd: float = 0.0,
+        cash_available_usd: float | None = None,
         max_position_usd: float | None = None,
         snapshot_pct: dict[str, float] | None = None,
         plan_targets: dict[str, float] | None = None,
@@ -251,9 +294,15 @@ class ExecutionRouter:
                     )
 
             # ----- Risk preflight ------------------------------------------------
+            # Resolve cash when the caller omitted it (UI historically POSTed
+            # only user_id → default 0.0 treated missing as zero and cancelled
+            # an owner-approved buy — proposal 15, 2026-07-13).
+            resolved_cash, cash_source = await self.resolve_cash_available_usd(
+                session, cash_available_usd
+            )
             inputs = self.build_preflight_inputs(
                 proposal,
-                cash_available_usd=cash_available_usd,
+                cash_available_usd=resolved_cash,
                 max_position_usd=max_position_usd,
                 snapshot_pct=snapshot_pct,
                 plan_targets=plan_targets,
@@ -269,6 +318,8 @@ class ExecutionRouter:
                 payload={
                     "passed": report.passed,
                     "summary": report.summary(),
+                    "cash_available_usd": resolved_cash,
+                    "cash_source": cash_source,
                     "results": [
                         {
                             "check": r.check,
@@ -282,15 +333,49 @@ class ExecutionRouter:
             )
 
             if not report.passed:
-                # Hard-fail: cancel the proposal (per SDD §10.3 "Rejected + alert").
-                await self._transition(
-                    session,
-                    proposal,
-                    ProposalStatus.CANCELLED,
-                    actor="execution_router",
-                    note=f"preflight blocked: {report.summary()}",
+                # Owner-approved cards are NEVER auto-cancelled by a gate
+                # acting on missing/stale/insufficient inputs (proposal-15
+                # scar). Keep status=approved so the card stays actionable;
+                # record audit + alert. Cancellation is reserved for real
+                # vetoes (human reject / kill switch), not automated preflight.
+                _log.warning(
+                    "execution_router.preflight_blocked_keep_approved",
+                    proposal_id=proposal.id,
+                    summary=report.summary(),
+                    cash_source=cash_source,
+                    cash_available_usd=resolved_cash,
+                )
+                await record_audit_event(
+                    user_id=self.user_id,
+                    event_type="preflight.blocked_approved_preserved",
+                    entity_type="proposal",
+                    entity_id=str(proposal.id),
+                    payload={
+                        "summary": report.summary(),
+                        "proposal_status": "approved",
+                        "cash_source": cash_source,
+                        "cash_available_usd": resolved_cash,
+                        "hard_failures": [
+                            {"check": r.check, "message": r.message}
+                            for r in report.hard_failures
+                        ],
+                    },
+                    session=session,
                 )
                 await session.commit()
+                try:
+                    await publish_event(
+                        "proposal.preflight_blocked",
+                        {
+                            "proposal_id": proposal_id,
+                            "user_id": self.user_id,
+                            "summary": report.summary(),
+                            "cash_source": cash_source,
+                            "status_preserved": "approved",
+                        },
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    _log.exception("execution_router.preflight_alert_publish_failed")
                 return ExecutionResult(
                     status="rejected",
                     broker="(preflight)",

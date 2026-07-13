@@ -116,9 +116,11 @@ async def test_preflight_hard_fails_when_loss_breached(engine: None) -> None:
     # The aggregator returns a summary "BLOCKED: N hard failure(s)..."; the
     # daily-loss-limit check IS one of those hard failures. Verify via the
     # audit log payload which captures per-check status.
+    # Owner-approved proposals are preserved on preflight hard-fail
+    # (proposal-15 scar) — never auto-cancelled.
     async with db_mod.get_session() as session:
         row = await session.get(ProposalRow, pid)
-        assert row.status == "cancelled"
+        assert row.status == "approved"
         from argosy.state.models import AuditLog
 
         events = (

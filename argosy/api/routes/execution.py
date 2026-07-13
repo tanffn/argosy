@@ -51,7 +51,10 @@ router = APIRouter(tags=["execution"])
 
 class ExecuteRequest(BaseModel):
     user_id: str = "ariel"
-    cash_available_usd: float = 0.0
+    # None = omitted; router resolves from the latest portfolio snapshot.
+    # Never default to 0.0 — that treated missing input as "no cash" and
+    # cancelled an owner-approved proposal (CMPS #15, 2026-07-13).
+    cash_available_usd: float | None = None
     max_position_usd: float | None = None
     plan_targets: dict[str, float] | None = None
     snapshot_pct: dict[str, float] | None = None

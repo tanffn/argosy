@@ -67,6 +67,16 @@ def test_cash_warn_on_market_order() -> None:
     assert r.status is PreflightStatus.WARN
 
 
+def test_cash_none_is_input_missing_not_zero() -> None:
+    """None means unavailable — must not compare against $0.00."""
+    p = _proposal(action="buy", size_shares_or_currency=100, size_units="currency")
+    r = check_cash_availability(p, cash_available_usd=None)
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert r.detail.get("input_missing") is True
+    assert "unavailable" in r.message.lower() or "missing" in r.message.lower()
+    assert "$0.00" not in r.message
+
+
 # ----------------- size cap -----------------
 
 

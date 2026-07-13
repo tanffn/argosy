@@ -71,11 +71,16 @@ class PreflightReport:
 
 def check_cash_availability(
     proposal: Any,
-    cash_available_usd: float,
+    cash_available_usd: float | None,
     *,
     estimated_cost_usd: float | None = None,
 ) -> PreflightResult:
     """Hard fail if a buy lacks the cash. Sells PASS by definition.
+
+    ``cash_available_usd is None`` means the input is unavailable (caller
+    omitted it AND no snapshot cash could be resolved) — that is NOT the
+    same as a measured $0 balance. Treating missing as zero destroyed an
+    owner-approved buy (proposal 15, 2026-07-13). Fail-loud on missing.
 
     `estimated_cost_usd` is what the trader expects to spend. If absent,
     we estimate from the proposal as `size_shares_or_currency *
@@ -86,6 +91,18 @@ def check_cash_availability(
     if action == "sell" or action == "hold":
         return PreflightResult(
             check="cash_availability", status=PreflightStatus.PASS, message="N/A for sell/hold"
+        )
+
+    if cash_available_usd is None:
+        return PreflightResult(
+            check="cash_availability",
+            status=PreflightStatus.HARD_FAIL,
+            message=(
+                "Cash available input is unavailable (not supplied by caller "
+                "and no portfolio-snapshot cash reading) — refusing to treat "
+                "missing data as a measured zero balance"
+            ),
+            detail={"cash": None, "input_missing": True},
         )
 
     if estimated_cost_usd is None:
@@ -342,12 +359,16 @@ def check_tier_mode_match(
 
 @dataclass
 class PreflightInputs:
-    """Bundle of values needed by `run_preflight`. Keeps the call site clean."""
+    """Bundle of values needed by `run_preflight`. Keeps the call site clean.
+
+    ``cash_available_usd`` is ``None`` when the figure is unavailable —
+    never silently coerce missing to 0.0 (proposal-15 scar).
+    """
 
     proposal: Any
     settings: AgentSettings
     now: datetime
-    cash_available_usd: float = 0.0
+    cash_available_usd: float | None = None
     max_position_usd: float | None = None
     snapshot_pct: dict[str, float] = field(default_factory=dict)
     plan_targets: dict[str, float] = field(default_factory=dict)

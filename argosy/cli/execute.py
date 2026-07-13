@@ -19,10 +19,13 @@ from argosy.state import db as db_mod
 def execute(
     proposal_id: int = typer.Argument(..., help="Proposal id to execute."),
     user_id: str = typer.Option("ariel", "--user-id"),
-    cash_available_usd: float = typer.Option(
-        0.0,
+    cash_available_usd: float | None = typer.Option(
+        None,
         "--cash-available-usd",
-        help="Cash available for the preflight check.",
+        help=(
+            "Cash available for the preflight check. Omit to resolve from "
+            "the latest portfolio snapshot (never defaults to 0)."
+        ),
     ),
     max_position_usd: float | None = typer.Option(
         None,

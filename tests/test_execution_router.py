@@ -175,21 +175,98 @@ async def test_router_live_path_creates_pending_and_advances(engine: None) -> No
 
 
 @pytest.mark.asyncio
-async def test_router_preflight_hard_fail_cancels_proposal(engine: None) -> None:
+async def test_router_preflight_hard_fail_keeps_approved(engine: None) -> None:
+    """Preflight hard-fail must NOT cancel an owner-approved proposal.
+
+    Live scar (proposal 15, 2026-07-13): cash input missing/stale → $0
+    reading → HARD_FAIL → cancelled an approved buy. Correct shape: keep
+    approved, return rejected, no broker call.
+    """
     pid = await _seed_user_and_proposal(qty=10, limit_price=10_000.0)
     mock = MockBroker()
     router = ExecutionRouter(
         user_id="ariel", adapter_factories={"ibkr": lambda: mock}
     )
-    # Estimated cost = 10 * 10000 = 100_000; available cash = 1.
+    # Estimated cost = 10 * 10000 = 100_000; available cash = 1 (explicit).
     result = await router.execute(pid, cash_available_usd=1.0)
     assert result.status == "rejected"
     assert "BLOCKED" in result.reason or "cash" in result.reason.lower()
     async with db_mod.get_session() as session:
         row = await session.get(ProposalRow, pid)
-        assert row.status == "cancelled"
+        assert row.status == "approved"
         # No order placed.
         assert mock.placed == []
+        # Preservation audited (not a cancel transition).
+        events = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_id == str(pid),
+                    AuditLog.event_type == "preflight.blocked_approved_preserved",
+                )
+            )
+        ).scalars().all()
+        assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_router_omitted_cash_resolves_from_snapshot(engine: None) -> None:
+    """When the UI omits cash_available_usd, load it from the latest snapshot."""
+    from datetime import datetime, timezone
+    import json
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    pid = await _seed_user_and_proposal(qty=10, limit_price=100.0)  # cost $1k
+    async with db_mod.get_session() as session:
+        session.add(
+            PortfolioSnapshotRow(
+                user_id="ariel",
+                snapshot_date=None,
+                imported_at=datetime.now(timezone.utc),
+                source_path="test",
+                positions_json="[]",
+                allocations_json="[]",
+                nvda_sales_json="[]",
+                real_estate_json="[]",
+                pensions_json="[]",
+                totals_json=json.dumps({
+                    "total_usd_value_k": 100.0,
+                    "cash_balances_usd_k": 50.0,  # $50k
+                }),
+                parse_warnings_json="[]",
+            )
+        )
+        await session.commit()
+
+    mock = MockBroker()
+    router = ExecutionRouter(
+        user_id="ariel", adapter_factories={"ibkr": lambda: mock}
+    )
+    # Omit cash — must resolve from snapshot and proceed (paper path).
+    result = await router.execute(pid)
+    assert result.status in {"paper", "submitted", "manual_required"}
+    assert mock.placed  # order went through
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, pid)
+        assert row.status in {"executed_paper", "executed_live"}
+
+
+@pytest.mark.asyncio
+async def test_router_omitted_cash_without_snapshot_keeps_approved(
+    engine: None,
+) -> None:
+    """No caller cash + no snapshot → input-missing hard-fail; stay approved."""
+    pid = await _seed_user_and_proposal(qty=10, limit_price=100.0)
+    mock = MockBroker()
+    router = ExecutionRouter(
+        user_id="ariel", adapter_factories={"ibkr": lambda: mock}
+    )
+    result = await router.execute(pid)  # omit cash; no snapshot seeded
+    assert result.status == "rejected"
+    assert mock.placed == []
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, pid)
+        assert row.status == "approved"
 
 
 @pytest.mark.asyncio
