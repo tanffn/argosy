@@ -107,6 +107,13 @@ def isracard_oracle(path: Path) -> GroundTruth:
     metadata block has fewer lines). We locate it dynamically.
 
     The declared total appears at row 4 col 7 in NIS.
+
+    Billing basis is the **charge** side (cols 4–5). NIS conservation sums
+    charge amounts only when מטבע חיוב is ₪; foreign-settlement rows
+    (EUR/USD/…) are excluded from the ₪ totals — matching the parser, which
+    stores those as ``amount_orig``/``currency_orig`` (ISO) with
+    ``amount_nis=None``. Merchant-local stickers in cols 2–3 (¥/฿/…) are
+    never the conservation basis.
     """
     df = pd.read_excel(path, sheet_name="פירוט עסקאות", header=None)
     declared_str = str(df.iat[4, 7])
@@ -143,14 +150,12 @@ def isracard_oracle(path: Path) -> GroundTruth:
     debits = 0.0
     credits = 0.0
     for _, row in data.iterrows():
-        tx_amount = _to_float(row[2])              # סכום עסקה
-        # NIS-only sums (Bug 2 part 1): foreign rows are excluded — the parser
-        # stores amount_nis=None for them and downstream FX conversion is
-        # responsible for any NIS-equivalent rendering. Oracle mirrors that.
+        # NIS-only sums: foreign settlement rows are excluded — the parser
+        # stores amount_nis=None for them (charge side in amount_orig).
         if str(row[5]).strip() != "₪":
             continue
-        charge_nis = _to_float(row[4])
-        if tx_amount < 0 or charge_nis < 0:
+        charge_nis = _to_float(row[4])  # סכום חיוב — billing basis
+        if charge_nis < 0:
             credits += abs(charge_nis)
         else:
             debits += abs(charge_nis)

@@ -9,11 +9,16 @@ Layout (row indices are 0-based pandas row numbers):
   Header row ('תאריך רכישה' in col 0): typically rows 11-13, found by scanning.
   Data rows: header_idx+1 until blank col 0 or non-date col 0.
 
-Multi-currency: when מטבע חיוב (col 5) is '₪', col 4 (סכום חיוב) is the NIS
-charge amount.  For foreign-currency rows, col 2 (סכום עסקה) holds the original
-transaction amount and is used as amount_nis proxy (matching the ground-truth
-oracle).  The _USD_NIS_FALLBACK constant is available for orchestrator-level FX
-conversion; it is not applied during parsing to keep conservation sums exact.
+Multi-currency: the billing basis is always the charge side (cols 4–5:
+סכום חיוב / מטבע חיוב). When charge currency is ₪, ``amount_nis`` is the
+charge amount and ``amount_orig`` is unset. When the card settles in a
+foreign currency (e.g. EUR for a yen-ticketed Japan Air purchase),
+``amount_nis`` is None and ``amount_orig``/``currency_orig`` hold the
+charge amount/ISO code — never the merchant-local sticker (¥/฿/…) in
+cols 2–3. Those stay in ``raw_row`` for reference. Downstream FX
+(``argosy.services.fx``) converts ISO codes only; symbol currencies
+fail BoI lookup. Fall back to the tx side only when the charge columns
+are blank.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from argosy.services.expense_ingest.types import (
     NormalizedTransaction, ParseResult, ParserName, SourceHint, StatementMeta,
 )
 
-PARSER_VERSION = "0.1.0"
+PARSER_VERSION = "0.1.1"
 
 _USD_NIS_FALLBACK = 3.70  # used when no cached spot rate available
 
@@ -39,6 +44,19 @@ _CARDHOLDER_RE = re.compile(r"על שם\s+(.+)")
 _CHARGE_DATE_RE = re.compile(r"לחיוב ב-?\s*(\d{1,2})[./](\d{1,2})")
 _NIS_NUM_RE = re.compile(r"[-+]?[\d,]+\.?\d*")
 _ISRACARD_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{2}$")
+
+# Symbol → ISO. BoI / fx.convert keys on ISO codes only; bare symbols
+# (¥, ฿, إ.د) fail lookup and leave the UI showing the raw sticker.
+_CURRENCY_SYMBOLS: dict[str, str] = {
+    "₪": "NIS",
+    "$": "USD",
+    "€": "EUR",
+    "¥": "JPY",
+    "฿": "THB",
+    "£": "GBP",
+    "إ.د": "AED",
+    "د.إ": "AED",
+}
 
 
 def _to_float(x) -> float:
@@ -70,7 +88,40 @@ def _normalize_currency(c) -> str:
     if pd.isna(c):
         return "NIS"
     s = str(c).strip()
-    return {"₪": "NIS", "$": "USD", "€": "EUR"}.get(s, s.upper() or "NIS")
+    if not s:
+        return "NIS"
+    return _CURRENCY_SYMBOLS.get(s, s.upper())
+
+
+def _has_charge_side(charge_amount_cell, charge_ccy_cell) -> bool:
+    """True when the charge columns carry usable billing data."""
+    if pd.isna(charge_amount_cell) and pd.isna(charge_ccy_cell):
+        return False
+    if pd.isna(charge_ccy_cell) and _to_float(charge_amount_cell) == 0.0:
+        return False
+    return True
+
+
+def _amounts_from_billing(
+    *,
+    tx_amount: float,
+    tx_ccy: str,
+    charge_amount: float,
+    charge_ccy: str,
+    has_charge: bool,
+) -> tuple[float | None, float | None, str | None]:
+    """Prefer charge side; fall back to tx side only if charge cols blank.
+
+    Returns ``(amount_nis, amount_orig, currency_orig)``.
+    """
+    if has_charge:
+        if charge_ccy == "NIS":
+            return abs(charge_amount), None, None
+        return None, abs(charge_amount), charge_ccy
+    # No charge column — last-resort tx side.
+    if tx_ccy == "NIS":
+        return abs(tx_amount), None, None
+    return None, abs(tx_amount), tx_ccy
 
 
 def parse(path: Path) -> ParseResult:
@@ -152,6 +203,7 @@ def parse(path: Path) -> ParseResult:
         tx_ccy = _normalize_currency(row[3])
         charge_amount = _to_float(row[4])
         charge_ccy = _normalize_currency(row[5])
+        has_charge = _has_charge_side(row[4], row[5])
         voucher = None if pd.isna(row[6]) else str(row[6]).strip()
         # Strip trailing '.0' from numeric voucher refs loaded as float by pandas
         if voucher and voucher.endswith(".0"):
@@ -161,16 +213,18 @@ def parse(path: Path) -> ParseResult:
                 pass
         extras = "" if pd.isna(row[7]) else str(row[7])
 
-        # amount_nis carries actual NIS only — never a foreign-amount stand-in.
-        # Foreign rows preserve original amount in `amount_orig`/`currency_orig`;
-        # downstream code converts on demand via `argosy.services.fx`.
-        if charge_ccy == "NIS":
-            amount_nis: float | None = abs(charge_amount)
-        else:
-            amount_nis = None
+        amount_nis, amount_orig, currency_orig = _amounts_from_billing(
+            tx_amount=tx_amount,
+            tx_ccy=tx_ccy,
+            charge_amount=charge_amount,
+            charge_ccy=charge_ccy,
+            has_charge=has_charge,
+        )
 
-        # Direction + tx_type derivation
-        is_refund = tx_amount < 0
+        # Direction + tx_type: prefer charge-side sign when present (billing),
+        # else the merchant-local tx amount.
+        signed_for_dir = charge_amount if has_charge else tx_amount
+        is_refund = signed_for_dir < 0
         if is_refund:
             tx_type = "refund"
             direction = "credit"
@@ -185,7 +239,7 @@ def parse(path: Path) -> ParseResult:
             direction = "debit"
 
         # Accumulate NIS-only signed total (matches what declared_total_nis covers)
-        if charge_ccy == "NIS":
+        if has_charge and charge_ccy == "NIS":
             _nis_signed_total += charge_amount  # signed: negative for refunds
 
         txs.append(NormalizedTransaction(
@@ -193,8 +247,8 @@ def parse(path: Path) -> ParseResult:
             merchant_raw=merchant_raw,
             merchant_normalized=normalize(merchant_raw),
             amount_nis=amount_nis,
-            amount_orig=abs(tx_amount) if tx_ccy != "NIS" else None,
-            currency_orig=tx_ccy if tx_ccy != "NIS" else None,
+            amount_orig=amount_orig,
+            currency_orig=currency_orig,
             direction=direction,
             tx_type=tx_type,
             reference=voucher,

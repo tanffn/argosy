@@ -93,6 +93,50 @@ def test_isracard_parser_handles_usd_row():
     assert usd.amount_nis is None
 
 
+def test_normalize_currency_maps_symbols_to_iso():
+    from argosy.services.expense_ingest.parsers.isracard import _normalize_currency
+    assert _normalize_currency("¥") == "JPY"
+    assert _normalize_currency("฿") == "THB"
+    assert _normalize_currency("£") == "GBP"
+    assert _normalize_currency("إ.د") == "AED"
+    assert _normalize_currency("€") == "EUR"
+    assert _normalize_currency("usd") == "USD"  # .upper() fallback
+
+
+def test_isracard_japan_air_uses_charge_eur_not_yen_sticker():
+    """Foreign settlement: prefer charge € over merchant-local ¥ sticker."""
+    from argosy.services.expense_ingest.parsers.isracard import parse
+
+    # Prefer the uploaded July-2026 statement that carries the two Japan Air rows.
+    uploads = Path(__file__).resolve().parents[1] / "uploads" / "ariel"
+    sample = next(
+        (p for p in uploads.rglob("*1266_07_2026.xlsx")),
+        None,
+    )
+    if sample is None and _SAMPLES:
+        root = Path(_SAMPLES)
+        sample = next(iter(root.glob("**/1266/*07*2026*.xlsx")), None)
+    if sample is None:
+        pytest.skip("1266_07_2026 sample not present")
+
+    result = parse(sample)
+    japan = [t for t in result.transactions if "JAPAN AIR" in t.merchant_raw.upper()]
+    assert len(japan) == 2, [t.merchant_raw for t in japan]
+    amounts = sorted(t.amount_orig for t in japan)
+    assert amounts == pytest.approx([244.72, 705.36])
+    assert all(t.currency_orig == "EUR" for t in japan)
+    assert all(t.amount_nis is None for t in japan)
+    # No symbol currencies leak into currency_orig.
+    assert all(
+        t.currency_orig is None
+        or (t.currency_orig.isascii() and t.currency_orig.isalpha())
+        for t in result.transactions
+    )
+    # raw_row keeps the merchant-local sticker (normalized to JPY) for reference.
+    assert {t.raw_row["tx_ccy"] for t in japan} == {"JPY"}
+    assert {t.raw_row["charge_ccy"] for t in japan} == {"EUR"}
+
+
 def test_isracard_parser_detects_refund():
     from argosy.services.expense_ingest.parsers.isracard import parse
     result = parse(FIXTURES / "isracard_minimal.xlsx")
