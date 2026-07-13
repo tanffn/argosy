@@ -24,7 +24,7 @@ a magic constant:
 
   * **Fixed-income / cash** weight is DERIVED, not asserted. FI is sized as the
     MINIMUM weight (NVDA held fixed, the other equity sleeves kept at their agreed
-    ratios, FI split cash/short-IG bonds by ``CASH_FRAC_OF_FI``) at which the
+    ratios, FI held entirely as cash/T-bills) at which the
     allocation's COVARIANCE-blended sigma (``sigma_glidepath.covariance_sigma``)
     sits on the phase-aware anchor. The anchor is risk-tolerance POLICY: in the
     accumulation phase (salary covers expenses, no withdrawals → no sequence risk)
@@ -79,12 +79,11 @@ from argosy.services.target_allocation_doc import AllocationInstrument
 NVDA_TARGET_PCT = 8.0
 assert NVDA_TARGET_PCT <= DEFAULT_NVDA_CAP_PCT * 100.0 + 1e-9
 
-# The FI sleeve is split into a liquid cash/T-bill tranche (home of the
-# earmarked ILS hedge + the 2-year deconcentration working capital + the
-# near-term bridge buffer) and a short-duration IG-bond tranche (yield on the
-# rest). Cash-heavy because bridge liquidity + the shekel-appreciation hedge
-# dominate the sleeve's job; a parameter, not a law.
-CASH_FRAC_OF_FI = 0.70
+# All derived FI is held in the liquid cash/T-bill sleeve: home of the earmarked
+# ILS hedge, the 2-year deconcentration working capital, and the near-term bridge
+# buffer. IB01 is the deployable primary; IBTA remains a zero-weight alternative
+# within the same sleeve.
+CASH_FRAC_OF_FI = 1.0
 
 # --- Alternatives sleeve (TEAM-SOURCED, not hardcoded). ----------------------
 # The Alternatives sleeve's SIZE and INSTRUMENTS are derived by the agent fleet
@@ -569,7 +568,7 @@ def _renormalise(
     high_growth_pct: float = 0.0,
 ) -> dict[str, float]:
     """Hold NVDA + FI + Alternatives + High-growth fixed; distribute the rest among
-    the equity sleeves at their agreed ratios; split FI into cash + short-IG bonds.
+    the equity sleeves at their agreed ratios; hold all FI in cash/T-bills.
 
     The team-sourced Alternatives and High-growth weights are subtracted off the
     book BEFORE the equity sleeves are sized (they displace the non-NVDA risky
@@ -585,8 +584,7 @@ def _renormalise(
         weights[_ALTERNATIVES_LABEL] = alternatives_pct
     if high_growth_pct > 0:
         weights[HIGH_GROWTH_LABEL] = high_growth_pct
-    weights["Cash & T-bills (incl. ILS tranche)"] = fi_pct * CASH_FRAC_OF_FI
-    weights["Short-duration IG bonds"] = fi_pct * (1.0 - CASH_FRAC_OF_FI)
+    weights[CASH_LABEL] = fi_pct
     return weights
 
 
@@ -701,6 +699,14 @@ _FI_CASH = AllocationClass(
                 "estate_tax_nonresidents.md."
             ),
         ),
+        AllocationInstrument(
+            symbol="IBTA", role="alt", weight_within_class_pct=0.0, domicile="IE",
+            rationale=(
+                "1-3yr US Treasuries via Irish UCITS IBTA — held alt inside Cash & T-bills "
+                "(owner reclass from retired Short-duration IG bonds). Deploy prefers IB01; "
+                "IBTA remains estate-safe UCITS membership in this sleeve."
+            ),
+        ),
     ),
 )
 _FI_BONDS = AllocationClass(
@@ -763,9 +769,7 @@ def _apply_authored_overrides(
     is the downstream risk/invariant gate's job to flag a sigma-anchor breach —
     not the engine's to warn or clamp.
 
-    CASH_FRAC_OF_FI: the 70/30 cash/short-IG split is NOT re-enforced when only
-    one FI sub-sleeve is overridden granularly (accepted limitation of granular
-    authored overrides).
+    All derived FI is represented by the single Cash & T-bills sleeve.
     """
     if not authored_overrides:
         return weights
@@ -966,14 +970,13 @@ def build_target_allocation(
             instruments=_NVDA_SLEEVE.instruments,
         )
     )
-    cash_pct = round(weights["Cash & T-bills (incl. ILS tranche)"], 2)
-    bonds_pct = round(weights["Short-duration IG bonds"], 2)
+    cash_pct = round(weights[CASH_LABEL], 2)
+    bonds_pct = 0.0
     classes.append(AllocationClass(**{**_FI_CASH.__dict__, "target_pct": cash_pct}))
-    classes.append(AllocationClass(**{**_FI_BONDS.__dict__, "target_pct": bonds_pct}))
 
     # Derive the reported fi_pct / nvda_pct from the post-override weights so the
     # TargetAllocation summary fields stay consistent with the class target_pcts.
-    reported_fi_pct = round(cash_pct + bonds_pct, 2)
+    reported_fi_pct = cash_pct
     reported_nvda_pct = round(weights[_NVDA_SLEEVE.label], 2)
     reported_alternatives_pct = (
         round(weights[_ALTERNATIVES_LABEL], 2) if alternatives_pct > 0 else 0.0
@@ -1009,7 +1012,7 @@ def build_target_allocation(
     )
     residual = (
         "FI sizing — derived to the phase anchor via the covariance blend (NVDA fixed, "
-        "70/30 cash/short-IG). Caveats: correlation tiers are documented strategic "
+        "all FI held in Cash & T-bills). Caveats: correlation tiers are documented strategic "
         "long-run estimates (an adversarial reviewer can reconcile them in sigma_glidepath), "
         "and the MC holds mu_real constant regardless of FI (sees the volatility benefit, "
         "not the return drag). | Strategic-NVDA: panel lenses spanned 10-13 direct; "
