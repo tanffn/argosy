@@ -323,3 +323,79 @@ def test_sub_shekel_movement_warns(sync_session):
     assert c.balance_continuous is False
     assert c.delta == Decimal("-0.50")
     assert receipt.warnings
+
+
+# ---------------------------------------------------------------------------
+# Interleaved coverage: the gap checker pairs a new statement with its
+# nearest NON-overlapping neighbour; statements that overlap the new one can
+# fully cover the in-between days (live false positives 2026-07-13: '104
+# days uncovered' NIS and '128 days uncovered' USD).
+# ---------------------------------------------------------------------------
+
+def test_gap_covered_by_interleaved_statement_no_warning(sync_session):
+    """A (Jan) .. C (Apr15+) pairs with a day-gap, but B (Feb..May) covers
+    every in-between day → no missing-transactions warning even though the
+    non-adjacent closing/opening balances differ wildly."""
+    db = sync_session
+    src = _source(db)
+    a = _statement(db, src, start=date(2026, 1, 1), end=date(2026, 1, 31))
+    _tx(db, src, a, merchant="X", amount=50, occurred_on=date(2026, 1, 31),
+        direction="debit", balance="72727.11")
+    b = _statement(db, src, start=date(2026, 2, 1), end=date(2026, 5, 10))
+    _tx(db, src, b, merchant="Y", amount=50, occurred_on=date(2026, 3, 1),
+        direction="debit", balance="60000")
+    c = _statement(db, src, start=date(2026, 4, 15), end=date(2026, 7, 10))
+    _tx(db, src, c, merchant="Z", amount=50, occurred_on=date(2026, 4, 20),
+        direction="debit", balance="44753.61")
+    db.commit()
+    receipt = reconcile_statement(db, user_id=USER, source_id=src, statement_id=c)
+    pair = [r for r in receipt.continuities if r.earlier_statement_id == a]
+    assert pair, "expected the (a, c) pair to be checked"
+    assert pair[0].has_gap is False
+    assert pair[0].warning is None
+    assert not receipt.warnings
+
+
+def test_gap_partially_covered_still_warns(sync_session):
+    """Interleaved statement covers only part of the span → still a warning
+    (conservative: any truly uncovered day keeps the alert)."""
+    db = sync_session
+    src = _source(db)
+    a = _statement(db, src, start=date(2026, 1, 1), end=date(2026, 1, 8))
+    _tx(db, src, a, merchant="X", amount=50, occurred_on=date(2026, 1, 8),
+        direction="debit", balance="1000")
+    # Covers Jan 9-10 only; Jan 11-13 remain uncovered.
+    mid = _statement(db, src, start=date(2026, 1, 9), end=date(2026, 1, 10))
+    _tx(db, src, mid, merchant="M", amount=10, occurred_on=date(2026, 1, 9),
+        direction="debit", balance="990")
+    b = _statement(db, src, start=date(2026, 1, 14), end=date(2026, 1, 16))
+    _tx(db, src, b, merchant="Y", amount=50, occurred_on=date(2026, 1, 14),
+        direction="debit", balance="800")
+    db.commit()
+    receipt = reconcile_statement(db, user_id=USER, source_id=src, statement_id=b)
+    # Nearest non-overlapping earlier is `mid` (ends Jan 10); the Jan 11-13
+    # hole has no interleaved coverage → the warning must survive.
+    pair = [r for r in receipt.continuities if r.earlier_statement_id == mid]
+    assert pair
+    assert pair[0].has_gap is True
+    assert pair[0].warning is not None
+
+
+def test_covered_by_others_merges_touching_intervals():
+    """Pure-function check: two touching intervals jointly cover the span."""
+    from types import SimpleNamespace
+
+    from argosy.services.expense_ingest.statement_reconciliation import (
+        _covered_by_others,
+    )
+
+    others = [
+        SimpleNamespace(period_start=date(2026, 1, 5), period_end=date(2026, 1, 10)),
+        SimpleNamespace(period_start=date(2026, 1, 11), period_end=date(2026, 1, 20)),
+    ]
+    assert _covered_by_others(date(2026, 1, 6), date(2026, 1, 19), others) is True
+    # Hole on Jan 21 — span extends past coverage.
+    assert _covered_by_others(date(2026, 1, 6), date(2026, 1, 21), others) is False
+    # Hole between non-touching intervals.
+    others[1] = SimpleNamespace(period_start=date(2026, 1, 12), period_end=date(2026, 1, 20))
+    assert _covered_by_others(date(2026, 1, 6), date(2026, 1, 19), others) is False

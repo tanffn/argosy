@@ -200,12 +200,55 @@ def _dedup_overlap(
     return removed, overlapping_ids
 
 
+def _covered_by_others(
+    span_start, span_end, others: list[ExpenseStatement],
+) -> bool:
+    """True when every day of ``[span_start, span_end]`` lies inside the
+    union of the other statements' periods.
+
+    The gap checker pairs a new statement with its nearest NON-overlapping
+    neighbour, so a rolling export can pair across statements that fully
+    cover the in-between days (live false positives 2026-07-13: '104 days
+    uncovered' NIS and '128 days uncovered' USD, both covered by
+    interleaved uploads). A day-gap between such a pair is not missing
+    data and the closing→opening balance delta across it is meaningless.
+    """
+    if span_start > span_end:
+        return True
+    intervals = sorted(
+        (s.period_start, s.period_end) for s in others
+        if s.period_end >= span_start and s.period_start <= span_end
+    )
+    cursor = span_start
+    for a, b in intervals:
+        if a > cursor:
+            return False  # a day before this interval is uncovered
+        if b >= cursor:
+            cursor = b + timedelta(days=1)
+        if cursor > span_end:
+            return True
+    return cursor > span_end
+
+
 def _continuity_between(
     session: "Session", earlier: ExpenseStatement, later: ExpenseStatement,
+    *, interleaved: list[ExpenseStatement] | None = None,
 ) -> ContinuityResult:
-    """Gap + balance continuity from ``earlier`` (closes) to ``later`` (opens)."""
+    """Gap + balance continuity from ``earlier`` (closes) to ``later`` (opens).
+
+    ``interleaved``: the source's OTHER statements — a day-gap between the
+    pair that they fully cover is suppressed (no missing-transactions or
+    balance-delta warning; the endpoints aren't adjacent in that case).
+    """
     gap_days = (later.period_start - earlier.period_end).days
     has_gap = gap_days > 1  # D → D+1 is contiguous, not a gap
+    if has_gap and interleaved:
+        if _covered_by_others(
+            earlier.period_end + timedelta(days=1),
+            later.period_start - timedelta(days=1),
+            interleaved,
+        ):
+            has_gap = False  # fully covered by interleaved statements
     # Uncovered span = the calendar days strictly between the two statements
     # (gap_days is boundary distance; missing-day count is one less).
     uncovered_days = max(0, gap_days - 1)
@@ -259,11 +302,17 @@ def _check_neighbours(
     earlier_candidates = [s for s in others if s.period_end <= new_stmt.period_start]
     if earlier_candidates:
         prior = max(earlier_candidates, key=lambda s: s.period_end)
-        results.append(_continuity_between(session, prior, new_stmt))
+        rest = [s for s in others if s.id != prior.id]
+        results.append(
+            _continuity_between(session, prior, new_stmt, interleaved=rest)
+        )
     later_candidates = [s for s in others if s.period_start >= new_stmt.period_end]
     if later_candidates:
         nxt = min(later_candidates, key=lambda s: s.period_start)
-        results.append(_continuity_between(session, new_stmt, nxt))
+        rest = [s for s in others if s.id != nxt.id]
+        results.append(
+            _continuity_between(session, new_stmt, nxt, interleaved=rest)
+        )
     return results
 
 
