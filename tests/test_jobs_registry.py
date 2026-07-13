@@ -806,17 +806,27 @@ def test_fire_once_matches_parent_body() -> None:
     from argosy.services.jobs.registered_scheduler import RegisteredScheduler
 
     parent_src = inspect.getsource(Scheduler._fire_once)
-    locked = inspect.getsource(RegisteredScheduler.fire_once_already_locked)
+    # The tick body lives in _fire_once_already_locked_inner since the
+    # in-flight bracket was centralized (fire_once_already_locked is now
+    # the _mark_inflight wrapper that delegates to the inner body).
+    wrapper = inspect.getsource(RegisteredScheduler.fire_once_already_locked)
+    inner = inspect.getsource(
+        RegisteredScheduler._fire_once_already_locked_inner
+    )
+
+    # Both fire paths must mark in-flight (double-fire guard contract).
+    assert "_mark_inflight" in parent_src
+    assert "_mark_inflight" in wrapper
 
     # Both must contain the exact tick invocation token sequence.
     assert "await loop.tick(now=self.clock)" in parent_src
-    assert "await loop.tick(now=self.clock)" in locked, (
+    assert "await loop.tick(now=self.clock)" in inner, (
         "Override must call loop.tick with the same shape as the parent."
     )
 
     # Both must use _record_tick with the same TickStatus enum.
-    assert "TickStatus.OK" in locked
-    assert "TickStatus.ERROR" in locked
+    assert "TickStatus.OK" in inner
+    assert "TickStatus.ERROR" in inner
 
 
 @pytest.mark.asyncio
