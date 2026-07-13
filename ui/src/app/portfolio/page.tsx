@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
@@ -8,7 +7,7 @@ import { PerPositionThesisSection } from "@/components/positions/per-position-th
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { AllocationBreakdownCard } from "@/components/portfolio/allocation-breakdown-card";
 import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
-import { HoldingHoverCard } from "@/components/portfolio/holding-hover-card";
+import { HoldingHoverCard, VerdictHoverCard } from "@/components/portfolio/holding-hover-card";
 import { InstrumentClassMapCard } from "@/components/portfolio/instrument-class-map-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { RealEstateCard } from "@/components/portfolio/real-estate-card";
@@ -32,30 +31,6 @@ import {
 } from "@/lib/portfolio/position-sections";
 
 const USER_ID = "ariel";
-
-// Hold/Buy/Sell column on per-account tables (2026-05-29). Verdict
-// comes from the per-position thesis on the current accepted plan
-// draft. Tones picked so the most-frequent verdicts (HOLD on most
-// positions) read as neutral; only BUY/ADD (green) and TRIM/SELL
-// (rose) draw the eye.
-const VERDICT_CLASS: Record<PositionThesisDTO["verdict"], string> = {
-  HOLD: "text-muted-foreground border-border/40 bg-secondary/40",
-  BUY: "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
-  ADD: "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
-  TRIM: "text-amber-400 border-amber-400/40 bg-amber-400/10",
-  SELL: "text-rose-400 border-rose-400/40 bg-rose-400/10",
-};
-
-function formatReviewedAt(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
 
 export default function PortfolioPage() {
   const [snap, setSnap] = useState<PortfolioSnapshotDTO | null>(null);
@@ -115,7 +90,7 @@ export default function PortfolioPage() {
 
   // Per-account table sorting (applies to every account table). Click a
   // sortable header to sort; click again to flip direction.
-  type SortKey = "symbol" | "sleeve" | "value" | "verdict";
+  type SortKey = "symbol" | "sleeve" | "value" | "alloc" | "verdict";
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   // Page-level exclude-NVDA toggle — drives the composition donuts AND the
@@ -127,7 +102,7 @@ export default function PortfolioPage() {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      setSortDir(key === "value" ? "desc" : "asc");
+      setSortDir(key === "value" || key === "alloc" ? "desc" : "asc");
     }
   }
   // Verdict ranked by actionability (BUY/ADD → SELL); unrated sorts last.
@@ -137,6 +112,20 @@ export default function PortfolioPage() {
   function sleeveOf(p: PortfolioPosition): string {
     return (p.sleeve || p.type_label || p.asset_type || "").trim();
   }
+  /** Table-only short labels — hover/API keep the canonical full string. */
+  function sleeveTableLabel(full: string): string {
+    if (full === "Global quality growth (ex-NVDA-dense)") {
+      return "Global quality growth";
+    }
+    if (full === "Cash & T-bills (incl. ILS tranche)") {
+      return "Cash & T-bills";
+    }
+    return full;
+  }
+  function allocPct(p: PortfolioPosition): number | null {
+    if (p.usd_value_k == null || liquidTotalK <= 0) return null;
+    return (100 * p.usd_value_k) / liquidTotalK;
+  }
   function sortPositions(positions: PortfolioPosition[]): PortfolioPosition[] {
     if (!sortKey) return positions;
     const dir = sortDir === "asc" ? 1 : -1;
@@ -144,6 +133,7 @@ export default function PortfolioPage() {
       if (sortKey === "symbol") return (p.symbol || p.details || "").toLowerCase();
       if (sortKey === "sleeve") return sleeveOf(p).toLowerCase();
       if (sortKey === "value") return p.usd_value_k ?? -Infinity;
+      if (sortKey === "alloc") return allocPct(p) ?? -Infinity;
       const v = thesisByTicker[(p.symbol || "").toUpperCase()]?.verdict;
       return v ? (VERDICT_ORDER[v] ?? 98) : 99;
     };
@@ -377,7 +367,14 @@ export default function PortfolioPage() {
                     className="py-2 text-right cursor-pointer hover:text-foreground"
                     onClick={() => toggleSort("value")}
                   >
-                    Value (K USD){sortKey === "value" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                    K USD{sortKey === "value" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
+                  <th
+                    className="py-2 text-right cursor-pointer hover:text-foreground"
+                    onClick={() => toggleSort("alloc")}
+                    title="% of liquid portfolio"
+                  >
+                    Alloc %{sortKey === "alloc" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
                   </th>
                   <th
                     className="py-2 text-right cursor-pointer hover:text-foreground"
@@ -395,7 +392,7 @@ export default function PortfolioPage() {
                   const symbolLabel = isCash
                     ? `Cash (${(p.currency || "").toUpperCase() || "—"})`
                     : p.symbol || p.details || "—";
-                  const reviewed = formatReviewedAt(thesis?.last_fleet_check_at);
+                  const pct = allocPct(p);
                   return (
                     <tr
                       key={`${p.location}-${p.symbol || p.details}-${i}`}
@@ -413,8 +410,11 @@ export default function PortfolioPage() {
                           )}
                         </HoldingHoverCard>
                       </td>
-                      <td className="py-1.5 text-muted-foreground">
-                        {sleeveOf(p) || "—"}
+                      <td
+                        className="py-1.5 text-muted-foreground"
+                        title={sleeveOf(p) || undefined}
+                      >
+                        {sleeveTableLabel(sleeveOf(p)) || "—"}
                         {sleeveOf(p) === "Unmapped — needs classification" && (
                           <div className="text-[10px] text-amber-400 font-normal">
                             needs classification
@@ -443,7 +443,7 @@ export default function PortfolioPage() {
                             className="text-[10px] text-amber-400"
                             title="US-situs — exposed to US estate tax (40% above $60k) for a non-US person"
                           >
-                            ⚠ US-situs
+                            ⚠ US
                           </span>
                         )}
                       </td>
@@ -456,37 +456,15 @@ export default function PortfolioPage() {
                       <td className="py-1.5 text-right">
                         {p.usd_value_k !== null ? p.usd_value_k.toLocaleString() : "—"}
                       </td>
+                      <td
+                        className="py-1.5 text-right tabular-nums text-muted-foreground"
+                        title="% of liquid portfolio"
+                      >
+                        {pct != null ? `${pct.toFixed(1)}%` : "—"}
+                      </td>
                       <td className="py-1.5 text-right">
                         {thesis ? (
-                          <div className="inline-flex flex-col items-end gap-0.5">
-                            <Link
-                              href="/positions"
-                              title={
-                                `Conviction: ${thesis.conviction}` +
-                                (thesis.falsifier_state === "none_recorded"
-                                  ? " · ⚠ no falsifiers recorded"
-                                  : ` · falsifiers ${thesis.falsifier_state}`) +
-                                (thesis.last_fleet_check_at
-                                  ? ` · reviewed ${thesis.last_fleet_check_at}`
-                                  : " · reviewed_at missing") +
-                                ` — ${thesis.reasoning_md.slice(0, 160)}`
-                              }
-                              className={`inline-block px-2 py-0.5 rounded border text-[10px] font-medium tabular-nums hover:opacity-80 transition-opacity ${VERDICT_CLASS[thesis.verdict]}`}
-                            >
-                              {thesis.verdict}
-                              {thesis.falsifier_state === "none_recorded" ? " ⚠" : ""}
-                            </Link>
-                            <span
-                              className="text-[10px] text-muted-foreground/70 font-normal"
-                              title={
-                                thesis.last_fleet_check_at
-                                  ? `holding_reviews.reviewed_at = ${thesis.last_fleet_check_at}`
-                                  : "No holding_reviews.reviewed_at yet"
-                              }
-                            >
-                              {reviewed ? `reviewed ${reviewed}` : "undated"}
-                            </span>
-                          </div>
+                          <VerdictHoverCard thesis={thesis} />
                         ) : (
                           <span className="text-muted-foreground/60">—</span>
                         )}
