@@ -1276,7 +1276,16 @@ def get_allocation_breakdown(
     # dependence — so memoize on the version tuple + the one query param.
     version = derived_cache.version_tuple(db, user_id)
     if version is not None:
-        version = version + ("allocation-breakdown", exclude_nvda)
+        # The instrument→plan-class map is NOT in version_tuple, so a seed /
+        # owner-reassign would otherwise serve stale buckets until the plan or
+        # snapshot changed. Fold its fingerprint into the key.
+        from argosy.services.instrument_plan_class import classification_fingerprint
+
+        version = version + (
+            "allocation-breakdown",
+            exclude_nvda,
+            classification_fingerprint(db, user_id),
+        )
     return derived_cache.get_or_compute(
         "portfolio.allocation-breakdown", version, _compute
     )

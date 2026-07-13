@@ -99,6 +99,29 @@ class ClassificationEntry:
     updated_at: datetime | None = None
 
 
+def classification_fingerprint(session: Session, user_id: str) -> tuple:
+    """Cheap staleness key for ``user_id``'s instrument→class map.
+
+    ``(row_count, max_updated_at_iso)`` — busts a derived-cache key on any
+    seed / owner-reassign / fleet write, so cached surfaces that group by
+    ``resolve_sleeve_label`` recompute. Returns ``(0, None)`` on any error
+    (degrades to a stable-but-recomputable key). NOT a security boundary.
+    """
+    from sqlalchemy import func
+
+    try:
+        row = session.execute(
+            select(
+                func.count(InstrumentPlanClass.id),
+                func.max(InstrumentPlanClass.updated_at),
+            ).where(InstrumentPlanClass.user_id == user_id)
+        ).one()
+        stamp = row[1].isoformat() if row[1] is not None else None
+        return (int(row[0] or 0), stamp)
+    except Exception:  # noqa: BLE001 — never raise from a cache-key helper
+        return (0, None)
+
+
 def load_classification_map(
     session: Session, user_id: str
 ) -> dict[str, ClassificationEntry]:
@@ -383,6 +406,7 @@ __all__ = [
     "SOURCE_FLEET",
     "SOURCE_OWNER",
     "ClassificationEntry",
+    "classification_fingerprint",
     "load_classification_map",
     "resolve_sleeve_label",
     "seed_from_plan",
