@@ -809,7 +809,7 @@ class SourceHealthEntry(BaseModel):
     parsed_total_nis: float | None
     declared_total_nis: float | None
     gap: float | None
-    status: str                   # green | yellow | red | unknown
+    status: str                   # green | yellow | red | n/a
     statement_count: int
     correlated_card_payments: int
 
@@ -1026,14 +1026,9 @@ class DashboardMonthly(BaseModel):
 
 
 def _gap_status(gap: float | None) -> str:
-    if gap is None:
-        return "unknown"
-    a = abs(gap)
-    if a < 0.5:
-        return "green"
-    if a < 5.0:
-        return "yellow"
-    return "red"
+    """Backward-compat wrapper — prefer ``statement_status`` for Status pills."""
+    from argosy.services.expense_ingest.source_status import declared_gap_status
+    return declared_gap_status(gap)
 
 
 # Dividend detection: Leumi USD account rows wear Hebrew descriptors
@@ -1493,6 +1488,8 @@ def dashboard_overview(
     months_list = sorted(month_acc.values(), key=lambda e: e.month)[-months:]
 
     # 2. Sources health
+    from argosy.services.expense_ingest.source_status import statement_status
+
     sources_health: list[SourceHealthEntry] = []
     for src_row in db.query(ExpenseSource).filter_by(
         user_id=user_id, active=True,
@@ -1511,13 +1508,20 @@ def dashboard_overview(
         corr_n = db.query(ExpenseTransaction).filter_by(
             source_id=src_row.id, user_id=user_id, is_card_payment=True,
         ).count()
+        status = (
+            statement_status(
+                db, user_id=user_id, source=src_row, statement=latest,
+            )
+            if latest is not None
+            else "n/a"
+        )
         sources_health.append(SourceHealthEntry(
             source_id=src_row.id, display_name=src_row.display_name,
             issuer=src_row.issuer, external_id=src_row.external_id,
             last_period=latest.period_end if latest else None,
             parsed_total_nis=float(latest.parsed_total_nis) if latest and latest.parsed_total_nis is not None else None,
             declared_total_nis=float(latest.declared_total_nis) if latest and latest.declared_total_nis is not None else None,
-            gap=gap, status=_gap_status(gap),
+            gap=gap, status=status,
             statement_count=stmt_n,
             correlated_card_payments=corr_n,
         ))
@@ -2029,24 +2033,28 @@ def source_detail(
         source_id=src.id, user_id=user_id,
     ).order_by(ExpenseStatement.period_start).all()
     out_stmts: list[StatementSummary] = []
+    from argosy.services.expense_ingest.source_status import statement_status
+
     for st in stmts:
-        tx_n = db.query(ExpenseTransaction).filter_by(
+        tx_rows = db.query(ExpenseTransaction).filter_by(
             statement_id=st.id, user_id=user_id,
-        ).count()
-        corr_n = db.query(ExpenseTransaction).filter_by(
-            statement_id=st.id, user_id=user_id, is_card_payment=True,
-        ).count()
+        ).all()
+        tx_n = len(tx_rows)
+        corr_n = sum(1 for t in tx_rows if t.is_card_payment)
         gap = (
             float(st.parsed_total_nis or 0) - float(st.declared_total_nis)
             if st.declared_total_nis is not None
             else None
+        )
+        status = statement_status(
+            db, user_id=user_id, source=src, statement=st, txs=tx_rows,
         )
         out_stmts.append(StatementSummary(
             id=st.id,
             period_start=st.period_start, period_end=st.period_end,
             parsed_total_nis=float(st.parsed_total_nis) if st.parsed_total_nis is not None else None,
             declared_total_nis=float(st.declared_total_nis) if st.declared_total_nis is not None else None,
-            gap=gap, status=_gap_status(gap),
+            gap=gap, status=status,
             parser_name=st.parser_name, parser_version=st.parser_version,
             transaction_count=tx_n, correlated_count=corr_n,
             parse_error=st.parse_error,

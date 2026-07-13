@@ -19,6 +19,7 @@ const STATUS_DOT = {
   green: "bg-success",
   yellow: "bg-warning",
   red: "bg-error",
+  "n/a": "bg-muted-foreground/40",
   unknown: "bg-muted-foreground/40",
 } as const;
 

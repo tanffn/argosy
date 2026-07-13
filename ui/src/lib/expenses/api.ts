@@ -146,7 +146,7 @@ export interface SourceHealthEntry {
   parsed_total_nis: number | null;
   declared_total_nis: number | null;
   gap: number | null;
-  status: "green" | "yellow" | "red" | "unknown";
+  status: "green" | "yellow" | "red" | "n/a";
   statement_count: number;
   correlated_card_payments: number;
 }
@@ -305,7 +305,7 @@ export interface StatementSummary {
   parsed_total_nis: number | null;
   declared_total_nis: number | null;
   gap: number | null;
-  status: "green" | "yellow" | "red" | "unknown";
+  status: "green" | "yellow" | "red" | "n/a";
   parser_name: string;
   parser_version: string;
   transaction_count: number;
