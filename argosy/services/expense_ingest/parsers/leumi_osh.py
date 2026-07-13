@@ -34,7 +34,7 @@ _LEUMI_ACCOUNT_RE = re.compile(
 _LEUMI_BIDI_MARKS_RE = re.compile(r"[‎‏‪-‮]")
 
 
-def _extract_account_number(path: Path) -> str | None:
+def _extract_account_number(path: Path, *, text: str | None = None) -> str | None:
     """Read the Leumi HTML and pull the account number from the header.
 
     Leumi statements include a Hebrew label like 'חשבון 882-44745280' or
@@ -44,10 +44,11 @@ def _extract_account_number(path: Path) -> str | None:
     prefix so the returned external_id is the bare 8-digit account number.
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        if text is None:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            text = _LEUMI_BIDI_MARKS_RE.sub("", text)
     except OSError:
         return None
-    text = _LEUMI_BIDI_MARKS_RE.sub("", text)
     m = _LEUMI_ACCOUNT_RE.search(text)
     if not m:
         return None
@@ -99,6 +100,11 @@ def parse(path: Path) -> ParseResult:
     rows whose col 0 isn't a parseable DD/MM/YYYY date (filters trailing
     disclaimer rows that have non-null but non-date content).
     """
+    # Shared custody guard — a NIS/non-USD securities-custody export used
+    # to reach this parser with no check (currency where spend math lives).
+    from argosy.services.expense_ingest.parsers.leumi_html import raise_if_custody
+    text = raise_if_custody(path)
+
     tables = pd.read_html(path, encoding="utf-8")
     tx_table = max(tables, key=lambda t: t.shape[0])
     data = tx_table.iloc[2:].copy()
@@ -169,7 +175,7 @@ def parse(path: Path) -> ParseResult:
         source_hint=SourceHint(
             kind="bank",
             issuer="leumi",
-            external_id=_extract_account_number(path) or "",
+            external_id=_extract_account_number(path, text=text) or "",
             display_name="Leumi current account",
         ),
     )

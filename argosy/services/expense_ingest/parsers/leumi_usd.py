@@ -28,49 +28,22 @@ from pathlib import Path
 import pandas as pd
 
 from argosy.services.expense_ingest.normalize import normalize
+from argosy.services.expense_ingest.parsers.leumi_html import (
+    LeumiCustodyViewError,
+    raise_if_custody,
+    read_leumi_html,
+)
 from argosy.services.expense_ingest.parsers.leumi_osh import (
-    _LEUMI_BIDI_MARKS_RE, _to_float,
+    _to_float,
 )
 from argosy.services.expense_ingest.types import (
     NormalizedTransaction, ParseResult, SourceHint, StatementMeta,
 )
 
-PARSER_VERSION = "0.2.0"
+PARSER_VERSION = "0.3.0"
 
-
-class LeumiCustodyViewError(ValueError):
-    """The file is the foreign-securities CUSTODY sub-account view
-    ('ני"ע נסחרים בחו"ל'), not the פמ"ח cash ledger.
-
-    Both sub-accounts share the exact same report header ('בנק לאומי -
-    תנועות בחשבון מט"ח') and the same top account number, so the sniffer
-    cannot tell them apart. The custody view lists value-date clearing
-    pairs — every trade appears as a debit plus a mirroring credit
-    netting to zero (clearing legs labelled 'נ"ע-פעולה'), with a
-    pending-obligations counter in the balance column that dips negative.
-    Ingesting it double-counts trades already booked in the cash ledger
-    (live incident 2026-07-13: 20 phantom rows, $215k phantom credits).
-    """
-
-
-# Header discriminator: the account-descriptor cell of the custody view
-# carries 'נסחרים' ("traded [abroad]"); some exports render the label in
-# visual (reversed) Hebrew order, hence the mirrored marker too. The cash
-# view's label carries 'פמ"ח' instead. NOTE: the header is the ONLY valid
-# discriminator — row descriptions are NOT (the real cash ledger also
-# carries 'נ"ע-פעולה' settlement rows, verified against live samples).
-_CUSTODY_HEADER_MARKERS = ("נסחרים", "םירחסנ")
-
-
-def is_custody_view(path: Path) -> bool:
-    """Cheap header sniff: True when this export is the securities-custody
-    sub-account view rather than the פמ"ח cash ledger."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")[:20_000]
-    except OSError:
-        return False
-    text = _LEUMI_BIDI_MARKS_RE.sub("", text)
-    return any(m in text for m in _CUSTODY_HEADER_MARKERS)
+# Re-export for callers/tests that import from this module.
+__all_custody__ = ("LeumiCustodyViewError",)
 
 
 # Leumi USD ('פמ"ח') exports place the account digits much further from the
@@ -83,19 +56,27 @@ _LEUMI_USD_ACCOUNT_RE = re.compile(
 )
 
 
-def _extract_account_number_usd(path: Path) -> str | None:
+def is_custody_view(path: Path) -> bool:
+    """Cheap header sniff — delegates to the shared fail-closed helper."""
+    from argosy.services.expense_ingest.parsers.leumi_html import (
+        is_custody_view as _shared,
+    )
+    return _shared(path)
+
+
+def _extract_account_number_usd(path: Path, *, text: str | None = None) -> str | None:
     """Pull the 8-digit account number from a Leumi USD HTML export.
 
     The header carries it as 'NNNNNN/NN NNN' (the 'NNN' suffix is a
     branch-style code: '094' for the foreign-currency desk). We grab
-    just the 'NNNNNN/NN' chunk and strip the slash.
+    just the 'NNNNNN/NN' chunk and strip the slash. Reuses ``text`` when
+    the caller already read the file (one-read contract).
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        body = text if text is not None else read_leumi_html(path)
     except OSError:
         return None
-    text = _LEUMI_BIDI_MARKS_RE.sub("", text)
-    m = _LEUMI_USD_ACCOUNT_RE.search(text)
+    m = _LEUMI_USD_ACCOUNT_RE.search(body)
     if not m:
         return None
     digits = "".join(c for c in m.group(1) if c.isdigit())
@@ -122,14 +103,11 @@ def parse(path: Path) -> ParseResult:
     header). We iterate each row, skip non-date rows, and emit one
     NormalizedTransaction per data row.
     """
-    if is_custody_view(path):
-        raise LeumiCustodyViewError(
-            f"{path.name} is the foreign-securities custody view "
-            "(ני\"ע נסחרים בחו\"ל) of the Leumi account, not the פמ\"ח cash "
-            "ledger — its rows are value-date clearing pairs that would "
-            "double-count trades already booked in the cash statement. "
-            "Export the פמ\"ח (עו\"ש מט\"ח) sub-account instead."
-        )
+    # One read: custody guard + account extraction share the same text.
+    # (pd.read_html re-reads for the table — unavoidable without a
+    # StringIO bridge; the expensive Google Drive round-trip for the
+    # guard/account path is what we collapse.)
+    text = raise_if_custody(path)
 
     tables = pd.read_html(path, encoding="utf-8")
     tx_table = max(tables, key=lambda t: t.shape[0])
@@ -227,8 +205,9 @@ def parse(path: Path) -> ParseResult:
         source_hint=SourceHint(
             kind="bank",
             issuer="leumi",
-            external_id=_extract_account_number_usd(path) or "",
+            external_id=_extract_account_number_usd(path, text=text) or "",
             cardholder_name=None,
             display_name="Leumi USD account",
         ),
     )
+

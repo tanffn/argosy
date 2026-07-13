@@ -83,3 +83,24 @@ def test_sniff_leumi_nis_live_fixture_stays_osh():
 def test_sniff_leumi_synthetic_minimal_stays_osh():
     """The synthetic NIS fixture must remain LEUMI_OSH (no דולר marker)."""
     assert detect_format(FIXTURES / "leumi_osh_minimal.xls") == ParserName.LEUMI_OSH
+
+
+def test_sniff_raises_on_leumi_custody(tmp_path):
+    """Custody HTML must raise LeumiCustodyViewError at sniff, not route to cash."""
+    from argosy.services.expense_ingest.parsers.leumi_html import LeumiCustodyViewError
+
+    html = (
+        '<HTML dir="RTL"><head><META http-equiv="Content-Type" '
+        'content="text/html; charset=utf-8"></head><body>'
+        '<span>בנק לאומי - תנועות בחשבון מט"ח</span>'
+        '<span>חשבון:</span><span>‏ל"וחב םירחסנ ע"ינ‏ ‎447452/00 968‎ דולר ארה"ב</span>'
+        '<table><tr><td>תאריך</td><td>תיאור</td><td>תאור מורחב</td><td>אסמכתא</td>'
+        '<td>חובה</td><td>זכות</td><td>יתרה</td></tr>'
+        '<tr><td>16/06/26</td><td>נ"ע-פעולה</td><td></td><td>813322</td><td></td>'
+        '<td>5,499.90</td><td>-48,418.00</td></tr></table></body></HTML>'
+    )
+    p = tmp_path / 'custody.xls'
+    p.write_text(html, encoding='utf-8')
+    with pytest.raises(LeumiCustodyViewError):
+        detect_format(p)
+

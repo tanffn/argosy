@@ -310,6 +310,14 @@ def audit_file(root: Path, path: Path) -> AuditRow:
             sanity="n/a",
         )
     except Exception as e:  # noqa: BLE001
+        from argosy.services.expense_ingest.parsers.leumi_html import (
+            LeumiCustodyViewError,
+        )
+        if isinstance(e, LeumiCustodyViewError):
+            return AuditRow(
+                rel_path=rel, status="SKIPPED",
+                skip_reason="securities custody view (rejected by design)",
+            )
         return AuditRow(
             rel_path=rel, status="ERROR", sniffed="?",
             notes=f"sniff raised {type(e).__name__}: {e}",
@@ -334,7 +342,7 @@ def audit_file(root: Path, path: Path) -> AuditRow:
         else:
             result = parse_fn(path)
     except Exception as e:  # noqa: BLE001 — loud failure is the point
-        from argosy.services.expense_ingest.parsers.leumi_usd import (
+        from argosy.services.expense_ingest.parsers.leumi_html import (
             LeumiCustodyViewError,
         )
         if isinstance(e, LeumiCustodyViewError):
