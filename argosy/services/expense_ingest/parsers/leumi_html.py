@@ -6,6 +6,15 @@ number. Discriminating them by a fixed prefix length is unsafe — the
 header offset drifted ~1.6k chars Jun→Jul 2026 and a custody marker can
 silently slip past a 20k cut (false-ACCEPT → $215k-class double-count).
 
+Sub-account semantics (owner-confirmed 2026-07-13): the custody/trade
+sub-account (e.g. suffix 968) is the LEADING ledger — trades appear
+there T+0 and merge into the main cash sub-account (e.g. 094) a few
+days later. The main account is LAGGING but COMPLETE (it also carries
+lines the trade view never shows, e.g. interest/dividend 'נ"ע רבית/דו').
+Ingest therefore accepts ONLY the main cash view: ingesting both
+double-counts every trade once it merges. The trade view is fine for
+eyeballing the last few days at the bank — it is just not ledger data.
+
 Contract:
   * Read the file ONCE; callers reuse the returned text.
   * Anchor on the account-descriptor region (first ``חשבון`` onward),
@@ -133,11 +142,12 @@ def raise_if_custody(path: Path, *, text: str | None = None) -> str:
     view = classify_leumi_account_view(body)
     if view is LeumiAccountView.CUSTODY:
         raise LeumiCustodyViewError(
-            f"{path.name} is the foreign-securities custody view "
-            "(ני\"ע נסחרים בחו\"ל) of the Leumi account, not a cash "
-            "ledger — its rows are value-date clearing pairs that would "
-            "double-count trades already booked in the cash statement. "
-            "Export the פמ\"ח (עו\"ש מט\"ח) or Osh cash sub-account instead."
+            f"{path.name} is the securities TRADE sub-account view "
+            "(ני\"ע נסחרים בחו\"ל) — the leading ledger whose rows merge "
+            "into the main cash account a few days later, so ingesting it "
+            "double-counts every trade. Export the MAIN cash sub-account "
+            "(פמ\"ח / עו\"ש מט\"ח — the one that also shows רבית/דיבידנד "
+            "lines) instead; it lags a few days but is complete."
         )
     return body
 
