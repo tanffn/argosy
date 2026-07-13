@@ -544,9 +544,15 @@ def project_thesis_dtos(
     return out
 
 
+def clear_thesis_cache() -> None:
+    """Drop the in-process plan-thesis cache (e.g. after a code-gate change)."""
+    _THESIS_CACHE.clear()
+
+
 __all__ = [
     "DEFAULT_MAX_AGE_SECONDS",
     "OPEN_PROPOSAL_STATUSES",
+    "clear_thesis_cache",
     "get_stances",
     "project_thesis_dtos",
     "rebuild_stances",

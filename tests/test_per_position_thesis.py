@@ -213,7 +213,11 @@ def test_ucits_replacement_xeon_appears_as_add_card():
     )
     pv = _plan_version(horizon_short=horizon_short)
     snap = _portfolio(positions)
-    out = derive_position_theses(pv, snap, [])
+    # XEON is a real plan-named UCITS cash ETF; may be absent from
+    # instrument_reference — pass via allowed_symbols (plan instrument set).
+    out = derive_position_theses(
+        pv, snap, [], allowed_symbols={"XEON"},
+    )
 
     # XEON should appear as an ADD card (not in portfolio).
     xeon = next((c for c in out if c.ticker == "XEON"), None)
@@ -223,6 +227,8 @@ def test_ucits_replacement_xeon_appears_as_add_card():
     assert xeon.current_usd_value is None
     # Conviction with zero analyst data is LOW per spec.
     assert xeon.conviction == "LOW"
+    # Prose "UCITS" must not become its own ADD card.
+    assert not any(c.ticker == "UCITS" for c in out)
 
 
 def test_ticker_with_empty_analyst_data_holds_with_low_conviction():

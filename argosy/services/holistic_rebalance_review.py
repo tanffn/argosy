@@ -791,6 +791,8 @@ def _load_position_verdicts(session: Any, user_id: str, pv: Any, snapshot: Any) 
             plan_version=pv,
             portfolio_snapshot=snapshot,
             agent_reports=reports,
+            session=session,
+            user_id=user_id,
         )
     except Exception:  # noqa: BLE001
         logger.warning("rebalance_review: per-position derivation failed", exc_info=True)

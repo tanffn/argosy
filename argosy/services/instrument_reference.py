@@ -239,6 +239,15 @@ _COLLISION_OVERRIDES: tuple[tuple[str, str, InstrumentRef], ...] = (
 )
 
 
+def known_symbols() -> frozenset[str]:
+    """Upper-cased tickers in the curated reference table.
+
+    Used by thesis/stance "should-add" extraction to reject prose acronyms
+    (IPS, UCITS, FIRE, …) that match the ticker regex but aren't instruments.
+    """
+    return frozenset(_REFERENCE.keys())
+
+
 def lookup(symbol: str, details: str = "") -> InstrumentRef | None:
     """Return the canonical reference for a resolved ticker, or ``None`` when
     the instrument isn't in the curated table and no name-keyword/Israeli
@@ -367,6 +376,6 @@ def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
     return f"{ref.structure} · {ref.sector}"
 
 
-__all__ = ["InstrumentRef", "lookup", "estate_safe_for", "type_label",
-           "name_for", "REGION_US", "REGION_ISRAEL", "REGION_EUROPE",
-           "REGION_EM", "REGION_GLOBAL", "REGION_OTHER"]
+__all__ = ["InstrumentRef", "lookup", "known_symbols", "estate_safe_for",
+           "type_label", "name_for", "REGION_US", "REGION_ISRAEL",
+           "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL", "REGION_OTHER"]

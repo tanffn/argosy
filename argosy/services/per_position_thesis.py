@@ -157,11 +157,38 @@ def _extract_candidate_tickers(text: str) -> set[str]:
     Filters out a small stop-list of all-caps English words that aren't
     tickers (US, IT, OK, NO, OR, BE, ...). Captures 1-10 char uppercase
     tokens; UCITS tickers like ``CSPX``, ``XEON``, ``FWRA`` all fit.
+
+    Callers MUST still intersect the result with a real instrument
+    universe (held ∪ plan-named ∪ instrument_reference) before creating
+    ADD cards — the stop-list alone cannot catch prose acronyms like
+    IPS / FIRE / TIPS.
     """
     if not text:
         return set()
     tokens = _TICKER_RE.findall(text)
     return {t for t in tokens if t.upper() not in _STOP_WORDS}
+
+
+def _add_ticker_universe(
+    held: set[str],
+    allowed_symbols: set[str] | frozenset[str] | None = None,
+) -> set[str]:
+    """Real-instrument gate for ADD-card candidates.
+
+    Universe = held snapshot symbols ∪ plan/classification extras ∪
+    ``instrument_reference.known_symbols()``. Anything outside this set
+    (IPS, UCITS, FIRE, …) is prose noise, not a position.
+    """
+    from argosy.services.instrument_reference import known_symbols
+
+    universe: set[str] = {s.upper() for s in held if s} | set(known_symbols())
+    if allowed_symbols:
+        universe |= {
+            (s or "").strip().upper()
+            for s in allowed_symbols
+            if (s or "").strip()
+        }
+    return universe
 
 
 # Common all-caps words that match the ticker regex but aren't tickers.
@@ -527,6 +554,30 @@ def _ticker_to_position(positions: list[dict[str, Any]]) -> dict[str, dict[str, 
 # ---------------------------------------------------------------------------
 
 
+def _load_allowed_symbols(
+    session: Any,
+    user_id: str,
+    plan_version: Any,
+) -> set[str]:
+    """Plan instruments ∪ instrument_plan_classes — extras for the ADD universe."""
+    out: set[str] = set()
+    try:
+        from argosy.services.allocation_breakdown import _plan_symbol_labels
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+
+        doc = load_plan_target_allocation(plan_version)
+        out |= {s.upper() for s in _plan_symbol_labels(doc)}
+    except Exception:  # noqa: BLE001 — never block thesis derivation
+        logger.warning("plan-named symbols load failed", exc_info=True)
+    try:
+        from argosy.services.instrument_plan_class import load_classification_map
+
+        out |= {s.upper() for s in load_classification_map(session, user_id)}
+    except Exception:  # noqa: BLE001
+        logger.warning("instrument_plan_classes symbols load failed", exc_info=True)
+    return out
+
+
 def derive_position_theses(
     plan_version: Any,
     portfolio_snapshot: Any,
@@ -534,6 +585,7 @@ def derive_position_theses(
     *,
     session: Any = None,
     user_id: str | None = None,
+    allowed_symbols: set[str] | frozenset[str] | None = None,
 ) -> list[PositionThesis]:
     """Derive one thesis card per held ticker, plus "should add" cards.
 
@@ -556,16 +608,32 @@ def derive_position_theses(
             ``reliability_annotations`` list (spec C commit #6 / §6.3).
             Best-effort: any failure is logged and the annotations
             list stays empty so the primary derivation path is
-            unaffected.
+            unaffected. Also used (with ``user_id``) to load plan-named
+            / classification symbols into the ADD universe when
+            ``allowed_symbols`` is omitted.
         user_id: tenant id; required when ``session`` is provided
             (multi-tenant ready per SDD §12.5). Defaults to None
             → annotations stay empty.
+        allowed_symbols: optional extra symbols treated as real
+            instruments (plan-named tickers / ``instrument_plan_classes``
+            keys). Unioned with held snapshot symbols and
+            ``instrument_reference.known_symbols()`` before any ADD
+            card is created — prose acronyms outside that universe are
+            dropped. When omitted and ``session``+``user_id`` are set,
+            loaded automatically from the plan + classification map.
 
     Returns:
         list[PositionThesis] sorted so current holdings come first
         (by ``current_usd_value`` desc), with "should add" cards
         appended at the end.
     """
+
+    if (
+        allowed_symbols is None
+        and session is not None
+        and user_id
+    ):
+        allowed_symbols = _load_allowed_symbols(session, user_id, plan_version)
 
     # ---- Normalize inputs --------------------------------------------------
     def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -726,6 +794,7 @@ def derive_position_theses(
 
     # ---- "Should add" tickers ---------------------------------------------
     held_set = set(held_map.keys())
+    universe = _add_ticker_universe(held_set, allowed_symbols)
     candidate_tickers: set[str] = set()
     for h_payload in horizon_payloads.values():
         for a in h_payload.get("actions") or []:
@@ -743,7 +812,10 @@ def derive_position_theses(
             )
             candidate_tickers |= _extract_candidate_tickers(text)
 
-    add_candidates = sorted(candidate_tickers - held_set)
+    # Universe gate: prose acronyms (IPS, UCITS, FIRE, TIPS, …) match the
+    # ticker regex but are not instruments — drop anything outside
+    # held ∪ plan-named ∪ instrument_reference before creating ADD cards.
+    add_candidates = sorted((candidate_tickers & universe) - held_set)
     add_cards: list[PositionThesis] = []
     for ticker in add_candidates:
         all_targets: list[dict[str, Any]] = []
