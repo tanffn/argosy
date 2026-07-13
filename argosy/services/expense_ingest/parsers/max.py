@@ -206,7 +206,7 @@ def _parse_rolling(path: Path, *, last4_hint: str | None = None) -> ParseResult:
     # then caller hint, then the '<last4>_' filename convention.
     last4 = None
     title = str(df.iat[0, 0]) if not pd.isna(df.iat[0, 0]) else ""
-    m_title = re.search(r"לכרטיס\s+\S+\s+(\d{4})", title)
+    m_title = re.search(r"לכרטיס\s+\S+\s+(\d{4})\b", title)
     if m_title:
         last4 = m_title.group(1)
     if last4 is None:
