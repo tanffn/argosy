@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -61,6 +61,15 @@ export function YearlySummaryCard({
       return next;
     });
 
+  const displayCats = useMemo(
+    () =>
+      groupByTaxonomyParent(
+        data.top_categories_12m,
+        data.yearly_spending_total_nis,
+      ),
+    [data.top_categories_12m, data.yearly_spending_total_nis],
+  );
+
   if (data.months_covered === 0) {
     return (
       <Card>
@@ -105,10 +114,6 @@ export function YearlySummaryCard({
     ? lastDayOfMonth(data.window_end_month)
     : null;
 
-  const displayCats = groupByTaxonomyParent(
-    data.top_categories_12m,
-    data.yearly_spending_total_nis,
-  );
   // Collapse counts top-level rows only so "Show top 10" isn't diluted
   // by nested children.
   const topLevelOrdered = displayCats.filter((c) => c.depth === 0);
@@ -207,10 +212,10 @@ export function YearlySummaryCard({
                           "capitalize flex-1 min-w-0 truncate"
                           + (c.slug ? " group-hover:underline" : "")
                           + (c.depth === 1 ? " pl-4 text-muted-foreground" : "")
-                          + (c.childKeys ? " font-medium" : "")
+                          + (c.slug === null ? " font-medium" : "")
                         }
                       >
-                        {c.childKeys
+                        {c.slug === null
                           ? `${expandedParents.has(c.key) ? "▾" : "▸"} ${c.label_en}`
                           : c.depth === 1
                             ? `↳ ${c.label_en}`

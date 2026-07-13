@@ -1536,14 +1536,21 @@ def dashboard_overview(
          -ExpenseTransaction.amount_nis),
         else_=ExpenseTransaction.amount_nis,
     )
+    # Taxonomy parent via outerjoin (merchants-endpoint pattern) — scoped
+    # to categories that appear in THIS user's spending rollup. Avoids the
+    # prior full-table category scan that could bleed cross-tenant labels.
+    ParentCat = aliased(ExpenseCategory)
     spending_12m_rows = db.execute(
         sa_select(
             ExpenseCategory.slug, ExpenseCategory.label_en,
+            ParentCat.slug.label("parent_slug"),
+            ParentCat.label_en.label("parent_label"),
             func.sum(signed_nis).label("total"),
             func.count().label("n"),
         )
         .join(ExpenseTransaction,
               ExpenseTransaction.category_id == ExpenseCategory.id)
+        .outerjoin(ParentCat, ParentCat.id == ExpenseCategory.parent_id)
         .where(ExpenseTransaction.user_id == user_id)
         .where(ExpenseTransaction.is_card_payment.is_(False))
         .where(ExpenseTransaction.amount_nis.is_not(None))
@@ -1551,29 +1558,16 @@ def dashboard_overview(
         .where(ExpenseTransaction.occurred_on <= anchor)
         .where(ExpenseCategory.is_excluded_from_spend.is_(False))
         .where(ExpenseCategory.is_inflow.is_(False))
-        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
+        .group_by(
+            ExpenseCategory.slug, ExpenseCategory.label_en,
+            ParentCat.slug, ParentCat.label_en,
+        )
         .order_by(func.sum(signed_nis).desc())
     ).all()
     yearly_spending_total_nis = sum(
         float(r.total or 0) for r in spending_12m_rows
     )
     spending_pct_base = yearly_spending_total_nis or 1.0
-    # Taxonomy parent per leaf slug — the UI groups leaves under
-    # collapsible parent rows (Vacation, Car, Housing, …).
-    cat_rows_all = db.execute(
-        sa_select(
-            ExpenseCategory.id, ExpenseCategory.slug,
-            ExpenseCategory.label_en, ExpenseCategory.parent_id,
-        )
-        # System rows first so user-scoped rows overwrite in parent_by_slug.
-        .order_by(ExpenseCategory.user_id.isnot(None))
-    ).all()
-    cat_by_pk = {c.id: c for c in cat_rows_all}
-    parent_by_slug: dict[str, tuple[str, str]] = {}
-    for c in cat_rows_all:
-        p = cat_by_pk.get(c.parent_id) if c.parent_id is not None else None
-        if p is not None:
-            parent_by_slug[c.slug] = (p.slug, p.label_en)
     # ALL spending categories with a non-zero total — sorted desc by total_nis
     # (the underlying SQL already ORDER BY desc). Frontend may paginate /
     # show-all as desired. Filter zero-totals defensively.
@@ -1583,8 +1577,8 @@ def dashboard_overview(
             total_nis=float(r.total or 0),
             transaction_count=int(r.n or 0),
             percent=float(r.total or 0) / spending_pct_base * 100.0,
-            parent_slug=parent_by_slug.get(r.slug, (None, None))[0],
-            parent_label=parent_by_slug.get(r.slug, (None, None))[1],
+            parent_slug=r.parent_slug,
+            parent_label=r.parent_label,
         )
         for r in spending_12m_rows
         if float(r.total or 0) > 0
