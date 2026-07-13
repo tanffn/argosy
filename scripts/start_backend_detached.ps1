@@ -20,6 +20,18 @@ param(
 
 $Root = Split-Path -Parent $PSScriptRoot
 if (-not $env:ARGOSY_HOME) { $env:ARGOSY_HOME = $Root }
+
+# Idempotency guard: a second supervisor must never stack on a running one
+# (observed 2026-07-13: two full supervisor+uvicorn stacks fighting over the
+# port). Also makes the logon-startup registration safe to fire when the
+# backend was already started by hand.
+$existing = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object { $_.CommandLine -match 'run_backend_service\.py' }
+if ($existing) {
+    Write-Host "Backend supervisor already running (PID $($existing[0].ProcessId)) - nothing to do."
+    exit 0
+}
+
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $Python)) {
     Write-Error "Missing venv python at $Python"
