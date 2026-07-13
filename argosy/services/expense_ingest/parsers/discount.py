@@ -33,6 +33,12 @@ PARSER_VERSION = "0.1.0"
 
 _DOMESTIC_SHEET = "עסקאות במועד החיוב"
 _FOREIGN_SHEET = 'עסקאות חו"ל ומט"ח'
+# Immediate-charge sheet (ATM / debit-now). Present on some monthly exports
+# (live: 2923/07_2026.xlsx) — same 16-col layout as domestic/foreign.
+_IMMEDIATE_SHEET = "עסקאות בחיוב מיידי"
+
+# Public so format_audit can detect unconsumed 'עסקאות…' sheets.
+CONSUMED_SHEETS = frozenset({_DOMESTIC_SHEET, _FOREIGN_SHEET, _IMMEDIATE_SHEET})
 
 _TX_TYPE_MAP = {
     "רגילה": "regular",
@@ -161,7 +167,7 @@ def parse(path: Path) -> ParseResult:
     txs: list[NormalizedTransaction] = []
     last4: str | None = None
 
-    for sheet_name in (_DOMESTIC_SHEET, _FOREIGN_SHEET):
+    for sheet_name in (_DOMESTIC_SHEET, _FOREIGN_SHEET, _IMMEDIATE_SHEET):
         if sheet_name not in sheets:
             continue
         df = pd.read_excel(path, sheet_name=sheet_name, header=None)

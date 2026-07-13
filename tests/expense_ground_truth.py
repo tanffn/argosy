@@ -168,7 +168,11 @@ def discount_oracle(path: Path) -> GroundTruth:
     Sums col 5 (סכום חיוב) across both sheets, signed.
     """
     xl = pd.ExcelFile(path)
-    expected_sheets = {"עסקאות במועד החיוב", 'עסקאות חו"ל ומט"ח'}
+    expected_sheets = {
+        "עסקאות במועד החיוב",
+        'עסקאות חו"ל ומט"ח',
+        "עסקאות בחיוב מיידי",  # ATM / immediate-charge (same 16-col layout)
+    }
     sheets = [s for s in xl.sheet_names if s in expected_sheets]
     if not sheets:
         raise ValueError(
