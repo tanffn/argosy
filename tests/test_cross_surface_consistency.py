@@ -59,7 +59,7 @@ def _canonical_doc():
         nvda_tradeable_pct=64.86,
         ex_nvda_categories=_EX_NVDA,
         low_vol_target=by_label["US low-volatility equity"],
-        bonds_target=by_label["Short-duration IG bonds"],
+        cash_target=by_label["Cash & T-bills (incl. ILS tranche)"],
     )
     return build_target_allocation_doc(today=_TODAY, today_composition=comp)
 
@@ -94,12 +94,12 @@ def test_doc_is_the_seeded_single_source(tmp_path) -> None:
     doc = load_plan_target_allocation(get_current_plan(db, "ariel"))
     assert doc is not None
     assert doc.glide[0].composition_pct_by_class[NVDA_LABEL] == pytest.approx(64.86, abs=0.01)
-    assert doc.glide[-1].composition_pct_by_class[NVDA_LABEL] == pytest.approx(12.0, abs=0.01)
+    assert doc.glide[-1].composition_pct_by_class[NVDA_LABEL] == pytest.approx(8.0, abs=0.01)
 
 
 def test_plan_glidepath_reconciles_to_the_canonical_doc(tmp_path) -> None:
     """T2.1 target: /plan glidepath renders the doc's glide (full-book, NVDA
-    64.86 -> 12), NOT the snapshot's other-singles 18.21 nor LLM SynthTargets."""
+    64.86 -> 8), NOT the snapshot's other-singles 18.21 nor LLM SynthTargets."""
     db = _seed_plan_with_doc(tmp_path)
     gp = compute_allocation_glidepath(db, "ariel", _TODAY)
 
@@ -113,8 +113,8 @@ def test_plan_glidepath_reconciles_to_the_canonical_doc(tmp_path) -> None:
         f"t0 NVDA band must be the full-book 64.86 (got {nvda_t0}); the "
         "other-singles 18.21 is the root-confusion bug this guardrail kills"
     )
-    assert nvda_end == pytest.approx(12.0, abs=1.5), (
-        f"glidepath must deconcentrate NVDA to the 12 target (got {nvda_end})"
+    assert nvda_end == pytest.approx(8.0, abs=1.5), (
+        f"glidepath must deconcentrate NVDA to the 8 target (got {nvda_end})"
     )
 
 
@@ -130,7 +130,7 @@ def test_portfolio_pie_reconciles_to_the_canonical_doc() -> None:
 
     nvda = by_cat[NVDA_LABEL]
     assert nvda.pct == pytest.approx(64.86, abs=0.01)        # current == glide q0
-    assert nvda.target_pct == pytest.approx(12.0, abs=0.01)  # target == glide q8
+    assert nvda.target_pct == pytest.approx(8.0, abs=0.01)   # target == glide q8
 
     q0 = doc.glide[0].composition_pct_by_class
     qN = doc.glide[-1].composition_pct_by_class
@@ -142,7 +142,7 @@ def test_portfolio_pie_reconciles_to_the_canonical_doc() -> None:
 def test_retirement_glide_reconciles_to_the_canonical_doc() -> None:
     """T2.3/T2.5 — the /retirement equity/bond/cash glide projects the doc's
     target allocation (the plan's equity-heavy mix), not a textbook age curve:
-    bonds/cash are the doc's FI split, equity is everything else, sum == 100."""
+    Cash is the doc's FI sleeve, equity is everything else, sum == 100."""
     from argosy.services.target_allocation_doc import doc_equity_bond_cash
 
     doc = _canonical_doc()

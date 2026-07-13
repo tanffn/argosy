@@ -144,11 +144,12 @@ def test_doc_equity_bond_cash_aggregates_by_sigma_class() -> None:
     )
     eq, bd, cs = doc_equity_bond_cash(doc)
     assert eq + bd + cs == pytest.approx(100.0, abs=0.1)
-    # equity dominates (NVDA + the equity sleeves); bonds + cash are the FI split
+    # equity dominates (NVDA + the equity sleeves); all derived FI is held as Cash
     assert eq > bd and eq > cs
-    assert bd > 0 and cs > 0
-    # NVDA (concentrated_equity, 12%) folds into equity, not its own bucket
-    assert eq >= 12.0
+    assert bd == pytest.approx(0.0)
+    assert cs > 0
+    # NVDA (concentrated_equity, 8%) folds into equity, not its own bucket
+    assert eq >= 8.0
 
 
 def test_load_plan_target_allocation_parses_when_set() -> None:
@@ -188,13 +189,13 @@ _SNAPSHOT_EX_NVDA = {
 def test_derive_full_book_composition_matches_codex_verified() -> None:
     """Reconciles to the codex danger-full-access verdict against the live DB:
     NVDA 64.86% (concentration report, NOT the snapshot 'Individual Stocks'),
-    ex-NVDA categories scaled by (100-64.86)/100, Defensive split low-vol/bonds
+    ex-NVDA categories scaled by (100-64.86)/100, Defensive split low-vol/Cash
     by target ratio, other-singles modeled as a distinct redeploy band."""
     comp = derive_full_book_today_composition(
         nvda_tradeable_pct=64.86,
         ex_nvda_categories=_SNAPSHOT_EX_NVDA,
         low_vol_target=5.56,
-        bonds_target=6.39,
+        cash_target=6.39,
     )
     assert sum(comp.values()) == pytest.approx(100.0, abs=0.01)
     assert comp["Strategic single-stock (NVDA)"] == pytest.approx(64.86)
@@ -204,8 +205,8 @@ def test_derive_full_book_composition_matches_codex_verified() -> None:
     # growth ALONE (10.9 x 0.3514), NOT folded with the other singles
     assert comp["Global quality growth (ex-NVDA-dense)"] == pytest.approx(3.8303, abs=0.001)
     assert comp["US low-volatility equity"] == pytest.approx(1.8083, abs=0.001)
-    assert comp["Short-duration IG bonds"] == pytest.approx(2.0782, abs=0.001)
-    assert comp["Cash & T-bills (incl. ILS tranche)"] == pytest.approx(4.5471, abs=0.001)
+    assert "Short-duration IG bonds" not in comp
+    assert comp["Cash & T-bills (incl. ILS tranche)"] == pytest.approx(6.6253, abs=0.001)
     assert comp["Real assets (REIT/TIPS)"] == pytest.approx(0.0, abs=0.001)
     # the non-NVDA singles are an honest, distinct redeploy band (-> glides to 0)
     assert comp[OTHER_SINGLES_LABEL] == pytest.approx(6.399, abs=0.001)
@@ -233,7 +234,7 @@ def test_derive_full_book_composition_conserves_on_total_book_basis() -> None:
         nvda_tradeable_pct=62.52,
         ex_nvda_categories=ex_nvda_total_basis,
         low_vol_target=5.92,
-        bonds_target=2.40,
+        cash_target=2.40,
     )
     assert sum(comp.values()) == pytest.approx(100.0, abs=0.5)
     assert comp["Strategic single-stock (NVDA)"] == pytest.approx(62.52)
@@ -306,7 +307,7 @@ def test_derived_composition_drives_a_two_sided_glide() -> None:
         nvda_tradeable_pct=64.86,
         ex_nvda_categories=_SNAPSHOT_EX_NVDA,
         low_vol_target=5.56,
-        bonds_target=6.39,
+        cash_target=6.39,
     )
     doc = build_target_allocation_doc(
         today=date(2026, 6, 9), today_composition=comp, quarters=8

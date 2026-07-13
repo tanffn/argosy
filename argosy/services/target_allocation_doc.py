@@ -218,7 +218,7 @@ def derive_full_book_today_composition(
     nvda_tradeable_pct: float,
     ex_nvda_categories: dict[str, float],
     low_vol_target: float,
-    bonds_target: float,
+    cash_target: float,
 ) -> dict[str, float]:
     """Today's composition on the FULL tradeable book basis, keyed by engine label.
 
@@ -231,7 +231,7 @@ def derive_full_book_today_composition(
     book sums to ~100.
 
     Special cases:
-      * ``defensive`` splits between US low-vol + short IG bonds proportional to
+      * ``defensive`` splits between US low-vol + Cash proportional to
         their engine target weights (the glidepath's shared-category rule);
       * ``individual stocks`` (the non-NVDA singles) becomes the redeploy band
         ``OTHER_SINGLES_LABEL`` (glides to 0 — no target sleeve);
@@ -276,14 +276,16 @@ def derive_full_book_today_composition(
         renorm = (pct * 100.0 / ex_sum) if ex_sum > 0 else 0.0
         scaled = renorm * mult
         if cat == "defensive":
-            denom = low_vol_target + bonds_target
+            denom = low_vol_target + cash_target
             if denom <= 0:
                 comp["US low-volatility equity"] = comp.get("US low-volatility equity", 0.0) + scaled
                 continue
             comp["US low-volatility equity"] = (
                 comp.get("US low-volatility equity", 0.0) + scaled * low_vol_target / denom)
-            comp["Short-duration IG bonds"] = (
-                comp.get("Short-duration IG bonds", 0.0) + scaled * bonds_target / denom)
+            comp["Cash & T-bills (incl. ILS tranche)"] = (
+                comp.get("Cash & T-bills (incl. ILS tranche)", 0.0)
+                + scaled * cash_target / denom
+            )
         elif cat == "individual stocks":
             comp[OTHER_SINGLES_LABEL] = comp.get(OTHER_SINGLES_LABEL, 0.0) + scaled
         else:
@@ -506,7 +508,7 @@ def load_full_book_today_composition(
         nvda_tradeable_pct=nvda_pct,
         ex_nvda_categories=ex_nvda,
         low_vol_target=by_label.get("US low-volatility equity", 0.0),
-        bonds_target=by_label.get("Short-duration IG bonds", 0.0),
+        cash_target=by_label.get("Cash & T-bills (incl. ILS tranche)", 0.0),
     )
 
 
