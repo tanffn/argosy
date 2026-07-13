@@ -6,11 +6,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  type CategorySpend,
   type YearlySummary,
   type YearlyWindow,
 } from "@/lib/expenses/api";
 import { colorForSlug, formatNIS, formatPercent } from "@/lib/expenses/format";
+import { groupByTaxonomyParent, slugForColor } from "@/lib/expenses/group-by-taxonomy-parent";
 
 interface YearlySummaryCardProps {
   data: YearlySummary;
@@ -20,108 +20,6 @@ interface YearlySummaryCardProps {
 }
 
 const COLLAPSED_ROWS = 10;
-
-interface DisplayCategory {
-  key: string;
-  /** Leaf slug used for the transactions deep-link; null for synthetic
-   *  parent rows (children keep their own links). */
-  slug: string | null;
-  label_en: string;
-  total_nis: number;
-  transaction_count: number;
-  percent: number;
-  depth: 0 | 1;
-  /** Set on depth-0 parent rows: keys of the leaves nested under it. */
-  childKeys?: string[];
-  /** Set on depth-1 rows: key of the parent row they belong to. */
-  parentKey?: string;
-}
-
-/** Group leaves under their taxonomy parents (backend-supplied
- *  parent_slug/parent_label). Parents with 2+ spending leaves become
- *  collapsible rows summing their children; single-leaf parents stay
- *  flat (no point folding "Groceries" under "Food"). Leaves without a
- *  parent render flat. */
-function groupByTaxonomyParent(
-  cats: CategorySpend[],
-  spendingTotal: number,
-): DisplayCategory[] {
-  const denom = spendingTotal || 1;
-  const byParent = new Map<string, CategorySpend[]>();
-  const flat: CategorySpend[] = [];
-  for (const c of cats) {
-    if (c.parent_slug) {
-      const group = byParent.get(c.parent_slug) ?? [];
-      group.push(c);
-      byParent.set(c.parent_slug, group);
-    } else {
-      flat.push(c);
-    }
-  }
-
-  const topLevel: DisplayCategory[] = flat.map((c) => ({
-    key: c.slug,
-    slug: c.slug,
-    label_en: c.label_en,
-    total_nis: c.total_nis,
-    transaction_count: c.transaction_count,
-    percent: c.percent,
-    depth: 0,
-  }));
-  const childrenByParent = new Map<string, DisplayCategory[]>();
-
-  for (const [parentSlug, kids] of byParent) {
-    if (kids.length === 1) {
-      const c = kids[0];
-      topLevel.push({
-        key: c.slug,
-        slug: c.slug,
-        label_en: c.label_en,
-        total_nis: c.total_nis,
-        transaction_count: c.transaction_count,
-        percent: c.percent,
-        depth: 0,
-      });
-      continue;
-    }
-    const total = kids.reduce((s, c) => s + c.total_nis, 0);
-    const count = kids.reduce((s, c) => s + c.transaction_count, 0);
-    topLevel.push({
-      key: parentSlug,
-      slug: null,
-      label_en: kids[0].parent_label ?? parentSlug,
-      total_nis: total,
-      transaction_count: count,
-      percent: (total / denom) * 100,
-      depth: 0,
-      childKeys: kids.map((c) => c.slug),
-    });
-    childrenByParent.set(
-      parentSlug,
-      [...kids]
-        .sort((a, b) => b.total_nis - a.total_nis)
-        .map((c) => ({
-          key: c.slug,
-          slug: c.slug,
-          label_en: c.label_en,
-          total_nis: c.total_nis,
-          transaction_count: c.transaction_count,
-          percent: c.percent,
-          depth: 1 as const,
-          parentKey: parentSlug,
-        })),
-    );
-  }
-
-  topLevel.sort((a, b) => b.total_nis - a.total_nis);
-  const ordered: DisplayCategory[] = [];
-  for (const p of topLevel) {
-    ordered.push(p);
-    const kids = childrenByParent.get(p.key);
-    if (kids) ordered.push(...kids);
-  }
-  return ordered;
-}
 
 function lastDayOfMonth(yyyymm: string): string {
   const [y, m] = yyyymm.split("-").map(Number);
@@ -334,7 +232,7 @@ export function YearlySummaryCard({
                         className="h-full rounded-full transition-all"
                         style={{
                           width: `${pctOfMax}%`,
-                          backgroundColor: colorForSlug(c.slug ?? c.key),
+                          backgroundColor: colorForSlug(slugForColor(c.key, c.slug)),
                           opacity: c.depth === 1 ? 0.7 : 1,
                         }}
                       />
