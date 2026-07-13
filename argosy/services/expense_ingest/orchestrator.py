@@ -96,6 +96,8 @@ class IngestResult:
     # is ``transactions_inserted - overlap_duplicates_removed``. Kept separate so
     # the figure can never read negative (codex nit).
     overlap_duplicates_removed: int = 0
+    # Rows whose tag list changed via expense_tag_rules on this ingest.
+    tags_applied: int = 0
 
 
 def _ensure_categories_seeded(session: Session, user_id: str) -> None:
@@ -304,6 +306,20 @@ def ingest_user_file(
         session, user_id, lookback_days=refund_cfg.lookback_days,
     )
 
+    # Brush-paint tag rules: exact merchant[+category] → tag. Runs after
+    # categorization/refunds so category-scoped rules see the resolved slug.
+    tags_applied = 0
+    try:
+        from argosy.services.expense_tag_rules import apply_tag_rules
+
+        with session.begin_nested():
+            tags_applied = apply_tag_rules(session, user_id)
+    except Exception as exc:  # noqa: BLE001 — never fail ingest on tagging
+        logging.getLogger(__name__).warning(
+            "expense_tag_rules.apply_failed",
+            extra={"user_id": user_id, "error": str(exc)},
+        )
+
     # Run all 5 non-LLM anomaly detectors (Buckets A/B-recurring/C/D) on
     # every successful ingest. Each detector is self-contained: it scans
     # the user's recent transactions, writes ExpenseReviewQueue rows
@@ -401,4 +417,5 @@ def ingest_user_file(
         parser_name=parser_name.value,
         reconciliation_warnings=reconciliation_warnings,
         overlap_duplicates_removed=overlap_removed,
+        tags_applied=tags_applied,
     )

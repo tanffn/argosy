@@ -16,6 +16,9 @@ interface TagEditorProps {
   currentTags: string[];
   onChanged?: (tags: string[]) => void;
   label?: string;          // overrides the trigger label; default '+ tag'
+  /** When set, offers "Always tag this merchant" → creates a tag rule. */
+  merchantNormalized?: string;
+  onRuleCreated?: (taggedCount: number) => void;
 }
 
 /**
@@ -23,26 +26,25 @@ interface TagEditorProps {
  *   - shows current tags with × to remove
  *   - text input + autocomplete suggestions sourced from /api/expenses/tags
  *   - quick-select for existing tags or 'Create "trip:foo"' on Enter.
- *
- * The component is uncontrolled w.r.t. the rendered tag list — it talks
- * directly to the API and reports back through `onChanged`. The popover
- * stays in sync on the next refresh by the parent.
+ *   - optional "Always tag this merchant" brush-rule checkbox.
  */
 export function TagEditor({
   txId, userId, currentTags, onChanged, label,
+  merchantNormalized, onRuleCreated,
 }: TagEditorProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const [alwaysTag, setAlwaysTag] = useState(false);
   // Local optimistic state — seeded from props on each open.
   const [localTags, setLocalTags] = useState<string[] | null>(null);
   const tags = localTags ?? currentTags;
   const [suggestions, setSuggestions] = useState<string[]>([]);
 
-  // Reset local state whenever the popover opens (cheap; no cascade).
   function openPopover() {
     setLocalTags(null);
     setDraft("");
+    setAlwaysTag(false);
     setOpen(true);
   }
 
@@ -64,9 +66,23 @@ export function TagEditor({
     if (!t || tags.includes(t)) return;
     setSaving(true);
     try {
-      const r = await expensesApi.addTag(txId, userId, t);
-      setLocalTags(r.tags);
-      onChanged?.(r.tags);
+      if (alwaysTag && merchantNormalized) {
+        const created = await expensesApi.createTagRule({
+          user_id: userId,
+          match_merchant_normalized: merchantNormalized,
+          tag: t,
+        });
+        // Ensure this row is tagged even if it somehow missed the retro apply.
+        const r = await expensesApi.addTag(txId, userId, t);
+        setLocalTags(r.tags);
+        onChanged?.(r.tags);
+        onRuleCreated?.(created.tagged_count);
+        setAlwaysTag(false);
+      } else {
+        const r = await expensesApi.addTag(txId, userId, t);
+        setLocalTags(r.tags);
+        onChanged?.(r.tags);
+      }
       setDraft("");
     } catch (e) {
       alert(`Failed: ${e}`);
@@ -124,6 +140,23 @@ export function TagEditor({
             autoFocus
             disabled={saving}
           />
+          {merchantNormalized && (
+            <label className="flex items-start gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={alwaysTag}
+                onChange={(e) => setAlwaysTag(e.target.checked)}
+                disabled={saving}
+              />
+              <span>
+                Always tag this merchant
+                <span className="block font-mono text-[11px] text-muted-foreground/80">
+                  {merchantNormalized}
+                </span>
+              </span>
+            </label>
+          )}
           <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
             {suggestions.map((s) => (
               <Button

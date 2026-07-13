@@ -25,6 +25,7 @@ from argosy.state.models import (
     ExpenseCategory,
     ExpenseSource,
     ExpenseStatement,
+    ExpenseTagRule,
     ExpenseTransaction,
     MerchantCategoryCache,
     UserFile,
@@ -2187,6 +2188,137 @@ def list_tags(
             if prefix is None or t.startswith(prefix):
                 seen.add(t)
     return TagsListResponse(tags=sorted(seen))
+
+
+# ---------------------------------------------------------------------------
+# Tag rules (brush-paint: merchant[+category] → tag)
+# ---------------------------------------------------------------------------
+
+
+class TagRuleCreateRequest(BaseModel):
+    user_id: str
+    match_merchant_normalized: str
+    tag: str
+    match_category_slug: str | None = None
+
+
+class TagRuleOut(BaseModel):
+    id: int
+    match_merchant_normalized: str
+    match_category_slug: str | None
+    tag: str
+    created_at: str | None = None
+
+
+class TagRuleCreateResponse(BaseModel):
+    rule: TagRuleOut
+    tagged_count: int
+
+
+class TagRulesListResponse(BaseModel):
+    rules: list[TagRuleOut]
+
+
+def _tag_rule_out(row: ExpenseTagRule) -> TagRuleOut:
+    created = row.created_at
+    return TagRuleOut(
+        id=row.id,
+        match_merchant_normalized=row.match_merchant_normalized,
+        match_category_slug=row.match_category_slug,
+        tag=row.tag,
+        created_at=created.isoformat() if created is not None else None,
+    )
+
+
+@router.post("/tag-rules", response_model=TagRuleCreateResponse)
+def create_expense_tag_rule(
+    body: TagRuleCreateRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> TagRuleCreateResponse:
+    """Create a brush rule and apply it retroactively to matching txs."""
+    from argosy.services.expense_tag_rules import create_tag_rule
+
+    try:
+        rule, tagged = create_tag_rule(
+            db,
+            body.user_id,
+            match_merchant_normalized=body.match_merchant_normalized,
+            tag=body.tag,
+            match_category_slug=body.match_category_slug,
+            apply_retroactive=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    db.commit()
+    return TagRuleCreateResponse(rule=_tag_rule_out(rule), tagged_count=tagged)
+
+
+@router.get("/tag-rules", response_model=TagRulesListResponse)
+def list_expense_tag_rules(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> TagRulesListResponse:
+    rows = (
+        db.query(ExpenseTagRule)
+        .filter_by(user_id=user_id)
+        .order_by(ExpenseTagRule.id.asc())
+        .all()
+    )
+    return TagRulesListResponse(rules=[_tag_rule_out(r) for r in rows])
+
+
+@router.delete("/tag-rules/{rule_id}")
+def delete_expense_tag_rule(
+    rule_id: int,
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str | int]:
+    """Delete a rule; leave existing tags on transactions untouched."""
+    row = (
+        db.query(ExpenseTagRule)
+        .filter_by(id=rule_id, user_id=user_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="tag rule not found")
+    db.delete(row)
+    db.commit()
+    return {"status": "deleted", "id": rule_id}
+
+
+class BulkAddTagRequest(BaseModel):
+    user_id: str
+    tag: str
+    transaction_ids: list[int] | None = None
+    merchant_normalized: str | None = None
+    category_slug: str | None = None
+
+
+class BulkAddTagResponse(BaseModel):
+    tagged_count: int
+
+
+@router.post("/transactions/tags/bulk-add", response_model=BulkAddTagResponse)
+def bulk_add_transaction_tag(
+    body: BulkAddTagRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> BulkAddTagResponse:
+    """Add one tag to a tx_ids list OR a merchant/category filter."""
+    from argosy.services.expense_tag_rules import bulk_add_tag
+
+    try:
+        n = bulk_add_tag(
+            db,
+            body.user_id,
+            body.tag,
+            transaction_ids=body.transaction_ids,
+            merchant_normalized=body.merchant_normalized,
+            category_slug=body.category_slug,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    db.commit()
+    return BulkAddTagResponse(tagged_count=n)
 
 
 class CurrencyAmount(BaseModel):

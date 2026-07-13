@@ -1340,6 +1340,7 @@ __all__ = [
     "ExpenseStatement",
     "ExpenseCategory",
     "ExpenseTransaction",
+    "ExpenseTagRule",
     "MerchantCategoryCache",
     "ExpenseReviewQueue",
     # FX rate cache (Wave EX1.1 — migration 0023)
@@ -1516,6 +1517,45 @@ class ExpenseTransaction(Base):
     )
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class ExpenseTagRule(Base):
+    """Durable merchant [+ optional category] → tag brush rule.
+
+    Exact-match on ``match_merchant_normalized`` (and ``match_category_slug``
+    when set). Applied on ingest and retroactively on create. Migration 0094.
+    """
+
+    __tablename__ = "expense_tag_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    match_merchant_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
+    match_category_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "match_merchant_normalized",
+            "match_category_slug",
+            "tag",
+            name="uq_expense_tag_rules_user_merchant_cat_tag",
+        ),
+        Index(
+            "ix_expense_tag_rules_user_merchant",
+            "user_id",
+            "match_merchant_normalized",
+        ),
     )
 
 

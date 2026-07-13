@@ -3,11 +3,12 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { LabelEditor } from "@/components/expenses/label-editor";
+import { TagRulesPanel } from "@/components/expenses/tag-rules-panel";
 import { TransactionsTable } from "@/components/expenses/transactions-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { LabelEditor } from "@/components/expenses/label-editor";
 import {
   expensesApi,
   transactionsApi,
@@ -29,6 +30,9 @@ function TransactionsPageInner() {
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [labelEditorOpen, setLabelEditorOpen] = useState(false);
+  const [bulkTag, setBulkTag] = useState("");
+  const [bulkTagBusy, setBulkTagBusy] = useState(false);
+  const [rulesRefreshKey, setRulesRefreshKey] = useState(0);
 
   const filterParams = {
     category: params.get("category") ?? undefined,
@@ -73,6 +77,44 @@ function TransactionsPageInner() {
     else next.set(key, value);
     router.replace(`/expenses/transactions?${next.toString()}`);
     setPage(0);
+  }
+
+  async function selectAllMatchingFilter() {
+    const ids: number[] = [];
+    let off = 0;
+    const PAGE = 1000;
+    while (true) {
+      const res = await expensesApi.transactions(USER_ID, {
+        ...filterParams,
+        limit: PAGE,
+        offset: off,
+      });
+      for (const tx of res.transactions) ids.push(tx.id);
+      if (res.transactions.length < PAGE) break;
+      off += PAGE;
+    }
+    setSelected(new Set(ids));
+  }
+
+  async function applyBulkTag() {
+    const tag = bulkTag.trim();
+    if (!tag || selected.size === 0) return;
+    setBulkTagBusy(true);
+    try {
+      const res = await expensesApi.bulkAddTag({
+        user_id: USER_ID,
+        tag,
+        transaction_ids: Array.from(selected),
+      });
+      alert(`Tagged ${res.tagged_count} transactions with "${tag}".`);
+      setBulkTag("");
+      setSelected(new Set());
+      await refresh();
+    } catch (e) {
+      alert(`Failed: ${e}`);
+    } finally {
+      setBulkTagBusy(false);
+    }
   }
 
   const total = data?.total ?? 0;
@@ -182,30 +224,15 @@ function TransactionsPageInner() {
           </details>
         </CardContent>
       </Card>
-      {selected.size === 0 && total > showing && (
+      <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={async () => {
-            const ids: number[] = [];
-            let off = 0;
-            const PAGE = 1000;
-            while (true) {
-              const res = await expensesApi.transactions(USER_ID, {
-                ...filterParams,
-                limit: PAGE,
-                offset: off,
-              });
-              for (const tx of res.transactions) ids.push(tx.id);
-              if (res.transactions.length < PAGE) break;
-              off += PAGE;
-            }
-            setSelected(new Set(ids));
-          }}
+          onClick={() => void selectAllMatchingFilter()}
           className="text-xs underline text-muted-foreground"
         >
           Select all matching filter ({total} transactions)
         </button>
-      )}
+      </div>
       <Card>
         <CardContent className="p-4 overflow-x-auto">
           {loading && !data ? (
@@ -222,7 +249,10 @@ function TransactionsPageInner() {
                 categories={categories}
                 sources={sources}
                 onCategoryChanged={refresh}
-                onTagsChanged={refresh}
+                onTagsChanged={() => {
+                  setRulesRefreshKey((k) => k + 1);
+                  void refresh();
+                }}
                 selected={selected}
                 onSelectionChange={setSelected}
               />
@@ -249,11 +279,31 @@ function TransactionsPageInner() {
           )}
         </CardContent>
       </Card>
+      <TagRulesPanel userId={USER_ID} refreshKey={rulesRefreshKey} />
       {selected.size > 0 && (
         <>
-          <div className="sticky bottom-2 bg-background border border-border rounded-md p-3 shadow flex items-center gap-3">
+          <div className="sticky bottom-2 bg-background border border-border rounded-md p-3 shadow flex flex-wrap items-center gap-3">
             <span className="text-sm">{selected.size} transactions selected</span>
             <Button onClick={() => setLabelEditorOpen(true)}>Apply labels…</Button>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Tag selected:</span>
+              <Input
+                value={bulkTag}
+                onChange={(e) => setBulkTag(e.target.value)}
+                placeholder="e.g. Mazda"
+                className="h-8 w-40 text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void applyBulkTag();
+                }}
+              />
+              <Button
+                size="sm"
+                disabled={bulkTagBusy || !bulkTag.trim()}
+                onClick={() => void applyBulkTag()}
+              >
+                Apply
+              </Button>
+            </div>
             <Button variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
           </div>
           <LabelEditor

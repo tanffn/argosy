@@ -39,6 +39,15 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function deleteJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
+  return (await res.json()) as T;
+}
+
 async function postMultipart<T>(path: string, fd: FormData): Promise<T> {
   // Multipart bodies — Content-Type is auto-set with the boundary by the
   // browser; explicitly setting it here would break parsing on the server.
@@ -487,6 +496,35 @@ export const expensesApi = {
     if (prefix) qs.set("prefix", prefix);
     return getJSON<{ tags: string[] }>(`/api/expenses/tags?${qs.toString()}`);
   },
+  createTagRule: (body: {
+    user_id: string;
+    match_merchant_normalized: string;
+    tag: string;
+    match_category_slug?: string | null;
+  }) =>
+    postJSON<{
+      rule: TagRuleOut;
+      tagged_count: number;
+    }>("/api/expenses/tag-rules", body),
+  listTagRules: (userId: string) =>
+    getJSON<{ rules: TagRuleOut[] }>(
+      `/api/expenses/tag-rules?user_id=${encodeURIComponent(userId)}`,
+    ),
+  deleteTagRule: (ruleId: number, userId: string) =>
+    deleteJSON<{ status: string; id: number }>(
+      `/api/expenses/tag-rules/${ruleId}?user_id=${encodeURIComponent(userId)}`,
+    ),
+  bulkAddTag: (body: {
+    user_id: string;
+    tag: string;
+    transaction_ids?: number[];
+    merchant_normalized?: string;
+    category_slug?: string;
+  }) =>
+    postJSON<{ tagged_count: number }>(
+      "/api/expenses/transactions/tags/bulk-add",
+      body,
+    ),
   tripSummary: (userId: string, tag: string) =>
     getJSON<TripSummary>(
       `/api/expenses/trip-summary?user_id=${encodeURIComponent(userId)}&tag=${encodeURIComponent(tag)}`,
@@ -520,6 +558,14 @@ export interface TripSummary {
   transactions: TransactionOut[];
   period_start: string | null;
   period_end: string | null;
+}
+
+export interface TagRuleOut {
+  id: number;
+  match_merchant_normalized: string;
+  match_category_slug: string | null;
+  tag: string;
+  created_at: string | null;
 }
 
 // ---------------------------------------------------------------------------

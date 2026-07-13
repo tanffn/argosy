@@ -223,7 +223,9 @@ export function TransactionsTable({
                     txId={t.id}
                     userId={USER_ID}
                     currentTags={tags}
+                    merchantNormalized={t.merchant_normalized}
                     onChanged={() => onTagsChanged?.()}
+                    onRuleCreated={() => onTagsChanged?.()}
                   />
                 </div>
               </td>
