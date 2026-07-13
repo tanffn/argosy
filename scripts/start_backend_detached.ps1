@@ -25,11 +25,37 @@ if (-not $env:ARGOSY_HOME) { $env:ARGOSY_HOME = $Root }
 # (observed 2026-07-13: two full supervisor+uvicorn stacks fighting over the
 # port). Also makes the logon-startup registration safe to fire when the
 # backend was already started by hand.
-$existing = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.CommandLine -match 'run_backend_service\.py' }
-if ($existing) {
-    Write-Host "Backend supervisor already running (PID $($existing[0].ProcessId)) - nothing to do."
-    exit 0
+#
+# Match is anchored to THIS repo's run_backend_service.py — a foreign
+# checkout's supervisor must not satisfy the guard. Also probe the target
+# port: a dead/zombie CommandLine match with nothing listening is not
+# "already running".
+$SupervisorScript = Join-Path $Root "scripts\run_backend_service.py"
+$SupervisorScriptNorm = [System.IO.Path]::GetFullPath($SupervisorScript)
+$existing = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine -match 'run_backend_service\.py' -and
+        $_.CommandLine.IndexOf($SupervisorScriptNorm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+if ($existing.Count -gt 0) {
+    $portBusy = $false
+    try {
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if ($listener) { $portBusy = $true }
+    } catch {
+        # Get-NetTCPConnection may be unavailable; fall back to Test-NetConnection.
+        try {
+            $portBusy = (Test-NetConnection -ComputerName $HostAddr -Port $Port -WarningAction SilentlyContinue).TcpTestSucceeded
+        } catch {
+            $portBusy = $false
+        }
+    }
+    if ($portBusy) {
+        Write-Host "Backend supervisor already running (PID $($existing[0].ProcessId)) on port $Port - nothing to do."
+        exit 0
+    }
+    Write-Host "Found stale supervisor PID $($existing[0].ProcessId) but port $Port is free - starting a fresh one."
 }
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"

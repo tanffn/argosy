@@ -325,3 +325,15 @@ def seed_user_categories(session: Session, user_id: str) -> None:
             )
             session.add(user_c)
             new_by_slug[c.slug] = user_c
+
+
+def parent_label_en(slug: str) -> str | None:
+    """Display label for a top-level taxonomy slug (Bottom-line / FI rollups).
+
+    Single naming source — keeps /retirement category names aligned with
+    the expenses Bottom-line parent rows (Car, Vacation, …).
+    """
+    for entry in DEFAULT_TAXONOMY:
+        if entry.slug == slug and entry.parent_slug is None:
+            return entry.label_en
+    return None

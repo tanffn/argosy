@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from argosy.services.expense_ingest.taxonomy_seed import parent_label_en as _tax_label
 from argosy.state.models import UserContext
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -158,21 +159,28 @@ def _load_yaml(text: str | None) -> dict:
 # Map the tracked budget's fine-grained lines → readable parent categories.
 # Keys are the identity_yaml ``monthly_expenses_breakdown`` field stems
 # (``_nis`` suffix stripped). Anything unmapped falls into "Other".
+# Parent display names come from ``taxonomy_seed.parent_label_en`` so this
+# surface stays aligned with the expenses Bottom-line (Car / Vacation / …).
+
+_LABEL_CAR = _tax_label("transportation") or "Car"
+_LABEL_VACATION = _tax_label("travel") or "Vacation"
+_LABEL_INSURANCE = _tax_label("insurance_other") or "Other insurance"
+
 _CATEGORY_MAP: dict[str, str] = {
     "mortgage": "Housing", "property_tax_arnona": "Housing",
     "electricity": "Housing", "home_maintenance": "Housing",
     "internet_phone": "Housing",
-    "hotels": "Travel & vacation", "flights": "Travel & vacation",
-    "vacation_other": "Travel & vacation",
+    "hotels": _LABEL_VACATION, "flights": _LABEL_VACATION,
+    "vacation_other": _LABEL_VACATION,
     "groceries": "Groceries",
     "restaurants": "Dining out", "takeout": "Dining out",
     "coffee_bars": "Dining out",
-    "fuel": "Transportation", "car_maintenance": "Transportation",
-    "car_insurance": "Transportation",
+    "fuel": _LABEL_CAR, "car_maintenance": _LABEL_CAR,
+    "car_insurance": _LABEL_CAR,
     "after_school": "Childcare & education", "kids_activities": "Childcare & education",
     "health_insurance": "Healthcare", "medical_other": "Healthcare",
     "pharmacy": "Healthcare",
-    "insurance_other": "Insurance (life/home)",
+    "insurance_other": _LABEL_INSURANCE,
     "shopping_other": "Discretionary", "entertainment": "Discretionary",
     "clothing": "Discretionary", "furniture": "Discretionary",
     "pet": "Other", "uncategorized": "Other",
