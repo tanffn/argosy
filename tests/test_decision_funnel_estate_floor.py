@@ -40,6 +40,26 @@ from argosy.state.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_pushback_gate(monkeypatch):
+    """These are ESTATE-floor tests. The stage-3 verdict pushback gate is a
+    separate concern that builds its OWN engine from the global get_engine()
+    (deep_decision.py) — so it reads the dev DB's live verdicts and can
+    short-circuit ('verdict_defended') before the estate floor runs, making
+    these tests depend on whatever verdict SOFI happens to carry. Neutralize
+    it so the floor path is exercised deterministically."""
+    import argosy.services.verdict_registry as vr
+
+    monkeypatch.setattr(
+        vr,
+        "check_pushback_gate",
+        lambda *a, **k: SimpleNamespace(
+            defended=False, standing=None, reason=None
+        ),
+        raising=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # INPUTS — estate KB in the stage-3 packet
 # ---------------------------------------------------------------------------
