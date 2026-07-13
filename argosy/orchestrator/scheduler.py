@@ -75,6 +75,10 @@ class Scheduler:
         # must not stampede every missed job (each an LLM-heavy run) at
         # once on restart.
         self._catchup_gate = asyncio.Semaphore(1)
+        # Loops whose scheduled fire is currently executing. Ticks are
+        # recorded only AFTER a run completes, so the wake-sweep catch-up
+        # needs this to avoid re-firing an in-flight LLM-heavy loop.
+        self._inflight: set[str] = set()
 
     # ------------------------------------------------------------------
     # Registration
@@ -371,6 +375,18 @@ class Scheduler:
             for loop in self._loops.values()
         ]
         try:
+            from argosy.config import get_settings
+
+            wake_enabled = getattr(get_settings(), "scheduler_wake_catchup", True)
+        except Exception:  # pragma: no cover - settings must never break boot
+            wake_enabled = True
+        if wake_enabled:
+            tasks.append(
+                asyncio.create_task(
+                    self._wake_watchdog(), name="cadence:wake_watchdog"
+                )
+            )
+        try:
             await self._stop.wait()
         finally:
             for t in tasks:
@@ -407,17 +423,38 @@ class Scheduler:
                 await self._record_tick(loop.name, status=TickStatus.SKIPPED, error=None, next_due=next_due)
                 continue
 
-            await self._fire_once(loop)
+            # Slot guard (cron loops): after a system sleep, asyncio timers
+            # can stretch by the sleep duration — this fire may be hours
+            # late for a slot the wake watchdog already caught up. A tick
+            # recorded at/after the slot means it was handled; don't
+            # double-run the (LLM-heavy) loop.
+            if loop.schedule.cron:
+                handled = await self._tick_recorded_since(loop.name, next_due)
+                if handled:
+                    _log.info(
+                        "cadence.slot_already_handled",
+                        loop=loop.name,
+                        slot=next_due.isoformat(),
+                    )
+                    continue
+
+            self._inflight.add(loop.name)
+            try:
+                await self._fire_once(loop)
+            finally:
+                self._inflight.discard(loop.name)
 
     async def _catch_up_if_missed(self, loop: CadenceLoop) -> None:
-        """Boot-time catch-up: if this loop's most recent scheduled fire
-        was missed (no tick recorded at or after it — the server was down),
-        fire it now instead of silently waiting for the next cron slot.
+        """Missed-run catch-up: if this loop's most recent scheduled fire
+        was missed (no tick recorded at or after it — the server was down
+        or the PC slept through it), fire it now instead of silently
+        waiting for the next cron slot.
 
-        A daily review that runs at 17:00 must not be lost to a 16:55-to-
-        17:05 server restart, and a server that was down all day must run
-        the day's reviews when it comes back — the daily pipeline IS the
-        product (proactive agency: the client never asks).
+        Called at loop-task start (boot) and by ``_wake_watchdog`` after
+        a detected sleep/suspend. A daily review that runs at 17:00 must
+        not be lost to a 16:55-to-17:05 server restart or an afternoon
+        lid-close — the daily pipeline IS the product (proactive agency:
+        the client never asks).
 
         Scope guards:
           * cron-driven loops only (``prev_due_before`` returns None
@@ -427,8 +464,10 @@ class Scheduler:
             at exactly its cron time);
           * ``market_hours_only`` loops respect the market gate, same as a
             scheduled fire;
-          * catch-ups run sequentially through ``_catchup_gate`` (no boot
-            stampede when several jobs were missed);
+          * catch-ups run sequentially through ``_catchup_gate`` (no
+            stampede when several jobs were missed); the tick-state check
+            happens INSIDE the gate, and a loop whose scheduled fire is
+            currently in flight is skipped — never double-fire;
           * kill switch: ``scheduler_catchup_on_boot`` (default on).
         """
         try:
@@ -462,29 +501,20 @@ class Scheduler:
                 max_age_days=_max_age_days,
             )
             return
-        last_tick_at: datetime | None = None
-        try:
-            async with db_mod.get_session() as session:
-                row = (
-                    await session.execute(
-                        select(CadenceState).where(
-                            CadenceState.loop_name == loop.name
-                        )
-                    )
-                ).scalar_one_or_none()
-                if row is not None:
-                    last_tick_at = row.last_tick_at
-        except Exception:  # pragma: no cover - a broken read must not block the loop
-            _log.exception("cadence.catchup_state_read_failed", loop=loop.name)
-            return
-        if last_tick_at is not None:
-            if last_tick_at.tzinfo is None:
-                last_tick_at = last_tick_at.replace(tzinfo=timezone.utc)
-            if last_tick_at >= prev_due:
-                return  # the scheduled fire happened (or was attempted)
         async with self._catchup_gate:
             if self._stop.is_set():
                 return
+            if loop.name in self._inflight:
+                # The loop's scheduled fire is executing RIGHT NOW — the
+                # missed slot is being handled; a second fire would
+                # double-run an LLM-heavy job.
+                _log.info("cadence.catchup_skipped_inflight", loop=loop.name)
+                return
+            handled = await self._tick_recorded_since(loop.name, prev_due)
+            if handled is None:
+                return  # state read failed — never fire blind
+            if handled:
+                return  # the scheduled fire happened (or was attempted)
             if loop.schedule.market_hours_only and not self._market_open_check():
                 _log.info(
                     "cadence.catchup_skipped_market_closed", loop=loop.name,
@@ -494,10 +524,8 @@ class Scheduler:
                 "cadence.catchup_fire",
                 loop=loop.name,
                 missed_due=prev_due.isoformat(),
-                last_tick_at=(
-                    last_tick_at.isoformat() if last_tick_at else None
-                ),
             )
+            self._inflight.add(loop.name)
             try:
                 await self._fire_once(loop)
             except Exception:  # noqa: BLE001
@@ -507,6 +535,91 @@ class Scheduler:
                 # rejected). A failed catch-up must never kill this loop's
                 # cadence task — the regular schedule continues.
                 _log.exception("cadence.catchup_fire_failed", loop=loop.name)
+            finally:
+                self._inflight.discard(loop.name)
+
+    async def _tick_recorded_since(
+        self, loop_name: str, when: datetime
+    ) -> bool | None:
+        """Whether a tick is recorded at/after ``when`` (slot handled).
+
+        Returns ``None`` when the state read fails — callers decide the
+        safe direction (catch-up skips: never fire blind; the scheduled
+        path fires: a read hiccup must not stall the cadence).
+        """
+        last_tick_at: datetime | None = None
+        try:
+            async with db_mod.get_session() as session:
+                row = (
+                    await session.execute(
+                        select(CadenceState).where(
+                            CadenceState.loop_name == loop_name
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is not None:
+                    last_tick_at = row.last_tick_at
+        except Exception:  # pragma: no cover - a broken read must not block the loop
+            _log.exception("cadence.tick_state_read_failed", loop=loop_name)
+            return None
+        if last_tick_at is None:
+            return False
+        if last_tick_at.tzinfo is None:
+            last_tick_at = last_tick_at.replace(tzinfo=timezone.utc)
+        return last_tick_at >= when
+
+    async def _wake_watchdog(self) -> None:
+        """Detect system sleep / process suspension and catch up on wake.
+
+        The per-loop cadence tasks sleep on asyncio timers; when the PC
+        sleeps, those timers can stretch by the sleep duration, so a cron
+        slot missed mid-sleep would fire hours late (or hit the market
+        gate and be skipped entirely). This task heartbeats on the wall
+        clock: a gap far above its own interval means the process was
+        suspended — re-run the boot catch-up sweep so missed slots fire
+        now. Idempotent by construction: `_catch_up_if_missed` skips
+        loops whose slot ticked or whose fire is in flight, and the slot
+        guard in `_run_loop` stops the stretched timer from re-firing a
+        slot the sweep already handled.
+
+        Kill switch: ``scheduler_wake_catchup``; the sweep itself also
+        respects ``scheduler_catchup_on_boot`` and the max-age window.
+        """
+        interval, threshold = 60.0, 180.0
+        try:
+            from argosy.config import get_settings
+
+            s = get_settings()
+            interval = float(
+                getattr(s, "scheduler_wake_watchdog_interval_seconds", interval)
+            )
+            threshold = float(
+                getattr(s, "scheduler_wake_gap_threshold_seconds", threshold)
+            )
+        except Exception:  # pragma: no cover - settings must never kill the watchdog
+            pass
+        last = self.clock()
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                return  # stop signaled
+            except asyncio.TimeoutError:
+                pass
+            now = self.clock()
+            gap = (now - last).total_seconds()
+            last = now
+            if gap <= interval + threshold:
+                continue
+            _log.info(
+                "cadence.wake_gap_detected",
+                gap_seconds=round(gap, 1),
+                interval_seconds=interval,
+            )
+            for lp in list(self._loops.values()):
+                if self._stop.is_set():
+                    return
+                if lp.enabled:
+                    await self._catch_up_if_missed(lp)
 
     async def fire_once(self, loop_name: str) -> None:
         """One-shot: fire a registered loop now, regardless of schedule.

@@ -217,6 +217,16 @@ class Settings(BaseSettings):
     # (the annual loop's January 2nd rediscovered in July) waits for its next
     # scheduled time instead. Read via ARGOSY_SCHEDULER_CATCHUP_MAX_AGE_DAYS.
     scheduler_catchup_max_age_days: float = Field(default=7.0)
+    # Sleep/wake catch-up: a watchdog task detects wall-clock jumps (the PC
+    # slept or the process was suspended past cron fire-times) and re-runs
+    # the missed-slot catch-up sweep on wake — no restart required.
+    # Read via ARGOSY_SCHEDULER_WAKE_CATCHUP.
+    scheduler_wake_catchup: bool = Field(default=True)
+    # Watchdog heartbeat (seconds) + slack above it before a gap counts as
+    # a sleep/suspend. Gap > interval + threshold triggers the sweep; the
+    # default tolerates ~3 min of event-loop stall without false positives.
+    scheduler_wake_watchdog_interval_seconds: float = Field(default=60.0)
+    scheduler_wake_gap_threshold_seconds: float = Field(default=180.0)
     # Research-informed deployment preflight (deterministic; Increment 1).
     #   - deployment_funnel_enabled: master switch. When False, /deploy-cash
     #     behaves exactly as before (no preflight block).

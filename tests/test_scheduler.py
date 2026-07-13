@@ -11,6 +11,7 @@ the `Scheduler.fire_once(...)` one-shot path to verify:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -392,3 +393,135 @@ async def test_catchup_skips_out_of_season_slots(engine: None) -> None:
     scheduler.register_loop(loop)
     await scheduler._catch_up_if_missed(loop)
     assert loop.ticks == 0
+
+
+# ---------------------------------------------------------------------------
+# Sleep/wake catch-up: the watchdog detects a wall-clock jump (PC slept
+# through cron fire-times) and re-runs the missed-slot sweep on wake —
+# without double-firing a loop whose slot was already handled or whose
+# scheduled fire is in flight.
+# ---------------------------------------------------------------------------
+
+
+class _MutableClock:
+    """Injectable clock the test advances to simulate a system sleep."""
+
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+async def _wait_until(cond, timeout: float = 3.0) -> bool:
+    import time as _time
+
+    t0 = _time.monotonic()
+    while _time.monotonic() - t0 < timeout:
+        if cond():
+            return True
+        await asyncio.sleep(0.02)
+    return cond()
+
+
+@pytest.mark.asyncio
+async def test_tick_recorded_since(engine: None) -> None:
+    """Slot-guard helper: tick at/after the slot → handled; before → not;
+    never-ran loop → not."""
+    await _seed_cadence_row(
+        "counting", datetime(2026, 5, 2, 12, 5, tzinfo=timezone.utc),
+    )
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 13, 0, tzinfo=timezone.utc)),
+    )
+    assert await scheduler._tick_recorded_since(
+        "counting", datetime(2026, 5, 2, 9, 0, tzinfo=timezone.utc)
+    ) is True
+    assert await scheduler._tick_recorded_since(
+        "counting", datetime(2026, 5, 2, 13, 0, tzinfo=timezone.utc)
+    ) is False
+    assert await scheduler._tick_recorded_since(
+        "never_ran", datetime(2026, 5, 2, 9, 0, tzinfo=timezone.utc)
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_catchup_skipped_when_scheduled_fire_inflight(engine: None) -> None:
+    """A loop whose scheduled fire is executing right now is never
+    re-fired by a catch-up sweep (ticks are recorded only at completion)."""
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+    scheduler = Scheduler(
+        user_id="ariel",
+        clock=_fixed_clock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)),
+    )
+    scheduler.register_loop(loop)
+    scheduler._inflight.add("counting")
+    try:
+        await scheduler._catch_up_if_missed(loop)
+    finally:
+        scheduler._inflight.discard("counting")
+    assert loop.ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_wake_watchdog_fires_missed_slot_after_clock_jump(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Simulated sleep: the wall clock jumps past a cron slot with no
+    restart → the watchdog detects the gap and fires the missed loop.
+    A second jump does NOT re-fire (the tick is now recorded)."""
+    from argosy.config import get_settings
+
+    monkeypatch.setenv("ARGOSY_SCHEDULER_WAKE_WATCHDOG_INTERVAL_SECONDS", "0.05")
+    monkeypatch.setenv("ARGOSY_SCHEDULER_WAKE_GAP_THRESHOLD_SECONDS", "0")
+    get_settings.cache_clear()
+    clock = _MutableClock(datetime(2026, 5, 2, 8, 0, tzinfo=timezone.utc))
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+    scheduler = Scheduler(user_id="ariel", clock=clock)
+    scheduler.register_loop(loop)
+    task = asyncio.create_task(scheduler._wake_watchdog())
+    try:
+        # Heartbeats with a frozen clock: gap is 0 — no sweep, no fire.
+        await asyncio.sleep(0.15)
+        assert loop.ticks == 0
+
+        # "Wake up" 4 hours later — past the 09:00 slot.
+        clock.now = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
+        assert await _wait_until(lambda: loop.ticks == 1), (
+            "watchdog did not catch up the missed 09:00 slot after the jump"
+        )
+
+        # Second jump, same slot already ticked → no double fire.
+        clock.now = datetime(2026, 5, 2, 16, 0, tzinfo=timezone.utc)
+        await asyncio.sleep(0.2)
+        assert loop.ticks == 1
+    finally:
+        scheduler.stop()
+        await task
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_wake_watchdog_noop_without_gap(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No clock jump → the watchdog never sweeps, even with a missed
+    slot pending (boot catch-up owns that case, not the watchdog)."""
+    from argosy.config import get_settings
+
+    monkeypatch.setenv("ARGOSY_SCHEDULER_WAKE_WATCHDOG_INTERVAL_SECONDS", "0.05")
+    monkeypatch.setenv("ARGOSY_SCHEDULER_WAKE_GAP_THRESHOLD_SECONDS", "0")
+    get_settings.cache_clear()
+    clock = _MutableClock(datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc))
+    loop = _CountingLoop(schedule=LoopSchedule(cron="0 9 * * *", timezone="UTC"))
+    scheduler = Scheduler(user_id="ariel", clock=clock)
+    scheduler.register_loop(loop)
+    task = asyncio.create_task(scheduler._wake_watchdog())
+    try:
+        await asyncio.sleep(0.2)
+        assert loop.ticks == 0
+    finally:
+        scheduler.stop()
+        await task
+        get_settings.cache_clear()
