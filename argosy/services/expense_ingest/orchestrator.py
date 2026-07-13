@@ -298,7 +298,11 @@ def ingest_user_file(
 
     correlations = correlate_for_user(session, user_id)
     resolved = resolve_categories_for_user(session, user_id)
-    refunds = match_refunds_for_user(session, user_id)
+    from argosy.config import load_expenses_config
+    refund_cfg = load_expenses_config(user_id).refund_matcher
+    refunds = match_refunds_for_user(
+        session, user_id, lookback_days=refund_cfg.lookback_days,
+    )
 
     # Run all 5 non-LLM anomaly detectors (Buckets A/B-recurring/C/D) on
     # every successful ingest. Each detector is self-contained: it scans

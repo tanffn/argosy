@@ -338,6 +338,11 @@ export interface TransactionOut {
   /** Backend-computed NIS equivalent (BoI rate on occurred_on for foreign
    * rows; equals amount_nis for native NIS rows). null when rate unavailable. */
   amount_nis_converted: number | null;
+  /** Id of the original debit this refund credits (set on refund rows). */
+  refund_of_id: number | null;
+  /** Id of the refund that paired with this debit (set on refunded charges).
+   *  When non-null the amount is struck through — it nets to zero. */
+  refunded_by_id: number | null;
 }
 
 export interface TransactionsResponse {

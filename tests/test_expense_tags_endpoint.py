@@ -284,3 +284,25 @@ def test_transaction_out_includes_tags_field(client_with_db):
     txs = r.json()["transactions"]
     assert len(txs) == 1
     assert txs[0]["tags"] == ["alpha"]
+
+
+def test_list_transactions_exposes_refund_pair_ids(client_with_db):
+    """Refunded charges surface ``refunded_by_id`` so the UI can strikethrough."""
+    ids = _seed(client_with_db, user_id="u_refund_pair", n=2)
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        refund = s.query(ExpenseTransaction).filter_by(id=ids[1]).one()
+        refund.direction = "credit"
+        refund.tx_type = "refund"
+        refund.merchant_normalized = "m0"  # match the prior debit
+        refund.refund_of_id = ids[0]
+        s.commit()
+    r = client_with_db.get(
+        "/api/expenses/transactions?user_id=u_refund_pair&limit=10"
+    )
+    assert r.status_code == 200
+    by_id = {t["id"]: t for t in r.json()["transactions"]}
+    assert by_id[ids[0]]["refunded_by_id"] == ids[1]
+    assert by_id[ids[0]]["refund_of_id"] is None
+    assert by_id[ids[1]]["refund_of_id"] == ids[0]
+    assert by_id[ids[1]]["refunded_by_id"] is None

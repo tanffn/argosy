@@ -639,7 +639,8 @@ class ExpensesCorrelationConfig(BaseModel):
 
 class ExpensesRefundMatcherConfig(BaseModel):
     amount_tolerance_pct: float = 0.05
-    lookback_days: int = 90
+    # 180 covers multi-month holds (car rental / hotel auth → refund).
+    lookback_days: int = 180
 
 
 class ExpensesAnomalyConfig(BaseModel):

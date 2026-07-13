@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  type CategorySpend,
   type YearlySummary,
   type YearlyWindow,
 } from "@/lib/expenses/api";
@@ -19,6 +20,87 @@ interface YearlySummaryCardProps {
 }
 
 const COLLAPSED_ROWS = 10;
+
+/** Leaf slugs that roll up under a single "Vacation" parent in the
+ *  Bottom-line category list. Hotels are lodging for trips; Vacation
+ *  (other) is residual trip spend — both belong under one Vacation line
+ *  with Hotels as a visible subcategory. Flights stay separate. */
+const VACATION_CHILD_SLUGS = new Set([
+  "travel.hotels",
+  "travel.vacation_other",
+]);
+
+interface DisplayCategory {
+  key: string;
+  /** Leaf slug used for the transactions deep-link; null for the
+   *  synthetic Vacation parent (children keep their own links). */
+  slug: string | null;
+  label_en: string;
+  total_nis: number;
+  transaction_count: number;
+  percent: number;
+  depth: 0 | 1;
+}
+
+function foldVacationCategories(
+  cats: CategorySpend[],
+  spendingTotal: number,
+): DisplayCategory[] {
+  const vacationKids = cats.filter((c) => VACATION_CHILD_SLUGS.has(c.slug));
+  const rest = cats.filter((c) => !VACATION_CHILD_SLUGS.has(c.slug));
+  const denom = spendingTotal || 1;
+
+  const out: DisplayCategory[] = rest.map((c) => ({
+    key: c.slug,
+    slug: c.slug,
+    label_en: c.label_en,
+    total_nis: c.total_nis,
+    transaction_count: c.transaction_count,
+    percent: c.percent,
+    depth: 0,
+  }));
+
+  if (vacationKids.length > 0) {
+    const total = vacationKids.reduce((s, c) => s + c.total_nis, 0);
+    const count = vacationKids.reduce((s, c) => s + c.transaction_count, 0);
+    out.push({
+      key: "vacation",
+      slug: null,
+      label_en: "Vacation",
+      total_nis: total,
+      transaction_count: count,
+      percent: (total / denom) * 100,
+      depth: 0,
+    });
+    for (const c of [...vacationKids].sort(
+      (a, b) => b.total_nis - a.total_nis,
+    )) {
+      out.push({
+        key: c.slug,
+        slug: c.slug,
+        label_en:
+          c.slug === "travel.vacation_other" ? "Other" : c.label_en,
+        total_nis: c.total_nis,
+        transaction_count: c.transaction_count,
+        percent: (c.total_nis / denom) * 100,
+        depth: 1,
+      });
+    }
+  }
+
+  // Depth-0 by total desc; keep Vacation children immediately under parent.
+  const parents = out.filter((r) => r.depth === 0);
+  parents.sort((a, b) => b.total_nis - a.total_nis);
+  const vacationChildren = out.filter((r) => r.depth === 1);
+  const ordered: DisplayCategory[] = [];
+  for (const p of parents) {
+    ordered.push(p);
+    if (p.key === "vacation") {
+      ordered.push(...vacationChildren);
+    }
+  }
+  return ordered;
+}
 
 function lastDayOfMonth(yyyymm: string): string {
   const [y, m] = yyyymm.split("-").map(Number);
@@ -92,9 +174,27 @@ export function YearlySummaryCard({
     ? lastDayOfMonth(data.window_end_month)
     : null;
 
-  const cats = data.top_categories_12m;
-  const visibleCats = showAll ? cats : cats.slice(0, COLLAPSED_ROWS);
-  const maxCat = Math.max(1, ...cats.map((c) => c.total_nis));
+  const displayCats = foldVacationCategories(
+    data.top_categories_12m,
+    data.yearly_spending_total_nis,
+  );
+  // Collapse counts top-level rows only so "Show top 10" isn't diluted
+  // by Vacation's nested Hotels/Other lines.
+  const topLevelKeys = new Set(
+    displayCats.filter((c) => c.depth === 0).map((c) => c.key),
+  );
+  const topLevelOrdered = displayCats.filter((c) => c.depth === 0);
+  const visibleTopKeys = new Set(
+    (showAll ? topLevelOrdered : topLevelOrdered.slice(0, COLLAPSED_ROWS))
+      .map((c) => c.key),
+  );
+  const visibleCats = displayCats.filter((c) => {
+    if (c.depth === 0) return visibleTopKeys.has(c.key);
+    // Show Vacation children only when the Vacation parent is visible.
+    return visibleTopKeys.has("vacation");
+  });
+  const maxCat = Math.max(1, ...displayCats.filter((c) => c.depth === 0).map((c) => c.total_nis));
+  const topLevelCount = topLevelKeys.size;
 
   return (
     <Card>
@@ -154,56 +254,74 @@ export function YearlySummaryCard({
           </div>
         </div>
 
-        {cats.length > 0 && (
+        {displayCats.length > 0 && (
           <div className="mt-5">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs text-muted-foreground">
                 Where it goes — every spending category, sorted by total
               </div>
               <div className="text-xs text-muted-foreground tabular-nums">
-                {cats.length} categor{cats.length === 1 ? "y" : "ies"}
+                {topLevelCount} categor{topLevelCount === 1 ? "y" : "ies"}
               </div>
             </div>
             <ul className="flex flex-col gap-1.5">
               {visibleCats.map((c) => {
                 const pctOfMax = (c.total_nis / maxCat) * 100;
-                const href = buildTxLink(c.slug, fromDate, toDate);
+                const body = (
+                  <>
+                    <div className="flex items-baseline gap-2 text-sm">
+                      <span
+                        className={
+                          "capitalize flex-1 min-w-0 truncate"
+                          + (c.slug ? " group-hover:underline" : "")
+                          + (c.depth === 1 ? " pl-4 text-muted-foreground" : "")
+                          + (c.depth === 0 && c.key === "vacation" ? " font-medium" : "")
+                        }
+                      >
+                        {c.depth === 1 ? `↳ ${c.label_en}` : c.label_en}
+                      </span>
+                      <span className="tabular-nums text-muted-foreground text-xs w-14 text-right">
+                        {c.transaction_count}{" "}
+                        tx
+                      </span>
+                      <span className="tabular-nums text-muted-foreground text-xs w-12 text-right">
+                        {formatPercent(c.percent)}
+                      </span>
+                      <span className="tabular-nums w-24 text-right">
+                        {formatNIS(c.total_nis)}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full bg-secondary/40 rounded-full overflow-hidden mt-1">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${pctOfMax}%`,
+                          backgroundColor: colorForSlug(c.slug ?? c.key),
+                          opacity: c.depth === 1 ? 0.7 : 1,
+                        }}
+                      />
+                    </div>
+                  </>
+                );
                 return (
-                  <li key={c.slug}>
-                    <Link
-                      href={href}
-                      className="block group hover:bg-accent/30 rounded px-1 -mx-1 py-1"
-                    >
-                      <div className="flex items-baseline gap-2 text-sm">
-                        <span className="capitalize flex-1 min-w-0 truncate group-hover:underline">
-                          {c.label_en}
-                        </span>
-                        <span className="tabular-nums text-muted-foreground text-xs w-14 text-right">
-                          {c.transaction_count}{" "}
-                          tx
-                        </span>
-                        <span className="tabular-nums text-muted-foreground text-xs w-12 text-right">
-                          {formatPercent(c.percent)}
-                        </span>
-                        <span className="tabular-nums w-24 text-right">
-                          {formatNIS(c.total_nis)}
-                        </span>
+                  <li key={c.key}>
+                    {c.slug ? (
+                      <Link
+                        href={buildTxLink(c.slug, fromDate, toDate)}
+                        className="block group hover:bg-accent/30 rounded px-1 -mx-1 py-1"
+                      >
+                        {body}
+                      </Link>
+                    ) : (
+                      <div className="rounded px-1 -mx-1 py-1">
+                        {body}
                       </div>
-                      <div className="h-1.5 w-full bg-secondary/40 rounded-full overflow-hidden mt-1">
-                        <div
-                          className="h-full rounded-full transition-all"
-                          style={{
-                            width: `${pctOfMax}%`,
-                            backgroundColor: colorForSlug(c.slug),
-                          }}
-                        />
-                      </div>
-                    </Link>
+                    )}
                   </li>
                 );
               })}
             </ul>
-            {cats.length > COLLAPSED_ROWS && (
+            {topLevelCount > COLLAPSED_ROWS && (
               <div className="mt-3 flex justify-center">
                 <Button
                   variant="ghost"
@@ -212,7 +330,7 @@ export function YearlySummaryCard({
                 >
                   {showAll
                     ? "Show top 10"
-                    : `Show all ${cats.length} categories`}
+                    : `Show all ${topLevelCount} categories`}
                 </Button>
               </div>
             )}

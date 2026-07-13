@@ -14,7 +14,7 @@ def test_load_expenses_config_returns_defaults_when_missing(tmp_path, monkeypatc
     assert isinstance(cfg, ExpensesConfig)
     assert cfg.categorization.confidence_threshold == 0.85
     assert cfg.correlation.amount_tolerance_nis == 50
-    assert cfg.refund_matcher.lookback_days == 90
+    assert cfg.refund_matcher.lookback_days == 180
     assert cfg.anomaly.mom_category_factor == 1.5
     assert cfg.ingest_sanity.row_amount_cap_nis == 250_000
     assert cfg.ingest_sanity.date_past_months == 14

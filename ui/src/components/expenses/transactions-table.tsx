@@ -134,6 +134,7 @@ export function TransactionsTable({
         {transactions.map((t) => {
           const src = sourceById.get(t.source_id);
           const isMoneyIn = t.direction === "credit" || t.tx_type === "refund";
+          const isRefunded = t.refunded_by_id != null;
           const amountText =
             fxMode === "nis" && t.amount_nis_converted !== null
               ? formatNIS(t.amount_nis_converted)
@@ -144,7 +145,13 @@ export function TransactionsTable({
                   : "—");
           const tags = t.tags ?? [];
           return (
-            <tr key={t.id} className="border-b border-border/60 hover:bg-secondary/40">
+            <tr
+              key={t.id}
+              className={
+                "border-b border-border/60 hover:bg-secondary/40"
+                + (isRefunded ? " opacity-70" : "")
+              }
+            >
               {onSelectionChange && (
                 <td className="px-2 py-2">
                   <Checkbox
@@ -235,14 +242,30 @@ export function TransactionsTable({
               </td>
               <td
                 className="py-2 pl-2 text-right tabular-nums whitespace-nowrap"
-                title={isMoneyIn ? "Money in (credit)" : "Money out (debit)"}
+                title={
+                  isRefunded
+                    ? `Refunded by tx #${t.refunded_by_id} — nets to zero`
+                    : isMoneyIn
+                      ? "Money in (credit)"
+                      : "Money out (debit)"
+                }
               >
-                <span className={isMoneyIn ? "text-success" : ""}>
+                <span
+                  className={
+                    (isMoneyIn ? "text-success " : "")
+                    + (isRefunded ? "line-through text-muted-foreground" : "")
+                  }
+                >
                   {isMoneyIn ? `+${amountText}` : amountText}
                 </span>
                 {t.tx_type !== "regular" && (
                   <Badge variant="secondary" className="ml-2 text-xs">
                     {t.tx_type}
+                  </Badge>
+                )}
+                {isRefunded && t.tx_type === "regular" && (
+                  <Badge variant="secondary" className="ml-2 text-xs">
+                    refunded
                   </Badge>
                 )}
               </td>

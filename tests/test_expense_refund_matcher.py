@@ -97,3 +97,58 @@ def test_refund_matcher_is_idempotent(alembic_engine_at_head):
         n2 = match_refunds_for_user(s, "ariel"); s.commit()
         assert n1 == 1
         assert n2 == 0
+
+
+def test_refund_matcher_allows_same_day(alembic_engine_at_head):
+    """Charge + cancel on the same statement date must still pair."""
+    with Session(alembic_engine_at_head) as s:
+        ctx = _seed(s)
+        ctx["prior"].occurred_on = ctx["refund"].occurred_on
+        s.commit()
+        n = match_refunds_for_user(s, "ariel")
+        s.commit()
+        s.refresh(ctx["refund"])
+        assert n == 1
+        assert ctx["refund"].refund_of_id == ctx["prior"].id
+
+
+def test_refund_matcher_lookback_covers_114_days(alembic_engine_at_head):
+    """Romania-style car-rental holds: charge Nov → refund ~114 days later."""
+    with Session(alembic_engine_at_head) as s:
+        ctx = _seed(s)
+        ctx["prior"].occurred_on = date(2025, 11, 15)
+        ctx["refund"].occurred_on = date(2026, 3, 9)  # 114 days later
+        s.commit()
+        n = match_refunds_for_user(s, "ariel", lookback_days=180)
+        s.commit()
+        s.refresh(ctx["refund"])
+        assert n == 1
+        assert ctx["refund"].refund_of_id == ctx["prior"].id
+
+
+def test_refund_matcher_skips_already_claimed_prior(alembic_engine_at_head):
+    """Two refunds of the same amount must not both claim one debit."""
+    with Session(alembic_engine_at_head) as s:
+        ctx = _seed(s)
+        # Second refund, same merchant/amount, later date — no second prior.
+        twin = ExpenseTransaction(
+            user_id="ariel",
+            statement_id=ctx["refund"].statement_id,
+            source_id=ctx["refund"].source_id,
+            occurred_on=ctx["refund"].occurred_on + timedelta(days=1),
+            merchant_raw="WIZZ AIRGR73FH",
+            merchant_normalized="wizz airgr73fh",
+            amount_nis=Decimal("2097.83"),
+            direction="credit",
+            tx_type="refund",
+            raw_row_json="{}",
+        )
+        s.add(twin)
+        s.commit()
+        n = match_refunds_for_user(s, "ariel")
+        s.commit()
+        s.refresh(ctx["refund"])
+        s.refresh(twin)
+        assert n == 1
+        assert ctx["refund"].refund_of_id == ctx["prior"].id
+        assert twin.refund_of_id is None

@@ -231,6 +231,11 @@ class TransactionOut(BaseModel):
     # converted to ILS via BoI daily rates (services/fx). Null if the rate
     # for occurred_on can't be resolved.
     amount_nis_converted: float | None = None
+    # Refund pairing (refund_matcher). ``refund_of_id`` is set on the credit
+    # refund row; ``refunded_by_id`` is the reverse pointer on the original
+    # debit so the UI can strikethrough amounts that netted to zero.
+    refund_of_id: int | None = None
+    refunded_by_id: int | None = None
 
 
 class TransactionsResponse(BaseModel):
@@ -238,11 +243,33 @@ class TransactionsResponse(BaseModel):
     total: int
 
 
+def _refunded_by_map(
+    session: Session, tx_ids: list[int],
+) -> dict[int, int]:
+    """Map debit tx id → refund tx id for every refund pointing at ``tx_ids``."""
+    if not tx_ids:
+        return {}
+    rows = session.execute(
+        sa_select(
+            ExpenseTransaction.refund_of_id,
+            ExpenseTransaction.id,
+        )
+        .where(ExpenseTransaction.refund_of_id.in_(tx_ids))
+    ).all()
+    # If two refunds somehow point at the same debit, keep the first seen.
+    out: dict[int, int] = {}
+    for prior_id, refund_id in rows:
+        if prior_id is not None and prior_id not in out:
+            out[int(prior_id)] = int(refund_id)
+    return out
+
+
 def _tx_to_out(
     r: "ExpenseTransaction",
     cat_by_id: dict[int, str],
     *,
     session: Session | None = None,
+    refunded_by_id: int | None = None,
 ) -> TransactionOut:
     """Marshal an ExpenseTransaction row into the TransactionOut DTO.
 
@@ -251,6 +278,9 @@ def _tx_to_out(
 
     ``session`` is required to populate ``amount_nis_converted`` for foreign
     rows; if None or the rate is unavailable, the converted value is None.
+
+    ``refunded_by_id`` is the reverse of ``refund_of_id`` — pass it when the
+    caller has batch-loaded the map (list endpoints); leave None otherwise.
     """
     try:
         raw_row = json.loads(r.raw_row_json) if r.raw_row_json else {}
@@ -295,6 +325,8 @@ def _tx_to_out(
         tags=_parse_tags(getattr(r, "tags", None)),
         raw_row=raw_row,
         amount_nis_converted=nis_converted,
+        refund_of_id=r.refund_of_id,
+        refunded_by_id=refunded_by_id,
     )
 
 
@@ -352,8 +384,15 @@ def list_transactions(
             user_id=user_id
         ).all()
     }
+    refunded_by = _refunded_by_map(db, [r.id for r in rows])
     return TransactionsResponse(
-        transactions=[_tx_to_out(r, cat_by_id, session=db) for r in rows],
+        transactions=[
+            _tx_to_out(
+                r, cat_by_id, session=db,
+                refunded_by_id=refunded_by.get(r.id),
+            )
+            for r in rows
+        ],
         total=total,
     )
 
@@ -1484,10 +1523,18 @@ def dashboard_overview(
         months_covered = 0
 
     # Yearly SPENDING total + top categories — exclude inflow & excluded.
+    # Credits (refunds that inherited a spending category) NET against
+    # debits so a book+refund pair contributes ₪0, matching trip_summary
+    # and the "refunded charge is not counted" UI contract.
+    signed_nis = case(
+        (ExpenseTransaction.direction == "credit",
+         -ExpenseTransaction.amount_nis),
+        else_=ExpenseTransaction.amount_nis,
+    )
     spending_12m_rows = db.execute(
         sa_select(
             ExpenseCategory.slug, ExpenseCategory.label_en,
-            func.sum(ExpenseTransaction.amount_nis).label("total"),
+            func.sum(signed_nis).label("total"),
             func.count().label("n"),
         )
         .join(ExpenseTransaction,
@@ -1500,7 +1547,7 @@ def dashboard_overview(
         .where(ExpenseCategory.is_excluded_from_spend.is_(False))
         .where(ExpenseCategory.is_inflow.is_(False))
         .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
-        .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+        .order_by(func.sum(signed_nis).desc())
     ).all()
     yearly_spending_total_nis = sum(
         float(r.total or 0) for r in spending_12m_rows
@@ -2233,7 +2280,14 @@ def trip_summary(
         )
     ]
     cat_by_id_slug = {cid: slug for cid, (slug, _) in cat_by_id.items()}
-    transactions = [_tx_to_out(r, cat_by_id_slug) for r in rows]
+    refunded_by = _refunded_by_map(db, [r.id for r in rows])
+    transactions = [
+        _tx_to_out(
+            r, cat_by_id_slug, session=db,
+            refunded_by_id=refunded_by.get(r.id),
+        )
+        for r in rows
+    ]
 
     return TripSummary(
         tag=tag,
