@@ -114,13 +114,16 @@ DEFAULT_TAXONOMY: list[TaxonomyEntry] = [
     # === INSURANCE OTHER ===
     TaxonomyEntry("insurance_other", "Other insurance", "ביטוחים אחרים",
                   display_order=50),
-    TaxonomyEntry("insurance_other.life", "Life", "ביטוח חיים",
+    # Labels are self-contained (not parent-relative): dashboard rollups
+    # render leaf categories FLAT, so a bare "Other"/"Home" row is
+    # unreadable there (owner confused "Other" with the Vacation fold).
+    TaxonomyEntry("insurance_other.life", "Life insurance", "ביטוח חיים",
                   "insurance_other", display_order=51),
-    TaxonomyEntry("insurance_other.home", "Home", "ביטוח דירה",
+    TaxonomyEntry("insurance_other.home", "Home insurance", "ביטוח דירה",
                   "insurance_other", display_order=52),
-    TaxonomyEntry("insurance_other.umbrella", "Umbrella", "ביטוח-על",
+    TaxonomyEntry("insurance_other.umbrella", "Umbrella insurance", "ביטוח-על",
                   "insurance_other", display_order=53),
-    TaxonomyEntry("insurance_other.other", "Other", "אחר",
+    TaxonomyEntry("insurance_other.other", "Insurance (other)", "ביטוח אחר",
                   "insurance_other", display_order=54),
 
     # === CHILDCARE / EDUCATION ===

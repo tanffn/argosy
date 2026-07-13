@@ -129,6 +129,8 @@ export function YearlySummaryCard({
   onWindowChange,
 }: YearlySummaryCardProps) {
   const [showAll, setShowAll] = useState(false);
+  // Vacation parent row toggles its nested Hotels/Other children.
+  const [vacationOpen, setVacationOpen] = useState(true);
 
   if (data.months_covered === 0) {
     return (
@@ -190,8 +192,8 @@ export function YearlySummaryCard({
   );
   const visibleCats = displayCats.filter((c) => {
     if (c.depth === 0) return visibleTopKeys.has(c.key);
-    // Show Vacation children only when the Vacation parent is visible.
-    return visibleTopKeys.has("vacation");
+    // Show Vacation children only when the parent is visible AND expanded.
+    return vacationOpen && visibleTopKeys.has("vacation");
   });
   const maxCat = Math.max(1, ...displayCats.filter((c) => c.depth === 0).map((c) => c.total_nis));
   const topLevelCount = topLevelKeys.size;
@@ -278,7 +280,11 @@ export function YearlySummaryCard({
                           + (c.depth === 0 && c.key === "vacation" ? " font-medium" : "")
                         }
                       >
-                        {c.depth === 1 ? `↳ ${c.label_en}` : c.label_en}
+                        {c.key === "vacation"
+                          ? `${vacationOpen ? "▾" : "▸"} ${c.label_en}`
+                          : c.depth === 1
+                            ? `↳ ${c.label_en}`
+                            : c.label_en}
                       </span>
                       <span className="tabular-nums text-muted-foreground text-xs w-14 text-right">
                         {c.transaction_count}{" "}
@@ -313,9 +319,18 @@ export function YearlySummaryCard({
                         {body}
                       </Link>
                     ) : (
-                      <div className="rounded px-1 -mx-1 py-1">
+                      <button
+                        type="button"
+                        onClick={() => setVacationOpen((v) => !v)}
+                        title={
+                          vacationOpen
+                            ? "Collapse Vacation subcategories"
+                            : "Expand Vacation subcategories"
+                        }
+                        className="block w-full text-left rounded px-1 -mx-1 py-1 hover:bg-accent/30 cursor-pointer"
+                      >
                         {body}
-                      </div>
+                      </button>
                     )}
                   </li>
                 );
