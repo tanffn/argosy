@@ -71,6 +71,10 @@ class PositionDTO(BaseModel):
     type_label: str = ""       # canonical "structure · exposure" from the §20.4 reference (display)
     # Plan-sleeve association — same mapping as allocation-breakdown buckets.
     sleeve: str = ""
+    # Block H — stored blurbs from instrument_plan_classes (hover card).
+    what_it_is: str = ""
+    why_held: str = ""
+    classification_source: str = ""  # plan | fleet | owner | "" (unmapped/cash)
     name: str = ""             # plain-English instrument name (the cryptic-ticker description line)
     details: str
     symbol: str
@@ -151,17 +155,19 @@ def _find_latest_tsv() -> Path | None:
     return None
 
 
-def _snapshot_to_dto(snap, doc=None) -> PortfolioSnapshotDTO:
+def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapshotDTO:
     """Translate a parsed/hydrated PortfolioSnapshot to the route DTO.
 
     ``doc`` (optional TargetAllocationDoc) supplies plan-instrument → sleeve
     labels so the Sleeve column matches Current-allocation-vs-plan-target.
+    ``classification_map`` is the Block H DB map (owner/fleet/plan rows).
     """
     from argosy.services import instrument_reference
     from argosy.services.allocation_breakdown import (
         _plan_symbol_labels,
         resolve_sleeve_label,
     )
+    from argosy.services.instrument_plan_class import UNMAPPED_LABEL
     from argosy.services.wealth_dashboard import _classify_asset_class
 
     # Resolve one asset_type per ticker (prefer non-blank): the hand-maintained
@@ -176,38 +182,38 @@ def _snapshot_to_dto(snap, doc=None) -> PortfolioSnapshotDTO:
             eff_type[sym] = at
 
     plan_labels = _plan_symbol_labels(doc)
+    cmap = classification_map or {}
     positions: list[PositionDTO] = []
     classification_warnings: list[str] = []
     for p in snap.positions:
         sym = (p.symbol or "").strip().upper()
         asset_type = (p.asset_type or "").strip() or eff_type.get(sym, "")
-        # Correct a source Type that contradicts the instrument reference: the
-        # export mislabels STOXX Europe 600 + EIMI as "REIT" (they're equity
-        # ETFs) and IWDP as "Equity" (it's a property/REIT ETF). When the
-        # source asset_type implies a different asset CLASS than the reference,
-        # show the reference's sector — otherwise keep the source tilt
-        # (Growth/Dividend/Core), which the reference doesn't capture.
         ref = instrument_reference.lookup(p.symbol or "", p.details or "")
         if ref is not None and ref.asset_class != _classify_asset_class(asset_type, sym):
             asset_type = ref.sector
-        # Estate-safety is REFERENCE-driven for every curated security — so a
-        # US-situs cash-like ETF (e.g. SGOV) stays flagged exposed even though
-        # its display Type reads cash-ish. Only genuine physical cash (no ticker
-        # → no ref) resolves to None / "—" (codex review).
         estate_safe = instrument_reference.estate_safe_for(p.symbol or "", p.details or "")
-        # Canonical "structure · exposure" Type label (the reference is the
-        # authority; falls back to the raw asset_type for un-curated rows).
         type_label = instrument_reference.type_label(
             p.symbol or "", p.details or "", fallback=asset_type
         )
         name = instrument_reference.name_for(p.symbol or "", p.details or "")
         sleeve = resolve_sleeve_label(
-            p.symbol or "", asset_type, p.details or "", plan_labels,
+            p.symbol or "",
+            asset_type=asset_type,
+            details=p.details or "",
+            plan_symbol_labels=plan_labels,
+            classification_map=cmap,
         )
-        # Fail-loud: a holding with a real latin ticker that the reference
-        # doesn't know is un-curated — its estate-safety is unknown (a silent
-        # US-situs gap). Physical cash / real-estate rows (no real ticker) are
-        # expected to be absent from the reference and are NOT flagged.
+        entry = cmap.get(sym)
+        what = entry.what_it_is if entry else ""
+        why = entry.why_held if entry else ""
+        if plan_labels and sym in plan_labels:
+            src = "plan"
+        elif entry is not None:
+            src = entry.source
+        elif sleeve == UNMAPPED_LABEL:
+            src = ""
+        else:
+            src = "cash" if sleeve.startswith("Cash") else ""
         has_ticker = bool(sym) and sym != "-"
         classified = ref is not None or not has_ticker
         if not classified:
@@ -219,6 +225,9 @@ def _snapshot_to_dto(snap, doc=None) -> PortfolioSnapshotDTO:
                 asset_type=asset_type,
                 type_label=type_label,
                 sleeve=sleeve,
+                what_it_is=what,
+                why_held=why,
+                classification_source=src,
                 name=name,
                 details=p.details,
                 symbol=p.symbol,
@@ -283,8 +292,9 @@ def _project_canonical_allocations(
     """Override the snapshot's TSV allocation pie with the canonical doc's
     full-book composition when the plan carries one; else leave the TSV pie.
 
-    Also re-resolves per-position ``sleeve`` once the plan doc is available so
-    the Sleeve column and allocation-breakdown buckets share one mapping.
+    Also re-resolves per-position ``sleeve`` (+ Block H blurbs) once the plan
+    doc and classification map are available so the Sleeve column and
+    allocation-breakdown buckets share one mapping.
 
     Best-effort: the projection is additive, so any failure reading the plan
     (e.g. an unmigrated DB without plan_versions) falls back to the snapshot
@@ -294,29 +304,51 @@ def _project_canonical_allocations(
             _plan_symbol_labels,
             resolve_sleeve_label,
         )
+        from argosy.services.instrument_plan_class import (
+            UNMAPPED_LABEL,
+            load_classification_map,
+        )
         from argosy.services.target_allocation_doc import load_plan_target_allocation
         from argosy.state.queries import get_current_plan
 
         pv = get_current_plan(db, user_id)
         doc = load_plan_target_allocation(pv) if pv is not None else None
+        cmap = load_classification_map(db, user_id)
         updates: dict = {}
         if doc is not None and doc.glide:
             updates["allocations"] = _allocations_from_doc(doc)
-        if doc is not None and dto.positions:
+        if dto.positions:
             plan_labels = _plan_symbol_labels(doc)
-            updates["positions"] = [
-                p.model_copy(
-                    update={
-                        "sleeve": resolve_sleeve_label(
-                            p.symbol or "",
-                            p.asset_type or "",
-                            p.details or "",
-                            plan_labels,
-                        )
-                    }
+            new_positions = []
+            for p in dto.positions:
+                sym = (p.symbol or "").strip().upper()
+                sleeve = resolve_sleeve_label(
+                    p.symbol or "",
+                    asset_type=p.asset_type or "",
+                    details=p.details or "",
+                    plan_symbol_labels=plan_labels,
+                    classification_map=cmap,
                 )
-                for p in dto.positions
-            ]
+                entry = cmap.get(sym)
+                if plan_labels and sym in plan_labels:
+                    src = "plan"
+                elif entry is not None:
+                    src = entry.source
+                elif sleeve == UNMAPPED_LABEL:
+                    src = ""
+                else:
+                    src = "cash" if sleeve.startswith("Cash") else ""
+                new_positions.append(
+                    p.model_copy(
+                        update={
+                            "sleeve": sleeve,
+                            "what_it_is": entry.what_it_is if entry else p.what_it_is,
+                            "why_held": entry.why_held if entry else p.why_held,
+                            "classification_source": src,
+                        }
+                    )
+                )
+            updates["positions"] = new_positions
         if updates:
             return dto.model_copy(update=updates)
         return dto
@@ -1229,7 +1261,11 @@ def get_allocation_breakdown(
         snap = row_to_snapshot(row)
         pv = get_current_plan(db, user_id)
         doc = load_plan_target_allocation(pv) if pv is not None else None
-        rows = build_allocation_breakdown(snap, doc, exclude_nvda=exclude_nvda)
+        from argosy.services.instrument_plan_class import load_classification_map
+        cmap = load_classification_map(db, user_id)
+        rows = build_allocation_breakdown(
+            snap, doc, exclude_nvda=exclude_nvda, classification_map=cmap,
+        )
         note = ("Current = your live holdings grouped by asset class; target = the "
                 "canonical plan's class targets. Click a class to see its symbols. "
                 + ("" if doc is not None
@@ -1258,6 +1294,170 @@ def _allocation_breakdown_dto(rows, note: str) -> "AllocationBreakdownDTO":
         ) for r in rows],
         total_value_k=round(sum(r.current_value_k for r in rows), 2),
         note=note,
+    )
+
+
+# --- Block H: instrument → plan-class mapping (owner-visible + editable) ----
+
+
+class InstrumentClassRowDTO(BaseModel):
+    symbol: str
+    plan_class_label: str
+    source: str
+    confidence: str
+    what_it_is: str
+    why_held: str
+    updated_at: str | None = None
+    resolved_label: str | None = None  # after live plan precedence
+
+
+class InstrumentClassListDTO(BaseModel):
+    rows: list[InstrumentClassRowDTO]
+    unmapped_held: list[str]
+    plan_classes: list[str]
+
+
+class InstrumentClassReassignRequest(BaseModel):
+    user_id: str = "ariel"
+    plan_class_label: str
+    what_it_is: str | None = None
+    why_held: str | None = None
+
+
+class InstrumentClassSeedResponse(BaseModel):
+    plan: int
+    fleet_deterministic: int
+    unmapped_held: list[str]
+
+
+@router.get("/instrument-classes", response_model=InstrumentClassListDTO)
+def list_instrument_classes(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> InstrumentClassListDTO:
+    """Owner-visible classification map (nothing hidden)."""
+    from argosy.services.allocation_breakdown import (
+        _plan_symbol_labels,
+        resolve_sleeve_label,
+    )
+    from argosy.services.instrument_plan_class import (
+        list_unmapped_held,
+        load_classification_map,
+    )
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    plan_labels = _plan_symbol_labels(doc)
+    cmap = load_classification_map(db, user_id)
+    plan_classes = sorted(
+        {getattr(c, "label", "") for c in (getattr(doc, "classes", None) or []) if getattr(c, "label", "")}
+    )
+    held: set[str] = set()
+    row = get_latest_snapshot_row(db, user_id)
+    if row is not None:
+        for p in getattr(row_to_snapshot(row), "positions", []) or []:
+            s = (getattr(p, "symbol", "") or "").strip().upper()
+            if s and s not in {"-", "—"}:
+                held.add(s)
+    rows_out: list[InstrumentClassRowDTO] = []
+    for sym, entry in sorted(cmap.items()):
+        resolved = resolve_sleeve_label(
+            sym,
+            plan_symbol_labels=plan_labels,
+            classification_map=cmap,
+        )
+        rows_out.append(
+            InstrumentClassRowDTO(
+                symbol=sym,
+                plan_class_label=entry.plan_class_label,
+                source=entry.source,
+                confidence=entry.confidence,
+                what_it_is=entry.what_it_is,
+                why_held=entry.why_held,
+                updated_at=entry.updated_at.isoformat() if entry.updated_at else None,
+                resolved_label=resolved,
+            )
+        )
+    unmapped = list_unmapped_held(
+        held_symbols=held,
+        plan_symbol_labels=plan_labels,
+        classification_map=cmap,
+    )
+    return InstrumentClassListDTO(
+        rows=rows_out, unmapped_held=unmapped, plan_classes=plan_classes,
+    )
+
+
+@router.put("/instrument-classes/{symbol}", response_model=InstrumentClassRowDTO)
+def reassign_instrument_class(
+    symbol: str,
+    body: InstrumentClassReassignRequest,
+    db: Session = Depends(get_db),
+) -> InstrumentClassRowDTO:
+    """Owner reassign — persists source=owner (outranks fleet)."""
+    from argosy.services.instrument_plan_class import owner_reassign
+
+    row = owner_reassign(
+        db,
+        body.user_id,
+        symbol,
+        body.plan_class_label,
+        what_it_is=body.what_it_is,
+        why_held=body.why_held,
+    )
+    db.commit()
+    return InstrumentClassRowDTO(
+        symbol=row.symbol,
+        plan_class_label=row.plan_class_label,
+        source=row.source,
+        confidence=row.confidence,
+        what_it_is=row.what_it_is,
+        why_held=row.why_held,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+        resolved_label=row.plan_class_label,
+    )
+
+
+@router.post("/instrument-classes/seed", response_model=InstrumentClassSeedResponse)
+def seed_instrument_classes(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> InstrumentClassSeedResponse:
+    """Deterministic seed: plan instruments + known-holdings fleet rows.
+
+    Live WebSearch fleet enrichment is a queued follow-up — not this gate.
+    """
+    from argosy.services.allocation_breakdown import _plan_symbol_labels
+    from argosy.services.instrument_plan_class import (
+        list_unmapped_held,
+        load_classification_map,
+        seed_all,
+    )
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    held: set[str] = set()
+    row = get_latest_snapshot_row(db, user_id)
+    if row is not None:
+        for p in getattr(row_to_snapshot(row), "positions", []) or []:
+            s = (getattr(p, "symbol", "") or "").strip().upper()
+            if s and s not in {"-", "—"}:
+                held.add(s)
+    counts = seed_all(db, user_id, doc, held_symbols=held)
+    cmap = load_classification_map(db, user_id)
+    unmapped = list_unmapped_held(
+        held_symbols=held,
+        plan_symbol_labels=_plan_symbol_labels(doc),
+        classification_map=cmap,
+    )
+    return InstrumentClassSeedResponse(
+        plan=counts["plan"],
+        fleet_deterministic=counts["fleet_deterministic"],
+        unmapped_held=unmapped,
     )
 
 
@@ -1665,10 +1865,13 @@ def get_deploy_cash(
             # nothing about investments — only clean plan-fills auto-approve). The
             # `fleet_review=true` call is phase 2 (the fleet adjudicates below).
             _fleet_on = get_settings().deployment_fleet_review_enabled
+            from argosy.services.instrument_plan_class import load_classification_map
+            _cmap = load_classification_map(db, user_id)
             result = run_preflight_for_plan(
                 plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                 deployable_usd=amount, snapshot_prices=snapshot_prices,
                 fleet_available=_fleet_on, snapshot=_snap_obj,
+                classification_map=_cmap,
             )
 
             # Deterministic redirect (no LLM, no gold, no plan change): cash the
@@ -1689,6 +1892,7 @@ def get_deploy_cash(
                     plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                     deployable_usd=amount, snapshot_prices=snapshot_prices,
                     fleet_available=_fleet_on, snapshot=_snap_obj,
+                    classification_map=_cmap,
                 )
 
             # Increment 2: route the genuine judgment calls the deterministic

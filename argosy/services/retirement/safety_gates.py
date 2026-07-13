@@ -54,63 +54,56 @@ class GateVerdict:
     detail_summary: str  # 1-sentence summary surfacing context
 
 
-def _us_situs_assets_usd(
+def _estate_domicile_split_usd(
     positions: list[dict], *, exclude_nvda: bool = False
-) -> float:
-    """Sum US-situs assets per IRS NRA estate-tax rules.
+) -> tuple[float, float]:
+    """Return ``(us_situs_usd, estate_safe_usd)`` for liquid securities.
 
-    US-situs is a property of the INSTRUMENT'S DOMICILE, not the broker it
-    happens to sit at: a US-domiciled security (NVDA, SCHD, VOO, AMD, …) is
-    US-situs whether held at Schwab or at an Israeli broker. Classification
-    is therefore delegated to the canonical per-instrument domicile table
-    (``instrument_reference.estate_safe_for``), the SAME source the portfolio
-    route, allocation breakdown, and deployment advisor already use — not a
-    ``location == "schwab"`` heuristic (which silently dropped the entire
-    Leumi-held US book and understated the exposure the UCITS-first policy
-    exists to shrink).
+    US-situs is a property of the INSTRUMENT'S DOMICILE, not the broker —
+    delegated to ``instrument_reference.estate_safe_for`` (same source as the
+    portfolio route / allocation breakdown / deployment advisor).
 
-    Counted as US-situs:
-      - Any US-domiciled security at ANY broker (classifier returns False),
-      - Any uncurated, non-cash security (classifier returns None) — counted
-        conservatively and logged, so a new holding fails loud for curation
-        rather than silently dropping out of the estate tail.
-    Excluded:
-      - Cash in any account (portfolio-interest exemption),
-      - UCITS / non-US-domiciled funds and Israeli instruments
-        (classifier returns True),
-      - Physical real estate and other rows with no instrument symbol,
-      - NVDA when ``exclude_nvda`` is True (portfolio toggle variant).
+    Counted as US-situs: US-domiciled securities + uncurated tickers
+    (conservative). Counted as estate-safe: UCITS / non-US-domiciled /
+    Israeli instruments (classifier True, or an explicit 'ucits' marker).
+    Excluded from both: cash (portfolio-interest exemption), physical real
+    estate (no tradable ticker), and NVDA when ``exclude_nvda``.
 
-    Returns total USD value of US-situs holdings.
+    The sum of the two sides is the securities-book denominator for
+    "how much has already moved to UCITS."
     """
     from argosy.services.instrument_reference import estate_safe_for
 
-    total = 0.0
+    us_total = 0.0
+    safe_total = 0.0
     for p in positions:
         asset_type = (p.get("asset_type") or "").lower()
         details = (p.get("details") or "")
         symbol = (p.get("symbol") or "").strip()
-        # Cash never US-situs (portfolio-interest exemption).
         if "cash" in asset_type:
             continue
         if exclude_nvda and (
             symbol.upper() == "NVDA" or "nvidia" in asset_type
         ):
             continue
-        # Explicit UCITS marker in the raw fields — estate-safe even when the
-        # ticker is not yet curated (keeps uncurated UCITS like VWRA out).
+        # Physical / illiquid property (no tradable ticker) — not securities.
+        if not symbol or symbol in {"-", "—", "n/a", "na", "none"}:
+            continue
+        try:
+            value_usd = float(p.get("usd_value_k") or 0.0) * 1000.0
+        except (TypeError, ValueError):
+            continue
+        if value_usd <= 0:
+            continue
+
         if "ucits" in details.lower() or "ucits" in asset_type:
+            safe_total += value_usd
             continue
         estate_safe = estate_safe_for(symbol, details)
         if estate_safe is True:
-            # Classifier: non-US-situs (UCITS / Israeli / non-US domicile).
+            safe_total += value_usd
             continue
         if estate_safe is None:
-            # Unknown instrument. Rows with no real symbol (physical real
-            # estate, residual cash-like) are not securities → skip. A real
-            # but uncurated ticker is counted conservatively and flagged.
-            if not symbol or symbol in {"-", "—"}:
-                continue
             log.warning(
                 "us_situs.uncurated_instrument_counted symbol=%s details=%s "
                 "(estate_safe_for returned None; counted as US-situs "
@@ -118,13 +111,18 @@ def _us_situs_assets_usd(
                 "authoritative domicile classification)",
                 symbol, details[:80],
             )
-        # estate_safe is False (US-domiciled) or None-with-symbol (conservative).
-        v_k = p.get("usd_value_k") or 0.0
-        try:
-            total += float(v_k) * 1000.0
-        except (TypeError, ValueError):
-            continue
-    return total
+        us_total += value_usd
+    return us_total, safe_total
+
+
+def _us_situs_assets_usd(
+    positions: list[dict], *, exclude_nvda: bool = False
+) -> float:
+    """Sum US-situs assets per IRS NRA estate-tax rules."""
+    us_usd, _safe = _estate_domicile_split_usd(
+        positions, exclude_nvda=exclude_nvda,
+    )
+    return us_usd
 
 
 def compute_nra_estate_gate(*, user_id: str, session: Session) -> GateVerdict:

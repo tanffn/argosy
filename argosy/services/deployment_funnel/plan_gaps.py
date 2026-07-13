@@ -59,6 +59,7 @@ def sleeve_gaps_for_deploy(
     doc,
     snapshot,
     cash_usd: float,
+    classification_map=None,
 ) -> list[PlanGap]:
     """Per-sleeve underweight gaps for the entered cash amount.
 
@@ -67,18 +68,24 @@ def sleeve_gaps_for_deploy(
     ``blocked_amount_usd`` = $-to-close for ``cash_usd`` (scaled like
     ``allocation_engine``: full gap when total underweight ≤ cash, else
     proportional). Overweight / on-target sleeves are omitted.
+    Unmapped bucket is never a deploy target (skipped).
     """
     from argosy.services.allocation_breakdown import build_allocation_breakdown
+    from argosy.services.instrument_plan_class import UNMAPPED_LABEL
 
     if doc is None or snapshot is None or cash_usd <= 0:
         return []
-    rows = build_allocation_breakdown(snapshot, doc, exclude_nvda=False)
+    rows = build_allocation_breakdown(
+        snapshot, doc, exclude_nvda=False, classification_map=classification_map,
+    )
     book_usd = sum(float(r.current_value_k or 0.0) for r in rows) * 1000.0
     if book_usd <= 0:
         return []
 
     raw: list[tuple[str, float, float, float]] = []
     for r in rows:
+        if r.label == UNMAPPED_LABEL:
+            continue
         tgt = r.target_pct
         if tgt is None:
             continue

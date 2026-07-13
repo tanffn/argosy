@@ -723,6 +723,11 @@ class TestEstateExposure:
             e.potential_liability_usd * 3.0
         )
         assert e.exclude_nvda is False
+        # Seed has only US-domiciled securities (NVDA+SGOV+VOO); cash excluded.
+        assert e.estate_safe_usd == pytest.approx(0.0)
+        assert e.securities_book_usd == pytest.approx(460_000.0)
+        assert e.us_situs_pct_of_securities == pytest.approx(100.0)
+        assert e.estate_safe_pct_of_securities == pytest.approx(0.0)
 
     def test_exclude_nvda_drops_nvda_from_estate(self, client_with_db):
         SF = client_with_db.app.state.session_factory
@@ -738,6 +743,38 @@ class TestEstateExposure:
         assert ex.estate_exposure.us_situs_usd == pytest.approx(
             full.estate_exposure.us_situs_usd - 200_000.0
         )
+
+    def test_ucits_share_of_securities_book(self, client_with_db):
+        """Estate card ratio: US-situs vs already-moved-to-UCITS."""
+        SF = client_with_db.app.state.session_factory
+        positions = [
+            {
+                "location": "schwab", "currency": "USD", "asset_type": "Equity",
+                "details": "RSU", "symbol": "NVDA", "shares": 100.0,
+                "current_price": 100.0, "usd_value_k": 100.0,
+            },
+            {
+                "location": "leumi", "currency": "USD", "asset_type": "Core Equity",
+                "details": "iShares Core S&P 500 UCITS", "symbol": "CSPX",
+                "shares": 50.0, "current_price": 100.0, "usd_value_k": 300.0,
+            },
+            {
+                "location": "leumi", "currency": "USD", "asset_type": "Cash",
+                "details": "Cash", "symbol": "-", "shares": 50_000.0,
+                "current_price": 1.0, "usd_value_k": 50.0,
+            },
+        ]
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0, positions=positions, total_usd_value_k=450.0)
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        e = dash.estate_exposure
+        assert e.us_situs_usd == pytest.approx(100_000.0)
+        assert e.estate_safe_usd == pytest.approx(300_000.0)
+        assert e.securities_book_usd == pytest.approx(400_000.0)
+        assert e.us_situs_pct_of_securities == pytest.approx(25.0)
+        assert e.estate_safe_pct_of_securities == pytest.approx(75.0)
 
 
 class TestAssumptionsAndDefaults:

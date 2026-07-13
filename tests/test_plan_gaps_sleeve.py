@@ -44,13 +44,20 @@ def _doc():
 
 def test_sleeve_gaps_scale_to_cash():
     # Book $100k: 10% core (want 40%) → $30k full gap; 90% cash (want 60%) → overweight.
+    from argosy.services.instrument_plan_class import ClassificationEntry, SOURCE_FLEET
+
     snap = SimpleNamespace(positions=[
         SimpleNamespace(symbol="VOO", asset_type="Core Equity", usd_value_k=10.0,
                         details="", location="schwab", currency="USD"),
         SimpleNamespace(symbol="IB01", asset_type="Cash", usd_value_k=90.0,
                         details="", location="leumi", currency="USD"),
     ])
-    gaps = sleeve_gaps_for_deploy(doc=_doc(), snapshot=snap, cash_usd=10_000.0)
+    cmap = {
+        "VOO": ClassificationEntry("VOO", "US broad-market core", SOURCE_FLEET),
+    }
+    gaps = sleeve_gaps_for_deploy(
+        doc=_doc(), snapshot=snap, cash_usd=10_000.0, classification_map=cmap,
+    )
     assert len(gaps) == 1
     g = gaps[0]
     assert g.asset_class == "US broad-market core"

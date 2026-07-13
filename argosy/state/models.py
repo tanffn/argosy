@@ -4626,3 +4626,53 @@ class Verdict(Base):
             "settled",
         ),
     )
+
+
+class InstrumentPlanClass(Base):
+    """Durable symbol → plan-class mapping (Block H, 2026-07-13).
+
+    Resolve precedence (live, not stored rank):
+        live plan instrument list  >  owner  >  fleet  >  plan-seeded row
+        >  Unmapped — needs classification
+
+    The asset_type→US-broad catch-all is gone: unmapped symbols fail loud.
+    ``what_it_is`` / ``why_held`` are authored once (seed / fleet) and stored
+    for hover cards — not regenerated per render.
+
+    Migration: alembic 0093.
+    """
+
+    __tablename__ = "instrument_plan_classes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_class_label: Mapped[str] = mapped_column(String(128), nullable=False)
+    # plan | fleet | owner
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="HIGH", server_default="HIGH"
+    )
+    what_it_is: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    why_held: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "symbol", name="uq_instrument_plan_classes_user_symbol"
+        ),
+        Index("ix_instrument_plan_classes_user", "user_id"),
+    )

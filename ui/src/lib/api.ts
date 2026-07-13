@@ -265,6 +265,10 @@ export interface PortfolioPosition {
    * as Current-allocation-vs-plan-target. Empty when no plan/doc is available.
    */
   sleeve?: string;
+  /** Block H — stored one-liner from instrument_plan_classes (hover). */
+  what_it_is?: string;
+  why_held?: string;
+  classification_source?: string;
   /** Plain-English instrument name (the description line under the ticker). */
   name: string;
   details: string;
@@ -295,6 +299,29 @@ export interface PortfolioSnapshotDTO {
   parse_warnings: string[];
   /** Held symbols not in the instrument reference (fail-loud: need curation). */
   classification_warnings: string[];
+}
+
+export interface InstrumentClassRowDTO {
+  symbol: string;
+  plan_class_label: string;
+  source: string;
+  confidence: string;
+  what_it_is: string;
+  why_held: string;
+  updated_at: string | null;
+  resolved_label: string | null;
+}
+
+export interface InstrumentClassListDTO {
+  rows: InstrumentClassRowDTO[];
+  unmapped_held: string[];
+  plan_classes: string[];
+}
+
+export interface InstrumentClassSeedResponse {
+  plan: number;
+  fleet_deterministic: number;
+  unmapped_held: string[];
 }
 
 // Tri-state response from POST /api/portfolio/upload-snapshot. The
@@ -2622,6 +2649,28 @@ export const api = {
   portfolioSnapshot: (userId: string) =>
     getJSON<PortfolioSnapshotDTO>(
       `/api/portfolio/snapshot?user_id=${encodeURIComponent(userId)}`,
+    ),
+  instrumentClasses: (userId: string) =>
+    getJSON<InstrumentClassListDTO>(
+      `/api/portfolio/instrument-classes?user_id=${encodeURIComponent(userId)}`,
+    ),
+  instrumentClassesSeed: (userId: string) =>
+    postJSON<InstrumentClassSeedResponse>(
+      `/api/portfolio/instrument-classes/seed?user_id=${encodeURIComponent(userId)}`,
+      {},
+    ),
+  instrumentClassReassign: (
+    symbol: string,
+    body: {
+      user_id?: string;
+      plan_class_label: string;
+      what_it_is?: string | null;
+      why_held?: string | null;
+    },
+  ) =>
+    putJSON<InstrumentClassRowDTO>(
+      `/api/portfolio/instrument-classes/${encodeURIComponent(symbol)}`,
+      { user_id: "ariel", ...body },
     ),
   // Self-tuning unallocated-cash detector (2026-05-29). Fires when
   // current cash > plan-target cash * overageRatio (default 1.5x).
@@ -5442,6 +5491,12 @@ export interface WealthEstateExposureBlock {
   potential_liability_nis: number | null;
   /** True when US-situs totals exclude NVDA (matches the portfolio toggle). */
   exclude_nvda?: boolean;
+  /** UCITS / non-US-domiciled securities (cash + physical RE excluded). */
+  estate_safe_usd?: number | null;
+  /** us_situs + estate_safe — denominator for the domicile ratio. */
+  securities_book_usd?: number | null;
+  us_situs_pct_of_securities?: number | null;
+  estate_safe_pct_of_securities?: number | null;
   missing_reasons: string[];
 }
 

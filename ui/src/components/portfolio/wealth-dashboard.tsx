@@ -598,6 +598,10 @@ function EstateExposureCard({
   const liability = block.potential_liability_usd;
   const above = block.above_exemption_usd;
   const exNvda = block.exclude_nvda ?? excludeNvda;
+  const usPct = block.us_situs_pct_of_securities;
+  const safePct = block.estate_safe_pct_of_securities;
+  const safeUsd = block.estate_safe_usd;
+  const bookUsd = block.securities_book_usd;
   const tone =
     liability == null
       ? "default"
@@ -619,24 +623,74 @@ function EstateExposureCard({
           <>
             {formatUsd(usSitus)}{" "}
             <span className="text-sm text-muted-foreground">US-situs</span>
+            {usPct != null && (
+              <span className="text-sm text-muted-foreground">
+                {" "}
+                · {formatPct(usPct)} of securities
+              </span>
+            )}
           </>
         ) : (
           "—"
         )
       }
       subline={
-        liability != null
-          ? `~${formatUsd(liability)} potential liability (40% on amount > $60k)` +
-            (exNvda ? " · NVDA excluded" : " · NVDA included")
-          : exNvda
-            ? "NVDA excluded from this view"
-            : null
+        [
+          liability != null
+            ? `~${formatUsd(liability)} potential liability (40% on amount > $60k)`
+            : null,
+          safePct != null && safeUsd != null
+            ? `${formatPct(safePct)} already estate-safe (UCITS) · ${formatUsd(safeUsd)}`
+            : null,
+          exNvda ? "NVDA excluded" : liability != null ? "NVDA included" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || null
       }
       tone={tone === "default" ? "default" : tone}
       missingReasons={block.missing_reasons}
     >
       {usSitus != null && (
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-2">
+          {/* Domicile split of the securities book: US-situs vs already-UCITS */}
+          {bookUsd != null && bookUsd > 0 && usPct != null && (
+            <div className="flex flex-col gap-1">
+              <div
+                className="flex h-2 w-full overflow-hidden rounded bg-muted/40"
+                title={`US-situs ${formatUsd(usSitus)} · estate-safe ${formatUsd(safeUsd ?? 0)} · book ${formatUsd(bookUsd)}`}
+                role="img"
+                aria-label={`${usPct}% US-situs, ${safePct ?? 0}% estate-safe`}
+              >
+                <div
+                  className={cn(
+                    "h-full",
+                    tone === "success"
+                      ? "bg-success"
+                      : tone === "warning"
+                        ? "bg-warning"
+                        : "bg-error",
+                  )}
+                  style={{ width: `${Math.min(Math.max(usPct, 0), 100)}%` }}
+                />
+                <div
+                  className="h-full bg-emerald-500/50"
+                  style={{
+                    width: `${Math.min(Math.max(safePct ?? 0, 0), 100)}%`,
+                  }}
+                />
+              </div>
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>
+                  US-situs {formatPct(usPct)}
+                  {usSitus != null ? ` · ${formatUsd(usSitus)}` : ""}
+                </span>
+                <span>
+                  Estate-safe {formatPct(safePct ?? 0)}
+                  {safeUsd != null ? ` · ${formatUsd(safeUsd)}` : ""}
+                </span>
+              </div>
+            </div>
+          )}
           {/* Exemption marker bar — fill is US-situs holdings, marker at exemption */}
           <div className="relative h-2 w-full rounded bg-muted/40 overflow-hidden">
             <div

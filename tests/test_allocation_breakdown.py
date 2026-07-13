@@ -5,7 +5,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from argosy.services.allocation_breakdown import build_allocation_breakdown
+from argosy.services.instrument_plan_class import (
+    UNMAPPED_LABEL,
+    ClassificationEntry,
+    SOURCE_FLEET,
+)
 from argosy.services.target_allocation_doc import OTHER_SINGLES_LABEL
+
+
+def _cmap(*pairs: tuple[str, str]) -> dict[str, ClassificationEntry]:
+    return {
+        sym: ClassificationEntry(sym, label, SOURCE_FLEET)
+        for sym, label in pairs
+    }
 
 
 def _re_pos(usd_k):
@@ -53,7 +65,11 @@ def test_breakdown_live_current_vs_target_with_holdings():
         _pos("SCHD", "Dividend", 100.0),
         _pos("-", "Cash", 100.0),
     ])  # total 1000k
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(
+        ("VOO", "US broad-market core"),
+        ("SCHD", "Dividend-quality income"),
+    )
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     by = {r.label: r for r in rows}
 
     # current % is from LIVE holdings (NVDA 60% — the real concentration)
@@ -78,7 +94,13 @@ def test_breakdown_exclude_nvda_renormalizes_to_ex_nvda_book():
         _pos("SCHD", "Dividend", 100.0),
         _pos("-", "Cash", 100.0),
     ])  # total 1000k, ex-NVDA 400k
-    rows = build_allocation_breakdown(snap, _doc(), exclude_nvda=True)
+    cmap = _cmap(
+        ("VOO", "US broad-market core"),
+        ("SCHD", "Dividend-quality income"),
+    )
+    rows = build_allocation_breakdown(
+        snap, _doc(), exclude_nvda=True, classification_map=cmap,
+    )
     by = {r.label: r for r in rows}
     # NVDA gone entirely.
     assert "Strategic single-stock (NVDA)" not in by
@@ -90,14 +112,15 @@ def test_breakdown_exclude_nvda_renormalizes_to_ex_nvda_book():
 
 def test_breakdown_blank_asset_type_inherits_sibling_ticker_type():
     # The $3K Schwab SCHG row has a blank asset_type; a $17K Leumi SCHG row is
-    # "Growth". Same ticker → the blank inherits Growth (US growth tilt), not
-    # the "Unclassified" bucket.
+    # "Growth". Same ticker → classified via fleet map to Global quality growth,
+    # not the "Unclassified" / Unmapped bucket.
     snap = _snap([
         _pos("SCHG", "", 3.0, details=""),
         _pos("SCHG", "Growth", 17.0, details="(...) SCHG"),
         _pos("NVDA", "NVIDIA", 80.0),
     ])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(("SCHG", "Global quality growth (ex-NVDA-dense)"))
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     labels = {r.label for r in rows}
     assert "Unclassified" not in labels
     growth = next(r for r in rows if r.label == "Global quality growth (ex-NVDA-dense)")
@@ -113,7 +136,11 @@ def test_breakdown_pure_non_us_equity_routes_to_international():
         _pos("EIMI", "REIT", 16.0, details="(ISHR CORE EM IMI) EIMI LN"),
         _pos("CSPX", "Core Equity", 44.0, details="(ISHR CORE S&P500) CSPX LN"),
     ])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(
+        ('מחקה ת"א-200', "International developed (ex-US)"),
+        ("EIMI", "International developed (ex-US)"),
+    )
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     by = {r.label: r for r in rows}
     intl = by.get("International developed (ex-US)")
     assert intl is not None
@@ -131,7 +158,8 @@ def test_breakdown_sgov_counts_in_cash_and_tbills():
         _pos("-", "Cash", 20.0, details="Cash"),
         _pos("NVDA", "NVIDIA", 75.0),
     ])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(("SGOV", "Cash & T-bills (incl. ILS tranche)"))
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     by = {r.label: r for r in rows}
     cash = by.get("Cash & T-bills (incl. ILS tranche)")
     assert cash is not None
@@ -145,7 +173,8 @@ def test_targets_sum_to_100_including_unheld_plan_classes():
     # Hold only 2 of the 4 plan classes; the unheld ones must still appear as
     # 0%-current rows so the target column conserves to 100%.
     snap = _snap([_pos("NVDA", "NVIDIA", 130.0), _pos("VOO", "Core Equity", 870.0)])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(("VOO", "US broad-market core"))
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     by = {r.label: r for r in rows}
     assert by["Dividend-quality income"].current_pct == 0.0
     assert by["Cash & T-bills (incl. ILS tranche)"].current_pct == 0.0
@@ -161,7 +190,12 @@ def test_listed_property_securities_stay_in_investable_breakdown():
         _re_pos(500.0),
         _pos("VOO", "Core Equity", 47.1),
     ])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(
+        ("IWDP", "Real assets (REIT/TIPS)"),
+        ("O", "Real assets (REIT/TIPS)"),
+        ("VOO", "US broad-market core"),
+    )
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     # Physical RE excluded; liquid book = 100k
     by = {r.label: r for r in rows}
     real = by.get("Real assets (REIT/TIPS)")
@@ -174,7 +208,8 @@ def test_listed_property_securities_stay_in_investable_breakdown():
 
 def test_physical_real_estate_excluded_from_investable_breakdown():
     snap = _snap([_pos("VOO", "Core Equity", 100.0), _re_pos(69.0)])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(("VOO", "US broad-market core"))
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     # The $69K physical property is gone; the book total is just VOO.
     assert all(h.value_k != 69.0 for r in rows for h in r.holdings)
     voo = next(r for r in rows if r.label == "US broad-market core")
@@ -183,30 +218,43 @@ def test_physical_real_estate_excluded_from_investable_breakdown():
 
 def test_oklo_curated_to_high_growth_sleeve():
     snap = _snap([_pos("OKLO", "Individual Stocks", 50.0), _pos("VOO", "Core Equity", 50.0)])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(
+        ("OKLO", "High-growth / high-potential"),
+        ("VOO", "US broad-market core"),
+    )
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     by = {r.label: r for r in rows}
     assert "OKLO" in {h.symbol for h in by["High-growth / high-potential"].holdings}
 
 
 def test_redeploy_singles_show_zero_target_not_none():
+    # Off-plan singles with no classification_map entry fail loud as Unmapped
+    # (target 0.0) — not OTHER_SINGLES via asset_type catch-all.
     snap = _snap([_pos("SOFI", "Individual Stocks", 50.0),
                   _pos("VOO", "Core Equity", 50.0)])
-    rows = build_allocation_breakdown(snap, _doc())
-    singles = next(r for r in rows if r.label == OTHER_SINGLES_LABEL)
-    assert singles.target_pct == 0.0
+    cmap = _cmap(("VOO", "US broad-market core"))
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
+    unmapped = next(r for r in rows if r.label == UNMAPPED_LABEL)
+    assert "SOFI" in {h.symbol for h in unmapped.holdings}
+    assert unmapped.target_pct == 0.0
 
 
-def test_bare_equity_maps_to_core_not_orphan():
+def test_bare_equity_fails_loud_unmapped():
     snap = _snap([_pos("BRK/B", "Equity", 90.0), _pos("VOO", "Core Equity", 10.0)])
-    rows = build_allocation_breakdown(snap, _doc())
+    cmap = _cmap(("VOO", "US broad-market core"))
+    rows = build_allocation_breakdown(snap, _doc(), classification_map=cmap)
     by = {r.label: r for r in rows}
     assert "Equity" not in by, "no orphan 'Equity' catch-all row"
-    assert "BRK/B" in {h.symbol for h in by["US broad-market core"].holdings}
+    assert "BRK/B" in {h.symbol for h in by[UNMAPPED_LABEL].holdings}
+    assert "BRK/B" not in {h.symbol for h in by["US broad-market core"].holdings}
 
 
 def test_exclude_nvda_renormalises_targets_to_100():
     snap = _snap([_pos("NVDA", "NVIDIA", 600.0), _pos("VOO", "Core Equity", 400.0)])
-    rows = build_allocation_breakdown(snap, _doc(), exclude_nvda=True)
+    cmap = _cmap(("VOO", "US broad-market core"))
+    rows = build_allocation_breakdown(
+        snap, _doc(), exclude_nvda=True, classification_map=cmap,
+    )
     assert "Strategic single-stock (NVDA)" not in {r.label for r in rows}
     assert round(sum(r.target_pct or 0.0 for r in rows), 0) == 100.0
 
@@ -289,7 +337,11 @@ def test_plan_instrument_attributes_to_its_plan_class_not_asset_type():
         _pos("TEM", "Individual Stocks", 5.0),
         _pos("GOOG", "Individual Stocks", 16.0),  # true off-plan legacy single
     ])
-    rows = build_allocation_breakdown(snap, _doc_with_moonshot())
+    # GOOG is not a plan instrument → map into the residual redeploy sleeve.
+    cmap = _cmap(("GOOG", OTHER_SINGLES_LABEL))
+    rows = build_allocation_breakdown(
+        snap, _doc_with_moonshot(), classification_map=cmap,
+    )
     by = {r.label: r for r in rows}
     moonshot = by["High-growth / high-potential"]
     assert {h.symbol for h in moonshot.holdings} == {"RXRX", "OKLO", "TEM"}
@@ -309,7 +361,13 @@ def test_legacy_single_stays_in_residual_redeploy_bucket():
         _pos("META", "Individual Stocks", 30.0),
         _pos("CSPX", "Core Equity", 30.0),
     ])
-    rows = build_allocation_breakdown(snap, _doc_with_moonshot())
+    cmap = _cmap(
+        ("SOFI", OTHER_SINGLES_LABEL),
+        ("META", OTHER_SINGLES_LABEL),
+    )
+    rows = build_allocation_breakdown(
+        snap, _doc_with_moonshot(), classification_map=cmap,
+    )
     by = {r.label: r for r in rows}
     singles = by[OTHER_SINGLES_LABEL]
     assert {h.symbol for h in singles.holdings} == {"SOFI", "META"}
@@ -332,7 +390,13 @@ def test_live_shape_moonshot_buys_out_of_redeploy_residual_ex_nvda():
         _pos("AMD", "Individual Stocks", 55.0),
         _pos("-", "Cash", 65.0),
     ])  # ex-NVDA book = 400
-    rows = build_allocation_breakdown(snap, _doc_with_moonshot(), exclude_nvda=True)
+    cmap = _cmap(
+        ("GOOG", OTHER_SINGLES_LABEL),
+        ("AMD", OTHER_SINGLES_LABEL),
+    )
+    rows = build_allocation_breakdown(
+        snap, _doc_with_moonshot(), exclude_nvda=True, classification_map=cmap,
+    )
     by = {r.label: r for r in rows}
     moonshot = by["High-growth / high-potential"]
     assert {h.symbol for h in moonshot.holdings} == {"RXRX", "OKLO", "TEM"}
@@ -353,4 +417,5 @@ def test_breakdown_unmapped_category_surfaces_with_zero_target():
         "Strategic single-stock (NVDA)", "US broad-market core",
         "Dividend-quality income", "Cash & T-bills (incl. ILS tranche)")]
     assert other and any(h.symbol == "WEIRD" for r in other for h in r.holdings)
+    assert by[UNMAPPED_LABEL].target_pct == 0.0
     assert round(sum(r.current_pct for r in rows), 1) == 100.0

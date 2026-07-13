@@ -8,6 +8,8 @@ import { PerPositionThesisSection } from "@/components/positions/per-position-th
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { AllocationBreakdownCard } from "@/components/portfolio/allocation-breakdown-card";
 import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
+import { HoldingHoverCard } from "@/components/portfolio/holding-hover-card";
+import { InstrumentClassMapCard } from "@/components/portfolio/instrument-class-map-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { RealEstateCard } from "@/components/portfolio/real-estate-card";
 import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
@@ -400,15 +402,24 @@ export default function PortfolioPage() {
                       className="border-b border-border/40"
                     >
                       <td className="py-1.5">
-                        <div>{symbolLabel}</div>
-                        {!isCash && p.name && (
-                          <div className="text-[11px] text-muted-foreground/70 font-normal">
-                            {p.name}
+                        <HoldingHoverCard position={p} thesis={thesis}>
+                          <div className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2">
+                            {symbolLabel}
                           </div>
-                        )}
+                          {!isCash && p.name && (
+                            <div className="text-[11px] text-muted-foreground/70 font-normal">
+                              {p.name}
+                            </div>
+                          )}
+                        </HoldingHoverCard>
                       </td>
                       <td className="py-1.5 text-muted-foreground">
                         {sleeveOf(p) || "—"}
+                        {sleeveOf(p) === "Unmapped — needs classification" && (
+                          <div className="text-[10px] text-amber-400 font-normal">
+                            needs classification
+                          </div>
+                        )}
                       </td>
                       <td className="py-1.5">
                         {p.classified === false ? (
@@ -504,6 +515,8 @@ export default function PortfolioPage() {
           plan target, with per-symbol drill-down — replaces the prior chart that
           compared the plan glide's modelled today-anchor to its end-state. */}
       <AllocationBreakdownCard userId={USER_ID} excludeNvda={excludeNvda} />
+
+      <InstrumentClassMapCard userId={USER_ID} />
     </main>
   );
 }

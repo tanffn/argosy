@@ -123,6 +123,10 @@ class EstateExposureBlockDTO(BaseModel):
     potential_liability_usd: float | None
     potential_liability_nis: float | None
     exclude_nvda: bool = False
+    estate_safe_usd: float | None = None
+    securities_book_usd: float | None = None
+    us_situs_pct_of_securities: float | None = None
+    estate_safe_pct_of_securities: float | None = None
     missing_reasons: list[str]
 
 

@@ -1,48 +1,23 @@
 """Live current-allocation vs canonical plan-target, by class, with per-symbol
 drill-down — the data behind the /portfolio 'Allocation vs target' card.
 
-The prior chart compared the plan glide's *modelled* today-anchor (q0) to its
-end-state (qN) — neither is your LIVE allocation. This builds the honest view:
+- **current** %: live holdings grouped by ``resolve_sleeve_label`` (Block H
+  instrument_plan_classes map + plan instrument list — never asset_type→US-broad).
+- **target** %: canonical ``TargetAllocationDoc`` class ``target_pct``.
+- **holdings**: per-symbol drill-down.
 
-- **current** %: the live snapshot holdings, grouped by their ``asset_type``
-  (the TSV category: NVIDIA / Core Equity / Dividend / Growth / Cash / …),
-  mapped to the canonical plan's class labels.
-- **target** %: the canonical ``TargetAllocationDoc`` class ``target_pct`` for
-  the same label (the plan's destination).
-- **holdings**: the actual symbols that fell into each class (symbol, name,
-  value, % of book) — the drill-down.
-
-A held category with no plan class (e.g. legacy single names being wound down,
-or an unrecognised asset type) is surfaced under its own row with a 0% target —
-never dropped — so the current %s always conserve to 100.
+Unmapped holdings land in ``Unmapped — needs classification`` (fail-loud).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from argosy.services import instrument_reference
-from argosy.services.target_allocation_doc import OTHER_SINGLES_LABEL
-
-# Live snapshot ``asset_type`` (lower-cased) -> canonical plan class label.
-# Covers the categories the Family-Finances TSV emits; anything unmapped is
-# surfaced under its own (target-less) row rather than silently bucketed.
-_ASSET_TYPE_TO_LABEL: dict[str, str] = {
-    "nvidia": "Strategic single-stock (NVDA)",
-    "core equity": "US broad-market core",
-    # Bare "equity" (BRK/B, IUHC carry the generic word, not a tilt) → the
-    # US broad-market core bucket, rather than an orphan "Equity" row with no
-    # plan target.
-    "equity": "US broad-market core",
-    "dividend": "Dividend-quality income",
-    "growth": "Global quality growth (ex-NVDA-dense)",
-    "international": "International developed (ex-US)",
-    "cash": "Cash & T-bills (incl. ILS tranche)",
-    "defensive": "Short-duration IG bonds",
-    "reit": "Real assets (REIT/TIPS)",
-    "real estate": "Real assets (REIT/TIPS)",
-    "alternative": "Real assets (REIT/TIPS)",
-    "individual stocks": OTHER_SINGLES_LABEL,
-}
+from argosy.services.instrument_plan_class import (
+    UNMAPPED_LABEL,
+    ClassificationEntry,
+    resolve_sleeve_label,
+)
 
 
 @dataclass(frozen=True)
@@ -64,18 +39,6 @@ class CategoryBreakdown:
     holdings: tuple[HoldingRow, ...] = field(default=())
 
 
-# Reference asset-class → canonical plan-class label, for the non-equity
-# classes. The raw asset_type is unreliable (SGOV is tagged "Defensive" but is
-# a T-bill = Cash & T-bills; EIMI is tagged "REIT" but is equity). The
-# instrument reference is authoritative for what a holding *is*.
-_ASSET_CLASS_TO_LABEL: dict[str, str] = {
-    "Cash": "Cash & T-bills (incl. ILS tranche)",
-    "Fixed Income": "Short-duration IG bonds",
-    "Real Estate": "Real assets (REIT/TIPS)",
-    "Alternatives": "Real assets (REIT/TIPS)",
-}
-
-
 def _is_physical_real_estate(p) -> bool:
     """Illiquid/direct property only — listed REITs/property ETFs stay investable.
 
@@ -93,66 +56,12 @@ def _is_physical_real_estate(p) -> bool:
     return not has_tradable
 
 
-# Owner-curated symbol → plan sleeve when the live plan's instrument list has
-# not yet named the ticker (or the broker tags it as a generic single stock).
-# Kept small and explicit — judgment calls surface here, not via asset_type.
-_CURATED_SLEEVE_BY_SYMBOL: dict[str, str] = {
-    "OKLO": "High-growth / high-potential",
-    "O": "Real assets (REIT/TIPS)",
-    "IWDP": "Real assets (REIT/TIPS)",
-}
-
-
-def resolve_sleeve_label(
-    symbol: str,
-    asset_type: str = "",
-    details: str = "",
-    plan_symbol_labels: dict[str, str] | None = None,
-) -> str:
-    """Canonical plan-sleeve label for one holding — single source for the
-    portfolio Sleeve column and Current-allocation-vs-plan-target buckets."""
-    sym = (symbol or "").strip().upper()
-    if plan_symbol_labels and sym in plan_symbol_labels:
-        return plan_symbol_labels[sym]
-    if sym in _CURATED_SLEEVE_BY_SYMBOL:
-        return _CURATED_SLEEVE_BY_SYMBOL[sym]
-    return _label_for(asset_type, symbol, details)
-
-
-def _label_for(asset_type: str, symbol: str = "", details: str = "") -> str:
-    # The instrument reference is the classification authority; the raw
-    # asset_type is only a fallback for instruments not in the table.
-    ref = instrument_reference.lookup(symbol, details)
-    if ref is not None:
-        if ref.asset_class == "Equity":
-            # Pure non-US equity → International (TA-200 "Core Equity", EIMI
-            # "REIT"); never "Global" (partly US — codex review). US/Global
-            # equity falls through to the asset_type tilt crosswalk below.
-            if ref.region in (
-                instrument_reference.REGION_ISRAEL,
-                instrument_reference.REGION_EUROPE,
-                instrument_reference.REGION_EM,
-            ):
-                return _ASSET_TYPE_TO_LABEL["international"]
-        elif ref.asset_class in _ASSET_CLASS_TO_LABEL:
-            # Cash / Fixed Income / Real Estate — e.g. SGOV → Cash & T-bills,
-            # not "Short-duration IG bonds" off its "Defensive" asset_type.
-            return _ASSET_CLASS_TO_LABEL[ref.asset_class]
-    at = (asset_type or "").strip().lower()
-    return _ASSET_TYPE_TO_LABEL.get(at, asset_type.strip() or "Unclassified")
-
-
 def _plan_symbol_labels(doc) -> dict[str, str]:
     """Symbol → canonical plan-class label, from the doc's instrument lists.
 
     Exposure-aware attribution (binding rule): a position whose ticker the
     plan explicitly names attributes to THAT class, regardless of the
-    snapshot's ``asset_type`` label. The moonshot-sleeve buys (RXRX / OKLO /
-    TEM, plan v67 "High-growth / high-potential") arrive from the broker
-    tagged "Individual Stocks" — without this map they'd be mis-counted in
-    the residual "Individual Stocks (non-NVDA, to redeploy)" bucket as if
-    they were off-plan legacy singles. Only positions the plan does NOT
-    name fall through to the asset_type / instrument-reference crosswalk.
+    snapshot's ``asset_type`` label.
     """
     if doc is None:
         return {}
@@ -169,10 +78,7 @@ def _plan_symbol_labels(doc) -> dict[str, str]:
 
 
 def _doc_targets_by_label(doc) -> dict[str, float]:
-    """Targets keyed by CURRENT canonical label. A persisted doc from before a
-    sleeve relabel (e.g. the v64 current plan's "US growth tilt (ex-NVDA)") is
-    normalized through the alias map so the live-vs-target join never drops a
-    sleeve's target across a relabel."""
+    """Targets keyed by CURRENT canonical label."""
     if doc is None:
         return {}
     from argosy.services.allocation_plan import normalize_sleeve_label
@@ -219,36 +125,33 @@ def _is_nvda(p) -> bool:
     return sym == "NVDA" or "nvidia" in at
 
 
-def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> list[CategoryBreakdown]:
+def build_allocation_breakdown(
+    snapshot,
+    doc,
+    *,
+    exclude_nvda: bool = False,
+    classification_map: dict[str, ClassificationEntry] | None = None,
+) -> list[CategoryBreakdown]:
     """Group live holdings into plan classes; pair current % with the canonical
     class target %; attach the per-symbol drill-down. Sorted by current weight.
 
     ``exclude_nvda`` drops the NVDA RSU concentration and renormalises the
     percentages over the ex-NVDA book — NVDA at ~61% otherwise flattens every
-    other class to a sliver, so the diversified core is unreadable."""
+    other class to a sliver, so the diversified core is unreadable.
+
+    ``classification_map`` is the Block H DB map (owner/fleet/plan rows).
+    """
     positions = list(getattr(snapshot, "positions", []) or [])
     if exclude_nvda:
         positions = [p for p in positions if not _is_nvda(p)]
-    # Physical real estate (the "Aborad" property aggregate) is illiquid net
-    # worth, not an investable allocation sleeve — it lives in the dedicated
-    # Real-estate panel and must NOT sit in "Real assets (REIT/TIPS)" next to
-    # tradeable REIT ETFs (Ariel: "it's not something I can easily trade/sell").
-    # Listed property securities (IWDP, O, …) KEEP their real-estate asset_type
-    # but stay in the investable book — same rule as plan_numeric_resolver.
+    # Physical real estate is illiquid net worth — not an investable sleeve.
     positions = [p for p in positions if not _is_physical_real_estate(p)]
     total = sum(float(getattr(p, "usd_value_k", 0.0) or 0.0) for p in positions)
     if total <= 0:
         return []
 
     targets = _doc_targets_by_label(doc)
-    # When NVDA is excluded, drop its plan class too and renormalise the
-    # remaining targets to 100% — otherwise current %s (over the ex-NVDA book)
-    # and target %s (incl. NVDA) aren't comparable, and NVDA's target would
-    # appear as a phantom 0%-current row.
     if exclude_nvda and targets:
-        # Drop ONLY the NVDA strategic-stock class — match it precisely, not by
-        # an "NVDA" substring (which also matches "US growth tilt (ex-NVDA)"
-        # and would wrongly zero its target).
         targets = {
             k: v for k, v in targets.items()
             if "strategic single-stock" not in k.lower()
@@ -257,10 +160,6 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
         if tsum > 0:
             targets = {k: round(v * 100.0 / tsum, 2) for k, v in targets.items()}
 
-    # Resolve one asset_type per ticker (prefer non-blank): the export leaves
-    # asset_type blank on some lots of a ticker held with a populated type
-    # elsewhere (e.g. the $3K Schwab SCHG vs the Leumi SCHG "Growth"). Without
-    # this the blank lot falls into "Unclassified".
     effective_type: dict[str, str] = {}
     for p in positions:
         sym = (getattr(p, "symbol", "") or "").strip().upper()
@@ -277,7 +176,11 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
         sym = (getattr(p, "symbol", "") or "").strip().upper()
         at = (getattr(p, "asset_type", "") or "").strip() or effective_type.get(sym, "")
         label = resolve_sleeve_label(
-            sym, at, getattr(p, "details", ""), plan_symbol_labels,
+            sym,
+            asset_type=at,
+            details=getattr(p, "details", "") or "",
+            plan_symbol_labels=plan_symbol_labels,
+            classification_map=classification_map,
         )
         grouped.setdefault(label, []).append(p)
 
@@ -301,8 +204,6 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
             ),
             key=lambda h: -h.value_k,
         ))
-        # No blank targets: a held category the plan has no target for means
-        # the plan wants 0% there (redeploy) — show 0.0%, never "—".
         tgt = targets.get(label)
         if tgt is None:
             tgt = 0.0
@@ -314,10 +215,6 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
             holdings=holdings,
         ))
 
-    # Surface EVERY plan-target class, including those with no current holding
-    # (e.g. US low-volatility equity, Short-duration IG bonds) as 0%-current
-    # rows — otherwise the target column silently omits them and doesn't sum to
-    # 100%, and the user can't see where they're under-allocated.
     held_labels = {r.label for r in rows}
     for label, tgt in targets.items():
         if label not in held_labels:
@@ -326,9 +223,11 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
                 current_value_k=0.0, holdings=(),
             ))
 
-    # Sort by current weight, then by target — so 0%-current plan classes are
-    # ordered by how much the plan wants there (not arbitrarily).
-    rows.sort(key=lambda r: (-r.current_pct, -(r.target_pct or 0.0)))
+    def _sort_key(r: CategoryBreakdown):
+        unmapped_boost = 1 if r.label == UNMAPPED_LABEL and r.current_pct > 0 else 0
+        return (-unmapped_boost, -r.current_pct, -(r.target_pct or 0.0))
+
+    rows.sort(key=_sort_key)
     return rows
 
 
@@ -339,4 +238,5 @@ __all__ = [
     "resolve_sleeve_label",
     "_plan_symbol_labels",
     "_is_physical_real_estate",
+    "UNMAPPED_LABEL",
 ]

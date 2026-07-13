@@ -152,12 +152,14 @@ def run_preflight_for_plan(
     snapshot_prices: dict[str, float] | None = None,
     fleet_available: bool = False,
     snapshot=None,
+    classification_map=None,
 ) -> PreflightResult:
     """End-to-end: plan candidates -> gate inputs -> deterministic preflight.
 
     ``fleet_available`` selects the phase-1 flag-based disposition (see
     ``run_preflight``); default False preserves the legacy fallback behavior.
     ``snapshot`` (optional) feeds the sleeve-gap layer with live positions.
+    ``classification_map`` (Block H) keeps sleeve gaps on the same resolve path.
     """
     gi = build_gate_inputs(doc=doc, holdings_usd=holdings_usd, cash_usd=cash_usd)
     candidates = plan_to_candidates(plan)
@@ -203,7 +205,10 @@ def run_preflight_for_plan(
             snap_for_gaps = SimpleNamespace(positions=positions)
         sleeve_gaps = tuple(
             sleeve_gaps_for_deploy(
-                doc=doc, snapshot=snap_for_gaps, cash_usd=deployable_usd,
+                doc=doc,
+                snapshot=snap_for_gaps,
+                cash_usd=deployable_usd,
+                classification_map=classification_map,
             )
         ) if snap_for_gaps is not None else ()
     except Exception:  # noqa: BLE001 — additive; never break preflight

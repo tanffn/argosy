@@ -195,6 +195,12 @@ class EstateExposureBlock:
     potential_liability_usd: float | None
     potential_liability_nis: float | None
     exclude_nvda: bool = False
+    # Securities-book domicile split (cash + physical RE excluded). The sum is
+    # the denominator for "how much has already moved to UCITS."
+    estate_safe_usd: float | None = None
+    securities_book_usd: float | None = None
+    us_situs_pct_of_securities: float | None = None
+    estate_safe_pct_of_securities: float | None = None
     missing_reasons: list[str] = field(default_factory=list)
 
 
@@ -1159,6 +1165,10 @@ def _estate_exposure(
             potential_liability_usd=None,
             potential_liability_nis=None,
             exclude_nvda=exclude_nvda,
+            estate_safe_usd=None,
+            securities_book_usd=None,
+            us_situs_pct_of_securities=None,
+            estate_safe_pct_of_securities=None,
             missing_reasons=["no portfolio snapshot"],
         )
     try:
@@ -1167,9 +1177,14 @@ def _estate_exposure(
         positions = []
     # Lazy import: safety_gates imports helpers from this module, so importing
     # it at module scope would create a cycle.
-    from argosy.services.retirement.safety_gates import _us_situs_assets_usd
+    from argosy.services.retirement.safety_gates import _estate_domicile_split_usd
 
-    us_usd = _us_situs_assets_usd(positions, exclude_nvda=exclude_nvda)
+    us_usd, safe_usd = _estate_domicile_split_usd(
+        positions, exclude_nvda=exclude_nvda,
+    )
+    book_usd = us_usd + safe_usd
+    us_pct = round(100.0 * us_usd / book_usd, 1) if book_usd > 0 else None
+    safe_pct = round(100.0 * safe_usd / book_usd, 1) if book_usd > 0 else None
     us_nis = us_usd * fx_usd_nis
     above = max(us_usd - US_NRA_ESTATE_EXEMPTION_USD, 0.0)
     liability_usd = above * US_NRA_ESTATE_RATE
@@ -1182,6 +1197,10 @@ def _estate_exposure(
         potential_liability_usd=liability_usd,
         potential_liability_nis=liability_nis,
         exclude_nvda=exclude_nvda,
+        estate_safe_usd=safe_usd,
+        securities_book_usd=book_usd,
+        us_situs_pct_of_securities=us_pct,
+        estate_safe_pct_of_securities=safe_pct,
         missing_reasons=[],
     )
 
