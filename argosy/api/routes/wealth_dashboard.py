@@ -122,6 +122,7 @@ class EstateExposureBlockDTO(BaseModel):
     above_exemption_usd: float | None
     potential_liability_usd: float | None
     potential_liability_nis: float | None
+    exclude_nvda: bool = False
     missing_reasons: list[str]
 
 

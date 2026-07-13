@@ -181,19 +181,65 @@ def build_client_narrative(run: Any, stage_rows: list[Any]) -> dict[str, Any]:
     a one-line headline, the per-stage counts, the names acted on, and the
     count of names with no action. Self-resolved work is summarised here, never
     pushed to the active to-do list (feedback_client_in_loop_only_when_needed).
+
+    Trust rules (2026-07-13):
+    * Do NOT report suppressed surface rows as actions (``decision=hidden``,
+      e.g. ``north_star_aligned: false``). A NVDA BUY on a sell-NVDA plan is
+      the trust-eroding case.
+    * Dedup repeated passes of the same subject within a stage.
+    * Shadow runs are calibration — they must not read as client actions.
+    * ``funnel_stage_rows.proposal_id`` is a within-run counter, NOT an FK to
+      ``proposals`` — never join it.
     """
     macro = _loads(run.macro_read_json) or {}
-    considered = [r for r in stage_rows if r.stage in ("stage1", "stage2", "stage3")]
-    routed = [r for r in stage_rows if r.stage == "stage1" and r.decision == "routed"]
-    deep = [r for r in stage_rows if r.stage == "stage3"]
-    proposed = [r for r in stage_rows if r.decision == "proposed"]
-    surfaced = [r for r in stage_rows if r.stage == "surface" and r.decision == "surfaced"]
+    is_shadow = bool(getattr(run, "shadow", False))
 
-    # Names with no action = considered subjects that never reached a proposal.
+    # Subjects the surface stage explicitly HIDDEN (north-star misaligned, etc.).
+    # Keys are subject strings; a later "proposed" stage for the same subject
+    # must not appear as a client action when the surface suppressed it.
+    hidden_subjects: set[str] = set()
+    for r in stage_rows:
+        if r.stage == "surface" and r.decision == "hidden":
+            hidden_subjects.add(r.subject)
+
+    def _dedup(rows: list[Any]) -> list[Any]:
+        """Keep first occurrence of each subject (stable)."""
+        seen: set[str] = set()
+        out: list[Any] = []
+        for r in rows:
+            if r.subject in seen:
+                continue
+            seen.add(r.subject)
+            out.append(r)
+        return out
+
+    considered = [r for r in stage_rows if r.stage in ("stage1", "stage2", "stage3")]
+    routed = _dedup(
+        [r for r in stage_rows if r.stage == "stage1" and r.decision == "routed"]
+    )
+    deep = _dedup([r for r in stage_rows if r.stage == "stage3"])
+    # Proposed rows that were NOT surface-hidden — the only ones that read as
+    # "actions" on the client narrative. Shadow runs keep the underlying list
+    # for calibration but the UI retitles / empties the action section.
+    proposed_raw = [
+        r for r in stage_rows
+        if r.decision == "proposed" and r.subject not in hidden_subjects
+    ]
+    proposed = _dedup(proposed_raw)
+    surfaced = _dedup(
+        [r for r in stage_rows if r.stage == "surface" and r.decision == "surfaced"]
+    )
+
+    # Names with no action = considered subjects that never reached a
+    # non-suppressed proposal (and aren't themselves surface-hidden).
     acted_subjects = {r.subject for r in proposed}
     no_action_subjects = {
-        r.subject for r in considered if r.subject_type in ("holding", "watch")
+        r.subject for r in considered
+        if r.subject_type in ("holding", "watch") and r.subject not in hidden_subjects
     } - acted_subjects
+
+    # For shadow/calibration runs, do not present proposed lines as actions.
+    action_proposed = [] if is_shadow else proposed
 
     headline_bits: list[str] = []
     macro_line = macro.get("summary") or macro.get("headline")
@@ -207,19 +253,23 @@ def build_client_narrative(run: Any, stage_rows: list[Any]) -> dict[str, Any]:
     if deep:
         names = ", ".join(sorted({r.subject for r in deep})[:5])
         headline_bits.append(f"reviewed {names} deeply")
-    if proposed:
+    if action_proposed:
         acts = ", ".join(
             f"{(_loads(r.inputs_json) or {}).get('action', 'action')} {r.subject}"
-            for r in proposed[:5]
+            for r in action_proposed[:5]
         )
         headline_bits.append(f"proposed {acts}")
+    elif is_shadow and proposed:
+        headline_bits.append(
+            f"considered {len(proposed)} candidate(s) (calibration — no actions)"
+        )
     headline = " -> ".join(headline_bits)
     if no_action_subjects:
         headline += f". {len(no_action_subjects)} names: no action."
 
     return {
         "run_id": run.id,
-        "shadow": bool(run.shadow),
+        "shadow": is_shadow,
         "as_of": run.finished_at.isoformat() if run.finished_at else (
             run.started_at.isoformat() if run.started_at else None
         ),
@@ -228,18 +278,28 @@ def build_client_narrative(run: Any, stage_rows: list[Any]) -> dict[str, Any]:
         "counts": {
             "routed": len(routed),
             "deep_reviewed": len(deep),
-            "proposed": len(proposed),
+            "proposed": len(action_proposed),
             "surfaced": len(surfaced),
             "no_action": len(no_action_subjects),
+            # Calibration visibility: how many candidates the funnel considered
+            # before the shadow / surface filter (not shown as client actions).
+            "considered_proposed": len(proposed),
+            "suppressed": len(hidden_subjects),
         },
         "proposed": [
             {
                 "subject": r.subject,
+                # Within-run counter only — NOT a FK to proposals.id.
                 "proposal_id": r.proposal_id,
                 "reason": r.reason,
             }
-            for r in proposed
+            for r in action_proposed
         ],
+        "section_title": (
+            "What the funnel considered — calibration run, no actions"
+            if is_shadow
+            else "What Argosy did for me"
+        ),
     }
 
 

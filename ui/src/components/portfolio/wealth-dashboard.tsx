@@ -105,7 +105,10 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
       {/* Row 3: 2-column rich-visual grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <RsuIncomeCard block={data.rsu_income} />
-        <EstateExposureCard block={data.estate_exposure} />
+        <EstateExposureCard
+          block={data.estate_exposure}
+          excludeNvda={excludeNvda}
+        />
       </div>
 
       {/* Row 4: composition donuts — asset class, sector, region */}
@@ -586,12 +589,15 @@ function RsuIncomeCard({
 
 function EstateExposureCard({
   block,
+  excludeNvda = false,
 }: {
   block: WealthDashboardDTO["estate_exposure"];
+  excludeNvda?: boolean;
 }) {
   const usSitus = block.us_situs_usd;
   const liability = block.potential_liability_usd;
   const above = block.above_exemption_usd;
+  const exNvda = block.exclude_nvda ?? excludeNvda;
   const tone =
     liability == null
       ? "default"
@@ -603,7 +609,11 @@ function EstateExposureCard({
 
   return (
     <StatCard
-      eyebrow="Estate exposure (US-situs)"
+      eyebrow={
+        exNvda
+          ? "Estate exposure (US-situs, excl. NVDA)"
+          : "Estate exposure (US-situs, incl. NVDA)"
+      }
       value={
         usSitus != null ? (
           <>
@@ -616,8 +626,11 @@ function EstateExposureCard({
       }
       subline={
         liability != null
-          ? `~${formatUsd(liability)} potential liability (40% on amount > $60k)`
-          : null
+          ? `~${formatUsd(liability)} potential liability (40% on amount > $60k)` +
+            (exNvda ? " · NVDA excluded" : " · NVDA included")
+          : exNvda
+            ? "NVDA excluded from this view"
+            : null
       }
       tone={tone === "default" ? "default" : tone}
       missingReasons={block.missing_reasons}

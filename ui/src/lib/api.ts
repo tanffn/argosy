@@ -260,6 +260,11 @@ export interface PortfolioPosition {
   asset_type: string;
   /** Canonical "structure · exposure" Type label from the §20.4 reference. */
   type_label: string;
+  /**
+   * Plan-sleeve association (moonshot / real-assets / core …) — same mapping
+   * as Current-allocation-vs-plan-target. Empty when no plan/doc is available.
+   */
+  sleeve?: string;
   /** Plain-English instrument name (the description line under the ticker). */
   name: string;
   details: string;
@@ -2045,8 +2050,12 @@ export interface FunnelNarrative {
     proposed: number;
     surfaced: number;
     no_action: number;
+    considered_proposed?: number;
+    suppressed?: number;
   };
   proposed: { subject: string; proposal_id: number | null; reason: string }[];
+  /** Shadow runs retitle so calibration never reads as client actions. */
+  section_title?: string;
 }
 
 // Full debug view of one funnel run (every stage row + immutable snapshots).
@@ -5431,6 +5440,8 @@ export interface WealthEstateExposureBlock {
   above_exemption_usd: number | null;
   potential_liability_usd: number | null;
   potential_liability_nis: number | null;
+  /** True when US-situs totals exclude NVDA (matches the portfolio toggle). */
+  exclude_nvda?: boolean;
   missing_reasons: string[];
 }
 

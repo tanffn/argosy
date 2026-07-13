@@ -223,5 +223,57 @@ def test_build_client_narrative(session):
     narrative = fv.build_client_narrative(run, list(rows))
     assert "Scanned the market" in narrative["headline"]
     assert "NVDA" in narrative["headline"]
-    assert narrative["counts"]["proposed"] == 1
+    # Shadow run: proposed lines are calibration, not client actions.
+    assert narrative["counts"]["proposed"] == 0
+    assert narrative["counts"]["considered_proposed"] == 1
+    assert narrative["proposed"] == []
+    assert "calibration" in narrative["section_title"].lower()
     assert narrative["counts"]["routed"] == 1
+
+
+def test_client_narrative_excludes_surface_hidden(session):
+    """North-star-misaligned / surface-hidden subjects must not appear as actions."""
+    run = ft.open_run(
+        session, user_id="ariel", day=DAY, shadow=False, policy_version="p",
+        ips_version="i", plan_version_id=1, started_at=NOW,
+    )
+    ft.close_run(session, run_id=run.id, status="ok", finished_at=NOW)
+    ft.record_stage_row(
+        session, run_id=run.id, stage="stage3", subject="NVDA",
+        subject_type="holding", decision="proposed", reason="buy more",
+        inputs={"action": "BUY"}, proposal_id=1,
+    )
+    ft.record_stage_row(
+        session, run_id=run.id, stage="surface", subject="NVDA",
+        subject_type="holding", decision="hidden",
+        reason="north_star_misaligned",
+        inputs={"north_star_aligned": False},
+    )
+    ft.record_stage_row(
+        session, run_id=run.id, stage="stage3", subject="CSPX",
+        subject_type="holding", decision="proposed", reason="top-up",
+        inputs={"action": "BUY"}, proposal_id=2,
+    )
+    ft.record_stage_row(
+        session, run_id=run.id, stage="surface", subject="CSPX",
+        subject_type="holding", decision="surfaced", reason="ok",
+        inputs={"north_star_aligned": True},
+    )
+    # Duplicate proposed pass of CSPX — must dedup.
+    ft.record_stage_row(
+        session, run_id=run.id, stage="stage3", subject="CSPX",
+        subject_type="holding", decision="proposed", reason="top-up again",
+        inputs={"action": "BUY"}, proposal_id=3,
+    )
+    session.refresh(run)
+    rows = session.execute(
+        sa.select(FunnelStageRow).where(FunnelStageRow.run_id == run.id)
+        .order_by(FunnelStageRow.id)
+    ).scalars().all()
+    narrative = fv.build_client_narrative(run, list(rows))
+    subjects = [p["subject"] for p in narrative["proposed"]]
+    assert "NVDA" not in subjects
+    assert subjects == ["CSPX"]
+    assert narrative["counts"]["proposed"] == 1
+    assert narrative["counts"]["suppressed"] == 1
+    assert narrative["section_title"] == "What Argosy did for me"

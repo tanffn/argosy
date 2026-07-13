@@ -69,6 +69,8 @@ class PositionDTO(BaseModel):
     currency: str
     asset_type: str            # raw/normalized source Type (drives is-cash / is-real-estate logic)
     type_label: str = ""       # canonical "structure · exposure" from the §20.4 reference (display)
+    # Plan-sleeve association — same mapping as allocation-breakdown buckets.
+    sleeve: str = ""
     name: str = ""             # plain-English instrument name (the cryptic-ticker description line)
     details: str
     symbol: str
@@ -149,9 +151,17 @@ def _find_latest_tsv() -> Path | None:
     return None
 
 
-def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
-    """Translate a parsed/hydrated PortfolioSnapshot to the route DTO."""
+def _snapshot_to_dto(snap, doc=None) -> PortfolioSnapshotDTO:
+    """Translate a parsed/hydrated PortfolioSnapshot to the route DTO.
+
+    ``doc`` (optional TargetAllocationDoc) supplies plan-instrument → sleeve
+    labels so the Sleeve column matches Current-allocation-vs-plan-target.
+    """
     from argosy.services import instrument_reference
+    from argosy.services.allocation_breakdown import (
+        _plan_symbol_labels,
+        resolve_sleeve_label,
+    )
     from argosy.services.wealth_dashboard import _classify_asset_class
 
     # Resolve one asset_type per ticker (prefer non-blank): the hand-maintained
@@ -165,6 +175,7 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
         if sym and at and sym not in eff_type:
             eff_type[sym] = at
 
+    plan_labels = _plan_symbol_labels(doc)
     positions: list[PositionDTO] = []
     classification_warnings: list[str] = []
     for p in snap.positions:
@@ -190,6 +201,9 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
             p.symbol or "", p.details or "", fallback=asset_type
         )
         name = instrument_reference.name_for(p.symbol or "", p.details or "")
+        sleeve = resolve_sleeve_label(
+            p.symbol or "", asset_type, p.details or "", plan_labels,
+        )
         # Fail-loud: a holding with a real latin ticker that the reference
         # doesn't know is un-curated — its estate-safety is unknown (a silent
         # US-situs gap). Physical cash / real-estate rows (no real ticker) are
@@ -204,6 +218,7 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
                 currency=p.currency,
                 asset_type=asset_type,
                 type_label=type_label,
+                sleeve=sleeve,
                 name=name,
                 details=p.details,
                 symbol=p.symbol,
@@ -268,18 +283,43 @@ def _project_canonical_allocations(
     """Override the snapshot's TSV allocation pie with the canonical doc's
     full-book composition when the plan carries one; else leave the TSV pie.
 
+    Also re-resolves per-position ``sleeve`` once the plan doc is available so
+    the Sleeve column and allocation-breakdown buckets share one mapping.
+
     Best-effort: the projection is additive, so any failure reading the plan
     (e.g. an unmigrated DB without plan_versions) falls back to the snapshot
     pie rather than breaking /portfolio."""
     try:
+        from argosy.services.allocation_breakdown import (
+            _plan_symbol_labels,
+            resolve_sleeve_label,
+        )
         from argosy.services.target_allocation_doc import load_plan_target_allocation
         from argosy.state.queries import get_current_plan
 
         pv = get_current_plan(db, user_id)
         doc = load_plan_target_allocation(pv) if pv is not None else None
-        if doc is None or not doc.glide:
-            return dto
-        return dto.model_copy(update={"allocations": _allocations_from_doc(doc)})
+        updates: dict = {}
+        if doc is not None and doc.glide:
+            updates["allocations"] = _allocations_from_doc(doc)
+        if doc is not None and dto.positions:
+            plan_labels = _plan_symbol_labels(doc)
+            updates["positions"] = [
+                p.model_copy(
+                    update={
+                        "sleeve": resolve_sleeve_label(
+                            p.symbol or "",
+                            p.asset_type or "",
+                            p.details or "",
+                            plan_labels,
+                        )
+                    }
+                )
+                for p in dto.positions
+            ]
+        if updates:
+            return dto.model_copy(update=updates)
+        return dto
     except Exception:  # noqa: BLE001 — additive projection, never break /portfolio
         return dto
 
@@ -1610,9 +1650,11 @@ def get_deploy_cash(
             # live fetch (UCITS tickers often need an exchange suffix on yfinance);
             # only genuinely-new symbols fall through to a live quote.
             snapshot_prices: dict[str, float] = {}
+            _snap_obj = None
             _row = get_latest_snapshot_row(db, user_id)
             if _row is not None:
-                for _p in getattr(row_to_snapshot(_row), "positions", []) or []:
+                _snap_obj = row_to_snapshot(_row)
+                for _p in getattr(_snap_obj, "positions", []) or []:
                     _sym = (getattr(_p, "symbol", "") or "").strip().upper()
                     _px = getattr(_p, "current_price", None)
                     if _sym and _px:
@@ -1626,7 +1668,7 @@ def get_deploy_cash(
             result = run_preflight_for_plan(
                 plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                 deployable_usd=amount, snapshot_prices=snapshot_prices,
-                fleet_available=_fleet_on,
+                fleet_available=_fleet_on, snapshot=_snap_obj,
             )
 
             # Deterministic redirect (no LLM, no gold, no plan change): cash the
@@ -1646,7 +1688,7 @@ def get_deploy_cash(
                 result = run_preflight_for_plan(
                     plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
                     deployable_usd=amount, snapshot_prices=snapshot_prices,
-                    fleet_available=_fleet_on,
+                    fleet_available=_fleet_on, snapshot=_snap_obj,
                 )
 
             # Increment 2: route the genuine judgment calls the deterministic

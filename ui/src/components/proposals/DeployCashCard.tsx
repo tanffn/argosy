@@ -14,6 +14,7 @@ import {
   type DeploymentPlanDTO,
   type DeploymentTierDTO,
   type FundingBreakdownDTO,
+  type PlanGapDTO,
   type PreflightDTO,
   type WindfallHorizon,
 } from "@/lib/api";
@@ -816,6 +817,9 @@ export function DeployCashCard({
           )}
           {plan.disposition && <DispositionBlock d={plan.disposition} />}
           {plan.preflight && (
+            <SleeveGapTable gaps={plan.preflight.plan_gaps} amount={amount} />
+          )}
+          {plan.preflight && (
             <PreflightVerdict
               preflight={plan.preflight}
               onRunFleetReview={onRunFleetReview}
@@ -932,6 +936,70 @@ function DispositionBlock({ d }: { d: DeploymentDispositionDTO }) {
   );
 }
 
+/** Per-sleeve underweight table: why these buy amounts (target vs current vs
+ *  $-to-close for the entered cash). Gaps with a numeric proposed_target_pct
+ *  are sleeve underweights; proposed_target_pct === null are missing-class
+ *  questions (shown under Research check instead). */
+function SleeveGapTable({
+  gaps,
+  amount,
+}: {
+  gaps: PlanGapDTO[];
+  amount: number;
+}) {
+  const sleeveGaps = gaps.filter(
+    (g) => g.proposed_target_pct != null && g.blocked_amount_usd > 0,
+  );
+  if (sleeveGaps.length === 0) return null;
+  return (
+    <div
+      data-testid="sleeve-gap-table"
+      className="mt-3 rounded-md border border-border bg-muted/20 p-3"
+    >
+      <div className="text-xs font-semibold">
+        Sleeve gaps for $
+        {amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+      </div>
+      <div className="mt-1 text-[11px] text-muted-foreground">
+        Target % vs current % — $-to-close is this deploy&apos;s share of each
+        underweight sleeve (same scale as the buy list below).
+      </div>
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-muted-foreground border-b border-border/50">
+              <th className="py-1.5 pr-2 font-medium">Sleeve</th>
+              <th className="py-1.5 pr-2 text-right font-medium">Current %</th>
+              <th className="py-1.5 pr-2 text-right font-medium">Target %</th>
+              <th className="py-1.5 text-right font-medium">$-to-close</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sleeveGaps.map((g) => (
+              <tr
+                key={g.asset_class}
+                className="border-b border-border/30"
+                title={g.reason_refs[0] ?? undefined}
+              >
+                <td className="py-1.5 pr-2 font-medium">{g.asset_class}</td>
+                <td className="py-1.5 pr-2 text-right tabular-nums">
+                  {g.current_target_pct.toFixed(1)}%
+                </td>
+                <td className="py-1.5 pr-2 text-right tabular-nums">
+                  {g.proposed_target_pct!.toFixed(1)}%
+                </td>
+                <td className="py-1.5 text-right tabular-nums font-semibold">
+                  {fmtMoney(g.blocked_amount_usd)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /** Research verdict on the deterministic buy list: concentration/reserve checks
  *  per line + any plan questions. Advisory (shadow) — annotates the list above. */
 function PreflightVerdict({
@@ -949,7 +1017,10 @@ function PreflightVerdict({
   // Items the fast pass surfaced as "pending fleet judgment" — resolved by the
   // phase-2 "Run fleet review" action.
   const pending = flagged.filter((e) => e.status === "needs_fleet_review");
-  if (flagged.length === 0 && preflight.plan_gaps.length === 0) return null;
+  const missingClasses = preflight.plan_gaps.filter(
+    (g) => g.proposed_target_pct == null,
+  );
+  if (flagged.length === 0 && missingClasses.length === 0) return null;
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
       <div className="flex items-center justify-between">
@@ -1001,7 +1072,7 @@ function PreflightVerdict({
           })}
         </ul>
       )}
-      {preflight.plan_gaps.map((g) => (
+      {missingClasses.map((g) => (
         <div key={g.asset_class} className="mt-2 text-xs text-amber-700">
           {`Your plan has no "${g.asset_class}" sleeve — intended, or worth adding? `}
           {g.reason_refs[0] ?? ""}

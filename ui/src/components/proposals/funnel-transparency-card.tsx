@@ -51,20 +51,24 @@ export function FunnelTransparencyCard({ userId }: { userId: string }) {
   if (!loaded || !narrative) return null;
 
   const c = narrative.counts;
+  const title =
+    narrative.section_title ||
+    (shadow
+      ? "What the funnel considered — calibration run, no actions"
+      : "What Argosy did for me");
   const summary =
     `${c.proposed} proposed · ${c.deep_reviewed} reviewed · ` +
-    `${c.no_action} no action${shadow ? " · shadow" : ""}`;
+    `${c.no_action} no action${shadow ? " · shadow" : ""}` +
+    (c.suppressed ? ` · ${c.suppressed} suppressed` : "");
 
   return (
     <section id="what-argosy-did" className="scroll-mt-6">
-      <CollapsibleSection title="What Argosy did for me" summary={summary}>
+      <CollapsibleSection title={title} summary={summary}>
         <div className="flex flex-col gap-3 px-1 py-1">
           {shadow && (
             <p className="text-xs text-muted-foreground">
-              Argosy&apos;s daily review is still warming up — it checks the
-              market and your holdings each day and records what it would
-              suggest, but isn&apos;t putting suggestions in front of you yet
-              while it learns what&apos;s worth your attention.
+              Calibration run — the funnel recorded what it would consider, but
+              is not putting suggestions in front of you as actions yet.
             </p>
           )}
           <p className="text-sm">{narrative.headline}</p>
@@ -74,7 +78,7 @@ export function FunnelTransparencyCard({ userId }: { userId: string }) {
           {narrative.proposed.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
               {narrative.proposed.map((p, i) => (
-                <li key={i} className="text-muted-foreground">
+                <li key={`${p.subject}-${i}`} className="text-muted-foreground">
                   <span className="text-foreground font-medium">{p.subject}</span>
                   {p.reason ? ` — ${p.reason}` : null}
                 </li>

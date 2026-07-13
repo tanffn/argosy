@@ -151,11 +151,14 @@ def run_preflight_for_plan(
     signals_by_symbol: dict[str, str] | None = None,
     snapshot_prices: dict[str, float] | None = None,
     fleet_available: bool = False,
+    snapshot=None,
 ) -> PreflightResult:
     """End-to-end: plan candidates -> gate inputs -> deterministic preflight.
 
     ``fleet_available`` selects the phase-1 flag-based disposition (see
-    ``run_preflight``); default False preserves the legacy fallback behavior."""
+    ``run_preflight``); default False preserves the legacy fallback behavior.
+    ``snapshot`` (optional) feeds the sleeve-gap layer with live positions.
+    """
     gi = build_gate_inputs(doc=doc, holdings_usd=holdings_usd, cash_usd=cash_usd)
     candidates = plan_to_candidates(plan)
     result = run_preflight(
@@ -173,9 +176,39 @@ def run_preflight_for_plan(
     from dataclasses import replace
 
     from argosy.services.deployment_funnel.look_through import has_lookthrough
-    from argosy.services.deployment_funnel.plan_gaps import detect_missing_classes
+    from argosy.services.deployment_funnel.plan_gaps import (
+        detect_missing_classes,
+        sleeve_gaps_for_deploy,
+    )
 
     added_gaps = tuple(detect_missing_classes(doc))
+    # Sleeve underweight layer for Deploy Cash (target % / current % / $-to-close).
+    # Built from the same allocation-breakdown mapping as the portfolio card.
+    try:
+        snap_for_gaps = snapshot
+        if snap_for_gaps is None and holdings_usd:
+            from types import SimpleNamespace
+
+            positions = [
+                SimpleNamespace(
+                    symbol=sym,
+                    asset_type="",
+                    usd_value_k=float(v) / 1000.0,
+                    details="",
+                    location="",
+                    currency="USD",
+                )
+                for sym, v in holdings_usd.items()
+            ]
+            snap_for_gaps = SimpleNamespace(positions=positions)
+        sleeve_gaps = tuple(
+            sleeve_gaps_for_deploy(
+                doc=doc, snapshot=snap_for_gaps, cash_usd=deployable_usd,
+            )
+        ) if snap_for_gaps is not None else ()
+    except Exception:  # noqa: BLE001 — additive; never break preflight
+        sleeve_gaps = ()
+    added_gaps = added_gaps + sleeve_gaps
     # Surface HELD symbols with no look-through entry (codex): the current-NVDA
     # baseline sums look-through over holdings, so an unmapped held fund silently
     # under-counts NVDA and LOOSENS the cap. Flag it rather than trust the 0.

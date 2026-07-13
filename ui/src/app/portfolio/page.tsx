@@ -24,6 +24,10 @@ import {
   type PortfolioSnapshotDTO,
   type PositionThesisDTO,
 } from "@/lib/api";
+import {
+  assertPositionsPartition,
+  groupByAccount,
+} from "@/lib/portfolio/position-sections";
 
 const USER_ID = "ariel";
 
@@ -40,40 +44,15 @@ const VERDICT_CLASS: Record<PositionThesisDTO["verdict"], string> = {
   SELL: "text-rose-400 border-rose-400/40 bg-rose-400/10",
 };
 
-interface AccountGroup {
-  location: string;
-  positions: PortfolioPosition[];
-  total_usd_k: number;
-}
-
-// The NVDA RSU row's location is bare "schwab" while the other Schwab
-// holdings are "schwab 876" — same account, so group them together.
-function normalizeLocation(loc: string): string {
-  const l = (loc || "").trim();
-  if (l.toLowerCase() === "schwab") return "schwab 876";
-  return l || "(unknown)";
-}
-
-function isRealEstate(p: PortfolioPosition): boolean {
-  return (p.asset_type || "").trim().toLowerCase() === "real estate";
-}
-
-function groupByAccount(snap: PortfolioSnapshotDTO | null): AccountGroup[] {
-  if (!snap) return [];
-  const map = new Map<string, AccountGroup>();
-  for (const p of snap.positions) {
-    // Real estate is surfaced in its own net-worth card, not as a brokerage
-    // account — keep it out of the per-account tables + liquid total.
-    if (isRealEstate(p)) continue;
-    const key = normalizeLocation(p.location);
-    const g = map.get(key) ?? { location: key, positions: [], total_usd_k: 0 };
-    g.positions.push(p);
-    g.total_usd_k += p.usd_value_k ?? 0;
-    map.set(key, g);
-  }
-  return Array.from(map.values()).sort(
-    (a, b) => b.total_usd_k - a.total_usd_k,
-  );
+function formatReviewedAt(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 export default function PortfolioPage() {
@@ -86,6 +65,23 @@ export default function PortfolioPage() {
   const [thesisByTicker, setThesisByTicker] = useState<
     Record<string, PositionThesisDTO>
   >({});
+  const [holdingsReviewBusy, setHoldingsReviewBusy] = useState(false);
+  const [holdingsReviewMsg, setHoldingsReviewMsg] = useState<string | null>(
+    null,
+  );
+
+  const refreshTheses = () => {
+    api
+      .positionTheses(USER_ID)
+      .then((rows) => {
+        const map: Record<string, PositionThesisDTO> = {};
+        for (const r of rows) map[r.ticker] = r;
+        setThesisByTicker(map);
+      })
+      .catch(() => {
+        // swallow
+      });
+  };
 
   useEffect(() => {
     api
@@ -98,30 +94,26 @@ export default function PortfolioPage() {
   useEffect(() => {
     // Fail soft: a 404 (no current accepted plan) just means the
     // Verdict column shows "—" for every row; not an error state.
-    api
-      .positionTheses(USER_ID)
-      .then((rows) => {
-        const map: Record<string, PositionThesisDTO> = {};
-        for (const r of rows) map[r.ticker] = r;
-        setThesisByTicker(map);
-      })
-      .catch(() => {
-        // swallow
-      });
+    refreshTheses();
   }, []);
 
   const groups = useMemo(() => groupByAccount(snap), [snap]);
-  // Liquid investable total = sum of the (real-estate-excluded) account
+  // Liquid investable total = sum of the (physical-RE-excluded) account
   // groups, so the "Total liquid USD" stat reconciles with the tables below
-  // it. Real-estate net worth is shown separately in its own card.
+  // it. Physical real-estate net worth is shown separately in its own card;
+  // listed property securities (IWDP, O, …) stay in the liquid book.
   const liquidTotalK = useMemo(
     () => groups.reduce((s, g) => s + g.total_usd_k, 0),
     [groups],
   );
+  const partitionError = useMemo(
+    () => (snap ? assertPositionsPartition(snap) : null),
+    [snap],
+  );
 
   // Per-account table sorting (applies to every account table). Click a
   // sortable header to sort; click again to flip direction.
-  type SortKey = "symbol" | "type" | "value" | "verdict";
+  type SortKey = "symbol" | "sleeve" | "value" | "verdict";
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   // Page-level exclude-NVDA toggle — drives the composition donuts AND the
@@ -140,12 +132,15 @@ export default function PortfolioPage() {
   const VERDICT_ORDER: Record<string, number> = {
     BUY: 0, ADD: 1, HOLD: 2, TRIM: 3, SELL: 4,
   };
+  function sleeveOf(p: PortfolioPosition): string {
+    return (p.sleeve || p.type_label || p.asset_type || "").trim();
+  }
   function sortPositions(positions: PortfolioPosition[]): PortfolioPosition[] {
     if (!sortKey) return positions;
     const dir = sortDir === "asc" ? 1 : -1;
     const key = (p: PortfolioPosition): string | number => {
       if (sortKey === "symbol") return (p.symbol || p.details || "").toLowerCase();
-      if (sortKey === "type") return (p.type_label || p.asset_type || "").toLowerCase();
+      if (sortKey === "sleeve") return sleeveOf(p).toLowerCase();
       if (sortKey === "value") return p.usd_value_k ?? -Infinity;
       const v = thesisByTicker[(p.symbol || "").toUpperCase()]?.verdict;
       return v ? (VERDICT_ORDER[v] ?? 98) : 99;
@@ -157,6 +152,25 @@ export default function PortfolioPage() {
       if (av > bv) return dir;
       return 0;
     });
+  }
+
+  async function runHoldingsReviewNow() {
+    setHoldingsReviewBusy(true);
+    setHoldingsReviewMsg(null);
+    try {
+      const resp = await api.jobs.runNow("holdings_review");
+      setHoldingsReviewMsg(
+        `Holdings review queued (run #${resp.job_run_id}). Refresh in a minute.`,
+      );
+      // Soft refresh — verdicts may still be stale until the job finishes.
+      window.setTimeout(() => refreshTheses(), 5_000);
+    } catch (e: unknown) {
+      setHoldingsReviewMsg(
+        e instanceof Error ? e.message : "Could not queue holdings review",
+      );
+    } finally {
+      setHoldingsReviewBusy(false);
+    }
   }
 
   return (
@@ -271,13 +285,19 @@ export default function PortfolioPage() {
           onChange={(e) => setExcludeNvda(e.target.checked)}
           className="accent-primary"
         />
-        Exclude NVDA from charts &amp; allocation
+        Exclude NVDA from charts, allocation &amp; estate exposure
         <span className="text-xs text-muted-foreground/70">
           (its ~61% RSU concentration otherwise dominates every view)
         </span>
       </label>
 
       <WealthDashboard userId={USER_ID} excludeNvda={excludeNvda} />
+
+      {partitionError && (
+        <p className="text-xs text-destructive" role="alert">
+          Portfolio partition invariant failed: {partitionError}
+        </p>
+      )}
 
       {snap && (
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -308,6 +328,20 @@ export default function PortfolioPage() {
         </section>
       )}
 
+      <div className="flex flex-wrap items-center gap-3 self-start">
+        <button
+          type="button"
+          disabled={holdingsReviewBusy}
+          onClick={() => void runHoldingsReviewNow()}
+          className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-secondary/50 disabled:opacity-50"
+        >
+          {holdingsReviewBusy ? "Queuing…" : "Run holdings review now"}
+        </button>
+        {holdingsReviewMsg && (
+          <span className="text-xs text-muted-foreground">{holdingsReviewMsg}</span>
+        )}
+      </div>
+
       {groups.map((g) => (
         <Card key={g.location}>
           <CardHeader>
@@ -330,9 +364,9 @@ export default function PortfolioPage() {
                   </th>
                   <th
                     className="py-2 cursor-pointer hover:text-foreground"
-                    onClick={() => toggleSort("type")}
+                    onClick={() => toggleSort("sleeve")}
                   >
-                    Type{sortKey === "type" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                    Sleeve{sortKey === "sleeve" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
                   </th>
                   <th className="py-2">Estate</th>
                   <th className="py-2 text-right">Shares</th>
@@ -359,6 +393,7 @@ export default function PortfolioPage() {
                   const symbolLabel = isCash
                     ? `Cash (${(p.currency || "").toUpperCase() || "—"})`
                     : p.symbol || p.details || "—";
+                  const reviewed = formatReviewedAt(thesis?.last_fleet_check_at);
                   return (
                     <tr
                       key={`${p.location}-${p.symbol || p.details}-${i}`}
@@ -373,7 +408,7 @@ export default function PortfolioPage() {
                         )}
                       </td>
                       <td className="py-1.5 text-muted-foreground">
-                        {p.type_label || p.asset_type}
+                        {sleeveOf(p) || "—"}
                       </td>
                       <td className="py-1.5">
                         {p.classified === false ? (
@@ -412,23 +447,35 @@ export default function PortfolioPage() {
                       </td>
                       <td className="py-1.5 text-right">
                         {thesis ? (
-                          <Link
-                            href="/positions"
-                            title={
-                              `Conviction: ${thesis.conviction}` +
-                              (thesis.falsifier_state === "none_recorded"
-                                ? " · ⚠ no falsifiers recorded"
-                                : ` · falsifiers ${thesis.falsifier_state}`) +
-                              (thesis.last_fleet_check_at
-                                ? ` · last check ${thesis.last_fleet_check_at}`
-                                : "") +
-                              ` — ${thesis.reasoning_md.slice(0, 160)}`
-                            }
-                            className={`inline-block px-2 py-0.5 rounded border text-[10px] font-medium tabular-nums hover:opacity-80 transition-opacity ${VERDICT_CLASS[thesis.verdict]}`}
-                          >
-                            {thesis.verdict}
-                            {thesis.falsifier_state === "none_recorded" ? " ⚠" : ""}
-                          </Link>
+                          <div className="inline-flex flex-col items-end gap-0.5">
+                            <Link
+                              href="/positions"
+                              title={
+                                `Conviction: ${thesis.conviction}` +
+                                (thesis.falsifier_state === "none_recorded"
+                                  ? " · ⚠ no falsifiers recorded"
+                                  : ` · falsifiers ${thesis.falsifier_state}`) +
+                                (thesis.last_fleet_check_at
+                                  ? ` · reviewed ${thesis.last_fleet_check_at}`
+                                  : " · reviewed_at missing") +
+                                ` — ${thesis.reasoning_md.slice(0, 160)}`
+                              }
+                              className={`inline-block px-2 py-0.5 rounded border text-[10px] font-medium tabular-nums hover:opacity-80 transition-opacity ${VERDICT_CLASS[thesis.verdict]}`}
+                            >
+                              {thesis.verdict}
+                              {thesis.falsifier_state === "none_recorded" ? " ⚠" : ""}
+                            </Link>
+                            <span
+                              className="text-[10px] text-muted-foreground/70 font-normal"
+                              title={
+                                thesis.last_fleet_check_at
+                                  ? `holding_reviews.reviewed_at = ${thesis.last_fleet_check_at}`
+                                  : "No holding_reviews.reviewed_at yet"
+                              }
+                            >
+                              {reviewed ? `reviewed ${reviewed}` : "undated"}
+                            </span>
+                          </div>
                         ) : (
                           <span className="text-muted-foreground/60">—</span>
                         )}

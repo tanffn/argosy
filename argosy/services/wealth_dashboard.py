@@ -194,6 +194,7 @@ class EstateExposureBlock:
     above_exemption_usd: float | None
     potential_liability_usd: float | None
     potential_liability_nis: float | None
+    exclude_nvda: bool = False
     missing_reasons: list[str] = field(default_factory=list)
 
 
@@ -1133,7 +1134,10 @@ def _rsu_income(
 
 
 def _estate_exposure(
-    *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float
+    *,
+    snapshot: PortfolioSnapshotRow | None,
+    fx_usd_nis: float,
+    exclude_nvda: bool = False,
 ) -> EstateExposureBlock:
     """Estimate US-situs holdings exposure relative to the NRA exemption.
 
@@ -1143,6 +1147,9 @@ def _estate_exposure(
     broker location — so US-domiciled securities held at an Israeli broker are
     counted, and this dashboard block agrees with the plan's estate headline
     to the shekel (no per-surface divergence).
+
+    ``exclude_nvda`` drops NVDA from the US-situs sum so the portfolio page
+    toggle (charts / allocation / estate) stays consistent.
     """
     if snapshot is None:
         return EstateExposureBlock(
@@ -1151,6 +1158,7 @@ def _estate_exposure(
             above_exemption_usd=None,
             potential_liability_usd=None,
             potential_liability_nis=None,
+            exclude_nvda=exclude_nvda,
             missing_reasons=["no portfolio snapshot"],
         )
     try:
@@ -1161,7 +1169,7 @@ def _estate_exposure(
     # it at module scope would create a cycle.
     from argosy.services.retirement.safety_gates import _us_situs_assets_usd
 
-    us_usd = _us_situs_assets_usd(positions)
+    us_usd = _us_situs_assets_usd(positions, exclude_nvda=exclude_nvda)
     us_nis = us_usd * fx_usd_nis
     above = max(us_usd - US_NRA_ESTATE_EXEMPTION_USD, 0.0)
     liability_usd = above * US_NRA_ESTATE_RATE
@@ -1173,6 +1181,7 @@ def _estate_exposure(
         above_exemption_usd=above,
         potential_liability_usd=liability_usd,
         potential_liability_nis=liability_nis,
+        exclude_nvda=exclude_nvda,
         missing_reasons=[],
     )
 
@@ -1391,7 +1400,9 @@ def compute_wealth_dashboard(
     rsu_income = _rsu_income(
         user_ctx=user_ctx, snapshot=snapshot, fx_usd_nis=fx_usd_nis, today=today,
     )
-    estate_exposure = _estate_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
+    estate_exposure = _estate_exposure(
+        snapshot=snapshot, fx_usd_nis=fx_usd_nis, exclude_nvda=exclude_nvda,
+    )
     asset_class_composition, sector_composition, region_composition = _compositions(
         snapshot=snapshot, fx_usd_nis=fx_usd_nis, exclude_nvda=exclude_nvda,
     )

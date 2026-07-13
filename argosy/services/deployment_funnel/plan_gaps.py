@@ -1,14 +1,5 @@
-"""Plan-level gap detection: classes a diversified plan should carry that the
-current plan is MISSING entirely (the gold/alternatives hole being the live
-case). This is distinct from candidate-level plan-gaps (a buy implying an
-absent class) — here we inspect the plan itself, independent of any candidate,
-so the gap surfaces even when the deterministic engine never proposes the
-missing class (it can't propose gold if the plan has no gold sleeve).
-
-Owner decision: a missing class is raised as a plan CHANGE-REQUEST proposal for
-the owner to approve; the funnel does NOT invent the sleeve weight. The
-engine-derived weight + the publish-gated plan amendment are the remaining
-Increment-3 work — this module produces the typed gap + proposal, not the edit.
+"""Plan-level gap detection: missing diversifier classes + live sleeve gaps
+for the Deploy Cash surface (target % vs current % vs $-to-close).
 """
 from __future__ import annotations
 
@@ -63,4 +54,65 @@ def detect_missing_classes(doc) -> list[PlanGap]:
     return gaps
 
 
-__all__ = ["detect_missing_classes"]
+def sleeve_gaps_for_deploy(
+    *,
+    doc,
+    snapshot,
+    cash_usd: float,
+) -> list[PlanGap]:
+    """Per-sleeve underweight gaps for the entered cash amount.
+
+    ``current_target_pct`` = live current % of book;
+    ``proposed_target_pct`` = plan target %;
+    ``blocked_amount_usd`` = $-to-close for ``cash_usd`` (scaled like
+    ``allocation_engine``: full gap when total underweight ≤ cash, else
+    proportional). Overweight / on-target sleeves are omitted.
+    """
+    from argosy.services.allocation_breakdown import build_allocation_breakdown
+
+    if doc is None or snapshot is None or cash_usd <= 0:
+        return []
+    rows = build_allocation_breakdown(snapshot, doc, exclude_nvda=False)
+    book_usd = sum(float(r.current_value_k or 0.0) for r in rows) * 1000.0
+    if book_usd <= 0:
+        return []
+
+    raw: list[tuple[str, float, float, float]] = []
+    for r in rows:
+        tgt = r.target_pct
+        if tgt is None:
+            continue
+        cur = float(r.current_pct or 0.0)
+        gap_pct = max(0.0, float(tgt) - cur)
+        if gap_pct <= 1e-9:
+            continue
+        full_gap_usd = gap_pct / 100.0 * book_usd
+        raw.append((r.label, cur, float(tgt), full_gap_usd))
+
+    total_gap = sum(g for *_, g in raw)
+    if total_gap <= 0:
+        return []
+    scale = 1.0 if total_gap <= cash_usd else cash_usd / total_gap
+    out: list[PlanGap] = []
+    remaining = round(float(cash_usd), 2)
+    for label, cur, tgt, full_gap in sorted(raw, key=lambda t: (-t[3], t[0])):
+        amount = min(round(full_gap * scale, 2), remaining)
+        if amount <= 0:
+            continue
+        remaining = round(remaining - amount, 2)
+        out.append(
+            PlanGap(
+                asset_class=label,
+                current_target_pct=round(cur, 2),
+                proposed_target_pct=round(tgt, 2),
+                reason_refs=(
+                    f"underweight vs plan: {cur:.1f}% current → {tgt:.1f}% target; "
+                    f"${amount:,.0f} of this deploy closes the gap",
+                ),
+                blocked_amount_usd=amount,
+            )
+        )
+    return out
+
+
+__all__ = ["detect_missing_classes", "sleeve_gaps_for_deploy"]

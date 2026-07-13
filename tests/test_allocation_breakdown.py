@@ -152,6 +152,26 @@ def test_targets_sum_to_100_including_unheld_plan_classes():
     assert round(sum(r.target_pct or 0.0 for r in rows), 1) == 100.0
 
 
+def test_listed_property_securities_stay_in_investable_breakdown():
+    """IWDP / O carry asset_type Real Estate / REIT but are liquid capital —
+    they must appear under Real assets, not vanish with physical property."""
+    snap = _snap([
+        _pos("IWDP", "Real Estate", 40.0, details="iShares Dev Prop"),
+        _pos("O", "REIT", 12.9, details="Realty Income"),
+        _re_pos(500.0),
+        _pos("VOO", "Core Equity", 47.1),
+    ])
+    rows = build_allocation_breakdown(snap, _doc())
+    # Physical RE excluded; liquid book = 100k
+    by = {r.label: r for r in rows}
+    real = by.get("Real assets (REIT/TIPS)")
+    assert real is not None, f"labels={list(by)}"
+    syms = {h.symbol for h in real.holdings}
+    assert "IWDP" in syms and "O" in syms
+    assert "-" not in syms  # physical property excluded
+    assert round(sum(r.current_pct for r in rows), 0) == 100.0
+
+
 def test_physical_real_estate_excluded_from_investable_breakdown():
     snap = _snap([_pos("VOO", "Core Equity", 100.0), _re_pos(69.0)])
     rows = build_allocation_breakdown(snap, _doc())
@@ -159,6 +179,13 @@ def test_physical_real_estate_excluded_from_investable_breakdown():
     assert all(h.value_k != 69.0 for r in rows for h in r.holdings)
     voo = next(r for r in rows if r.label == "US broad-market core")
     assert voo.current_pct == 100.0
+
+
+def test_oklo_curated_to_high_growth_sleeve():
+    snap = _snap([_pos("OKLO", "Individual Stocks", 50.0), _pos("VOO", "Core Equity", 50.0)])
+    rows = build_allocation_breakdown(snap, _doc())
+    by = {r.label: r for r in rows}
+    assert "OKLO" in {h.symbol for h in by["High-growth / high-potential"].holdings}
 
 
 def test_redeploy_singles_show_zero_target_not_none():

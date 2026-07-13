@@ -54,7 +54,9 @@ class GateVerdict:
     detail_summary: str  # 1-sentence summary surfacing context
 
 
-def _us_situs_assets_usd(positions: list[dict]) -> float:
+def _us_situs_assets_usd(
+    positions: list[dict], *, exclude_nvda: bool = False
+) -> float:
     """Sum US-situs assets per IRS NRA estate-tax rules.
 
     US-situs is a property of the INSTRUMENT'S DOMICILE, not the broker it
@@ -76,7 +78,8 @@ def _us_situs_assets_usd(positions: list[dict]) -> float:
       - Cash in any account (portfolio-interest exemption),
       - UCITS / non-US-domiciled funds and Israeli instruments
         (classifier returns True),
-      - Physical real estate and other rows with no instrument symbol.
+      - Physical real estate and other rows with no instrument symbol,
+      - NVDA when ``exclude_nvda`` is True (portfolio toggle variant).
 
     Returns total USD value of US-situs holdings.
     """
@@ -89,6 +92,10 @@ def _us_situs_assets_usd(positions: list[dict]) -> float:
         symbol = (p.get("symbol") or "").strip()
         # Cash never US-situs (portfolio-interest exemption).
         if "cash" in asset_type:
+            continue
+        if exclude_nvda and (
+            symbol.upper() == "NVDA" or "nvidia" in asset_type
+        ):
             continue
         # Explicit UCITS marker in the raw fields — estate-safe even when the
         # ticker is not yet curated (keeps uncurated UCITS like VWRA out).

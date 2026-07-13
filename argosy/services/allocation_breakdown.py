@@ -76,6 +76,49 @@ _ASSET_CLASS_TO_LABEL: dict[str, str] = {
 }
 
 
+def _is_physical_real_estate(p) -> bool:
+    """Illiquid/direct property only — listed REITs/property ETFs stay investable.
+
+    Mirrors ``plan_numeric_resolver._is_real_estate`` so IWDP/O never vanish
+    from Current-allocation-vs-plan-target while the Pipera apartment stays out.
+    """
+    blob = " ".join(
+        str(getattr(p, k, "") or "")
+        for k in ("asset_type", "details", "category", "type")
+    ).lower()
+    if "real estate" not in blob and "real-estate" not in blob:
+        return False
+    sym = str(getattr(p, "symbol", "") or "").strip().lower()
+    has_tradable = bool(sym) and sym not in {"-", "—", "n/a", "na", "none"}
+    return not has_tradable
+
+
+# Owner-curated symbol → plan sleeve when the live plan's instrument list has
+# not yet named the ticker (or the broker tags it as a generic single stock).
+# Kept small and explicit — judgment calls surface here, not via asset_type.
+_CURATED_SLEEVE_BY_SYMBOL: dict[str, str] = {
+    "OKLO": "High-growth / high-potential",
+    "O": "Real assets (REIT/TIPS)",
+    "IWDP": "Real assets (REIT/TIPS)",
+}
+
+
+def resolve_sleeve_label(
+    symbol: str,
+    asset_type: str = "",
+    details: str = "",
+    plan_symbol_labels: dict[str, str] | None = None,
+) -> str:
+    """Canonical plan-sleeve label for one holding — single source for the
+    portfolio Sleeve column and Current-allocation-vs-plan-target buckets."""
+    sym = (symbol or "").strip().upper()
+    if plan_symbol_labels and sym in plan_symbol_labels:
+        return plan_symbol_labels[sym]
+    if sym in _CURATED_SLEEVE_BY_SYMBOL:
+        return _CURATED_SLEEVE_BY_SYMBOL[sym]
+    return _label_for(asset_type, symbol, details)
+
+
 def _label_for(asset_type: str, symbol: str = "", details: str = "") -> str:
     # The instrument reference is the classification authority; the raw
     # asset_type is only a fallback for instruments not in the table.
@@ -190,10 +233,9 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
     # worth, not an investable allocation sleeve — it lives in the dedicated
     # Real-estate panel and must NOT sit in "Real assets (REIT/TIPS)" next to
     # tradeable REIT ETFs (Ariel: "it's not something I can easily trade/sell").
-    positions = [
-        p for p in positions
-        if (getattr(p, "asset_type", "") or "").strip().lower() != "real estate"
-    ]
+    # Listed property securities (IWDP, O, …) KEEP their real-estate asset_type
+    # but stay in the investable book — same rule as plan_numeric_resolver.
+    positions = [p for p in positions if not _is_physical_real_estate(p)]
     total = sum(float(getattr(p, "usd_value_k", 0.0) or 0.0) for p in positions)
     if total <= 0:
         return []
@@ -233,13 +275,10 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
         if v <= 0:
             continue
         sym = (getattr(p, "symbol", "") or "").strip().upper()
-        # Plan-instrument attribution FIRST (exposure-aware rule): a ticker
-        # the plan names belongs to its plan class, whatever the snapshot's
-        # asset_type says. Only unnamed positions use the crosswalk below.
-        label = plan_symbol_labels.get(sym)
-        if label is None:
-            at = (getattr(p, "asset_type", "") or "").strip() or effective_type.get(sym, "")
-            label = _label_for(at, getattr(p, "symbol", ""), getattr(p, "details", ""))
+        at = (getattr(p, "asset_type", "") or "").strip() or effective_type.get(sym, "")
+        label = resolve_sleeve_label(
+            sym, at, getattr(p, "details", ""), plan_symbol_labels,
+        )
         grouped.setdefault(label, []).append(p)
 
     rows: list[CategoryBreakdown] = []
@@ -293,4 +332,11 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
     return rows
 
 
-__all__ = ["HoldingRow", "CategoryBreakdown", "build_allocation_breakdown"]
+__all__ = [
+    "HoldingRow",
+    "CategoryBreakdown",
+    "build_allocation_breakdown",
+    "resolve_sleeve_label",
+    "_plan_symbol_labels",
+    "_is_physical_real_estate",
+]

@@ -722,6 +722,22 @@ class TestEstateExposure:
         assert e.potential_liability_nis == pytest.approx(
             e.potential_liability_usd * 3.0
         )
+        assert e.exclude_nvda is False
+
+    def test_exclude_nvda_drops_nvda_from_estate(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0)
+            full = compute_wealth_dashboard(s, user_id="ariel", exclude_nvda=False)
+            ex = compute_wealth_dashboard(s, user_id="ariel", exclude_nvda=True)
+        assert full.estate_exposure.exclude_nvda is False
+        assert ex.estate_exposure.exclude_nvda is True
+        # Seed snapshot has 200k NVDA US-situs — excluding it must shrink the total.
+        assert ex.estate_exposure.us_situs_usd == pytest.approx(
+            full.estate_exposure.us_situs_usd - 200_000.0
+        )
 
 
 class TestAssumptionsAndDefaults:
