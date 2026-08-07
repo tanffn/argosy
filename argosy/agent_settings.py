@@ -193,9 +193,9 @@ class BackupsBlock(BaseModel):
     enabled: bool = True
     backups_dir: str = ""
     offsite_path: str = ""
-    retention_daily: int = 30
-    retention_weekly: int = 12
-    retention_monthly: int = 12
+    retention_daily: int = 7
+    retention_weekly: int = 4
+    retention_monthly: int = 3
 
 
 class CostBlock(BaseModel):
@@ -392,9 +392,9 @@ backups:
   enabled: true
   backups_dir: ""
   offsite_path: ""
-  retention_daily: 30
-  retention_weekly: 12
-  retention_monthly: 12
+  retention_daily: 7
+  retention_weekly: 4
+  retention_monthly: 3
 
 cost:
   monthly_budget_usd: 100

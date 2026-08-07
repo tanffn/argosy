@@ -23,9 +23,15 @@ $ExcludeDirs = @(
     '.git', '.venv', 'node_modules', '.next', '.worktrees',
     'graphify-out', 'tmp', '.claude', '.pytest_cache', '.ruff_cache',
     '.progress', '.idea', '.vscode', '__pycache__', '.turbo',
-    '.mypy_cache', 'htmlcov', 'out'
+    '.mypy_cache', 'htmlcov', 'out',
+    # `backups/` holds ~daily full-DB snapshots (~300 MB each, ~5.5 GB total).
+    # Backing up backups into a sibling backup is redundant — the live
+    # db/argosy.db is still copied. See handover 2026-08-07.
+    'backups'
 )
-$ExcludeFiles = @('*.bak', '*.pyc', '*.pyo', '*.swp', '*.swo', 'result.md')
+# Also skip loose DB snapshot copies in db/ (db/argosy.db.bak-*, .bak_* etc.);
+# the live db/argosy.db (no extension suffix) is still backed up.
+$ExcludeFiles = @('*.bak', '*.bak-*', '*.bak_*', '*.pyc', '*.pyo', '*.swp', '*.swo', 'result.md')
 
 $args = @($Source, $Destination, '/E', '/COPY:DAT', '/R:1', '/W:5')
 $args += '/XD'; $args += $ExcludeDirs

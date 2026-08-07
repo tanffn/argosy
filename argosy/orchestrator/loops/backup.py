@@ -5,9 +5,9 @@ Cron `0 3 * * *` (03:00). Snapshots the SQLite DB to
 `agent_settings.backups.backups_dir` when set).
 
 Retention enforcement (default):
-  - 30 daily
-  - 12 weekly  (Sunday)
-  - 12 monthly (1st of month)
+  - 7 daily
+  - 4 weekly  (Sunday)
+  - 3 monthly (1st of month)
   - indefinite annual (Jan 1)
 
 Old files outside retention are deleted.
