@@ -12,12 +12,18 @@ interface TagChipProps {
 }
 
 /**
- * Color-coded tag chip. Tags prefixed with `trip:` render in blue;
- * generic tags render in muted/gray. Optional remove button + link wrap.
+ * Color-coded tag chip. Tags prefixed with `trip:` or `vacation:` render
+ * in blue with a flight icon (same semantics on the Trips tab); generic
+ * tags render in muted/gray. Optional remove button + link wrap.
  */
 export function TagChip({ tag, onRemove, href, className }: TagChipProps) {
-  const isTrip = tag.startsWith("trip:");
-  const display = isTrip ? tag.slice("trip:".length) : tag;
+  const tripPrefix = tag.startsWith("trip:")
+    ? "trip:"
+    : tag.startsWith("vacation:")
+      ? "vacation:"
+      : null;
+  const isTrip = tripPrefix !== null;
+  const display = isTrip ? tag.slice(tripPrefix.length) : tag;
   const baseStyle = isTrip
     ? "bg-info/10 text-info border border-info/30"
     : "bg-secondary text-secondary-foreground border border-border";

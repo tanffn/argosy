@@ -9,6 +9,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "@/lib/utils";
 
@@ -65,9 +66,18 @@ function DialogContent({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
 
-  if (!open) return null;
+  // Portal to body so `fixed` centers on the viewport. Without this, a
+  // parent with `transform` (Card hover:-translate-y-px) becomes the
+  // containing block and the panel sits mid-page — needing a scroll to
+  // find. "Apply labels…" worked because that Dialog mounts outside Card.
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
 
-  return (
+  if (!open || !mounted) return null;
+
+  return createPortal(
     <>
       {/* Backdrop */}
       <div
@@ -90,7 +100,8 @@ function DialogContent({
       >
         {children}
       </div>
-    </>
+    </>,
+    document.body,
   );
 }
 
