@@ -4,7 +4,7 @@ topic: israel_surtax_high_income
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual
-last_verified: 2026-07-12
+last_verified: 2026-08-07
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
@@ -17,13 +17,13 @@ sources:
     retrieved: 2026-07-12
     tier: 1
   - url: https://taxsummaries.pwc.com/israel/individual/income-determination
-    retrieved: 2026-07-12
+    retrieved: 2026-08-07
     tier: 1
   - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
     retrieved: 2026-07-12
     tier: 2
   - url: https://barlaw.co.il/practice_areas/tax/client_updates/high-income-earners-in-israel-prepare-to-pay-an-additional-surtax/
-    retrieved: 2026-07-12
+    retrieved: 2026-08-07
     tier: 2
 ---
 
