@@ -17,6 +17,7 @@ from typing import Any
 
 from argosy.adapters import MissingAPIKeyError, MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
+from argosy.adapters.data.symbols import to_finnhub_symbol
 from argosy.secrets import get_external_api_key, get_secret
 from argosy.services.adapter_outcomes import track_adapter_call
 
@@ -145,10 +146,13 @@ class FinnhubAdapter:
         """
         with track_adapter_call("finnhub_financials", target=symbol) as _outcome:
             client = self._resolve_client()
-            key = f"basic_financials:{symbol}:all"
+            # Class-share tickers (BRK/B) must become BRK.B for finnhub, else it
+            # returns empty metrics. No-op on plain / Hebrew tickers.
+            fh_symbol = to_finnhub_symbol(symbol)
+            key = f"basic_financials:{fh_symbol}:all"
 
             def _fetch() -> dict[str, Any]:
-                raw = client.company_basic_financials(symbol, "all")
+                raw = client.company_basic_financials(fh_symbol, "all")
                 if not isinstance(raw, dict):
                     raise MissingDataSourceError(
                         f"finnhub: unexpected payload type for {symbol}: {type(raw).__name__}"

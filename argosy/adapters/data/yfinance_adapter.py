@@ -18,6 +18,7 @@ from typing import Any
 
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
+from argosy.adapters.data.symbols import to_yahoo_symbol
 from argosy.services.adapter_outcomes import track_adapter_call
 
 
@@ -300,10 +301,13 @@ class YFinanceAdapter:
         """
         with track_adapter_call("yfinance_indicators", target=ticker) as _outcome:
             client = self._resolve_client()
-            key = f"indicators:{ticker}"
+            # Class-share tickers (BRK/B) must become BRK-B for Yahoo, else the
+            # quoteSummary URL path breaks (404). No-op on plain / Hebrew tickers.
+            yf_ticker = to_yahoo_symbol(ticker)
+            key = f"indicators:{yf_ticker}"
 
             def _fetch() -> dict[str, Any]:
-                tk = client.Ticker(ticker)
+                tk = client.Ticker(yf_ticker)
                 try:
                     hist = tk.history(period="6mo", auto_adjust=True)
                 except TypeError:

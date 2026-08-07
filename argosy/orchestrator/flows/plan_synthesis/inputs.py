@@ -1382,7 +1382,9 @@ def _yfinance_news_fallback(
         if ticker in out:
             continue
         try:
-            raw = yf.Ticker(ticker).news or []
+            from argosy.adapters.data.symbols import to_yahoo_symbol
+
+            raw = yf.Ticker(to_yahoo_symbol(ticker)).news or []
         except Exception as exc:  # noqa: BLE001 - per-ticker defensive
             log.warning(
                 "plan_synthesis.inputs.news_yfinance_per_ticker_failed",
@@ -1568,7 +1570,9 @@ def _yfinance_fundamentals_fallback(
         ):
             continue  # already fully anchored — no fetch needed
         try:
-            info = yf.Ticker(ticker).info or {}
+            from argosy.adapters.data.symbols import to_yahoo_symbol
+
+            info = yf.Ticker(to_yahoo_symbol(ticker)).info or {}
         except Exception as exc:  # noqa: BLE001 - per-ticker defensive
             log.warning(
                 "plan_synthesis.inputs.fundamentals_yfinance_per_ticker_failed",
