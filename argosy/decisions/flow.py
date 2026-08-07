@@ -23,6 +23,8 @@ so tests construct mocked subclasses without touching the SDK.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal
@@ -148,6 +150,101 @@ _FundFactory = Callable[[str], FundManagerAgent]
 # ----------------------------------------------------------------------
 # Flow
 # ----------------------------------------------------------------------
+
+
+_VALID_TRIGGER_KINDS = {"price_below", "price_above", "metric_condition", "dated_event"}
+
+# A falsifier that any broad market/price move would trip is WORSE than none —
+# it re-opens a DEFENDED winner on noise via the token-overlap pushback matcher
+# (the PLTR-scar / NOW-churn failure). The prompt forbids these; this is the
+# structural floor that also drops them at storage, protecting the invariant.
+# We use a GENERAL specificity test (digit, or >=2 non-generic content tokens)
+# rather than an enumerated phrase denylist, which would be whack-a-mole.
+_GENERIC_FALSIFIER_TOKENS = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "with", "is", "are",
+    "its", "it", "at", "by", "as", "for", "this",
+    "stock", "stocks", "share", "shares", "price", "prices", "market", "markets",
+    "equity", "equities", "company", "valuation", "value", "ticker", "name",
+    "drops", "drop", "dropped", "falls", "fall", "fell", "declines", "decline",
+    "declined", "dips", "dip", "slides", "slide", "tanks", "tank", "crashes",
+    "crash", "sinks", "sink", "plunges", "plunge", "sells", "sell", "selloff",
+    "off", "down", "up", "rises", "rise", "jumps", "jump", "pulls", "pull",
+    "back", "lower", "higher", "weakens", "weaken", "underperforms",
+    "underperform", "sharply", "significantly", "materially", "further",
+})
+
+
+def _is_degenerate_falsifier(text: str) -> bool:
+    """True for empty / too-short / purely-generic market-move falsifiers that
+    would trivially unlock a settled verdict on any bearish headline.
+
+    General floor (not an enumerated phrase list): a real thesis falsifier
+    carries a numeric threshold or >=2 distinct content tokens outside the
+    generic market/price/movement vocabulary. Conservative — nuanced quality
+    is the trader's job (fleet authors); this only stops the degenerate case.
+    """
+    t = text.strip()
+    if len(t) < 10:
+        return True
+    if any(ch.isdigit() for ch in t):
+        return False  # a specific numeric threshold is inherently non-degenerate
+    tokens = re.findall(r"[a-z]{2,}", t.lower())
+    specific = {w for w in tokens if w not in _GENERIC_FALSIFIER_TOKENS}
+    return len(specific) < 2
+
+
+def _coerce_verdict_falsifiers(tp: Any) -> tuple[list[str], list[dict]]:
+    """Extract fleet-authored falsifiers + typed revisit-triggers from a
+    TraderProposal, dropping any malformed / non-fireable / degenerate item
+    BEFORE ``write_verdict`` (which raises on an unknown kind — that would
+    discard the whole verdict + retract transaction — and whose downstream
+    ``evaluate_triggers`` sweep does ``float(price)`` / ISO date-parse
+    unguarded). Best-effort; never raises.
+    """
+    from datetime import date as _date_cls
+
+    falsifiers = [
+        str(x).strip()
+        for x in (getattr(tp, "falsifiers", None) or [])
+        if str(x).strip() and not _is_degenerate_falsifier(str(x))
+    ]
+    triggers: list[dict] = []
+    for t in getattr(tp, "revisit_triggers", None) or []:
+        try:
+            d = t.model_dump(exclude_none=True) if hasattr(t, "model_dump") else dict(t)
+        except Exception:  # noqa: BLE001
+            continue
+        kind = str(d.get("kind") or "")
+        if kind not in _VALID_TRIGGER_KINDS:
+            _log.warning("decision_flow.falsifier_trigger_dropped", kind=kind)
+            continue
+        if kind in ("price_below", "price_above"):
+            try:
+                d["price"] = float(d.get("price"))  # must be numeric; sweep floats it
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(d["price"]):  # NaN/inf never fire — drop
+                continue
+        elif kind == "metric_condition":
+            # metric + a VALID op + value all required, else the sweep defaults
+            # an unknown/missing op to equality and fires an unauthored compare.
+            if not (d.get("metric") and d.get("value") is not None):
+                continue
+            if d.get("op") not in {">=", ">", "<=", "<", "=="}:
+                continue
+            try:
+                d["value"] = float(d.get("value"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(d["value"]):
+                continue
+        elif kind == "dated_event":
+            try:
+                _date_cls.fromisoformat(str(d.get("date")))  # must be ISO or never fires
+            except (TypeError, ValueError):
+                continue
+        triggers.append(d)
+    return falsifiers, triggers
 
 
 @dataclass
@@ -385,13 +482,17 @@ class DecisionFlow:
             await self._close_decision_run(
                 decision_run_id, finished_at=clock(), status="hold", fm="hold"
             )
-            # Item B — record DEFENDED HOLD in the verdict registry.
+            # Item B — record DEFENDED HOLD in the verdict registry, armed
+            # with the trader's fleet-authored falsifiers + typed triggers.
+            _hold_fals, _hold_trigs = _coerce_verdict_falsifiers(trader_proposal)
             await self._record_settled_verdict(
                 ticker=ticker,
                 verdict="HOLD",
                 conviction=getattr(trader_proposal.confidence, "value", "MED"),
                 decision_run_id=decision_run_id,
                 reasoning_md=trader_proposal.rationale_summary or "",
+                falsifiers=_hold_fals,
+                revisit_triggers=_hold_trigs,
             )
             return BlockedProposal(
                 reason=f"Trader returned HOLD: {trader_proposal.rationale_summary}",
@@ -697,7 +798,9 @@ class DecisionFlow:
             proposal_id=proposal_id,
         )
 
-        # Item B — settle the actionable verdict in the registry.
+        # Item B — settle the actionable verdict in the registry, armed with
+        # the trader's fleet-authored falsifiers + typed triggers.
+        _appr_fals, _appr_trigs = _coerce_verdict_falsifiers(trader_proposal)
         await self._record_settled_verdict(
             ticker=ticker,
             verdict=str(trader_proposal.action).upper(),
@@ -709,6 +812,8 @@ class DecisionFlow:
             decision_run_id=decision_run_id,
             reasoning_md=trader_proposal.rationale_summary or "",
             named_sleeve=(funnel_meta or {}).get("named_sleeve"),
+            falsifiers=_appr_fals,
+            revisit_triggers=_appr_trigs,
         )
 
         try:

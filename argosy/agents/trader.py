@@ -28,6 +28,48 @@ class ExpectedImpact(BaseModel):
     )
 
 
+_FALSIFIER_RULE = (
+    "  - **AUTHOR FALSIFIERS (required for every verdict, including HOLD).** "
+    "Emit 2-4 ``falsifiers``: specific, checkable statements that would prove "
+    "THIS thesis wrong and force a re-review, each tied to the ACTUAL reason "
+    "for your verdict. Never generic ('stock drops', 'market falls') — a "
+    "generic falsifier that any bearish headline would trip is WORSE than "
+    "none, because it re-opens a DEFENDED position on noise. Examples: HOLD "
+    "ORCL — 'TTM free cash flow turns sustainably positive with debt stable'; "
+    "BUY grower — 'two consecutive quarters of gross-margin compression below "
+    "55%'; SELL — 'dividend restored and coverage back above 1.3x'. For EACH "
+    "mechanically-checkable falsifier, pair a typed ``revisit_trigger`` (see "
+    "schema): a price level uses kind=price_below or price_above with a "
+    "numeric price; a fundamental uses kind=metric_condition with "
+    "metric/op/value (metric names like fcf_ttm, eps, revenue_growth, "
+    "de_ratio, nrr); a catalyst date uses kind=dated_event with an ISO date "
+    "and a label. A qualitative falsifier with no clean trigger is fine — "
+    "omit it from revisit_triggers. A HOLD is a DEFENDED position: state what "
+    "would move you off it. Never emit an empty falsifiers list.\n"
+)
+
+
+class RevisitTrigger(BaseModel):
+    """One typed tripwire the fleet arms alongside a verdict.
+
+    Serialized via ``model_dump(exclude_none=True)`` to the dict shape
+    ``verdict_registry.write_verdict`` / ``evaluate_triggers`` read. The four
+    ``kind`` values match ``verdict_registry.VALID_TRIGGER_KINDS`` exactly.
+    """
+
+    kind: Literal["price_below", "price_above", "metric_condition", "dated_event"]
+    # price_below / price_above
+    price: float | None = None
+    # metric_condition
+    metric: str | None = None
+    op: Literal[">=", ">", "<=", "<", "=="] | None = None
+    value: float | None = None
+    # dated_event (ISO YYYY-MM-DD)
+    date: str | None = None
+    # shared human label (metric_condition / dated_event matching + UI)
+    label: str | None = None
+
+
 class TraderProposal(BaseModel):
     """Concrete proposal produced by the trader.
 
@@ -77,6 +119,18 @@ class TraderProposal(BaseModel):
         default_factory=list,
         description="Citations from analyst reports / debate outcome / "
         "domain_knowledge files. Required.",
+    )
+    falsifiers: list[str] = Field(
+        default_factory=list,
+        description="2-4 specific, checkable statements that would prove THIS "
+        "verdict wrong and force a re-review (required for every verdict, "
+        "including HOLD). Thesis-specific — tied to the actual reason for the "
+        "call — never generic ('price drops', 'market falls').",
+    )
+    revisit_triggers: list[RevisitTrigger] = Field(
+        default_factory=list,
+        description="Typed tripwires, ideally one per mechanically-checkable "
+        "falsifier. Qualitative falsifiers may have no trigger.",
     )
 
 
@@ -266,7 +320,8 @@ class TraderAgent(BaseAgent[TraderProposal]):
                 "If positions context is empty, default to the 'do "
                 "not initiate' framing — /consult is most often used "
                 "to evaluate new candidates.\n\n"
-                "OUTPUT must be a JSON object conforming to this schema:\n"
+                + _FALSIFIER_RULE
+                + "OUTPUT must be a JSON object conforming to this schema:\n"
                 f"{TraderProposal.model_json_schema()}\n"
             )
         else:
@@ -310,7 +365,8 @@ class TraderAgent(BaseAgent[TraderProposal]):
                 "retry'. The fleet handles its own remediation "
                 "internally — your job is to produce the verdict with "
                 "whatever inputs landed.\n\n"
-                "OUTPUT must be a JSON object conforming to this schema:\n"
+                + _FALSIFIER_RULE
+                + "OUTPUT must be a JSON object conforming to this schema:\n"
                 f"{TraderProposal.model_json_schema()}\n"
             )
 
