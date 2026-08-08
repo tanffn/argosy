@@ -272,7 +272,7 @@ def persist_snapshot(
             "accounts_covered": list(merge.accounts_covered),
             "accounts_carried": list(merge.accounts_carried),
             "feed_position_count": len(incoming_positions),
-            "feed_row_hash": feed_content_digest(incoming_positions),
+            "feed_row_hash": feed_content_digest(snapshot),
             "merged_position_count": len(stamped),
         }),
         fx_usd_nis=snapshot.fx_usd_nis,
@@ -380,23 +380,48 @@ def persist_snapshot(
     return row
 
 
-def feed_content_digest(positions: Any) -> str:
-    """Order-independent digest of a FEED's economic content.
+def _canonical_rows(items: Any) -> list[str]:
+    """Sorted canonical JSON for a collection, so row ORDER is not content."""
+    out: list[str] = []
+    for it in items or []:
+        if hasattr(it, "model_dump"):
+            try:
+                d = it.model_dump(mode="json")
+            except TypeError:  # pydantic v1 style
+                d = it.model_dump()
+        else:
+            d = dict(it)
+        out.append(json.dumps(d, sort_keys=True, default=str))
+    return sorted(out)
 
-    Covers symbol, account, share count, value and price, so a re-export of the
-    same file with corrected numbers digests differently even though its path,
-    date and position count are unchanged. Accepts models or dicts because the
-    ingest paths carry both.
+
+def feed_content_digest(snapshot: Any) -> str:
+    """Order-independent digest of EVERYTHING a feed persists.
+
+    An earlier version hashed only symbol, account, shares, value and price.
+    That left real corrections invisible: changing the FX rates, the allocation
+    block, real estate, pensions, NVDA sales, or a position's currency, cost
+    basis, local value or asset classification all produced an identical digest,
+    so the write was treated as an already-ingested no-op and silently dropped —
+    the same failure class this digest exists to prevent.
+
+    Every persisted collection is now covered. A bare positions list is still
+    accepted for callers that only have positions.
     """
-    parts: list[str] = []
-    for p in positions or []:
-        d = p.model_dump() if hasattr(p, "model_dump") else dict(p)
-        parts.append(
-            f"{str(d.get('symbol') or '').strip()}|"
-            f"{str(d.get('location') or '').strip().lower()}|"
-            f"{d.get('shares')}|{d.get('usd_value_k')}|{d.get('current_price')}"
-        )
-    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
+    if isinstance(snapshot, (list, tuple)):
+        payload: dict[str, Any] = {"positions": _canonical_rows(snapshot)}
+    else:
+        payload = {
+            "positions": _canonical_rows(getattr(snapshot, "positions", None)),
+            "allocations": _canonical_rows(getattr(snapshot, "allocations", None)),
+            "nvda_sales": _canonical_rows(getattr(snapshot, "nvda_sales", None)),
+            "real_estate": _canonical_rows(getattr(snapshot, "real_estate", None)),
+            "pensions": _canonical_rows(getattr(snapshot, "pensions", None)),
+            "fx_usd_nis": getattr(snapshot, "fx_usd_nis", None),
+            "fx_usd_eur": getattr(snapshot, "fx_usd_eur", None),
+        }
+    blob = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 # Re-export for callers that need to catch the guard.
@@ -580,7 +605,7 @@ def latest_matches_snapshot(
     if not stored_digest:
         return False
     # Subsumes the position count: a differing row set digests differently.
-    return bool(stored_digest == feed_content_digest(snapshot.positions))
+    return bool(stored_digest == feed_content_digest(snapshot))
 
 
 def write_through_if_changed(

@@ -67,14 +67,19 @@ def _assemble_portfolio_summary(*, session, user_id) -> str:
 
     The ``session`` + ``user_id`` arguments are kept for monkeypatch
     compatibility with the test suite (tests stub this helper directly).
+
+    This routes through the SAME trusted resolution as Phase 1 rather than
+    re-parsing the TSV off disk. Parsing it directly bypassed the ingest guard
+    entirely: a feed the store had REFUSED as account-erasing still reached
+    Synthesizer Phase 3 through this helper, so the database was protected while
+    the plan was written against the truncated book.
     """
     try:
-        tsv_path = _find_latest_tsv()
-        if tsv_path is None:
-            return "(no positions)"
-        from argosy.ingest.tsv import parse_portfolio_tsv
-
-        snapshot = parse_portfolio_tsv(tsv_path)
+        snapshot = _resolve_snapshot_for_inputs(
+            session=session, user_id=user_id, log=log,
+        )
+        if snapshot is None:
+            return "(no positions — latest feed unavailable or REJECTED)"
         return _summarize_positions(snapshot)
     except Exception as exc:  # noqa: BLE001 — defensive
         log.warning(

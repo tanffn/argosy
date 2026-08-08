@@ -109,6 +109,52 @@ def test_gate_backup_verification_rejects_a_copy2_backup(tmp_path, mod):
         writer.close()
 
 
+def test_gate_backup_missing_an_unrelated_table_is_rejected(tmp_path, mod):
+    """A rollback point is the WHOLE database, not just the latest book.
+
+    A backup can carry a byte-identical latest snapshot while having lost the
+    `proposals` table entirely. Reconciling only the book blessed it.
+
+    Revert detector: drop the whole-database reconciliation → this fails.
+    """
+    src = tmp_path / "book.db"
+    _book_db(src, _POSITIONS)
+    con = sqlite3.connect(str(src))
+    con.execute("CREATE TABLE proposals (id INTEGER PRIMARY KEY, note TEXT)")
+    con.execute("INSERT INTO proposals (note) VALUES ('approve NVDA trim')")
+    con.commit()
+    con.close()
+
+    # A "backup" with the same book but the other table missing.
+    bad = tmp_path / "book.db.partial"
+    mod.sqlite_consistent_backup(src, bad)
+    con = sqlite3.connect(str(bad))
+    con.execute("DROP TABLE proposals")
+    con.commit()
+    con.close()
+
+    ok, detail = mod.verify_backup_against_source(src, bad, "ariel")
+    assert ok is False, f"a backup missing a table must not verify: {detail}"
+    assert "proposals" in detail
+
+    # And a row-count difference in an unrelated table must also fail.
+    thinned = tmp_path / "book.db.thinned"
+    mod.sqlite_consistent_backup(src, thinned)
+    con = sqlite3.connect(str(thinned))
+    con.execute("DELETE FROM proposals")
+    con.commit()
+    con.close()
+    ok2, detail2 = mod.verify_backup_against_source(src, thinned, "ariel")
+    assert ok2 is False, f"row-count loss must not verify: {detail2}"
+
+    # Control: a faithful backup still passes.
+    good = tmp_path / "book.db.good"
+    mod.sqlite_consistent_backup(src, good)
+    ok3, detail3 = mod.verify_backup_against_source(src, good, "ariel")
+    assert ok3 is True, detail3
+    assert "whole-DB" in detail3
+
+
 def test_gate_integrity_check_alone_would_bless_garbage(tmp_path, mod):
     """Documents WHY content reconciliation replaced the structural check."""
     src = tmp_path / "book.db"
@@ -149,47 +195,119 @@ def test_gate_fingerprint_detects_a_changed_value(tmp_path, mod):
     assert fa["row_hash"] != fb["row_hash"]
 
 
-def test_gate_quiesce_check_detects_an_active_writer(tmp_path, mod):
-    """Gate step 1 — an active writer must be refused, not merely noted.
+def test_gate_quiesce_check_detects_a_writer_that_keeps_the_wal_size_constant(
+    tmp_path, mod,
+):
+    """Gate step 1 must detect a writer the SIZE heuristic could not see.
 
-    Revert detector: drop the settle-window comparison (always return True) →
-    this fails.
+    The original check compared the ``-wal`` sidecar size at two instants. With
+    ``wal_autocheckpoint`` active a steady writer holds that size constant: a
+    measured run committed 143 transactions while the sidecar stayed at exactly
+    4152 bytes and the gate reported "quiesced". This pins the replacement
+    (``PRAGMA data_version`` from one held-open connection, plus an EXCLUSIVE
+    probe).
+
+    Revert detector: go back to comparing ``wal_sidecar_size`` twice → this
+    fails, because the sizes are equal while the writer runs.
     """
     src = tmp_path / "busy.db"
     _book_db(src, _POSITIONS)
+    con = sqlite3.connect(str(src))
+    con.execute("PRAGMA wal_autocheckpoint=1")
+    con.close()
 
     stop = threading.Event()
+    commits = {"n": 0}
 
     def writer():
         con = sqlite3.connect(str(src), timeout=30)
-        i = 0
+        con.execute("PRAGMA wal_autocheckpoint=1")
         while not stop.is_set():
             con.execute(
-                "INSERT INTO portfolio_snapshots (user_id, positions_json) "
-                "VALUES ('noise', '[]')"
+                "INSERT OR REPLACE INTO portfolio_snapshots "
+                "(id, user_id, positions_json) VALUES (9999, 'noise', '[]')"
             )
             con.commit()
-            i += 1
-            time.sleep(0.01)
+            commits["n"] += 1
+            time.sleep(0.005)
         con.close()
 
     t = threading.Thread(target=writer, daemon=True)
     t.start()
+    time.sleep(0.2)
+    sizes = []
     try:
+        sizes = [mod.wal_sidecar_size(src) for _ in range(3)]
+        before = commits["n"]
         ok, detail = mod.quiesce_check(src, 0.5)
+        during = commits["n"] - before
     finally:
         stop.set()
         t.join(timeout=5)
 
-    assert ok is False, f"an active writer must be detected, got: {detail}"
-    assert "ACTIVE" in detail
+    assert during > 0, "the writer must have committed during the window"
+    assert ok is False, (
+        f"a writer committing {during} txns must be detected; sizes={sizes} "
+        f"detail={detail}"
+    )
+    assert "data_version" in detail
+
+
+def test_gate_quiesce_check_refuses_a_zero_length_window(tmp_path, mod):
+    """`--settle-seconds 0` silently reported "quiesced" — it must refuse.
+
+    Revert detector: return True for a zero window → this fails.
+    """
+    src = tmp_path / "zero.db"
+    _book_db(src, _POSITIONS)
+    ok, detail = mod.quiesce_check(src, 0)
+    assert ok is False
+    assert "REFUSED" in detail
 
 
 def test_gate_quiesce_check_passes_when_idle(tmp_path, mod):
+    """Characterization: the gate must not refuse a genuinely idle database.
+
+    This one does NOT bite on revert (a broken gate also passes an idle DB); it
+    exists to catch over-tightening that would block the real repair.
+    """
     src = tmp_path / "idle.db"
     _book_db(src, _POSITIONS)
     ok, detail = mod.quiesce_check(src, 0.2)
     assert ok is True, detail
+
+
+def test_gate_checkpoint_reports_failure_when_a_reader_pins_the_wal(tmp_path, mod):
+    """An incomplete checkpoint must be a FAILURE, not a log line.
+
+    With a reader holding an open read transaction, TRUNCATE returns busy=1 /
+    checkpointed=0 and leaves the WAL in place. The previous version returned
+    only a string, so the repair proceeded and backed up a database whose WAL
+    had not been folded in.
+
+    Revert detector: return just the detail string (no pass/fail) → this fails.
+    """
+    src = tmp_path / "pinned.db"
+    _book_db(src, _POSITIONS)
+
+    reader = sqlite3.connect(str(src), timeout=30)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM portfolio_snapshots").fetchall()
+    writer = sqlite3.connect(str(src), timeout=30)
+    writer.execute(
+        "INSERT INTO portfolio_snapshots (user_id, positions_json) "
+        "VALUES ('pending', '[]')"
+    )
+    writer.commit()
+    try:
+        ok, detail = mod.checkpoint_wal(src)
+    finally:
+        reader.rollback()
+        reader.close()
+        writer.close()
+
+    assert ok is False, f"a pinned WAL must fail the checkpoint gate: {detail}"
+    assert "INCOMPLETE" in detail
 
 
 def test_gate_checkpoint_folds_wal_into_main(tmp_path, mod):
@@ -207,30 +325,52 @@ def test_gate_checkpoint_folds_wal_into_main(tmp_path, mod):
         writer.commit()
 
         assert mod.wal_sidecar_size(src) > 0, "expected an un-checkpointed WAL"
-        detail = mod.checkpoint_wal(src)
+        ok, detail = mod.checkpoint_wal(src)
+        assert ok is True, detail
         assert mod.wal_sidecar_size(src) == 0, detail
     finally:
         writer.close()
 
 
-def test_gate_guard_accepts_a_staged_copy_named_argosy_db(tmp_path, mod):
-    """The guard must key on identity, never the basename.
+def test_gate_unidentifiable_argosy_db_is_refused_without_a_designation(
+    tmp_path, mod,
+):
+    """Identity alone cannot protect a deployment we do not enumerate.
 
-    Refusing a legitimately-named staged copy forces
-    ``--i-really-mean-the-live-db`` in rehearsal, making rehearsal
-    indistinguishable from production.
+    With ``ARGOSY_HOME`` unset, a real production database at an unknown path
+    (a mapped drive, an alternate install) is not identity-matched, so
+    identity-only refusal would let the repair write to it.
 
-    Revert detector: re-add ``db_path.name == "argosy.db"`` to the refusal →
-    this fails.
+    Revert detector: refuse on identity ONLY → this fails.
+    """
+    unknown_prod = tmp_path / "some" / "deployment" / "db" / "argosy.db"
+    unknown_prod.parent.mkdir(parents=True)
+    _book_db(unknown_prod, _POSITIONS)
+
+    assert mod.is_live_db_path(unknown_prod) is False, "not identity-matched"
+    reason = mod.refuse_reason(unknown_prod, override=False)
+    assert reason is not None, "an unidentifiable argosy.db must be refused"
+    assert "--staged-copy" in reason
+
+
+def test_gate_staged_copy_designation_is_distinct_from_the_live_override(
+    tmp_path, mod,
+):
+    """A rehearsal must never need the flag the production repair needs.
+
+    That was the original reason for dropping the blunt basename check: sharing
+    one flag trains the operator to type the live override during rehearsals.
     """
     staged = tmp_path / "stage" / "db" / "argosy.db"
     staged.parent.mkdir(parents=True)
     _book_db(staged, _POSITIONS)
 
-    # Asserted at the layer that DECIDES the refusal, not on is_live_db_path —
-    # otherwise a basename check reintroduced in the caller would slip through.
-    assert mod.refuse_reason(staged, override=False) is None
-    assert mod.is_live_db_path(staged) is False
+    # Rehearsal: the harmless affirmation is enough.
+    assert mod.refuse_reason(staged, override=False, staged_copy=True) is None
+    # And a copy that is not named like a deployment needs nothing at all.
+    plain = tmp_path / "rehearsal_copy.db"
+    _book_db(plain, _POSITIONS)
+    assert mod.refuse_reason(plain, override=False) is None
 
 
 def test_gate_guard_refuses_a_hardlink_alias_of_the_live_db(tmp_path, mod, monkeypatch):

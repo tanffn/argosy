@@ -146,6 +146,32 @@ def test_digest_ignores_row_order(session):
     assert a == b
 
 
+def test_changed_fx_is_not_a_noop(session):
+    """FX rates are persisted economics — a change must not be dropped.
+
+    Revert detector: digest only the five position fields → this fails, because
+    positions are identical and only the FX rates moved.
+    """
+    persist_snapshot(session, user_id="ariel", snapshot=_snap(TWO_ACCOUNTS))
+    revalued = _snap(TWO_ACCOUNTS)
+    revalued.fx_usd_nis = 3.71
+    assert latest_matches_snapshot(
+        session, user_id="ariel", snapshot=revalued
+    ) is False
+
+
+def test_changed_position_currency_is_not_a_noop(session):
+    """Fields outside the original five still change the economics."""
+    persist_snapshot(session, user_id="ariel", snapshot=_snap(TWO_ACCOUNTS))
+    reclassified = [dict(p.model_dump()) for p in TWO_ACCOUNTS]
+    reclassified[0]["currency"] = "ILS"
+    snap = _snap(TWO_ACCOUNTS)
+    snap.positions = [PortfolioPosition(**d) for d in reclassified]
+    assert latest_matches_snapshot(
+        session, user_id="ariel", snapshot=snap
+    ) is False
+
+
 def test_partial_feed_carries_the_uncovered_account_instead_of_erasing_it(session):
     """The Jul-13 incident, as a test: a Leumi-only feed must not erase schwab.
 
@@ -267,3 +293,51 @@ def test_plan_synthesis_does_not_build_inputs_from_a_rejected_feed(
         e[0] == "plan_synthesis.inputs.snapshot_rejected_not_used"
         for e in log.errors
     ), f"the rejection must be logged loudly, got: {log.errors}"
+
+
+def test_portfolio_summary_does_not_reparse_a_rejected_feed(
+    monkeypatch, session, tmp_path,
+):
+    """The Phase-3 summary helper must not bypass the ingest guard.
+
+    `_assemble_portfolio_summary` parsed the latest TSV straight off disk, so a
+    feed the store had REFUSED still reached Synthesizer Phase 3 through this
+    second door — the database was protected while the plan was written against
+    the truncated book.
+
+    Revert detector: parse the TSV directly in that helper again → this fails,
+    because the rejected symbol reappears in the summary text.
+    """
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+    from argosy.services.holding_books import SnapshotIngestRejected
+
+    tsv = tmp_path / "leumi_only.tsv"
+    tsv.write_text("dummy", encoding="utf-8")
+
+    # The rejected feed contains ONLY this symbol; it must not appear.
+    rejected = _snap([_pos("REJECTEDSYM", "leumi", 100.0, 60.0)])
+    monkeypatch.setattr(inputs_mod, "_find_latest_tsv", lambda: tsv)
+    monkeypatch.setattr(
+        "argosy.ingest.tsv.parse_portfolio_tsv", lambda *a, **k: rejected,
+    )
+
+    def _reject(*_a, **_k):
+        raise SnapshotIngestRejected(
+            "account_erasure", "would remove accounts: schwab, aborad",
+        )
+
+    monkeypatch.setattr(
+        "argosy.services.portfolio_snapshot_store.write_through_if_changed",
+        _reject,
+    )
+
+    summary = inputs_mod._assemble_portfolio_summary(  # noqa: SLF001
+        session=session, user_id="ariel",
+    )
+
+    assert "REJECTEDSYM" not in summary, (
+        f"the rejected feed leaked into the Phase-3 summary: {summary!r}"
+    )
+    assert "REJECTED" in summary or "no positions" in summary, (
+        f"the summary must say the data is unavailable, got: {summary!r}"
+    )

@@ -35,6 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Allow `python scripts/...` without installing the package editable in this
 # worktree — put the worktree root on sys.path.
@@ -104,18 +105,43 @@ def is_live_db_path(db_path: Path) -> bool:
     return False
 
 
-def refuse_reason(db_path: Path, *, override: bool) -> str | None:
+def refuse_reason(
+    db_path: Path, *, override: bool, staged_copy: bool = False
+) -> str | None:
     """The single decision for whether this tool may touch ``db_path``.
 
     Kept as one function so the refusal is testable at the layer that actually
     decides it — a test asserting on ``is_live_db_path`` alone would still pass
     if a basename check were reintroduced here.
+
+    Two distinct hazards, deliberately given two DIFFERENT flags:
+
+    * The target IS a database we can identify as live ⇒ needs
+      ``--i-really-mean-the-live-db``.
+    * The target merely LOOKS like a deployment (named ``argosy.db``) but is not
+      one of the locations we enumerate — an install with ``ARGOSY_HOME`` unset,
+      a mapped drive, an alternate deployment — ⇒ needs ``--staged-copy``.
+
+    Identity alone was not enough: it cannot protect a production database whose
+    path this tool does not know about. But refusing every file named
+    ``argosy.db`` outright was worse, because it pushed operators into passing
+    the LIVE override during rehearsals and made a rehearsal indistinguishable
+    from the real repair. Requiring a separate, harmless affirmation keeps the
+    two situations apart.
     """
     if is_live_db_path(db_path) and not override:
         return (
             f"REFUSING: {db_path} IS the live database (resolved path / "
             "samefile identity match). Pass --i-really-mean-the-live-db only "
             "for the scheduled production repair; rehearse on a copy instead."
+        )
+    if not override and not staged_copy and db_path.name == "argosy.db":
+        return (
+            f"REFUSING: {db_path} is named argosy.db but is not a location this "
+            "tool can identify, so it may be a deployment we cannot see "
+            "(ARGOSY_HOME unset, mapped drive, alternate install). Pass "
+            "--staged-copy to affirm it is a throwaway copy, or "
+            "--i-really-mean-the-live-db for the real repair."
         )
     return None
 
@@ -198,6 +224,39 @@ def book_fingerprint(db_file: Path, user_id: str) -> dict:
         con.close()
 
 
+def database_fingerprint(db_file: Path) -> dict:
+    """Row counts for EVERY table, plus the structural check.
+
+    The book fingerprint alone is not a rollback point: a backup can carry a
+    byte-identical latest snapshot while having lost the ``proposals`` table
+    entirely, and reconciling only the book would bless it. A rollback point has
+    to be the whole database.
+    """
+    con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    try:
+        tables = [
+            r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        counts: dict[str, Any] = {}
+        for t in tables:
+            try:
+                counts[t] = con.execute(
+                    f'SELECT COUNT(*) FROM "{t}"'
+                ).fetchone()[0]
+            except sqlite3.Error as exc:
+                counts[t] = f"ERROR {exc}"
+        return {
+            "integrity": con.execute("PRAGMA quick_check(1)").fetchone()[0],
+            "table_count": len(tables),
+            "row_counts": counts,
+        }
+    finally:
+        con.close()
+
+
 def verify_backup_against_source(
     src: Path, backup: Path, user_id: str
 ) -> tuple[bool, str]:
@@ -225,10 +284,34 @@ def verify_backup_against_source(
             if src_fp.get(k) != bak_fp.get(k)
         ]
         return False, "content mismatch -> " + "; ".join(diffs)
+
+    # The book matching is necessary but not sufficient — reconcile the whole
+    # database, so selective loss outside the latest snapshot cannot pass.
+    try:
+        src_db = database_fingerprint(src)
+        bak_db = database_fingerprint(backup)
+    except (sqlite3.Error, ValueError) as exc:
+        return False, f"cannot fingerprint the whole database ({exc})"
+    if bak_db["integrity"] != "ok":
+        return False, f"backup integrity={bak_db['integrity']!r}"
+    missing = sorted(set(src_db["row_counts"]) - set(bak_db["row_counts"]))
+    if missing:
+        return False, f"backup is MISSING {len(missing)} table(s): {missing[:8]}"
+    differing = [
+        f"{t}: source={src_db['row_counts'][t]} backup={bak_db['row_counts'][t]}"
+        for t in sorted(src_db["row_counts"])
+        if src_db["row_counts"][t] != bak_db["row_counts"][t]
+    ]
+    if differing:
+        return False, (
+            f"{len(differing)} table(s) differ in row count -> "
+            + "; ".join(differing[:6])
+        )
     return True, (
         f"reconciled: snapshot {src_fp['snapshot_id']}, {src_fp['positions']} "
         f"positions / ${src_fp['total_usd_k']}k, accounts={src_fp['accounts']}, "
-        f"row_hash={src_fp['row_hash']}"
+        f"row_hash={src_fp['row_hash']}; whole-DB: {src_db['table_count']} "
+        "tables, all row counts match"
     )
 
 
@@ -238,38 +321,97 @@ def wal_sidecar_size(db_path: Path) -> int:
 
 
 def quiesce_check(db_path: Path, settle_seconds: float) -> tuple[bool, str]:
-    """Confirm no writer is active by watching the WAL over a settle window.
+    """Confirm no OTHER connection is writing, and that we can lock the file.
 
-    A perfect backup is undone if a scheduled job writes a new snapshot moments
-    after the restore, so the repair requires a quiesced database rather than
-    merely a good backup.
+    An earlier version of this compared the ``-wal`` sidecar SIZE at two
+    instants. That is not a liveness test: with ``wal_autocheckpoint`` active a
+    steady writer holds the WAL at a constant size, and a measured run saw 143
+    transactions commit across the window while the sidecar sat at exactly 4152
+    bytes, so the gate reported "quiesced" against a fully live database.
+
+    Two authoritative signals replace it:
+
+    * ``PRAGMA data_version`` — SQLite guarantees this value changes, as seen
+      from ONE held-open connection, when any OTHER connection commits. It is a
+      change detector rather than a heuristic, so we hold a single connection
+      across the window.
+    * ``BEGIN EXCLUSIVE`` — mutual exclusion rather than observation. If any
+      other connection holds the database we cannot acquire it, which also
+      proves no writer can slip in at this instant.
     """
     if settle_seconds <= 0:
-        return True, "settle window skipped (--settle-seconds 0)"
-    first = wal_sidecar_size(db_path)
-    time.sleep(settle_seconds)
-    second = wal_sidecar_size(db_path)
-    if second != first:
         return False, (
-            f"WAL changed during a {settle_seconds:g}s settle window "
-            f"({first} -> {second} bytes) — a writer is ACTIVE. Stop the "
-            "backend and scheduler first."
+            "REFUSED: --settle-seconds 0 disables the only liveness check. "
+            "A zero-length window cannot observe a writer."
         )
-    return True, f"WAL stable at {second} bytes over {settle_seconds:g}s"
+    con = sqlite3.connect(str(db_path), timeout=1.0)
+    try:
+        try:
+            first = con.execute("PRAGMA data_version").fetchone()[0]
+        except sqlite3.Error as exc:
+            return False, f"cannot read data_version ({exc}) — refusing"
+        time.sleep(settle_seconds)
+        second = con.execute("PRAGMA data_version").fetchone()[0]
+        if first != second:
+            return False, (
+                f"data_version moved {first} -> {second} during a "
+                f"{settle_seconds:g}s window: ANOTHER connection committed. "
+                "Stop the backend and scheduler first."
+            )
+        # Observation says idle; now prove exclusivity.
+        try:
+            con.execute("BEGIN EXCLUSIVE")
+            con.execute("ROLLBACK")
+        except sqlite3.OperationalError as exc:
+            return False, (
+                f"cannot acquire an EXCLUSIVE lock ({exc}): another connection "
+                "holds the database. Stop the backend and scheduler first."
+            )
+        return True, (
+            f"data_version stable at {second} over {settle_seconds:g}s and "
+            "EXCLUSIVE lock acquired — no other connection is active"
+        )
+    finally:
+        con.close()
 
 
-def checkpoint_wal(db_path: Path) -> str:
-    """Fold the WAL into the main database (gate step 2)."""
-    con = sqlite3.connect(str(db_path))
+def checkpoint_wal(db_path: Path) -> tuple[bool, str]:
+    """Fold the WAL into the main database, and report whether it COMPLETED.
+
+    ``wal_checkpoint(TRUNCATE)`` reports ``busy=1`` with ``checkpointed=0`` when
+    a reader pins the WAL. The previous version returned only a log string, so
+    the repair proceeded against a database whose WAL had not been folded in at
+    all. The result is now a pass/fail the caller must honour.
+    """
+    con = sqlite3.connect(str(db_path), timeout=5.0)
     try:
         busy, log_pages, checkpointed = con.execute(
             "PRAGMA wal_checkpoint(TRUNCATE)"
         ).fetchone()
         con.commit()
-        return (
+        remaining = wal_sidecar_size(db_path)
+        detail = (
             f"wal_checkpoint(TRUNCATE) busy={busy} log_pages={log_pages} "
-            f"checkpointed={checkpointed}; wal now {wal_sidecar_size(db_path)}B"
+            f"checkpointed={checkpointed}; wal now {remaining}B"
         )
+        if busy != 0 or remaining != 0:
+            return False, (
+                detail
+                + " — INCOMPLETE: the WAL was not folded into the main file "
+                "(a reader is holding it). Stop every other connection."
+            )
+        return True, detail
+    finally:
+        con.close()
+
+
+def db_data_version(db_path: Path) -> int | None:
+    """Snapshot of the cross-connection change counter, for after-the-fact use."""
+    con = sqlite3.connect(str(db_path), timeout=5.0)
+    try:
+        return int(con.execute("PRAGMA data_version").fetchone()[0])
+    except sqlite3.Error:
+        return None
     finally:
         con.close()
 
@@ -286,6 +428,14 @@ def main(argv: list[str] | None = None) -> int:
         "--i-really-mean-the-live-db",
         action="store_true",
         help="Required when --db resolves to (or hardlinks) the live argosy.db",
+    )
+    parser.add_argument(
+        "--staged-copy",
+        action="store_true",
+        help=(
+            "Affirm that a target named argosy.db is a throwaway copy. Use this "
+            "for rehearsals so they never share a flag with the live repair."
+        ),
     )
     parser.add_argument(
         "--apply",
@@ -322,7 +472,11 @@ def main(argv: list[str] | None = None) -> int:
     # Refuse live DB by identity (resolve/samefile), not basename alone.
     # Basename remains a belt-and-braces refusal for casual copies named
     # argosy.db that are not the live inode.
-    refusal = refuse_reason(db_path, override=args.i_really_mean_the_live_db)
+    refusal = refuse_reason(
+        db_path,
+        override=args.i_really_mean_the_live_db,
+        staged_copy=args.staged_copy,
+    )
     if refusal is not None:
         print(refusal, file=sys.stderr)
         return 2
@@ -394,6 +548,23 @@ def main(argv: list[str] | None = None) -> int:
             print("dry-run OK (pass --apply to write)")
             return 0
 
+        # On the live database the safety overrides are not available at all.
+        # An escape hatch that exists is an escape hatch that gets used at 2am.
+        if args.i_really_mean_the_live_db and (
+            args.skip_quiesce_check or args.settle_seconds <= 0
+        ):
+            print(
+                "ERROR: --skip-quiesce-check / --settle-seconds 0 are refused "
+                "for the live database. Stop the backend and scheduler.",
+                file=sys.stderr,
+            )
+            return 2
+
+        # Release the read locks our own reconnaissance SELECTs are holding,
+        # otherwise the EXCLUSIVE probe below would refuse OUR connection and
+        # the repair would deadlock against itself.
+        session.rollback()
+
         # Gate step 1 — the database must be quiesced. A correct backup does
         # not help if the scheduler writes a new snapshot right after us.
         ok, detail = quiesce_check(db_path, args.settle_seconds)
@@ -402,15 +573,28 @@ def main(argv: list[str] | None = None) -> int:
             if not args.skip_quiesce_check:
                 print(
                     "ERROR: refusing to restore against a live writer. Stop the "
-                    "backend and scheduler, or pass --skip-quiesce-check if you "
-                    "are certain (not advised for production).",
+                    "backend and scheduler first.",
                     file=sys.stderr,
                 )
                 return 1
             print("WARNING: proceeding despite an active writer (override)")
 
         # Gate step 2 — fold the WAL into the main file before copying it.
-        print(f"checkpoint: {checkpoint_wal(db_path)}")
+        checkpointed, detail = checkpoint_wal(db_path)
+        print(f"checkpoint: {detail}")
+        if not checkpointed and not args.skip_quiesce_check:
+            print(
+                "ERROR: the WAL was not fully folded in, so the backup would "
+                "not capture the database as it stands. Refusing.",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Change counter around the backup window. We do not write during the
+        # backup, so any movement here is somebody else — which would mean the
+        # backup is not a faithful rollback point for what we are about to
+        # overwrite.
+        version_before = db_data_version(db_path)
 
         # Gate step 3 — content-verified backup.
         backup = timestamped_backup_path(db_path)
@@ -424,6 +608,17 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "ERROR: backup failed content reconciliation — refusing to "
                 "restore. There is no trustworthy rollback point.",
+                file=sys.stderr,
+            )
+            return 1
+
+        version_after_backup = db_data_version(db_path)
+        if version_before is not None and version_after_backup != version_before:
+            print(
+                f"ERROR: another connection wrote during the backup "
+                f"(data_version {version_before} -> {version_after_backup}). "
+                "The backup does not match what we are about to overwrite. "
+                "Refusing.",
                 file=sys.stderr,
             )
             return 1
