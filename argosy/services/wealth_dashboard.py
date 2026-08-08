@@ -924,6 +924,13 @@ def _total_book_positions(
     supplied, merges durable unmanaged holdings. Degraded books return ``[]``
     plus a reason so callers can surface missing_reasons instead of a wrong
     HIGH-confidence number.
+
+    Valuation mode: dashboard math is **as-of the snapshot date**. Passing
+    ``today=snapshot_date`` keeps stored marks fresh relative to that as-of
+    (so seeded / historical valuations stay deterministic) while still
+    live-repricing durable restores that are absent from the snapshot.
+    Live "current money" publication (``/portfolio/snapshot``) uses real
+    ``date.today()`` via ``_apply_total_book_to_snap`` instead.
     """
     if snapshot is None:
         return [], "no portfolio snapshot"
@@ -935,11 +942,13 @@ def _total_book_positions(
         return raw if isinstance(raw, list) else [], None
     from argosy.services.holding_books import load_total_book
 
+    snap_date = getattr(snapshot, "snapshot_date", None)
     book = load_total_book(
         session,
         user_id,
         raw if isinstance(raw, list) else [],
-        snapshot_date=getattr(snapshot, "snapshot_date", None),
+        snapshot_date=snap_date,
+        today=snap_date,  # as-of snapshot; not live reprice of present marks
     )
     if book.degraded:
         return [], book.degrade_reason or "total book degraded"

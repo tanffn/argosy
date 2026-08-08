@@ -9,12 +9,18 @@ COPY. The script refuses paths named ``argosy.db`` unless
 ``--i-really-mean-the-live-db`` is passed, and always writes a sibling
 ``.bak_pre_restore`` backup before any write.
 
+Default action is DRY-RUN (resolve + verify only). Pass ``--apply`` to write.
+
 Usage (PowerShell)::
 
     $env:PYTHONIOENCODING = "utf-8"
     D:/Projects/financial-advisor/.venv/Scripts/python.exe `
       scripts/backfill_restored_holdings_book.py `
       --db path/to/argosy.copy.db
+    # then, after inspecting the dry-run output:
+    D:/Projects/financial-advisor/.venv/Scripts/python.exe `
+      scripts/backfill_restored_holdings_book.py `
+      --db path/to/argosy.copy.db --apply
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect as sa_inspect
 from sqlalchemy.orm import sessionmaker
 
 
@@ -47,9 +53,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Required when --db basename is argosy.db",
     )
     parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually write the restored snapshot (default is dry-run)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Resolve + verify only; do not write",
+        help="Deprecated alias: dry-run is the default; kept for compatibility",
     )
     parser.add_argument(
         "--skip-expected-check",
@@ -73,9 +84,12 @@ def main(argv: list[str] | None = None) -> int:
     from argosy.services.holding_books import (
         EXPECTED_RESTORED_POSITION_COUNT,
         EXPECTED_RESTORED_USD_K,
+        accounts_covered_from_positions,
         backfill_restored_holdings_book,
         resolve_prior_positions_by_account_coverage,
     )
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+    import json
 
     expected_n = None if args.skip_expected_check else EXPECTED_RESTORED_POSITION_COUNT
     expected_usd = None if args.skip_expected_check else EXPECTED_RESTORED_USD_K
@@ -87,20 +101,52 @@ def main(argv: list[str] | None = None) -> int:
     Session = sessionmaker(bind=engine)
     session = Session()
     try:
-        if args.dry_run:
-            positions = resolve_prior_positions_by_account_coverage(
-                session, args.user_id,
+        # Fail closed before any reconstruction claims success.
+        insp = sa_inspect(engine)
+        missing = [
+            t for t in ("unmanaged_holdings", "unmanaged_symbol_policy")
+            if not insp.has_table(t)
+        ]
+        if missing:
+            print(
+                "ERROR: prerequisite missing: "
+                + ", ".join(missing)
+                + " (need alembic 0097_unmanaged_holdings). "
+                "Refusing — NVDA would restore as managed.",
+                file=sys.stderr,
             )
-            n = len(positions)
-            total = sum(float(p.get("usd_value_k") or 0.0) for p in positions)
-            print(f"dry-run reconstruction: {n} positions / ${total:.1f}k")
-            if expected_n is not None and n != expected_n:
-                print(f"FAIL: expected {expected_n} positions", file=sys.stderr)
-                return 1
-            if expected_usd is not None and abs(total - expected_usd) > 0.5:
-                print(f"FAIL: expected ${expected_usd:.1f}k", file=sys.stderr)
-                return 1
-            print("dry-run OK")
+            return 1
+
+        positions = resolve_prior_positions_by_account_coverage(
+            session, args.user_id,
+        )
+        n = len(positions)
+        total = sum(float(p.get("usd_value_k") or 0.0) for p in positions)
+        accounts = sorted(accounts_covered_from_positions(positions))
+        latest = get_latest_snapshot_row(session, args.user_id)
+        latest_accounts: set[str] = set()
+        if latest is not None:
+            try:
+                cur = json.loads(latest.positions_json or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                cur = []
+            latest_accounts = set(accounts_covered_from_positions(cur))
+        accounts_carried = sorted(a for a in accounts if a not in latest_accounts)
+
+        mode = "APPLY" if args.apply and not args.dry_run else "DRY-RUN"
+        print(
+            f"{mode} reconstruction: {n} positions / ${total:.1f}k "
+            f"accounts_covered={accounts} accounts_carried={accounts_carried}"
+        )
+        if expected_n is not None and n != expected_n:
+            print(f"FAIL: expected {expected_n} positions", file=sys.stderr)
+            return 1
+        if expected_usd is not None and abs(total - expected_usd) > 0.5:
+            print(f"FAIL: expected ${expected_usd:.1f}k", file=sys.stderr)
+            return 1
+
+        if not args.apply or args.dry_run:
+            print("dry-run OK (pass --apply to write)")
             return 0
 
         backup = db_path.with_suffix(db_path.suffix + ".bak_pre_restore")
@@ -116,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(
             f"{result['status']}: {result['position_count']} positions / "
-            f"${result['total_usd_k']:.1f}k accounts={result['accounts']}"
+            f"${result['total_usd_k']:.1f}k accounts={result['accounts']} "
+            f"carried={result.get('accounts_carried')}"
         )
         if result["status"] == "restored":
             print(f"new snapshot id={result.get('snapshot_id')}")

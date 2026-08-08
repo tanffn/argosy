@@ -1943,29 +1943,42 @@ class AllocationTasksDTO(BaseModel):
     executable_tasks: list[ExecutableTaskDTO] | None = None
 
 
-def _load_current_doc_and_holdings(user_id: str):
+def _load_current_doc_and_holdings(user_id: str, db: Session | None = None):
     """(TargetAllocationDoc | None, holdings_by_symbol, cash_usd) from the user's
     current accepted plan (PlanVersion role='current') + latest snapshot.
     Best-effort; ({}, 0.0) on miss — never raises."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
     from argosy.services.allocation_engine import tradeable_holdings
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
 
-    url = str(get_settings().database_url).replace("+aiosqlite", "")
-    factory = sessionmaker(
-        bind=create_engine(url, connect_args={"check_same_thread": False}),
-        expire_on_commit=False)
-    with factory() as db:
-        pv = get_current_plan(db, user_id)
-        doc = load_plan_target_allocation(pv) if pv is not None else None
-        row = get_latest_snapshot_row(db, user_id)
-        holdings, cash = ({}, 0.0)
-        if row is not None:
-            holdings, cash = tradeable_holdings(row_to_snapshot(row))
-    return doc, holdings, cash
+    def _from_session(session: Session):
+        try:
+            pv = get_current_plan(session, user_id)
+            doc = load_plan_target_allocation(pv) if pv is not None else None
+            row = get_latest_snapshot_row(session, user_id)
+            holdings, cash = ({}, 0.0)
+            if row is not None:
+                holdings, cash = tradeable_holdings(row_to_snapshot(row))
+            return doc, holdings, cash
+        except Exception:  # noqa: BLE001 — docstring: never raises
+            return None, {}, 0.0
+
+    if db is not None:
+        return _from_session(db)
+
+    # Legacy fallback for callers that don't have a request session.
+    try:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        url = str(get_settings().database_url).replace("+aiosqlite", "")
+        factory = sessionmaker(
+            bind=create_engine(url, connect_args={"check_same_thread": False}),
+            expire_on_commit=False)
+        with factory() as own_db:
+            return _from_session(own_db)
+    except Exception:  # noqa: BLE001
+        return None, {}, 0.0
 
 
 @router.get("/allocation-tasks", response_model=AllocationTasksDTO)
@@ -2086,7 +2099,7 @@ def get_deploy_cash(
 
     from argosy.services.deployment_advisor import assemble_deployment_plan
 
-    doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
+    doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id, db)
     amount = cash_usd if cash_usd is not None else snap_cash
 
     ctx = None
