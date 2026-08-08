@@ -473,6 +473,69 @@ class Phase1Inputs:
     base_salary_usd: float | None = None
 
 
+def _resolve_snapshot_for_inputs(*, session, user_id: str, log):
+    """Resolve the snapshot phase-1 inputs are built from, or ``None``.
+
+    Prefers the DB-backed ``portfolio_snapshots`` row, falling back to walking
+    ``ARGOSY_HOME`` for the freshest TSV and writing it through so later runs
+    hit the fast path.
+
+    Extracted from ``assemble_phase1_inputs`` so the rejection branch is
+    reachable in a test without running the whole gathering pipeline.
+    """
+    from argosy.services.portfolio_snapshot_store import (
+        get_latest_snapshot_row,
+        row_to_snapshot,
+        write_through_if_changed,
+    )
+
+    snapshot = None
+    row = get_latest_snapshot_row(session, user_id)
+    if row is not None:
+        try:
+            snapshot = row_to_snapshot(row)
+            log.info(
+                "plan_synthesis.inputs.snapshot_from_db",
+                user_id=user_id, row_id=row.id,
+            )
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning(
+                "plan_synthesis.inputs.snapshot_db_hydrate_failed",
+                user_id=user_id, error=str(exc),
+            )
+            snapshot = None
+    if snapshot is not None:
+        return snapshot
+
+    tsv_path = _find_latest_tsv()
+    if tsv_path is None:
+        log.warning("plan_synthesis.inputs.no_tsv_found", user_id=user_id)
+        return None
+
+    from argosy.ingest.tsv import parse_portfolio_tsv
+    from argosy.services.holding_books import SnapshotIngestRejected
+
+    snapshot = parse_portfolio_tsv(tsv_path)
+    try:
+        write_through_if_changed(session, user_id=user_id, snapshot=snapshot)
+    except SnapshotIngestRejected as exc:
+        # The store refused this feed because it would erase accounts.
+        # Swallowing that left the REJECTED feed in `snapshot` and synthesised
+        # a plan from the truncated book — the DB was protected but the planner
+        # was not. Drop it: no snapshot is safer than a known-bad one.
+        log.error(
+            "plan_synthesis.inputs.snapshot_rejected_not_used",
+            user_id=user_id, error=str(exc), path=str(tsv_path),
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.snapshot_write_through_failed",
+            user_id=user_id, error=str(exc),
+        )
+    return snapshot
+
+
 def assemble_phase1_inputs(
     session: Session,
     *,
@@ -534,45 +597,9 @@ def assemble_phase1_inputs(
     #    warning and leaves ``tickers``/``positions_summary`` empty.
     snapshot = None
     try:
-        from argosy.services.portfolio_snapshot_store import (
-            get_latest_snapshot_row,
-            row_to_snapshot,
-            write_through_if_changed,
+        snapshot = _resolve_snapshot_for_inputs(
+            session=session, user_id=user_id, log=log,
         )
-
-        row = get_latest_snapshot_row(session, user_id)
-        if row is not None:
-            try:
-                snapshot = row_to_snapshot(row)
-                log.info(
-                    "plan_synthesis.inputs.snapshot_from_db",
-                    user_id=user_id, row_id=row.id,
-                )
-            except Exception as exc:  # noqa: BLE001 - defensive
-                log.warning(
-                    "plan_synthesis.inputs.snapshot_db_hydrate_failed",
-                    user_id=user_id, error=str(exc),
-                )
-                snapshot = None
-        if snapshot is None:
-            tsv_path = _find_latest_tsv()
-            if tsv_path is not None:
-                from argosy.ingest.tsv import parse_portfolio_tsv
-
-                snapshot = parse_portfolio_tsv(tsv_path)
-                try:
-                    write_through_if_changed(
-                        session, user_id=user_id, snapshot=snapshot
-                    )
-                except Exception as exc:  # noqa: BLE001 - defensive
-                    log.warning(
-                        "plan_synthesis.inputs.snapshot_write_through_failed",
-                        user_id=user_id, error=str(exc),
-                    )
-            else:
-                log.warning(
-                    "plan_synthesis.inputs.no_tsv_found", user_id=user_id
-                )
         if snapshot is not None:
             # PortfolioPosition uses `.symbol` (not `.ticker`); filter out the
             # cash sentinel "-" and any other non-ticker values.

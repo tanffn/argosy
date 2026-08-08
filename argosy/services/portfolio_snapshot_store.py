@@ -34,6 +34,7 @@ Ingest semantics (stream D repair):
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -271,6 +272,7 @@ def persist_snapshot(
             "accounts_covered": list(merge.accounts_covered),
             "accounts_carried": list(merge.accounts_carried),
             "feed_position_count": len(incoming_positions),
+            "feed_row_hash": feed_content_digest(incoming_positions),
             "merged_position_count": len(stamped),
         }),
         fx_usd_nis=snapshot.fx_usd_nis,
@@ -376,6 +378,25 @@ def persist_snapshot(
         session.flush()
     session.refresh(row)
     return row
+
+
+def feed_content_digest(positions: Any) -> str:
+    """Order-independent digest of a FEED's economic content.
+
+    Covers symbol, account, share count, value and price, so a re-export of the
+    same file with corrected numbers digests differently even though its path,
+    date and position count are unchanged. Accepts models or dicts because the
+    ingest paths carry both.
+    """
+    parts: list[str] = []
+    for p in positions or []:
+        d = p.model_dump() if hasattr(p, "model_dump") else dict(p)
+        parts.append(
+            f"{str(d.get('symbol') or '').strip()}|"
+            f"{str(d.get('location') or '').strip().lower()}|"
+            f"{d.get('shares')}|{d.get('usd_value_k')}|{d.get('current_price')}"
+        )
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
 
 
 # Re-export for callers that need to catch the guard.
@@ -531,9 +552,18 @@ def latest_matches_snapshot(
 
     Used by the write-through path so we don't bloat ``portfolio_snapshots``
     with duplicate rows when ``/api/portfolio/snapshot`` is hit repeatedly
-    against the same source TSV. The match criterion is ``source_path`` +
-    ``snapshot_date`` + position count + total USD value — strong enough
-    to detect "same parse output" but cheap (no JSON deep-compare).
+    against the same source TSV.
+
+    Matching on ``source_path`` + ``snapshot_date`` + position count alone was
+    content-blind: a corrected re-export of the same file on the same day with
+    the same number of rows but different shares or prices looked identical, so
+    the real change was silently dropped and the book kept stale values. The
+    criterion is now a digest of the feed's economic content.
+
+    A row without a stored digest (written before this field, or by the restore
+    path, which is not a feed) is deliberately treated as NOT a match. That
+    errs toward writing, and a write is guarded by the destructive-ingest
+    checks in ``persist_snapshot``; erring the other way drops money silently.
     """
     row = get_latest_snapshot_row(session, user_id)
     if row is None:
@@ -542,25 +572,15 @@ def latest_matches_snapshot(
         return False
     if row.snapshot_date != snapshot.snapshot_date:
         return False
-    # Position-count + totals proxy for content equality. JSON deep-compare
-    # would be defensible but adds CPU cost for the hot path with no
-    # benefit — a TSV with the same source_path + date + position count +
-    # total value is the same parse output for our purposes.
     try:
-        positions = json.loads(row.positions_json or "[]")
-        # Compare against FEED size stored in totals when present; else merged.
         totals = json.loads(row.totals_json or "{}")
-        feed_n = totals.get("feed_position_count")
-        if feed_n is not None:
-            if int(feed_n) != len(snapshot.positions):
-                return False
-        elif len(positions) != len(snapshot.positions):
-            return False
-        # Don't compare total_usd_value_k against feed total — merged book
-        # totals diverge from the raw feed when accounts are carried.
     except (ValueError, TypeError):
         return False
-    return True
+    stored_digest = totals.get("feed_row_hash")
+    if not stored_digest:
+        return False
+    # Subsumes the position count: a differing row set digests differently.
+    return bool(stored_digest == feed_content_digest(snapshot.positions))
 
 
 def write_through_if_changed(
@@ -596,6 +616,7 @@ def write_through_if_changed(
 __all__ = [
     "SnapshotIngestRejected",
     "dedup_nvda_sale_dicts",
+    "feed_content_digest",
     "get_latest_snapshot_row",
     "latest_matches_snapshot",
     "persist_snapshot",

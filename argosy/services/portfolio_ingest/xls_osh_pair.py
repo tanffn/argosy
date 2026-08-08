@@ -360,6 +360,8 @@ def _write_through_resolved_snapshot(
     ingest verifies the armed expectations"). Returns the closed-loop
     reconcile lines (empty on no-op / nothing armed) so the caller surfaces
     them in the resolution's parse_warnings."""
+    from argosy.services.holding_books import SnapshotIngestRejected
+
     row = None
     try:
         from argosy.ingest.tsv import parse_portfolio_tsv
@@ -371,6 +373,22 @@ def _write_through_resolved_snapshot(
         row = write_through_if_changed(
             db, user_id=user_id, snapshot=snap, commit=commit,
         )
+    except SnapshotIngestRejected as exc:
+        # A feed that would erase an account must never fail quietly. Swallowed
+        # into the generic warning below, this is how a Leumi-only import
+        # replaced the whole book and $2.4M went missing unnoticed. The pair
+        # itself stays durable; what changes is that the operator LEARNS the
+        # book was not updated, via parse_warnings on the resolution.
+        _log.error(
+            "portfolio_snapshot.pair_write_through_rejected",
+            extra={"path": str(tsv_path), "error": str(exc)},
+        )
+        return [
+            "SNAPSHOT_INGEST_REJECTED — the book was NOT updated. "
+            f"{exc} "
+            "The uploaded files are stored. Re-upload a feed covering every "
+            "account, or apply an explicit operator override."
+        ]
     except Exception as exc:  # noqa: BLE001 — additive; never break the pair
         _log.warning(
             "portfolio_snapshot.pair_write_through_failed",
