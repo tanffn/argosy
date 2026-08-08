@@ -27,9 +27,12 @@ Usage (PowerShell)::
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -88,13 +91,33 @@ def paths_refer_to_same_file(a: Path, b: Path) -> bool:
 def is_live_db_path(db_path: Path) -> bool:
     """True if ``db_path`` is (or hardlinks/aliases to) a known live argosy.db.
 
-    Filename alone is not enough — a hardlink named ``portfolio.copy.db``
-    that points at the live file must also be refused.
+    Identity ONLY — never the basename. A hardlink named ``portfolio.copy.db``
+    pointing at the live file must be refused, and equally a legitimate staged
+    copy at ``<stage>/db/argosy.db`` must NOT be. Refusing safe copies by name
+    forces operators to pass ``--i-really-mean-the-live-db`` during rehearsals,
+    which makes a rehearsal indistinguishable from the production run and
+    builds exactly the habit that loses money.
     """
     for live in live_db_candidates():
         if paths_refer_to_same_file(db_path, live):
             return True
     return False
+
+
+def refuse_reason(db_path: Path, *, override: bool) -> str | None:
+    """The single decision for whether this tool may touch ``db_path``.
+
+    Kept as one function so the refusal is testable at the layer that actually
+    decides it — a test asserting on ``is_live_db_path`` alone would still pass
+    if a basename check were reintroduced here.
+    """
+    if is_live_db_path(db_path) and not override:
+        return (
+            f"REFUSING: {db_path} IS the live database (resolved path / "
+            "samefile identity match). Pass --i-really-mean-the-live-db only "
+            "for the scheduled production repair; rehearse on a copy instead."
+        )
+    return None
 
 
 def sqlite_consistent_backup(src: Path, dst: Path) -> None:
@@ -130,6 +153,127 @@ def timestamped_backup_path(db_path: Path, *, now: datetime | None = None) -> Pa
     return db_path.with_name(f"{db_path.name}.bak_pre_restore.{stamp}")
 
 
+def book_fingerprint(db_file: Path, user_id: str) -> dict:
+    """Content fingerprint of the latest snapshot: counts, money, row-hash.
+
+    ``PRAGMA integrity_check`` is NOT a backup check. A ``shutil.copy2`` of a
+    WAL-mode database can be a 4 KB empty-header file whose schema still lives
+    in the ``-wal`` sibling, and it reports ``integrity_check = ok``. A
+    structural check blesses garbage, so a backup is only trustworthy when its
+    CONTENT reconciles against the source.
+    """
+    con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    try:
+        row = con.execute(
+            "SELECT id, positions_json FROM portfolio_snapshots "
+            "WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return {"snapshot_id": None, "positions": 0, "total_usd_k": 0.0,
+                    "accounts": {}, "row_hash": "empty"}
+        snapshot_id, positions_json = row
+        positions = json.loads(positions_json or "[]")
+        per_account: dict[str, float] = {}
+        for p in positions:
+            key = str(p.get("location") or "?").lower()
+            per_account[key] = per_account.get(key, 0.0) + float(
+                p.get("usd_value_k") or 0.0
+            )
+        parts = sorted(
+            f"{str(p.get('symbol') or '').strip()}|"
+            f"{str(p.get('location') or '').lower()}|"
+            f"{p.get('shares')}|{p.get('usd_value_k')}"
+            for p in positions
+        )
+        digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+        return {
+            "snapshot_id": snapshot_id,
+            "positions": len(positions),
+            "total_usd_k": round(sum(per_account.values()), 1),
+            "accounts": {k: round(v, 1) for k, v in sorted(per_account.items())},
+            "row_hash": digest,
+        }
+    finally:
+        con.close()
+
+
+def verify_backup_against_source(
+    src: Path, backup: Path, user_id: str
+) -> tuple[bool, str]:
+    """Reconcile a backup's CONTENT against its source. Also assert standalone."""
+    orphan_siblings = [
+        str(p) for p in (Path(str(backup) + "-wal"), Path(str(backup) + "-shm"))
+        if p.exists()
+    ]
+    if orphan_siblings:
+        return False, f"backup is not standalone; needs {orphan_siblings}"
+    try:
+        src_fp = book_fingerprint(src, user_id)
+    except (sqlite3.Error, ValueError) as exc:
+        return False, f"cannot fingerprint SOURCE ({exc}) — aborting"
+    # An unreadable backup is a FAILED backup, not a crash: a copy2 artefact can
+    # be missing the schema entirely, which raises rather than mismatching.
+    try:
+        bak_fp = book_fingerprint(backup, user_id)
+    except (sqlite3.Error, ValueError) as exc:
+        return False, f"backup is unreadable ({exc}) — no rollback point"
+    if src_fp != bak_fp:
+        diffs = [
+            f"{k}: source={src_fp.get(k)!r} backup={bak_fp.get(k)!r}"
+            for k in sorted(set(src_fp) | set(bak_fp))
+            if src_fp.get(k) != bak_fp.get(k)
+        ]
+        return False, "content mismatch -> " + "; ".join(diffs)
+    return True, (
+        f"reconciled: snapshot {src_fp['snapshot_id']}, {src_fp['positions']} "
+        f"positions / ${src_fp['total_usd_k']}k, accounts={src_fp['accounts']}, "
+        f"row_hash={src_fp['row_hash']}"
+    )
+
+
+def wal_sidecar_size(db_path: Path) -> int:
+    sidecar = Path(str(db_path) + "-wal")
+    return sidecar.stat().st_size if sidecar.exists() else 0
+
+
+def quiesce_check(db_path: Path, settle_seconds: float) -> tuple[bool, str]:
+    """Confirm no writer is active by watching the WAL over a settle window.
+
+    A perfect backup is undone if a scheduled job writes a new snapshot moments
+    after the restore, so the repair requires a quiesced database rather than
+    merely a good backup.
+    """
+    if settle_seconds <= 0:
+        return True, "settle window skipped (--settle-seconds 0)"
+    first = wal_sidecar_size(db_path)
+    time.sleep(settle_seconds)
+    second = wal_sidecar_size(db_path)
+    if second != first:
+        return False, (
+            f"WAL changed during a {settle_seconds:g}s settle window "
+            f"({first} -> {second} bytes) — a writer is ACTIVE. Stop the "
+            "backend and scheduler first."
+        )
+    return True, f"WAL stable at {second} bytes over {settle_seconds:g}s"
+
+
+def checkpoint_wal(db_path: Path) -> str:
+    """Fold the WAL into the main database (gate step 2)."""
+    con = sqlite3.connect(str(db_path))
+    try:
+        busy, log_pages, checkpointed = con.execute(
+            "PRAGMA wal_checkpoint(TRUNCATE)"
+        ).fetchone()
+        con.commit()
+        return (
+            f"wal_checkpoint(TRUNCATE) busy={busy} log_pages={log_pages} "
+            f"checkpointed={checkpointed}; wal now {wal_sidecar_size(db_path)}B"
+        )
+    finally:
+        con.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -158,6 +302,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not assert the Ariel 46 / $4047.6k reconciliation targets",
     )
+    parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=5.0,
+        help="Watch the WAL this long to confirm no writer is active (0 skips)",
+    )
+    parser.add_argument(
+        "--skip-quiesce-check",
+        action="store_true",
+        help="Proceed even if a writer appears active (not advised)",
+    )
     args = parser.parse_args(argv)
 
     db_path = Path(args.db).resolve()
@@ -167,16 +322,9 @@ def main(argv: list[str] | None = None) -> int:
     # Refuse live DB by identity (resolve/samefile), not basename alone.
     # Basename remains a belt-and-braces refusal for casual copies named
     # argosy.db that are not the live inode.
-    if (
-        (is_live_db_path(db_path) or db_path.name == "argosy.db")
-        and not args.i_really_mean_the_live_db
-    ):
-        print(
-            "REFUSING to touch the live argosy.db (resolved path / samefile "
-            "match or basename argosy.db) without --i-really-mean-the-live-db. "
-            "Copy the DB first.",
-            file=sys.stderr,
-        )
+    refusal = refuse_reason(db_path, override=args.i_really_mean_the_live_db)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
         return 2
 
     from argosy.services.holding_books import (
@@ -187,7 +335,6 @@ def main(argv: list[str] | None = None) -> int:
         resolve_prior_positions_by_account_coverage,
     )
     from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
-    import json
 
     expected_n = None if args.skip_expected_check else EXPECTED_RESTORED_POSITION_COUNT
     expected_usd = None if args.skip_expected_check else EXPECTED_RESTORED_USD_K
@@ -247,9 +394,39 @@ def main(argv: list[str] | None = None) -> int:
             print("dry-run OK (pass --apply to write)")
             return 0
 
+        # Gate step 1 — the database must be quiesced. A correct backup does
+        # not help if the scheduler writes a new snapshot right after us.
+        ok, detail = quiesce_check(db_path, args.settle_seconds)
+        print(f"quiesce: {detail}")
+        if not ok:
+            if not args.skip_quiesce_check:
+                print(
+                    "ERROR: refusing to restore against a live writer. Stop the "
+                    "backend and scheduler, or pass --skip-quiesce-check if you "
+                    "are certain (not advised for production).",
+                    file=sys.stderr,
+                )
+                return 1
+            print("WARNING: proceeding despite an active writer (override)")
+
+        # Gate step 2 — fold the WAL into the main file before copying it.
+        print(f"checkpoint: {checkpoint_wal(db_path)}")
+
+        # Gate step 3 — content-verified backup.
         backup = timestamped_backup_path(db_path)
         sqlite_consistent_backup(db_path, backup)
+        verified, detail = verify_backup_against_source(
+            db_path, backup, args.user_id
+        )
         print(f"backup written: {backup}")
+        print(f"backup verification: {detail}")
+        if not verified:
+            print(
+                "ERROR: backup failed content reconciliation — refusing to "
+                "restore. There is no trustworthy rollback point.",
+                file=sys.stderr,
+            )
+            return 1
 
         result = backfill_restored_holdings_book(
             session,
