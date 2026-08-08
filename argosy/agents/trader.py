@@ -419,45 +419,29 @@ class TraderAgent(BaseAgent[TraderProposal]):
                 f"{TraderProposal.model_json_schema()}\n"
             )
 
-        report_blocks: list[str] = []
-        for r in analyst_reports:
-            role = r.get("agent_role") or r.get("role") or "?"
-            payload = {k: v for k, v in r.items() if k not in ("agent_role", "role")}
-            report_blocks.append(f"### Analyst: {role}\n{payload}")
+        from argosy.agents.trader_prompt import assemble_trader_user_prompt
 
-        premise_block = ""
         ps = premise_status or (
             debate_outcome.get("premise_status")
             if isinstance(debate_outcome, dict) else None
         )
-        if ps:
-            from argosy.agents.researcher import _render_premise_block
-            premise_block = _render_premise_block(ps)
-        disagreements = []
+        disagreements: list[str] = []
         if isinstance(debate_outcome, dict):
-            disagreements = list(debate_outcome.get("premise_disagreements") or [])
-        disagreement_block = ""
-        if disagreements:
-            disagreement_block = (
-                "PREMISE DISAGREEMENTS (structural — do not ignore):\n"
-                + "\n".join(f"  - {d}" for d in disagreements)
-                + "\n\n"
+            disagreements = list(
+                debate_outcome.get("premise_disagreements") or []
             )
 
-        user = (
-            f"Tier: {tier}\n"
-            f"Ticker: {ticker or '(infer from analyst reports if unambiguous)'}\n\n"
-            f"{premise_block}"
-            f"{disagreement_block}"
-            "USER CONSTRAINTS:\n"
-            f"{user_constraints}\n\n"
-            "POSITIONS SNAPSHOT:\n"
-            f"{positions_snapshot}\n\n"
-            "ANALYST REPORTS:\n\n"
-            + "\n\n".join(report_blocks)
-            + "\n\nDEBATE OUTCOME:\n"
-            f"{debate_outcome}\n\n"
-            "Produce the TraderProposal JSON now."
+        # Single choke point: all agent-authored text is escaped inside
+        # assemble_trader_user_prompt. Do not concatenate agent fields here.
+        user = assemble_trader_user_prompt(
+            tier=tier,
+            ticker=ticker or "",
+            premise_status=ps if isinstance(ps, dict) else None,
+            disagreements=disagreements,
+            user_constraints=user_constraints,
+            positions_snapshot=positions_snapshot,
+            analyst_reports=list(analyst_reports or []),
+            debate_outcome=debate_outcome,
         )
         return system, user
 

@@ -141,13 +141,13 @@ PREMISE_CHECK_CONFIG = FleetRetryConfig(
     retries=1, backoff_base_s=20.0, total_wall_clock_s=240.0,
 )
 
-#: Bear independent-retrieval enforcement. Structural miss (zero tool URLs)
-#: is retryable once with short backoff, then loud green_light block.
-#: Not a judgment gate — "did WebSearch run?" is a mechanical fact.
-#: Short backoff: this is a fresh-agent re-ask, not an exit-1 burst span.
+#: Researcher independent-retrieval enforcement (bull + bear). Structural
+#: miss (no substantive point grounded in a retrieved URL) is retryable
+#: once with short backoff, then loud integrity block. Not a judgment gate.
 BEAR_INDEPENDENCE_CONFIG = FleetRetryConfig(
     retries=1, backoff_base_s=0.5, backoff_cap_s=2.0, total_wall_clock_s=120.0,
 )
+RESEARCHER_INDEPENDENCE_CONFIG = BEAR_INDEPENDENCE_CONFIG
 
 
 # The exit-1 fingerprint, mirrored from BaseAgent's in-call detector: word-bounded
@@ -279,7 +279,11 @@ async def call_reliably_async(
             )
             await sleep(delay)
 
-    if is_retryable_fleet_error(last_exc):
+    if is_transient_fleet_error(last_exc):
+        # Only infrastructure flakes trip the breaker. Structural integrity
+        # misses (e.g. bear produced no grounded independent point) are
+        # retryable then degrade loudly — they must NOT open the circuit
+        # and masquerade subsequent runs as infrastructure_degraded.
         breaker.record_failure()
     assert last_exc is not None
     raise last_exc
@@ -356,7 +360,7 @@ def call_reliably_sync(
             )
             sleep(delay)
 
-    if is_retryable_fleet_error(last_exc):
+    if is_transient_fleet_error(last_exc):
         breaker.record_failure()
     assert last_exc is not None
     raise last_exc
@@ -367,6 +371,7 @@ __all__ = [
     "CONSULT_ANALYST_CONFIG",
     "DEPLOY_REVIEWER_CONFIG",
     "PREMISE_CHECK_CONFIG",
+    "RESEARCHER_INDEPENDENCE_CONFIG",
     "CircuitBreaker",
     "FleetCallTimeout",
     "FleetCallUnavailable",

@@ -85,6 +85,80 @@ def researcher_turn_dump(report: AgentReport) -> dict:
     }
 
 
+def _integrity_block_if_any(
+    *,
+    premise_unverified: bool,
+    premise_unverified_reason: str,
+    bear_independence_unverified: bool,
+    bear_independence_unverified_reason: str,
+    bull_independence_unverified: bool = False,
+    bull_independence_unverified_reason: str = "",
+    infrastructure_degraded: bool = False,
+    infrastructure_degraded_reason: str = "",
+) -> tuple[str, str] | None:
+    """Return ``(blocked_by, reason)`` for a pipeline-integrity failure.
+
+    Distinct from considered ``trader_hold``: the fleet could not see / could
+    not complete a mandatory mechanical check. Priority: infrastructure →
+    premise → bear independence → bull independence.
+    """
+    if not (
+        premise_unverified
+        or bear_independence_unverified
+        or bull_independence_unverified
+        or infrastructure_degraded
+    ):
+        return None
+    if infrastructure_degraded:
+        return (
+            "infrastructure_degraded",
+            "Fleet infrastructure degraded — not a considered decision. "
+            + (infrastructure_degraded_reason or "circuit breaker open"),
+        )
+    if premise_unverified and (
+        bear_independence_unverified or bull_independence_unverified
+    ):
+        extra = "; ".join(
+            r for r in (
+                bear_independence_unverified_reason,
+                bull_independence_unverified_reason,
+            ) if r
+        )
+        return (
+            "premise_unverified",
+            "Premise check and researcher independence unverified — "
+            "integrity block (not a considered HOLD). "
+            + (premise_unverified_reason or "")
+            + (f"; {extra}" if extra else ""),
+        )
+    if premise_unverified:
+        return (
+            "premise_unverified",
+            "Premise check unverified — integrity block (not a considered "
+            "HOLD). "
+            + (premise_unverified_reason or "see decision_runs.notes_json"),
+        )
+    if bear_independence_unverified:
+        return (
+            "bear_independence_unverified",
+            "Bear independence unverified — integrity block (not a "
+            "considered HOLD). "
+            + (
+                bear_independence_unverified_reason
+                or "see decision_runs.notes_json"
+            ),
+        )
+    return (
+        "bull_independence_unverified",
+        "Bull independence unverified — integrity block (not a "
+        "considered HOLD). "
+        + (
+            bull_independence_unverified_reason
+            or "see decision_runs.notes_json"
+        ),
+    )
+
+
 @dataclass
 class ApprovedProposal:
     """Fund manager green-lit. Flow returns this and a `Proposal` row."""
@@ -106,7 +180,7 @@ class BlockedProposal:
     # and the recommendation is to wait; INSUFFICIENT_DATA means the
     # analysis couldn't complete because load-bearing inputs were
     # missing or flagged-unusable AFTER remediation.
-    blocked_by: str  # 'fund_manager' | 'risk_team' | 'plan_critique_red' | 'trader_hold' | 'trader_insufficient_data' | 'premise_unverified' | 'bear_independence_unverified' | 'sleeve_fit_invalid'
+    blocked_by: str  # 'fund_manager' | 'risk_team' | 'plan_critique_red' | 'trader_hold' | 'trader_insufficient_data' | 'premise_unverified' | 'bear_independence_unverified' | 'bull_independence_unverified' | 'infrastructure_degraded' | 'sleeve_fit_invalid'
     fund_manager: FundManagerDecision | None = None
     risk_outcome: RiskOutcome | None = None
     debate_outcome: DebateOutcome | None = None
@@ -416,14 +490,18 @@ class DecisionFlow:
         premise_unverified_reason = ""
         bear_independence_unverified = False
         bear_independence_unverified_reason = ""
+        bull_independence_unverified = False
+        bull_independence_unverified_reason = ""
+        infrastructure_degraded = False
+        infrastructure_degraded_reason = ""
         if tier in (Tier.T1, Tier.T2, Tier.T3):
             premise_started_at = clock()
+            from argosy.services.fleet_reliability import (
+                PREMISE_CHECK_CONFIG,
+                FleetCallUnavailable,
+                call_reliably_async,
+            )
             try:
-                from argosy.services.fleet_reliability import (
-                    PREMISE_CHECK_CONFIG,
-                    call_reliably_async,
-                )
-
                 async def _premise_attempt():
                     return await self._premise_check().run(
                         ticker=ticker,
@@ -453,6 +531,45 @@ class DecisionFlow:
                         phase="premise_check", run_id=decision_run_id,
                         error=str(exc),
                     )
+            except FleetCallUnavailable as exc:
+                infrastructure_degraded = True
+                infrastructure_degraded_reason = (
+                    f"premise_check circuit open: {exc}"
+                )
+                premise_unverified = True
+                premise_unverified_reason = infrastructure_degraded_reason
+                _log.warning(
+                    "decision_flow.infrastructure_degraded",
+                    run_id=decision_run_id,
+                    ticker=ticker,
+                    scope="premise_check",
+                    error=str(exc)[:300],
+                )
+                premise_status = {
+                    "status": "unverified",
+                    "reason": premise_unverified_reason,
+                    "ticker": ticker,
+                    "premises": [],
+                    "summary": (
+                        "Premise check blocked — fleet infrastructure "
+                        "degraded (circuit open). Not a considered decision."
+                    ),
+                    "confidence": "LOW",
+                    "cited_sources": [],
+                    "blocks_green_light": True,
+                    "infrastructure_degraded": True,
+                }
+                await self._merge_decision_run_notes(
+                    decision_run_id,
+                    {
+                        "premise_check": {
+                            "status": "unverified",
+                            "reason": premise_unverified_reason,
+                            "blocks_green_light": True,
+                            "infrastructure_degraded": True,
+                        }
+                    },
+                )
             except Exception as exc:  # noqa: BLE001 — degrade, don't abort
                 premise_unverified = True
                 premise_unverified_reason = (
@@ -506,45 +623,31 @@ class DecisionFlow:
 
             debate_started_at = clock()
             n_rounds = self._rounds_for(tier)
-            for r_idx in range(1, n_rounds + 1):
-                bull_agent = self._bull()
-                prior = _interleave(bull_turns, bear_turns)
-                bull_turn = await bull_agent.run(
-                    analyst_reports=analyst_dicts,
-                    prior_rounds=prior,
-                    round_index=r_idx,
-                    n_max=n_rounds,
-                    ticker=ticker,
-                    premise_status=premise_status,
-                )
-                bull_ids = await self._persist_agent_reports(
-                    decision_run_id, [bull_turn]
-                )
-                debate_ids.extend(bull_ids)
-                for bid in bull_ids:
-                    debate_side[bid] = "bull"
-                    debate_round[bid] = r_idx
-                bull_turns.append(researcher_turn_dump(bull_turn))
+            from argosy.agents.researcher import (
+                turn_has_grounded_independent_point,
+            )
+            from argosy.services.fleet_reliability import (
+                RESEARCHER_INDEPENDENCE_CONFIG,
+                FleetCallUnavailable,
+                FleetStructuralRetryError,
+                call_reliably_async,
+            )
 
-                bear_agent = self._bear()
-                prior = _interleave(bull_turns, bear_turns)
-                # Independent retrieval is mechanical integrity, not judgment:
-                # prompt-mandatory WebSearch is unenforced unless we check
-                # tool_retrieved_urls. Retry via reliability wrapper; if still
-                # empty, degrade loudly and block green_light (TRLV class).
-                from argosy.agents.researcher import (
-                    bear_turn_has_independent_retrieval,
-                )
-                from argosy.services.fleet_reliability import (
-                    BEAR_INDEPENDENCE_CONFIG,
-                    FleetStructuralRetryError,
-                    call_reliably_async,
-                )
+            async def _run_side_with_independence(
+                *,
+                side: str,
+                factory,
+                prior: list,
+                r_idx: int,
+            ):
+                """Retry until a substantive grounded-independent point exists.
 
-                _bear_last: list = []
+                Mechanical integrity: unrelated retrievals do not count.
+                """
+                last: list = []
 
-                async def _bear_attempt():
-                    agent = self._bear()
+                async def _attempt():
+                    agent = factory()
                     report = await agent.run(
                         analyst_reports=analyst_dicts,
                         prior_rounds=prior,
@@ -554,31 +657,162 @@ class DecisionFlow:
                         premise_status=premise_status,
                     )
                     dump = researcher_turn_dump(report)
-                    _bear_last.clear()
-                    _bear_last.append(report)
-                    if not bear_turn_has_independent_retrieval(dump):
+                    last.clear()
+                    last.append(report)
+                    if not turn_has_grounded_independent_point(dump):
                         raise FleetStructuralRetryError(
-                            f"bear_researcher round {r_idx}: no independent "
-                            "retrieval (tool_retrieved_urls empty) — "
-                            "independence is mandatory, not prompt-only"
+                            f"{side}_researcher round {r_idx}: no substantive "
+                            "point grounded in an independently retrieved "
+                            "source — independence requires a retrieved cite "
+                            "on a real point, not merely any retrieval"
                         )
                     return report
 
                 try:
-                    bear_turn = await call_reliably_async(
-                        _bear_attempt,
-                        scope="bear_independence",
-                        config=BEAR_INDEPENDENCE_CONFIG,
+                    report = await call_reliably_async(
+                        _attempt,
+                        scope=f"{side}_independence",
+                        config=RESEARCHER_INDEPENDENCE_CONFIG,
+                    )
+                    return report, None, None
+                except FleetCallUnavailable as exc:
+                    # Circuit open — try one non-enforced call for transcript
+                    # if we have nothing yet; still mark infrastructure.
+                    if not last:
+                        try:
+                            agent = factory()
+                            last.append(
+                                await agent.run(
+                                    analyst_reports=analyst_dicts,
+                                    prior_rounds=prior,
+                                    round_index=r_idx,
+                                    n_max=n_rounds,
+                                    ticker=ticker,
+                                    premise_status=premise_status,
+                                )
+                            )
+                        except Exception:  # noqa: BLE001 — best-effort transcript
+                            pass
+                    return (
+                        last[0] if last else None,
+                        "infrastructure",
+                        f"{side}_independence circuit open: {exc}",
                     )
                 except FleetStructuralRetryError as exc:
+                    # Keep last attempt for transcript when present.
+                    if not last:
+                        # Absolute miss — one non-enforced call for transcript.
+                        agent = factory()
+                        last.append(
+                            await agent.run(
+                                analyst_reports=analyst_dicts,
+                                prior_rounds=prior,
+                                round_index=r_idx,
+                                n_max=n_rounds,
+                                ticker=ticker,
+                                premise_status=premise_status,
+                            )
+                        )
+                    return last[0], "independence", str(exc)
+
+            for r_idx in range(1, n_rounds + 1):
+                prior = _interleave(bull_turns, bear_turns)
+                bull_turn, bull_fail_kind, bull_fail_reason = (
+                    await _run_side_with_independence(
+                        side="bull",
+                        factory=self._bull,
+                        prior=prior,
+                        r_idx=r_idx,
+                    )
+                )
+                if bull_fail_kind == "infrastructure":
+                    infrastructure_degraded = True
+                    infrastructure_degraded_reason = bull_fail_reason or ""
+                    bull_independence_unverified = True
+                    bull_independence_unverified_reason = (
+                        bull_fail_reason or ""
+                    )
+                elif bull_fail_kind == "independence":
+                    bull_independence_unverified = True
+                    bull_independence_unverified_reason = (
+                        bull_fail_reason or ""
+                    )
+                    _log.warning(
+                        "decision_flow.bull_independence_unverified",
+                        run_id=decision_run_id,
+                        ticker=ticker,
+                        round=r_idx,
+                        error=(bull_fail_reason or "")[:300],
+                    )
+                    await self._merge_decision_run_notes(
+                        decision_run_id,
+                        {
+                            "bull_independence": {
+                                "status": "unverified",
+                                "reason": bull_independence_unverified_reason,
+                                "blocks_green_light": True,
+                                "round": r_idx,
+                            }
+                        },
+                    )
+                if bull_turn is None:
+                    # Should not happen; skip persist if absolute empty.
+                    continue
+                bull_ids = await self._persist_agent_reports(
+                    decision_run_id, [bull_turn]
+                )
+                debate_ids.extend(bull_ids)
+                for bid in bull_ids:
+                    debate_side[bid] = "bull"
+                    debate_round[bid] = r_idx
+                bull_turns.append(researcher_turn_dump(bull_turn))
+
+                prior = _interleave(bull_turns, bear_turns)
+                bear_turn, bear_fail_kind, bear_fail_reason = (
+                    await _run_side_with_independence(
+                        side="bear",
+                        factory=self._bear,
+                        prior=prior,
+                        r_idx=r_idx,
+                    )
+                )
+                if bear_fail_kind == "infrastructure":
+                    infrastructure_degraded = True
+                    infrastructure_degraded_reason = bear_fail_reason or ""
                     bear_independence_unverified = True
-                    bear_independence_unverified_reason = str(exc)
+                    bear_independence_unverified_reason = (
+                        bear_fail_reason or ""
+                    )
+                    _log.warning(
+                        "decision_flow.infrastructure_degraded",
+                        run_id=decision_run_id,
+                        ticker=ticker,
+                        scope="bear_independence",
+                        error=(bear_fail_reason or "")[:300],
+                    )
+                    await self._merge_decision_run_notes(
+                        decision_run_id,
+                        {
+                            "bear_independence": {
+                                "status": "unverified",
+                                "reason": bear_independence_unverified_reason,
+                                "blocks_green_light": True,
+                                "infrastructure_degraded": True,
+                                "round": r_idx,
+                            }
+                        },
+                    )
+                elif bear_fail_kind == "independence":
+                    bear_independence_unverified = True
+                    bear_independence_unverified_reason = (
+                        bear_fail_reason or ""
+                    )
                     _log.warning(
                         "decision_flow.bear_independence_unverified",
                         run_id=decision_run_id,
                         ticker=ticker,
                         round=r_idx,
-                        error=str(exc)[:300],
+                        error=(bear_fail_reason or "")[:300],
                     )
                     await self._merge_decision_run_notes(
                         decision_run_id,
@@ -591,20 +825,8 @@ class DecisionFlow:
                             }
                         },
                     )
-                    # Keep last attempt for transcript inspection when present.
-                    if _bear_last:
-                        bear_turn = _bear_last[0]
-                    else:
-                        # Absolute miss — fall back to a single non-enforced call
-                        # so debate transcript is not empty.
-                        bear_turn = await bear_agent.run(
-                            analyst_reports=analyst_dicts,
-                            prior_rounds=prior,
-                            round_index=r_idx,
-                            n_max=n_rounds,
-                            ticker=ticker,
-                            premise_status=premise_status,
-                        )
+                if bear_turn is None:
+                    continue
                 bear_ids = await self._persist_agent_reports(
                     decision_run_id, [bear_turn]
                 )
@@ -734,6 +956,33 @@ class DecisionFlow:
             )
 
         if trader_proposal.action == "hold":
+            # Integrity failures are NOT considered HOLDs. A pipeline that
+            # could not see (premise/independence/circuit) must not read as
+            # "the fleet chose not to act." Check BEFORE recording HOLD.
+            integrity_block = _integrity_block_if_any(
+                premise_unverified=premise_unverified,
+                premise_unverified_reason=premise_unverified_reason,
+                bear_independence_unverified=bear_independence_unverified,
+                bear_independence_unverified_reason=bear_independence_unverified_reason,
+                bull_independence_unverified=bull_independence_unverified,
+                bull_independence_unverified_reason=bull_independence_unverified_reason,
+                infrastructure_degraded=infrastructure_degraded,
+                infrastructure_degraded_reason=infrastructure_degraded_reason,
+            )
+            if integrity_block is not None:
+                block_by, block_reason = integrity_block
+                await self._close_decision_run(
+                    decision_run_id,
+                    finished_at=clock(),
+                    status="blocked",
+                    fm="block",
+                )
+                return BlockedProposal(
+                    reason=block_reason,
+                    blocked_by=block_by,
+                    debate_outcome=debate_outcome,
+                    decision_run_id=decision_run_id,
+                )
             await self._close_decision_run(
                 decision_run_id, finished_at=clock(), status="hold", fm="hold"
             )
@@ -967,39 +1216,26 @@ class DecisionFlow:
                     decision_run_id=decision_run_id,
                 )
 
-        # Premise-check unverified OR bear independence unverified → block
-        # green_light (buy/sell/add). Debate + trader may still complete for
-        # inspection. Explicit, never silent confidence-laundering.
+        # Premise-check / researcher-independence / infrastructure integrity
+        # → block green_light (buy/sell/add). Distinct from considered HOLD.
         if (
-            (premise_unverified or bear_independence_unverified)
-            and trader_proposal.action in ("buy", "sell", "add")
-        ):
-            if bear_independence_unverified and not premise_unverified:
-                block_reason = (
-                    "Bear independence unverified — green_light blocked. "
-                    + (
-                        bear_independence_unverified_reason
-                        or "see decision_runs.notes_json"
-                    )
-                )
-                block_by = "bear_independence_unverified"
-            elif premise_unverified and bear_independence_unverified:
-                block_reason = (
-                    "Premise check and bear independence unverified — "
-                    "green_light blocked. "
-                    + (premise_unverified_reason or "")
-                    + (
-                        f"; {bear_independence_unverified_reason}"
-                        if bear_independence_unverified_reason else ""
-                    )
-                )
-                block_by = "premise_unverified"
-            else:
-                block_reason = (
-                    "Premise check unverified — green_light blocked. "
-                    + (premise_unverified_reason or "see decision_runs.notes_json")
-                )
-                block_by = "premise_unverified"
+            premise_unverified
+            or bear_independence_unverified
+            or bull_independence_unverified
+            or infrastructure_degraded
+        ) and trader_proposal.action in ("buy", "sell", "add"):
+            integrity_block = _integrity_block_if_any(
+                premise_unverified=premise_unverified,
+                premise_unverified_reason=premise_unverified_reason,
+                bear_independence_unverified=bear_independence_unverified,
+                bear_independence_unverified_reason=bear_independence_unverified_reason,
+                bull_independence_unverified=bull_independence_unverified,
+                bull_independence_unverified_reason=bull_independence_unverified_reason,
+                infrastructure_degraded=infrastructure_degraded,
+                infrastructure_degraded_reason=infrastructure_degraded_reason,
+            )
+            assert integrity_block is not None
+            block_by, block_reason = integrity_block
             await self._close_decision_run(
                 decision_run_id, finished_at=clock(), status="blocked", fm="block"
             )

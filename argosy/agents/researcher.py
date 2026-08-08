@@ -477,24 +477,76 @@ def authoritative_premise_disagreements(
     return rendered
 
 
-def bear_turn_has_independent_retrieval(turn: dict | None) -> bool:
-    """True iff the bear turn recorded ≥1 http(s) tool retrieval.
+#: Substantive independent point floors — a throwaway "ok" + URL must not
+#: launder the whole assessment. Mechanical length floors, not judgment of
+#: whether the reasoning is good.
+_MIN_SUBSTANTIVE_CLAIM_CHARS = 24
+_MIN_SUBSTANTIVE_EVIDENCE_CHARS = 40
+_THROWAY_CLAIMS = frozenset({
+    "ok", "okay", "see above", "independent", "retrieved", "done",
+    "noted", "agreed", "disagree", "n/a", "na", "none", "test",
+})
 
-    Mechanical integrity — not judgment: "did this agent actually perform
-    independent retrieval?" Empty ``tool_retrieved_urls`` means WebSearch
-    was skipped (or produced nothing). Prompt-mandatory is not guaranteed.
+
+def point_is_substantive(point: Any) -> bool:
+    """True iff a point has enough claim+evidence body to count as substantive.
+
+    Mechanical floor only: length + not a known throwaway token. Does NOT
+    judge whether the argument is good — that is the opposing agent's job.
+    """
+    if isinstance(point, dict):
+        claim = (point.get("claim") or "").strip()
+        evidence = (point.get("evidence") or "").strip()
+    else:
+        claim = (getattr(point, "claim", None) or "").strip()
+        evidence = (getattr(point, "evidence", None) or "").strip()
+    if len(claim) < _MIN_SUBSTANTIVE_CLAIM_CHARS:
+        return False
+    if len(evidence) < _MIN_SUBSTANTIVE_EVIDENCE_CHARS:
+        return False
+    if claim.lower() in _THROWAY_CLAIMS:
+        return False
+    return True
+
+
+def turn_has_grounded_independent_point(turn: dict | None) -> bool:
+    """True iff ≥1 substantive point is grounded in an independently retrieved URL.
+
+    Mechanical integrity — not judgment. Presence of *any* retrieval is NOT
+    enough: an unrelated WebSearch must not satisfy independence while every
+    point remains ``shared_payload``. A point counts only when:
+      1. it cites an http(s) URL that matches this turn's tool_retrieved_urls
+         (same derivation as ``derive_point_independence``), AND
+      2. it is substantive (claim+evidence floors above).
     """
     if not turn:
         return False
-    for u in turn.get("tool_retrieved_urls") or []:
-        if not isinstance(u, str):
+    tool_urls = [
+        u for u in (turn.get("tool_retrieved_urls") or [])
+        if isinstance(u, str)
+    ]
+    if not tool_urls:
+        return False
+    for point in turn.get("points") or []:
+        if isinstance(point, dict):
+            cites = list(point.get("cited_sources") or [])
+        else:
+            cites = list(getattr(point, "cited_sources", None) or [])
+        if derive_point_independence(cites, tool_urls) != "independent":
             continue
-        raw = u.strip()
-        if raw.startswith(("http://", "https://")):
-            from argosy.agents.base import url_contains_control_chars
-            if not url_contains_control_chars(raw):
-                return True
+        if not point_is_substantive(point):
+            continue
+        return True
     return False
+
+
+def bear_turn_has_independent_retrieval(turn: dict | None) -> bool:
+    """Backward-compatible alias → ``turn_has_grounded_independent_point``.
+
+    Round-10: retrieval presence alone was decorative; independence is now
+    semantic (substantive point grounded in a retrieved source).
+    """
+    return turn_has_grounded_independent_point(turn)
 
 
 def _render_premise_block(premise_status: dict | None) -> str:
@@ -610,48 +662,37 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
         opposite = "bear" if self._side == "bull" else "bull"
         self._required_premise_ids = premise_ids_from_status(premise_status)
 
-        if self._side == "bear":
-            independence_rules = (
-                "  - INDEPENDENT RETRIEVAL (mandatory for the bear): you have "
-                "the WebSearch tool. You MUST run 1-3 targeted searches for "
-                "PRIMARY sources on this ticker — SEC filings, company IR / "
-                "press releases, regulator publications — and ground at least "
-                "one point on what you retrieve. Do NOT merely restate the "
-                "shared analyst payload; when the payload is wrong, restating "
-                "it makes both sides wrong in the same direction.\n"
-                "  - Cite live URLs for independent findings. Independence is "
-                "DERIVED by the system from whether those URLs appear in your "
-                "actual WebSearch tool results — self-labelling a point "
-                "`independent` without a real retrieval does nothing.\n"
-                "  - PREMISE CHECK CHALLENGE (mandatory): if a PREMISE CHECK "
-                "block lists premises, you MUST emit `catalyst_status_claims` "
-                "with one entry per `premise_id` (exact id from the block — "
-                "not a restated label). Confirm or contradict each status. "
-                "Empty/omitted claims are a parse failure. Unknown premise_ids "
-                "are a parse failure. Key by premise_id only.\n"
-            )
-        else:
-            independence_rules = (
-                "  - Cite analyst reports and specific facts. Live primary-"
-                "source URLs are allowed when grounded; independence is "
-                "derived from tool retrieval, not from self-labelling.\n"
-                "  - A PREMISE CHECK block (when present) is contestable "
-                "evidence from another agent — not ground truth. When the "
-                "block lists premises, you MUST emit `catalyst_status_claims` "
-                "with one entry per exact `premise_id` (confirm or disagree). "
-                "Empty/omitted claims are a parse failure.\n"
-            )
+        # Both sides have the same mechanical independence mandate. A stale
+        # bullish payload without a retrieving bear (TRLV) and a stale bearish
+        # payload without a retrieving bull are the same defect mirrored.
+        independence_rules = (
+            "  - INDEPENDENT RETRIEVAL (mandatory): you have the WebSearch "
+            "tool. You MUST run 1-3 targeted searches for PRIMARY sources on "
+            "this ticker — SEC filings, company IR / press releases, "
+            "regulator publications — and ground at least ONE SUBSTANTIVE "
+            "point on what you retrieve (claim + concrete evidence citing a "
+            "live URL you actually fetched). A throwaway point that merely "
+            "cites a retrieved URL does NOT count. Do NOT merely restate the "
+            "shared analyst payload; when the payload is wrong, restating it "
+            "makes both sides wrong in the same direction.\n"
+            "  - Cite live URLs for independent findings. Independence is "
+            "DERIVED by the system from whether those URLs appear in your "
+            "actual WebSearch tool results AND are cited on a substantive "
+            "point — self-labelling a point `independent` without a real "
+            "retrieval does nothing; an unrelated retrieval does nothing.\n"
+            "  - PREMISE CHECK CHALLENGE (mandatory): if a PREMISE CHECK "
+            "block lists premises, you MUST emit `catalyst_status_claims` "
+            "with one entry per `premise_id` (exact id from the block — "
+            "not a restated label). Confirm or contradict each status. "
+            "Empty/omitted claims are a parse failure. Unknown premise_ids "
+            "are a parse failure. Key by premise_id only.\n"
+        )
 
         system = (
             f"You are the {self._side} researcher on the Argosy fleet. "
             f"You marshal the strongest possible {self._side}ish case from the "
-            "evidence in the analyst reports"
-            + (
-                " AND from primary sources you retrieve yourself"
-                if self._side == "bear"
-                else ""
-            )
-            + ". The other side argues the opposite case.\n\n"
+            "evidence in the analyst reports AND from primary sources you "
+            "retrieve yourself. The other side argues the opposite case.\n\n"
             "Rules:\n"
             "  - Cite specific facts. Do NOT invent facts.\n"
             "  - Address the strongest opposing point from the prior round; "
@@ -686,9 +727,8 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
             role = r.get("agent_role") or r.get("role") or "?"
             payload = {k: v for k, v in r.items() if k not in ("agent_role", "role")}
             report_blocks.append(f"### Analyst: {role}\n{payload}")
-            if self._side == "bear":
-                sid = _analyst_source_id(str(role), ticker)
-                sources.append((sid, str(payload)))
+            sid = _analyst_source_id(str(role), ticker)
+            sources.append((sid, str(payload)))
 
         prior_block = ""
         if prior_rounds:
@@ -723,39 +763,21 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
             f"{premise_prefix}"
             f"Ticker under debate: {ticker or '(unspecified)'}\n"
             f"Round {round_index} of {n_max}; you argue the {self._side} case.\n\n"
-            "ANALYST REPORTS (shared debate payload"
-            + (
-                " — verify material figures against primary sources via WebSearch"
-                if self._side == "bear"
-                else ""
-            )
-            + "):\n\n"
+            "ANALYST REPORTS (shared debate payload — verify material "
+            "figures against primary sources via WebSearch):\n\n"
             + "\n\n".join(report_blocks)
             + prior_block
             + "\n\nProduce the ResearcherTurn JSON now. Set `side` to "
             f"{self._side!r} and `round_index` to {round_index}."
         )
-        if self._side == "bear":
-            return system, user, sources
-        return system, user
+        # Both sides supply analyst payloads as source material for the
+        # citation gate; independence still requires tool-retrieved URLs.
+        return system, user, sources
 
 
-class BullResearcherAgent(_ResearcherAgent):
-    """Bull-side researcher. Default Opus."""
+class _ResearcherAgentWithRetrieval(_ResearcherAgent):
+    """Shared WebSearch + tool-URL merge for both bull and bear."""
 
-    agent_role = "bull_researcher"
-    _side = "bull"
-
-
-class BearResearcherAgent(_ResearcherAgent):
-    """Bear-side researcher. Default Opus.
-
-    Carries WebSearch so the bear can gather primary-source evidence
-    independently of the shared analyst payload (TRLV scar fix).
-    """
-
-    agent_role = "bear_researcher"
-    _side = "bear"
     claude_code_allowed_tools: ClassVar[tuple[str, ...]] = ("WebSearch",)
 
     def _finalize_sources_json(
@@ -765,7 +787,7 @@ class BearResearcherAgent(_ResearcherAgent):
         *,
         tool_retrieved_urls: list[str] | None = None,
     ) -> str | None:
-        """Merge tool-retrieved URLs that the bear actually cited.
+        """Merge tool-retrieved URLs cited on independently-derived points.
 
         Only URLs present in the tool-use record AND cited on an
         independently-derived point are appended — fabricated URLs never
@@ -810,7 +832,8 @@ class BearResearcherAgent(_ResearcherAgent):
                         "source_id": matched,
                         "content": (
                             "(independent primary-source citation observed "
-                            "in bear_researcher successful WebSearch tool results)"
+                            f"in {self.agent_role} successful WebSearch tool "
+                            "results)"
                         ),
                     }
                 )
@@ -820,6 +843,28 @@ class BearResearcherAgent(_ResearcherAgent):
         if not entries:
             return sources_json
         return json.dumps(entries, ensure_ascii=False)
+
+
+class BullResearcherAgent(_ResearcherAgentWithRetrieval):
+    """Bull-side researcher. Default Opus.
+
+    Carries WebSearch so the bull can independently challenge a stale
+    bearish shared payload (mirror of the TRLV bear-failure shape).
+    """
+
+    agent_role = "bull_researcher"
+    _side = "bull"
+
+
+class BearResearcherAgent(_ResearcherAgentWithRetrieval):
+    """Bear-side researcher. Default Opus.
+
+    Carries WebSearch so the bear can gather primary-source evidence
+    independently of the shared analyst payload (TRLV scar fix).
+    """
+
+    agent_role = "bear_researcher"
+    _side = "bear"
 
 
 __all__ = [
@@ -837,5 +882,7 @@ __all__ = [
     "derive_turn_independence",
     "format_premise_disagreement",
     "missing_catalyst_status_claims_reason",
+    "point_is_substantive",
     "premise_ids_from_status",
+    "turn_has_grounded_independent_point",
 ]

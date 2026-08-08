@@ -85,16 +85,55 @@ def extract_http_urls(value: Any) -> list[str]:
     return found
 
 
-def url_contains_control_chars(url: str) -> bool:
-    """True if ``url`` contains ASCII control characters (incl. newline).
+# Zero-width / bidi-override code points that can launder URL identity
+# (ZWSP between path segments, RTL override reordering, etc.).
+_URL_INVISIBLE_CODEPOINTS = frozenset({
+    0x00AD,  # soft hyphen
+    0x034F,  # combining grapheme joiner
+    0x061C,  # Arabic letter mark
+    0x180E,  # Mongolian vowel separator
+    0x200B,  # zero-width space
+    0x200C,  # zero-width non-joiner
+    0x200D,  # zero-width joiner
+    0x200E,  # LTR mark
+    0x200F,  # RTL mark
+    0x202A,  # LTR embedding
+    0x202B,  # RTL embedding
+    0x202C,  # pop directional formatting
+    0x202D,  # LTR override
+    0x202E,  # RTL override
+    0x2060,  # word joiner
+    0x2066,  # LTR isolate
+    0x2067,  # RTL isolate
+    0x2068,  # first strong isolate
+    0x2069,  # pop directional isolate
+    0xFEFF,  # BOM / ZWNBSP
+    0xFFF9, 0xFFFA, 0xFFFB,  # interlinear annotation
+})
 
-    Control characters must never be normalised away — stripping/query
-    dropping can otherwise launder ``https://host/x?utm=1\\nINJECT`` into
-    a match against a clean retrieved URL.
+# Percent-encoded ASCII controls / DEL — reject rather than unquote-into-match.
+_PCT_ENCODED_CONTROL_RE = re.compile(
+    r"%(?:0[0-9A-Fa-f]|1[0-9A-Fa-f]|7[Ff])",
+)
+
+
+def url_contains_control_chars(url: str) -> bool:
+    """True if ``url`` contains characters that must never enter identity match.
+
+    Rejects ASCII controls, DEL, zero-width/bidi-override code points, and
+    percent-encoded control sequences (``%0a``, ``%0d``, ``%00``, …). These
+    must not be normalised into a match against a clean retrieved URL —
+    reject, do not strip-then-compare.
     """
     if not url:
         return False
-    return any(ord(ch) < 32 or ord(ch) == 127 for ch in url)
+    for ch in url:
+        o = ord(ch)
+        if o < 32 or o == 127 or o in _URL_INVISIBLE_CODEPOINTS:
+            return True
+    if _PCT_ENCODED_CONTROL_RE.search(url):
+        return True
+    return False
 
 
 def url_identity_parts(url: str) -> tuple[str, str, str] | None:

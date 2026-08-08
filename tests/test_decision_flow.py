@@ -69,8 +69,11 @@ def _mock_agent(cls, canned: dict, *, tool_retrieved_urls: list[str] | None = No
     return _M
 
 
-#: Bear independence requires ≥1 http(s) tool retrieval on T1+.
+#: Researcher independence requires ≥1 substantive point grounded in a
+#: retrieved http(s) URL on T1+ (both bull and bear).
 _BEAR_RETRIEVED_URL = "https://example.com/bear-independent-retrieval"
+_BULL_RETRIEVED_URL = "https://example.com/bull-independent-retrieval"
+_PREMISE_RETRIEVED_URL = "https://example.com/premise-no-catalyst-search"
 
 
 _BULL_CANNED = {
@@ -79,14 +82,17 @@ _BULL_CANNED = {
     "position_summary": "Bull case strong.",
     "points": [
         {
-            "claim": "Earnings up.",
-            "evidence": "Fundamentals report shows growth.",
-            "cited_sources": ["analyst:fundamentals"],
+            "claim": "Earnings growth remains intact on latest IR release.",
+            "evidence": (
+                "Company IR shows sequential revenue growth with stable "
+                "margins per the retrieved primary release."
+            ),
+            "cited_sources": [_BULL_RETRIEVED_URL],
         }
     ],
     "response_to_opposing": "",
     "confidence": "MEDIUM",
-    "cited_sources": ["analyst:fundamentals"],
+    "cited_sources": [_BULL_RETRIEVED_URL],
 }
 
 _BEAR_CANNED = {
@@ -95,14 +101,17 @@ _BEAR_CANNED = {
     "position_summary": "Valuation rich.",
     "points": [
         {
-            "claim": "PE 35.",
-            "evidence": "Tech RSI 78.",
-            "cited_sources": ["analyst:technical"],
+            "claim": "Valuation remains stretched versus historical PE band.",
+            "evidence": (
+                "Primary filing shows PE near 35 with RSI elevated; "
+                "independent check confirms the shared technical figure."
+            ),
+            "cited_sources": [_BEAR_RETRIEVED_URL],
         }
     ],
     "response_to_opposing": "",
     "confidence": "MEDIUM",
-    "cited_sources": ["analyst:technical"],
+    "cited_sources": [_BEAR_RETRIEVED_URL],
 }
 
 _PREMISE_CANNED = {
@@ -218,7 +227,11 @@ def _make_flow(
             debate_rounds_t2=1,
             debate_rounds_t3=1,
         ),
-        bull_factory=lambda u: _mock_agent(BullResearcherAgent, _BULL_CANNED)(user_id=u),
+        bull_factory=lambda u: _mock_agent(
+            BullResearcherAgent,
+            _BULL_CANNED,
+            tool_retrieved_urls=[_BULL_RETRIEVED_URL],
+        )(user_id=u),
         bear_factory=lambda u: _mock_agent(
             BearResearcherAgent,
             _BEAR_CANNED,
@@ -228,7 +241,9 @@ def _make_flow(
             ResearcherFacilitatorAgent, _DEBATE_CANNED
         )(user_id=u),
         premise_check_factory=lambda u: _mock_agent(
-            PremiseCheckAgent, _PREMISE_CANNED
+            PremiseCheckAgent,
+            _PREMISE_CANNED,
+            tool_retrieved_urls=[_PREMISE_RETRIEVED_URL],
         )(user_id=u),
         trader_factory=lambda u, t: _mock_agent(TraderAgent, trader_canned)(
             user_id=u, tier=t
@@ -508,16 +523,16 @@ async def test_omitted_premises_field_surfaces_premise_unverified(engine: None) 
             debate_rounds_t3=1,
         ),
         premise_check_factory=lambda u: _OmitPremise(user_id=u),
-        bull_factory=lambda u: _mock_agent(BullResearcherAgent, _BULL_CANNED)(
-            user_id=u
-        ),
+        bull_factory=lambda u: _mock_agent(
+            BullResearcherAgent,
+            _BULL_CANNED,
+            tool_retrieved_urls=[_BULL_RETRIEVED_URL],
+        )(user_id=u),
         bear_factory=lambda u: _mock_agent(
             BearResearcherAgent,
             _BEAR_CANNED,
             tool_retrieved_urls=[_BEAR_RETRIEVED_URL],
-        )(
-            user_id=u
-        ),
+        )(user_id=u),
         researcher_facilitator_factory=lambda u: _mock_agent(
             ResearcherFacilitatorAgent, _DEBATE_CANNED
         )(user_id=u),
@@ -604,7 +619,7 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
     assert rep.output.premises[0].premise_id == "p0"
     assert ok_url in rep.output.premises[0].cited_sources
 
-    # Empty premises still waive.
+    # Empty premises requires a retrieval (searched, found nothing).
     empty = {
         "ticker": "AAPL",
         "premises": [],
@@ -612,6 +627,22 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
         "confidence": "MEDIUM",
         "cited_sources": [],
     }
+    searched = "https://example.com/catalyst-search"
+
+    class _EmptyNoSearch(PremiseCheckAgent):
+        async def _call_model(self, *, system: str, user: str, **_e: Any) -> ModelCall:
+            return ModelCall(
+                text=json.dumps(empty),
+                tokens_in=10,
+                tokens_out=10,
+                model=self.model,
+                tool_retrieved_urls=[],
+            )
+
+    with pytest.raises(AgentRunError, match="premises=\\[\\]|retriev|search"):
+        await _EmptyNoSearch(user_id="ariel").run(
+            ticker="AAPL", analyst_reports=[{"agent_role": "fundamentals"}]
+        )
 
     class _Empty(PremiseCheckAgent):
         async def _call_model(self, *, system: str, user: str, **_e: Any) -> ModelCall:
@@ -620,6 +651,7 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
                 tokens_in=10,
                 tokens_out=10,
                 model=self.model,
+                tool_retrieved_urls=[searched],
             )
 
     rep_empty = await _Empty(user_id="ariel").run(

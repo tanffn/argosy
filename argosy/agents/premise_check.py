@@ -130,14 +130,44 @@ class PremiseCheckReport(BaseModel):
     )
 
 
+def is_trivial_premise(prem: CatalystPremise | dict) -> bool:
+    """True for blank / punctuation-only / near-empty catalyst labels.
+
+    Absence, explicit ``[]``, and all-trivial lists are the same failure
+    class when they claim "no catalysts" without retrieval — do not fix
+    only the literal ``[]`` case and leave a third variant open.
+    """
+    if isinstance(prem, dict):
+        cat = (prem.get("catalyst") or "").strip()
+    else:
+        cat = (prem.catalyst or "").strip()
+    if len(cat) < 8:
+        return True
+    if not any(ch.isalnum() for ch in cat):
+        return True
+    return False
+
+
+def effective_premises(
+    premises: list[CatalystPremise] | None,
+) -> list[CatalystPremise] | None:
+    """None stays None (omission); otherwise drop trivial rows.
+
+    An all-trivial list collapses to ``[]`` — same path as explicit empty.
+    """
+    if premises is None:
+        return None
+    return [p for p in premises if not is_trivial_premise(p)]
+
+
 class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
     """Opus premise checker. WebSearch for live catalyst status."""
 
     agent_role = "premise_check"
     output_model = PremiseCheckReport
-    # Citations are enforced conditionally in ``_validate_citations``:
-    # waived ONLY for an explicitly provided premises=[]. Omitted premises
-    # (None) is a parse failure — routed by DecisionFlow to premise_unverified.
+    # Citations / retrieval enforced in ``_validate_citations``:
+    # omitted (None), empty ([]), and all-trivial are the SAME class —
+    # claiming "no catalysts" without a retrieval is unverified silence.
     require_citations = True
     # Live status must come from primary sources, not the shared payload alone.
     claude_code_allowed_tools: tuple[str, ...] = ("WebSearch",)
@@ -153,12 +183,13 @@ class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
 
     @staticmethod
     def _stamp_premise_ids(report: PremiseCheckReport) -> PremiseCheckReport:
-        """Assign stable ``p0``/``p1``/… ids once; overwrite any model value."""
+        """Assign stable ``p0``/``p1``/… ids; drop trivial premises first."""
         if report.premises is None:
             return report
+        kept = effective_premises(report.premises) or []
         stamped = [
             p.model_copy(update={"premise_id": f"p{i}"})
-            for i, p in enumerate(report.premises)
+            for i, p in enumerate(kept)
         ]
         return report.model_copy(update={"premises": stamped})
 
@@ -168,14 +199,16 @@ class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
         *,
         tool_retrieved_urls: list[str] | None = None,
     ) -> None:
-        """Require retrieved http(s) URL cites iff premises is non-empty.
+        """Require retrieval for every answer shape; cites iff non-empty premises.
 
-        Omitted ``premises`` (None) is NOT a waiver — raise so DecisionFlow's
-        existing premise_check except path marks premise_unverified.
-        Explicit ``premises=[]`` earns the no-catalyst citation waiver.
+        Mechanical integrity (not judgment):
+          * ``premises is None`` → silence (parse failure)
+          * ``premises == []`` OR all-trivial → claimed no-catalyst; MUST still
+            have performed WebSearch (non-empty tool_retrieved_urls)
+          * non-empty premises → each needs a corroborated http(s) cite
 
-        Mechanical integrity (not judgment): a well-formed URL that was never
-        observed in this invocation's tool results is not a citation.
+        An earlier round fixed omitted-``None`` and missed empty-list; do not
+        leave a third variant (all-trivial / zero-retrieval empty) open.
         """
         if not isinstance(output, PremiseCheckReport):
             super()._validate_citations(
@@ -186,11 +219,24 @@ class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
             raise AgentRunError(
                 f"{self.agent_role}: premises field omitted — silence is not "
                 "a verified no-catalyst finding (emit premises=[] explicitly "
-                "when none exist)"
+                "when none exist, after searching)"
             )
+        tool_urls = [
+            u for u in (tool_retrieved_urls or [])
+            if isinstance(u, str) and u.strip()
+        ]
+        # Empty and all-trivial already collapsed by _stamp_premise_ids.
         if output.premises == []:
+            if not any(
+                is_well_formed_http_url(u) for u in tool_urls
+            ):
+                raise AgentRunError(
+                    f"{self.agent_role}: premises=[] (no catalysts) without "
+                    "any well-formed tool-retrieved URL — claiming no "
+                    "catalysts requires a search, not silence "
+                    f"(tool_retrieved_n={len(tool_urls)})"
+                )
             return
-        tool_urls = list(tool_retrieved_urls or [])
         for i, prem in enumerate(output.premises):
             urls = [
                 s.strip()
@@ -245,8 +291,9 @@ class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
             "Rules:\n"
             "  - Extract every dated/pending catalyst implied by the analyst "
             "reports or the ticker's known thesis framing. If none, return "
-            "premises=[] EXPLICITLY — omitting the premises field is a "
-            "parse failure, not a no-catalyst finding.\n"
+            "premises=[] EXPLICITLY AFTER searching — omitting the premises "
+            "field is a parse failure, and premises=[] without a WebSearch "
+            "is also a failure (silence is not a no-catalyst finding).\n"
             "  - For EACH catalyst, use WebSearch to check CURRENT status. "
             "Prefer company IR releases, SEC filings, and regulator "
             "publications over secondary commentary.\n"
@@ -296,5 +343,7 @@ __all__ = [
     "PremiseCheckAgent",
     "PremiseCheckReport",
     "citation_corroborated_by_retrieval",
+    "effective_premises",
+    "is_trivial_premise",
     "is_well_formed_http_url",
 ]

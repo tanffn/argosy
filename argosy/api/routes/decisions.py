@@ -248,20 +248,57 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
         "named_sleeve": body.named_sleeve,
         "live_valuation": body.live_valuation or {},
     }
-    outcome = await flow.run(
-        ticker=body.ticker,
-        tier=tier,
-        analyst_reports=analyst_reports,
-        positions_summary=body.positions_summary,
-        plan_critique=body.plan_critique,
-        user_constraints=body.user_constraints,
-        risk_caps=body.risk_caps,
-        account_class=body.account_class,  # type: ignore[arg-type]
-        decision_run_id=pre_opened_run_id,
-        persist_input_analysts=persist_input_analysts,
-        consult_mode=body.consult_mode,
-        funnel_meta=_funnel_meta,
-    )
+    try:
+        outcome = await flow.run(
+            ticker=body.ticker,
+            tier=tier,
+            analyst_reports=analyst_reports,
+            positions_summary=body.positions_summary,
+            plan_critique=body.plan_critique,
+            user_constraints=body.user_constraints,
+            risk_caps=body.risk_caps,
+            account_class=body.account_class,  # type: ignore[arg-type]
+            decision_run_id=pre_opened_run_id,
+            persist_input_analysts=persist_input_analysts,
+            consult_mode=body.consult_mode,
+            funnel_meta=_funnel_meta,
+        )
+    except Exception as flow_exc:  # noqa: BLE001 — classify infrastructure
+        from argosy.services.fleet_reliability import FleetCallUnavailable
+
+        if isinstance(flow_exc, FleetCallUnavailable):
+            # Circuit open — structured degrade, never HTTP 500. The
+            # unattended system must not read this as a considered HOLD.
+            _log.warning(
+                "consult.infrastructure_degraded",
+                error=str(flow_exc)[:300],
+                ticker=body.ticker,
+            )
+            try:
+                await enqueue_pending_reevaluation(
+                    user_id=body.user_id,
+                    ticker=body.ticker,
+                    tier_value=tier.value,
+                    consult_mode=body.consult_mode,
+                    user_constraints=body.user_constraints,
+                    failure_reason=f"infrastructure_degraded: {flow_exc}",
+                )
+            except Exception as enq_exc:  # noqa: BLE001
+                _log.warning(
+                    "consult.pending_reevaluation_enqueue_failed",
+                    error=str(enq_exc)[:200],
+                )
+            return RunResponse(
+                decision_run_id=pre_opened_run_id or 0,
+                status="blocked",
+                blocked_reason=(
+                    "Fleet infrastructure degraded (circuit open) — not a "
+                    f"considered decision: {flow_exc}"
+                ),
+                blocked_by="infrastructure_degraded",
+                tier=tier.value,
+            )
+        raise
 
     if isinstance(outcome, ApprovedProposal):
         return RunResponse(
@@ -271,10 +308,16 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
             tier=tier.value,
         )
     assert isinstance(outcome, BlockedProposal)
-    # If the trader returned INSUFFICIENT_DATA, enqueue an auto-retry
-    # row so the daily pending_reevaluation job re-fires the consult
-    # when fresh data lands.
-    if outcome.blocked_by in ("trader_insufficient_data", "premise_unverified"):
+    # Integrity / insufficient-data blocks schedule their own retry —
+    # distinct from considered trader_hold.
+    _REEVAL_BLOCKED_BY = (
+        "trader_insufficient_data",
+        "premise_unverified",
+        "bear_independence_unverified",
+        "bull_independence_unverified",
+        "infrastructure_degraded",
+    )
+    if outcome.blocked_by in _REEVAL_BLOCKED_BY:
         try:
             await enqueue_pending_reevaluation(
                 user_id=body.user_id,
