@@ -7,6 +7,37 @@ the family's wealth"): a measured answer to *"are we beating the market, and
 where is value added or lost?"* Today this is a narrative, not a number — there
 is **no realized-return or benchmark-comparison logic anywhere** (verified).
 
+---
+
+## REVISIONS — adversarial review 2026-08-08 (BINDING; apply before build)
+
+An independent adversarial review (verified against the live DB) found one
+**critical** flaw in this design. These amendments override the sections they name.
+
+- **[CRITICAL] §2.2 must NOT auto-classify a position going to zero shares as a
+  "flow".** The share/price decomposition treats `(shares_t1−shares_t0)×price` as
+  an excluded external flow. But a *silent deletion* (the July book erasure — 16
+  positions → 0 shares) is arithmetically identical to a *withdrawal*, so the
+  scorecard would exclude the erasure and report a **pristine TWR straight through
+  a $2.7M loss** — silent success reborn inside the tool built to catch it.
+  **Amendment:** any position dropping to zero shares (or an entire account
+  disappearing) is a **candidate corruption event** — it must be reconciled
+  against a real sale/vest (proposals `executed_live` / `rsu_vest_events`) or
+  **quarantined and the period flagged fail-loud**, never silently classified as
+  flow. A sub-period containing an unreconciled zero-out does not produce a return
+  number.
+- **[CRITICAL] Integrity floor is an INPUT CONTRACT, not an assumption.** C must
+  read a per-snapshot integrity verdict (the conservation gate) and **refuse /
+  quarantine, fail-loud,** any period whose snapshot did not pass. C never
+  computes a return on a book that failed conservation.
+- **[HIGH] Reconcile with the ledger (Component B) or fail loud.** C's Brinson
+  selection effect and B's per-bet grading are two truth systems over the same
+  trades with different windows/prices. They must be reconciled to a tolerance;
+  divergence beyond it is a fail-loud flag, not two coexisting numbers (else the
+  "which number is right?" ambiguity returns).
+
+---
+
 Reviewers: §2 (methodology + the *why* of each choice) and §3 (data foundation
 with exact tables/columns + gaps) are the load-bearing sections. Every design
 choice is justified so you can challenge the reasoning, not just the code.

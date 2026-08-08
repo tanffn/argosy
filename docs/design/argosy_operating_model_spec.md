@@ -11,6 +11,53 @@ Component C rather than restating it).
 
 ---
 
+## REVISIONS — adversarial review 2026-08-08 (BINDING; apply before build)
+
+An independent adversarial review (verified read-only against `db/argosy.db`)
+returned **SOUND-WITH-CHANGES**. These amendments override the sections they name.
+
+- **[CRITICAL] §3 integrity floor is an ENFORCED INPUT CONTRACT, not an
+  assumption.** Every A/B/C computation must read a per-snapshot integrity verdict
+  (the conservation gate) and **refuse or quarantine, fail-loud,** when it has not
+  passed. "A/B/C assume the floor holds" is deleted — an assumption is exactly the
+  hand-wave the audit warned about, and the book is corrupt *today*. This is the
+  single highest-value change; it also fixes the scorecard's zero-shares laundering
+  (see `performance_scorecard_design.md` revisions §2.2).
+- **[HIGH] §8 — reconcile B and C, or fail loud.** They are two truth systems over
+  the same trades (ledger entry→target/30d vs snapshot share×price/Brinson). "Same
+  benchmark → they reconcile" is false. Add a reconciliation gate: divergence
+  beyond tolerance is a fail-loud flag, not two coexisting numbers.
+- **[HIGH] §5 B3/B4 — quarantine the contaminated historical prior.** The 38%
+  long hit-rate is computed on the ~40% of longs that parsed; the ~60% unparseable
+  are NOT missing-at-random. The E→A actionability gate must **learn only from
+  post-fix, cleanly-scored bets**, ignore all pre-fix ledger outcomes, and require
+  a minimum N before it may suppress a signal class (else it self-fulfills
+  "index-only" from a biased base). And a permanently-degraded evaluator must
+  **escalate to an owner action item**, not just sit as a "degraded" job status.
+- **[HIGH] §4 A2 reframe — the real gap is fee/tracking metadata, not the whole
+  thing.** Domicile (`estate_safe`/US-situs) and exposure category already exist in
+  `argosy/services/instrument_reference.py`; TER / tracking-error / dist-vs-acc /
+  AUM-spread exist **nowhere**. Without a metadata provider, A2 collapses into
+  "prefer the UCITS equivalent" (already the plan mandate). **A2-phase-0 = the
+  domicile-only estate switch** (below) ships first on existing data; the fee/
+  tracking comparator is a later phase gated on sourcing that metadata.
+- **[MEDIUM] §4 A2 equivalence needs a quantitative gate, not just the fleet.** The
+  existing exposure tags are too coarse — VOO and equal-weight XZEW are both
+  "Broad Index / US". A holdings-overlap / return-correlation threshold is required
+  before any "like-for-like" switch, or the comparator swaps cap-weight for
+  equal-weight as equivalent.
+- **§9 sequencing addendum:** step 2 ("ledger honest") must explicitly *quarantine
+  the pre-fix history from the learning gate*, and step 1 (integrity floor) ships
+  as an enforced interlock consumed by A/B/C, not a parallel assumption.
+
+**Smallest thing that moves a real dollar first (do this before the scorecard or
+full A2):** the **domicile-only estate switch** — flag every US-situs ETF sleeve
+(`_US_SITUS_TICKERS`) that has a held-or-known UCITS equivalent, size the US-situs
+estate-tax tail, and propose the tax-aware swap. **Zero new data** (domicile +
+`avg_price` already exist), first-order dollars. Ship as A2-phase-0.
+
+---
+
 ## 1. Purpose — the one goal, and the one test
 
 Argosy exists to **maximize the family's wealth and reach the earliest *safe*
