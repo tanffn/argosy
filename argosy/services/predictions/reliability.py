@@ -348,6 +348,285 @@ WHERE d.rn = 1
 """
 
 
+#: Explicit exclusions documented on every standing scorecard row.
+SCORECARD_EXCLUSIONS_DOC: tuple[str, ...] = (
+    "outcome_kind='unparseable' (generic)",
+    "direction='neutral' scored holds (reported under hold_* only)",
+    "unscored (no outcome row yet)",
+    "pending_entry / missing_entry_quote (verdict recorded, not yet scoreable)",
+    "superseded_by_correction (prior immutable version; head is scored)",
+    "hold_self_benchmark (CSPX vs CSPX — degenerate)",
+    "hold_non_equity (CSPX not a valid benchmark for asset class)",
+    "hold_incomplete_benchmark (CSPX/name marks missing or truncated)",
+)
+
+
+@dataclass(frozen=True)
+class SourceScorecardRow:
+    """Auditable per-source hit rate + avg P&L.
+
+    Archived-but-scored outcomes stay in the sample. Pending-entry,
+    superseded, and HOLD-ineligible rows are explicit exclusion buckets.
+    ``hold_*`` is strictly separate from directional hit-rate.
+
+    Invariant (output-trust):
+      falsifiable_denominator
+      + excluded_unparseable
+      + excluded_neutral
+      + excluded_unscored
+      + excluded_pending_entry
+      + excluded_superseded
+      + excluded_hold_self_benchmark
+      + excluded_hold_non_equity
+      + excluded_hold_incomplete_benchmark
+      == total_predictions
+    """
+
+    source: str
+    hit_rate: float | None
+    win_rate: float | None
+    avg_pnl_pct: float | None
+    falsifiable_denominator: int
+    hit_target_count: int
+    expired_positive_count: int
+    hold_scored: int
+    hold_correct_count: int
+    hold_correct_rate: float | None
+    excluded_unparseable: int
+    excluded_neutral: int
+    excluded_archived: int  # always 0 — archived scored stay in sample
+    excluded_unscored: int
+    excluded_pending_entry: int
+    excluded_superseded: int
+    excluded_hold_self_benchmark: int
+    excluded_hold_non_equity: int
+    excluded_hold_incomplete_benchmark: int
+    total_predictions: int
+    exclusions: tuple[str, ...] = SCORECARD_EXCLUSIONS_DOC
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "hit_rate": self.hit_rate,
+            "win_rate": self.win_rate,
+            "avg_pnl_pct": self.avg_pnl_pct,
+            "falsifiable_denominator": self.falsifiable_denominator,
+            "hit_target_count": self.hit_target_count,
+            "expired_positive_count": self.expired_positive_count,
+            "hold_scored": self.hold_scored,
+            "hold_correct_count": self.hold_correct_count,
+            "hold_correct_rate": self.hold_correct_rate,
+            "excluded_unparseable": self.excluded_unparseable,
+            "excluded_neutral": self.excluded_neutral,
+            "excluded_archived": self.excluded_archived,
+            "excluded_unscored": self.excluded_unscored,
+            "excluded_pending_entry": self.excluded_pending_entry,
+            "excluded_superseded": self.excluded_superseded,
+            "excluded_hold_self_benchmark": self.excluded_hold_self_benchmark,
+            "excluded_hold_non_equity": self.excluded_hold_non_equity,
+            "excluded_hold_incomplete_benchmark": (
+                self.excluded_hold_incomplete_benchmark
+            ),
+            "total_predictions": self.total_predictions,
+            "exclusions": list(self.exclusions),
+            "hit_rate_definition": (
+                "hit_target / falsifiable_denominator "
+                "(directional long/short only; never includes HOLD)"
+            ),
+            "win_rate_definition": (
+                "(hit_target + expired_positive) / falsifiable_denominator"
+            ),
+            "hold_correct_rate_definition": (
+                "(expired_neutral + expired_positive) / hold_scored — "
+                "CSPX-relative: excess = name_ret − CSPX_ret; "
+                "correct when excess >= −HOLD_BENCHMARK_BAND_PCT (3%)"
+            ),
+            "hold_benchmark": "CSPX",
+            "hold_benchmark_band_pct": 0.03,
+        }
+
+
+def ledger_scorecard_by_source(
+    session: Session,
+    user_id: str,
+) -> list[SourceScorecardRow]:
+    """Standing scorecard: hit rate + avg P&L broken out by ``source``.
+
+    Archived-but-scored outcomes remain in the denominator (retention
+    must not improve hit rate by aging failures out). Pending-entry and
+    superseded versions are published exclusion buckets.
+    """
+    from argosy.services.predictions.writers import (
+        MISSING_ENTRY_REASON,
+        SUPERSEDED_REASON,
+    )
+
+    rows = session.execute(
+        select(Prediction, PredictionOutcome, EvaluationMethod)
+        .join(
+            PredictionOutcome,
+            PredictionOutcome.prediction_id == Prediction.id,
+        )
+        .join(
+            EvaluationMethod,
+            EvaluationMethod.method_name
+            == PredictionOutcome.evaluation_method,
+        )
+        .where(
+            Prediction.user_id == user_id,
+            EvaluationMethod.is_active == 1,
+        )
+    ).all()
+
+    selected: dict[
+        int, tuple[Prediction, PredictionOutcome, EvaluationMethod]
+    ] = {}
+    for prediction, outcome, method in rows:
+        current = selected.get(prediction.id)
+        rank = (
+            int(method.method_version or 0),
+            outcome.evaluated_at or datetime.min,
+            int(outcome.id or 0),
+        )
+        if current is None:
+            selected[prediction.id] = (prediction, outcome, method)
+            continue
+        current_rank = (
+            int(current[2].method_version or 0),
+            current[1].evaluated_at or datetime.min,
+            int(current[1].id or 0),
+        )
+        if rank > current_rank:
+            selected[prediction.id] = (prediction, outcome, method)
+
+    all_preds = session.execute(
+        select(Prediction).where(Prediction.user_id == user_id)
+    ).scalars().all()
+    by_source_preds: dict[str, list[Prediction]] = {}
+    for p in all_preds:
+        by_source_preds.setdefault(p.source, []).append(p)
+
+    out: list[SourceScorecardRow] = []
+    for source, preds in sorted(by_source_preds.items()):
+        from argosy.services.predictions.hold_benchmark import (
+            hold_ineligibility_bucket,
+        )
+
+        excluded_unparseable = 0
+        excluded_neutral = 0
+        excluded_unscored = 0
+        excluded_pending_entry = 0
+        excluded_superseded = 0
+        excluded_hold_self_benchmark = 0
+        excluded_hold_non_equity = 0
+        excluded_hold_incomplete_benchmark = 0
+        falsifiable: list[PredictionOutcome] = []
+        hit_target = 0
+        expired_positive = 0
+        hold_scored = 0
+        hold_correct = 0
+        pnl_values: list[float] = []
+        for p in preds:
+            if (
+                p.superseded_by_prediction_id is not None
+                or (p.unparseable_reason or "") == SUPERSEDED_REASON
+            ):
+                excluded_superseded += 1
+                continue
+            if (p.unparseable_reason or "") == MISSING_ENTRY_REASON or (
+                p.entry_price is None
+                and (p.unparseable_reason or "").startswith("missing_entry")
+            ):
+                excluded_pending_entry += 1
+                continue
+            triple = selected.get(p.id)
+            if triple is None:
+                excluded_unscored += 1
+                continue
+            _p, outcome, _m = triple
+            if outcome.outcome_kind == "unparseable":
+                bucket = hold_ineligibility_bucket(outcome.notes)
+                if bucket == "excluded_hold_self_benchmark":
+                    excluded_hold_self_benchmark += 1
+                elif bucket == "excluded_hold_non_equity":
+                    excluded_hold_non_equity += 1
+                elif bucket == "excluded_hold_incomplete_benchmark":
+                    excluded_hold_incomplete_benchmark += 1
+                else:
+                    excluded_unparseable += 1
+                continue
+            if p.direction == "neutral":
+                excluded_neutral += 1
+                hold_scored += 1
+                if outcome.outcome_kind in (
+                    "expired_neutral",
+                    "expired_positive",
+                ):
+                    hold_correct += 1
+                continue
+            falsifiable.append(outcome)
+            if outcome.outcome_kind == "hit_target":
+                hit_target += 1
+            if outcome.outcome_kind == "expired_positive":
+                expired_positive += 1
+            if outcome.pnl_pct is not None:
+                pnl_values.append(float(outcome.pnl_pct))
+
+        denom = len(falsifiable)
+        hit_rate = (hit_target / denom) if denom else None
+        win_rate = (
+            (hit_target + expired_positive) / denom if denom else None
+        )
+        avg_pnl = (
+            sum(pnl_values) / len(pnl_values) if pnl_values else None
+        )
+        hold_rate = (
+            hold_correct / hold_scored if hold_scored else None
+        )
+        row = SourceScorecardRow(
+            source=source,
+            hit_rate=hit_rate,
+            win_rate=win_rate,
+            avg_pnl_pct=avg_pnl,
+            falsifiable_denominator=denom,
+            hit_target_count=hit_target,
+            expired_positive_count=expired_positive,
+            hold_scored=hold_scored,
+            hold_correct_count=hold_correct,
+            hold_correct_rate=hold_rate,
+            excluded_unparseable=excluded_unparseable,
+            excluded_neutral=excluded_neutral,
+            excluded_archived=0,
+            excluded_unscored=excluded_unscored,
+            excluded_pending_entry=excluded_pending_entry,
+            excluded_superseded=excluded_superseded,
+            excluded_hold_self_benchmark=excluded_hold_self_benchmark,
+            excluded_hold_non_equity=excluded_hold_non_equity,
+            excluded_hold_incomplete_benchmark=(
+                excluded_hold_incomplete_benchmark
+            ),
+            total_predictions=len(preds),
+        )
+        reconciled = (
+            row.falsifiable_denominator
+            + row.excluded_unparseable
+            + row.excluded_neutral
+            + row.excluded_unscored
+            + row.excluded_pending_entry
+            + row.excluded_superseded
+            + row.excluded_hold_self_benchmark
+            + row.excluded_hold_non_equity
+            + row.excluded_hold_incomplete_benchmark
+        )
+        if reconciled != row.total_predictions:
+            raise RuntimeError(
+                f"scorecard reconcile failed for source={source!r}: "
+                f"{reconciled} != {row.total_predictions}"
+            )
+        out.append(row)
+    return out
+
+
 def _compute_medians(
     session: Session, user_id: str
 ) -> dict[tuple[str, str], float]:
@@ -830,13 +1109,16 @@ __all__ = [
     "CACHE_TTL_SECONDS",
     "FULL_SAMPLE_SIZE",
     "MIN_SAMPLE_SIZE",
+    "SCORECARD_EXCLUSIONS_DOC",
     "SourceReliability",
+    "SourceScorecardRow",
     "SignalFunnelContextPolicy",
     "WEIGHT_CEIL",
     "WEIGHT_FLOOR",
     "get_source_reliability",
     "get_weight_for_source",
     "invalidate_reliability_cache",
+    "ledger_scorecard_by_source",
     "reliability_annotation",
     "signal_scorecard_label",
     "signal_funnel_context_policy",

@@ -49,6 +49,7 @@ from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.jobs.registry import JobMetadata
 from argosy.services.predictions.evaluator import (
+    EvaluatorNoProgressError,
     EvaluatorSummary,
     PriceFetcher,
     ReevaluationSummary,
@@ -217,16 +218,54 @@ class PredictionsEvaluatorLoop(CadenceLoop):
         :func:`asyncio.to_thread` without the orchestration logic
         leaking into the async coroutine. Same pattern as
         ``news_daily``.
+
+        Raises :class:`EvaluatorNoProgressError` when the evaluator
+        selected due rows but graded none — after committing any
+        reevaluation/retention work that already ran is NOT done; we
+        fail before retention so the operator sees a loud error and
+        the due backlog remains for the next successful tick. The
+        exception carries the evaluator summary for
+        ``job_runs.output_summary``.
         """
         factory = self._resolve_session_factory()
         session: Session = factory()
         try:
-            ev_summary: EvaluatorSummary = run_evaluator_batch(
-                session,
-                now=now_dt,
-                batch_size=self._batch_size,
-                price_fetcher=self._price_fetcher,
-            )
+            try:
+                ev_summary: EvaluatorSummary = run_evaluator_batch(
+                    session,
+                    now=now_dt,
+                    batch_size=self._batch_size,
+                    price_fetcher=self._price_fetcher,
+                    assert_progress=True,
+                )
+            except EvaluatorNoProgressError as exc:
+                # Persist durable failure evidence on a separate connection,
+                # then COMMIT this session so unparseable audit outcomes are
+                # not rolled away (iter-2 finding 4). Rolling them back left
+                # the backlog unchanged and the same rows retried forever.
+                try:
+                    from argosy.services.predictions.evaluator_failure_audit import (
+                        record_evaluator_batch_failure,
+                    )
+
+                    record_evaluator_batch_failure(
+                        session_factory=factory,
+                        due_selected=exc.summary.due_selected,
+                        unparseable=exc.summary.unparseable,
+                        adapter_errors=exc.summary.adapter_errors,
+                        overdue_unscored_remaining=(
+                            exc.summary.overdue_unscored_remaining
+                        ),
+                        prediction_ids=exc.summary.due_prediction_ids,
+                        summary=exc.summary.to_dict(),
+                        failure_reason=str(exc),
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.exception(
+                        "predictions_evaluator.failure_audit_failed"
+                    )
+                session.commit()
+                raise
             reeval_summary: ReevaluationSummary = run_reevaluation_batch(
                 session,
                 now=now_dt,
@@ -264,6 +303,8 @@ class PredictionsEvaluatorLoop(CadenceLoop):
         The ``finally`` block writes ``self.last_output_summary`` so a
         mid-tick exception still surfaces partial progress via the
         :class:`RegisteredScheduler` adapter (Spec A §7 NICE #7).
+        :class:`EvaluatorNoProgressError` is re-raised after stamping
+        the evaluator summary onto ``last_output_summary``.
         """
         self.last_output_summary = None
 
@@ -284,6 +325,15 @@ class PredictionsEvaluatorLoop(CadenceLoop):
             summary = await asyncio.to_thread(
                 self._run_tick_sync, now_dt
             )
+        except EvaluatorNoProgressError as exc:
+            summary = {
+                "evaluator": exc.summary.to_dict(),
+                "reevaluation": None,
+                "retention": None,
+                "progress_ok": False,
+                "failure_reason": str(exc),
+            }
+            raise
         finally:
             if summary is not None:
                 self.last_output_summary = summary

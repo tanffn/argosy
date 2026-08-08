@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -107,6 +107,66 @@ DEFAULT_TIMEFRAME_DAYS_MONITOR: int = 30
 #: 180 days (§5.5 — the evaluator can re-fire on a fresh prediction
 #: when the next analyst run re-confirms the structural pick).
 DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT: int = 180
+
+#: Fleet-verdict default horizon when no dated_event / next_validation
+#: is available. Thesis-length (not tactical); scored via
+#: ``fixed_lookahead_180d`` when preserve_long_horizon applies.
+DEFAULT_TIMEFRAME_DAYS_FLEET_VERDICT: int = 180
+
+#: Source enum for predictions authored from settled fleet verdicts.
+FLEET_VERDICT_SOURCE: str = "internal_fleet_verdict"
+
+#: Durable omission when a verdict was recorded without an entry quote.
+MISSING_ENTRY_REASON: str = "missing_entry_quote"
+
+#: Prior claim frozen because a newer version supersedes it.
+SUPERSEDED_REASON: str = "superseded_by_correction"
+
+#: Directional verdicts → long/short. HOLD/WAIT → neutral (measurable
+#: against an absolute-move band — see module docstring on HOLD grading).
+_FLEET_VERDICT_TO_DIRECTION: dict[str, Literal["long", "short", "neutral"]] = {
+    "BUY": "long",
+    "ADD": "long",
+    "TRIM": "short",
+    "SELL": "short",
+    "HOLD": "neutral",
+    "WAIT": "neutral",
+}
+
+#: Label tokens that mark a price_* trigger as a TRUE stop / exit level.
+_STOP_LABEL_TOKENS: tuple[str, ...] = (
+    "stop",
+    "exit",
+    "cut loss",
+    "invalidat",
+    "thesis broken",
+    "sell if",
+    "trim if",
+    "hard floor",
+)
+
+#: Label tokens that mark a price_* trigger as a TARGET / take-profit.
+_TARGET_LABEL_TOKENS: tuple[str, ...] = (
+    "target",
+    "take profit",
+    "upside to",
+    "reach $",
+    "price objective",
+)
+
+#: Label tokens that mark a price_* trigger as a REVISIT / add-on-weakness
+#: signal — NOT a grading stop. Fabricating a stop from these manufactures
+#: false misses (IOVA $4.50 class).
+_REVISIT_ONLY_LABEL_TOKENS: tuple[str, ...] = (
+    "add on",
+    "adding on",
+    "consider adding",
+    "on weakness",
+    "re-check",
+    "recheck",
+    "re-review",
+    "revisit",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +269,26 @@ def _monitor_flag_message_id(*, monitor_flag_id: int | str) -> str:
     return f"{DEDUP_KEY_VERSION}|predictions|mf|{monitor_flag_id}"
 
 
+def _fleet_verdict_message_id(
+    *,
+    verdict_id: int | str,
+    ticker: str,
+    version: int = 1,
+) -> str:
+    """``v1|predictions|internal_fleet_verdict|<verdict_id>.<ticker>[#vN]``."""
+    if verdict_id is None or verdict_id == "":
+        raise ValueError("fleet_verdict prediction needs a non-empty verdict_id")
+    if not ticker:
+        raise ValueError("fleet_verdict prediction needs a non-empty ticker")
+    base = (
+        f"{DEDUP_KEY_VERSION}|predictions|{FLEET_VERDICT_SOURCE}|"
+        f"{verdict_id}.{ticker.upper()}"
+    )
+    if int(version) <= 1:
+        return base
+    return f"{base}#v{int(version)}"
+
+
 def _alpha_report_message_id(
     *, analysis_id: int | str, ticker: str, kind: str
 ) -> str:
@@ -294,6 +374,13 @@ def _choose_method_and_window(
         # leaves it unset.
         chosen_window = timeframe_days or DEFAULT_TIMEFRAME_DAYS_DISCORD
         return ("target_stop", chosen_window)
+
+    if preserve_long_horizon and timeframe_days is not None and timeframe_days > 30:
+        # Early-signal / fleet-verdict thesis horizons: do NOT collapse
+        # to the §5.5 30d cap. Window is min(stated, 180); method is
+        # the true 180d registry entry (evaluator keys off due_at).
+        chosen_window = min(int(timeframe_days), 180)
+        return ("fixed_lookahead_180d", chosen_window)
 
     if preserve_long_horizon and timeframe_days == 180:
         return ("fixed_lookahead_180d", 180)
@@ -898,6 +985,361 @@ def write_monitor_flag_prediction(
     )
 
 
+def _label_has_token(label: str, tokens: tuple[str, ...]) -> bool:
+    low = (label or "").lower()
+    return any(tok in low for tok in tokens)
+
+
+def classify_price_trigger_role(
+    trigger: dict[str, Any],
+    *,
+    direction: str,
+) -> Literal["target", "stop"] | None:
+    """Map a typed price_* revisit trigger to a grading anchor — or None.
+
+    Intent is read from the trigger ``label``, never inferred from the
+    comparison operator alone. ``price_below`` on a BUY is often
+    "add on weakness" (IOVA $4.50) — treating that as a stop manufactures
+    false ``hit_stop`` misses. Ambiguous / revisit-only labels return
+    ``None`` so the field stays unset with a documented reason.
+    """
+    kind = str(trigger.get("kind") or "")
+    if kind not in ("price_below", "price_above"):
+        return None
+    if trigger.get("price") is None:
+        return None
+    label = str(trigger.get("label") or "")
+
+    if _label_has_token(label, _REVISIT_ONLY_LABEL_TOKENS) and not _label_has_token(
+        label, _STOP_LABEL_TOKENS
+    ):
+        return None
+
+    if _label_has_token(label, _STOP_LABEL_TOKENS):
+        if direction == "long" and kind == "price_below":
+            return "stop"
+        if direction == "short" and kind == "price_above":
+            return "stop"
+        # Mismatched geometry — do not invent.
+        return None
+
+    if _label_has_token(label, _TARGET_LABEL_TOKENS):
+        if direction == "long" and kind == "price_above":
+            return "target"
+        if direction == "short" and kind == "price_below":
+            return "target"
+        return None
+
+    # No determinate intent — leave unset rather than fabricate.
+    return None
+
+
+def _fleet_lineage_prefix(*, verdict_id: int | str, ticker: str) -> str:
+    return (
+        f"{DEDUP_KEY_VERSION}|predictions|{FLEET_VERDICT_SOURCE}|"
+        f"{verdict_id}.{ticker.upper()}"
+    )
+
+
+def _parse_fleet_version(message_id: str | None) -> int:
+    if not message_id:
+        return 1
+    if "#v" in message_id:
+        try:
+            return int(message_id.rsplit("#v", 1)[1])
+        except ValueError:
+            return 1
+    return 1
+
+
+def _fleet_claim_fingerprint(
+    *,
+    direction: str,
+    entry_price: Decimal | float | None,
+    target_price: Decimal | float | None,
+    stop_price: Decimal | float | None,
+    unparseable_reason: str | None,
+) -> tuple[Any, ...]:
+    def _n(v: Decimal | float | None) -> float | None:
+        if v is None:
+            return None
+        return float(v)
+
+    return (
+        direction,
+        _n(entry_price),
+        _n(target_price),
+        _n(stop_price),
+        unparseable_reason,
+    )
+
+
+def _find_fleet_prediction_head(
+    session: Session,
+    *,
+    user_id: str,
+    verdict_id: int | str,
+    ticker: str,
+) -> Prediction | None:
+    """Latest non-superseded fleet prediction for this verdict+ticker."""
+    prefix = _fleet_lineage_prefix(verdict_id=verdict_id, ticker=ticker)
+    rows = list(
+        session.execute(
+            select(Prediction).where(
+                Prediction.user_id == user_id,
+                Prediction.source == FLEET_VERDICT_SOURCE,
+                (
+                    (Prediction.message_id == prefix)
+                    | (Prediction.message_id.like(prefix + "#v%"))
+                ),
+            )
+        ).scalars()
+    )
+    if not rows:
+        return None
+    live = [r for r in rows if r.superseded_by_prediction_id is None]
+    pool = live or rows
+    pool.sort(key=lambda r: _parse_fleet_version(r.message_id), reverse=True)
+    return pool[0]
+
+
+def _append_fleet_prediction_version(
+    session: Session,
+    *,
+    user_id: str,
+    prior: Prediction | None,
+    verdict_id: int | str,
+    ticker: str,
+    direction: str,
+    entry_price: Decimal | float | None,
+    target_price: Decimal | float | None,
+    stop_price: Decimal | float | None,
+    timeframe_days: int | None,
+    event_at: datetime,
+    source_ref: dict[str, Any],
+    unparseable_reason: str | None,
+    preserve_long_horizon: bool,
+) -> Prediction:
+    """Insert a new immutable version; mark ``prior`` superseded (metadata only)."""
+    version = 1
+    if prior is not None:
+        version = _parse_fleet_version(prior.message_id) + 1
+    source_ref = dict(source_ref)
+    source_ref["version"] = version
+    if prior is not None and prior.id is not None:
+        source_ref["supersedes_prediction_id"] = prior.id
+
+    row = _insert_prediction(
+        session,
+        user_id,
+        source=FLEET_VERDICT_SOURCE,
+        source_ref=source_ref,
+        message_id=_fleet_verdict_message_id(
+            verdict_id=verdict_id, ticker=ticker, version=version
+        ),
+        ticker=ticker.upper(),
+        direction=direction,
+        event_at=event_at,
+        entry_price=entry_price,
+        target_price=target_price,
+        stop_price=stop_price,
+        timeframe_days=timeframe_days,
+        unparseable_reason=unparseable_reason,
+        preserve_long_horizon=preserve_long_horizon,
+        raw_text_ref=f"verdicts.id:{verdict_id}",
+    )
+    if prior is not None and prior.id is not None:
+        prior.superseded_by_prediction_id = row.id
+        prior.unparseable_reason = SUPERSEDED_REASON
+        try:
+            meta = json.loads(prior.source_ref or "{}")
+            if not isinstance(meta, dict):
+                meta = {}
+        except (TypeError, ValueError):
+            meta = {}
+        meta["superseded_by_prediction_id"] = row.id
+        prior.source_ref = json.dumps(meta, sort_keys=True, default=str)
+        session.flush()
+    return row
+
+
+def write_fleet_verdict_prediction(
+    session: Session,
+    user_id: str,
+    *,
+    verdict_id: int | str,
+    ticker: str,
+    verdict: str,
+    event_at: datetime,
+    entry_price: Decimal | float | None,
+    revisit_triggers: list[dict[str, Any]] | None = None,
+    next_validation: date | None = None,
+    conviction: str | None = None,
+    decision_run_id: int | None = None,
+    missing_field_reasons: list[str] | None = None,
+    asset_class: str | None = None,
+) -> Prediction | None:
+    """Write a fleet-verdict prediction — immutable versions, durable omissions.
+
+    Missing ``entry_price`` still writes a durable row with
+    ``unparseable_reason=missing_entry_quote``. Corrections append a
+    new versioned row; claim fields on the prior are never rewritten.
+    """
+    action = (verdict or "").strip().upper()
+    direction = _FLEET_VERDICT_TO_DIRECTION.get(action)
+    if direction is None:
+        return None
+
+    pending_entry = entry_price is None
+    if pending_entry:
+        logger.warning(
+            "predictions.writers.fleet_verdict_pending_entry",
+            verdict_id=verdict_id,
+            ticker=ticker,
+            verdict=action,
+        )
+
+    triggers = [t for t in (revisit_triggers or []) if isinstance(t, dict)]
+    target_price: float | None = None
+    stop_price: float | None = None
+    earliest_dated: date | None = None
+    reasons = list(missing_field_reasons or [])
+
+    for t in triggers:
+        kind = str(t.get("kind") or "")
+        if kind == "dated_event" and t.get("date"):
+            try:
+                d = date.fromisoformat(str(t["date"])[:10])
+            except ValueError:
+                d = None
+            if d is not None and (
+                earliest_dated is None or d < earliest_dated
+            ):
+                earliest_dated = d
+            continue
+        if kind not in ("price_below", "price_above"):
+            continue
+        role = classify_price_trigger_role(t, direction=direction)
+        try:
+            px = float(t["price"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if role == "target" and target_price is None:
+            target_price = px
+        elif role == "stop" and stop_price is None:
+            stop_price = px
+        elif role is None:
+            reasons.append(
+                f"{kind}@{t.get('price')}: not used as grading anchor "
+                f"(label intent indeterminate or revisit-only: "
+                f"{(t.get('label') or '')[:80]!r})"
+            )
+
+    if target_price is None and not pending_entry:
+        reasons.append(
+            "target_price unset: no price_* trigger with determinate "
+            "target intent"
+        )
+    if stop_price is None and not pending_entry:
+        reasons.append(
+            "stop_price unset: no price_* trigger with determinate "
+            "stop/exit intent"
+        )
+
+    event_aware = _ensure_aware(event_at)
+    if earliest_dated is not None:
+        delta = (earliest_dated - event_aware.date()).days
+        timeframe_days = max(delta, 1)
+    elif next_validation is not None:
+        delta = (next_validation - event_aware.date()).days
+        timeframe_days = max(delta, 1)
+    else:
+        timeframe_days = DEFAULT_TIMEFRAME_DAYS_FLEET_VERDICT
+
+    preserve_long = (
+        direction == "neutral"
+        or target_price is None
+        or stop_price is None
+        or pending_entry
+    )
+
+    unparseable_reason = MISSING_ENTRY_REASON if pending_entry else None
+    source_ref: dict[str, Any] = {
+        "verdict_id": verdict_id,
+        "ticker": ticker.upper(),
+        "verdict": action,
+        "conviction": conviction,
+        "decision_run_id": decision_run_id,
+        "revisit_triggers": triggers,
+        "grading_field_notes": reasons,
+        "pending_entry": pending_entry,
+        "hold_grading": (
+            "cspx_relative: excess=name_ret−CSPX_ret; "
+            "correct when excess>=−HOLD_BENCHMARK_BAND_PCT (3%); "
+            "self-benchmark/non-equity/incomplete→unparseable buckets"
+            if direction == "neutral"
+            else None
+        ),
+        "asset_class": asset_class,
+    }
+
+    head = _find_fleet_prediction_head(
+        session,
+        user_id=user_id,
+        verdict_id=verdict_id,
+        ticker=ticker,
+    )
+    new_fp = _fleet_claim_fingerprint(
+        direction=direction,
+        entry_price=entry_price,
+        target_price=target_price,
+        stop_price=stop_price,
+        unparseable_reason=unparseable_reason,
+    )
+    if head is not None:
+        old_fp = _fleet_claim_fingerprint(
+            direction=head.direction,
+            entry_price=head.entry_price,
+            target_price=head.target_price,
+            stop_price=head.stop_price,
+            unparseable_reason=head.unparseable_reason,
+        )
+        if old_fp == new_fp:
+            return head
+        return _append_fleet_prediction_version(
+            session,
+            user_id=user_id,
+            prior=head,
+            verdict_id=verdict_id,
+            ticker=ticker,
+            direction=direction,
+            entry_price=entry_price,
+            target_price=target_price,
+            stop_price=stop_price,
+            timeframe_days=timeframe_days,
+            event_at=event_aware,
+            source_ref=source_ref,
+            unparseable_reason=unparseable_reason,
+            preserve_long_horizon=preserve_long,
+        )
+
+    return _append_fleet_prediction_version(
+        session,
+        user_id=user_id,
+        prior=None,
+        verdict_id=verdict_id,
+        ticker=ticker,
+        direction=direction,
+        entry_price=entry_price,
+        target_price=target_price,
+        stop_price=stop_price,
+        timeframe_days=timeframe_days,
+        event_at=event_aware,
+        source_ref=source_ref,
+        unparseable_reason=unparseable_reason,
+        preserve_long_horizon=preserve_long,
+    )
+
 def write_alpha_report_prediction(
     session: Session,
     user_id: str,
@@ -984,15 +1426,21 @@ __all__ = [
     "DEDUP_KEY_VERSION",
     "DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT",
     "DEFAULT_TIMEFRAME_DAYS_DISCORD",
+    "DEFAULT_TIMEFRAME_DAYS_FLEET_VERDICT",
     "DEFAULT_TIMEFRAME_DAYS_MONITOR",
     "DEFAULT_TIMEFRAME_DAYS_NEWS_HIGH",
     "DEFAULT_TIMEFRAME_DAYS_NEWS_MEDIUM",
     "DEFAULT_TIMEFRAME_DAYS_OBSERVER",
     "DEFAULT_TIMEFRAME_DAYS_THESIS",
+    "FLEET_VERDICT_SOURCE",
+    "MISSING_ENTRY_REASON",
+    "SUPERSEDED_REASON",
     "LONG_HORIZON_CAP_DAYS",
+    "classify_price_trigger_role",
     "discord_message_id",
     "write_alpha_report_prediction",
     "write_discord_prediction",
+    "write_fleet_verdict_prediction",
     "write_monitor_flag_prediction",
     "write_news_signal_prediction",
     "write_per_position_thesis_prediction",

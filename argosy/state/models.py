@@ -3170,6 +3170,42 @@ class Prediction(Base):
         nullable=False,
         server_default=_sa_text("0"),
     )
+    # Stream C iter-2 — lineage pointer. NULL = current head (or never
+    # corrected). When set, this row's claim is frozen and a newer
+    # version owns the standing prediction; direction/entry/levels on
+    # THIS row must never be rewritten.
+    superseded_by_prediction_id: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+
+class PredictionEvaluatorBatchFailure(Base):
+    """Durable evidence that an evaluator tick graded zero usable rows.
+
+    Written on a separate connection so it survives the tick's rollback
+    of in-session unparseable outcomes (Stream C iter-2 finding 4).
+    """
+
+    __tablename__ = "prediction_evaluator_batch_failures"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    due_selected: Mapped[int] = mapped_column(Integer, nullable=False)
+    unparseable: Mapped[int] = mapped_column(Integer, nullable=False)
+    adapter_errors: Mapped[int] = mapped_column(Integer, nullable=False)
+    overdue_unscored_remaining: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    prediction_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+    failure_reason: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class EvaluationMethod(Base):

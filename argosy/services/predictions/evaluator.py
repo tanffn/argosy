@@ -143,6 +143,11 @@ class EvaluatorSummary:
     Used by the loop's ``tick()`` to surface counts in the
     ``job_runs.output_summary`` column (spec A commit #7's
     widened ``dict | None`` return contract on :class:`CadenceLoop`).
+
+    Progress contract (Stream C 2026-08-07): a tick that selected due
+    rows but graded none is a failure — never report vacuous ``ok``.
+    ``due_selected`` / ``overdue_unscored_remaining`` make the backlog
+    auditable in ``job_runs.output_summary``.
     """
 
     evaluated: int = 0
@@ -150,6 +155,11 @@ class EvaluatorSummary:
     unparseable: int = 0
     adapter_errors: int = 0
     by_kind: dict[str, int] = field(default_factory=dict)
+    due_selected: int = 0
+    due_prediction_ids: list[int] = field(default_factory=list)
+    overdue_unscored_remaining: int = 0
+    progress_ok: bool = True
+    failure_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -158,6 +168,11 @@ class EvaluatorSummary:
             "unparseable": self.unparseable,
             "adapter_errors": self.adapter_errors,
             "by_kind": dict(self.by_kind),
+            "due_selected": self.due_selected,
+            "due_prediction_ids": list(self.due_prediction_ids),
+            "overdue_unscored_remaining": self.overdue_unscored_remaining,
+            "progress_ok": self.progress_ok,
+            "failure_reason": self.failure_reason,
         }
 
 
@@ -171,6 +186,20 @@ class EvaluatorAdapterError(RuntimeError):
     tomorrow). Persistent adapter failures will look like ever-growing
     "due" backlogs in the next-due query.
     """
+
+
+class EvaluatorNoProgressError(RuntimeError):
+    """Due backlog existed but this batch graded zero predictions.
+
+    Distinguishes "nothing was due" (legitimate ``ok``) from "things
+    were due and I graded none" (must not report ``ok``). Carries the
+    :class:`EvaluatorSummary` so the job adapter can still persist
+    backlog metrics on the error path.
+    """
+
+    def __init__(self, message: str, summary: EvaluatorSummary) -> None:
+        super().__init__(message)
+        self.summary = summary
 
 
 #: Price-fetcher contract. Returns ``None`` on "ticker not found / no
@@ -534,6 +563,47 @@ def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[Bar]:
 # ---------------------------------------------------------------------------
 
 
+def _outcome_for_active_method_exists():
+    """EXISTS predicate: an outcome row for the prediction's active method."""
+    return (
+        select(PredictionOutcome.id)
+        .where(PredictionOutcome.prediction_id == Prediction.id)
+        .where(
+            PredictionOutcome.evaluation_method
+            == Prediction.evaluation_method
+        )
+        .exists()
+    )
+
+
+def count_overdue_unscored(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Count archived=0 predictions past ``evaluation_due_at`` with no
+    outcome for their active ``evaluation_method``.
+
+    Surfaced as ``overdue_unscored_remaining`` so operators can see the
+    backlog grow even when a tick made partial progress.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    from sqlalchemy import func
+
+    stmt = (
+        select(func.count())
+        .select_from(Prediction)
+        .where(Prediction.evaluation_due_at <= now)
+        .where(Prediction.archived == 0)
+        .where(~_outcome_for_active_method_exists())
+    )
+    return int(session.execute(stmt).scalar_one())
+
+
 def find_due_predictions(
     session: Session,
     *,
@@ -569,24 +639,33 @@ def find_due_predictions(
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    # Sub-select instead of OUTER JOIN — SQLite handles this fine and
-    # the resulting plan uses the (prediction_id, evaluation_method)
-    # UNIQUE index on prediction_outcomes for the EXISTS probe.
-    outcome_exists = (
-        select(PredictionOutcome.id)
-        .where(PredictionOutcome.prediction_id == Prediction.id)
-        .where(
-            PredictionOutcome.evaluation_method
-            == Prediction.evaluation_method
-        )
-        .exists()
+    from sqlalchemy import and_, or_
+
+    from argosy.services.predictions.writers import (
+        MISSING_ENTRY_REASON,
+        SUPERSEDED_REASON,
     )
+
+    outcome_exists = _outcome_for_active_method_exists()
 
     stmt = (
         select(Prediction)
         .where(Prediction.evaluation_due_at <= now)
         .where(Prediction.archived == 0)
         .where(~outcome_exists)
+        # Pending-entry omissions and superseded versions are durable
+        # audit rows — not due for scoring until a scoreable version exists.
+        .where(
+            or_(
+                Prediction.unparseable_reason.is_(None),
+                and_(
+                    Prediction.unparseable_reason != MISSING_ENTRY_REASON,
+                    Prediction.unparseable_reason != SUPERSEDED_REASON,
+                ),
+            )
+        )
+        .where(Prediction.superseded_by_prediction_id.is_(None))
+        .where(Prediction.entry_price.is_not(None))
         .order_by(Prediction.evaluation_due_at.asc(), Prediction.id.asc())
         .limit(batch_size)
     )
@@ -800,6 +879,14 @@ def _compute_outcome(
             "fixed_lookahead_30d": 30,
             "fixed_lookahead_180d": 180,
         }
+        if prediction.direction == "neutral":
+            return _score_hold_vs_cspx_dispatch(
+                prediction,
+                name_bars=bars,
+                price_fetcher=price_fetcher,
+                start=start,
+                end=end,
+            )
         return _score_fixed_lookahead(
             prediction,
             bars,
@@ -810,6 +897,66 @@ def _compute_outcome(
     return Outcome(
         kind="unparseable",
         notes=f"unknown evaluation_method={method!r}",
+    )
+
+
+def _score_hold_vs_cspx_dispatch(
+    prediction: Prediction,
+    *,
+    name_bars: Sequence[Bar],
+    price_fetcher: PriceFetcher,
+    start: date,
+    end: date,
+) -> Outcome:
+    """Option B: HOLD/WAIT vs CSPX; ineligible cases → unparseable+reason."""
+    from argosy.services.predictions.hold_benchmark import (
+        HOLD_BENCHMARK_TICKER,
+        asset_class_from_source_ref,
+        score_hold_vs_cspx,
+    )
+
+    if prediction.entry_price is None:
+        return Outcome(
+            kind="unparseable",
+            notes="hold_vs_cspx chosen but entry_price missing",
+        )
+
+    event_d = _to_date(prediction.event_at)
+    # CSPX fetch from event date (not +1) so entry mark exists.
+    try:
+        raw_cspx = price_fetcher(HOLD_BENCHMARK_TICKER, event_d, end)
+    except EvaluatorAdapterError:
+        raise
+
+    cspx_bars: list[Bar] | None
+    if raw_cspx is None:
+        cspx_bars = None
+    elif raw_cspx and isinstance(raw_cspx[0], Bar):
+        cspx_bars = sorted(list(raw_cspx), key=lambda b: b.bar_date)
+    else:
+        cspx_bars = sorted(
+            _normalize_rows(raw_cspx), key=lambda b: b.bar_date  # type: ignore[arg-type]
+        )
+    if cspx_bars is not None:
+        cspx_bars = [b for b in cspx_bars if b.bar_date <= end]
+
+    result = score_hold_vs_cspx(
+        ticker=prediction.ticker or "",
+        entry_price=float(prediction.entry_price),
+        name_bars=name_bars,
+        cspx_bars=cspx_bars,
+        event_date=event_d,
+        due_date=end,
+        asset_class=asset_class_from_source_ref(prediction.source_ref),
+    )
+    return Outcome(
+        kind=result.kind,  # type: ignore[arg-type]
+        pnl_pct=result.pnl_pct,
+        entry_price_used=result.entry_price_used,
+        exit_price_used=result.exit_price_used,
+        exit_trigger_date=result.exit_trigger_date,
+        notes=result.notes,
+        evidence=result.evidence,
     )
 
 
@@ -1233,6 +1380,7 @@ def run_evaluator_batch(
     now: datetime | None = None,
     batch_size: int = 200,
     price_fetcher: PriceFetcher = default_price_fetcher,
+    assert_progress: bool = True,
 ) -> EvaluatorSummary:
     """Spec §3.1 — full batch: find due → score each → return summary.
 
@@ -1247,6 +1395,13 @@ def run_evaluator_batch(
     (the surviving DUE rows will be re-picked on the next tick — the
     idempotency contract makes this safe).
 
+    Progress assertion (``assert_progress=True``, the production
+    default): if the batch selected one or more due predictions and
+    graded none (``evaluated == 0``), raises
+    :class:`EvaluatorNoProgressError`. "Nothing was due" remains a
+    legitimate success. Pass ``assert_progress=False`` only for
+    diagnostic dry-runs that must inspect the summary without raising.
+
     Returns :class:`EvaluatorSummary` — converted to the
     ``output_summary`` dict at the loop's tick boundary.
     """
@@ -1257,6 +1412,10 @@ def run_evaluator_batch(
     due = find_due_predictions(
         session, now=now, batch_size=batch_size
     )
+    summary.due_selected = len(due)
+    summary.due_prediction_ids = [
+        int(p.id) for p in due if p.id is not None
+    ]
     _log.info(
         "predictions.evaluator.batch.start",
         due_count=len(due),
@@ -1309,11 +1468,38 @@ def run_evaluator_batch(
                 summary.skipped_existing += 1
                 continue
 
-        summary.evaluated += 1
+        # Fresh outcome accounting. Unparseable is an audit write, NOT
+        # progress — counting it as ``evaluated`` was the production
+        # defect that let 848 unusable rows report ``ok``.
         kind = outcome.outcome_kind
         summary.by_kind[kind] = summary.by_kind.get(kind, 0) + 1
         if kind == "unparseable":
             summary.unparseable += 1
+            continue
+
+        summary.evaluated += 1
+
+    summary.overdue_unscored_remaining = count_overdue_unscored(
+        session, now=now
+    )
+
+    if summary.due_selected > 0 and summary.evaluated == 0:
+        summary.progress_ok = False
+        summary.failure_reason = (
+            f"evaluator graded 0 usable outcomes of {summary.due_selected} "
+            f"due prediction(s) "
+            f"(unparseable={summary.unparseable}, "
+            f"adapter_errors={summary.adapter_errors}); "
+            f"overdue_unscored_remaining="
+            f"{summary.overdue_unscored_remaining}"
+        )
+        _log.error(
+            "predictions.evaluator.no_progress",
+            **summary.to_dict(),
+        )
+    else:
+        summary.progress_ok = True
+        summary.failure_reason = None
 
     _log.info(
         "predictions.evaluator.batch.done",
@@ -1321,6 +1507,9 @@ def run_evaluator_batch(
         skipped_existing=summary.skipped_existing,
         unparseable=summary.unparseable,
         adapter_errors=summary.adapter_errors,
+        due_selected=summary.due_selected,
+        overdue_unscored_remaining=summary.overdue_unscored_remaining,
+        progress_ok=summary.progress_ok,
     )
 
     # Spec C commit #6 — bust the reliability cache so the NEXT consumer
@@ -1341,6 +1530,12 @@ def run_evaluator_batch(
             exc_info=True,
         )
 
+    if assert_progress and not summary.progress_ok:
+        raise EvaluatorNoProgressError(
+            summary.failure_reason or "evaluator made no progress",
+            summary,
+        )
+
     return summary
 
 
@@ -1349,11 +1544,13 @@ __all__ = [
     "ENTRY_BACKFILL_BASE_METHODS",
     "ENTRY_BACKFILL_SUFFIX",
     "EvaluatorAdapterError",
+    "EvaluatorNoProgressError",
     "EvaluatorSummary",
     "Outcome",
     "OutcomeKind",
     "PriceFetcher",
     "ReevaluationSummary",
+    "count_overdue_unscored",
     "default_price_fetcher",
     "evaluate_prediction",
     "find_due_predictions",

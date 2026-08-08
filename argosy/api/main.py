@@ -43,6 +43,7 @@ from argosy.api.routes.domain_kb import router as domain_kb_router
 from argosy.api.routes.execution import router as execution_router
 from argosy.api.routes.files import router as files_router
 from argosy.api.routes.fleet_self_review import router as fleet_self_review_router
+from argosy.api.routes.predictions import router as predictions_router
 from argosy.api.routes.health import router as health_router
 from argosy.api.routes.intake import router as intake_router
 from argosy.api.routes.internal import router as internal_router
@@ -201,6 +202,7 @@ def create_app() -> FastAPI:
     # the daily sweep.  See argosy/services/fleet_self_review.py for
     # detector implementations.
     app.include_router(fleet_self_review_router, prefix=api_prefix)
+    app.include_router(predictions_router, prefix=api_prefix)
 
     # EX2 anomaly-detection report viewer (migration 0038). Auto-fires
     # from the expense ingest path on every Discount Bank statement

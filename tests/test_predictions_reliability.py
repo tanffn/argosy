@@ -245,6 +245,10 @@ def test_abstain_rate_counts_neutral_predictions(sync_session) -> None:
     ``direction='neutral'`` so the agent can be measured for hiding
     behind HOLD. The view's abstain_rate exposes this; consumers apply
     participation_penalty = 1 - abstain_rate.
+
+    Stream C review item 4: the weight/view denominator is unchanged —
+    neutrals still count in scored_predictions for the view. The
+    standing scorecard excludes them from directional hit-rate.
     """
     session, _ = sync_session
     for _ in range(3):
@@ -270,6 +274,8 @@ def test_abstain_rate_counts_neutral_predictions(sync_session) -> None:
     )
     r = rows[0]
     assert r.total_predictions == 10
+    assert r.scored_predictions == 10
+    assert r.hit_rate == pytest.approx(0.7, abs=1e-9)
     assert r.abstain_rate == pytest.approx(0.3, abs=1e-9)
     assert r.participation_penalty == pytest.approx(0.7, abs=1e-9)
 
@@ -658,7 +664,12 @@ def test_weight_floor_prevents_collapse(sync_session) -> None:
 def test_weight_participation_penalty_multiplies_in(sync_session) -> None:
     """30 long hits + 30 HOLD neutral → abstain=0.5, penalty=0.5,
     hit_rate=30/60=0.5, sample_size_factor=1.0 (>=50 scored) →
-    raw weight = 0.5 * 0.5 * 1.0 = 0.25."""
+    raw weight = 0.5 * 0.5 * 1.0 = 0.25.
+
+    Stream C review item 4: weight formula is UNCHANGED — neutrals still
+    enter the view's scored_predictions / hit_rate denominator. The
+    standing scorecard owns its own exclusions separately.
+    """
     session, _ = sync_session
     for _ in range(30):
         p = _insert_prediction(

@@ -203,9 +203,13 @@ class Settings(BaseSettings):
     decision_funnel_shadow: bool = Field(default=True)
     decision_funnel_stage3: bool = Field(default=True)
     decision_funnel_autoact: bool = Field(default=False)
-    # Discord signal listener. OFF (2026-07-07): reconnect bug (~150 supervisor
-    # restarts/day) + Discord blocked the API; 0 signals since 2026-05-29.
-    # Re-enable via ARGOSY_DISCORD_LISTENER_ENABLED=1 after value review + fix.
+    # Discord signal listener. OFF (2026-07-07; retirement confirmed
+    # Stream C 2026-08-07): gateway close code 4004 Authentication failed
+    # accounted for 5512 of 5603 error runs; 0 succeeded. Listener has
+    # been dead since 2026-06-21. Migration 0096 archives the unparseable
+    # discord / discord_alpha_report backlog (reversible via
+    # prediction_source_retirements). Re-enable via
+    # ARGOSY_DISCORD_LISTENER_ENABLED=1 only after a fresh token + value review.
     discord_listener_enabled: bool = Field(default=False)
     # Boot-time missed-run catch-up: a cron loop whose most recent scheduled
     # fire has no recorded tick (server was down) fires once at startup,

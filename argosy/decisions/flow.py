@@ -869,7 +869,10 @@ class DecisionFlow:
             from argosy.decisions.retract_on_reversal import (
                 retract_contradictory_open_proposals,
             )
-            from argosy.services.verdict_registry import write_verdict
+            from argosy.services.verdict_registry import (
+                register_fleet_prediction_for_verdict,
+                write_verdict,
+            )
 
             url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
             sf = sessionmaker(
@@ -877,11 +880,12 @@ class DecisionFlow:
                 expire_on_commit=False,
             )
             sess = sf()
+            verdict_row_id: int | None = None
             try:
                 note = reasoning_md
                 if named_sleeve:
                     note = f"{note}\n\nplan_sleeve={named_sleeve}".strip()
-                write_verdict(
+                vrow = write_verdict(
                     sess,
                     user_id=self.user_id,
                     subject=ticker,
@@ -892,7 +896,10 @@ class DecisionFlow:
                     source_decision_run_id=decision_run_id or None,
                     reasoning_md=note,
                     settled=True,
+                    # Never fetch quotes inside the verdict transaction.
+                    entry_price=None,
                 )
+                verdict_row_id = vrow.id
                 # Item C — same transaction as the verdict write.
                 if decision_run_id:
                     detail = (reasoning_md or "").strip()
@@ -909,11 +916,36 @@ class DecisionFlow:
                 sess.commit()
             finally:
                 sess.close()
+
+            # Measurement is deferred past commit: hard-timeout quote,
+            # then a fresh short transaction. Failure never affects the
+            # verdict that already committed.
+            if verdict_row_id is not None:
+                try:
+                    post = sf()
+                    try:
+                        register_fleet_prediction_for_verdict(
+                            post,
+                            user_id=self.user_id,
+                            verdict_id=verdict_row_id,
+                            resolve_quote=True,
+                        )
+                        post.commit()
+                    finally:
+                        post.close()
+                except Exception as post_exc:  # noqa: BLE001
+                    _log.warning(
+                        "decision_flow.fleet_prediction_post_commit_failed",
+                        ticker=ticker,
+                        error=str(post_exc)[:200],
+                    )
+            return
         except Exception as exc:  # noqa: BLE001 — registry write must not fail the flow
             _log.warning(
                 "decision_flow.verdict_registry_write_failed",
                 ticker=ticker, error=str(exc)[:200],
             )
+            return
 
     def _rounds_for(self, tier: Tier) -> int:
         return {

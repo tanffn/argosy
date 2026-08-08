@@ -148,12 +148,19 @@ def write_verdict(
     source_decision_run_id: int | None = None,
     reasoning_md: str = "",
     settled: bool = True,
+    entry_price: float | None = None,
 ) -> Verdict:
     """Insert a verdict row; if ``settled``, supersede any prior settled row.
 
     Typed triggers are validated (unknown kinds raise). Idempotent on the
     same run id: a second write for the same ``source_decision_run_id`` on
     the same subject refreshes the standing row in place.
+
+    ``entry_price`` — optional snapshot for the fleet-verdict prediction
+    ledger. This function NEVER fetches market data (measurement must not
+    stall the decision transaction). Callers that have a price pass it;
+    otherwise use :func:`register_fleet_prediction_for_verdict` after
+    commit with a hard-timeout quote resolver / the backfill command.
     """
     subj = _norm_subject(subject)
     v = _norm_verdict(verdict)
@@ -185,6 +192,12 @@ def write_verdict(
             existing_same_run.settled = True
             existing_same_run.updated_at = _utcnow()
             session.flush()
+            _safe_fleet_prediction_write(
+                session,
+                user_id=user_id,
+                verdict_row=existing_same_run,
+                entry_price=entry_price,
+            )
             try:
                 from argosy.services.home_greeting_cache import mark_home_greeting_dirty
 
@@ -231,6 +244,12 @@ def write_verdict(
         run_id=source_decision_run_id,
         superseded_prior=prior.id if prior is not None else None,
     )
+    _safe_fleet_prediction_write(
+        session,
+        user_id=user_id,
+        verdict_row=row,
+        entry_price=entry_price,
+    )
     try:
         from argosy.services.home_greeting_cache import mark_home_greeting_dirty
 
@@ -238,6 +257,158 @@ def write_verdict(
     except Exception:  # noqa: BLE001
         pass
     return row
+
+
+#: Hard ceiling for deferred quote resolution (seconds). Measurement
+#: must never hang the decision path; callers run this AFTER commit.
+FLEET_QUOTE_TIMEOUT_SECONDS: float = 3.0
+
+
+def resolve_entry_price_with_timeout(
+    subject: str,
+    *,
+    timeout_seconds: float = FLEET_QUOTE_TIMEOUT_SECONDS,
+) -> float | None:
+    """Resolve last price off the critical path with a hard timeout.
+
+    Uses a daemon thread + ``join(timeout)`` so returning after the
+    deadline does **not** wait for the worker (``ThreadPoolExecutor``
+    ``shutdown(wait=True)`` would). A hung provider cannot block the
+    decision path indefinitely.
+    """
+    import threading
+
+    sym = (subject or "").strip().upper()
+    if not sym:
+        return None
+
+    box: dict[str, float | None] = {"px": None}
+
+    def _fetch() -> None:
+        try:
+            import yfinance as yf  # type: ignore[import-untyped]
+
+            t = yf.Ticker(sym)
+            fast = getattr(t, "fast_info", None)
+            if fast is not None:
+                px = getattr(fast, "last_price", None)
+                if px is None and isinstance(fast, dict):
+                    px = fast.get("last_price") or fast.get("lastPrice")
+                if px is not None:
+                    box["px"] = float(px)
+                    return
+            info = getattr(t, "info", None) or {}
+            if isinstance(info, dict):
+                for key in (
+                    "currentPrice",
+                    "regularMarketPrice",
+                    "previousClose",
+                ):
+                    if info.get(key) is not None:
+                        box["px"] = float(info[key])
+                        return
+        except Exception:  # noqa: BLE001
+            box["px"] = None
+
+    worker = threading.Thread(target=_fetch, name=f"fleet-quote-{sym}", daemon=True)
+    worker.start()
+    worker.join(timeout=timeout_seconds)
+    if worker.is_alive():
+        _log.warning(
+            "verdict_registry.quote_timeout",
+            subject=sym,
+            timeout_seconds=timeout_seconds,
+        )
+        return None
+    return box["px"]
+
+
+def register_fleet_prediction_for_verdict(
+    session: Session,
+    *,
+    user_id: str,
+    verdict_id: int,
+    entry_price: float | None = None,
+    resolve_quote: bool = False,
+) -> Any:
+    """Post-commit ledger registration for a settled verdict.
+
+    Safe to call after the verdict transaction has committed. Optionally
+    resolves a quote with :func:`resolve_entry_price_with_timeout` when
+    ``resolve_quote=True`` and ``entry_price`` is None. Returns the
+    Prediction row, or ``None`` when no entry is available / verdict
+    kind is unregistered.
+    """
+    row = session.get(Verdict, verdict_id)
+    if row is None or row.user_id != user_id:
+        return None
+    px = entry_price
+    if px is None and resolve_quote:
+        px = resolve_entry_price_with_timeout(row.subject)
+    return _maybe_write_fleet_prediction(
+        session,
+        user_id=user_id,
+        verdict_row=row,
+        entry_price=px,
+    )
+
+
+def _safe_fleet_prediction_write(
+    session: Session,
+    *,
+    user_id: str,
+    verdict_row: Verdict,
+    entry_price: float | None,
+) -> None:
+    """Best-effort prediction write; never fails the verdict transaction.
+
+    Always attempts a durable row — missing entry becomes a pending-entry
+    omission visible on the scorecard (iter-2 finding 2).
+    """
+    try:
+        _maybe_write_fleet_prediction(
+            session,
+            user_id=user_id,
+            verdict_row=verdict_row,
+            entry_price=entry_price,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "verdict_registry.fleet_prediction_write_failed",
+            subject=verdict_row.subject,
+            verdict_id=verdict_row.id,
+            error=str(exc)[:200],
+        )
+
+
+def _maybe_write_fleet_prediction(
+    session: Session,
+    *,
+    user_id: str,
+    verdict_row: Verdict,
+    entry_price: float | None,
+) -> Any:
+    """Idempotent ledger write for settled fleet verdicts (incl. HOLD)."""
+    from argosy.services.predictions.writers import write_fleet_verdict_prediction
+
+    triggers = [
+        t
+        for t in _loads_list(verdict_row.revisit_triggers_json)
+        if isinstance(t, dict)
+    ]
+    return write_fleet_verdict_prediction(
+        session,
+        user_id,
+        verdict_id=verdict_row.id,
+        ticker=verdict_row.subject,
+        verdict=verdict_row.verdict,
+        event_at=verdict_row.created_at or _utcnow(),
+        entry_price=entry_price,
+        revisit_triggers=triggers,
+        next_validation=verdict_row.next_validation,
+        conviction=verdict_row.conviction,
+        decision_run_id=verdict_row.source_decision_run_id,
+    )
 
 
 def _fact_hits_falsifier(fact: str, falsifier: str) -> bool:
