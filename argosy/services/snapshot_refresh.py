@@ -26,9 +26,10 @@ Rules (fail-safe, never fabricate):
   row whose local value had moved (live incident: the post-SGOV-sale row's
   Leumi USD cash showed local $3,655 but usd_value_k −16.4, and the
   self-refresh row inherited a phantom-negative cash total).
-* A quote miss carries the old values and is recorded in
-  ``parse_warnings_json`` as ``reprice_miss:<symbol>`` (its ``usd_value_k``
-  is still re-derived from the carried local value at fresh FX).
+* A quote miss carries the old values BUT keeps the prior ``valued_as_of``
+  and stamps ``mark_stale=True`` — never laundering a July mark into a
+  snapshot dated today. Consumers that publish current money must reprice
+  or refuse stale marks.
 * A live quote must pass two sanity guards before it is trusted:
   currency agreement with the position (GBp/GBX pence listings are rejected,
   they would 100x the value) and a price-ratio band vs the old price
@@ -460,26 +461,47 @@ def refresh_portfolio_snapshot(
         return c
 
     new_positions: list[PortfolioPosition] = []
+    prior_as_of = old.snapshot_date
     for p in old.positions:
         label = (p.symbol or "").strip() or (p.details or p.asset_type or "?")[:24]
         if _is_carry_only(p):
-            new_positions.append(_carry(p))
+            carried = _carry(p)
+            # Preserve prior mark date — do not launder a stale mark into today.
+            if carried.valued_as_of is None:
+                carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            if carried.observed_as_of is None:
+                carried.observed_as_of = (
+                    getattr(p, "observed_as_of", None) or prior_as_of
+                )
+            new_positions.append(carried)
             result.carried.append(label)
             continue
         if not _internally_consistent(p):
-            new_positions.append(_carry(p))
+            carried = _carry(p)
+            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
+            carried.mark_stale = True
+            new_positions.append(carried)
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}:inconsistent-source-row")
             continue
 
         price = quote_fn(p.symbol, currency=p.currency, details=p.details)
         if price is None or price <= 0:
-            new_positions.append(_carry(p))
+            carried = _carry(p)
+            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
+            carried.mark_stale = True
+            new_positions.append(carried)
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}")
             continue
         if p.current_price and not _within_band(price / p.current_price, _PRICE_RATIO_BAND):
-            new_positions.append(_carry(p))
+            carried = _carry(p)
+            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
+            carried.mark_stale = True
+            new_positions.append(carried)
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}:price-out-of-band")
             continue
@@ -489,7 +511,11 @@ def refresh_portfolio_snapshot(
             new_value_local, p.currency, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
         )
         if usd_k is None:
-            new_positions.append(_carry(p))
+            carried = _carry(p)
+            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
+            carried.mark_stale = True
+            new_positions.append(carried)
             result.carried.append(label)
             result.warnings.append(f"reprice_miss:{label}:no-fx-for-{p.currency}")
             continue
@@ -498,6 +524,9 @@ def refresh_portfolio_snapshot(
         updated.current_price = float(price)
         updated.current_value_local = new_value_local
         updated.usd_value_k = usd_k
+        updated.valued_as_of = today
+        updated.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
+        updated.mark_stale = False
         # pct_change / pct_yearly are carried verbatim: the source mixes units
         # (Schwab rows store 24.0 for 24%, Leumi rows store 0.24) — recomputing
         # into either unit would corrupt half the rows.

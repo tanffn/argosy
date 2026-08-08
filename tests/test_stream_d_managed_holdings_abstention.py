@@ -481,31 +481,306 @@ def test_closed_account_via_explicit_retire(fixture_db):
     assert "999" in (active[0].location or "")
 
 
+def test_persist_partial_feed_merges_per_account_without_override(fixture_db):
+    """Task 1 — Leumi-only feed must carry Schwab/Aborad, not wipe them."""
+    from argosy.state.models import AuditLog
+
+    full = [
+        _pos("NVDA", 2300.0, shares=10940, price=210, location="schwab"),
+        _pos("BMY", 5.8, shares=100, price=58, location="schwab 876"),
+        _pos("-", 69.0, shares=3, price=None, location="Aborad", asset_type="Other"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+        _pos("NKE", 6.7, shares=150, price=44, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 7, 13)),
+    )
+    leumi_only = [
+        _pos("CSPX", 410.0, shares=100, price=410, location="Leumi"),
+        # NKE sold — genuine disappearance within covered account
+    ]
+    row = persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(leumi_only, date(2026, 8, 8)),
+    )
+    pos = json.loads(row.positions_json)
+    totals = json.loads(row.totals_json)
+    syms = {(p.get("symbol") or "").upper(): p for p in pos}
+    assert "NVDA" in syms
+    assert float(syms["NVDA"]["shares"]) == 10940
+    assert any((p.get("symbol") or "") == "BMY" for p in pos)
+    assert any(
+        (p.get("symbol") or "") == "-" and "aborad" in (p.get("location") or "").lower()
+        for p in pos
+    )
+    assert not any((p.get("symbol") or "").upper() == "NKE" for p in pos)
+    assert "leumi" in totals.get("accounts_covered", [])
+    assert "schwab" in totals.get("accounts_carried", [])
+    assert any(p.get("carried_forward") for p in pos if (p.get("symbol") or "").upper() == "NVDA")
+
+
+def test_persist_rename_not_scored_as_sale(fixture_db):
+    """מחקה ת\"א-200 → ת\"א-200 is a rename, not a sale+buy."""
+    prior = [
+        _pos('מחקה ת"א-200', 39.0, shares=80000, price=147.5, location="Leumi",
+             currency="NIS", asset_type="Core Equity"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(prior, date(2026, 7, 13)),
+    )
+    incoming = [
+        _pos('ת"א-200', 40.0, shares=80000, price=150.5, location="Leumi",
+             currency="NIS", asset_type="Core Equity"),
+        _pos("CSPX", 410.0, shares=100, price=410, location="Leumi"),
+    ]
+    row = persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(incoming, date(2026, 8, 8)),
+    )
+    warns = json.loads(row.parse_warnings_json or "[]")
+    assert any("SYMBOL_RENAME" in w for w in warns)
+    pos = json.loads(row.positions_json)
+    assert sum(1 for p in pos if "ת\"א-200" in str(p.get("symbol") or "")) == 1
+    assert not any('מחקה' in str(p.get("symbol") or "") for p in pos)
+
+
+def test_rejected_ingest_writes_audit_log(fixture_db):
+    """Task 4 — rejection is durable + carries actor/reason/bypasses."""
+    from argosy.state.models import AuditLog
+
+    full = [_pos(f"T{i}", 20.0, location="schwab") for i in range(10)]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 8, 7)),
+    )
+    with pytest.raises(SnapshotIngestRejected):
+        persist_snapshot(
+            fixture_db, user_id="ariel",
+            snapshot=_pydantic_snap(full, date(2026, 6, 1)),
+            actor="test-actor",
+            override_reason=None,
+        )
+    rows = fixture_db.execute(
+        select(AuditLog).where(AuditLog.event_type == "snapshot.ingest.rejected")
+    ).scalars().all()
+    assert len(rows) >= 1
+    payload = json.loads(rows[-1].payload_json)
+    assert payload["code"] == "stale_snapshot_date"
+    assert payload.get("actor") == "test-actor"
+    assert payload.get("allow_stale") is False
+
+
+def test_override_requires_reason(fixture_db):
+    full = [_pos(f"T{i}", 20.0, location="schwab") for i in range(10)]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 8, 7)),
+    )
+    with pytest.raises(SnapshotIngestRejected) as ei:
+        persist_snapshot(
+            fixture_db, user_id="ariel",
+            snapshot=_pydantic_snap(full, date(2026, 6, 1)),
+            allow_stale=True,
+            override_reason="",
+        )
+    assert ei.value.code == "override_reason_required"
+
+
+def test_present_stale_nvda_mark_must_reprice_or_degrade(fixture_db):
+    """Task 4 CRITICAL — NVDA present in snap with July mark cannot publish as-is."""
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
+    july = date(2026, 7, 13)
+    positions = [
+        _pos("CSPX", 400.0, shares=10, price=40, location="ibi"),
+        _pos("NVDA", 2307.902, shares=10940, price=210.96, location="schwab"),
+    ]
+    # Stamp July mark dates explicitly (as a stale allow_stale re-import would).
+    for p in positions:
+        p["valued_as_of"] = july
+        p["observed_as_of"] = july
+    # Quote miss for NVDA → must degrade, must NOT publish 2307.902
+    book = load_total_book(
+        fixture_db, "ariel", positions,
+        today=date(2026, 8, 8),
+        quote_fn=lambda symbol, **kw: None,
+        snapshot_date=july,
+    )
+    assert book.degraded is True
+    nvda = next((p for p in book.total if p.get("symbol") == "NVDA"), None)
+    assert nvda is not None
+    assert nvda.get("usd_value_k") in (None, 0) or nvda.get("mark_stale") is True
+    assert symbol_value_usd_k(book.total, "NVDA") == 0.0
+
+
+def test_present_stale_nvda_mark_reprices_when_quote_available(fixture_db):
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
+    july = date(2026, 7, 13)
+    positions = [
+        _pos("NVDA", 2307.902, shares=10940, price=210.96, location="schwab"),
+    ]
+    for p in positions:
+        p["valued_as_of"] = july
+        p["observed_as_of"] = july
+    live = 180.0
+    book = load_total_book(
+        fixture_db, "ariel", positions,
+        today=date(2026, 8, 8),
+        quote_fn=_nvda_quote(live),
+        snapshot_date=july,
+    )
+    assert book.degraded is False
+    nvda = next(p for p in book.total if p["symbol"] == "NVDA")
+    assert float(nvda["current_price"]) == live
+    assert float(nvda["usd_value_k"]) == pytest.approx(10940 * live / 1000.0)
+    assert float(nvda["usd_value_k"]) != pytest.approx(2307.902)
+
+
+def test_upload_ordinary_path_does_not_require_admin(fixture_db, monkeypatch):
+    """Task 2 — ordinary upload must not 401 when admin token is unset."""
+    from io import BytesIO
+
+    from fastapi import UploadFile
+
+    from argosy.api.routes import portfolio as portfolio_routes
+
+    monkeypatch.setattr(
+        portfolio_routes, "_resolve_snapshot_root",
+        lambda: __import__("pathlib").Path(str(fixture_db.get_bind().url).replace("sqlite:///", "")).parent,
+    )
+    monkeypatch.setattr(
+        portfolio_routes, "run_windfall_detection_on_snapshot",
+        lambda *a, **k: SimpleNamespace(event=None, plan=None, detect_status="skipped"),
+    )
+    monkeypatch.setattr(portfolio_routes, "_warm_derived_cache", lambda *a, **k: None)
+    snap = _pydantic_snap(
+        [_pos("CSPX", 400.0, shares=10, price=40, location="Leumi")],
+        date(2026, 8, 8),
+    )
+    monkeypatch.setattr(portfolio_routes, "parse_portfolio_tsv", lambda *a, **k: snap)
+    tsv = b"Bank account / funds allocation\nSymbol\tShares\nCSPX\t10\n"
+    upload = UploadFile(filename="ok.tsv", file=BytesIO(tsv))
+    resp = portfolio_routes.upload_snapshot(
+        file=upload, user_id="ariel", fire_detector=False,
+        allow_stale=False, allow_catastrophic_drop=False,
+        override_reason="", x_argosy_admin=None, db=fixture_db,
+    )
+    assert resp.tsv_persisted is True
+
+
+def test_resolver_sell_shares_use_tradeable_denominator(fixture_db):
+    """Task 3 — exercise real resolver path; target is live IPS 8%, not 12%.
+
+    Ultimate endpoint (8% of tradeable book) is DISTINCT from this year's
+    adjudicated glide quota (``concentration.nvda_quota_tax_year_sh``).
+    """
+    from argosy.services.allocation_plan import NVDA_TARGET_PCT
+    from argosy.services.plan_numeric_resolver import (
+        ResolvedValue as RV,
+        _apply_nvda_deconcentration,
+    )
+    from argosy.state.models import UnmanagedHolding
+
+    assert NVDA_TARGET_PCT == 8.0
+
+    # Tradeable book $3.554M at $180 → NVDA 10,940 sh = 55.41% weight.
+    # target_sh = floor(0.08 * 3.554e6 / 180) = floor(1579.55) = 1579
+    # sell = 10940 - 1579 = 9361
+    nvda_sh, nvda_px = 10_940, 180.0
+    tradeable_usd = 3_554_000.0
+    nvda_usd = nvda_sh * nvda_px
+    assert abs(nvda_usd / tradeable_usd - 0.5541) < 1e-3
+
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.add(UnmanagedHolding(
+        user_id="ariel", symbol="NVDA", location="schwab",
+        shares=float(nvda_sh), current_price=nvda_px,
+        usd_value_k=nvda_usd / 1000.0, currency="USD",
+        asset_type="Stock", details="Stock", reason="observed",
+        status="active",
+        valued_as_of=date(2026, 8, 8), observed_as_of=date(2026, 8, 8),
+    ))
+    other_usd_k = (tradeable_usd - nvda_usd) / 1000.0
+    _add_snap(
+        fixture_db,
+        positions=[
+            _pos("CSPX", other_usd_k, shares=other_usd_k, price=1.0, location="Leumi"),
+        ],
+        snap_date=date(2026, 8, 8),
+        totals_k=tradeable_usd / 1000.0,
+        fx=3.0,
+    )
+
+    values = {
+        "concentration.nvda_current_pct": RV.excluded(
+            "concentration.nvda_current_pct", "pct", "unmanaged",
+        ),
+        "concentration.nvda_value_nis": RV(
+            "concentration.nvda_value_nis", nvda_usd * 3.0, "nis", "resolved", "t",
+        ),
+        "concentration.nvda_cap_pct": RV(
+            "concentration.nvda_cap_pct", 0.13, "pct", "resolved", "t",
+        ),
+    }
+    _apply_nvda_deconcentration(fixture_db, "ariel", values)
+
+    sell = values["concentration.nvda_sell_sh"]
+    target = values["concentration.nvda_target_sh"]
+    target_pct = values["concentration.nvda_target_pct"]
+    assert target_pct.status == "resolved"
+    assert float(target_pct.value) == pytest.approx(0.08)
+    assert sell.status == "resolved"
+    assert target.status == "resolved"
+    assert int(target.value) == 1579
+    assert int(sell.value) == 9361
+    # Quota key is a SEPARATE adjudicated figure — pending here (no verdict).
+    assert "concentration.nvda_quota_tax_year_sh" not in values or (
+        values.get("concentration.nvda_quota_tax_year_sh") is None
+    )
+
+
 def test_persist_catastrophic_override_does_not_retire_absent_account(fixture_db):
     full = [
         _pos("NVDA", 2300.0, shares=100, price=23, location="schwab 876"),
-        *[_pos(f"T{i}", 20.0, location="ibi") for i in range(10)],
+        *[_pos(f"T{i}", 20.0, shares=1, price=20, location="ibi") for i in range(10)],
     ]
     persist_snapshot(
         fixture_db, user_id="ariel",
         snapshot=_pydantic_snap(full, date(2026, 8, 1)),
     )
-    closed = [_pos(f"T{i}", 20.0, location="ibi") for i in range(10)]
+    # Partial feed covering only ibi — merge carries schwab; no override needed.
+    closed = [_pos(f"T{i}", 20.0, shares=1, price=20, location="ibi") for i in range(10)]
     row = persist_snapshot(
         fixture_db, user_id="ariel",
         snapshot=_pydantic_snap(closed, date(2026, 8, 7)),
-        allow_catastrophic_drop=True,
-        actor="test-admin",
-        override_reason="leumi-only reimport after schwab export lag",
     )
-    warns = json.loads(row.parse_warnings_json or "[]")
-    assert any("INGEST_OVERRIDE" in w and "actor=test-admin" in w for w in warns)
-    # NVDA at schwab 876 must still be ACTIVE — closure is explicit-only.
+    totals = json.loads(row.totals_json)
+    assert "schwab 876" in totals.get("accounts_carried", [])
     active = fixture_db.execute(
         select(UnmanagedHolding).where(UnmanagedHolding.status == "active")
     ).scalars().all()
     assert len(active) == 1
     assert active[0].symbol == "NVDA"
+
+
+def test_same_account_catastrophic_drop_still_rejected(fixture_db):
+    """Within a covered account, wiping most names is still catastrophic."""
+    full = [_pos(f"T{i}", 50.0, shares=1, price=50, location="Leumi") for i in range(12)]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 8, 7)),
+    )
+    tiny = [_pos("T0", 50.0, shares=1, price=50, location="Leumi")]
+    with pytest.raises(SnapshotIngestRejected) as ei:
+        persist_snapshot(
+            fixture_db, user_id="ariel",
+            snapshot=_pydantic_snap(tiny, date(2026, 8, 8)),
+        )
+    assert ei.value.code == "catastrophic_position_drop"
 
 # ---------------------------------------------------------------------------
 # Finding 3 — degraded never renders as 0.0 money
@@ -628,9 +903,9 @@ def test_upload_surfaces_ingest_rejection_as_error(fixture_db, monkeypatch):
     )
     monkeypatch.setattr(portfolio_routes, "_warm_derived_cache", lambda *a, **k: None)
 
-    # Force parse to a catastrophic pydantic snap without needing perfect TSV.
+    # Force parse to a same-account catastrophic snap (Leumi wiped).
     bad_snap = _pydantic_snap(
-        [_pos("T0", 20.0, location="ibi"), _pos("T1", 20.0, location="ibi")],
+        [_pos("T0", 20.0, location="schwab"), _pos("T1", 20.0, location="schwab")],
         date(2026, 8, 8),
     )
     monkeypatch.setattr(
@@ -640,7 +915,8 @@ def test_upload_surfaces_ingest_rejection_as_error(fixture_db, monkeypatch):
     upload = UploadFile(filename="bad.tsv", file=BytesIO(tsv))
     resp = portfolio_routes.upload_snapshot(
         file=upload, user_id="ariel", fire_detector=False,
-        allow_stale=False, allow_catastrophic_drop=False, db=fixture_db,
+        allow_stale=False, allow_catastrophic_drop=False,
+        override_reason="", x_argosy_admin=None, db=fixture_db,
     )
     assert resp.tsv_persisted is False
     assert resp.detail is not None
@@ -658,9 +934,12 @@ def test_allow_stale_override_audited_on_row(fixture_db):
         fixture_db, user_id="ariel",
         snapshot=_pydantic_snap(full, date(2026, 7, 1)),
         allow_stale=True,
+        actor="test-admin",
+        override_reason="deliberate re-import of June book for audit",
     )
     warns = json.loads(row.parse_warnings_json or "[]")
     assert any("allow_stale=True" in w for w in warns)
+    assert any("reason=deliberate re-import" in w for w in warns)
 
 
 # ---------------------------------------------------------------------------
@@ -1086,50 +1365,3 @@ def test_compositions_unavailable_not_empty_when_degraded(fixture_db):
     assert reason is not None
     assert "unavailable" in reason.lower() or "degrad" in reason.lower()
     assert "no positions" not in reason.lower()
-
-
-def test_resolver_sell_shares_use_tradeable_denominator(fixture_db):
-    """Finding 5 — excluded NVDA weight → sell shares via tradeable book, not NW."""
-    from argosy.services.plan_derivation import derive_nvda_deconcentration
-    from argosy.services.plan_numeric_resolver import ResolvedValue as RV
-    from argosy.services.holding_books import implied_nvda_weight_frac
-
-    # NVDA $2.3M, tradeable $10M, NW $13.8M — wrong denom changes sell shares.
-    nvda_nis = 6_900_000.0
-    tradeable = 10_000_000.0
-    net_worth = 13_800_000.0
-    nvda_sh, nvda_px = 10_000, 230.0
-    class _R:
-        def __init__(self, d):
-            self._d = d
-        def get(self, key):
-            return self._d.get(key)
-    resolved = _R({
-        "concentration.nvda_current_pct": RV.excluded(
-            "concentration.nvda_current_pct", "pct", "unmanaged",
-        ),
-        "concentration.nvda_value_nis": RV(
-            "concentration.nvda_value_nis", nvda_nis, "nis", "resolved", "t",
-        ),
-        "portfolio.net_worth_nis": RV(
-            "portfolio.net_worth_nis", net_worth, "nis", "resolved", "t",
-        ),
-    })
-    w = implied_nvda_weight_frac(resolved, tradeable_securities_nis=tradeable)
-    assert w == pytest.approx(0.69)
-    wrong_w = nvda_nis / net_worth
-    cap, target = 0.13, 0.12
-    right = derive_nvda_deconcentration(
-        nvda_sh=nvda_sh, nvda_px_usd=nvda_px, nvda_weight=w,
-        target_w=target, cap=cap,
-    )
-    wrong = derive_nvda_deconcentration(
-        nvda_sh=nvda_sh, nvda_px_usd=nvda_px, nvda_weight=wrong_w,
-        target_w=target, cap=cap,
-    )
-    # Fixture assertion: correct sell uses tradeable-implied book.
-    assert right["nvda_sell_sh"].value != wrong["nvda_sell_sh"].value
-    # book = nvda_usd / w = 2.3M / 0.69 ≈ 3.333M tradeable USD
-    # target_sh = floor(0.12 * 3.333M / 230) = floor(1739.13) = 1739
-    # sell = 10000 - 1739 = 8261
-    assert right["nvda_sell_sh"].value == 8261
