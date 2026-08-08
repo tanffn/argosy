@@ -293,8 +293,24 @@ def test_gate_value_encoding_is_injective_across_types(tmp_path, mod):
         "NULL must not fingerprint as an empty string"
     )
 
-    # Length framing: neighbouring values must not be able to shift the frame.
-    assert fingerprint_with("?", ("a|1|b",)) != fingerprint_with("?", ("a|1|b ",))
+    # Length framing specifically: with type tags but NO lengths, a value that
+    # contains a tag sequence can swallow the boundary with its neighbour, so
+    # ("aT|b", "c") and ("a", "bT|c") both encode to T|aT|bT|c. The lengths are
+    # what keep the columns apart.
+    # Revert detector: drop the length from _encode_value → this fails.
+    def fingerprint_pair(a: str, b: str) -> str:
+        db = tmp_path / f"pair{next(counter)}.db"
+        mod.sqlite_consistent_backup(src, db)
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE pair (a, b)")
+        con.execute("INSERT INTO pair (a, b) VALUES (?, ?)", (a, b))
+        con.commit()
+        con.close()
+        return mod.database_fingerprint(db)["row_counts"]["pair"]
+
+    assert fingerprint_pair("aT|b", "c") != fingerprint_pair("a", "bT|c"), (
+        "adjacent columns must not be able to shift the frame between them"
+    )
 
     # Non-UTF8 text must survive rather than crash the fingerprint.
     weird = fingerprint_with("CAST(? AS TEXT)", (sqlite3.Binary(b"\xff\xfe"),))
