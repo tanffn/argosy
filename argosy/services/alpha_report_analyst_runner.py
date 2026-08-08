@@ -150,6 +150,11 @@ class RunBatchResult:
     skipped: int
     predictions_written: int
     monitor_flags_written: int
+    #: Per-signal EXCEPTIONS during this batch (distinct from benign
+    #: ``skipped`` where the analyst simply returned no row). Non-zero
+    #: means real work FAILED — surfaced so the cadence layer's
+    #: status-derivation contract closes the run non-ok instead of green.
+    failures: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +385,7 @@ def run_pending_batch(
 
     analyzed = 0
     skipped = 0
+    failures = 0
     predictions_total = 0
     monitor_flags_total = 0
 
@@ -398,6 +404,10 @@ def run_pending_batch(
                 "news_signal_id=%s",
                 signal.id,
             )
+            # A raised per-signal analysis is a real FAILURE, not a
+            # benign skip — count it separately so it can't hide behind
+            # a green run status.
+            failures += 1
             skipped += 1
             continue
         if row is None:
@@ -437,6 +447,7 @@ def run_pending_batch(
         skipped=skipped,
         predictions_written=predictions_total,
         monitor_flags_written=monitor_flags_total,
+        failures=failures,
     )
 
 

@@ -724,6 +724,31 @@ class Scheduler:
                 if force:
                     raise
                 return None
+            # Fail-open fix: a raise-free tick is not automatically a
+            # success. Derive the cadence status from the returned
+            # summary against the documented failure contract (see
+            # ``argosy.services.jobs.summary_status``) so a tick that
+            # reported adapter_errors / all-items-failed / zero-work-done
+            # records ERROR, not a green OK, in cadence_state.
+            # Imported locally to avoid the scheduler ↔ jobs-package
+            # import cycle (jobs/__init__ imports RegisteredScheduler,
+            # which imports this module).
+            from argosy.services.jobs.summary_status import (
+                OK_STATUS as _OK_STATUS,
+                derive_run_status,
+            )
+
+            derived_status, derived_reason = derive_run_status(result)
+            if derived_status != _OK_STATUS:
+                _log.warning(
+                    "cadence.tick_reported_failure",
+                    loop=loop.name,
+                    reason=derived_reason,
+                )
+                await self._record_tick(
+                    loop.name, status=TickStatus.ERROR, error=derived_reason
+                )
+                return result
             await self._record_tick(loop.name, status=TickStatus.OK, error=None)
             return result
 

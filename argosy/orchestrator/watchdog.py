@@ -37,7 +37,7 @@ from sqlalchemy import func, select
 from argosy.config import get_settings
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
-from argosy.state.models import AgentReport, AuditLog, CadenceState
+from argosy.state.models import AgentReport, AuditLog, CadenceState, JobRun
 
 _log = get_logger("argosy.watchdog")
 
@@ -56,6 +56,13 @@ class WatchdogSignals:
     state_db_size_gb: float = 0.0
     backup_age_hours: float | None = None
     disk_space_pct_free: float = 100.0
+    #: Job names with a non-ok ``job_runs`` row in the probe window.
+    #: Populated from the registry audit log so fail-OPEN jobs (a tick
+    #: that returned but reported failure — see fix #1) are visible even
+    #: though the loop is still ticking (so `cadence_loops_stuck` stays
+    #: empty).
+    failed_job_runs: list[str] = field(default_factory=list)
+    failed_job_run_count: int = 0
     breaches: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -106,6 +113,38 @@ async def _stuck_cadence_loops(now: datetime) -> list[str]:
             if tick < threshold:
                 out.append(r.loop_name)
         return out
+
+
+async def _failed_job_runs(now: datetime, *, window_hours: int = 6) -> list[str]:
+    """Job names with a non-ok ``job_runs`` row finished in the window.
+
+    Closes the watchdog's fail-open blind spot: before fix #1 a tick
+    that returned WITHOUT raising always closed ``status='ok'`` even when
+    its summary reported failure, so the only failure proxies the
+    watchdog had were ``response_text LIKE 'ERROR:%'`` on ``AgentReport``
+    and fully STOPPED cadence loops. Now that the scheduler derives a
+    non-ok close status from the tick summary, this probe reads the
+    registry audit trail directly and surfaces every ``error`` /
+    ``degraded`` / ``cancelled`` run — including fail-open ones where the
+    loop keeps ticking (so it never shows up as ``cadence_loop_stuck``).
+
+    Returns the list of job names (one entry per failed run, so the
+    length is the failure volume). ``ok`` / ``running`` / ``skipped``
+    runs are excluded.
+    """
+    cutoff = now - timedelta(hours=window_hours)
+    bad_statuses = ("error", "degraded", "cancelled")
+    async with db_mod.get_session() as session:
+        rows = (
+            await session.execute(
+                select(JobRun.job_name)
+                .where(JobRun.finished_at.is_not(None))
+                .where(JobRun.finished_at >= cutoff)
+                .where(JobRun.status.in_(bad_statuses))
+                .order_by(JobRun.finished_at.desc())
+            )
+        ).scalars().all()
+        return [str(r) for r in rows]
 
 
 async def _claude_error_rate(user_id: str, *, now: datetime) -> float:
@@ -189,6 +228,8 @@ async def collect_signals(
         sig.engine_heartbeat_age_s = (moment - last_hb).total_seconds()
 
     sig.cadence_loops_stuck = await _stuck_cadence_loops(moment)
+    sig.failed_job_runs = await _failed_job_runs(moment)
+    sig.failed_job_run_count = len(sig.failed_job_runs)
     sig.claude_error_rate = await _claude_error_rate(user_id, now=moment)
     sig.claude_monthly_spend_usd = await _monthly_spend_usd(user_id, now=moment)
     sig.claude_monthly_budget_usd = monthly_budget_usd
@@ -226,6 +267,24 @@ def compute_breaches(sig: WatchdogSignals) -> list[dict[str, Any]]:
                     f"{', '.join(sig.cadence_loops_stuck)}"
                 ),
                 "severity": "warning",
+            }
+        )
+    if sig.failed_job_runs:
+        # Distinct unique names for the message; count is the volume.
+        unique_names = sorted(set(sig.failed_job_runs))
+        out.append(
+            {
+                "signal": "job_runs_failed",
+                "message": (
+                    f"{sig.failed_job_run_count} non-ok job run(s) in the "
+                    f"last 6h across {len(unique_names)} job(s): "
+                    f"{', '.join(unique_names)}"
+                ),
+                # Warning-level volume proxy: a burst of failures is
+                # critical, a handful is a warning.
+                "severity": (
+                    "critical" if sig.failed_job_run_count >= 5 else "warning"
+                ),
             }
         )
     if sig.claude_error_rate > 0.05:

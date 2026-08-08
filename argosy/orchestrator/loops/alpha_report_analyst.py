@@ -228,10 +228,15 @@ class AlphaReportAnalystLoop(CadenceLoop):
                 now=run_at,
             )
             session.commit()
+            # ``failures`` (per-signal exceptions) is surfaced as
+            # ``failure_count`` so the scheduler's status-derivation
+            # contract closes the run non-ok when analysis actually
+            # errored (vs. a benign zero-work day).
             return {
                 "fetched": int(getattr(result, "fetched", 0)),
                 "analyzed": int(getattr(result, "analyzed", 0)),
                 "skipped": int(getattr(result, "skipped", 0)),
+                "failure_count": int(getattr(result, "failures", 0)),
                 "predictions_written": int(
                     getattr(result, "predictions_written", 0)
                 ),

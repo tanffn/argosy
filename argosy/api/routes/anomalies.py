@@ -44,6 +44,12 @@ class AnomalyReportDTO(BaseModel):
     report: dict
     severity_summary: dict
     agent_report_id: int | None
+    # True when the underlying anomaly agent CRASHED for this run. A
+    # crashed check is NOT "all clear" — the banner must render a
+    # distinct "check failed" state instead of green. Sourced from the
+    # ``check_failed`` marker the runner stamps into the persisted
+    # severity summary / report payload on the exception path.
+    check_failed: bool = False
 
 
 def _iso(dt: datetime | None) -> str:
@@ -65,6 +71,9 @@ def _row_to_dto(row: AnomalyReport) -> AnomalyReportDTO:
             sev = {}
     except (json.JSONDecodeError, TypeError):
         sev = {}
+    check_failed = bool(
+        sev.get("check_failed") or report.get("check_failed")
+    )
     return AnomalyReportDTO(
         id=row.id,
         user_id=row.user_id,
@@ -74,6 +83,7 @@ def _row_to_dto(row: AnomalyReport) -> AnomalyReportDTO:
         report=report,
         severity_summary=sev,
         agent_report_id=row.agent_report_id,
+        check_failed=check_failed,
     )
 
 

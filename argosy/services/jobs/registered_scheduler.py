@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING
 from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, TickStatus
 from argosy.orchestrator.scheduler import Scheduler
+from argosy.services.jobs.summary_status import OK_STATUS, derive_run_status
 
 if TYPE_CHECKING:  # pragma: no cover
     from argosy.services.jobs.registry import JobRegistry
@@ -224,7 +225,7 @@ class RegisteredScheduler(Scheduler):
                 raise
             return
 
-        # Step 3 (ok) — close BEFORE step 4.
+        # Step 3 (ok-path) — close BEFORE step 4.
         # Spec A commit #7: prefer the tick's explicit return value
         # when present; fall back to `loop.last_output_summary` for
         # legacy loops that still use the attribute side-channel.
@@ -234,9 +235,39 @@ class RegisteredScheduler(Scheduler):
             if isinstance(tick_result, dict)
             else _safe_output_summary(loop)
         )
+        # Fail-open fix: a tick that returned WITHOUT raising is not
+        # automatically a success. Inspect the summary against the
+        # documented failure contract (see
+        # ``argosy.services.jobs.summary_status``) and DERIVE the close
+        # status: adapter_errors>0 / non-empty errors / all-items-failed
+        # / zero-work-done → "error" instead of a green "ok".
+        derived_status, derived_reason = derive_run_status(output_summary)
+        if derived_status != OK_STATUS:
+            _log.warning(
+                "cadence.tick_reported_failure",
+                loop=loop.name,
+                derived_status=derived_status,
+                reason=derived_reason,
+            )
+            await self._close_safely(
+                run_id,
+                status=derived_status,
+                error_message=(
+                    f"tick returned without raising but reported failure: "
+                    f"{derived_reason}"
+                ),
+                output_summary=output_summary,
+            )
+            await self._record_tick(
+                loop.name,
+                status=TickStatus.ERROR,
+                error=derived_reason,
+            )
+            return
+
         await self._close_safely(
             run_id,
-            status="ok",
+            status=OK_STATUS,
             output_summary=output_summary,
         )
         # Step 4 — parent's pointer write (success branch). Runs even

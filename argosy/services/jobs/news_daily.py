@@ -588,6 +588,7 @@ def _build_summary(
         "ingested_persisted": stage1_result.persisted if stage1_result else 0,
         "ingested_duplicates": stage1_result.duplicates if stage1_result else 0,
         "analyzed": stage2_result.analyzed if stage2_result else 0,
+        "analyzed_skipped": stage2_result.skipped if stage2_result else 0,
         "analyzed_batches": stage2_result.batches if stage2_result else 0,
     }
     stage_errors: dict[str, str] = {}
@@ -595,6 +596,18 @@ def _build_summary(
         stage_errors["ingest"] = stage1_error
     if stage2_error:
         stage_errors["analyze"] = stage2_error
+
+    # Fail-open fix: the analyst ran (``analyze`` status == "ok") but
+    # classified NOTHING while every fetched signal was skipped — the
+    # model returned no usable output for the whole batch. That is a
+    # DEGRADED run, not a clean one; surface it so the scheduler's
+    # status-derivation contract closes the row non-ok instead of green.
+    degraded_all_skip = (
+        stage2_status == "ok"
+        and stage2_result is not None
+        and stage2_result.analyzed == 0
+        and stage2_result.skipped > 0
+    )
 
     notes = (
         f"by_source={stage1_result.by_source!r}"
@@ -611,6 +624,16 @@ def _build_summary(
         "stage_errors": stage_errors,
         "notes": notes,
     }
+    if degraded_all_skip:
+        out["status"] = "degraded"
+        stage_errors.setdefault(
+            "analyze",
+            (
+                f"analyst returned no usable classification for all "
+                f"{stage2_result.skipped} signal(s) "  # type: ignore[union-attr]
+                "(100% skipped)"
+            ),
+        )
     if tickers_info is not None:
         out["tickers"] = tickers_info
     if gate is not None:

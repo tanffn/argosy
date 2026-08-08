@@ -339,7 +339,16 @@ def run_anomaly_check(
     severity = _severity_summary(report)
     report_payload = json.loads(report.model_dump_json())
     if error_text:
+        # Fail-open fix: the agent CRASHED, so this is NOT an "all clear".
+        # Persisting the empty report with an all-zero severity summary
+        # made the home banner render green when the check never actually
+        # ran. Stamp a distinct ``check_failed`` state into BOTH the
+        # report payload and the severity summary so no consumer mistakes
+        # a crashed run for a clean one.
         report_payload["_runner_error"] = error_text
+        report_payload["check_failed"] = True
+        severity["check_failed"] = True
+        severity["error"] = error_text
 
     row = AnomalyReport(
         user_id=user_id,

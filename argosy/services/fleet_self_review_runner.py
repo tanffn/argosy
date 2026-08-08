@@ -199,6 +199,35 @@ def generate_fleet_self_review(
     )
     counts = severity_counts(findings)
 
+    # Fail-open fix: ``run_all_detectors`` swallows a crashing detector
+    # (empty result + ``ok:False`` in stats) so the report keeps
+    # rendering. But if EVERY detector crashed, ``findings`` is empty and
+    # the severity badge is all-zero — indistinguishable from a genuinely
+    # clean review. Stamp the detector-failure tally into the persisted
+    # severity summary (extra keys; RED/AMBER/YELLOW consumers unaffected)
+    # and mark ``check_failed`` when the whole detector suite failed, so
+    # no surface mistakes an all-crash run for "all clear".
+    failed_detectors = [s for s in stats if not s.get("ok", True)]
+    if failed_detectors:
+        counts["detectors_failed"] = len(failed_detectors)
+        counts["detectors_total"] = len(stats)
+        if len(failed_detectors) == len(stats):
+            counts["check_failed"] = True
+            log.error(
+                "fleet_self_review.all_detectors_failed",
+                user_id=user_id,
+                scope_kind=scope_kind,
+                detectors_total=len(stats),
+            )
+        else:
+            log.warning(
+                "fleet_self_review.some_detectors_failed",
+                user_id=user_id,
+                scope_kind=scope_kind,
+                failed=len(failed_detectors),
+                detectors_total=len(stats),
+            )
+
     row = FleetSelfReviewReport(
         user_id=user_id,
         generated_at=datetime.now(timezone.utc),

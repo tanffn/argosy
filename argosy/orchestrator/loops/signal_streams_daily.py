@@ -263,6 +263,32 @@ class SignalStreamsDailyLoop(CadenceLoop):
                 )
             finally:
                 session.close()
+
+        # Fail-open fix: surface an explicit failure tally so the
+        # scheduler's status-derivation contract (and any human reading
+        # the row) sees that streams failed. Previously a run where 100%
+        # of streams raised still closed "ok" because the tick itself
+        # returned normally (per-stream isolation swallows the raise).
+        # ``streams_failed`` / ``streams_total`` feed
+        # ``summary_status.derive_run_status`` → non-ok close.
+        stream_rows = summary["streams"]
+        total = len(stream_rows)
+        failed = [
+            name
+            for name, row in stream_rows.items()
+            if isinstance(row, dict) and row.get("status") == "error"
+        ]
+        summary["streams_total"] = total
+        summary["streams_ok"] = total - len(failed)
+        summary["streams_failed"] = len(failed)
+        if failed:
+            summary["failed_stream_names"] = failed
+            _log.warning(
+                "signal_streams_daily.streams_failed_summary",
+                failed=len(failed),
+                total=total,
+                names=", ".join(failed),
+            )
         return summary
 
     async def tick(
