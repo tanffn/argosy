@@ -174,14 +174,14 @@ def mark_is_stale(
 ) -> bool:
     """True when a stored PRICE/mark is too old to publish as current money.
 
-    Undated marks return False here — callers that know the snapshot as-of
-    MUST stamp ``valued_as_of`` / ``observed_as_of`` first (see
-    ``load_total_book``). An undated mark with ``mark_stale=True`` is still
-    refused by the merge path.
+    A missing date is NOT a fresh date — undated marks are stale. Callers that
+    know the snapshot as-of should stamp ``valued_as_of`` / ``observed_as_of``
+    first (see ``load_total_book``); if still undated after that, refuse to
+    publish the last known value as today's money.
     """
     d = _as_date(valued_as_of)
     if d is None:
-        return False
+        return True
     ref = today or date.today()
     return (ref - d).days > max_age_days
 
@@ -233,6 +233,66 @@ def accounts_covered_from_positions(positions: Sequence[Any] | None) -> frozense
     )
 
 
+def resolve_prior_positions_by_account_coverage(
+    session: Any,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """Rebuild the prior book from each account's most recent covering snapshot.
+
+    The globally latest snapshot is the wrong reference when it omitted an
+    account (partial feed). Coverage ≠ emptiness: walk history newest-first
+    and take the first observation of each account key. Each carried row
+    keeps / receives ``observed_as_of`` from the snapshot that covered it.
+    """
+    from sqlalchemy import desc, select
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    if session is None:
+        return []
+    rows = session.execute(
+        select(PortfolioSnapshotRow)
+        .where(PortfolioSnapshotRow.user_id == user_id)
+        .order_by(
+            desc(PortfolioSnapshotRow.imported_at),
+            desc(PortfolioSnapshotRow.id),
+        )
+    ).scalars().all()
+
+    seen_accounts: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            positions = json.loads(getattr(row, "positions_json", None) or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(positions, list):
+            continue
+        snap_date = _as_date(getattr(row, "snapshot_date", None))
+        by_acct: dict[str, list[dict[str, Any]]] = {}
+        for p in positions:
+            m = _as_mapping(p)
+            if m is None:
+                continue
+            d = dict(m)
+            ak = location_account_key(_location_of(d))
+            if not ak:
+                continue
+            by_acct.setdefault(ak, []).append(d)
+        for ak, acct_rows in by_acct.items():
+            if ak in seen_accounts:
+                continue
+            seen_accounts.add(ak)
+            for d in acct_rows:
+                if d.get("observed_as_of") is None and snap_date is not None:
+                    d["observed_as_of"] = snap_date
+                if d.get("valued_as_of") is None and snap_date is not None:
+                    d["valued_as_of"] = snap_date
+                d["coverage_source_snapshot_id"] = getattr(row, "id", None)
+                out.append(d)
+    return out
+
+
 def _position_shares(p: Any) -> float | None:
     m = _as_mapping(p) or {}
     raw = m.get("shares")
@@ -278,6 +338,10 @@ def merge_positions_per_account(
       * Within a covered account, disappearance of a symbol is a sale.
       * Known renames (and 1:1 same-shares replacements) are NOT scored as
         sale + purchase.
+      * If a feed contains BOTH sides of a rename alias in the same account,
+        that is a conflict — refuse rather than silently dropping money.
+      * Degenerate ``-`` symbols never collapse across rows (anon keys) and
+        are never rename pairs.
     """
     incoming_date = _as_date(incoming_snapshot_date)
     prior_date = _as_date(prior_snapshot_date)
@@ -308,10 +372,7 @@ def merge_positions_per_account(
         ak = location_account_key(_location_of(d))
         if not ak:
             continue
-        raw_sym = str(d.get("symbol") or "")
-        canon = normalize_symbol_identity(raw_sym)
-        if canon != raw_sym:
-            d["symbol"] = canon
+        # Do NOT canonicalize yet — dual-alias conflict detection needs raws.
         d["observed_as_of"] = incoming_date
         d["valued_as_of"] = incoming_date
         d["carried_forward"] = False
@@ -336,17 +397,44 @@ def merge_positions_per_account(
         prior_rows = prior_by_acct.get(ak) or []
         inc_rows = incoming_by_acct.get(ak) or []
 
+        # Dual-alias in the same feed/account is a conflict, not a rename.
+        canon_to_raws: dict[str, set[str]] = {}
+        for d in inc_rows:
+            raw_sym = str(d.get("symbol") or "")
+            if not raw_sym or raw_sym == "-":
+                continue
+            ck = _symbol_key_for_merge(raw_sym)
+            if not ck or ck == "-":
+                continue
+            canon_to_raws.setdefault(ck, set()).add(raw_sym)
+        for ck, raws in canon_to_raws.items():
+            if len(raws) > 1:
+                raise SnapshotIngestRejected(
+                    "alias_conflict",
+                    f"feed contains multiple aliases of the same identity "
+                    f"{sorted(raws)!r} in account {ak!r}; refusing to "
+                    f"collapse (a rename must never delete money)",
+                )
+
+        # Safe to canonicalize now that dual-alias is ruled out.
+        for d in inc_rows:
+            raw_sym = str(d.get("symbol") or "")
+            canon = normalize_symbol_identity(raw_sym)
+            if canon != raw_sym:
+                d["symbol"] = canon
+
         prior_by_sym: dict[str, dict[str, Any]] = {}
         for d in prior_rows:
             sk = _symbol_key_for_merge(str(d.get("symbol") or ""))
-            if sk and sk not in prior_by_sym:
+            if sk and sk not in {"", "-"} and sk not in prior_by_sym:
                 prior_by_sym[sk] = d
 
         inc_by_sym: dict[str, dict[str, Any]] = {}
         for d in inc_rows:
             sk = _symbol_key_for_merge(str(d.get("symbol") or ""))
-            # Keep empty / hyphen keys distinct per occurrence order.
-            if not sk:
+            # Empty / hyphen keys stay distinct per occurrence — two `-`
+            # lots must never collide, overwrite, or rename each other.
+            if not sk or sk == "-":
                 sk = f"__anon:{len(inc_by_sym)}"
             if sk not in inc_by_sym:
                 inc_by_sym[sk] = d
@@ -363,10 +451,12 @@ def merge_positions_per_account(
 
         # Heuristic: within this account, unmatched prior↔incoming with equal
         # shares (exactly one pair) is a rename, not a sale+buy.
+        # General mechanism — not limited to KNOWN_SYMBOL_RENAMES entries.
         gone = {
             sk: prior_by_sym[sk]
             for sk in prior_by_sym
             if sk not in inc_by_sym and sk not in {"", "-"}
+            and not sk.startswith("__anon:")
         }
         appeared = {
             sk: inc_by_sym[sk]
@@ -715,10 +805,15 @@ def merge_total_book_positions(
     refreshed: list[dict[str, Any]] = []
     for pos in stamped:
         mark_date = _position_mark_date(pos)
-        needs_reprice = (
-            bool(pos.get("mark_stale"))
-            or mark_is_stale(mark_date, today=ref)
-        )
+        explicit_stale = bool(pos.get("mark_stale"))
+        # Ephemeral in-memory books (sleeve unit tests) may omit mark dates
+        # entirely — treat those as caller-supplied current values. Stored
+        # marks must be stamped by ``load_total_book`` (which forces
+        # ``mark_stale`` when still undated after stamping).
+        if mark_date is None and not explicit_stale:
+            refreshed.append(pos)
+            continue
+        needs_reprice = explicit_stale or mark_is_stale(mark_date, today=ref)
         if not needs_reprice:
             refreshed.append(pos)
             continue
@@ -736,16 +831,20 @@ def merge_total_book_positions(
         if "cash" in at or not priceable or not shares_ok:
             stripped = dict(pos)
             stripped["mark_stale"] = True
+            # Cash balances ARE the mark — quantity-shaped cash can keep value.
+            # Every other unpriceable stale row must NOT publish last-known money
+            # as current: null it and record a loud reprice failure.
+            if "cash" in at:
+                refreshed.append(stripped)
+                continue
+            failures.append(
+                f"stale_mark_unpriceable:{sym or '-'}@"
+                f"{_norm_location(_location_of(pos)) or 'unknown'} "
+                f"(valued_as_of={mark_date})"
+            )
+            stripped["usd_value_k"] = None
+            stripped["current_price"] = None
             refreshed.append(stripped)
-            # Policy symbols must not publish stale money even if unpriceable.
-            policy = policy_symbols if policy_symbols is not None else DEFAULT_UNMANAGED_SYMBOLS
-            if sym in policy:
-                failures.append(
-                    f"stale_mark_unpriceable:{sym}@"
-                    f"{_norm_location(_location_of(pos)) or 'unknown'} "
-                    f"(valued_as_of={mark_date})"
-                )
-                stripped["usd_value_k"] = None
             continue
         priced = _reprice_position_dict(
             pos, quote_fn=quote_fn,
@@ -948,6 +1047,11 @@ def load_total_book(
     stamped_positions = stamp_mark_dates(
         snapshot_positions, snapshot_date=snap_date,
     )
+    # After stamping from the snapshot as-of, any still-undated mark is
+    # unknown — never publish as current money (BLOCKER 6).
+    for p in stamped_positions:
+        if _position_mark_date(p) is None:
+            p["mark_stale"] = True
 
     reprice_failures: list[str] = []
     # Catch double-counting on the RAW snapshot BEFORE merge drops duplicates.
@@ -1161,7 +1265,7 @@ def sync_unmanaged_from_positions(
         dedupe_positions_by_symbol_location(positions),
         policy_symbols=policy,
     )
-    vas = _as_date(valued_as_of) or date.today()
+    default_vas = _as_date(valued_as_of) or date.today()
 
     observed_keys: set[tuple[str, str]] = set()
     for p in stamped:
@@ -1172,6 +1276,10 @@ def sync_unmanaged_from_positions(
         if not sym:
             continue
         observed_keys.add((sym, _norm_location(loc)))
+        # A row's observation date is when THAT row was observed — never the
+        # feed date of some other account. Prefer per-position stamps.
+        row_oas = _as_date(p.get("observed_as_of")) or default_vas
+        row_vas = _as_date(p.get("valued_as_of")) or default_vas
         try:
             if _upsert_one(
                 session, user_id,
@@ -1183,8 +1291,8 @@ def sync_unmanaged_from_positions(
                 asset_type=str(p.get("asset_type") or ""),
                 details=str(p.get("details") or ""),
                 reason="observed_in_snapshot",
-                valued_as_of=vas,
-                observed_as_of=vas,
+                valued_as_of=row_vas,
+                observed_as_of=row_oas,
             ) is not None:
                 counts["upserted"] += 1
             else:
@@ -1353,6 +1461,204 @@ def backfill_unmanaged_from_snapshots(
     return n
 
 
+# Live-book restoration targets (Ariel truncated-book incident, 2026-08-08).
+# Used by the operator backfill to self-verify; not a hardcode inside merge.
+EXPECTED_RESTORED_POSITION_COUNT = 46
+EXPECTED_RESTORED_USD_K = 4047.6
+EXPECTED_RESTORED_USD_K_TOL = 0.5
+
+
+def _position_identity_key(p: Mapping[str, Any] | dict[str, Any]) -> tuple:
+    return (
+        str(p.get("symbol") or ""),
+        _norm_location(str(p.get("location") or "")),
+        round(float(p.get("shares") or 0.0), 6),
+    )
+
+
+def books_match_for_restore(
+    a: Sequence[Any] | None,
+    b: Sequence[Any] | None,
+    *,
+    tol_usd_k: float = EXPECTED_RESTORED_USD_K_TOL,
+) -> bool:
+    """True when two books share the same (symbol, location, shares) set + total."""
+    da = [dict(_as_mapping(p) or {}) for p in (a or []) if _as_mapping(p)]
+    db = [dict(_as_mapping(p) or {}) for p in (b or []) if _as_mapping(p)]
+    if len(da) != len(db):
+        return False
+    ka = sorted(_position_identity_key(p) for p in da)
+    kb = sorted(_position_identity_key(p) for p in db)
+    if ka != kb:
+        return False
+    ta = sum(float(p.get("usd_value_k") or 0.0) for p in da)
+    tb = sum(float(p.get("usd_value_k") or 0.0) for p in db)
+    return abs(ta - tb) <= tol_usd_k
+
+
+def backfill_restored_holdings_book(
+    session: Any,
+    *,
+    user_id: str,
+    expected_position_count: int | None = EXPECTED_RESTORED_POSITION_COUNT,
+    expected_usd_k: float | None = EXPECTED_RESTORED_USD_K,
+    expected_usd_k_tol: float = EXPECTED_RESTORED_USD_K_TOL,
+    commit: bool = True,
+    actor: str = "operator",
+) -> dict[str, Any]:
+    """Idempotent one-off restore of the truncated multi-account book.
+
+    Rebuilds the current book from each account's last covering snapshot
+    (same mechanism as ingest merge). Safe to re-run: when the latest row
+    already matches the reconstruction, returns ``status=noop`` without
+    writing. On write, verifies position count / total and rolls back
+    (raises) on mismatch.
+
+    Does not touch any DB the caller did not hand it — operators must
+    point the session at a COPY, never the live ``db/argosy.db`` casually.
+    """
+    from argosy.services.portfolio_snapshot_store import (
+        get_latest_snapshot_row,
+    )
+
+    reconstructed = resolve_prior_positions_by_account_coverage(session, user_id)
+    n = len(reconstructed)
+    total = sum(float(p.get("usd_value_k") or 0.0) for p in reconstructed)
+    accounts = sorted({
+        location_account_key(_location_of(p))
+        for p in reconstructed
+        if location_account_key(_location_of(p))
+    })
+
+    if expected_position_count is not None and n != expected_position_count:
+        raise AssertionError(
+            f"restore reconstruction yielded {n} positions, "
+            f"expected {expected_position_count}"
+        )
+    if expected_usd_k is not None and abs(total - expected_usd_k) > expected_usd_k_tol:
+        raise AssertionError(
+            f"restore reconstruction yielded ${total:.1f}k, "
+            f"expected ${expected_usd_k:.1f}k ±{expected_usd_k_tol}"
+        )
+
+    latest = get_latest_snapshot_row(session, user_id)
+    if latest is not None:
+        try:
+            current = json.loads(latest.positions_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            current = []
+        if books_match_for_restore(current, reconstructed):
+            return {
+                "status": "noop",
+                "position_count": n,
+                "total_usd_k": round(total, 1),
+                "accounts": accounts,
+                "latest_snapshot_id": getattr(latest, "id", None),
+            }
+
+    # Stamp management flags; keep per-row observed/valued dates intact.
+    policy = load_policy_symbols(session, user_id)
+    stamped = stamp_management_flags(reconstructed, policy_symbols=policy)
+
+    snap_dates = [
+        _as_date(p.get("observed_as_of")) for p in stamped
+        if _as_date(p.get("observed_as_of")) is not None
+    ]
+    snap_date = max(snap_dates) if snap_dates else date.today()
+
+    cash_balances = 0.0
+    for p in stamped:
+        at = str(p.get("asset_type") or "").lower()
+        if "cash" in at:
+            cash_balances += float(p.get("usd_value_k") or 0.0)
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    # Preserve non-position payload from latest when available.
+    alloc = "[]"
+    nvda = "[]"
+    re_json = "[]"
+    pensions = "[]"
+    fx_nis = None
+    fx_eur = None
+    if latest is not None:
+        alloc = latest.allocations_json or "[]"
+        nvda = latest.nvda_sales_json or "[]"
+        re_json = latest.real_estate_json or "[]"
+        pensions = latest.pensions_json or "[]"
+        fx_nis = latest.fx_usd_nis
+        fx_eur = latest.fx_usd_eur
+
+    row = PortfolioSnapshotRow(
+        user_id=user_id,
+        snapshot_date=snap_date,
+        imported_at=datetime.now(timezone.utc),
+        source_path="backfill:last_coverage_restore",
+        positions_json=json.dumps(stamped, default=str),
+        allocations_json=alloc,
+        nvda_sales_json=nvda,
+        real_estate_json=re_json,
+        pensions_json=pensions,
+        totals_json=json.dumps({
+            "total_usd_value_k": total,
+            "cash_balances_usd_k": cash_balances,
+            "accounts_covered": accounts,
+            "accounts_carried": [],
+            "feed_position_count": n,
+            "merged_position_count": n,
+            "restored_by": actor,
+            "restore_kind": "last_coverage",
+        }),
+        fx_usd_nis=fx_nis,
+        fx_usd_eur=fx_eur,
+        parse_warnings_json=json.dumps([
+            f"BOOK_RESTORE actor={actor} positions={n} "
+            f"total_usd_k={total:.1f} accounts={','.join(accounts)}"
+        ]),
+    )
+    session.add(row)
+    # Sync durable unmanaged rows from restored positions, preserving
+    # each row's own observed_as_of (never re-date carried quantities).
+    sync_unmanaged_from_positions(
+        session, user_id, stamped, commit=False, valued_as_of=snap_date,
+    )
+
+    # Self-verify before commit.
+    written = json.loads(row.positions_json or "[]")
+    written_n = len(written)
+    written_total = sum(float(p.get("usd_value_k") or 0.0) for p in written)
+    if expected_position_count is not None and written_n != expected_position_count:
+        session.rollback()
+        raise AssertionError(
+            f"restore write verification failed: {written_n} positions, "
+            f"expected {expected_position_count}"
+        )
+    if (
+        expected_usd_k is not None
+        and abs(written_total - expected_usd_k) > expected_usd_k_tol
+    ):
+        session.rollback()
+        raise AssertionError(
+            f"restore write verification failed: ${written_total:.1f}k, "
+            f"expected ${expected_usd_k:.1f}k"
+        )
+
+    if commit:
+        session.commit()
+        session.refresh(row)
+    else:
+        session.flush()
+
+    return {
+        "status": "restored",
+        "position_count": written_n,
+        "total_usd_k": round(written_total, 1),
+        "accounts": accounts,
+        "snapshot_id": getattr(row, "id", None),
+        "snapshot_date": str(snap_date),
+    }
+
+
 def parse_positions_json(raw: str | None) -> list[Any]:
     try:
         data = json.loads(raw or "[]")
@@ -1480,12 +1786,22 @@ def assess_snapshot_ingest(
     if latest_row is None:
         return
     if not allow_stale:
-        old_date = getattr(latest_row, "snapshot_date", None)
-        if old_date is not None and new_snapshot_date is not None:
-            if new_snapshot_date < old_date:
+        old_date = _as_date(getattr(latest_row, "snapshot_date", None))
+        new_date = _as_date(new_snapshot_date)
+        # A missing date is not a fresh date. An undated feed must not
+        # supersede a dated book (and undated marks never read as current).
+        if old_date is not None and new_date is None:
+            raise SnapshotIngestRejected(
+                "undated_snapshot",
+                f"incoming snapshot has no snapshot_date while latest is "
+                f"{old_date}; refusing to let an undated feed become current "
+                f"(pass allow_stale with a reason to override)",
+            )
+        if old_date is not None and new_date is not None:
+            if new_date < old_date:
                 raise SnapshotIngestRejected(
                     "stale_snapshot_date",
-                    f"incoming snapshot_date {new_snapshot_date} precedes "
+                    f"incoming snapshot_date {new_date} precedes "
                     f"latest {old_date}; refusing to let an older feed "
                     f"become current (pass allow_stale with a reason to override)",
                 )
@@ -1575,6 +1891,9 @@ def books_consistency_check(
 
 __all__ = [
     "DEFAULT_UNMANAGED_SYMBOLS",
+    "EXPECTED_RESTORED_POSITION_COUNT",
+    "EXPECTED_RESTORED_USD_K",
+    "EXPECTED_RESTORED_USD_K_TOL",
     "KNOWN_SYMBOL_RENAMES",
     "MARK_STALE_DAYS",
     "STATUS_ACTIVE",
@@ -1589,9 +1908,11 @@ __all__ = [
     "accounts_covered_from_positions",
     "assess_snapshot_ingest",
     "assess_total_book_integrity",
+    "backfill_restored_holdings_book",
     "backfill_unmanaged_from_snapshots",
     "books_consistency_check",
     "books_consistency_check_positions",
+    "books_match_for_restore",
     "dedupe_positions_by_symbol_location",
     "has_symbol",
     "implied_nvda_weight_frac",
@@ -1612,6 +1933,7 @@ __all__ = [
     "position_usd_value_k",
     "positions_for_books",
     "quantity_is_stale",
+    "resolve_prior_positions_by_account_coverage",
     "retire_unmanaged_account",
     "stamp_management_flags",
     "stamp_mark_dates",

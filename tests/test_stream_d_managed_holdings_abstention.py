@@ -214,6 +214,7 @@ def test_25day_old_quantity_reprices_to_live_valuation(fixture_db):
     live_px = 180.0
     book = load_total_book(
         fixture_db, "ariel", incomplete, today=today,
+        snapshot_date=today,
         quote_fn=_nvda_quote(live_px),
     )
     assert book.degraded is False, book.degrade_reason
@@ -239,8 +240,9 @@ def test_quote_miss_degrades_loudly(fixture_db):
     fixture_db.commit()
     book = load_total_book(
         fixture_db, "ariel",
-        [_pos("CSPX", 400.0, location="ibi")],
+        [_pos("CSPX", 400.0, shares=10, price=40, location="ibi")],
         today=today,
+        snapshot_date=today,
         quote_fn=lambda *a, **k: None,  # infrastructure failure
     )
     assert book.degraded is True
@@ -263,8 +265,8 @@ def test_quantity_older_than_90_days_degrades(fixture_db):
     fixture_db.commit()
     book = load_total_book(
         fixture_db, "ariel",
-        [_pos("CSPX", 400.0, location="ibi")],
-        today=today, quote_fn=_nvda_quote(180.0),
+        [_pos("CSPX", 400.0, shares=10, price=40, location="ibi")],
+        today=today, snapshot_date=today, quote_fn=_nvda_quote(180.0),
     )
     assert book.degraded is True
     assert "stale" in (book.degrade_reason or "").lower() or "quantity" in (
@@ -285,8 +287,8 @@ def test_fresh_durable_restores_nvda(fixture_db):
     fixture_db.commit()
     book = load_total_book(
         fixture_db, "ariel",
-        [_pos("CSPX", 410.0, location="ibi")],
-        today=today, quote_fn=_nvda_quote(230.0),
+        [_pos("CSPX", 410.0, shares=10, price=41, location="ibi")],
+        today=today, snapshot_date=today, quote_fn=_nvda_quote(230.0),
     )
     assert book.degraded is False
     assert symbol_value_usd_k(book.total, "NVDA") == pytest.approx(2300.0)
@@ -1021,7 +1023,10 @@ def test_load_total_book_degrades_on_duplicate_rows(fixture_db):
         _pos("NVDA", 2300.0, shares=10000, location="schwab", details="Stock, AI"),
         _pos("CSPX", 400.0, location="ibi", details="UCITS ETF"),
     ]
-    book = load_total_book(fixture_db, "ariel", raw, today=date(2026, 8, 7))
+    book = load_total_book(
+        fixture_db, "ariel", raw,
+        today=date(2026, 8, 7), snapshot_date=date(2026, 8, 7),
+    )
     assert book.degraded is True
     assert "duplicate" in (book.degrade_reason or "").lower()
     assert symbol_value_usd_k(book.total, "NVDA") == 2300.0  # first only
@@ -1323,18 +1328,19 @@ def test_abstain_helper_shape():
 
 
 def test_dashboard_total_book_includes_fresh_durable_nvda(fixture_db):
+    today = date.today()
     fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
     fixture_db.add(UnmanagedHolding(
         user_id="ariel", symbol="NVDA", location="schwab",
         shares=10000.0, current_price=230.0, usd_value_k=2300.0,
         currency="USD", asset_type="Stock", details="Stock",
         reason="observed", status="active",
-        valued_as_of=date(2026, 8, 6), observed_as_of=date(2026, 8, 6),
+        valued_as_of=today, observed_as_of=today,
     ))
     incomplete = _add_snap(
         fixture_db,
-        positions=[_pos("CSPX", 400.0, location="ibi")],
-        snap_date=date(2026, 8, 7),
+        positions=[_pos("CSPX", 400.0, shares=10, price=40, location="ibi")],
+        snap_date=today,
         totals_k=400.0,
     )
     positions, degrade = _total_book_positions(
@@ -1365,3 +1371,336 @@ def test_compositions_unavailable_not_empty_when_degraded(fixture_db):
     assert reason is not None
     assert "unavailable" in reason.lower() or "degrad" in reason.lower()
     assert "no positions" not in reason.lower()
+
+# ---------------------------------------------------------------------------
+# Round-5 adversarial blockers — each test FAILS when its fix is reverted
+# ---------------------------------------------------------------------------
+
+
+def test_blocker1_merge_uses_last_coverage_not_truncated_latest(fixture_db):
+    """BLOCKER 1 — after a truncated latest, Leumi feed must still restore Schwab.
+
+    Revert detector: if persist merges only against the globally latest row
+    (already Leumi-only), carried accounts stay empty and NVDA disappears.
+    """
+    from datetime import timedelta
+
+    full = [
+        _pos("NVDA", 2307.9, shares=10940, price=210, location="schwab"),
+        _pos("BMY", 5.8, shares=100, price=58, location="schwab 876"),
+        _pos("SCHD", 13.0, shares=400, price=32, location="schwab 876"),
+        _pos("-", 69.0, shares=3, price=None, location="Aborad", asset_type="Other"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+        _pos("NKE", 6.7, shares=150, price=44, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 7, 13)),
+    )
+    # Simulate the wipe: insert a truncated Leumi-only row OUTSIDE merge
+    # (how history actually looks after the bug landed).
+    wiped = [
+        _pos("CSPX", 410.0, shares=100, price=410, location="Leumi"),
+    ]
+    _add_snap(
+        fixture_db, positions=wiped, snap_date=date(2026, 8, 1), totals_k=410.0,
+    )
+    # Bump imported_at so wiped is globally latest.
+    latest = fixture_db.execute(
+        select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.id.desc())
+    ).scalars().first()
+    latest.imported_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    fixture_db.commit()
+
+    leumi_only = [
+        _pos("CSPX", 420.0, shares=100, price=420, location="Leumi"),
+    ]
+    row = persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(leumi_only, date(2026, 8, 8)),
+    )
+    pos = json.loads(row.positions_json)
+    totals = json.loads(row.totals_json)
+    assert any((p.get("symbol") or "").upper() == "NVDA" for p in pos)
+    assert any((p.get("symbol") or "").upper() == "BMY" for p in pos)
+    assert any(
+        (p.get("symbol") or "") == "-" and "aborad" in (p.get("location") or "").lower()
+        for p in pos
+    )
+    assert "schwab" in totals.get("accounts_carried", [])
+    assert len(pos) >= 5  # leumi CSPX + carried schwab/876/aborad
+
+
+def test_blocker1_backfill_restores_and_is_idempotent(fixture_db):
+    """BLOCKER 1b — operator backfill restores then no-ops on second run."""
+    from argosy.services.holding_books import (
+        backfill_restored_holdings_book,
+        resolve_prior_positions_by_account_coverage,
+    )
+
+    full = [
+        _pos("NVDA", 2307.9, shares=10940, price=210, location="schwab"),
+        _pos("SGOV", 20.1, shares=200, price=100, location="schwab 876"),
+        _pos("SCHD", 13.0, shares=400, price=32, location="schwab 876"),
+        _pos("VOO", 6.9, shares=10, price=690, location="schwab 876"),
+        _pos("-", 5.9, shares=5893, price=1, location="schwab 876", asset_type="Other"),
+        _pos("BMY", 5.8, shares=100, price=58, location="schwab 876"),
+        _pos("SCHG", 3.5, shares=100, price=35, location="schwab 876"),
+        _pos("-", 69.0, shares=3, price=None, location="Aborad", asset_type="Other"),
+        _pos("CSPX", 1600.0, shares=100, price=400, location="Leumi"),
+    ]
+    for i in range(29):
+        full.append(_pos(f"L{i}", 0.5, shares=1, price=0.5, location="Leumi"))
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 7, 13)),
+    )
+    wiped_rows = []
+    for p in full:
+        if (p.get("location") or "").lower() != "leumi":
+            continue
+        d = dict(p)
+        if (d.get("symbol") or "").upper() == "CSPX":
+            d["usd_value_k"] = 1615.6 - (29 * 0.5)
+        wiped_rows.append(d)
+    _add_snap(fixture_db, positions=wiped_rows, snap_date=date(2026, 8, 8))
+
+    expected = resolve_prior_positions_by_account_coverage(fixture_db, "ariel")
+    n_exp = len(expected)
+    total_exp = sum(float(p.get("usd_value_k") or 0) for p in expected)
+    # Must restore the wiped non-Leumi accounts (8) onto the Leumi book.
+    assert n_exp == len(wiped_rows) + 8
+    first = backfill_restored_holdings_book(
+        fixture_db, user_id="ariel",
+        expected_position_count=n_exp,
+        expected_usd_k=total_exp,
+        expected_usd_k_tol=1.0,
+    )
+    assert first["status"] == "restored"
+    assert first["position_count"] == n_exp
+    second = backfill_restored_holdings_book(
+        fixture_db, user_id="ariel",
+        expected_position_count=n_exp,
+        expected_usd_k=total_exp,
+        expected_usd_k_tol=1.0,
+    )
+    assert second["status"] == "noop"
+    rows = fixture_db.execute(
+        select(PortfolioSnapshotRow).where(
+            PortfolioSnapshotRow.source_path == "backfill:last_coverage_restore"
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+
+
+def test_blocker2_unpriceable_stale_hyphen_does_not_publish_money(fixture_db):
+    """BLOCKER 2 — July `-` marks must not publish as current money."""
+    july = date(2026, 7, 13)
+    positions = [
+        _pos("CSPX", 400.0, shares=10, price=40, location="Leumi"),
+        _pos("-", 69.0, shares=3, price=None, location="Aborad", asset_type="Other"),
+        _pos("-", 5.9, shares=5893, price=1, location="schwab 876", asset_type="Other"),
+    ]
+    for p in positions:
+        p["valued_as_of"] = july
+        p["observed_as_of"] = july
+    book = load_total_book(
+        fixture_db, "ariel", positions,
+        today=date(2026, 8, 8), snapshot_date=july,
+    )
+    hyphens = [p for p in book.total if (p.get("symbol") or "") == "-"]
+    assert len(hyphens) == 2
+    for h in hyphens:
+        assert h.get("usd_value_k") in (None, 0) or h.get("mark_stale") is True
+        # Must not publish the July dollars as current.
+        assert h.get("usd_value_k") in (None, 0)
+    assert book.degraded is True
+    assert book.degrade_reason and "unpriceable" in book.degrade_reason.lower()
+
+
+def test_blocker2_snapshot_route_goes_through_load_total_book(fixture_db):
+    """BLOCKER 2 — /portfolio/snapshot must not serve raw stale stored marks."""
+    from argosy.api.routes.portfolio import (
+        _apply_total_book_to_snap,
+        _snapshot_to_dto,
+    )
+    from argosy.services.portfolio_snapshot_store import row_to_snapshot
+
+    july = date(2026, 7, 13)
+    positions = [
+        _pos("CSPX", 400.0, shares=10, price=40, location="Leumi"),
+        _pos("-", 69.0, shares=3, price=None, location="Aborad", asset_type="Other"),
+    ]
+    for p in positions:
+        p["valued_as_of"] = july.isoformat()
+        p["observed_as_of"] = july.isoformat()
+    row = _add_snap(fixture_db, positions=positions, snap_date=july, totals_k=469.0)
+    snap = _apply_total_book_to_snap(row_to_snapshot(row), fixture_db, "ariel")
+    dto = _snapshot_to_dto(snap)
+    hyphens = [p for p in dto.positions if (p.symbol or "") == "-"]
+    assert hyphens
+    for h in hyphens:
+        assert h.usd_value_k in (None, 0)
+    assert dto.book_degraded is True
+
+
+def test_blocker3_carried_quantity_keeps_original_observed_as_of(fixture_db):
+    """BLOCKER 3 — Leumi feed must NOT re-date carried Schwab NVDA observation."""
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
+    july = date(2026, 7, 13)
+    full = [
+        _pos("NVDA", 2307.9, shares=10940, price=210, location="schwab"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, july),
+    )
+    row = persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(
+            [_pos("CSPX", 410.0, shares=100, price=410, location="Leumi")],
+            date(2026, 8, 8),
+        ),
+    )
+    pos = json.loads(row.positions_json)
+    nvda = next(p for p in pos if (p.get("symbol") or "").upper() == "NVDA")
+    assert nvda.get("carried_forward") is True
+    obs = nvda.get("observed_as_of")
+    assert str(obs)[:10] == "2026-07-13", obs
+
+    # Durable unmanaged row must also keep July — not Aug 8.
+    uh = fixture_db.execute(
+        select(UnmanagedHolding).where(
+            UnmanagedHolding.user_id == "ariel",
+            UnmanagedHolding.symbol == "NVDA",
+            UnmanagedHolding.status == "active",
+        )
+    ).scalars().one()
+    assert uh.observed_as_of == july
+
+
+def test_blocker4_coverage_reaches_dto_and_api(fixture_db):
+    """BLOCKER 4 — accounts_covered/carried survive row_to_snapshot → DTO."""
+    from argosy.api.routes.portfolio import _snapshot_to_dto
+    from argosy.services.portfolio_snapshot_store import row_to_snapshot
+
+    full = [
+        _pos("NVDA", 100.0, shares=10, price=10, location="schwab"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 7, 13)),
+    )
+    row = persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(
+            [_pos("CSPX", 410.0, shares=100, price=410, location="Leumi")],
+            date(2026, 8, 8),
+        ),
+    )
+    snap = row_to_snapshot(row)
+    assert "leumi" in snap.accounts_covered
+    assert "schwab" in snap.accounts_carried
+    dto = _snapshot_to_dto(snap)
+    assert "leumi" in dto.accounts_covered
+    assert "schwab" in dto.accounts_carried
+
+
+def test_blocker5_dual_alias_in_same_feed_refuses_not_drops_money(fixture_db):
+    """BLOCKER 5 — both rename aliases in one feed is a conflict, not a pick-one."""
+    prior = [
+        _pos('מחקה ת"א-200', 100.0, shares=80000, price=100, location="Leumi",
+             currency="NIS", asset_type="Core Equity"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(prior, date(2026, 7, 13)),
+    )
+    both = [
+        _pos('מחקה ת"א-200', 100.0, shares=80000, price=100, location="Leumi",
+             currency="NIS", asset_type="Core Equity"),
+        _pos('ת"א-200', 200.0, shares=80000, price=200, location="Leumi",
+             currency="NIS", asset_type="Core Equity"),
+    ]
+    with pytest.raises(SnapshotIngestRejected) as ei:
+        persist_snapshot(
+            fixture_db, user_id="ariel",
+            snapshot=_pydantic_snap(both, date(2026, 8, 8)),
+        )
+    assert ei.value.code == "alias_conflict"
+
+
+def test_blocker5_two_hyphen_symbols_in_different_accounts_survive(fixture_db):
+    """BLOCKER 5 — two `-` lots in different accounts never collide."""
+    from argosy.services.holding_books import merge_positions_per_account
+
+    prior = [
+        _pos("-", 69.0, shares=3, location="Aborad", asset_type="Other"),
+        _pos("-", 5.9, shares=5893, location="schwab 876", asset_type="Other"),
+        _pos("CSPX", 400.0, shares=100, location="Leumi"),
+    ]
+    merge = merge_positions_per_account(
+        prior_positions=prior,
+        incoming_positions=[
+            _pos("CSPX", 410.0, shares=100, location="Leumi"),
+        ],
+        incoming_snapshot_date=date(2026, 8, 8),
+        prior_snapshot_date=date(2026, 7, 13),
+    )
+    hyphens = [p for p in merge.positions if (p.get("symbol") or "") == "-"]
+    assert len(hyphens) == 2
+    locs = {(p.get("location") or "").lower() for p in hyphens}
+    assert "aborad" in locs and "schwab 876" in locs
+    total = sum(float(p.get("usd_value_k") or 0) for p in hyphens)
+    assert total == pytest.approx(74.9)
+
+
+def test_blocker5_rename_mechanism_is_general_not_hebrew_only(fixture_db):
+    """BLOCKER 5 — 1:1 same-shares unmatched pair is a rename for any symbols."""
+    prior = [
+        _pos("OLDETF", 50.0, shares=100, price=50, location="Leumi"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(prior, date(2026, 7, 13)),
+    )
+    incoming = [
+        _pos("NEWETF", 51.0, shares=100, price=51, location="Leumi"),
+        _pos("CSPX", 410.0, shares=100, price=410, location="Leumi"),
+    ]
+    row = persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(incoming, date(2026, 8, 8)),
+    )
+    warns = json.loads(row.parse_warnings_json or "[]")
+    assert any("SYMBOL_RENAME" in w and "OLDETF" in w and "NEWETF" in w for w in warns)
+    pos = json.loads(row.positions_json)
+    assert any((p.get("symbol") or "").upper() == "NEWETF" for p in pos)
+    assert not any((p.get("symbol") or "").upper() == "OLDETF" for p in pos)
+
+
+def test_blocker6_undated_feed_rejected_after_dated_book(fixture_db):
+    """BLOCKER 6 — undated feed must not supersede a dated book."""
+    full = [_pos(f"T{i}", 40.0, location="schwab") for i in range(10)]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 8, 7)),
+    )
+    with pytest.raises(SnapshotIngestRejected) as ei:
+        persist_snapshot(
+            fixture_db, user_id="ariel",
+            snapshot=_pydantic_snap(full, None),  # undated
+        )
+    assert ei.value.code == "undated_snapshot"
+
+
+def test_blocker6_mark_is_stale_treats_null_as_stale():
+    """BLOCKER 6 — null valued_as_of is never read as current."""
+    from argosy.services.holding_books import mark_is_stale
+
+    assert mark_is_stale(None, today=date(2026, 8, 8)) is True
+    assert mark_is_stale(date(2026, 8, 8), today=date(2026, 8, 8)) is False

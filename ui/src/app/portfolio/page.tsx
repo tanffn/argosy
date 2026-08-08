@@ -182,6 +182,39 @@ export default function PortfolioPage() {
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {error && <p className="text-sm text-error font-mono">{error}</p>}
 
+      {snap?.book_degraded && (
+        <div
+          className="rounded-md border border-rose-400/40 bg-rose-400/10 p-3"
+          data-testid="book-degraded-banner"
+        >
+          <p className="text-sm font-medium text-rose-200">
+            Valuation unavailable — total book degraded
+          </p>
+          {snap.degrade_reason && (
+            <p className="mt-1 text-xs font-mono text-rose-100/90">
+              {snap.degrade_reason}
+            </p>
+          )}
+        </div>
+      )}
+
+      {(snap?.accounts_covered?.length || snap?.accounts_carried?.length) ? (
+        <div
+          className="rounded-md border border-sky-400/30 bg-sky-400/10 p-3"
+          data-testid="accounts-coverage-banner"
+        >
+          <p className="text-sm font-medium text-sky-200">
+            Snapshot account coverage
+          </p>
+          <p className="mt-1 text-xs font-mono text-sky-100/90">
+            covered: {(snap.accounts_covered ?? []).join(", ") || "—"}
+            {(snap.accounts_carried?.length ?? 0) > 0
+              ? ` · carried forward: ${snap.accounts_carried!.join(", ")}`
+              : ""}
+          </p>
+        </div>
+      ) : null}
+
       {/* Parse warnings surfaced (nothing hidden, nothing lost): the snapshot
           DTO has always carried parse_warnings; this renders them so a row the
           parser couldn't fully read is visible rather than silently dropped. */}

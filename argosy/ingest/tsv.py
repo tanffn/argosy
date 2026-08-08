@@ -169,6 +169,13 @@ class PortfolioSnapshot(BaseModel):
     nvda_sales: list[NVDASale] = Field(default_factory=list)
     pensions: list[PensionEntry] = Field(default_factory=list)
     parse_warnings: list[str] = Field(default_factory=list)
+    # Coverage metadata (ingest merge) — distinguishes "account empty" from
+    # "feed did not mention account". Populated on DB hydrate from totals_json.
+    accounts_covered: list[str] = Field(default_factory=list)
+    accounts_carried: list[str] = Field(default_factory=list)
+    # Set by API hydrate via load_total_book — not persisted on the TSV itself.
+    book_degraded: bool = False
+    degrade_reason: str | None = None
 
     # Convenience aggregates
     @property
