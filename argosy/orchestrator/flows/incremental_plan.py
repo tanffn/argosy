@@ -166,10 +166,23 @@ class AppliedChange:
 # --------------------------------------------------------------------------- #
 
 def _snapshot_positions_fx(session, user_id: str) -> tuple[list[dict], float, float]:
-    """Read the latest portfolio snapshot's positions + current/snapshot fx
-    (read-only). Returns ``(positions, current_boi_fx, snapshot_fx)``."""
+    """Read the latest portfolio snapshot's TOTAL book + current/snapshot fx
+    (read-only). Returns ``(positions, current_boi_fx, snapshot_fx)``.
+
+    Positions come from ``load_total_book`` (snapshot + durable unmanaged) so
+    the derivation graph agrees with the resolver / wealth dashboard — never
+    a raw incomplete TSV alone.
+
+    Raises ``TotalBookDegraded`` when the book is untrustworthy — callers must
+    NOT convert that into empty holdings / ``0.0`` estate or net worth.
+    """
     from sqlalchemy import select
 
+    from argosy.services.holding_books import (
+        TotalBookDegraded,
+        load_total_book,
+        parse_positions_json,
+    )
     from argosy.state.models import PortfolioSnapshotRow
 
     snap = session.execute(
@@ -180,15 +193,11 @@ def _snapshot_positions_fx(session, user_id: str) -> tuple[list[dict], float, fl
     ).scalar_one_or_none()
     if snap is None:
         return [], 0.0, 0.0
-    try:
-        positions = json.loads(snap.positions_json or "[]")
-    except (json.JSONDecodeError, ValueError, TypeError):
-        positions = []
-    # Mark the USD-denominated sleeve to the BOI CURRENT representative rate
-    # (snapshot fx is only the fallback) — the SAME "one FX per book" convention
-    # the resolver uses for net worth + US-situs. The snapshot rate is returned
-    # ALONGSIDE so NIS-native positions can be held at their nominal shekel value
-    # (recovered via the snapshot rate), exactly as _resolve_net_worth does.
+    raw = parse_positions_json(snap.positions_json)
+    book = load_total_book(session, user_id, raw)
+    if book.degraded:
+        raise TotalBookDegraded(book.degrade_reason)
+    positions = book.total
     snap_fx = float(snap.fx_usd_nis or 0.0)
     try:
         from argosy.services.plan_numeric_resolver import _current_boi_usd_nis

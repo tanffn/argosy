@@ -135,15 +135,20 @@ def build_allocation_breakdown(
     """Group live holdings into plan classes; pair current % with the canonical
     class target %; attach the per-symbol drill-down. Sorted by current weight.
 
-    ``exclude_nvda`` drops the NVDA RSU concentration and renormalises the
-    percentages over the ex-NVDA book — NVDA at ~61% otherwise flattens every
-    other class to a sliver, so the diversified core is unreadable.
+    ``exclude_nvda`` drops deliberately unmanaged holdings (NVDA by
+    convention) and renormalises the percentages over the managed book —
+    NVDA at ~61% otherwise flattens every other class to a sliver, so the
+    diversified core is unreadable. Prefer the managed-book filter
+    (``holding_books.is_managed_position``) over a hard-coded symbol check
+    so other unmanaged holdings behave the same way.
 
     ``classification_map`` is the Block H DB map (owner/fleet/plan rows).
     """
+    from argosy.services.holding_books import is_managed_position
+
     positions = list(getattr(snapshot, "positions", []) or [])
     if exclude_nvda:
-        positions = [p for p in positions if not _is_nvda(p)]
+        positions = [p for p in positions if is_managed_position(p)]
     # Physical real estate is illiquid net worth — not an investable sleeve.
     positions = [p for p in positions if not _is_physical_real_estate(p)]
     total = sum(float(getattr(p, "usd_value_k", 0.0) or 0.0) for p in positions)

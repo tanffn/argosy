@@ -249,6 +249,9 @@ class WealthDashboard:
     sector_composition: list[CompositionSlice]
     region_composition: list[CompositionSlice]
     assumptions: Assumptions
+    # Explicit unavailable reason when compositions are empty because the
+    # total book is degraded — never confuse with "no positions".
+    composition_unavailable_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -781,7 +784,13 @@ def _retirement(
                 )
             )
     else:
-        missing.append("trajectory: no portfolio snapshot")
+        if snapshot is not None:
+            missing.append(
+                "trajectory: total book unavailable "
+                "(degraded or load failure) — not an empty portfolio"
+            )
+        else:
+            missing.append("trajectory: no portfolio snapshot")
 
     return RetirementBlock(
         net_worth_nis=nw_nis,
@@ -805,6 +814,8 @@ def _cash_runway(
     snapshot: PortfolioSnapshotRow | None,
     burn_nis: float | None,
     fx_usd_nis: float,
+    session: Session | None = None,
+    user_id: str | None = None,
 ) -> CashRunwayBlock:
     if snapshot is None:
         return CashRunwayBlock(
@@ -814,10 +825,17 @@ def _cash_runway(
             months_of_runway=None,
             missing_reasons=["no portfolio snapshot"],
         )
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except json.JSONDecodeError:
-        positions = []
+    positions, degrade = _total_book_positions(
+        snapshot=snapshot, session=session, user_id=user_id,
+    )
+    if degrade:
+        return CashRunwayBlock(
+            cash_nis=None,
+            sgov_nis=None,
+            defensive_total_nis=None,
+            months_of_runway=None,
+            missing_reasons=[f"total book unavailable: {degrade}"],
+        )
 
     cash_nis = 0.0
     sgov_usd_k = 0.0
@@ -894,6 +912,35 @@ def tradeable_securities_usd_k(positions: list[dict]) -> float:
     return total
 
 
+def _total_book_positions(
+    *,
+    snapshot: PortfolioSnapshotRow | None,
+    session: Session | None = None,
+    user_id: str | None = None,
+) -> tuple[list[dict], str | None]:
+    """TOTAL book positions for dashboard surfaces (one source of truth).
+
+    Returns ``(positions, degrade_reason)``. When ``session``/``user_id`` are
+    supplied, merges durable unmanaged holdings. Degraded books return ``[]``
+    plus a reason so callers can surface missing_reasons instead of a wrong
+    HIGH-confidence number.
+    """
+    if snapshot is None:
+        return [], "no portfolio snapshot"
+    try:
+        raw = json.loads(snapshot.positions_json or "[]")
+    except json.JSONDecodeError:
+        raw = []
+    if session is None or user_id is None:
+        return raw if isinstance(raw, list) else [], None
+    from argosy.services.holding_books import load_total_book
+
+    book = load_total_book(session, user_id, raw if isinstance(raw, list) else [])
+    if book.degraded:
+        return [], book.degrade_reason or "total book degraded"
+    return book.total, None
+
+
 def nvda_concentration_pct(
     positions: list[dict], symbol: str = "NVDA"
 ) -> float | None:
@@ -921,6 +968,8 @@ def _concentration(
     snapshot: PortfolioSnapshotRow | None,
     plan: PlanVersion | None,
     symbol: str = "NVDA",
+    session: Session | None = None,
+    user_id: str | None = None,
 ) -> tuple[ConcentrationBlock, float | None, str | None]:
     """Return the concentration block plus the (target_pct, target_source)
     pair so the caller can echo it in the top-level Assumptions block.
@@ -930,16 +979,19 @@ def _concentration(
     if snapshot is None:
         missing.append("no portfolio snapshot")
     else:
-        try:
-            positions = json.loads(snapshot.positions_json or "[]")
-        except json.JSONDecodeError:
-            positions = []
-        # Canonical denominator: the tradeable securities book (excl. cash and
-        # physical real estate), the same definition the plan resolver uses —
-        # one NVDA weight across surfaces, not three.
-        current_pct = nvda_concentration_pct(positions, symbol=symbol)
-        if current_pct is None:
-            missing.append("snapshot has no tradeable securities to weigh against")
+        positions, degrade = _total_book_positions(
+            snapshot=snapshot, session=session, user_id=user_id,
+        )
+        if degrade:
+            missing.append(f"total book unavailable: {degrade}")
+        else:
+            # Canonical denominator: the tradeable securities book (excl. cash and
+            # physical real estate), the same definition the plan resolver uses —
+            # one NVDA weight across surfaces, not three. TOTAL book so a durable
+            # unmanaged NVDA is never reported as 0%.
+            current_pct = nvda_concentration_pct(positions, symbol=symbol)
+            if current_pct is None:
+                missing.append("snapshot has no tradeable securities to weigh against")
 
     target_pct: float | None = None
     target_source: str | None = None
@@ -1012,16 +1064,24 @@ def _savings_rate(
 
 
 def _fx_exposure(
-    *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float
+    *,
+    snapshot: PortfolioSnapshotRow | None,
+    fx_usd_nis: float,
+    session: Session | None = None,
+    user_id: str | None = None,
 ) -> FxExposureBlock:
     if snapshot is None:
         return FxExposureBlock(
             buckets=[], usd_pct=None, missing_reasons=["no portfolio snapshot"],
         )
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except json.JSONDecodeError:
-        positions = []
+    positions, degrade = _total_book_positions(
+        snapshot=snapshot, session=session, user_id=user_id,
+    )
+    if degrade:
+        return FxExposureBlock(
+            buckets=[], usd_pct=None,
+            missing_reasons=[f"total book unavailable: {degrade}"],
+        )
 
     by_currency: dict[str, float] = {}
     for p in positions:
@@ -1144,6 +1204,8 @@ def _estate_exposure(
     snapshot: PortfolioSnapshotRow | None,
     fx_usd_nis: float,
     exclude_nvda: bool = False,
+    session: Session | None = None,
+    user_id: str | None = None,
 ) -> EstateExposureBlock:
     """Estimate US-situs holdings exposure relative to the NRA exemption.
 
@@ -1171,10 +1233,23 @@ def _estate_exposure(
             estate_safe_pct_of_securities=None,
             missing_reasons=["no portfolio snapshot"],
         )
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except json.JSONDecodeError:
-        positions = []
+    positions, degrade = _total_book_positions(
+        snapshot=snapshot, session=session, user_id=user_id,
+    )
+    if degrade:
+        return EstateExposureBlock(
+            us_situs_usd=None, us_situs_nis=None,
+            nra_exemption_usd=US_NRA_ESTATE_EXEMPTION_USD,
+            above_exemption_usd=None,
+            potential_liability_usd=None,
+            potential_liability_nis=None,
+            exclude_nvda=exclude_nvda,
+            estate_safe_usd=None,
+            securities_book_usd=None,
+            us_situs_pct_of_securities=None,
+            estate_safe_pct_of_securities=None,
+            missing_reasons=[f"total book unavailable: {degrade}"],
+        )
     # Lazy import: safety_gates imports helpers from this module, so importing
     # it at module scope would create a cycle.
     from argosy.services.retirement.safety_gates import _estate_domicile_split_usd
@@ -1208,25 +1283,24 @@ def _estate_exposure(
 def _compositions(
     *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float,
     exclude_nvda: bool = False,
-) -> tuple[list[CompositionSlice], list[CompositionSlice]]:
-    """Return (asset_class_composition, sector_composition).
+    session: Session | None = None,
+    user_id: str | None = None,
+) -> tuple[list[CompositionSlice], list[CompositionSlice], list[CompositionSlice], str | None]:
+    """Return (asset, sector, region, unavailable_reason).
 
-    Each composition is a list of ``CompositionSlice`` sorted by absolute
-    value descending, with ``pct`` summing to ~100% across the list.
-    Holdings within each slice are de-duplicated tickers (e.g. multiple
-    VOO lots → one "VOO" entry) sorted alphabetically.
-
-    Positions with non-positive ``usd_value_k`` are skipped — they
-    contribute nothing to either composition. Real-estate rows (symbol
-    "-", asset_type "Real estate") flow into "Real Estate" / "Other"
-    naturally via the classifiers.
+    When the total book is degraded, returns empty lists PLUS an explicit
+    reason — never an empty composition that the UI would relabel as
+    "no positions in snapshot".
     """
     if snapshot is None:
-        return [], [], []
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except json.JSONDecodeError:
-        return [], [], []
+        return [], [], [], "no portfolio snapshot"
+    positions, degrade = _total_book_positions(
+        snapshot=snapshot, session=session, user_id=user_id,
+    )
+    if degrade:
+        return [], [], [], f"total book unavailable: {degrade}"
+    if not positions:
+        return [], [], [], "no positions in snapshot"
 
     # Accumulate by bucket: name -> (total NIS, set of holding labels).
     asset_buckets: dict[str, dict[str, Any]] = {}
@@ -1245,13 +1319,12 @@ def _compositions(
             continue
 
         symbol = (p.get("symbol") or "").strip()
-        # Exclude NVDA so its ~61% RSU concentration doesn't flatten every
-        # other slice (the same toggle the allocation card uses).
-        if exclude_nvda and (
-            symbol.upper() == "NVDA"
-            or "nvidia" in (p.get("asset_type") or "").lower()
-        ):
-            continue
+        # Managed-book toggle: drop deliberately unmanaged holdings (NVDA by
+        # convention) so sleeve composition isn't flattened by the RSU.
+        if exclude_nvda:
+            from argosy.services.holding_books import is_managed_position
+            if not is_managed_position(p):
+                continue
         v_nis = v_k_f * 1000.0 * fx_usd_nis
 
         details = (p.get("details") or "").strip()
@@ -1326,6 +1399,7 @@ def _compositions(
         _finalise(asset_buckets, _ASSET_CLASS_ORDER),
         _finalise(sector_buckets, _SECTOR_ORDER),
         _finalise(region_buckets, _REGION_ORDER),
+        None,
     )
 
 
@@ -1408,22 +1482,34 @@ def compute_wealth_dashboard(
     )
     cash_runway = _cash_runway(
         snapshot=snapshot, burn_nis=retirement.monthly_burn_nis, fx_usd_nis=fx_usd_nis,
+        session=session, user_id=user_id,
     )
     concentration, target_pct, target_source = _concentration(
         snapshot=snapshot, plan=plan, symbol="NVDA",
+        session=session, user_id=user_id,
     )
     savings_rate = _savings_rate(
         burn=retirement.monthly_burn_nis, income=retirement.monthly_income_nis,
     )
-    fx_exposure = _fx_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
+    fx_exposure = _fx_exposure(
+        snapshot=snapshot, fx_usd_nis=fx_usd_nis,
+        session=session, user_id=user_id,
+    )
     rsu_income = _rsu_income(
         user_ctx=user_ctx, snapshot=snapshot, fx_usd_nis=fx_usd_nis, today=today,
     )
     estate_exposure = _estate_exposure(
         snapshot=snapshot, fx_usd_nis=fx_usd_nis, exclude_nvda=exclude_nvda,
+        session=session, user_id=user_id,
     )
-    asset_class_composition, sector_composition, region_composition = _compositions(
+    (
+        asset_class_composition,
+        sector_composition,
+        region_composition,
+        composition_unavailable_reason,
+    ) = _compositions(
         snapshot=snapshot, fx_usd_nis=fx_usd_nis, exclude_nvda=exclude_nvda,
+        session=session, user_id=user_id,
     )
 
     assumptions = Assumptions(
@@ -1459,6 +1545,7 @@ def compute_wealth_dashboard(
         sector_composition=sector_composition,
         region_composition=region_composition,
         assumptions=assumptions,
+        composition_unavailable_reason=composition_unavailable_reason,
     )
 
 

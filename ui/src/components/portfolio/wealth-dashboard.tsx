@@ -117,16 +117,19 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
           eyebrow="Asset class"
           slices={data.asset_class_composition}
           palette={ASSET_CLASS_PALETTE}
+          unavailableReason={data.composition_unavailable_reason}
         />
         <CompositionDonutCard
           eyebrow="Exposure & style"
           slices={data.sector_composition}
           palette={SECTOR_PALETTE}
+          unavailableReason={data.composition_unavailable_reason}
         />
         <CompositionDonutCard
           eyebrow="Region"
           slices={data.region_composition}
           palette={REGION_PALETTE}
+          unavailableReason={data.composition_unavailable_reason}
         />
       </div>
     </section>
@@ -818,12 +821,14 @@ interface CompositionDonutCardProps {
   eyebrow: string;
   slices: WealthDashboardDTO["asset_class_composition"];
   palette: Record<string, string>;
+  unavailableReason?: string | null;
 }
 
 function CompositionDonutCard({
   eyebrow,
   slices,
   palette,
+  unavailableReason,
 }: CompositionDonutCardProps) {
   const total = useMemo(
     () => slices.reduce((s, sl) => s + sl.value_nis, 0),
@@ -832,6 +837,10 @@ function CompositionDonutCard({
   const top = slices[0] ?? null;
   const colorFor = (name: string) =>
     palette[name] ?? "var(--color-muted-foreground)";
+  const emptyReason =
+    unavailableReason?.trim() ||
+    (slices.length === 0 ? "no portfolio snapshot" : undefined);
+  const isUnavailable = Boolean(unavailableReason?.trim()) && slices.length === 0;
 
   return (
     <StatCard
@@ -847,15 +856,19 @@ function CompositionDonutCard({
         )
       }
       subline={
-        total > 0 ? `${formatNis(total)} NIS total` : "no positions in snapshot"
+        total > 0
+          ? `${formatNis(total)} NIS total`
+          : isUnavailable
+            ? "valuation unavailable"
+            : "no positions in snapshot"
       }
-      missingReasons={
-        slices.length === 0 ? ["no portfolio snapshot"] : undefined
-      }
+      missingReasons={slices.length === 0 ? [emptyReason ?? "no portfolio snapshot"] : undefined}
     >
       {slices.length === 0 ? (
         <div className="text-xs text-muted-foreground py-6 text-center">
-          No positions to break down
+          {isUnavailable
+            ? `Unavailable: ${unavailableReason}`
+            : "No positions to break down"}
         </div>
       ) : (
         <div className="flex flex-col sm:flex-row gap-3 items-center">

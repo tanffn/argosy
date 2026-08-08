@@ -38,16 +38,16 @@ def _resolved_value(resolved, key):
 
 def _latest_nvda(session, user_id: str):
     try:
-        raw = session.execute(
-            sa.text(
-                "select positions_json from portfolio_snapshots where user_id=:u "
-                "order by snapshot_date desc, id desc limit 1"
-            ),
-            {"u": user_id},
-        ).scalar()
-        positions = json.loads(raw) if raw else []
-        if isinstance(positions, dict):
-            positions = positions.get("positions", [])
+        from argosy.services.holding_books import load_total_book, parse_positions_json
+        from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+        snap = get_latest_snapshot_row(session, user_id)
+        if snap is None:
+            return None, None
+        book = load_total_book(
+            session, user_id, parse_positions_json(snap.positions_json),
+        )
+        positions = [] if book.degraded else book.total
         for p in positions or []:
             if isinstance(p, dict) and str(p.get("symbol", "")).upper() == "NVDA":
                 return float(p["shares"]), float(p["current_price"])
@@ -67,7 +67,21 @@ def build_derived_facts(session, *, user_id: str, decision_run_id=None) -> dict 
     except Exception:  # noqa: BLE001 — fail-soft; injection no-ops
         return None
 
-    nvda_w = _resolved_value(resolved, "concentration.nvda_current_pct")
+    nvda_w = None
+    try:
+        from argosy.services.holding_books import (
+            implied_nvda_weight_frac,
+            tradeable_securities_nis_for_user,
+        )
+
+        nvda_w = implied_nvda_weight_frac(
+            resolved,
+            tradeable_securities_nis=tradeable_securities_nis_for_user(
+                session, user_id,
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        nvda_w = _resolved_value(resolved, "concentration.nvda_current_pct")
     cap = _resolved_value(resolved, "concentration.nvda_cap_pct")
     liquid = _resolved_value(resolved, "portfolio.liquid_net_worth_nis")
     fi_total = _resolved_value(resolved, "retirement.fi_total_capital_nis")

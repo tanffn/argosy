@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from argosy.api.auth import require_admin_token
 from argosy.api.routes.plan import get_db
 from argosy.config import get_settings
 from argosy.ingest.tsv import parse_portfolio_tsv
@@ -411,9 +412,39 @@ def get_portfolio_snapshot(
 
     snap = parse_portfolio_tsv(tsv)
     try:
+        from argosy.services.portfolio_snapshot_store import SnapshotIngestRejected
+
         written = write_through_if_changed(db, user_id=user_id, snapshot=snap)
         if written is not None:
             _warm_derived_cache(user_id)
+    except SnapshotIngestRejected as exc:
+        _log.warning(
+            "portfolio_snapshot.ingest_rejected_on_get",
+            user_id=user_id, code=exc.code, detail=exc.detail,
+        )
+        # Prefer an existing DB row over serving a rejected filesystem TSV.
+        row = get_latest_snapshot_row(db, user_id)
+        if row is not None:
+            return _project_canonical_allocations(
+                _snapshot_to_dto(row_to_snapshot(row)), db, user_id,
+            )
+        return _project_canonical_allocations(
+            PortfolioSnapshotDTO(
+                snapshot_date=None,
+                fx_usd_nis=None,
+                fx_usd_eur=None,
+                total_usd_value_k=0.0,
+                positions=[],
+                allocations=[],
+                source_path=None,
+                parse_warnings=[
+                    f"INGEST REJECTED ({exc.code}): {exc.detail} — "
+                    "refusing to serve untrusted TSV"
+                ],
+            ),
+            db,
+            user_id,
+        )
     except Exception as exc:  # noqa: BLE001 - defensive
         _log.warning(
             "portfolio_snapshot.write_through_failed",
@@ -519,11 +550,18 @@ def _resolve_snapshot_root() -> Path:
     return get_settings().home / "snapshots"
 
 
-@router.post("/upload-snapshot", response_model=UploadSnapshotResponse)
+@router.post(
+    "/upload-snapshot",
+    response_model=UploadSnapshotResponse,
+    dependencies=[Depends(require_admin_token)],
+)
 def upload_snapshot(
     file: UploadFile = File(...),
     user_id: str = Form("ariel"),
     fire_detector: bool = Form(True),
+    allow_stale: bool = Form(False),
+    allow_catastrophic_drop: bool = Form(False),
+    override_reason: str = Form(""),
     db: Session = Depends(get_db),
 ) -> UploadSnapshotResponse:
     """Upload a monthly portfolio snapshot.
@@ -613,25 +651,151 @@ def upload_snapshot(
         target_root.mkdir(parents=True, exist_ok=True)
         target_name = _normalize_tsv_filename(file.filename or "", snap)
         target_path = target_root / target_name
-        target_path.write_bytes(contents)
-        _log.info(
-            "portfolio_snapshot.uploaded",
-            user_id=user_id, path=str(target_path),
-            sha=sha[:8], size=len(contents),
+
+        # File FIRST to a sibling temp, then DB, then atomic rename — so a
+        # filesystem failure never leaves an authoritative DB row without a
+        # source file, and a rejected ingest never claims success.
+        from argosy.services.portfolio_snapshot_store import (
+            SnapshotIngestRejected,
+            write_through_if_changed,
         )
 
-        # Best-effort write-through into the DB-backed snapshot store so
-        # the next GET /snapshot returns the freshest data without a
-        # filesystem walk.
+        staging_path = target_path.with_suffix(target_path.suffix + ".staging")
         try:
-            written = write_through_if_changed(db, user_id=user_id, snapshot=snap)
-            if written is not None:
-                _warm_derived_cache(user_id)
+            staging_path.write_bytes(contents)
+        except OSError as exc:
+            return UploadSnapshotResponse(
+                tsv_persisted=False,
+                persisted_path=None,
+                snapshot_date=(
+                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
+                ),
+                detect_status="skipped",
+                event=None,
+                plan=None,
+                detail=f"filesystem write failed before DB: {exc}",
+                sha256=sha,
+            )
+
+        actor = "admin-token"
+        try:
+            written = write_through_if_changed(
+                db, user_id=user_id, snapshot=snap,
+                commit=False,
+                allow_stale=allow_stale,
+                allow_catastrophic_drop=allow_catastrophic_drop,
+                actor=actor,
+                override_reason=override_reason or None,
+            )
+        except SnapshotIngestRejected as exc:
+            try:
+                staging_path.unlink()
+            except OSError:
+                pass
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            _log.warning(
+                "portfolio_snapshot.ingest_rejected",
+                user_id=user_id, code=exc.code, detail=exc.detail,
+            )
+            return UploadSnapshotResponse(
+                tsv_persisted=False,
+                persisted_path=None,
+                snapshot_date=(
+                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
+                ),
+                detect_status="skipped",
+                event=None,
+                plan=None,
+                detail=f"INGEST REJECTED ({exc.code}): {exc.detail}",
+                sha256=sha,
+            )
         except Exception as exc:  # noqa: BLE001
+            try:
+                staging_path.unlink()
+            except OSError:
+                pass
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
             _log.warning(
                 "portfolio_snapshot.write_through_failed",
                 user_id=user_id, error=str(exc),
             )
+            return UploadSnapshotResponse(
+                tsv_persisted=False,
+                persisted_path=None,
+                snapshot_date=(
+                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
+                ),
+                detect_status="skipped",
+                event=None,
+                plan=None,
+                detail=f"DB write-through failed: {exc}",
+                sha256=sha,
+            )
+
+        try:
+            staging_path.replace(target_path)
+        except OSError as exc:
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                staging_path.unlink()
+            except OSError:
+                pass
+            return UploadSnapshotResponse(
+                tsv_persisted=False,
+                persisted_path=None,
+                snapshot_date=(
+                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
+                ),
+                detect_status="skipped",
+                event=None,
+                plan=None,
+                detail=(
+                    f"filesystem finalize failed — DB rolled back, "
+                    f"refusing to claim success: {exc}"
+                ),
+                sha256=sha,
+            )
+
+        try:
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return UploadSnapshotResponse(
+                tsv_persisted=False,
+                persisted_path=str(target_path),
+                snapshot_date=(
+                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
+                ),
+                detect_status="skipped",
+                event=None,
+                plan=None,
+                detail=f"DB commit failed after file write: {exc}",
+                sha256=sha,
+            )
+
+        if written is not None:
+            _warm_derived_cache(user_id)
+        _log.info(
+            "portfolio_snapshot.uploaded",
+            user_id=user_id, path=str(target_path),
+            sha=sha[:8], size=len(contents),
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            actor=actor,
+            override_reason=override_reason or None,
+        )
 
         # Synchronous windfall detection via the shared snapshot-change detector
         # (identical routine the Leumi Osh-arrival resolution path uses, so a
@@ -654,7 +818,16 @@ def upload_snapshot(
             detect_status=detect_status,
             event=event_payload,
             plan=plan_payload,
-            detail=None,
+            detail=(
+                None if not (allow_stale or allow_catastrophic_drop)
+                else (
+                    "INGEST_OVERRIDE "
+                    f"actor={actor} "
+                    f"reason={override_reason or 'unspecified'} "
+                    f"allow_stale={allow_stale} "
+                    f"allow_catastrophic_drop={allow_catastrophic_drop}"
+                )
+            ),
             sha256=sha,
         )
     finally:
@@ -663,6 +836,41 @@ def upload_snapshot(
             tmp_path.unlink()
         except OSError:
             pass
+
+
+class CloseUnmanagedAccountResponse(BaseModel):
+    account: str
+    retired: int
+    actor: str | None
+    reason: str | None
+
+
+@router.post(
+    "/unmanaged-holdings/close-account",
+    response_model=CloseUnmanagedAccountResponse,
+    dependencies=[Depends(require_admin_token)],
+)
+def close_unmanaged_account(
+    account_location: str = Form(...),
+    reason: str = Form(...),
+    user_id: str = Form("ariel"),
+    db: Session = Depends(get_db),
+) -> CloseUnmanagedAccountResponse:
+    """Explicit single-account closure for durable unmanaged holdings.
+
+    Does NOT retire other accounts — a partial feed must never wipe NVDA
+    at ``schwab 876`` because ``schwab 999`` closed. Admin-gated.
+    """
+    from argosy.services.holding_books import retire_unmanaged_account
+
+    result = retire_unmanaged_account(
+        db, user_id,
+        account_location=account_location,
+        reason=reason,
+        actor="admin-token",
+        commit=True,
+    )
+    return CloseUnmanagedAccountResponse(**result)
 
 
 def _handle_xls_branch(

@@ -195,6 +195,9 @@ def _latest_reviews(db: Session, user_id: str) -> dict[str, HoldingReview]:
 
     Ordered by id asc so the LAST row per symbol wins (same as the old
     overlay). Never fatal: reviews are an annotation.
+
+    ABSTAIN / outcome=abstained rows are SKIPPED — an evidence-feed outage
+    must not displace the last real review or revert stance to the plan.
     """
     reviews: dict[str, HoldingReview] = {}
     try:
@@ -207,6 +210,10 @@ def _latest_reviews(db: Session, user_id: str) -> dict[str, HoldingReview]:
             .scalars()
             .all()
         ):
+            if (hr.outcome or "").strip().lower() == "abstained":
+                continue
+            if (hr.verdict or "").strip().upper() == "ABSTAIN":
+                continue
             reviews[(hr.symbol or "").upper()] = hr  # latest wins
     except Exception:  # noqa: BLE001 — reviews are an annotation, never fatal
         logger.warning("holding_reviews overlay failed", exc_info=True)
@@ -423,7 +430,9 @@ def _sources_newer_than(
 
     latest_review = db.execute(
         select(func.max(HoldingReview.reviewed_at)).where(
-            HoldingReview.user_id == user_id
+            HoldingReview.user_id == user_id,
+            HoldingReview.outcome != "abstained",
+            HoldingReview.verdict != "ABSTAIN",
         )
     ).scalar()
     if latest_review is not None and _as_utc(latest_review) > built:

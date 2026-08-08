@@ -492,12 +492,18 @@ def load_full_book_today_composition(
     from argosy.services.plan_numeric_resolver import resolve_plan_numbers
 
     nums = resolve_plan_numbers(db, user_id=user_id, decision_run_id=decision_run_id)
-    cur_rv = nums.get("concentration.nvda_current_pct")
-    if cur_rv is None or getattr(cur_rv, "status", None) != "resolved":
+    from argosy.services.holding_books import (
+        implied_nvda_weight_frac,
+        tradeable_securities_nis_for_user,
+    )
+
+    weight = implied_nvda_weight_frac(
+        nums,
+        tradeable_securities_nis=tradeable_securities_nis_for_user(db, user_id),
+    )
+    if weight is None or weight <= 0:
         return None
-    if cur_rv.value is None or float(cur_rv.value) <= 0:
-        return None
-    nvda_pct = float(cur_rv.value) * 100.0
+    nvda_pct = float(weight) * 100.0
 
     ex_nvda = _categories_from_snapshot(_latest_portfolio_snapshot(db, user_id))
     if not ex_nvda:

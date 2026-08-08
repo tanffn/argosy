@@ -4469,6 +4469,107 @@ class FunnelStageRow(Base):
     )
 
 
+class UnmanagedSymbolPolicy(Base):
+    """Data-driven list of symbols deliberately excluded from sleeve math.
+
+    Seeded with NVDA per user by migration 0097; not a hardcoded constant in
+    the hot path. Migration: alembic 0097.
+    """
+
+    __tablename__ = "unmanaged_symbol_policy"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "symbol", name="uq_unmanaged_symbol_policy_user_symbol"
+        ),
+        Index("ix_unmanaged_symbol_policy_user", "user_id"),
+    )
+
+
+class UnmanagedHolding(Base):
+    """Durable deliberately-unmanaged position (excluded from sleeve math).
+
+    Per-(user, symbol, location) so multi-account lots survive. Status
+    ``active`` | ``retired`` — retirement is the lifecycle end after an
+    observed sale (account present, symbol gone). Incomplete TSV ingests that
+    omit a whole account do NOT retire rows. Migration: alembic 0097.
+    """
+
+    __tablename__ = "unmanaged_holdings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    location: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=""
+    )
+    shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    usd_value_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="USD", server_default="USD"
+    )
+    asset_type: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=""
+    )
+    details: Mapped[str] = mapped_column(
+        String(256), nullable=False, default="", server_default=""
+    )
+    reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="excluded_from_sleeve_math",
+        server_default="excluded_from_sleeve_math",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Valuation as-of date (last stored mark — informational). Current money
+    # uses live reprice of ``shares``; quantity trust uses ``observed_as_of``.
+    valued_as_of: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # When the share count was last confirmed by a snapshot observation.
+    # Quantity stays valid for QUANTITY_STALE_DAYS; price is always live.
+    observed_as_of: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "symbol",
+            "location",
+            name="uq_unmanaged_holdings_user_symbol_location",
+        ),
+        Index("ix_unmanaged_holdings_user", "user_id"),
+        Index("ix_unmanaged_holdings_user_status", "user_id", "status"),
+    )
+
+
 class HoldingReview(Base):
     """One queryable audit row per holdings-review VERDICT (incl. HOLD).
 
@@ -4485,10 +4586,13 @@ class HoldingReview(Base):
       * ``proposed``        — actionable, blind-verified, ActionProposal written
       * ``held_unverified`` — actionable but the blind re-derivation diverged
       * ``hold``            — HOLD verdict (thesis intact, silent by design)
+      * ``abstained``       — insufficient evidence; not a decision (distinct
+                              from HOLD — empty/near-empty research bundle)
       * ``dedup_skipped``   — actionable + verified, but an open peer proposal
                               already holds the dedup slot (or the sink failed)
 
-    Migration: alembic 0079.
+    Migration: alembic 0079 (table); abstention outcome is a string enum
+    extension (no schema change). Unmanaged holdings: alembic 0097.
     """
 
     __tablename__ = "holding_reviews"

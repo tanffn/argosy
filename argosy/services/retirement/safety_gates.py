@@ -67,11 +67,15 @@ def _estate_domicile_split_usd(
     (conservative). Counted as estate-safe: UCITS / non-US-domiciled /
     Israeli instruments (classifier True, or an explicit 'ucits' marker).
     Excluded from both: cash (portfolio-interest exemption), physical real
-    estate (no tradable ticker), and NVDA when ``exclude_nvda``.
+    estate (no tradable ticker), and deliberately unmanaged holdings
+    (NVDA by convention) when ``exclude_nvda`` — the portfolio page's
+    managed-book toggle. Estate GATES always call with ``exclude_nvda=False``
+    so the total book (incl. NVDA) is measured against the $60k NRA exemption.
 
     The sum of the two sides is the securities-book denominator for
     "how much has already moved to UCITS."
     """
+    from argosy.services.holding_books import is_managed_position
     from argosy.services.instrument_reference import estate_safe_for
 
     us_total = 0.0
@@ -82,9 +86,7 @@ def _estate_domicile_split_usd(
         symbol = (p.get("symbol") or "").strip()
         if "cash" in asset_type:
             continue
-        if exclude_nvda and (
-            symbol.upper() == "NVDA" or "nvidia" in asset_type
-        ):
+        if exclude_nvda and not is_managed_position(p):
             continue
         # Physical / illiquid property (no tradable ticker) — not securities.
         if not symbol or symbol in {"-", "—", "n/a", "na", "none"}:
@@ -154,15 +156,92 @@ def compute_nra_estate_gate(*, user_id: str, session: Session) -> GateVerdict:
         situs_note = "No portfolio snapshot found; gate evaluated as PASS (no exposure)."
     else:
         try:
-            positions = json.loads(snapshot.positions_json or "[]")
-        except (json.JSONDecodeError, TypeError):
-            positions = []
+            from argosy.services.holding_books import (
+                load_total_book,
+                parse_positions_json,
+            )
+
+            raw = parse_positions_json(snapshot.positions_json)
+            book = load_total_book(session, user_id, raw)
+            if book.degraded:
+                # NEVER publish incomplete/stale US-situs as PASS/WARN money.
+                return GateVerdict(
+                    gate_id="nra_estate",
+                    status="FAIL",
+                    value=ValueWithRationale(
+                        value=None,
+                        unit="USD",
+                        source_id=None,
+                        rationale=(
+                            f"DEGRADED total book — refusing US-situs evaluation: "
+                            f"{book.degrade_reason}"
+                        ),
+                        confidence="high",
+                    ),
+                    threshold=ValueWithRationale(
+                        value=exemption,
+                        unit="USD",
+                        source_id="us_nra_estate_tax",
+                        rationale=(
+                            "IRS NRA estate-tax exemption — gate refuses to score "
+                            "when the total book is degraded."
+                        ),
+                        confidence="high",
+                    ),
+                    suggested_action=ValueWithRationale(
+                        value=(
+                            "Restore a fresh unmanaged valuation (or a complete "
+                            "snapshot including the unmanaged account) before "
+                            "re-running the estate gate."
+                        ),
+                        unit="action",
+                        source_id=None,
+                        rationale="Refuse silent understatement of US-situs exposure.",
+                        confidence="high",
+                    ),
+                    detail_summary=(
+                        f"DEGRADED total book — US-situs refused: {book.degrade_reason}"
+                    ),
+                )
+            positions = book.total
+        except Exception as exc:  # noqa: BLE001 — refuse silent understatement
+            log.error(
+                "nra_estate_gate.total_book_failed user=%s err=%s",
+                user_id, exc,
+            )
+            return GateVerdict(
+                gate_id="nra_estate",
+                status="FAIL",
+                value=ValueWithRationale(
+                    value=None,
+                    unit="USD",
+                    source_id=None,
+                    rationale=f"total book load failed — refusing US-situs: {exc}",
+                    confidence="high",
+                ),
+                threshold=ValueWithRationale(
+                    value=exemption,
+                    unit="USD",
+                    source_id="us_nra_estate_tax",
+                    rationale="IRS NRA estate-tax exemption",
+                    confidence="high",
+                ),
+                suggested_action=ValueWithRationale(
+                    value="Fix total-book load failure before re-running the estate gate.",
+                    unit="action",
+                    source_id=None,
+                    rationale="Refuse silent understatement of US-situs exposure.",
+                    confidence="high",
+                ),
+                detail_summary=f"total book load failed — US-situs refused: {exc}",
+            )
         value = _us_situs_assets_usd(positions)
         situs_note = (
-            "Sum of all US-domiciled securities across every broker, "
-            "classified by instrument domicile (IRS NRA estate-tax rules) — "
-            "NVDA plus US-domiciled ETFs and single names at Schwab AND at the "
-            "Israeli broker. UCITS / Israeli instruments and cash excluded."
+            "Sum of all US-domiciled securities across every broker (TOTAL book "
+            "incl. deliberately unmanaged NVDA), classified by instrument "
+            "domicile (IRS NRA estate-tax rules) — NVDA plus US-domiciled ETFs "
+            "and single names at Schwab AND at the Israeli broker. UCITS / "
+            "Israeli instruments and cash excluded."
         )
 
     if value > fail_threshold:
