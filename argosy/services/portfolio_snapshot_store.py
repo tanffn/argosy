@@ -107,6 +107,7 @@ def persist_snapshot(
         assess_snapshot_ingest,
         load_policy_symbols,
         merge_positions_per_account,
+        resolve_prior_positions_by_account_coverage,
         stamp_management_flags,
         sync_unmanaged_from_positions,
     )
@@ -167,22 +168,47 @@ def persist_snapshot(
             session.flush()
         raise
 
-    # Per-account merge onto the prior book.
-    prior_positions: list = []
-    prior_date = None
-    if latest is not None:
-        try:
-            prior_positions = json.loads(latest.positions_json or "[]")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            prior_positions = []
-        prior_date = latest.snapshot_date
+    # Per-account merge onto the last-coverage prior book — NOT merely the
+    # globally latest snapshot (which may already omit uncovered accounts).
+    prior_positions = resolve_prior_positions_by_account_coverage(session, user_id)
+    prior_date = latest.snapshot_date if latest is not None else None
 
-    merge = merge_positions_per_account(
-        prior_positions=prior_positions,
-        incoming_positions=incoming_positions,
-        incoming_snapshot_date=snapshot.snapshot_date,
-        prior_snapshot_date=prior_date,
-    )
+    try:
+        merge = merge_positions_per_account(
+            prior_positions=prior_positions,
+            incoming_positions=incoming_positions,
+            incoming_snapshot_date=snapshot.snapshot_date,
+            prior_snapshot_date=prior_date,
+        )
+    except SnapshotIngestRejected as exc:
+        from argosy.logging import get_logger
+        get_logger("argosy.portfolio_snapshot_store").warning(
+            "snapshot_ingest.rejected",
+            user_id=user_id,
+            code=exc.code,
+            detail=exc.detail,
+            actor=actor,
+            accounts_covered=sorted(covered),
+            snapshot_date=str(snapshot.snapshot_date),
+        )
+        _record_ingest_audit(
+            session,
+            user_id=user_id,
+            event_type="snapshot.ingest.rejected",
+            payload={
+                "code": exc.code,
+                "detail": exc.detail,
+                "actor": actor,
+                "accounts_covered": sorted(covered),
+                "snapshot_date": str(snapshot.snapshot_date),
+                "source_path": snapshot.source_path,
+            },
+        )
+        if commit:
+            session.commit()
+        else:
+            session.flush()
+        raise
 
     policy = load_policy_symbols(session, user_id)
     stamped = stamp_management_flags(merge.positions, policy_symbols=policy)
@@ -257,8 +283,22 @@ def persist_snapshot(
     # retire_unmanaged_account for an explicit single-account retirement.
     # Sync against the FEED positions for covered accounts (sales), not the
     # carried-forward book — unmanaged sync already keeps absent accounts.
+    # Feed-only sync preserves carried rows' own observed_as_of.
+    feed_for_sync = stamp_management_flags(
+        [
+            (p.model_dump() if hasattr(p, "model_dump") else dict(p))
+            for p in incoming_positions
+        ],
+        policy_symbols=policy,
+    )
+    # Stamp feed rows with THIS feed's date only (covered accounts).
+    for p in feed_for_sync:
+        if p.get("observed_as_of") is None:
+            p["observed_as_of"] = snapshot.snapshot_date
+        if p.get("valued_as_of") is None:
+            p["valued_as_of"] = snapshot.snapshot_date
     sync_result = sync_unmanaged_from_positions(
-        session, user_id, stamped, commit=False,
+        session, user_id, feed_for_sync, commit=False,
         valued_as_of=snapshot.snapshot_date,
     )
     if sync_result.get("errors"):
@@ -441,7 +481,16 @@ def row_to_snapshot(row: PortfolioSnapshotRow) -> PortfolioSnapshot:
     Inverse of ``persist_snapshot``. Used by call sites that historically
     called ``parse_portfolio_tsv()`` and now want to read from the DB
     without changing their downstream code.
+
+    Coverage fields (``accounts_covered`` / ``accounts_carried``) are read
+    from ``totals_json`` so API consumers can tell coverage from emptiness.
     """
+    try:
+        totals = json.loads(row.totals_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        totals = {}
+    covered = [str(a) for a in (totals.get("accounts_covered") or [])]
+    carried = [str(a) for a in (totals.get("accounts_carried") or [])]
     return PortfolioSnapshot(
         source_path=row.source_path or "",
         snapshot_date=row.snapshot_date,
@@ -456,6 +505,8 @@ def row_to_snapshot(row: PortfolioSnapshotRow) -> PortfolioSnapshot:
         nvda_sales=dedup_nvda_sale_dicts(json.loads(row.nvda_sales_json or "[]")),
         pensions=json.loads(row.pensions_json or "[]"),
         parse_warnings=json.loads(row.parse_warnings_json or "[]"),
+        accounts_covered=covered,
+        accounts_carried=carried,
     )
 
 

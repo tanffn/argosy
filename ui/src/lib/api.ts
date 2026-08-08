@@ -299,6 +299,13 @@ export interface PortfolioSnapshotDTO {
   parse_warnings: string[];
   /** Held symbols not in the instrument reference (fail-loud: need curation). */
   classification_warnings: string[];
+  /** Accounts the latest feed actually mentioned (coverage ≠ emptiness). */
+  accounts_covered?: string[];
+  /** Accounts carried forward because the feed omitted them. */
+  accounts_carried?: string[];
+  /** True when the total book cannot publish current-money marks. */
+  book_degraded?: boolean;
+  degrade_reason?: string | null;
 }
 
 export interface InstrumentClassRowDTO {

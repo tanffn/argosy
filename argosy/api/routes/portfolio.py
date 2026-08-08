@@ -107,6 +107,12 @@ class PortfolioSnapshotDTO(BaseModel):
     # un-curated (a US-domiciled holding would otherwise be silently
     # estate-unflagged). The UI surfaces these for the team to classify.
     classification_warnings: list[str] = []
+    # Coverage ≠ emptiness: accounts the feed mentioned vs carried forward.
+    accounts_covered: list[str] = []
+    accounts_carried: list[str] = []
+    # Fail-loud: total book could not publish current-money marks.
+    book_degraded: bool = False
+    degrade_reason: str | None = None
 
 
 _PORTFOLIO_TSV_HEADER_MARKER = "Bank account / funds allocation"
@@ -265,7 +271,46 @@ def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapsh
         source_path=snap.source_path,
         parse_warnings=snap.parse_warnings,
         classification_warnings=classification_warnings,
+        accounts_covered=list(getattr(snap, "accounts_covered", None) or []),
+        accounts_carried=list(getattr(snap, "accounts_carried", None) or []),
+        book_degraded=bool(getattr(snap, "book_degraded", False)),
+        degrade_reason=getattr(snap, "degrade_reason", None),
     )
+
+
+def _apply_total_book_to_snap(snap, db: Session, user_id: str):
+    """Rewrite snap positions/total through ``load_total_book``.
+
+    Every surface that publishes money must go through the book loader so
+    stale/unpriceable marks degrade loudly instead of emitting last-known
+    values as current. Attaches ``book_degraded`` / ``degrade_reason`` on
+    the snap object for DTO propagation.
+    """
+    from argosy.ingest.tsv import PortfolioPosition
+    from argosy.services.holding_books import load_total_book
+
+    raw = [
+        (p.model_dump() if hasattr(p, "model_dump") else dict(p))
+        for p in (snap.positions or [])
+    ]
+    book = load_total_book(
+        db, user_id, raw, snapshot_date=getattr(snap, "snapshot_date", None),
+    )
+    rebuilt: list[PortfolioPosition] = []
+    for d in book.total:
+        known = {f for f in PortfolioPosition.model_fields}
+        payload = {k: v for k, v in d.items() if k in known}
+        rebuilt.append(PortfolioPosition(**payload))
+    snap.positions = rebuilt
+    snap.book_degraded = bool(book.degraded)
+    snap.degrade_reason = book.degrade_reason
+    if book.degraded and book.degrade_reason:
+        warns = list(snap.parse_warnings or [])
+        note = f"BOOK_DEGRADED: {book.degrade_reason}"
+        if note not in warns:
+            warns.append(note)
+        snap.parse_warnings = warns
+    return snap
 
 
 def _allocations_from_doc(doc) -> list[AllocationDTO]:
@@ -384,6 +429,7 @@ def get_portfolio_snapshot(
     if row is not None:
         try:
             snap = row_to_snapshot(row)
+            snap = _apply_total_book_to_snap(snap, db, user_id)
             return _project_canonical_allocations(_snapshot_to_dto(snap), db, user_id)
         except Exception as exc:  # noqa: BLE001 - defensive
             _log.warning(
@@ -425,8 +471,9 @@ def get_portfolio_snapshot(
         # Prefer an existing DB row over serving a rejected filesystem TSV.
         row = get_latest_snapshot_row(db, user_id)
         if row is not None:
+            snap = _apply_total_book_to_snap(row_to_snapshot(row), db, user_id)
             return _project_canonical_allocations(
-                _snapshot_to_dto(row_to_snapshot(row)), db, user_id,
+                _snapshot_to_dto(snap), db, user_id,
             )
         return _project_canonical_allocations(
             PortfolioSnapshotDTO(
@@ -450,6 +497,7 @@ def get_portfolio_snapshot(
             "portfolio_snapshot.write_through_failed",
             user_id=user_id, error=str(exc),
         )
+    snap = _apply_total_book_to_snap(snap, db, user_id)
     return _project_canonical_allocations(_snapshot_to_dto(snap), db, user_id)
 
 
@@ -1471,6 +1519,10 @@ class AllocationBreakdownDTO(BaseModel):
     rows: list[CategoryBreakdownDTO]
     total_value_k: float
     note: str
+    book_degraded: bool = False
+    degrade_reason: str | None = None
+    accounts_covered: list[str] = []
+    accounts_carried: list[str] = []
 
 
 @router.get("/allocation-breakdown", response_model=AllocationBreakdownDTO)
@@ -1492,7 +1544,7 @@ def get_allocation_breakdown(
         if row is None:
             return AllocationBreakdownDTO(rows=[], total_value_k=0.0,
                                           note="No portfolio snapshot found.")
-        snap = row_to_snapshot(row)
+        snap = _apply_total_book_to_snap(row_to_snapshot(row), db, user_id)
         pv = get_current_plan(db, user_id)
         doc = load_plan_target_allocation(pv) if pv is not None else None
         from argosy.services.instrument_plan_class import load_classification_map
@@ -1504,7 +1556,15 @@ def get_allocation_breakdown(
                 "canonical plan's class targets. Click a class to see its symbols. "
                 + ("" if doc is not None
                    else "No current plan — targets shown blank."))
-        return _allocation_breakdown_dto(rows, note)
+        if getattr(snap, "book_degraded", False):
+            reason = getattr(snap, "degrade_reason", None) or "total book degraded"
+            note = f"BOOK DEGRADED — valuation unavailable ({reason}). " + note
+        dto = _allocation_breakdown_dto(rows, note)
+        dto.book_degraded = bool(getattr(snap, "book_degraded", False))
+        dto.degrade_reason = getattr(snap, "degrade_reason", None)
+        dto.accounts_covered = list(getattr(snap, "accounts_covered", None) or [])
+        dto.accounts_carried = list(getattr(snap, "accounts_carried", None) or [])
+        return dto
 
     # Pure function of (plan, snapshot, exclude_nvda) — no time/random/live-market
     # dependence — so memoize on the version tuple + the one query param.

@@ -935,7 +935,12 @@ def _total_book_positions(
         return raw if isinstance(raw, list) else [], None
     from argosy.services.holding_books import load_total_book
 
-    book = load_total_book(session, user_id, raw if isinstance(raw, list) else [])
+    book = load_total_book(
+        session,
+        user_id,
+        raw if isinstance(raw, list) else [],
+        snapshot_date=getattr(snapshot, "snapshot_date", None),
+    )
     if book.degraded:
         return [], book.degrade_reason or "total book degraded"
     return book.total, None
