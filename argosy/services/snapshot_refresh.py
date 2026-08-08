@@ -166,6 +166,45 @@ def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | Non
     return None
 
 
+def reprice_quantity(
+    *,
+    symbol: str,
+    shares: float,
+    currency: str = "USD",
+    details: str = "",
+    old_price: float | None = None,
+    quote_fn: Callable[..., float | None] | None = None,
+    fx_usd_nis: float | None = None,
+    fx_usd_eur: float | None = None,
+) -> tuple[float, float] | None:
+    """Reprice a known share count via the managed-book quote path.
+
+    Returns ``(live_price, usd_value_k)`` or ``None`` on a quote miss / band
+    rejection / FX miss. Quantities never change — only the mark. Used by the
+    unmanaged durable-book restore so a 25-day-old *price* is never published
+    as current money while the share count remains a durable fact.
+    """
+    qfn = quote_fn or default_quote_fn
+    sym = (symbol or "").strip()
+    if not sym or shares is None or float(shares) <= 0:
+        return None
+    if not _PRICEABLE_SYMBOL_RE.match(sym):
+        return None
+    price = qfn(sym, currency=currency, details=details or "")
+    if price is None or price <= 0:
+        return None
+    if old_price and float(old_price) > 0:
+        if not _within_band(float(price) / float(old_price), _PRICE_RATIO_BAND):
+            return None
+    new_value_local = float(shares) * float(price)
+    usd_k = _to_usd_k(
+        new_value_local, currency, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
+    )
+    if usd_k is None:
+        return None
+    return float(price), float(usd_k)
+
+
 def default_fx_fn() -> dict[str, float | None]:
     """Fresh FX: ``{"usd_nis": <rate|None>, "usd_eur": <rate|None>}``.
 

@@ -848,20 +848,24 @@ def provenance_for_subjects(
             if subj in wanted:
                 fired_subjects.add(subj)
 
-    # Fallback last-check: latest holding_reviews.reviewed_at per symbol
+    # Fallback last-check: latest NON-ABSTAIN holding_reviews.reviewed_at
+    # per symbol — an evidence outage must not fake a fresh fleet check.
     review_at: dict[str, datetime] = {}
     for sym, reviewed_at in session.execute(
         select(HoldingReview.symbol, sa_func.max(HoldingReview.reviewed_at)).where(
             HoldingReview.user_id == user_id,
             HoldingReview.symbol.in_(wanted),
+            HoldingReview.outcome != "abstained",
+            HoldingReview.verdict != "ABSTAIN",
         ).group_by(HoldingReview.symbol)
     ).all():
         if reviewed_at is not None:
             review_at[_norm_subject(str(sym))] = reviewed_at
 
-    # Fallback: stance falsifiers_json (usually NULL until registry backfills)
+    # Fallback: stance falsifiers_json (usually NULL until registry backfills).
+    # Do NOT collect stance.built_at — abstention-triggered rebuilds would fake
+    # freshness via last_fleet_check_at.
     stance_falsifiers: dict[str, list[str]] = {}
-    stance_built: dict[str, datetime] = {}
     for stance in session.execute(
         select(PositionStance).where(
             PositionStance.user_id == user_id,
@@ -872,8 +876,6 @@ def provenance_for_subjects(
         stance_falsifiers[sym] = [
             str(x) for x in _loads_list(stance.falsifiers_json) if str(x).strip()
         ]
-        if stance.built_at is not None:
-            stance_built[sym] = stance.built_at
 
     # Fallback: latest proposal → decision_run.finished_at for the ticker
     proposal_check: dict[str, datetime] = {}
@@ -930,7 +932,8 @@ def provenance_for_subjects(
             last_check,
             _iso_dt(review_at.get(subj)),
             _iso_dt(proposal_check.get(subj)),
-            _iso_dt(stance_built.get(subj)),
+            # Do NOT fold stance.built_at into freshness — an abstention-only
+            # review wave rebuilds stances and would fake "checked just now".
         )
 
         if not falsifiers:

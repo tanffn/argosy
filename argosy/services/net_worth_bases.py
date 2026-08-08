@@ -138,14 +138,42 @@ def total_net_worth_incl_residence(
     if snapshot is None:
         return None, None
 
-    try:
-        totals = json.loads(snapshot.totals_json or "{}")
-    except json.JSONDecodeError:
-        totals = {}
-    total_usd_k = totals.get("total_usd_value_k")
-    if total_usd_k is None:
-        return None, None
-    base_k = float(total_usd_k)
+    # Prefer the TOTAL book (snapshot + durable unmanaged) when a session is
+    # available — totals_json alone understates NW after an incomplete TSV that
+    # omitted Schwab/NVDA. Fail soft to None when the book is degraded so we
+    # never publish a confidently understated headline.
+    base_k: float | None = None
+    if session is not None and user_id is not None:
+        try:
+            from argosy.services.holding_books import (
+                investable_usd_k,
+                load_total_book,
+                parse_positions_json,
+            )
+
+            book = load_total_book(
+                session, user_id, parse_positions_json(snapshot.positions_json),
+            )
+            if book.degraded:
+                log.warning(
+                    "net_worth_bases.degraded user=%s reason=%s",
+                    user_id, book.degrade_reason,
+                )
+                return None, None
+            base_k = investable_usd_k(book.total)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("net_worth_bases.total_book_failed err=%s", exc)
+            base_k = None
+
+    if base_k is None:
+        try:
+            totals = json.loads(snapshot.totals_json or "{}")
+        except json.JSONDecodeError:
+            totals = {}
+        total_usd_k = totals.get("total_usd_value_k")
+        if total_usd_k is None:
+            return None, None
+        base_k = float(total_usd_k)
 
     # Swap the legacy real-estate stub (the "$69K Aborad" row in the position
     # block) for the full per-property net equity — so net worth includes real

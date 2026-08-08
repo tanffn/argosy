@@ -172,16 +172,28 @@ def build_nvda_projection(
 # ---------------------------------------------------------------------------
 
 
-def _nvda_shares_from_snapshot(snap) -> int | None:
-    """Pull today's NVDA share count out of a snapshot's ``positions_json``."""
+def _nvda_shares_from_snapshot(
+    snap, *, session=None, user_id: str | None = None,
+) -> int | None:
+    """Pull today's NVDA share count from the TOTAL book (incl. durable unmanaged)."""
     if snap is None or not getattr(snap, "positions_json", None):
         return None
     try:
-        positions = json.loads(snap.positions_json)
+        raw = json.loads(snap.positions_json)
     except (TypeError, ValueError):
         return None
-    if not isinstance(positions, list):
+    if not isinstance(raw, list):
         return None
+    positions = raw
+    if session is not None and user_id is not None:
+        try:
+            from argosy.services.holding_books import load_total_book
+
+            book = load_total_book(session, user_id, raw)
+            if not book.degraded:
+                positions = book.total
+        except Exception:  # noqa: BLE001
+            positions = raw
     for p in positions:
         if not isinstance(p, dict):
             continue
@@ -232,14 +244,26 @@ def compute_nvda_projection(
         return None
 
     nums = resolve_plan_numbers(db, user_id=user_id, decision_run_id=pv.decision_run_id)
+    from argosy.services.holding_books import (
+        implied_nvda_weight_frac,
+        tradeable_securities_nis_for_user,
+    )
+
     cap_rv = nums.get("concentration.nvda_cap_pct")
-    cur_rv = nums.get("concentration.nvda_current_pct")
-    if cap_rv.status != "resolved" or cur_rv.status != "resolved":
-        return None
-    if cap_rv.value is None or cur_rv.value is None or cur_rv.value <= 0:
+    weight = implied_nvda_weight_frac(
+        nums,
+        tradeable_securities_nis=tradeable_securities_nis_for_user(db, user_id),
+    )
+    if (
+        cap_rv is None
+        or getattr(cap_rv, "status", None) != "resolved"
+        or cap_rv.value is None
+        or weight is None
+        or weight <= 0
+    ):
         return None
     cap_pct = float(cap_rv.value) * 100.0
-    current_tradeable_pct = float(cur_rv.value) * 100.0
+    current_tradeable_pct = float(weight) * 100.0
 
     # Bind the cap to the canonical TargetAllocationDoc — the SAME single source
     # the glidepath + portfolio surfaces use — so the trajectory reconciles with
@@ -258,7 +282,7 @@ def compute_nvda_projection(
         pass
 
     snap = _latest_portfolio_snapshot(db, user_id)
-    today_shares = _nvda_shares_from_snapshot(snap)
+    today_shares = _nvda_shares_from_snapshot(snap, session=db, user_id=user_id)
     if today_shares is None or today_shares <= 0:
         return None
 

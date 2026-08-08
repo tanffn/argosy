@@ -5576,6 +5576,8 @@ export interface WealthDashboardDTO {
   sector_composition: WealthCompositionSlice[];
   region_composition: WealthCompositionSlice[];
   assumptions: WealthAssumptions;
+  /** Set when compositions are empty because the total book is degraded — not "no positions". */
+  composition_unavailable_reason?: string | null;
 }
 
 // ----------------------------------------------------------------------

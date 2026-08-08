@@ -122,6 +122,8 @@ class HoldingsReviewJob(CadenceLoop):
             # line), so the honest "we saw a trade signal but couldn't confirm
             # it" count was invisible. Surfaced per FIX 3b (2026-07-08 audit).
             "held_unverified": summary.get("held_unverified", 0),
+            "abstained": summary.get("abstained", 0),
+            "decisions": summary.get("decisions", 0),
             "elevated": summary.get("elevated", []),
         }
         self.last_output_summary = out

@@ -54,14 +54,17 @@ class ResolvedValue:
     """One headline figure, resolved to a value + a full provenance trail.
 
     ``status`` is ``"resolved"`` only when ``value`` is a real number
-    traced to a source; otherwise ``"pending"`` and ``value is None``.
-    Never carries a fabricated constant.
+    traced to a source; ``"pending"`` when inputs are not yet available;
+    ``"excluded"`` when the figure is deliberately out of scope (e.g. NVDA
+    weight while NVDA is unmanaged / excluded from sleeve math);
+    ``"unavailable"`` when the underlying asset is missing and must not be
+    silently reported as zero. Never carries a fabricated constant.
     """
 
     key: str
     value: float | None
     unit: str
-    status: str  # "resolved" | "pending"
+    status: str  # "resolved" | "pending" | "excluded" | "unavailable"
     source_locator: str
     agent_report_id: int | None = None
     confidence: str | None = None
@@ -85,6 +88,48 @@ class ResolvedValue:
             status="pending",
             source_locator=source_locator,
             agent_report_id=agent_report_id,
+            confidence=None,
+            formula=formula,
+        )
+
+    @classmethod
+    def excluded(
+        cls,
+        key: str,
+        unit: str,
+        source_locator: str,
+        *,
+        formula: str | None = None,
+    ) -> "ResolvedValue":
+        """Deliberately out of scope — not zero, not pending."""
+        return cls(
+            key=key,
+            value=None,
+            unit=unit,
+            status="excluded",
+            source_locator=source_locator,
+            agent_report_id=None,
+            confidence="HIGH",
+            formula=formula,
+        )
+
+    @classmethod
+    def unavailable(
+        cls,
+        key: str,
+        unit: str,
+        source_locator: str,
+        *,
+        formula: str | None = None,
+    ) -> "ResolvedValue":
+        """Underlying data missing — must not silently resolve to 0.0."""
+        return cls(
+            key=key,
+            value=None,
+            unit=unit,
+            status="unavailable",
+            source_locator=source_locator,
+            agent_report_id=None,
             confidence=None,
             formula=formula,
         )
@@ -134,6 +179,7 @@ _KEY_UNITS: dict[str, str] = {
     "concentration.nvda_cap_pct": "pct",
     "concentration.nvda_target_pct": "pct",
     "concentration.nvda_current_pct": "pct",
+    "concentration.nvda_value_nis": "nis",
     "concentration.nvda_target_sh": "shares",
     "concentration.nvda_sell_sh": "shares",
     "concentration.nvda_eligible_now_sh": "shares",
@@ -527,12 +573,30 @@ def _resolve_net_worth(
         return ResolvedValue.pending(key, "nis", "no FX available")
 
     # Currency split from positions: USD assets × current FX + NIS native.
+    # TOTAL book — merge durable unmanaged holdings (NVDA) so a TSV that
+    # omitted Schwab cannot understate net worth. Fail loud when degraded.
+    from argosy.services.holding_books import (
+        load_total_book,
+        parse_positions_json,
+    )
+
     usd_assets_usd = 0.0
     nis_native_nis = 0.0
     try:
-        positions = json.loads(snap.positions_json or "[]")
-    except (json.JSONDecodeError, ValueError, TypeError):
-        positions = []
+        raw_positions = parse_positions_json(snap.positions_json)
+    except Exception:  # noqa: BLE001
+        raw_positions = []
+    book = load_total_book(session, user_id, raw_positions)
+    if book.degraded:
+        return ResolvedValue.unavailable(
+            key, "nis",
+            f"portfolio_snapshot DEGRADED: {book.degrade_reason}",
+            formula=(
+                "unavailable: refusing understated net worth at HIGH confidence "
+                "when unmanaged book cannot restore a policy holding"
+            ),
+        )
+    positions = book.total
     for p in positions:
         v = _to_float(p.get("usd_value_k")) or 0.0
         if (p.get("currency") or "").upper() == "USD":
@@ -1433,6 +1497,10 @@ def _apply_us_situs_estate(
         "USD/NIS (snapshot fx fallback)"
     )
     try:
+        from argosy.services.holding_books import (
+            load_total_book,
+            parse_positions_json,
+        )
         from argosy.services.retirement.safety_gates import _us_situs_assets_usd
 
         snap = session.execute(
@@ -1444,10 +1512,22 @@ def _apply_us_situs_estate(
         if snap is None:
             values[key] = ResolvedValue.pending(key, "nis", loc)
             return
-        try:
-            positions = json.loads(snap.positions_json or "[]")
-        except (json.JSONDecodeError, ValueError, TypeError):
-            positions = []
+        raw_positions = parse_positions_json(snap.positions_json)
+        book = load_total_book(session, user_id, raw_positions)
+        if book.degraded:
+            # NEVER publish a HIGH-confidence understated estate figure.
+            values[key] = ResolvedValue.unavailable(
+                key, "nis",
+                f"{loc} — DEGRADED: {book.degrade_reason}",
+                formula=(
+                    "unavailable: durable unmanaged book missing/unloadable "
+                    "while snapshot omits a policy holding — refusing to "
+                    "publish understated US-situs at HIGH confidence"
+                ),
+            )
+            return
+        # TOTAL book — US estate tax does not care which book manages an asset.
+        positions = book.total
         usd = _us_situs_assets_usd(positions)
         # Mark to the SAME current-BOI-FX basis net worth uses (snapshot fx is
         # the fallback only when BOI is uncached) — one FX convention per book.
@@ -1461,14 +1541,15 @@ def _apply_us_situs_estate(
             value=usd * fx,
             unit="nis",
             status="resolved",
-            source_locator=f"{loc} = {fx_src} {fx:.3f} (snapshot id={snap.id})",
+            source_locator=f"{loc} = {fx_src} {fx:.3f} (snapshot id={snap.id}; total book)",
             agent_report_id=None,
             confidence="HIGH",
             formula=(
-                "Σ US-domiciled securities across ALL brokers (by instrument "
-                "domicile: NVDA + US ETFs + US single names at Schwab and the "
-                "Israeli broker; UCITS / Israeli / cash excluded) per IRS NRA "
-                "estate-tax rules, × current BOI USD/NIS (snapshot fx fallback)"
+                "Σ US-domiciled securities across ALL brokers (TOTAL book incl. "
+                "deliberately unmanaged NVDA; by instrument domicile: NVDA + US "
+                "ETFs + US single names at Schwab and the Israeli broker; UCITS / "
+                "Israeli / cash excluded) per IRS NRA estate-tax rules, × current "
+                "BOI USD/NIS (snapshot fx fallback)"
             ),
         )
     except Exception as exc:  # noqa: BLE001 — defensive; leave pending
@@ -1481,20 +1562,27 @@ def _apply_nvda_current_weight(
 ) -> None:
     """Override ``concentration.nvda_current_pct`` with a DETERMINISTIC,
     snapshot-derived value (stored as a fraction 0–1, matching the unit
-    convention).
+    convention) — OR an explicit excluded/unavailable status.
 
-    The current NVDA weight is a mechanical fact, not a judgment — yet it was
-    sourced from the LLM concentration analyst's ``current_nvda_pct`` and went
-    "[derivation pending]" whenever that agent's output failed validation. That
-    fragility is one leg of the "NVDA weight reported three ways" defect. Here
-    we compute it deterministically as NVDA ÷ tradeable securities book — the
-    SAME canonical definition the wealth dashboard uses (one number across
-    surfaces) — so it is never pending and always auditable. The analyst still
-    owns the cap (a genuine judgment); only the current weight is overridden.
+    NVDA is deliberately unmanaged (excluded from sleeve math). Reporting
+    its sleeve weight as 0.0 because it is absent from the managed book is
+    a lie; when the total book has NVDA but it is unmanaged, status is
+    ``excluded``. When NVDA is missing from the total book entirely, status
+    is ``unavailable`` — never a silent 0.0. Absolute NVDA value for FI
+    shock / estate is published separately as ``concentration.nvda_value_nis``.
     """
     key = "concentration.nvda_current_pct"
-    loc = "wealth_dashboard.nvda_concentration_pct(snapshot positions)"
+    value_key = "concentration.nvda_value_nis"
+    loc = "holding_books total book + wealth_dashboard.nvda_concentration_pct"
     try:
+        from argosy.services.holding_books import (
+            TotalBookDegraded,
+            has_symbol,
+            is_managed_position,
+            load_total_book,
+            parse_positions_json,
+            symbol_value_usd_k,
+        )
         from argosy.services.wealth_dashboard import nvda_concentration_pct
 
         snap = session.execute(
@@ -1505,11 +1593,75 @@ def _apply_nvda_current_weight(
         ).scalar_one_or_none()
         if snap is None:
             return  # leave whatever the role resolver set (likely pending)
-        try:
-            positions = json.loads(snap.positions_json or "[]")
-        except (json.JSONDecodeError, ValueError, TypeError):
+        raw_positions = parse_positions_json(snap.positions_json)
+        book = load_total_book(session, user_id, raw_positions)
+        if book.degraded:
+            values[value_key] = ResolvedValue.unavailable(
+                value_key, "nis",
+                f"total book degraded — refusing NVDA value: {book.degrade_reason}",
+            )
+            values[key] = ResolvedValue.unavailable(
+                key, "pct",
+                f"total book degraded — refusing NVDA weight: {book.degrade_reason}",
+            )
             return
-        pct = nvda_concentration_pct(positions)
+        total = book.total
+        snap_fx = _to_float(snap.fx_usd_nis) or 0.0
+        fx, fx_src = _current_boi_usd_nis(session, snap_fx)
+
+        nvda_k = symbol_value_usd_k(total, "NVDA")
+        if nvda_k > 0 and fx and fx > 0:
+            values[value_key] = ResolvedValue(
+                key=value_key,
+                value=nvda_k * 1000.0 * fx,
+                unit="nis",
+                status="resolved",
+                source_locator=(
+                    f"Σ NVDA usd_value_k on TOTAL book × {fx_src} {fx:.3f} "
+                    f"(snapshot id={snap.id})"
+                ),
+                agent_report_id=None,
+                confidence="HIGH",
+                formula="NVDA usd_value_k × 1000 × current BOI USD/NIS (total book)",
+            )
+        elif has_symbol(total, "NVDA"):
+            values[value_key] = ResolvedValue.pending(
+                value_key, "nis", "NVDA present but FX/value unresolved",
+            )
+        # else: leave value_key unset / prior — cold snapshot with no positions
+
+        if not has_symbol(total, "NVDA"):
+            # Distinguish cold/empty snapshot (leave agent-derived prior) from
+            # a real book that silently omitted NVDA (must not publish 0.0).
+            from argosy.services.wealth_dashboard import tradeable_securities_usd_k
+
+            if tradeable_securities_usd_k(total) > 0:
+                values[key] = ResolvedValue.unavailable(
+                    key, "pct",
+                    "NVDA absent from total book that has other securities — "
+                    "not 0.0 (missing ≠ zero)",
+                    formula="unavailable (missing ≠ zero)",
+                )
+            return
+
+        # Find an NVDA row to check managed flag.
+        nvda_rows = [
+            p for p in total
+            if str(p.get("symbol") or "").upper() == "NVDA"
+        ]
+        if nvda_rows and not is_managed_position(nvda_rows[0]):
+            values[key] = ResolvedValue.excluded(
+                key, "pct",
+                f"{loc} — NVDA deliberately unmanaged / excluded_from_sleeve_math "
+                f"(snapshot id={snap.id})",
+                formula=(
+                    "excluded from sleeve-weight reporting; absolute value in "
+                    "concentration.nvda_value_nis; estate/NW/shock use TOTAL book"
+                ),
+            )
+            return
+
+        pct = nvda_concentration_pct(total)
         if pct is None:
             return
         values[key] = ResolvedValue(
@@ -1524,6 +1676,13 @@ def _apply_nvda_current_weight(
                 "NVDA usd_value_k ÷ tradeable securities book (excl. cash + "
                 "physical real estate), snapshot-derived — % of tradeable book"
             ),
+        )
+    except TotalBookDegraded as exc:
+        values[value_key] = ResolvedValue.unavailable(
+            value_key, "nis", f"total book degraded: {exc.reason}",
+        )
+        values[key] = ResolvedValue.unavailable(
+            key, "pct", f"total book degraded: {exc.reason}",
         )
     except Exception as exc:  # noqa: BLE001 — defensive; leave prior value
         log.warning("plan_numeric_resolver.nvda_current_weight_failed err=%s", exc)
@@ -1616,7 +1775,8 @@ def _apply_fi_shock_net_worths(values: dict[str, ResolvedValue]) -> None:
             confidence="HIGH",
             formula=(
                 f"net_worth − {PRIMARY_NVDA_SHOCK:.0%} × "
-                "(net_worth × nvda_current_pct) — gate shock_0.30 row"
+                "concentration.nvda_value_nis (TOTAL book; fallback "
+                "net_worth × nvda_current_pct) — gate shock_0.30 row"
             ),
         )
 
@@ -1729,22 +1889,62 @@ def _apply_nvda_deconcentration(
     )
     w = values.get("concentration.nvda_current_pct")
     cap = values.get("concentration.nvda_cap_pct")
-    if not w or w.status != "resolved" or not cap or cap.status != "resolved":
+    # Sleeve weight may be status=excluded (NVDA unmanaged) — still derive
+    # share counts from absolute NVDA value ÷ TRADEABLE SECURITIES book
+    # (same denominator as nvda_concentration_pct / the 13% cap). Never NW.
+    nvda_weight: float | None = None
+    if w is not None and w.status == "resolved" and w.value is not None:
+        nvda_weight = float(w.value)
+    elif w is not None and w.status == "excluded":
+        from argosy.services.holding_books import implied_nvda_weight_frac
+        from argosy.services.holding_books import tradeable_securities_nis_for_user
+
+        tradeable = tradeable_securities_nis_for_user(session, user_id)
+        nvda_weight = implied_nvda_weight_frac(
+            values, tradeable_securities_nis=tradeable,
+        )
+    if (
+        nvda_weight is None
+        or not cap or cap.status != "resolved" or cap.value is None
+    ):
         for k in keys:
             values[k] = ResolvedValue.pending(k, "shares", "nvda weight/cap pending")
         return
     nvda_sh = nvda_px = None
     try:
+        from argosy.services.holding_books import (
+            TotalBookDegraded,
+            load_total_book,
+            parse_positions_json,
+        )
+
         snap = session.execute(
             select(PortfolioSnapshotRow)
             .where(PortfolioSnapshotRow.user_id == user_id)
             .order_by(PortfolioSnapshotRow.id.desc()).limit(1)
         ).scalar_one_or_none()
-        for p in (json.loads(snap.positions_json or "[]") if snap else []):
+        raw = parse_positions_json(snap.positions_json if snap else None)
+        book = load_total_book(session, user_id, raw)
+        if book.degraded:
+            for k in keys:
+                values[k] = ResolvedValue.unavailable(
+                    k, "shares",
+                    f"total book degraded — refusing sell-share derivation: "
+                    f"{book.degrade_reason}",
+                )
+            return
+        total = book.total
+        for p in total:
             if str(p.get("symbol", "")).upper() == "NVDA":
                 nvda_sh = _to_float(p.get("shares"))
                 nvda_px = _to_float(p.get("current_price"))
                 break
+    except TotalBookDegraded as exc:
+        for k in keys:
+            values[k] = ResolvedValue.unavailable(
+                k, "shares", f"total book degraded: {exc.reason}",
+            )
+        return
     except Exception as exc:  # noqa: BLE001
         log.warning("plan_numeric_resolver.nvda_deconc_snapshot_failed err=%s", exc)
     if not nvda_sh or not nvda_px:
@@ -1754,7 +1954,7 @@ def _apply_nvda_deconcentration(
     from argosy.services.plan_derivation import derive_nvda_deconcentration
 
     dec = derive_nvda_deconcentration(
-        nvda_sh=int(nvda_sh), nvda_px_usd=nvda_px, nvda_weight=float(w.value),
+        nvda_sh=int(nvda_sh), nvda_px_usd=nvda_px, nvda_weight=float(nvda_weight),
         target_w=_NVDA_IPS_TARGET_W, cap=float(cap.value),
     )
     for k, field in (("concentration.nvda_target_sh", "nvda_target_sh"),
@@ -2164,8 +2364,24 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
     w = resolved.get("concentration.nvda_current_pct")
     elig = resolved.get("concentration.nvda_eligible_now_sh")
     quota = resolved.get("concentration.nvda_quota_tax_year_sh")
-    if (w is not None and w.status == "resolved" and w.value is not None
-            and float(w.value) > _NVDA_IPS_TARGET_W):
+    # Weight may be status=excluded (NVDA unmanaged): still state the FACTS
+    # using absolute NVDA value ÷ net worth when available.
+    weight_frac: float | None = None
+    weight_note = ""
+    if w is not None and w.status == "resolved" and w.value is not None:
+        weight_frac = float(w.value)
+    elif w is not None and w.status == "excluded":
+        nvda_val = resolved.get("concentration.nvda_value_nis")
+        nw = resolved.get("portfolio.net_worth_nis")
+        if (
+            nvda_val is not None and nvda_val.status == "resolved"
+            and nw is not None and nw.status == "resolved"
+            and nvda_val.value is not None and nw.value is not None
+            and float(nw.value) > 0
+        ):
+            weight_frac = float(nvda_val.value) / float(nw.value)
+            weight_note = " (TOTAL book; excluded from sleeve-weight reporting)"
+    if weight_frac is not None and weight_frac > _NVDA_IPS_TARGET_W:
         from datetime import UTC, datetime
 
         elig_txt = (f"{int(elig.value):,} NVDA shares are Section-102 "
@@ -2176,7 +2392,8 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
             "",
             "RSU-VEST-POLICY FACTS (state these; the vest/sale POLICY itself is "
             "fleet-authored — see the adjudicated policy below):",
-            f"  - Concentration: NVDA is {float(w.value) * 100:.0f}% of the book vs the "
+            f"  - Concentration: NVDA is {weight_frac * 100:.0f}% of the book"
+            f"{weight_note} vs the "
             f"{_NVDA_IPS_TARGET_W:.0%} IPS target.",
             f"  - Eligible pool: {elig_txt}.",
             "  - Per-lot Section-102 clock rule: each lot becomes capital-track "

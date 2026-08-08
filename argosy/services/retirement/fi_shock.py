@@ -42,17 +42,26 @@ def derive_nvda_shock_inputs(resolved: _ResolvedLike) -> dict[str, float] | None
     """Gate/synth shared inputs for ``fi_sufficiency_under_shock``.
 
     Returns kwargs when every required value is RESOLVED, else None.
-    ``nvda_value_nis`` = net_worth × nvda fraction (no ÷100).
+
+    Prefers absolute ``concentration.nvda_value_nis`` (TOTAL book) so a
+    deliberately unmanaged NVDA still shocks net worth. Falls back to
+    ``net_worth × nvda_current_pct`` only when the absolute value is absent
+    and the pct is resolved (legacy path).
     """
     net_worth = _resolved_float(resolved, "portfolio.net_worth_nis")
     perpetuity_base = _resolved_float(resolved, "retirement.fi_target_nis")
     fi_total = _resolved_float(resolved, "retirement.fi_total_capital_nis")
-    nvda_frac = _resolved_float(resolved, "concentration.nvda_current_pct")
-    if None in (net_worth, perpetuity_base, fi_total, nvda_frac):
+    if None in (net_worth, perpetuity_base, fi_total):
         return None
+    nvda_value = _resolved_float(resolved, "concentration.nvda_value_nis")
+    if nvda_value is None:
+        nvda_frac = _resolved_float(resolved, "concentration.nvda_current_pct")
+        if nvda_frac is None:
+            return None
+        nvda_value = net_worth * nvda_frac
     return {
         "net_worth_nis": net_worth,
-        "nvda_value_nis": net_worth * nvda_frac,
+        "nvda_value_nis": nvda_value,
         "perpetuity_base_nis": perpetuity_base,
         "fi_total_nis": fi_total,
     }

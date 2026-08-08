@@ -36,32 +36,147 @@ from argosy.ingest.tsv import PortfolioSnapshot
 from argosy.state.models import PortfolioSnapshotRow
 
 
-def _normalized_position_dicts(positions: list) -> list[dict]:
-    """Serialize positions with asset_type CORRECTED against the instrument
-    reference, so the stored snapshot is canonical for every consumer (not
-    just display-corrected per-surface).
+def persist_snapshot(
+    session: Session,
+    *,
+    user_id: str,
+    snapshot: PortfolioSnapshot,
+    commit: bool = True,
+    allow_stale: bool = False,
+    allow_catastrophic_drop: bool = False,
+    actor: str | None = None,
+    override_reason: str | None = None,
+) -> PortfolioSnapshotRow:
+    """Write one parsed snapshot row. Returns the persisted ORM row.
 
-    The source Type column is hand-maintained and occasionally mislabels an
-    instrument's asset CLASS (STOXX Europe 600 + EIMI tagged "REIT" though
-    they're equity ETFs; IWDP tagged "Equity" though it's a property/REIT
-    ETF). When the source type implies a different class than the reference,
-    store the reference's sector; otherwise keep the source tilt
-    (Growth/Dividend/Core/REIT-for-genuine-REITs), which the reference
-    doesn't capture. Cash and unknown instruments are untouched.
+    Each call appends a NEW row (no upsert) — keeping the history is
+    cheap and lets the chart pages render historical allocation curves
+    later without a migration.
+
+    Idempotency: callers should check ``latest_matches_snapshot`` first
+    so re-running the same TSV doesn't bloat the table with duplicates.
+    This function is intentionally dumb (always writes); the idempotency
+    decision lives at the call site.
+
+    ``commit=False`` adds + flushes but leaves the commit to the caller —
+    for write-throughs that must be ATOMIC with a surrounding batch (e.g.
+    the XLS↔Osh pairing resolution runs mid-ingest; an internal commit
+    there would split the ingest's atomic transaction).
+
+    Ingest guards (the Jul-13 NVDA-wipe class of failure):
+      * reject ``snapshot_date`` older than the current latest
+      * reject a silent catastrophic drop in position count / securities value
+    Pass ``allow_stale`` / ``allow_catastrophic_drop`` only for deliberate
+    repairs (self-refresh carry of a known-good book is dated today and
+    passes; a re-import of an older incomplete TSV does not).
     """
-    from argosy.services import instrument_reference
-    from argosy.services.wealth_dashboard import _classify_asset_class
+    from argosy.services.holding_books import (
+        SnapshotIngestRejected,
+        assess_snapshot_ingest,
+        load_policy_symbols,
+        stamp_management_flags,
+        sync_unmanaged_from_positions,
+    )
 
-    out: list[dict] = []
-    for p in positions:
-        d = p.model_dump()
-        sym = (d.get("symbol") or "").strip()
-        at = (d.get("asset_type") or "").strip()
-        ref = instrument_reference.lookup(sym, d.get("details") or "")
-        if ref is not None and ref.asset_class != _classify_asset_class(at, sym):
-            d["asset_type"] = ref.sector
-        out.append(d)
-    return out
+    latest = get_latest_snapshot_row(session, user_id)
+    assess_snapshot_ingest(
+        latest_row=latest,
+        new_positions=snapshot.positions,
+        new_snapshot_date=snapshot.snapshot_date,
+        allow_stale=allow_stale,
+        allow_catastrophic_drop=allow_catastrophic_drop,
+    )
+
+    policy = load_policy_symbols(session, user_id)
+    stamped = _normalized_position_dicts(snapshot.positions, policy_symbols=policy)
+
+    row = PortfolioSnapshotRow(
+        user_id=user_id,
+        snapshot_date=snapshot.snapshot_date,
+        imported_at=datetime.now(timezone.utc),
+        source_path=snapshot.source_path,
+        positions_json=json.dumps(stamped, default=str),
+        allocations_json=json.dumps(
+            [a.model_dump() for a in snapshot.allocations], default=str,
+        ),
+        nvda_sales_json=json.dumps(
+            dedup_nvda_sale_dicts(
+                [s.model_dump() for s in snapshot.nvda_sales]
+            ),
+            default=str,
+        ),
+        real_estate_json=json.dumps(
+            [r.model_dump() for r in snapshot.real_estate], default=str,
+        ),
+        pensions_json=json.dumps(
+            [pe.model_dump() for pe in snapshot.pensions], default=str,
+        ),
+        totals_json=json.dumps({
+            "total_usd_value_k": snapshot.total_usd_value_k,
+            "cash_balances_usd_k": snapshot.cash_balances_usd_k(),
+        }),
+        fx_usd_nis=snapshot.fx_usd_nis,
+        fx_usd_eur=snapshot.fx_usd_eur,
+        parse_warnings_json=json.dumps(list(snapshot.parse_warnings)),
+    )
+    session.add(row)
+    # Lifecycle sync in SAVEPOINTs — never rolls back this snapshot write.
+    # Account closure is NOT tied to catastrophic-drop — use
+    # retire_unmanaged_account for an explicit single-account retirement.
+    sync_result = sync_unmanaged_from_positions(
+        session, user_id, stamped, commit=False,
+        valued_as_of=snapshot.snapshot_date,
+    )
+    if sync_result.get("errors"):
+        from argosy.logging import get_logger
+        get_logger("argosy.portfolio_snapshot_store").warning(
+            "unmanaged_sync_errors", **sync_result,
+        )
+    if allow_stale or allow_catastrophic_drop:
+        # Auditable override — stamp the persisted row's warnings with enough
+        # to reconstruct who bypassed what and why.
+        try:
+            warns = json.loads(row.parse_warnings_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            warns = []
+        would_have: list[str] = []
+        if allow_stale:
+            would_have.append("stale_snapshot_date")
+        if allow_catastrophic_drop:
+            would_have.append("catastrophic_position_or_value_drop")
+        actor = actor or "unspecified"
+        reason = override_reason or "unspecified"
+        warns.append(
+            "INGEST_OVERRIDE "
+            f"actor={actor} "
+            f"reason={reason} "
+            f"allow_stale={allow_stale} "
+            f"allow_catastrophic_drop={allow_catastrophic_drop} "
+            f"guards_bypassed={','.join(would_have) or 'none'} "
+            f"snapshot_date={snapshot.snapshot_date}"
+        )
+        row.parse_warnings_json = json.dumps(warns)
+        from argosy.logging import get_logger
+        get_logger("argosy.portfolio_snapshot_store").warning(
+            "snapshot_ingest.override",
+            user_id=user_id,
+            actor=actor,
+            reason=reason,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            guards_bypassed=would_have,
+            snapshot_date=str(snapshot.snapshot_date),
+        )
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    session.refresh(row)
+    return row
+
+
+# Re-export for callers that need to catch the guard.
+from argosy.services.holding_books import SnapshotIngestRejected  # noqa: E402
 
 
 def dedup_nvda_sale_dicts(rows: list) -> list:
@@ -91,70 +206,40 @@ def dedup_nvda_sale_dicts(rows: list) -> list:
     return out
 
 
-def persist_snapshot(
-    session: Session,
-    *,
-    user_id: str,
-    snapshot: PortfolioSnapshot,
-    commit: bool = True,
-) -> PortfolioSnapshotRow:
-    """Write one parsed snapshot row. Returns the persisted ORM row.
+def _normalized_position_dicts(
+    positions: list, *, policy_symbols: frozenset | None = None
+) -> list[dict]:
+    """Serialize positions with asset_type CORRECTED against the instrument
+    reference, so the stored snapshot is canonical for every consumer (not
+    just display-corrected per-surface).
 
-    Each call appends a NEW row (no upsert) — keeping the history is
-    cheap and lets the chart pages render historical allocation curves
-    later without a migration.
+    The source Type column is hand-maintained and occasionally mislabels an
+    instrument's asset CLASS (STOXX Europe 600 + EIMI tagged "REIT" though
+    they're equity ETFs; IWDP tagged "Equity" though it's a property/REIT
+    ETF). When the source type implies a different class than the reference,
+    store the reference's sector; otherwise keep the source tilt
+    (Growth/Dividend/Core/REIT-for-genuine-REITs), which the reference
+    doesn't capture. Cash and unknown instruments are untouched.
 
-    Idempotency: callers should check ``latest_matches_snapshot`` first
-    so re-running the same TSV doesn't bloat the table with duplicates.
-    This function is intentionally dumb (always writes); the idempotency
-    decision lives at the call site.
-
-    ``commit=False`` adds + flushes but leaves the commit to the caller —
-    for write-throughs that must be ATOMIC with a surrounding batch (e.g.
-    the XLS↔Osh pairing resolution runs mid-ingest; an internal commit
-    there would split the ingest's atomic transaction).
+    Also stamps explicit ``managed`` / ``excluded_from_sleeve_math`` flags
+    (see ``holding_books``) so sleeve math vs total-book consumers never
+    confuse deliberate exclusion with absence. Explicit TSV overrides
+    (``review_status`` / ``details`` markers) are honored.
     """
-    row = PortfolioSnapshotRow(
-        user_id=user_id,
-        snapshot_date=snapshot.snapshot_date,
-        imported_at=datetime.now(timezone.utc),
-        source_path=snapshot.source_path,
-        positions_json=json.dumps(
-            _normalized_position_dicts(snapshot.positions), default=str,
-        ),
-        allocations_json=json.dumps(
-            [a.model_dump() for a in snapshot.allocations], default=str,
-        ),
-        nvda_sales_json=json.dumps(
-            # Writer-side guard: a snapshot assembled from a dup-carrying
-            # source (TSV re-ingest, self-refresh carry of a historical
-            # row) still writes a CLEAN sales block.
-            dedup_nvda_sale_dicts(
-                [s.model_dump() for s in snapshot.nvda_sales]
-            ),
-            default=str,
-        ),
-        real_estate_json=json.dumps(
-            [r.model_dump() for r in snapshot.real_estate], default=str,
-        ),
-        pensions_json=json.dumps(
-            [pe.model_dump() for pe in snapshot.pensions], default=str,
-        ),
-        totals_json=json.dumps({
-            "total_usd_value_k": snapshot.total_usd_value_k,
-            "cash_balances_usd_k": snapshot.cash_balances_usd_k(),
-        }),
-        fx_usd_nis=snapshot.fx_usd_nis,
-        fx_usd_eur=snapshot.fx_usd_eur,
-        parse_warnings_json=json.dumps(list(snapshot.parse_warnings)),
-    )
-    session.add(row)
-    if commit:
-        session.commit()
-    else:
-        session.flush()
-    session.refresh(row)
-    return row
+    from argosy.services import instrument_reference
+    from argosy.services.holding_books import stamp_management_flags
+    from argosy.services.wealth_dashboard import _classify_asset_class
+
+    raw: list[dict] = []
+    for p in positions:
+        d = p.model_dump() if hasattr(p, "model_dump") else dict(p)
+        sym = (d.get("symbol") or "").strip()
+        at = (d.get("asset_type") or "").strip()
+        ref = instrument_reference.lookup(sym, d.get("details") or "")
+        if ref is not None and ref.asset_class != _classify_asset_class(at, sym):
+            d["asset_type"] = ref.sector
+        raw.append(d)
+    return stamp_management_flags(raw, policy_symbols=policy_symbols)
 
 
 def get_latest_snapshot_row(
@@ -258,6 +343,10 @@ def latest_matches_snapshot(
 def write_through_if_changed(
     session: Session, *, user_id: str, snapshot: PortfolioSnapshot,
     commit: bool = True,
+    allow_stale: bool = False,
+    allow_catastrophic_drop: bool = False,
+    actor: str | None = None,
+    override_reason: str | None = None,
 ) -> PortfolioSnapshotRow | None:
     """Persist ``snapshot`` iff the latest row doesn't already match it.
 
@@ -274,10 +363,15 @@ def write_through_if_changed(
         return None
     return persist_snapshot(
         session, user_id=user_id, snapshot=snapshot, commit=commit,
+        allow_stale=allow_stale,
+        allow_catastrophic_drop=allow_catastrophic_drop,
+        actor=actor,
+        override_reason=override_reason,
     )
 
 
 __all__ = [
+    "SnapshotIngestRejected",
     "dedup_nvda_sale_dicts",
     "get_latest_snapshot_row",
     "latest_matches_snapshot",

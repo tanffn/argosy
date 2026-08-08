@@ -94,7 +94,13 @@ def _parse_snapshot_date(raw: str) -> date | None:
 
 
 class PortfolioPosition(BaseModel):
-    """One holding row from the TSV."""
+    """One holding row from the TSV.
+
+    ``managed`` / ``excluded_from_sleeve_math`` scope which book a holding
+    participates in: sleeve/allocation % math uses the managed book only;
+    estate / net worth / FX / tax / concentration shock use the total book.
+    NVDA is unmanaged by convention when present (see ``holding_books``).
+    """
 
     review_status: str = ""
     location: str = ""  # 'schwab 876', 'Leumi', 'Aborad', etc.
@@ -110,6 +116,9 @@ class PortfolioPosition(BaseModel):
     pct_change: float | None = None
     pct_yearly: float | None = None
     raw_line: int = 0  # 1-based source line for debugging
+    # Explicit book membership. None = infer (NVDA → unmanaged by convention).
+    managed: bool | None = None
+    excluded_from_sleeve_math: bool | None = None
 
 
 class RealEstatePosition(BaseModel):

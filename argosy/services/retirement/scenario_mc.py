@@ -605,17 +605,26 @@ def _nvda_deconcentration_haircut(session, user_id: str, net_worth_nis: float) -
         ).scalar_one_or_none()
         drun = getattr(pv, "decision_run_id", None) if pv else None
         nvda_pct = cap_pct = None
+        tradeable_nis = None
         if drun is not None:
+            from argosy.services.holding_books import (
+                implied_nvda_weight_frac,
+                tradeable_securities_nis_for_user,
+            )
+
             r = resolve_plan_numbers(session, user_id=user_id, decision_run_id=int(drun))
-            cur = r.get("concentration.nvda_current_pct")
             cap = r.get("concentration.nvda_cap_pct")
-            nvda_pct = float(cur.value) if (cur and cur.status == "resolved" and cur.value) else None
+            tradeable_nis = tradeable_securities_nis_for_user(session, user_id)
+            nvda_pct = implied_nvda_weight_frac(
+                r, tradeable_securities_nis=tradeable_nis,
+            )
             cap_pct = float(cap.value) if (cap and cap.status == "resolved" and cap.value) else None
-        if nvda_pct is None:
+        if nvda_pct is None or tradeable_nis is None or float(tradeable_nis) <= 0:
             return 0.0
         cap_pct = cap_pct if cap_pct is not None else DEFAULT_NVDA_CAP_PCT
         sell_fraction = max(0.0, nvda_pct - cap_pct)
-        sell_nis = sell_fraction * net_worth_nis
+        # Weight is NVDA÷tradeable — haircut must use the same book, never NW.
+        sell_nis = sell_fraction * float(tradeable_nis)
         return nvda_deconcentration_cgt(sell_nis, taper_years=DECONCENTRATION_TAPER_YEARS)
     except Exception:  # noqa: BLE001
         return 0.0

@@ -164,6 +164,7 @@ class WealthDashboardDTO(BaseModel):
     sector_composition: list[CompositionSliceDTO]
     region_composition: list[CompositionSliceDTO]
     assumptions: AssumptionsDTO
+    composition_unavailable_reason: str | None = None
 
 
 @router.get("/wealth-dashboard", response_model=WealthDashboardDTO)

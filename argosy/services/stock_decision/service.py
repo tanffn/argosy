@@ -414,6 +414,13 @@ def run_holdings_review(
         v = decide(ticker, context=context, bundle=bundle, user_id=user_id)
         verdicts.append(v)
         _audit = dict(position_usd=float(usd), elevated_by_flag=flag is not None)
+        if (v.verdict or "").upper() == "ABSTAIN":
+            log.info(
+                "stock_decision.abstained",
+                ticker=v.ticker, reason=(v.reason or "")[:120],
+            )
+            record(v, outcome="abstained", **_audit)
+            continue
         if not is_actionable(v.verdict):
             log.info("stock_decision.hold", ticker=v.ticker, reason=(v.reason or "")[:120])
             record(v, outcome="hold", **_audit)
@@ -438,6 +445,12 @@ def run_holdings_review(
         "actionable": actionable,
         "written": written,
         "held_unverified": held_unverified,
+        "abstained": sum(
+            1 for v in verdicts if (v.verdict or "").upper() == "ABSTAIN"
+        ),
+        "decisions": sum(
+            1 for v in verdicts if (v.verdict or "").upper() != "ABSTAIN"
+        ),
         "elevated": elevated,
         "verdicts": verdicts,
     }
