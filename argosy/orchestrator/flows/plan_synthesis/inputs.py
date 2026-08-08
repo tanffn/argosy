@@ -1582,78 +1582,103 @@ def _gather_fundamentals(
 def _enrich_reported_periods_sync(
     payload: dict[str, dict[str, Any]],
 ) -> None:
-    """Set sourced ``most_recent_reported_period`` from Finnhub calendar.
+    """Option C: class-aware reported-period enrichment.
 
-    Uses ``FinnhubAdapter.fetch_earnings_calendar_sync`` — never
-    ``asyncio.run``. Only accepts events with explicit quarter+year
-    (iter-2: never invent a period from a date-only release).
+    * ``single_name_equity`` — ``most_recent_reported_period`` from SEC
+      EDGAR submissions ``reportDate`` (never Finnhub calendar).
+    * ``fund_etf_index`` / ``cash_tbill`` — stamp the named exemption; do
+      not call SEC.
+    * ``unknown`` — leave reported period absent (gate fails closed) unless
+      SEC resolves a CIK, in which case promote to single-name equity.
 
-    Failure mode is fail-closed and *visible*: the field stays absent so
-    ``provenance_complete`` is false and the vintage gate blocks. A
-    warning is logged; we do not pretend enrichment succeeded.
+    yfinance ``mostRecentQuarter`` is recorded only as an *independent
+    second reading* for lag detection — it never satisfies the reported-
+    period side when SEC already populated it (and never both sides).
+
+    Sync HTTP only — never ``asyncio.run``. Failures stay visible.
     """
     if not payload:
         return
     try:
-        from datetime import date, timedelta
-
-        from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
+        from argosy.adapters.data.sec_reported_period import (
+            SecReportedPeriodAdapter,
+        )
         from argosy.services.decision_integrity.as_of import (
+            extract_earnings_date_from_yf_info,
             parse_date,
-            reported_period_from_earnings_event,
+        )
+        from argosy.services.decision_integrity.instrument_class import (
+            ProvenanceClass,
+            annotate_provenance_class,
+            classify_from_fields,
         )
 
-        adapter = FinnhubAdapter()
-        if not hasattr(adapter, "fetch_earnings_calendar_sync"):
-            # Test doubles that only stub get_company_financials — do not
-            # mutate the payload (preserves gather unit-test contracts).
-            return
-        end = date.today()
-        start = end - timedelta(days=180)
+        adapter = SecReportedPeriodAdapter()
+        yf = None
+        try:
+            import yfinance as yf_mod
+
+            yf = yf_mod
+        except Exception:  # noqa: BLE001
+            yf = None
+
         for ticker, fields in payload.items():
             if not isinstance(fields, dict):
                 continue
+            annotate_provenance_class(ticker, fields)
+            cls = classify_from_fields(ticker, fields)
+
+            if cls in (
+                ProvenanceClass.FUND_ETF_INDEX,
+                ProvenanceClass.CASH_TBILL,
+            ):
+                fields["reported_period_enrichment"] = f"exempt:{cls.value}"
+                continue
+
             if fields.get("most_recent_reported_period"):
                 fields.setdefault("most_recent_reported_period_sourced", True)
-                continue
-            try:
-                events = adapter.fetch_earnings_calendar_sync(
-                    start=start, end=end, symbol=ticker,
+                fields.setdefault(
+                    "most_recent_reported_period_source",
+                    fields.get("most_recent_reported_period_source")
+                    or "pre_set",
                 )
+                # Still attach independent second reading when possible.
+                _attach_yf_second_reading(ticker, fields, yf)
+                continue
+
+            # Equity or unknown: try SEC. CIK hit promotes unknown → equity.
+            try:
+                period = adapter.get_most_recent_reported_period_sync(ticker)
             except Exception as exc:  # noqa: BLE001
-                # Visible fail-closed: leave period absent; gate blocks.
                 fields["reported_period_enrichment"] = "failed"
                 fields["reported_period_enrichment_error"] = (
                     f"{type(exc).__name__}: {exc}"
                 )[:200]
                 log.warning(
-                    "plan_synthesis.inputs.earnings_calendar_failed",
+                    "plan_synthesis.inputs.sec_reported_period_failed",
                     ticker=ticker, error=str(exc)[:200],
                 )
+                _attach_yf_second_reading(ticker, fields, yf)
                 continue
-            periods: list[date] = []
-            release_dates: list[date] = []
-            for ev in events or []:
-                if not isinstance(ev, dict):
-                    continue
-                period = reported_period_from_earnings_event(ev)
-                if period is not None and period <= end:
-                    periods.append(period)
-                rel = parse_date(ev.get("date") or ev.get("reportDate"))
-                if rel is not None and rel <= end:
-                    release_dates.append(rel)
-            if periods:
-                fields["most_recent_reported_period"] = max(periods).isoformat()
-                fields["most_recent_reported_period_sourced"] = True
-                fields["reported_period_enrichment"] = "ok"
-            else:
-                # Calendar returned nothing usable (date-only or empty).
+
+            if period is None:
                 fields["reported_period_enrichment"] = "unsourced"
-            if release_dates and not fields.get("most_recent_earnings_date"):
-                fields["most_recent_earnings_date"] = max(release_dates).isoformat()
+                _attach_yf_second_reading(ticker, fields, yf)
+                continue
+
+            fields["most_recent_reported_period"] = period.isoformat()
+            fields["most_recent_reported_period_sourced"] = True
+            fields["most_recent_reported_period_source"] = (
+                "sec.submissions.reportDate"
+            )
+            fields["reported_period_enrichment"] = "ok"
+            if cls is ProvenanceClass.UNKNOWN:
+                fields["provenance_class"] = (
+                    ProvenanceClass.SINGLE_NAME_EQUITY.value
+                )
+                annotate_provenance_class(ticker, fields)
+            _attach_yf_second_reading(ticker, fields, yf)
     except Exception as exc:  # noqa: BLE001
-        # Global failure (e.g. missing API key) — mark every ticker so
-        # the sidecar shows enrichment did not silently succeed.
         for fields in payload.values():
             if isinstance(fields, dict) and not fields.get(
                 "most_recent_reported_period"
@@ -1663,9 +1688,53 @@ def _enrich_reported_periods_sync(
                     f"{type(exc).__name__}: {exc}"
                 )[:200]
         log.warning(
-            "plan_synthesis.inputs.earnings_enrichment_failed",
+            "plan_synthesis.inputs.reported_period_enrichment_failed",
             error=str(exc)[:200],
         )
+
+
+def _attach_yf_second_reading(
+    ticker: str,
+    fields: dict[str, Any],
+    yf_mod: Any,
+) -> None:
+    """Record yfinance mostRecentQuarter as independence second reading only.
+
+    Never copies it onto ``most_recent_reported_period`` when that field is
+    already SEC-sourced, and never uses it for both sides of the gate.
+    """
+    if yf_mod is None or not isinstance(fields, dict):
+        return
+    if fields.get("independence_second_reading"):
+        return
+    try:
+        info = yf_mod.Ticker(ticker).info or {}
+    except Exception as exc:  # noqa: BLE001
+        fields.setdefault(
+            "independence_second_reading_error",
+            f"{type(exc).__name__}: {exc}"[:160],
+        )
+        return
+    from argosy.services.decision_integrity.as_of import (
+        extract_earnings_date_from_yf_info,
+        parse_date,
+    )
+
+    second = extract_earnings_date_from_yf_info(info)
+    if second is None:
+        return
+    fields["independence_second_reading"] = second.isoformat()
+    fields["independence_second_reading_source"] = "yfinance.mostRecentQuarter"
+    # If financials_as_of is still missing, yfinance may stamp the *data*
+    # period — never the reported-period side.
+    if not fields.get("financials_as_of"):
+        fields["financials_as_of"] = second.isoformat()
+        fields["financials_as_of_source"] = "yfinance.mostRecentQuarter"
+    elif not fields.get("financials_as_of_source"):
+        # Preserve independence metadata when a prior path set the date.
+        existing = parse_date(fields.get("financials_as_of"))
+        if existing == second:
+            fields["financials_as_of_source"] = "yfinance.mostRecentQuarter"
 
 
 # Per-share fair-value ANCHOR fields — without at least price + an EPS
@@ -1747,10 +1816,9 @@ def _yfinance_fundamentals_fallback(
             continue
         anchors = _extract_yf_anchors(info)
         # Stream A — financials_as_of = period the numbers cover
-        # (mostRecentQuarter). Do NOT also set most_recent_earnings_date
-        # from the same value: that date must come from an independent
-        # earnings-calendar / news source so the vintage gate can detect
-        # feed lag (TRLV: Q1 figures still served after Q2 released).
+        # (mostRecentQuarter). Do NOT set most_recent_reported_period
+        # from the same value: that side is SEC EDGAR (Option C) so the
+        # vintage gate keeps an independent lag check.
         from argosy.services.decision_integrity.as_of import (
             extract_earnings_date_from_yf_info,
         )
@@ -1764,6 +1832,7 @@ def _yfinance_fundamentals_fallback(
                     existing[k] = v
             if period_dt is not None and existing.get("financials_as_of") is None:
                 existing["financials_as_of"] = period_dt.isoformat()
+                existing["financials_as_of_source"] = "yfinance.mostRecentQuarter"
             continue
         payload = {
             "pe_ratio": info.get("trailingPE"),
@@ -1782,6 +1851,7 @@ def _yfinance_fundamentals_fallback(
         }
         if period_dt is not None:
             payload["financials_as_of"] = period_dt.isoformat()
+            payload["financials_as_of_source"] = "yfinance.mostRecentQuarter"
         # Drop None-valued keys to keep the prompt tight.
         out[ticker] = {k: v for k, v in payload.items() if v is not None}
 

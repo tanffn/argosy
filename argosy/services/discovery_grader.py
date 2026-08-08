@@ -185,7 +185,16 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
                 "discovery_grader.integrity_gate_error",
                 ticker=ticker, error=str(exc)[:200],
             )
-            return None
+            return FleetPick(
+                ticker=ticker,
+                conviction="LOW",
+                thesis_md=(
+                    f"INTEGRITY EXCLUSION (integrity_gate_error): "
+                    f"{type(exc).__name__}: {exc}"
+                )[:500],
+                verdict="PASS",
+                cites=("integrity_exclusion:integrity_gate_error",),
+            )
         if gate.block:
             await _close_decision_run(decision_run_id=run_id, status="blocked")
             log.info(
@@ -194,7 +203,19 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
                 blocked_by=gate.blocked_by,
                 reason=gate.reason[:200],
             )
-            return None
+            # Visible exclusion — never a silent None that falls back to seeds.
+            return FleetPick(
+                ticker=out.ticker or ticker,
+                conviction=out.conviction,
+                thesis_md=(
+                    f"INTEGRITY EXCLUSION ({gate.blocked_by}): {gate.reason}\n\n"
+                    f"{out.thesis_md or ''}"
+                ).strip(),
+                verdict="PASS",
+                cites=tuple(list(out.cites) + [
+                    f"integrity_exclusion:{gate.blocked_by or 'blocked'}",
+                ]),
+            )
 
     await _close_decision_run(decision_run_id=run_id, status="completed")
 

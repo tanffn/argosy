@@ -68,12 +68,22 @@ _META_KEYS: frozenset[str] = frozenset(
         "most_recent_earnings_date",  # release day (informational)
         "most_recent_reported_period",  # period-end of latest reported quarter
         "most_recent_reported_period_sourced",
+        "most_recent_reported_period_source",
+        "reported_period_source",
         "reported_period_enrichment",
         "reported_period_enrichment_error",
         "financials_as_of",
+        "financials_as_of_source",
         "quote_as_of",
         "field_as_of",
         "provenance_complete",
+        "provenance_class",
+        "fiscal_vintage_rule",
+        "asset_type",
+        "details",
+        "what_it_is",
+        "independence_second_reading",
+        "independence_second_reading_source",
         "as_of",
     }
 )

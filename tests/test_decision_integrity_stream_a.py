@@ -89,8 +89,11 @@ def _trlv_stale_fields() -> dict[str, Any]:
         "net_income_ttm": -76_000_000,
         "current_price": 5.2,
         "financials_as_of": "2026-03-31",  # Q1 period end
+        "financials_as_of_source": "yfinance.mostRecentQuarter",
         "most_recent_reported_period": "2026-06-30",  # Q2 reported
+        "most_recent_reported_period_source": "sec.submissions.reportDate",
         "most_recent_earnings_date": "2026-08-06",  # release day (informational)
+        "provenance_class": "single_name_equity",
     }
 
 
@@ -98,12 +101,36 @@ def _trlv_fresh_fields() -> dict[str, Any]:
     """Genuine post-Q2 payload — period matches latest reported period."""
     return {
         "revenue_growth_yoy": -0.10,
-        "net_income_ttm": -406_000_000,
+        "net_income_ttm": -40_000_000,
         "current_price": 5.2,
         "financials_as_of": "2026-06-30",
+        "financials_as_of_source": "yfinance.mostRecentQuarter",
         "most_recent_reported_period": "2026-06-30",
-        "most_recent_earnings_date": "2026-08-06",
+        "most_recent_reported_period_source": "sec.submissions.reportDate",
+        "provenance_class": "single_name_equity",
     }
+
+
+def _fresh_aapl_fields() -> dict[str, Any]:
+    return {
+        "pe_ratio": 28.5,
+        "eps_ttm": 6.4,
+        "revenue_growth_yoy": 0.08,
+        "current_price": 190.0,
+        "financials_as_of": "2026-06-30",
+        "financials_as_of_source": "yfinance.mostRecentQuarter",
+        "most_recent_reported_period": "2026-06-30",
+        "most_recent_reported_period_source": "sec.submissions.reportDate",
+        "most_recent_reported_period_sourced": True,
+        "reported_period_enrichment": "ok",
+        "provenance_class": "single_name_equity",
+        "source_url": "yfinance:AAPL",
+    }
+
+
+# ----------------------------------------------------------------------
+# Option C — instrument class rules
+# ----------------------------------------------------------------------
 
 
 # ----------------------------------------------------------------------
@@ -739,65 +766,70 @@ def test_date_only_earnings_event_is_unknown_period() -> None:
     )
 
 
-def test_gather_fundamentals_uses_sync_earnings_enrich_not_asyncio_run() -> None:
-    """FAILS if earnings enrich reintroduces asyncio.run (iter-3/4)."""
+def test_gather_fundamentals_uses_sec_not_finnhub_calendar() -> None:
+    """Revert-detector: enrichment must use SEC, not Finnhub calendar.
+
+    FAILS if Finnhub calendar is reintroduced as the reported-period source
+    or if SEC enrich is removed.
+    """
     from pathlib import Path
 
     src = Path(
         "argosy/orchestrator/flows/plan_synthesis/inputs.py"
     ).read_text(encoding="utf-8")
     assert "_enrich_reported_periods_sync" in src
-    assert "fetch_earnings_calendar_sync" in src
-    # No asyncio.run wrapping the calendar call.
-    assert "asyncio.run(\n                    adapter.get_earnings_calendar" not in src
-    assert "asyncio.run(adapter.get_earnings_calendar" not in src
-    assert "asyncio.run(\n                    adapter.fetch_earnings_calendar" not in src
+    assert "SecReportedPeriodAdapter" in src
+    assert "sec.submissions.reportDate" in src
+    assert "get_most_recent_reported_period_sync" in src
+    # Finnhub calendar must not be the enrich source anymore.
+    assert "fetch_earnings_calendar_sync" not in src
+    assert "FinnhubAdapter" not in src.split("def _enrich_reported_periods_sync")[1].split(
+        "def _attach_yf_second_reading"
+    )[0]
 
 
-def test_sync_enrich_sets_sourced_reported_period(monkeypatch) -> None:
-    """FAILS if enrich does not write most_recent_reported_period from Q+Y."""
+def test_sync_enrich_sets_sec_reported_period(monkeypatch) -> None:
+    """Revert-detector: enrich writes SEC-sourced most_recent_reported_period.
+
+    FAILS if enrich is stubbed to no-op or writes a non-SEC source.
+    """
+    from datetime import date as date_cls
+
     from argosy.orchestrator.flows.plan_synthesis import inputs as inp
 
-    class _FakeAdapter:
-        def fetch_earnings_calendar_sync(self, *, start, end, symbol=None):
-            return [
-                {"date": "2026-08-06", "quarter": 2, "year": 2026},
-            ]
+    class _FakeSec:
+        def get_most_recent_reported_period_sync(self, ticker: str):
+            assert ticker == "AAPL"
+            return date_cls(2026, 6, 30)
 
     monkeypatch.setattr(
-        "argosy.adapters.data.finnhub_adapter.FinnhubAdapter",
-        lambda: _FakeAdapter(),
+        "argosy.adapters.data.sec_reported_period.SecReportedPeriodAdapter",
+        lambda: _FakeSec(),
     )
+    monkeypatch.setattr(inp, "_attach_yf_second_reading", lambda *a, **k: None)
     payload = {
         "AAPL": {
             "revenue_growth_yoy": 0.05,
             "financials_as_of": "2026-06-30",
+            "financials_as_of_source": "yfinance.mostRecentQuarter",
             "pe_ratio": 30.0,
+            "provenance_class": "single_name_equity",
         }
     }
     inp._enrich_reported_periods_sync(payload)
     assert payload["AAPL"]["most_recent_reported_period"] == "2026-06-30"
     assert payload["AAPL"]["most_recent_reported_period_sourced"] is True
+    assert (
+        payload["AAPL"]["most_recent_reported_period_source"]
+        == "sec.submissions.reportDate"
+    )
     assert payload["AAPL"]["reported_period_enrichment"] == "ok"
+    assert evaluate_vintage_gate("AAPL", payload["AAPL"]).ok is True
 
 
 def test_production_shaped_payload_passes_gate_and_flow() -> None:
-    """Liveness canary — FAILS if a realistic fresh payload cannot green-light.
-
-    Shape matches Finnhub metrics + yfinance mostRecentQuarter + sync
-    calendar enrich (quarter+year → period end).
-    """
-    fields = {
-        "pe_ratio": 28.5,
-        "eps_ttm": 6.4,
-        "revenue_growth_yoy": 0.08,
-        "current_price": 190.0,
-        "financials_as_of": "2026-06-30",  # yfinance mostRecentQuarter / FH series
-        "most_recent_reported_period": "2026-06-30",  # calendar Q2/2026
-        "most_recent_reported_period_sourced": True,
-        "reported_period_enrichment": "ok",
-        "source_url": "yfinance:AAPL",
-    }
+    """Liveness canary — FAILS if a realistic fresh payload cannot green-light."""
+    fields = _fresh_aapl_fields()
     gate = evaluate_green_light_integrity(
         None,
         user_id="ariel",
@@ -813,14 +845,7 @@ def test_production_shaped_payload_passes_gate_and_flow() -> None:
 @pytest.mark.asyncio
 async def test_liveness_decision_flow_approves_production_shaped_payload() -> None:
     """End-to-end: realistic provenance reaches ApprovedProposal (T0)."""
-    fields = {
-        "pe_ratio": 28.5,
-        "revenue_growth_yoy": 0.08,
-        "current_price": 190.0,
-        "financials_as_of": "2026-06-30",
-        "most_recent_reported_period": "2026-06-30",
-        "most_recent_reported_period_sourced": True,
-    }
+    fields = _fresh_aapl_fields()
 
     class _Trader:
         async def run(self, **kwargs):
@@ -861,59 +886,222 @@ async def test_liveness_decision_flow_approves_production_shaped_payload() -> No
     assert isinstance(outcome, ApprovedProposal)
 
 
-def test_realistic_ticker_set_provenance_pass_rate(monkeypatch) -> None:
-    """Quantify: after sync enrich, what fraction of a realistic set passes.
+def test_class_aware_exemptions_and_unknown_fail_closed() -> None:
+    """Revert-detector for Option C class rules.
 
-    FAILS if pass-rate is 0% (the dead-system failure mode).
+    FAILS if funds/cash inherit equity quarter gating, or unknowns pass.
     """
-    from argosy.orchestrator.flows.plan_synthesis import inputs as inp
+    from argosy.services.decision_integrity.instrument_class import (
+        ProvenanceClass,
+        classify_instrument,
+    )
 
-    # Simulated production: yfinance set financials_as_of; calendar has Q+Y.
-    calendar = {
-        "AAPL": [{"date": "2026-08-01", "quarter": 2, "year": 2026}],
-        "MSFT": [{"date": "2026-07-25", "quarter": 2, "year": 2026}],
-        "NVDA": [{"date": "2026-08-20", "quarter": 2, "year": 2026}],
-        "GOOGL": [{"date": "2026-07-24", "quarter": 2, "year": 2026}],
-        "AMZN": [{"date": "2026-08-01", "quarter": 2, "year": 2026}],
-        # Date-only only — must NOT invent a period → fail closed for this one.
-        "TRLV": [{"date": "2026-08-06"}],
+    assert classify_instrument("CSPX") is ProvenanceClass.FUND_ETF_INDEX
+    assert classify_instrument("SGOV") is ProvenanceClass.CASH_TBILL
+    assert classify_instrument("AMD") is ProvenanceClass.SINGLE_NAME_EQUITY
+    assert classify_instrument("ZZZZUNKNOWN99") is ProvenanceClass.UNKNOWN
+
+    fund = evaluate_vintage_gate(
+        "CSPX", {"pe_ratio": 20.0},  # no periods — must still exempt
+    )
+    assert fund.ok is True
+    assert "FUND_NO_ISSUER_FISCAL_QUARTER" in fund.reason.upper().replace(
+        "fund_no_issuer_fiscal_quarter", "FUND_NO_ISSUER_FISCAL_QUARTER"
+    ) or "fund_no_issuer_fiscal_quarter" in fund.reason
+
+    cash = evaluate_vintage_gate("SGOV", {})
+    assert cash.ok is True
+    assert "cash_or_tbill" in cash.reason
+
+    unknown = evaluate_vintage_gate("ZZZZUNKNOWN99", {"pe_ratio": 1.0})
+    assert unknown.block is True
+    assert unknown.blocked_by == "provenance_class_unknown"
+
+
+def test_independence_violation_blocks_same_source_both_sides() -> None:
+    """Revert-detector: one source must not satisfy both gate sides."""
+    fields = {
+        "pe_ratio": 10.0,
+        "financials_as_of": "2026-06-30",
+        "financials_as_of_source": "yfinance.mostRecentQuarter",
+        "most_recent_reported_period": "2026-06-30",
+        "most_recent_reported_period_source": "yfinance.mostRecentQuarter",
+        "provenance_class": "single_name_equity",
     }
+    result = evaluate_vintage_gate("AAPL", fields)
+    assert result.block is True
+    assert result.blocked_by == "independence_violation"
 
-    class _FakeAdapter:
-        def fetch_earnings_calendar_sync(self, *, start, end, symbol=None):
-            return list(calendar.get((symbol or "").upper(), []))
 
-    monkeypatch.setattr(
-        "argosy.adapters.data.finnhub_adapter.FinnhubAdapter",
-        lambda: _FakeAdapter(),
+def test_held_book_classification_counts() -> None:
+    """Revert-detector: held-book classifier covers the measured Leumi set.
+
+    FAILS if curated sets regress and reclassify funds as equities (or vice
+    versa). Counts are the measured snapshot composition, not aspirational.
+    """
+    from collections import Counter
+
+    from argosy.services.decision_integrity.instrument_class import (
+        ProvenanceClass,
+        classify_instrument,
+    )
+
+    held = [
+        ("", "Cash", ""),
+        ("", "Cash", ""),
+        ('ת"א-200', "Equity", 'ATF מחקה ת"א-200'),
+        ("MSCI World", "Equity", "MTF מחקה MSCI World"),
+        ("STOXX Europe 600", "Equity", "אי בי אי מחקה STOXX Europe 600"),
+        ("AMD", "Equity", ""),
+        ("OKLO", "Equity", ""),
+        ("SGOV", "Equity", "אגח אוצר 0-3"),
+        ("SPMO", "Equity", ""),
+        ("QQQM", "Equity", ""),
+        ("GOOG", "Equity", ""),
+        ("AMZN", "Equity", ""),
+        ("BRK/B", "Equity", ""),
+        ("VOO", "Equity", ""),
+        ("VTV", "Equity", ""),
+        ("TEM", "Equity", ""),
+        ("TSLA", "Equity", ""),
+        ("META", "Equity", ""),
+        ("SOFI", "Equity", ""),
+        ("CRM", "Equity", ""),
+        ("NOW", "Equity", ""),
+        ("O", "Real Estate", ""),
+        ("RXRX", "Equity", ""),
+        ("SCHG", "Equity", ""),
+        ("SCHD", "Equity", ""),
+        ("FUSA", "Equity", "FIL US QINC-ACC FUSA LN"),
+        ("IBTA", "Treasury 1-3yr", "ISH $TRS 1-3Y"),
+        ("IWQU", "Equity", "ISH EDG WLD QLY IWQU LN"),
+        ("SPMV", "Equity", "ISH EDGE S&P MV SPMV LN"),
+        ("CNDX", "Equity", "ISH NASDAQ100 CNDX LN"),
+        ("IUHC", "Equity", "ISH S&P HLTH CR IUHC LN"),
+        ("EIMI", "Equity", "ISHR CORE EM IMI EIMI LN"),
+        ("CSPX", "Equity", "ISHR CORE S&P500 CSPX LN"),
+        ("IWDP", "Real Estate", "ISHR DM PRPTY YD IWDP SW"),
+        ("FWRA", "Equity", "IVZ FTSE WRD ACC FWRA LN"),
+        ("ACWD", "Equity", "SPDR ACWI ACWD LN"),
+        ("XZEW", "Equity", "X SP500EWESG XZEW LN"),
+        ("EXUS", "Equity", "X WORLD EX US EXUS LN"),
+    ]
+    counts: Counter[str] = Counter()
+    for sym, at, details in held:
+        counts[classify_instrument(sym, asset_type=at, details=details).value] += 1
+    assert counts[ProvenanceClass.CASH_TBILL.value] == 4  # 2 blank cash + SGOV + IBTA
+    assert counts[ProvenanceClass.SINGLE_NAME_EQUITY.value] == 13
+    assert counts[ProvenanceClass.FUND_ETF_INDEX.value] == 21
+    assert counts[ProvenanceClass.UNKNOWN.value] == 0
+    assert sum(counts.values()) == 38
+
+
+def test_sec_submissions_parser_extracts_report_date() -> None:
+    """Revert-detector for the SEC submissions period extractor."""
+    from argosy.adapters.data.sec_reported_period import (
+        latest_reported_period_from_submissions,
     )
 
     payload = {
-        t: {
-            "pe_ratio": 20.0,
-            "revenue_growth_yoy": 0.1,
-            "financials_as_of": "2026-06-30",
+        "filings": {
+            "recent": {
+                "form": ["4", "10-Q", "8-K", "10-K"],
+                "reportDate": ["", "2026-06-27", "", "2025-12-27"],
+                "filingDate": ["2026-08-01", "2026-08-05", "2026-07-01", "2026-02-04"],
+            }
         }
-        for t in calendar
     }
-    # TRLV stale shape: data still on Q1 while we pretend calendar had Q2 —
-    # but date-only means unsourced, so provenance_unknown not vintage_stale.
-    payload["TRLV"]["financials_as_of"] = "2026-03-31"
+    assert latest_reported_period_from_submissions(payload) == date(2026, 6, 27)
+    assert latest_reported_period_from_submissions({"filings": {}}) is None
 
+
+def test_finnhub_earnings_calendar_async_uses_to_thread() -> None:
+    """Revert-detector: async Finnhub calendar must not block the loop."""
+    from pathlib import Path
+
+    src = Path("argosy/adapters/data/finnhub_adapter.py").read_text(encoding="utf-8")
+    assert "asyncio.to_thread" in src
+    assert "fetch_earnings_calendar_sync" in src
+    # The broken pattern: passing the sync callable directly to cached_call.
+    assert "fetch=lambda: self.fetch_earnings_calendar_sync" not in src
+
+
+def test_deploy_cash_route_uses_canonical_builder() -> None:
+    """Revert-detector: /deploy-cash must not bypass canonical remediation filter."""
+    from pathlib import Path
+
+    src = Path("argosy/api/routes/portfolio.py").read_text(encoding="utf-8")
+    assert '@router.get("/deploy-cash"' in src
+    # Function body between the deploy-cash decorator and the next route.
+    after = src.split('@router.get("/deploy-cash"', 1)[1]
+    # Next top-level route decorator ends the handler.
+    body = after.split("\n@router.", 1)[0]
+    assert "build_canonical_deploy_plan" in body
+    assert "session=db" in body
+    # Direct assemble without canonical is the bypass this catches.
+    assert "assemble_deployment_plan(" not in body
+
+
+def test_realistic_ticker_set_provenance_via_sec_enrich(monkeypatch) -> None:
+    """Drive production enrich path — FAILS if SEC enrich is a no-op.
+
+    Uses a fake SEC adapter (network not required) but the production
+    ``_enrich_reported_periods_sync`` function. Fabricating gate inputs
+    without calling enrich is forbidden here.
+    """
+    from datetime import date as date_cls
+
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inp
+
+    sec_periods = {
+        "AAPL": date_cls(2026, 6, 30),
+        "MSFT": date_cls(2026, 6, 30),
+        "NVDA": date_cls(2026, 4, 27),  # NVDA off-calendar
+        "GOOGL": date_cls(2026, 6, 30),
+        "AMZN": date_cls(2026, 6, 30),
+        "CSPX": None,  # fund — enrich should exempt without SEC
+        "SGOV": None,
+        "TRLV": date_cls(2026, 6, 30),
+    }
+
+    class _FakeSec:
+        def get_most_recent_reported_period_sync(self, ticker: str):
+            if ticker.upper() not in {"AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "TRLV"}:
+                raise RuntimeError(f"SEC should not be called for {ticker}")
+            return sec_periods[ticker.upper()]
+
+    monkeypatch.setattr(
+        "argosy.adapters.data.sec_reported_period.SecReportedPeriodAdapter",
+        lambda: _FakeSec(),
+    )
+    monkeypatch.setattr(inp, "_attach_yf_second_reading", lambda *a, **k: None)
+
+    payload = {
+        "AAPL": {"pe_ratio": 20.0, "financials_as_of": "2026-06-30",
+                 "financials_as_of_source": "yfinance.mostRecentQuarter"},
+        "MSFT": {"pe_ratio": 20.0, "financials_as_of": "2026-06-30",
+                 "financials_as_of_source": "yfinance.mostRecentQuarter"},
+        "NVDA": {"pe_ratio": 20.0, "financials_as_of": "2026-04-27",
+                 "financials_as_of_source": "yfinance.mostRecentQuarter"},
+        "GOOGL": {"pe_ratio": 20.0, "financials_as_of": "2026-06-30",
+                  "financials_as_of_source": "yfinance.mostRecentQuarter"},
+        "AMZN": {"pe_ratio": 20.0, "financials_as_of": "2026-06-30",
+                 "financials_as_of_source": "yfinance.mostRecentQuarter"},
+        "CSPX": {"pe_ratio": 20.0},
+        "SGOV": {},
+        # Stale equity: data on Q1 while SEC says Q2 reported.
+        "TRLV": {"pe_ratio": 20.0, "financials_as_of": "2026-03-31",
+                 "financials_as_of_source": "yfinance.mostRecentQuarter"},
+    }
     inp._enrich_reported_periods_sync(payload)
-    results = [
-        evaluate_vintage_gate(t, fields)
-        for t, fields in payload.items()
-    ]
-    passed = sum(1 for r in results if r.ok)
-    total = len(results)
-    rate = passed / total
-    # 5/6 liquid names with Q+Y calendar should pass; TRLV date-only blocks.
-    assert passed >= 5, f"pass_rate={rate:.0%} ({passed}/{total})"
-    assert rate >= 0.8
-    assert any(
-        (not r.ok) and r.ticker == "TRLV" for r in results
-    ), "date-only TRLV must still block"
+    results = {t: evaluate_vintage_gate(t, fields) for t, fields in payload.items()}
+    assert results["CSPX"].ok and "fund" in results["CSPX"].reason
+    assert results["SGOV"].ok and "cash" in results["SGOV"].reason
+    assert results["TRLV"].block and results["TRLV"].blocked_by == "vintage_stale"
+    equity_ok = sum(
+        1 for t in ("AAPL", "MSFT", "NVDA", "GOOGL", "AMZN") if results[t].ok
+    )
+    assert equity_ok == 5, {t: results[t].reason for t in results}
 
 
 def test_stamp_without_reported_period_is_incomplete() -> None:
@@ -1152,12 +1340,14 @@ def test_remediation_resolve_requires_totp(client_with_db) -> None:
 def test_deploy_buy_list_excludes_open_remediation_tickers(
     integrity_session,
 ) -> None:
-    """FAILS if inbox buy list still includes a ticker with open remediation."""
-    from datetime import date
+    """Revert-detector: inbox buy list uses session-backed remediation filter.
 
-    from argosy.services.decision_integrity.actionable import (
-        filter_tickers_with_open_remediations,
-    )
+    FAILS if deploy_plan_to_buy_list ignores the DB and requires an injected
+    blocked_tickers set (the old non-probative pattern), or silently drops
+    without an excluded=True row.
+    """
+    from datetime import date as date_cls
+
     from argosy.services.deployment_advisor import (
         DeploymentLine,
         DeploymentPlan,
@@ -1181,11 +1371,6 @@ def test_deploy_buy_list_excludes_open_remediation_tickers(
     )
     sess.commit()
 
-    blocked = filter_tickers_with_open_remediations(
-        sess, user_id="ariel", tickers=["BADX", "CSPX"],
-    )
-    assert blocked == {"BADX"}
-
     estate = EstateTag(domicile="Global", status="estate_safe", note="")
     line_bad = DeploymentLine(
         symbol="BADX", type="Stock", amount_usd=1000.0, timing="now",
@@ -1200,7 +1385,7 @@ def test_deploy_buy_list_excludes_open_remediation_tickers(
     empty = lambda n, c: DeploymentTier(n, c, ())
     plan = DeploymentPlan(
         deploy_amount_usd=2000.0,
-        as_of=date(2026, 8, 7),
+        as_of=date_cls(2026, 8, 7),
         tiers=(
             empty("reserve", 0.0),
             DeploymentTier("core", 70.0, (line_ok,)),
@@ -1214,12 +1399,65 @@ def test_deploy_buy_list_excludes_open_remediation_tickers(
         caveats=(),
         note="",
     )
-    rows = deploy_plan_to_buy_list(
-        plan, doc=None, user_id="ariel", blocked_tickers=blocked,
+    # Production path: pass the sync Session — do NOT inject blocked_tickers.
+    rows = deploy_plan_to_buy_list(plan, doc=None, user_id="ariel", session=sess)
+    by_inst = {r["instrument"]: r for r in rows}
+    assert "CSPX" in by_inst
+    assert by_inst["CSPX"].get("excluded") is False
+    assert by_inst["CSPX"]["amount_usd"] == 1000.0
+    assert "BADX" in by_inst
+    assert by_inst["BADX"].get("excluded") is True
+    assert by_inst["BADX"]["amount_usd"] == 0.0
+    assert "break" in (by_inst["BADX"].get("exclusion_reason") or "")
+
+
+def test_cached_sleeve_candidates_never_opens_async_engine() -> None:
+    """Revert-detector: MissingGreenlet path must stay deleted."""
+    from pathlib import Path
+
+    src = Path("argosy/services/deployment_advisor.py").read_text(encoding="utf-8")
+    assert "sessionmaker(bind=sync_eng" not in src
+    assert "getattr(async_eng, \"sync_engine\"" not in src
+    canon = Path("argosy/services/deployment_funnel/canonical.py").read_text(
+        encoding="utf-8"
     )
-    instruments = {r["instrument"] for r in rows}
-    assert "BADX" not in instruments
-    assert "CSPX" in instruments
+    assert "sessionmaker(bind=sync_eng" not in canon
+    assert "_blocked_tickers_for_deploy" not in canon
+
+
+def test_plan_synthesis_trail_carries_remediation_requests() -> None:
+    """Revert-detector: analyst remediations must reach the synthesis trail."""
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _agent_report_to_row_dict,
+    )
+
+    class _Out(BaseModel):
+        remediation_requests: list[RemediationRequest] = Field(default_factory=list)
+
+    report = AgentReport(
+        agent_role="fundamentals",
+        user_id="ariel",
+        model="t",
+        response_text="{}",
+        tokens_in=1,
+        tokens_out=1,
+        cost_usd=0.0,
+        prompt_hash="h",
+        confidence=ConfidenceBand.LOW,
+        output=_Out(
+            remediation_requests=[
+                RemediationRequest(
+                    kind="data_integrity",
+                    target_role="fundamentals",
+                    reason="stale",
+                    ticker="AMD",
+                )
+            ]
+        ),
+    )
+    row = _agent_report_to_row_dict(report)
+    assert row["remediation_requests"]
+    assert row["remediation_requests"][0]["ticker"] == "AMD"
 
 
 def test_actionable_buy_integrity_blocks_absent_provenance() -> None:

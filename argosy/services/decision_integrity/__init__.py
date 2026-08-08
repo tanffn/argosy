@@ -17,11 +17,21 @@ from argosy.services.decision_integrity.confidence_cap import (
     normalize_confidence,
     observe_confidence_delta,
 )
+from argosy.services.decision_integrity.exclusions import (
+    IntegrityExclusion,
+    exclusions_for_open_remediations,
+    exclusions_for_open_remediations_async,
+)
 from argosy.services.decision_integrity.gates import (
     IntegrityGateResult,
     collect_facilitator_conditions,
     collect_remediation_requests_from_reports,
     evaluate_green_light_integrity,
+)
+from argosy.services.decision_integrity.instrument_class import (
+    FiscalVintageRule,
+    ProvenanceClass,
+    classify_instrument,
 )
 from argosy.services.decision_integrity.overrides import (
     debate_action_contradicts_winning_side,
@@ -46,19 +56,25 @@ from argosy.services.decision_integrity.vintage_gate import (
 __all__ = [
     "AsOfValue",
     "CONFIDENCE_RANK",
+    "FiscalVintageRule",
+    "IntegrityExclusion",
     "IntegrityGateResult",
     "LOAD_BEARING_FINANCIAL_FIELDS",
     "MARKET_DATA_FIELDS",
+    "ProvenanceClass",
     "VintageGateResult",
     "apply_confidence_cap",
     "attach_provenance_sidecar",
     "auto_resolve_on_fresh_pass",
+    "classify_instrument",
     "clear_remediation",
     "collect_facilitator_conditions",
     "collect_remediation_requests_from_reports",
     "debate_action_contradicts_winning_side",
     "evaluate_green_light_integrity",
     "evaluate_vintage_gate",
+    "exclusions_for_open_remediations",
+    "exclusions_for_open_remediations_async",
     "format_as_of_label",
     "format_field_for_prompt",
     "has_open_remediation",

@@ -15,6 +15,12 @@ from typing import Any, Sequence
 from sqlalchemy.orm import Session
 
 from argosy.agents.base import AgentReport
+from argosy.services.decision_integrity.exclusions import (
+    IntegrityExclusion,
+    blocked_set,
+    exclusions_for_open_remediations,
+    exclusions_for_open_remediations_async,
+)
 from argosy.services.decision_integrity.gates import (
     IntegrityGateResult,
     evaluate_green_light_integrity,
@@ -49,21 +55,31 @@ def filter_tickers_with_open_remediations(
     tickers: Sequence[str],
 ) -> set[str]:
     """Return uppercased tickers that currently have an open remediation."""
-    from argosy.services.decision_integrity.remediation_store import (
-        list_open_remediations,
+    return blocked_set(
+        exclusions_for_open_remediations(
+            session, user_id=user_id, tickers=tickers,
+        )
     )
 
-    blocked: set[str] = set()
-    for t in tickers:
-        if not t:
-            continue
-        key = str(t).strip().upper()
-        if list_open_remediations(session, user_id=user_id, ticker=key):
-            blocked.add(key)
-    return blocked
+
+async def filter_tickers_with_open_remediations_async(
+    *,
+    user_id: str,
+    tickers: Sequence[str],
+) -> set[str]:
+    """Await open-remediation lookup — production async choke."""
+    return blocked_set(
+        await exclusions_for_open_remediations_async(
+            user_id=user_id, tickers=tickers,
+        )
+    )
 
 
 __all__ = [
+    "IntegrityExclusion",
     "evaluate_actionable_buy_integrity",
+    "exclusions_for_open_remediations",
+    "exclusions_for_open_remediations_async",
     "filter_tickers_with_open_remediations",
+    "filter_tickers_with_open_remediations_async",
 ]

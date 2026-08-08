@@ -618,6 +618,8 @@ class DeploymentPlanDTO(BaseModel):
     # Item D — dry-powder earmark excluded from deployable cash (0 when absent).
     discovery_reserve_usd: float = 0.0
     cash_total_usd: float | None = None
+    # Stream A — tickers refused as actionable, each with a reason (never silent).
+    integrity_exclusions: list[dict[str, str]] = []
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
@@ -648,6 +650,9 @@ def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
             getattr(plan, "discovery_reserve_usd", 0.0) or 0.0
         ),
         cash_total_usd=getattr(plan, "cash_total_usd", None),
+        integrity_exclusions=[
+            dict(e) for e in (getattr(plan, "integrity_exclusions", ()) or ())
+        ],
     )
 
 

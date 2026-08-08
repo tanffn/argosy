@@ -26,7 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 from sqlalchemy.orm import Session
 
@@ -3190,7 +3190,32 @@ def _agent_report_to_row_dict(r: AgentReport) -> dict:
     means both paths emit identical row shapes — important because
     ``_ingest_synthesis_trail`` constructs an ``AgentReportRow`` from this
     dict at end-of-flow as a fallback.
+
+    Stream A: also carries structured ``remediation_requests`` extracted from
+    the agent output so end-of-flow ingest can persist blocking remediations
+    raised by analysts / facilitators after gather-time.
     """
+    remediations: list[Any] = []
+    try:
+        output = getattr(r, "output", None)
+        if output is not None:
+            if hasattr(output, "model_dump"):
+                payload = output.model_dump()
+            elif isinstance(output, dict):
+                payload = output
+            else:
+                payload = {}
+            raw = payload.get("remediation_requests") or []
+            for entry in raw:
+                if hasattr(entry, "model_dump"):
+                    remediations.append(entry.model_dump())
+                elif isinstance(entry, dict):
+                    remediations.append(entry)
+                else:
+                    remediations.append({"reason": str(entry), "kind": "data_integrity"})
+    except Exception:  # noqa: BLE001
+        remediations = []
+
     return {
         "user_id": r.user_id,
         "agent_role": r.agent_role,
@@ -3211,6 +3236,7 @@ def _agent_report_to_row_dict(r: AgentReport) -> dict:
         "user_prompt": r.user_prompt,
         "model": r.model,
         "confidence": r.confidence.value if r.confidence else None,
+        "remediation_requests": remediations,
     }
 
 
@@ -3379,17 +3405,87 @@ def _ingest_synthesis_trail(
     try:
         inserted = 0
         skipped = 0
+        remediations_to_persist: list[tuple[str, str, list]] = []
         for row_dict in rows:
             corr = row_dict.get("run_correlation_id")
             if corr and corr in existing_corr_ids:
                 skipped += 1
+                # Still harvest remediations from trail even when the
+                # agent_reports row was already written per-phase.
+                rem = row_dict.get("remediation_requests") or []
+                if rem:
+                    remediations_to_persist.append(
+                        (
+                            str(row_dict.get("user_id") or ""),
+                            str(row_dict.get("agent_role") or "unknown"),
+                            list(rem),
+                        )
+                    )
                 continue
+            # remediation_requests is trail-only metadata — not an ORM column.
+            rem = row_dict.pop("remediation_requests", None) or []
+            if rem:
+                remediations_to_persist.append(
+                    (
+                        str(row_dict.get("user_id") or ""),
+                        str(row_dict.get("agent_role") or "unknown"),
+                        list(rem),
+                    )
+                )
             ar = AgentReportRow(**row_dict)
             session.add(ar)
             inserted += 1
             if corr:
                 existing_corr_ids.add(corr)
         session.commit()
+        # Stream A — persist analyst/facilitator remediations raised AFTER
+        # gather-time so actionable plan lines cannot slip past the choke.
+        if remediations_to_persist:
+            try:
+                from argosy.agents.remediation import RemediationRequest
+                from argosy.services.decision_integrity.remediation_store import (
+                    persist_remediation_requests,
+                )
+
+                reqs: list[RemediationRequest] = []
+                for user_id, role, rem_list in remediations_to_persist:
+                    for entry in rem_list:
+                        try:
+                            if isinstance(entry, RemediationRequest):
+                                req = entry
+                            else:
+                                req = RemediationRequest.model_validate(entry)
+                            if not req.target_role:
+                                req = req.model_copy(update={"target_role": role})
+                            reqs.append(req)
+                        except Exception:  # noqa: BLE001
+                            reqs.append(
+                                RemediationRequest(
+                                    kind="data_integrity",
+                                    target_role=role,
+                                    reason=f"malformed remediation_request: {entry!r}"[:300],
+                                )
+                            )
+                if reqs:
+                    uid = remediations_to_persist[0][0] or reqs[0].ticker or "ariel"
+                    # Prefer an explicit user_id from the trail rows.
+                    for u, _r, _x in remediations_to_persist:
+                        if u:
+                            uid = u
+                            break
+                    persist_remediation_requests(
+                        session, user_id=uid, requests=reqs,
+                    )
+                    session.commit()
+                    log.info(
+                        "plan_synthesis.trail_remediations_persisted",
+                        count=len(reqs), user_id=uid,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "plan_synthesis.trail_remediation_persist_failed",
+                    error=str(exc)[:200],
+                )
         log.info(
             "plan_synthesis.trail_ingested",
             count=inserted, skipped_dedup=skipped, trail=trail_path.name,

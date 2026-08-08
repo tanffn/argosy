@@ -1,15 +1,19 @@
 """Vintage gate — period-vs-period provenance check (Stream A).
 
-Rule (blocker 3): compare the fiscal period the data *covers*
-(``financials_as_of``) to the most recent fiscal period that has been
-*reported* (``most_recent_reported_period``). Stale means the payload
-covers an earlier period than the latest reported one.
+Option C — rules are class-specific (see ``instrument_class``):
 
-  * Q1 data (2026-03-31) when Q2 has been reported (2026-06-30) → BLOCK
-  * Q2 data (2026-06-30) after the Q2 release → PASS
+  * ``single_name_equity`` — compare the fiscal period the data *covers*
+    (``financials_as_of``) to the most recent fiscal period that has been
+    *reported* (``most_recent_reported_period``, from SEC EDGAR). Stale
+    means the payload covers an earlier period than the latest reported
+    one. Sources on each side of the check must be independent.
+  * ``fund_etf_index`` — named exemption ``FUND_NO_ISSUER_FISCAL_QUARTER``
+    (a fund has no issuer fiscal quarter; equity-quarter gating is wrong).
+  * ``cash_tbill`` — named exemption ``CASH_OR_TBILL_NO_FISCAL_VINTAGE``.
+  * ``unknown`` — fail closed; never inherits another class's rule.
 
-Unknown provenance (blocker 1): missing data period OR missing reported
-period is a BLOCK — never a silent pass. Never invents dates.
+Unknown equity provenance (blocker 1): missing data period OR missing
+reported period is a BLOCK — never a silent pass. Never invents dates.
 """
 
 from __future__ import annotations
@@ -22,6 +26,12 @@ from argosy.services.decision_integrity.as_of import (
     LOAD_BEARING_FINANCIAL_FIELDS,
     field_as_of,
     parse_date,
+)
+from argosy.services.decision_integrity.instrument_class import (
+    FiscalVintageRule,
+    ProvenanceClass,
+    annotate_provenance_class,
+    classify_from_fields,
 )
 
 
@@ -42,6 +52,8 @@ class VintageGateResult:
     stale_fields: tuple[StaleField, ...] = ()
     reason: str = ""
     blocked_by: str | None = None
+    provenance_class: str | None = None
+    fiscal_vintage_rule: str | None = None
 
     @property
     def block(self) -> bool:
@@ -53,6 +65,65 @@ class VintageGateResult:
         return self.most_recent_reported_period
 
 
+_EQUITY_DATA_SOURCES: frozenset[str] = frozenset(
+    {
+        "yfinance.mostRecentQuarter",
+        "yfinance.lastFiscalYearEnd",
+        "finnhub.series.quarterly",
+        "finnhub.metric",
+    }
+)
+_EQUITY_REPORTED_SOURCES: frozenset[str] = frozenset(
+    {
+        "sec.submissions.reportDate",
+        "sec.companyfacts",
+    }
+)
+
+
+def _source_independence_violation(payload: dict[str, Any]) -> str | None:
+    """Both sides of the period check must not share one provider.
+
+    ``financials_as_of`` may come from yfinance/Finnhub; reported period
+    must come from SEC (Option C). If both sides name the same family,
+    the lag check is not independent.
+    """
+    data_src = str(payload.get("financials_as_of_source") or "").strip()
+    reported_src = str(
+        payload.get("most_recent_reported_period_source")
+        or payload.get("reported_period_source")
+        or ""
+    ).strip()
+    if not data_src or not reported_src:
+        return None
+    if data_src == reported_src:
+        return (
+            f"independence_violation: financials_as_of_source={data_src!r} "
+            f"equals most_recent_reported_period_source={reported_src!r}"
+        )
+    # Same family: both yfinance*, or both finnhub*, or both sec*.
+    def _family(s: str) -> str:
+        return s.split(".", 1)[0].lower()
+
+    if _family(data_src) == _family(reported_src):
+        return (
+            f"independence_violation: both sides from {_family(data_src)!r} "
+            f"({data_src} vs {reported_src})"
+        )
+    # Soft guide: equity path expects SEC on the reported side when tagged.
+    if (
+        data_src in _EQUITY_DATA_SOURCES
+        and reported_src
+        and reported_src not in _EQUITY_REPORTED_SOURCES
+        and not reported_src.startswith("sec.")
+    ):
+        return (
+            f"independence_violation: reported period source {reported_src!r} "
+            "is not SEC for equity vintage"
+        )
+    return None
+
+
 def evaluate_vintage_gate(
     ticker: str,
     fields: dict[str, Any] | None,
@@ -60,18 +131,76 @@ def evaluate_vintage_gate(
     most_recent_reported_period: date | None = None,
     most_recent_earnings_date: date | None = None,  # legacy kw; ignored if period set
     require_load_bearing: bool = True,
+    provenance_class: ProvenanceClass | str | None = None,
 ) -> VintageGateResult:
-    """Fail closed on unknown or stale financial provenance."""
+    """Fail closed on unknown or stale financial provenance (class-aware)."""
     t = (ticker or "").strip().upper()
-    payload = fields if isinstance(fields, dict) else {}
+    payload = dict(fields) if isinstance(fields, dict) else {}
+    del most_recent_earnings_date
 
+    if provenance_class is not None:
+        try:
+            cls = (
+                provenance_class
+                if isinstance(provenance_class, ProvenanceClass)
+                else ProvenanceClass(str(provenance_class))
+            )
+        except ValueError:
+            cls = ProvenanceClass.UNKNOWN
+        payload["provenance_class"] = cls.value
+    else:
+        cls = classify_from_fields(t, payload)
+    annotate_provenance_class(t, payload)
+    rule = FiscalVintageRule(payload["fiscal_vintage_rule"])
+
+    # --- Class exemptions (named, deliberate) ---------------------------------
+    if cls is ProvenanceClass.CASH_TBILL:
+        return VintageGateResult(
+            ok=True,
+            ticker=t,
+            reason=f"exempt:{rule.value}",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
+        )
+    if cls is ProvenanceClass.FUND_ETF_INDEX:
+        return VintageGateResult(
+            ok=True,
+            ticker=t,
+            reason=f"exempt:{rule.value}",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
+        )
+    if cls is ProvenanceClass.UNKNOWN:
+        return VintageGateResult(
+            ok=False,
+            ticker=t,
+            reason=(
+                f"provenance_class_unknown:{t}: instrument could not be "
+                "classified; refusing to inherit equity/fund/cash rules"
+            ),
+            blocked_by="provenance_class_unknown",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
+        )
+
+    # --- single_name_equity: SEC-reported vs data period ----------------------
     data_period = parse_date(payload.get("financials_as_of"))
     reported = most_recent_reported_period or parse_date(
         payload.get("most_recent_reported_period")
     )
-    # Legacy: if only a release date was supplied, do NOT compare period to
-    # release day (that was the inverted bug). Require an explicit period.
-    del most_recent_earnings_date
+
+    indep = _source_independence_violation(payload)
+    if indep:
+        return VintageGateResult(
+            ok=False,
+            ticker=t,
+            data_period=data_period,
+            most_recent_reported_period=reported,
+            reason=indep,
+            blocked_by="independence_violation",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
+        )
 
     if data_period is None:
         return VintageGateResult(
@@ -84,6 +213,8 @@ def evaluate_vintage_gate(
                 "(cannot determine which fiscal period the numbers cover)"
             ),
             blocked_by="provenance_unknown",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
         )
 
     if reported is None:
@@ -97,11 +228,10 @@ def evaluate_vintage_gate(
                 "(cannot determine whether a later quarter has been reported)"
             ),
             blocked_by="provenance_unknown",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
         )
 
-    # Presence of load-bearing numbers without per-field as_of falls back to
-    # financials_as_of (sidecar). If a field_as_of entry is older than the
-    # reported period, flag that field specifically.
     stale: list[StaleField] = []
     has_load_bearing = False
     for key in LOAD_BEARING_FINANCIAL_FIELDS:
@@ -120,17 +250,16 @@ def evaluate_vintage_gate(
             )
 
     if require_load_bearing and not has_load_bearing:
-        # Empty fundamentals — not a vintage claim; caller may still block
-        # via remediation. Treat as ok for vintage specifically.
         return VintageGateResult(
             ok=True,
             ticker=t,
             data_period=data_period,
             most_recent_reported_period=reported,
             reason="ok_no_load_bearing_fields",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
         )
 
-    # Whole-payload period lag (even when individual field_as_of absent).
     if data_period < reported and not stale:
         stale.append(
             StaleField(
@@ -142,9 +271,6 @@ def evaluate_vintage_gate(
         )
 
     if stale or data_period < reported:
-        # Ensure we block when data_period lags even if field loop filled nothing.
-        if data_period < reported and not stale:
-            pass  # unreachable due to above, kept for clarity
         names = ", ".join(sorted({s.field for s in stale})) or "financials_as_of"
         return VintageGateResult(
             ok=False,
@@ -158,6 +284,8 @@ def evaluate_vintage_gate(
                 f"(fields: {names})"
             ),
             blocked_by="vintage_stale",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
         )
 
     return VintageGateResult(
@@ -166,6 +294,8 @@ def evaluate_vintage_gate(
         data_period=data_period,
         most_recent_reported_period=reported,
         reason="ok",
+        provenance_class=cls.value,
+        fiscal_vintage_rule=rule.value,
     )
 
 

@@ -1790,7 +1790,8 @@ def get_deploy_cash(
     """
     from datetime import date as _date
 
-    from argosy.services.deployment_advisor import assemble_deployment_plan
+    from argosy.services.deployment_funnel.canonical import build_canonical_deploy_plan
+    from argosy.services.contracts import preflight_result_to_dto
 
     doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
     amount = cash_usd if cash_usd is not None else snap_cash
@@ -1810,12 +1811,24 @@ def get_deploy_cash(
         )
         ctx = assemble_deployment_market_context(db)
 
-    plan = assemble_deployment_plan(
-        doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
+    # Stream A choke: same canonical builder as the inbox period directive,
+    # with integrity exclusions resolved against the request's sync Session.
+    from argosy.config import get_settings as _get_settings
+
+    plan, preflight = build_canonical_deploy_plan(
+        doc=doc, holdings=holdings, cash_usd=amount,
+        deploy_amount_usd=amount, as_of=_date.today(),
         market_context=ctx, sleeve_pct=sleeve_pct,
         use_high_potential=use_high_potential, user_id=user_id,
+        funnel_enabled=_get_settings().deployment_funnel_enabled,
+        session=db,
     )
     dto = deployment_plan_to_dto(plan, market_context=ctx)
+    if preflight is not None:
+        try:
+            dto = dto.model_copy(update={"preflight": preflight_result_to_dto(preflight)})
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("deploy_cash.preflight_dto_failed", error=str(exc)[:120])
 
     # FUNDING BREAKDOWN — WHERE the deploy money sits (2026-07-06 incident:
     # the surface said HOW MUCH but not that the pool spanned Leumi USD +

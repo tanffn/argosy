@@ -190,6 +190,7 @@ class FinnhubAdapter:
                 period = _latest_quarterly_period_from_series(raw.get("series"))
                 if period is not None:
                     out["financials_as_of"] = period
+                    out["financials_as_of_source"] = "finnhub.series.quarterly"
                 return out
 
             payload = await cached_call(
@@ -325,17 +326,32 @@ class FinnhubAdapter:
         symbol: str | None = None,
         ttl_seconds: int = 60 * 60 * 24,  # SDD §8.3: 24h fundamentals-class
     ) -> list[dict[str, Any]]:
-        """Return list of earnings events between [start, end]."""
+        """Return list of earnings events between [start, end].
+
+        Stream A Option C: Finnhub calendar is **not** the provenance
+        source for ``most_recent_reported_period`` (SEC EDGAR is). This
+        wrapper remains for any non-provenance callers. The sync SDK
+        call is offloaded with ``asyncio.to_thread`` so a cache miss
+        cannot block the event loop.
+        """
+        import asyncio
+
         key = f"earnings:{symbol or '*'}:{start.isoformat()}:{end.isoformat()}"
+
+        async def _fetch_async() -> list[dict[str, Any]]:
+            return await asyncio.to_thread(
+                self.fetch_earnings_calendar_sync,
+                start=start,
+                end=end,
+                symbol=symbol,
+            )
 
         return await cached_call(
             kind=CacheKind.NEWS,
             provider=self.PROVIDER,
             key=key,
             ttl_seconds=ttl_seconds,
-            fetch=lambda: self.fetch_earnings_calendar_sync(
-                start=start, end=end, symbol=symbol,
-            ),
+            fetch=_fetch_async,
         )
 
     def fetch_earnings_calendar_sync(

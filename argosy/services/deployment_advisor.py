@@ -87,6 +87,8 @@ class DeploymentPlan:
     # and deploy_amount = deployed_buys + undeployed_remainder.
     discovery_reserve_usd: float = 0.0
     cash_total_usd: float | None = None
+    # Stream A — tickers refused as actionable with reasons (never silent).
+    integrity_exclusions: tuple[dict[str, str], ...] = ()
 
     @property
     def deployed_total_usd(self) -> float:
@@ -293,7 +295,12 @@ _FLEET_CONVICTION_TO_SLEEVE: dict[str, str] = {
 }
 
 
-def _cached_buy_sleeve_candidates(user_id: str):
+def _cached_buy_sleeve_candidates(
+    user_id: str,
+    *,
+    blocked_tickers: set[str] | None = None,
+    integrity_exclusions: list[dict[str, str]] | None = None,
+):
     """Sleeve candidates from the CACHED discovery graded picks.
 
     Reads the persisted ScanState via the same accessor the /discovery GET uses
@@ -303,55 +310,40 @@ def _cached_buy_sleeve_candidates(user_id: str):
     funnel run. Returns ``None`` (caller falls back to the advisor seeds) when no
     cached BUY picks exist or the read fails.
 
-    A graded discovery pick is a single US-listed name with no stamped UCITS
-    domicile, so it maps to the ``single_name`` / ``us_situs=True`` carve-out
-    leg of the sleeve (the same convention the seed single-names use).
+    Integrity filter: callers MUST resolve open remediations via a real sync
+    Session or the async helper and pass ``blocked_tickers`` /
+    ``integrity_exclusions``. This function never opens an aiosqlite engine
+    synchronously (that path raised MissingGreenlet and silently dropped every
+    buy). When ``blocked_tickers`` is None, no integrity filter is applied here
+    — the deploy-cash / canonical choke points still exclude separately.
     """
     from argosy.services.high_potential_sleeve import SleeveCandidate
 
     try:
         from argosy.api.routes.portfolio import _load_discovery_state
-        from argosy.services.decision_integrity.actionable import (
-            filter_tickers_with_open_remediations,
-        )
-        from argosy.state import db as db_mod
 
         picks, _estimated, _last = _load_discovery_state(user_id)
     except Exception:  # noqa: BLE001 — cached read is best-effort; fall back to seeds
         return None
-    buy_tickers = [
-        (p.ticker or "").upper()
-        for p in picks
-        if (p.verdict or "").upper() == "BUY" and p.ticker
-    ]
-    blocked: set[str] = set()
-    try:
-        _ = db_mod.get_engine()
-    except Exception:
-        blocked = set()
-    else:
-        try:
-            from sqlalchemy.orm import sessionmaker
-
-            url = str(db_mod.get_engine().url)
-            async_eng = db_mod.get_engine()
-            sync_eng = getattr(async_eng, "sync_engine", None) or async_eng
-            sf = sessionmaker(bind=sync_eng, expire_on_commit=False)
-            sess = sf()
-            try:
-                blocked = filter_tickers_with_open_remediations(
-                    sess, user_id=user_id, tickers=buy_tickers,
-                )
-            finally:
-                sess.close()
-        except Exception:  # noqa: BLE001 — DB present but check failed
-            blocked = set(buy_tickers)
+    blocked = {t.upper() for t in (blocked_tickers or set())}
+    excl_out = integrity_exclusions
 
     cands: list[SleeveCandidate] = []
     for p in picks:
         if (p.verdict or "").upper() != "BUY":
             continue
-        if (p.ticker or "").upper() in blocked:
+        sym = (p.ticker or "").upper()
+        if sym in blocked:
+            if excl_out is not None and not any(
+                e.get("ticker") == sym for e in excl_out
+            ):
+                excl_out.append(
+                    {
+                        "ticker": sym,
+                        "reason": f"open remediation blocks sleeve BUY {sym}",
+                        "blocked_by": "open_remediation",
+                    }
+                )
             continue
         cands.append(SleeveCandidate(
             ticker=p.ticker,
@@ -364,6 +356,50 @@ def _cached_buy_sleeve_candidates(user_id: str):
             source="fleet_validated",
         ))
     return cands or None
+
+
+async def load_cached_buy_sleeve_candidates(user_id: str):
+    """Async loader: await remediation lookup, return (candidates, exclusions)."""
+    from argosy.services.decision_integrity.exclusions import (
+        exclusions_for_open_remediations_async,
+        merge_exclusion_dicts,
+    )
+
+    try:
+        from argosy.api.routes.portfolio import _load_discovery_state
+
+        picks, _estimated, _last = _load_discovery_state(user_id)
+    except Exception:  # noqa: BLE001
+        return None, []
+    buy_tickers = [
+        (p.ticker or "").upper()
+        for p in picks
+        if (p.verdict or "").upper() == "BUY" and p.ticker
+    ]
+    try:
+        exclusions = await exclusions_for_open_remediations_async(
+            user_id=user_id, tickers=buy_tickers,
+        )
+        blocked = {e.ticker.upper() for e in exclusions}
+        excl_dicts = merge_exclusion_dicts(exclusions)
+    except Exception as exc:  # noqa: BLE001 — fail CLOSED + visible
+        blocked = set(buy_tickers)
+        excl_dicts = [
+            {
+                "ticker": t,
+                "reason": (
+                    f"integrity filter failed ({type(exc).__name__}); "
+                    f"refusing BUY {t}"
+                ),
+                "blocked_by": "integrity_gate_error",
+            }
+            for t in buy_tickers
+        ]
+
+    cands = _cached_buy_sleeve_candidates(
+        user_id, blocked_tickers=blocked, integrity_exclusions=list(excl_dicts),
+    )
+    return cands, excl_dicts
 
 
 def _sleeve_estate_tag(cand) -> EstateTag:
@@ -398,6 +434,8 @@ def _sleeve_estate_tag(cand) -> EstateTag:
 def _high_potential_lines(
     *, sleeve_budget_usd: float, user_id: str, market_context, book_usd: float,
     tranche_usd: float, holdings: dict[str, float] | None = None,
+    blocked_tickers: set[str] | None = None,
+    integrity_exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[DeploymentLine], float, float]:
     """Build the ``high`` tier from the EXISTING high-potential sleeve sizer.
 
@@ -411,7 +449,11 @@ def _high_potential_lines(
 
     if sleeve_budget_usd <= 0:
         return [], 0.0, 0.0
-    candidates = _cached_buy_sleeve_candidates(user_id)
+    candidates = _cached_buy_sleeve_candidates(
+        user_id,
+        blocked_tickers=blocked_tickers,
+        integrity_exclusions=integrity_exclusions,
+    )
     allocs = build_high_potential_sleeve(sleeve_budget_usd, candidates)
     # Case-normalised current book so a sleeve pick already held reads as a
     # top-up (ADD), not a brand-new position (NEW). Mirrors the core path's
@@ -454,6 +496,8 @@ def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
     market_context=None, sleeve_pct: float = 5.0, use_high_potential: bool = True,
     user_id: str = "ariel", exposure_aware: bool = False,
+    blocked_tickers: set[str] | None = None,
+    integrity_exclusions: list[dict[str, str]] | None = None,
 ) -> DeploymentPlan:
     """Build the deploy plan: plan-bound ``cash_only_deploy`` buys, each
     annotated with tier/estate/cap/tax/horizon/pacing, grouped into tiers that
@@ -476,6 +520,8 @@ def assemble_deployment_plan(
     """
     amount = round(deploy_amount_usd, 2)
     cash_total = amount
+    excl_acc: list[dict[str, str]] = list(integrity_exclusions or [])
+    blocked = {t.upper() for t in (blocked_tickers or set())}
 
     # Item D — discovery dry-powder earmark is not deployable general cash.
     from argosy.services.discovery_reserve import (
@@ -504,6 +550,15 @@ def assemble_deployment_plan(
             note="No current canonical plan — accept a plan first.",
             discovery_reserve_usd=discovery_reserve,
             cash_total_usd=cash_total,
+            integrity_exclusions=tuple(
+                {
+                    "ticker": (e.get("ticker") or "").upper(),
+                    "reason": str(e.get("reason") or ""),
+                    "blocked_by": str(e.get("blocked_by") or "open_remediation"),
+                }
+                for e in excl_acc
+                if e.get("ticker")
+            ),
         )
 
     from argosy.services.allocation_engine import cash_only_deploy
@@ -544,6 +599,18 @@ def assemble_deployment_plan(
                     f"{leg.symbol!r} funded by {leg.funding_source!r} (kind={cand.kind})"
                 )
             sym = leg.symbol
+            if (sym or "").upper() in blocked:
+                excl_acc.append(
+                    {
+                        "ticker": (sym or "").upper(),
+                        "reason": (
+                            f"open remediation blocks deploy BUY "
+                            f"{(sym or '').upper()}"
+                        ),
+                        "blocked_by": "open_remediation",
+                    }
+                )
+                continue
             # The sleeve this buy FILLS may differ from the emitted symbol when the
             # engine tops up a held substitute (exposure-aware): a FWRA buy that
             # fills the EXUS sleeve is plan-bound CORE, not tactical. Read the
@@ -593,6 +660,8 @@ def assemble_deployment_plan(
             sleeve_budget_usd=sleeve_budget, user_id=user_id,
             market_context=market_context, book_usd=book_usd, tranche_usd=amount,
             holdings=holdings,
+            blocked_tickers=blocked,
+            integrity_exclusions=excl_acc,
         )
         exposed_total += sleeve_exposed
         sanctioned_total += sleeve_sanctioned
@@ -643,6 +712,21 @@ def assemble_deployment_plan(
             f"{note} {DISCOVERY_RESERVE_LABEL}: "
             f"${discovery_reserve:,.2f} of ${cash_total:,.2f} cash excluded."
         ).strip()
+    # Dedupe exclusions by ticker (last reason wins).
+    excl_by_ticker: dict[str, dict[str, str]] = {}
+    for e in excl_acc:
+        t = (e.get("ticker") or "").upper()
+        if t:
+            excl_by_ticker[t] = {
+                "ticker": t,
+                "reason": str(e.get("reason") or ""),
+                "blocked_by": str(e.get("blocked_by") or "open_remediation"),
+            }
+    excl_tuple = tuple(excl_by_ticker.values())
+    if excl_tuple:
+        caveats = caveats + tuple(
+            f"INTEGRITY EXCLUSION {e['ticker']}: {e['reason']}" for e in excl_tuple
+        )
     return DeploymentPlan(
         deploy_amount_usd=amount, as_of=as_of, tiers=tiers,
         us_situs_exposed_usd=round(exposed_total, 2),
@@ -652,4 +736,5 @@ def assemble_deployment_plan(
         note=note,
         discovery_reserve_usd=discovery_reserve,
         cash_total_usd=cash_total,
+        integrity_exclusions=excl_tuple,
     )
