@@ -373,8 +373,16 @@ def merge_positions_per_account(
         if not ak:
             continue
         # Do NOT canonicalize yet — dual-alias conflict detection needs raws.
-        d["observed_as_of"] = incoming_date
-        d["valued_as_of"] = incoming_date
+        # Preserve a carried QUANTITY date: a reprice / self-refresh row keeps its
+        # true observation date (snapshot_refresh.py:528 already preserves it), so
+        # only a fresh feed row — which carries none — takes the feed date.
+        # Re-dating carried quantities to "today" on every refresh permanently
+        # disarms the 90-day quantity-staleness guard (NVDA is ~58% of the book).
+        _carried_obs = d.get("observed_as_of")
+        d["observed_as_of"] = (
+            _carried_obs if _as_date(_carried_obs) is not None else incoming_date
+        )
+        d["valued_as_of"] = incoming_date  # the fresh mark date — legitimately today
         d["carried_forward"] = False
         incoming_by_acct.setdefault(ak, []).append(d)
 
@@ -505,7 +513,11 @@ def dedupe_positions_by_symbol_location(
         sym = _symbol_of(d)
         loc = _norm_location(_location_of(d))
         if not sym:
-            key = ("", loc or f"anon:{len(order)}")
+            # Each unnamed lot (blank-symbol cash / real-estate) is its own
+            # money and must never collide with another unnamed lot in the same
+            # location. The old ("", loc) key collapsed two Leumi cash rows and
+            # silently dropped $5,446.93 from every net-worth/estate surface.
+            key = ("", f"__anon:{len(order)}")
         else:
             key = (sym, loc)
         if key in acc:
