@@ -85,17 +85,59 @@ def extract_http_urls(value: Any) -> list[str]:
     return found
 
 
+def url_contains_control_chars(url: str) -> bool:
+    """True if ``url`` contains ASCII control characters (incl. newline).
+
+    Control characters must never be normalised away — stripping/query
+    dropping can otherwise launder ``https://host/x?utm=1\\nINJECT`` into
+    a match against a clean retrieved URL.
+    """
+    if not url:
+        return False
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in url)
+
+
+def url_identity_parts(url: str) -> tuple[str, str, str] | None:
+    """Parse a URL into (scheme, host, path) for identity comparison.
+
+    Returns None when the URL is blank, has control characters, or is not
+    a well-formed http(s) URL with a host. Query/fragment are intentionally
+    excluded from the identity tuple — callers that need them use
+    ``normalize_url_for_match`` after this gate passes.
+    """
+    from urllib.parse import urlsplit
+
+    raw = (url or "").strip().rstrip(".,;:)")
+    if not raw or url_contains_control_chars(raw):
+        return None
+    parts = urlsplit(raw)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return None
+    host = (parts.hostname or "").lower()
+    if not host:
+        return None
+    path = parts.path or ""
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    return (scheme, host, path)
+
+
 def normalize_url_for_match(url: str) -> str:
     """Normalise a URL for citation ↔ tool-result comparison.
 
     Handles scheme case, host case, default ports, trailing slash, and
     common tracking query params so genuine retrievals are not silently
     downgraded to ``shared_payload`` on near-miss formatting.
+
+    URLs containing control characters (newline, etc.) return ``""`` —
+    they are never matchable. Normalisation must not hide adversarial
+    payload embedded via control characters.
     """
     from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
     raw = (url or "").strip().rstrip(".,;:)")
-    if not raw:
+    if not raw or url_contains_control_chars(raw):
         return ""
     parts = urlsplit(raw)
     scheme = (parts.scheme or "https").lower()
@@ -134,7 +176,16 @@ def normalize_url_for_match(url: str) -> str:
 
 
 def urls_match(a: str, b: str) -> bool:
-    """True if two URLs refer to the same resource after normalisation."""
+    """True if two URLs refer to the same resource after normalisation.
+
+    Fail-closed: either side with control characters, missing scheme/host,
+    or empty normalisation is a non-match. Identity is parse-based, never
+    "strip until it looks equal."
+    """
+    if url_contains_control_chars(a or "") or url_contains_control_chars(b or ""):
+        return False
+    if url_identity_parts(a or "") is None or url_identity_parts(b or "") is None:
+        return False
     na, nb = normalize_url_for_match(a), normalize_url_for_match(b)
     return bool(na) and na == nb
 
@@ -1631,10 +1682,15 @@ class BaseAgent(Generic[T]):
                         "required fields / types named above.\n</validation_feedback>"
                     )
 
-            if self.require_citations:
-                self._validate_citations(output)
-
             tool_urls = list(getattr(call, "tool_retrieved_urls", None) or [])
+
+            # Citation validation runs AFTER tool_urls are known so agents
+            # that require retrieval corroboration (premise_check) can reject
+            # fabricated URL-shaped cites. Shape-only checks are not enough.
+            if self.require_citations:
+                self._validate_citations(
+                    output, tool_retrieved_urls=tool_urls,
+                )
 
             # Derive independence BEFORE hallucination flagging / source
             # enrichment so self-attested "independent" claims cannot
@@ -3201,12 +3257,22 @@ class BaseAgent(Generic[T]):
                         return out
             raise
 
-    def _validate_citations(self, output: BaseModel) -> None:
+    def _validate_citations(
+        self,
+        output: BaseModel,
+        *,
+        tool_retrieved_urls: list[str] | None = None,
+    ) -> None:
         """Reject outputs that have no citations when citations are required.
 
         We look for either a top-level `cited_sources: list[str]` or, for
         composite reports, any nested `cited_sources` non-empty list.
+
+        ``tool_retrieved_urls`` is available for subclasses that require
+        retrieval corroboration (an unretrieved citation is not a citation).
+        The default gate is shape/presence only.
         """
+        del tool_retrieved_urls  # default gate does not use retrieval
         try:
             payload = output.model_dump()
         except Exception:

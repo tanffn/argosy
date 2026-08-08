@@ -54,7 +54,9 @@ from argosy.state.models import (
 # ----------------------------------------------------------------------
 
 
-def _mock_agent(cls, canned: dict, **init_kwargs):
+def _mock_agent(cls, canned: dict, *, tool_retrieved_urls: list[str] | None = None, **init_kwargs):
+    urls = list(tool_retrieved_urls or [])
+
     class _M(cls):  # type: ignore[misc, valid-type]
         async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
@@ -62,8 +64,13 @@ def _mock_agent(cls, canned: dict, **init_kwargs):
                 tokens_in=50,
                 tokens_out=80,
                 model=self.model,
+                tool_retrieved_urls=urls,
             )
     return _M
+
+
+#: Bear independence requires ≥1 http(s) tool retrieval on T1+.
+_BEAR_RETRIEVED_URL = "https://example.com/bear-independent-retrieval"
 
 
 _BULL_CANNED = {
@@ -212,7 +219,11 @@ def _make_flow(
             debate_rounds_t3=1,
         ),
         bull_factory=lambda u: _mock_agent(BullResearcherAgent, _BULL_CANNED)(user_id=u),
-        bear_factory=lambda u: _mock_agent(BearResearcherAgent, _BEAR_CANNED)(user_id=u),
+        bear_factory=lambda u: _mock_agent(
+            BearResearcherAgent,
+            _BEAR_CANNED,
+            tool_retrieved_urls=[_BEAR_RETRIEVED_URL],
+        )(user_id=u),
         researcher_facilitator_factory=lambda u: _mock_agent(
             ResearcherFacilitatorAgent, _DEBATE_CANNED
         )(user_id=u),
@@ -500,7 +511,11 @@ async def test_omitted_premises_field_surfaces_premise_unverified(engine: None) 
         bull_factory=lambda u: _mock_agent(BullResearcherAgent, _BULL_CANNED)(
             user_id=u
         ),
-        bear_factory=lambda u: _mock_agent(BearResearcherAgent, _BEAR_CANNED)(
+        bear_factory=lambda u: _mock_agent(
+            BearResearcherAgent,
+            _BEAR_CANNED,
+            tool_retrieved_urls=[_BEAR_RETRIEVED_URL],
+        )(
             user_id=u
         ),
         researcher_facilitator_factory=lambda u: _mock_agent(
@@ -536,7 +551,12 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
     """
     from argosy.agents.errors import AgentRunError
 
-    async def _run_premises(cited: list[str], *, top: list[str] | None = None):
+    async def _run_premises(
+        cited: list[str],
+        *,
+        top: list[str] | None = None,
+        tool_retrieved_urls: list[str] | None = None,
+    ):
         body = {
             "ticker": "TRLV",
             "premises": [
@@ -552,6 +572,7 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
             "confidence": "HIGH",
             "cited_sources": list(top if top is not None else cited),
         }
+        urls = list(tool_retrieved_urls) if tool_retrieved_urls is not None else []
 
         class _A(PremiseCheckAgent):
             async def _call_model(
@@ -562,6 +583,7 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
                     tokens_in=10,
                     tokens_out=10,
                     model=self.model,
+                    tool_retrieved_urls=urls,
                 )
 
         return await _A(user_id="ariel").run(
@@ -569,11 +591,16 @@ async def test_nonempty_uncited_premise_is_rejected() -> None:
         )
 
     for bad in ([], [""], [" "], ["analyst:fundamentals"]):
-        with pytest.raises(AgentRunError, match="http|cited_sources|citations"):
+        with pytest.raises(AgentRunError, match="http|cited_sources|citations|corroborat|retriev"):
             await _run_premises(bad)
 
+    # Fabricated well-formed URL with empty retrieval must fail (Finding 2).
+    fabricated = "https://nowhere.example/never-fetched"
+    with pytest.raises(AgentRunError, match="corroborat|retriev|cited_sources|citations"):
+        await _run_premises([fabricated], tool_retrieved_urls=[])
+
     ok_url = "https://www.dea.gov/press-releases/2026/04/23/schedule-iii"
-    rep = await _run_premises([ok_url])
+    rep = await _run_premises([ok_url], tool_retrieved_urls=[ok_url])
     assert rep.output.premises[0].premise_id == "p0"
     assert ok_url in rep.output.premises[0].cited_sources
 

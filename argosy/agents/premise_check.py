@@ -18,7 +18,6 @@ deterministic gate that judges whether a thesis is good.
 from __future__ import annotations
 
 from typing import ClassVar, Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -36,12 +35,39 @@ CatalystStatus = Literal[
 
 
 def is_well_formed_http_url(value: str) -> bool:
-    """True iff ``value`` is a non-blank http(s) URL with a host."""
+    """True iff ``value`` is a non-blank http(s) URL with a host.
+
+    Control characters (newline, etc.) are rejected outright — they must
+    never be normalised into a match against a retrieved URL.
+    """
+    from argosy.agents.base import url_contains_control_chars, url_identity_parts
+
     raw = (value or "").strip()
-    if not raw:
+    if not raw or url_contains_control_chars(raw):
         return False
-    parts = urlsplit(raw)
-    return parts.scheme in ("http", "https") and bool(parts.netloc)
+    return url_identity_parts(raw) is not None
+
+
+def citation_corroborated_by_retrieval(
+    cited_url: str,
+    tool_retrieved_urls: list[str] | None,
+) -> bool:
+    """True iff ``cited_url`` is well-formed and matches a retrieved URL.
+
+    An unretrieved citation is not a citation. Matching is parse-based
+    (``urls_match``); control-character URLs never corroborate.
+    """
+    from argosy.agents.base import urls_match
+
+    if not is_well_formed_http_url(cited_url):
+        return False
+    tool_list = [
+        u for u in (tool_retrieved_urls or [])
+        if isinstance(u, str) and u.strip()
+    ]
+    if not tool_list:
+        return False
+    return any(urls_match(cited_url, u) for u in tool_list)
 
 
 class CatalystPremise(BaseModel):
@@ -136,15 +162,25 @@ class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
         ]
         return report.model_copy(update={"premises": stamped})
 
-    def _validate_citations(self, output: BaseModel) -> None:
-        """Require well-formed http(s) URL cites iff premises is non-empty.
+    def _validate_citations(
+        self,
+        output: BaseModel,
+        *,
+        tool_retrieved_urls: list[str] | None = None,
+    ) -> None:
+        """Require retrieved http(s) URL cites iff premises is non-empty.
 
         Omitted ``premises`` (None) is NOT a waiver — raise so DecisionFlow's
         existing premise_check except path marks premise_unverified.
         Explicit ``premises=[]`` earns the no-catalyst citation waiver.
+
+        Mechanical integrity (not judgment): a well-formed URL that was never
+        observed in this invocation's tool results is not a citation.
         """
         if not isinstance(output, PremiseCheckReport):
-            super()._validate_citations(output)
+            super()._validate_citations(
+                output, tool_retrieved_urls=tool_retrieved_urls,
+            )
             return
         if output.premises is None:
             raise AgentRunError(
@@ -154,31 +190,40 @@ class PremiseCheckAgent(BaseAgent[PremiseCheckReport]):
             )
         if output.premises == []:
             return
+        tool_urls = list(tool_retrieved_urls or [])
         for i, prem in enumerate(output.premises):
             urls = [
                 s.strip()
                 for s in (prem.cited_sources or [])
                 if isinstance(s, str) and s.strip()
             ]
-            http_urls = [u for u in urls if is_well_formed_http_url(u)]
-            if not http_urls:
+            corroborated = [
+                u for u in urls
+                if citation_corroborated_by_retrieval(u, tool_urls)
+            ]
+            if not corroborated:
                 raise AgentRunError(
                     f"{self.agent_role}: premise[{i}] "
-                    f"{(prem.catalyst or '')!r} (id={prem.premise_id!r}) "
-                    "lacks a well-formed http(s) URL in cited_sources "
-                    "(blank strings and non-URL tokens like "
-                    "'analyst:fundamentals' do not count)"
+                    f"(id={prem.premise_id!r}) lacks a cited http(s) URL "
+                    "corroborated by this invocation's tool retrievals "
+                    "(fabricated / unretrieved URLs do not count; "
+                    f"tool_retrieved_n={len(tool_urls)})"
                 )
-        # Top-level must also carry at least one real URL when premises exist.
+        # Top-level must also carry at least one corroborated URL.
         top = [
             s.strip()
             for s in (output.cited_sources or [])
-            if isinstance(s, str) and s.strip() and is_well_formed_http_url(s)
+            if isinstance(s, str) and s.strip()
         ]
-        if not top:
+        top_ok = [
+            u for u in top
+            if citation_corroborated_by_retrieval(u, tool_urls)
+        ]
+        if not top_ok:
             raise AgentRunError(
                 f"{self.agent_role}: output is missing required citations "
-                "(`cited_sources` has no well-formed http(s) URL)"
+                "(`cited_sources` has no http(s) URL corroborated by "
+                f"tool retrievals; tool_retrieved_n={len(tool_urls)})"
             )
 
     def build_prompt(
@@ -250,5 +295,6 @@ __all__ = [
     "CatalystStatus",
     "PremiseCheckAgent",
     "PremiseCheckReport",
+    "citation_corroborated_by_retrieval",
     "is_well_formed_http_url",
 ]

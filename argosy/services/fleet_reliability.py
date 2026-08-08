@@ -47,6 +47,18 @@ class FleetCallUnavailable(RuntimeError):
     """The scope's circuit breaker is open — short-circuited without a call."""
 
 
+class FleetStructuralRetryError(RuntimeError):
+    """Mechanical pipeline integrity miss — retry with a fresh agent, then degrade.
+
+    Distinct from judgment failures (another agent re-derives those) and from
+    transient flakes (exit-1 / timeout). Example: the bear produced zero
+    ``tool_retrieved_urls`` despite independent retrieval being mandatory.
+    Requested behaviour is not guaranteed behaviour; this error forces a
+    recovery attempt through ``call_reliably_*`` rather than silently
+    continuing with ``shared_payload``-only debate as actionable.
+    """
+
+
 class CircuitBreaker:
     """Trip after ``fail_threshold`` consecutive failures; short-circuit for
     ``cooldown_s`` then half-open (allow one trial, reset on its success)."""
@@ -129,6 +141,14 @@ PREMISE_CHECK_CONFIG = FleetRetryConfig(
     retries=1, backoff_base_s=20.0, total_wall_clock_s=240.0,
 )
 
+#: Bear independent-retrieval enforcement. Structural miss (zero tool URLs)
+#: is retryable once with short backoff, then loud green_light block.
+#: Not a judgment gate — "did WebSearch run?" is a mechanical fact.
+#: Short backoff: this is a fresh-agent re-ask, not an exit-1 burst span.
+BEAR_INDEPENDENCE_CONFIG = FleetRetryConfig(
+    retries=1, backoff_base_s=0.5, backoff_cap_s=2.0, total_wall_clock_s=120.0,
+)
+
 
 # The exit-1 fingerprint, mirrored from BaseAgent's in-call detector: word-bounded
 # so "exit code 137" never matches; the parenthesized form is exact-string.
@@ -157,6 +177,17 @@ def is_transient_fleet_error(exc: BaseException) -> bool:
         return True
     text_raw = str(exc)
     return bool(_EXIT1_RE.search(text_raw) or "(exit code: 1)" in text_raw)
+
+
+def is_retryable_fleet_error(exc: BaseException) -> bool:
+    """True for transient flakes OR mechanical integrity misses that warrant retry.
+
+    ``FleetStructuralRetryError`` is retryable then must degrade loudly —
+    it is not a judgment failure and must not be silently swallowed.
+    """
+    if isinstance(exc, FleetStructuralRetryError):
+        return True
+    return is_transient_fleet_error(exc)
 
 
 def _backoff_delay(attempt: int, config: FleetRetryConfig) -> float:
@@ -221,7 +252,7 @@ async def call_reliably_async(
             return result
         except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
-            if not is_transient_fleet_error(exc) or attempt >= cfg.retries:
+            if not is_retryable_fleet_error(exc) or attempt >= cfg.retries:
                 break
             if (
                 cfg.total_wall_clock_s is not None
@@ -248,7 +279,7 @@ async def call_reliably_async(
             )
             await sleep(delay)
 
-    if is_transient_fleet_error(last_exc):
+    if is_retryable_fleet_error(last_exc):
         breaker.record_failure()
     assert last_exc is not None
     raise last_exc
@@ -299,7 +330,7 @@ def call_reliably_sync(
             return result
         except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
-            if not is_transient_fleet_error(exc) or attempt >= cfg.retries:
+            if not is_retryable_fleet_error(exc) or attempt >= cfg.retries:
                 break
             if (
                 cfg.total_wall_clock_s is not None
@@ -325,13 +356,14 @@ def call_reliably_sync(
             )
             sleep(delay)
 
-    if is_transient_fleet_error(last_exc):
+    if is_retryable_fleet_error(last_exc):
         breaker.record_failure()
     assert last_exc is not None
     raise last_exc
 
 
 __all__ = [
+    "BEAR_INDEPENDENCE_CONFIG",
     "CONSULT_ANALYST_CONFIG",
     "DEPLOY_REVIEWER_CONFIG",
     "PREMISE_CHECK_CONFIG",
@@ -339,9 +371,11 @@ __all__ = [
     "FleetCallTimeout",
     "FleetCallUnavailable",
     "FleetRetryConfig",
+    "FleetStructuralRetryError",
     "call_reliably_async",
     "call_reliably_sync",
     "get_breaker",
+    "is_retryable_fleet_error",
     "is_transient_fleet_error",
     "_kill_claude_children",
 ]

@@ -265,27 +265,56 @@ def claim_has_independent_http_cite(
 ) -> bool:
     """True iff the claim cites ≥1 well-formed http(s) URL that was retrieved.
 
-    Reuses ``is_well_formed_http_url`` and ``urls_match`` — the same ground
-    truth as independence derivation / hallucination exemption. A top-level
-    turn citation does not count; only ``claim["cited_sources"]``.
+    Reuses ``citation_corroborated_by_retrieval`` — the same ground truth as
+    premise_check citation validation. A top-level turn citation does not
+    count; only ``claim["cited_sources"]``. Control-character URLs never
+    corroborate (rejected before normalisation).
     """
-    from argosy.agents.base import urls_match
-    from argosy.agents.premise_check import is_well_formed_http_url
+    from argosy.agents.premise_check import citation_corroborated_by_retrieval
 
-    tool_list = [
-        u for u in (tool_retrieved_urls or [])
-        if isinstance(u, str) and u.startswith(("http://", "https://"))
-    ]
-    if not tool_list:
-        return False
     for sid in claim.get("cited_sources") or []:
         if not isinstance(sid, str):
             continue
-        if not is_well_formed_http_url(sid):
-            continue
-        if any(urls_match(sid, u) for u in tool_list):
+        if citation_corroborated_by_retrieval(sid, tool_retrieved_urls):
             return True
     return False
+
+
+#: Allowed status vocabulary for trader-facing structural disagreements.
+#: Free-text catalyst labels and raw citation strings are NEVER included —
+#: those are agent-authored channels that can carry instructions.
+_DISAGREEMENT_STATUSES = frozenset({
+    "already_happened",
+    "pending",
+    "rejected",
+    "delayed",
+    "not_applicable",
+    "unclear",
+})
+
+
+class PremiseStatusDisagreement(BaseModel):
+    """Typed structural disagreement — no agent free-text fields.
+
+    Human-readable trader text is composed by ``format_premise_disagreement``
+    from these validated fields only. If there is no free-text channel, there
+    is nothing to launder into the trader's "do not ignore" block.
+    """
+
+    side: Literal["bull", "bear"]
+    premise_id: str = Field(min_length=1)
+    premise_check_status: str
+    claim_status: str
+
+
+def format_premise_disagreement(item: PremiseStatusDisagreement) -> str:
+    """Compose trader-facing text from typed fields only (our code, not agents)."""
+    return (
+        f"{item.side} disagrees with premise_check on "
+        f"premise_id={item.premise_id}: "
+        f"premise_check={item.premise_check_status}, "
+        f"{item.side}={item.claim_status}"
+    )
 
 
 def detect_premise_disagreements(
@@ -293,7 +322,7 @@ def detect_premise_disagreements(
     *,
     bear_turns: list[dict] | None = None,
     bull_turns: list[dict] | None = None,
-) -> list[str]:
+) -> list[PremiseStatusDisagreement]:
     """Detect researcher contradictions keyed by exact ``premise_id``.
 
     A status conflict is promoted to a structural disagreement ONLY when
@@ -304,6 +333,9 @@ def detect_premise_disagreements(
     is the TRLV disease; a softer channel still risks laundering it into
     the trader prompt. Completeness (``missing_catalyst_status_claims_reason``)
     still accepts id+status so silence ≠ drop; only promotion is gated.
+
+    Returned records contain ONLY validated side/id/status fields — never
+    catalyst prose or citation strings.
     """
     from argosy.logging import get_logger
 
@@ -323,7 +355,7 @@ def detect_premise_disagreements(
         if pid:
             by_id[pid] = prem
 
-    out: list[str] = []
+    out: list[PremiseStatusDisagreement] = []
     for side, turns in (("bear", bear_turns or []), ("bull", bull_turns or [])):
         for turn in turns:
             tool_urls = list(turn.get("tool_retrieved_urls") or [])
@@ -336,7 +368,18 @@ def detect_premise_disagreements(
                 prem = by_id.get(pid)
                 if prem is None or not claim_status:
                     continue
+                if claim_status not in _DISAGREEMENT_STATUSES:
+                    _log.info(
+                        "researcher.premise_claim_dropped",
+                        premise_id=pid,
+                        side=side,
+                        claim_status=claim_status,
+                        reason="status_not_in_allowed_vocabulary",
+                    )
+                    continue
                 prem_status = (prem.get("status") or "").lower().strip()
+                if prem_status not in _DISAGREEMENT_STATUSES:
+                    continue
                 if not prem_status or claim_status == prem_status:
                     continue
                 # Drop — do not promote uncited / unre retrieved claims.
@@ -352,68 +395,106 @@ def detect_premise_disagreements(
                         tool_retrieved_n=len(tool_urls),
                     )
                     continue
-                cat = prem.get("catalyst") or pid
-                cites = [
-                    c for c in (claim.get("cited_sources") or [])
-                    if isinstance(c, str) and c.strip()
-                ]
                 out.append(
-                    f"{side} disagrees with premise_check on "
-                    f"{cat!r} (premise_id={pid}): "
-                    f"premise_check={prem_status!r}, {side}={claim_status!r}"
-                    + (f" (cites {cites[0]})" if cites else "")
+                    PremiseStatusDisagreement(
+                        side=side,  # type: ignore[arg-type]
+                        premise_id=pid,
+                        premise_check_status=prem_status,
+                        claim_status=claim_status,
+                    )
                 )
-    seen: set[str] = set()
-    deduped: list[str] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    deduped: list[PremiseStatusDisagreement] = []
     for item in out:
-        if item not in seen:
-            seen.add(item)
+        key = (
+            item.side,
+            item.premise_id,
+            item.premise_check_status,
+            item.claim_status,
+        )
+        if key not in seen:
+            seen.add(key)
             deduped.append(item)
     return deduped
 
 
 def authoritative_premise_disagreements(
-    validated: list[str],
+    validated: list[PremiseStatusDisagreement] | list[str],
     facilitator_entries: list[str] | None,
 ) -> list[str]:
     """Return the trader-facing structural disagreement list.
 
-    **Validated entries only.** Facilitator prose never contributes content —
-    a matching ``premise_id`` token does not ground arbitrary attached text
-    (a grounded topic is not a grounded instruction). Facilitator entries
-    may influence **ordering** when they exactly equal a validated string,
-    and non-identical facilitator text is logged then discarded.
+    **Validated typed records only.** Human-readable text is composed by our
+    code from validated fields. Facilitator prose never contributes content —
+    a matching ``premise_id`` token does not ground arbitrary attached text.
+    Facilitator entries are logged then discarded (ordering ignored).
     """
     from argosy.logging import get_logger
 
     _log = get_logger("argosy.agents.researcher")
 
-    validated_list = [v for v in (validated or []) if isinstance(v, str) and v.strip()]
     fac_list = [
         e for e in (facilitator_entries or []) if isinstance(e, str) and e.strip()
     ]
-    validated_set = set(validated_list)
-
-    # Ordering hint: exact matches in facilitator order first, then any
-    # remaining validated entries in detection order.
-    ordered: list[str] = []
-    seen: set[str] = set()
     for entry in fac_list:
-        if entry in validated_set:
-            if entry not in seen:
-                ordered.append(entry)
-                seen.add(entry)
-            continue
         _log.info(
             "researcher.facilitator_disagreement_dropped",
-            reason="facilitator_content_not_in_validated_set",
+            reason="facilitator_content_never_authoritative",
             entry=entry[:240],
         )
-    for v in validated_list:
-        if v not in seen:
-            ordered.append(v)
-            seen.add(v)
-    return ordered
+
+    rendered: list[str] = []
+    seen: set[str] = set()
+    for item in validated or []:
+        if isinstance(item, PremiseStatusDisagreement):
+            text = format_premise_disagreement(item)
+        elif isinstance(item, str) and item.strip():
+            # Legacy/test path: only accept strings that match OUR renderer
+            # shape (no catalyst / cite free text). Reject anything else.
+            text = item.strip()
+            if "disagrees with premise_check on premise_id=" not in text:
+                _log.info(
+                    "researcher.legacy_disagreement_dropped",
+                    reason="string_not_code_composed_shape",
+                    entry=text[:240],
+                )
+                continue
+            # Reject injection payloads that snuck past as "legacy" strings.
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+                continue
+            if "cites " in text or " on '" in text:
+                _log.info(
+                    "researcher.legacy_disagreement_dropped",
+                    reason="legacy_string_contains_free_text_channel",
+                    entry=text[:240],
+                )
+                continue
+        else:
+            continue
+        if text not in seen:
+            seen.add(text)
+            rendered.append(text)
+    return rendered
+
+
+def bear_turn_has_independent_retrieval(turn: dict | None) -> bool:
+    """True iff the bear turn recorded ≥1 http(s) tool retrieval.
+
+    Mechanical integrity — not judgment: "did this agent actually perform
+    independent retrieval?" Empty ``tool_retrieved_urls`` means WebSearch
+    was skipped (or produced nothing). Prompt-mandatory is not guaranteed.
+    """
+    if not turn:
+        return False
+    for u in turn.get("tool_retrieved_urls") or []:
+        if not isinstance(u, str):
+            continue
+        raw = u.strip()
+        if raw.startswith(("http://", "https://")):
+            from argosy.agents.base import url_contains_control_chars
+            if not url_contains_control_chars(raw):
+                return True
+    return False
 
 
 def _render_premise_block(premise_status: dict | None) -> str:
@@ -746,12 +827,15 @@ __all__ = [
     "BullResearcherAgent",
     "CatalystStatusClaim",
     "CitedPoint",
+    "PremiseStatusDisagreement",
     "ResearcherTurn",
     "authoritative_premise_disagreements",
+    "bear_turn_has_independent_retrieval",
     "claim_has_independent_http_cite",
     "detect_premise_disagreements",
     "derive_point_independence",
     "derive_turn_independence",
+    "format_premise_disagreement",
     "missing_catalyst_status_claims_reason",
     "premise_ids_from_status",
 ]
