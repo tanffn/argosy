@@ -11,6 +11,7 @@ Never touches live ``db/argosy.db``.
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import shutil
 import sqlite3
@@ -246,6 +247,58 @@ def test_gate_backup_missing_an_unrelated_table_is_rejected(tmp_path, mod):
     ok3, detail3 = mod.verify_backup_against_source(src, good, "ariel")
     assert ok3 is True, detail3
     assert "whole-DB" in detail3
+
+
+def test_gate_value_encoding_is_injective_across_types(tmp_path, mod):
+    """Distinct values must never share a fingerprint.
+
+    Tagging TEXT by PREFIXING a marker onto the payload was in-band signalling,
+    and a review collided it: TEXT "abc" and BLOB b"\\x00T\\x00abc" fingerprinted
+    identically, so `verify_backup_against_source` accepted two unequal
+    databases. The type is now carried out of band and every value is length
+    framed.
+
+    Revert detector: go back to a prefixing text_factory → the first pair
+    collides and this fails.
+    """
+    src = tmp_path / "typed.db"
+    _book_db(src, _POSITIONS)
+
+    counter = itertools.count()
+
+    def fingerprint_with(value_sql: str, params: tuple) -> str:
+        db = tmp_path / f"probe{next(counter)}.db"
+        mod.sqlite_consistent_backup(src, db)
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE probe (v)")
+        con.execute(f"INSERT INTO probe (v) VALUES ({value_sql})", params)
+        con.commit()
+        con.close()
+        return mod.database_fingerprint(db)["row_counts"]["probe"]
+
+    # The exact collision the review reproduced.
+    text_abc = fingerprint_with("?", ("abc",))
+    blob_tagged = fingerprint_with("?", (sqlite3.Binary(b"\x00T\x00abc"),))
+    assert text_abc != blob_tagged, (
+        "TEXT 'abc' must not fingerprint as BLOB b'\\x00T\\x00abc'"
+    )
+
+    # The plain form of the same confusion, and numeric type confusion.
+    blob_abc = fingerprint_with("?", (sqlite3.Binary(b"abc"),))
+    assert text_abc != blob_abc, "TEXT must not fingerprint as an equal BLOB"
+    assert fingerprint_with("?", (1,)) != fingerprint_with("?", (1.0,)), (
+        "INTEGER 1 must not fingerprint as REAL 1.0"
+    )
+    assert fingerprint_with("NULL", ()) != fingerprint_with("?", ("",)), (
+        "NULL must not fingerprint as an empty string"
+    )
+
+    # Length framing: neighbouring values must not be able to shift the frame.
+    assert fingerprint_with("?", ("a|1|b",)) != fingerprint_with("?", ("a|1|b ",))
+
+    # Non-UTF8 text must survive rather than crash the fingerprint.
+    weird = fingerprint_with("CAST(? AS TEXT)", (sqlite3.Binary(b"\xff\xfe"),))
+    assert weird, "non-UTF8 TEXT must still fingerprint"
 
 
 def test_gate_integrity_check_alone_would_bless_garbage(tmp_path, mod):

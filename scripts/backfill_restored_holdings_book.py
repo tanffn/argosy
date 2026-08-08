@@ -224,6 +224,56 @@ def book_fingerprint(db_file: Path, user_id: str) -> dict:
         con.close()
 
 
+class _TextValue(bytes):
+    """A SQLite TEXT value, kept distinct from a BLOB with the same bytes.
+
+    ``sqlite3`` calls ``text_factory`` for TEXT and only for TEXT, so the column
+    type survives as a Python type rather than as a marker inside the payload.
+    Subclassing ``bytes`` also means non-UTF-8 text still round-trips, which a
+    ``str`` factory would refuse.
+    """
+
+
+def _as_str(v: Any) -> str:
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    return str(v)
+
+
+def _encode_value(v: Any) -> bytes:
+    """Type-tagged, length-framed encoding of one SQLite value.
+
+    Both properties are load-bearing. The tag keeps TEXT from colliding with a
+    BLOB of identical bytes, and keeps INTEGER 1 from colliding with REAL 1.0.
+    The length keeps a value from impersonating the framing around it.
+    """
+    if v is None:
+        return b"N|0|"
+    if isinstance(v, _TextValue):
+        raw = bytes(v)
+        return b"T|" + str(len(raw)).encode("ascii") + b"|" + raw
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        raw = bytes(v)
+        return b"B|" + str(len(raw)).encode("ascii") + b"|" + raw
+    if isinstance(v, bool):
+        return b"L|1|" + (b"1" if v else b"0")
+    if isinstance(v, int):
+        raw = repr(v).encode("ascii")
+        return b"I|" + str(len(raw)).encode("ascii") + b"|" + raw
+    if isinstance(v, float):
+        raw = repr(v).encode("ascii")
+        return b"F|" + str(len(raw)).encode("ascii") + b"|" + raw
+    if isinstance(v, str):
+        raw = v.encode("utf-8", "replace")
+        return b"S|" + str(len(raw)).encode("ascii") + b"|" + raw
+    raw = repr(v).encode("utf-8", "replace")
+    return b"?|" + str(len(raw)).encode("ascii") + b"|" + raw
+
+
+def _encode_row(row: Any) -> bytes:
+    return b"".join(_encode_value(v) for v in row)
+
+
 def database_fingerprint(db_file: Path) -> dict:
     """Content hash of EVERY row of EVERY table, plus the structural check.
 
@@ -237,16 +287,20 @@ def database_fingerprint(db_file: Path) -> dict:
     fingerprint does not depend on the order rows come back in (a copy made by
     some other mechanism may lay pages out differently). Summation rather than
     XOR, so that two identical rows do not cancel each other out.
+
+    Values are serialised with an explicit type tag and an explicit length. An
+    earlier attempt distinguished TEXT from BLOB by PREFIXING text with a marker
+    — in-band signalling, and a review duly collided it: the TEXT ``"abc"`` and
+    the BLOB ``b"\\x00T\\x00abc"`` produced the same fingerprint. The type now
+    travels out of band, carried by ``_TextValue`` (``text_factory`` is consulted
+    only for TEXT), and length framing stops any value from impersonating the
+    framing of another.
     """
     con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
-    # text_factory is consulted ONLY for TEXT values, so tagging them here keeps
-    # a TEXT 'abc' distinguishable from a BLOB x'616263'. Without the tag both
-    # arrive as identical bytes and a type change fingerprints as no change.
-    con.text_factory = lambda b: b"\x00T\x00" + b
+    con.text_factory = _TextValue
     try:
         tables = [
-            r[0].decode("utf-8", "replace").replace("\x00T\x00", "")
-            for r in con.execute(
+            _as_str(r[0]) for r in con.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
@@ -254,19 +308,14 @@ def database_fingerprint(db_file: Path) -> dict:
         # Views, indexes, triggers and table DDL are part of what a rollback
         # point has to restore; comparing only table rows let a changed view
         # definition through.
-        def _clean(v: Any) -> str:
-            if isinstance(v, bytes):
-                return v.decode("utf-8", "replace").replace("\x00T\x00", "")
-            return str(v)
-
         schema_objs: dict[str, str] = {}
         for typ, name, tbl_name, sql in con.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master "
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
         ):
-            key = f"{_clean(typ)}:{_clean(name)}"
+            key = f"{_as_str(typ)}:{_as_str(name)}"
             schema_objs[key] = hashlib.sha256(
-                repr((_clean(tbl_name), _clean(sql))).encode("utf-8", "replace")
+                _encode_row((tbl_name, sql))
             ).hexdigest()[:16]
 
         digests: dict[str, Any] = {}
@@ -280,10 +329,7 @@ def database_fingerprint(db_file: Path) -> dict:
                     acc = (
                         acc
                         + int.from_bytes(
-                            hashlib.sha256(
-                                repr(row).encode("utf-8", "replace")
-                            ).digest(),
-                            "big",
+                            hashlib.sha256(_encode_row(row)).digest(), "big"
                         )
                     ) % (1 << 256)
                 digests[t] = f"{count}:{acc:064x}"
@@ -296,9 +342,7 @@ def database_fingerprint(db_file: Path) -> dict:
             raise sqlite3.DatabaseError(
                 f"{len(unreadable)} unreadable table(s): {unreadable[:5]}"
             )
-        integrity = con.execute("PRAGMA quick_check(1)").fetchone()[0]
-        if isinstance(integrity, bytes):
-            integrity = integrity.decode("utf-8", "replace").replace("\x00T\x00", "")
+        integrity = _as_str(con.execute("PRAGMA quick_check(1)").fetchone()[0])
         return {
             "integrity": integrity,
             "table_count": len(tables),
