@@ -67,8 +67,8 @@ def build_canonical_deploy_plan(
     exclusions = list(integrity_exclusions or [])
     if blocked is None and session is not None:
         from argosy.services.decision_integrity.exclusions import (
-            exclusions_for_open_remediations,
             merge_exclusion_dicts,
+            resolve_integrity_exclusions,
         )
 
         # Symbols we might emit — plan instruments + discovery BUY tickers.
@@ -90,7 +90,10 @@ def build_canonical_deploy_plan(
             )
         except Exception:  # noqa: BLE001
             pass
-        resolved = exclusions_for_open_remediations(
+        # Evaluates open remediations always; current vintage only when
+        # settings.integrity_vintage_enforce is ON (default OFF until SEC
+        # contact email restores equity provenance liveness).
+        resolved = resolve_integrity_exclusions(
             session, user_id=user_id, tickers=candidate_syms,
         )
         exclusions = merge_exclusion_dicts(resolved)
@@ -165,12 +168,12 @@ def deploy_plan_to_buy_list(
         blocked = {t.upper() for t in blocked_tickers}
     elif session is not None:
         from argosy.services.decision_integrity.exclusions import (
-            exclusions_for_open_remediations,
             merge_exclusion_dicts,
+            resolve_integrity_exclusions,
         )
 
         symbols = [line.symbol for tier in plan.tiers for line in tier.lines]
-        resolved = exclusions_for_open_remediations(
+        resolved = resolve_integrity_exclusions(
             session, user_id=user_id, tickers=symbols,
         )
         exclusions = merge_exclusion_dicts(resolved)

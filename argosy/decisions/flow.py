@@ -699,16 +699,10 @@ class DecisionFlow:
                     decision_run_id=decision_run_id,
                 )
 
-            # Stream A — record debate-loser override when FM green-lights
-            # a trade that contradicts researcher_facilitator.winning_side.
-            if fm_decision.decision == "green_light":
-                await self._maybe_record_debate_override(
-                    decision_run_id=decision_run_id,
-                    ticker=ticker,
-                    debate_outcome=debate_outcome,
-                    trade_action=trader_proposal.action,
-                    fm_reason=getattr(fm_decision, "reason", "") or "",
-                )
+            # Debate-loser override is recorded AFTER the integrity gate
+            # below — an FM green_light that later blocks on stale
+            # provenance must not leave a debate-winner override as though
+            # an approval occurred (Stream A audit-trail corruption).
 
         # Stream A — provenance integrity choke point (blocker 5). Every
         # entry path that can green_light goes through DecisionFlow.run;
@@ -740,6 +734,20 @@ class DecisionFlow:
                 risk_outcome=risk_outcome,
                 debate_outcome=debate_outcome,
                 decision_run_id=decision_run_id,
+            )
+
+        # Record debate override only after integrity passed — audit trail
+        # must not imply approval when provenance later blocked.
+        if (
+            fm_decision is not None
+            and getattr(fm_decision, "decision", None) == "green_light"
+        ):
+            await self._maybe_record_debate_override(
+                decision_run_id=decision_run_id,
+                ticker=ticker,
+                debate_outcome=debate_outcome,
+                trade_action=trader_proposal.action,
+                fm_reason=getattr(fm_decision, "reason", "") or "",
             )
         # Vintage-scoped auto-resolve already ran inside the gate (iter-2
         # item 3). No second pass here — that would either be unreachable

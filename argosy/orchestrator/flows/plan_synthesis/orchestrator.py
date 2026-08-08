@@ -3440,39 +3440,41 @@ def _ingest_synthesis_trail(
         session.commit()
         # Stream A — persist analyst/facilitator remediations raised AFTER
         # gather-time so actionable plan lines cannot slip past the choke.
+        # Fail CLOSED: a write failure after we observed remediations must
+        # not leave an actionable draft with no blocking row.
         if remediations_to_persist:
-            try:
-                from argosy.agents.remediation import RemediationRequest
-                from argosy.services.decision_integrity.remediation_store import (
-                    persist_remediation_requests,
-                )
+            from argosy.agents.remediation import RemediationRequest
+            from argosy.services.decision_integrity.remediation_store import (
+                persist_remediation_requests,
+            )
 
-                reqs: list[RemediationRequest] = []
-                for user_id, role, rem_list in remediations_to_persist:
-                    for entry in rem_list:
-                        try:
-                            if isinstance(entry, RemediationRequest):
-                                req = entry
-                            else:
-                                req = RemediationRequest.model_validate(entry)
-                            if not req.target_role:
-                                req = req.model_copy(update={"target_role": role})
-                            reqs.append(req)
-                        except Exception:  # noqa: BLE001
-                            reqs.append(
-                                RemediationRequest(
-                                    kind="data_integrity",
-                                    target_role=role,
-                                    reason=f"malformed remediation_request: {entry!r}"[:300],
-                                )
+            reqs: list[RemediationRequest] = []
+            for user_id, role, rem_list in remediations_to_persist:
+                for entry in rem_list:
+                    try:
+                        if isinstance(entry, RemediationRequest):
+                            req = entry
+                        else:
+                            req = RemediationRequest.model_validate(entry)
+                        if not req.target_role:
+                            req = req.model_copy(update={"target_role": role})
+                        reqs.append(req)
+                    except Exception:  # noqa: BLE001
+                        reqs.append(
+                            RemediationRequest(
+                                kind="data_integrity",
+                                target_role=role,
+                                reason=f"malformed remediation_request: {entry!r}"[:300],
                             )
-                if reqs:
-                    uid = remediations_to_persist[0][0] or reqs[0].ticker or "ariel"
-                    # Prefer an explicit user_id from the trail rows.
-                    for u, _r, _x in remediations_to_persist:
-                        if u:
-                            uid = u
-                            break
+                        )
+            if reqs:
+                uid = remediations_to_persist[0][0] or reqs[0].ticker or "ariel"
+                # Prefer an explicit user_id from the trail rows.
+                for u, _r, _x in remediations_to_persist:
+                    if u:
+                        uid = u
+                        break
+                try:
                     persist_remediation_requests(
                         session, user_id=uid, requests=reqs,
                     )
@@ -3481,11 +3483,17 @@ def _ingest_synthesis_trail(
                         "plan_synthesis.trail_remediations_persisted",
                         count=len(reqs), user_id=uid,
                     )
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "plan_synthesis.trail_remediation_persist_failed",
-                    error=str(exc)[:200],
-                )
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "plan_synthesis.trail_remediation_persist_failed_closed",
+                        error=str(exc)[:200],
+                        count=len(reqs),
+                    )
+                    # Re-raise so the caller cannot treat the draft as clean.
+                    raise RuntimeError(
+                        "integrity remediation persist failed — refusing to "
+                        f"leave actionable draft without blocking rows: {exc}"
+                    ) from exc
         log.info(
             "plan_synthesis.trail_ingested",
             count=inserted, skipped_dedup=skipped, trail=trail_path.name,

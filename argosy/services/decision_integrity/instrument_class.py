@@ -185,30 +185,58 @@ def classify_from_fields(
     ticker: str,
     fields: dict[str, Any] | None = None,
 ) -> ProvenanceClass:
-    """Resolve class from explicit payload sidecar, else classify symbol."""
+    """Classify from system-owned evidence — never trust payload class.
+
+    A payload-supplied ``provenance_class`` is ignored (reviewer: stale
+    AAPL labelled ``fund_etf_index``). Classification uses symbol + trusted
+    asset metadata. A SEC-sourced reported period on an otherwise-unknown
+    symbol promotes to equity (stricter rules) — never to a fund exemption.
+    """
     payload = fields if isinstance(fields, dict) else {}
-    raw = payload.get("provenance_class")
-    if raw:
-        try:
-            return ProvenanceClass(str(raw))
-        except ValueError:
-            return ProvenanceClass.UNKNOWN
-    return classify_instrument(
+    cls = classify_instrument(
         ticker,
         asset_type=str(payload.get("asset_type") or "") or None,
         details=str(payload.get("details") or "") or None,
         what_it_is=str(payload.get("what_it_is") or "") or None,
     )
+    if cls is ProvenanceClass.UNKNOWN:
+        src = str(
+            payload.get("most_recent_reported_period_source")
+            or payload.get("reported_period_source")
+            or ""
+        )
+        if src.startswith("sec.") and payload.get("most_recent_reported_period"):
+            return ProvenanceClass.SINGLE_NAME_EQUITY
+    return cls
 
 
 def annotate_provenance_class(
     ticker: str,
     fields: dict[str, Any],
 ) -> dict[str, Any]:
-    """Stamp class + named rule onto a fundamentals sidecar (in place + return)."""
+    """Stamp derived class + named rule onto a fundamentals sidecar.
+
+    Overwrites any caller-supplied ``provenance_class`` with the
+    system-derived value so exemptions are durable and auditable.
+    """
     cls = classify_from_fields(ticker, fields)
+    rule = rule_for_class(cls)
     fields["provenance_class"] = cls.value
-    fields["fiscal_vintage_rule"] = rule_for_class(cls).value
+    fields["fiscal_vintage_rule"] = rule.value
+    # Durable exemption record — surfaces on actionable recommendations.
+    if cls is ProvenanceClass.FUND_ETF_INDEX:
+        fields["provenance_exemption"] = rule.value
+        fields["provenance_exemption_reason"] = (
+            "fund/ETF/index vehicle has no issuer fiscal quarter"
+        )
+    elif cls is ProvenanceClass.CASH_TBILL:
+        fields["provenance_exemption"] = rule.value
+        fields["provenance_exemption_reason"] = (
+            "cash/T-bill vehicle has no fiscal vintage"
+        )
+    else:
+        fields.pop("provenance_exemption", None)
+        fields.pop("provenance_exemption_reason", None)
     return fields
 
 

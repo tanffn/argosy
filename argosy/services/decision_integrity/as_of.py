@@ -79,12 +79,16 @@ _META_KEYS: frozenset[str] = frozenset(
         "provenance_complete",
         "provenance_class",
         "fiscal_vintage_rule",
+        "provenance_exemption",
+        "provenance_exemption_reason",
         "asset_type",
         "details",
         "what_it_is",
         "independence_second_reading",
         "independence_second_reading_source",
+        "independence_second_reading_error",
         "as_of",
+        "_sec_cik_promoted",
     }
 )
 

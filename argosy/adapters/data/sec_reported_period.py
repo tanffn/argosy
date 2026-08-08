@@ -10,15 +10,20 @@ reported?" Independent of yfinance ``mostRecentQuarter``, which may stamp
 for both sides of the vintage independence check.
 
 Reuses the existing SEC User-Agent / rate-limit helpers from the Form 4 /
-13F adapters. Does **not** invent periods from filing dates.
+13F adapters. Sync and async paths share one process-global rate limiter.
+Sync submissions responses are durably cached on disk (the async path keeps
+using ``cached_call`` / kv_cache).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,11 +31,19 @@ import httpx
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.adapters.data.sec_13f_adapter import _default_headers
+from argosy.adapters.data.sec_errors import (
+    SecContactEmailUnsetError,
+    SecFailureKind,
+    SecHttpStatusError,
+    SecProviderError,
+    SecTimeoutError,
+)
 from argosy.adapters.data.sec_form4_adapter import SEC_TICKERS_URL, TICKER_TTL_SECONDS
 from argosy.adapters.data.sec_rate_limit import (
     MIN_SEC_REQUEST_INTERVAL_SECONDS,
     validate_sec_request_interval,
     wait_for_sec_request_slot,
+    wait_for_sec_request_slot_sync,
 )
 from argosy.logging import get_logger
 from argosy.services.adapter_outcomes import track_adapter_call
@@ -100,13 +113,70 @@ def latest_reported_period_from_submissions(payload: dict[str, Any]) -> date | N
     return max(periods) if periods else None
 
 
+def _disk_cache_root() -> Path:
+    """Durable submissions cache — survives process restart, no async session."""
+    home = os.environ.get("ARGOSY_HOME", "").strip()
+    base = Path(home) if home else Path.cwd()
+    root = base / ".cache" / "sec_submissions"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _read_disk_cache(key: str, *, ttl_seconds: int) -> dict[str, Any] | None:
+    path = _disk_cache_root() / f"{key}.json"
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    retrieved = raw.get("_retrieved_at")
+    payload = raw.get("payload")
+    if not isinstance(payload, dict) or not isinstance(retrieved, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(retrieved)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if age > ttl_seconds:
+        return None
+    return payload
+
+
+def _write_disk_cache(key: str, payload: dict[str, Any]) -> None:
+    path = _disk_cache_root() / f"{key}.json"
+    body = {
+        "_retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "payload": payload,
+    }
+    try:
+        path.write_text(json.dumps(body), encoding="utf-8")
+    except OSError as exc:
+        _log.warning(
+            "sec_reported_period.disk_cache_write_failed",
+            key=key,
+            error=str(exc)[:160],
+        )
+
+
 _SYNC_TICKER_MAP: dict[str, str] | None = None
 _SYNC_TICKER_MAP_LOADED_AT: float = 0.0
 _SYNC_TICKER_MAP_TTL = 60 * 60 * 6
 
 
+def _raise_for_http_status(status: int, *, context: str) -> None:
+    if status == 200:
+        return
+    raise SecHttpStatusError(status, context)
+
+
 def _sync_ticker_map(client: httpx.Client) -> dict[str, str]:
-    """Process-local cache of SEC ticker→CIK for the sync enrich path."""
+    """Process-local + disk-backed cache of SEC ticker→CIK for sync enrich."""
     global _SYNC_TICKER_MAP, _SYNC_TICKER_MAP_LOADED_AT
     now = time.monotonic()
     if (
@@ -114,15 +184,42 @@ def _sync_ticker_map(client: httpx.Client) -> dict[str, str]:
         and (now - _SYNC_TICKER_MAP_LOADED_AT) < _SYNC_TICKER_MAP_TTL
     ):
         return _SYNC_TICKER_MAP
-    time.sleep(MIN_SEC_REQUEST_INTERVAL_SECONDS)
-    tr = client.get(SEC_TICKERS_URL)
-    if tr.status_code != 200:
-        raise MissingDataSourceError(
-            f"SEC company_tickers HTTP {tr.status_code}"
-        )
+
+    cached = _read_disk_cache("company_tickers", ttl_seconds=_SYNC_TICKER_MAP_TTL)
+    if cached is not None:
+        out: dict[str, str] = {}
+        if isinstance(cached, dict):
+            # Either the raw SEC map or our normalized form.
+            if cached.get("_normalized"):
+                for k, v in cached.items():
+                    if k.startswith("_"):
+                        continue
+                    out[str(k)] = str(v)
+            else:
+                for row in cached.values():
+                    if not isinstance(row, dict):
+                        continue
+                    t = _normalize_sec_ticker(str(row.get("ticker") or ""))
+                    cik = str(row.get("cik_str") or "").lstrip("0").zfill(10)
+                    if t and cik and cik != "0000000000":
+                        out[t] = cik
+        if out:
+            _SYNC_TICKER_MAP = out
+            _SYNC_TICKER_MAP_LOADED_AT = now
+            return out
+
+    wait_for_sec_request_slot_sync(
+        interval_seconds=MIN_SEC_REQUEST_INTERVAL_SECONDS,
+    )
+    try:
+        tr = client.get(SEC_TICKERS_URL)
+    except httpx.TimeoutException as exc:
+        raise SecTimeoutError(f"company_tickers: {exc}") from exc
+    _raise_for_http_status(tr.status_code, context="company_tickers")
     tickers = tr.json()
-    out: dict[str, str] = {}
+    out = {}
     if isinstance(tickers, dict):
+        _write_disk_cache("company_tickers", tickers)
         for row in tickers.values():
             if not isinstance(row, dict):
                 continue
@@ -173,17 +270,19 @@ class SecReportedPeriodAdapter:
             interval_seconds=self._request_interval_seconds,
         )
         client = self._client()
-        resp = await client.get(url, headers=_default_headers())
+        try:
+            resp = await client.get(url, headers=_default_headers())
+        except httpx.TimeoutException as exc:
+            raise SecTimeoutError(str(exc)) from exc
         status = getattr(resp, "status_code", None)
         if status != 200:
-            raise MissingDataSourceError(
-                f"SEC EDGAR HTTP {status} for {url}"
-            )
+            raise SecHttpStatusError(int(status or 0), url)
         try:
             return resp.json()
         except Exception as exc:  # noqa: BLE001
-            raise MissingDataSourceError(
-                f"SEC EDGAR non-JSON for {url}: {exc!s}"
+            raise SecProviderError(
+                SecFailureKind.MALFORMED,
+                f"SEC EDGAR non-JSON for {url}: {exc!s}",
             ) from exc
 
     async def _ticker_to_cik(self, ticker: str) -> str:
@@ -203,7 +302,10 @@ class SecReportedPeriodAdapter:
             outcome.set_payload_size_bytes(len(str(payload)))
         want = _normalize_sec_ticker(ticker)
         if not isinstance(payload, dict):
-            raise MissingDataSourceError("SEC company_tickers.json malformed")
+            raise SecProviderError(
+                SecFailureKind.MALFORMED,
+                "SEC company_tickers.json malformed",
+            )
         for row in payload.values():
             if not isinstance(row, dict):
                 continue
@@ -211,8 +313,9 @@ class SecReportedPeriodAdapter:
                 cik = str(row.get("cik_str") or "").lstrip("0").zfill(10)
                 if cik and cik != "0000000000":
                     return cik
-        raise MissingDataSourceError(
-            f"SEC ticker map has no CIK for ticker={ticker!r}"
+        raise SecProviderError(
+            SecFailureKind.NO_CIK,
+            f"SEC ticker map has no CIK for ticker={ticker!r}",
         )
 
     async def get_most_recent_reported_period(
@@ -233,8 +336,9 @@ class SecReportedPeriodAdapter:
             async def _fetch() -> dict[str, Any]:
                 raw = await self._get_json(url)
                 if not isinstance(raw, dict):
-                    raise MissingDataSourceError(
-                        f"SEC submissions non-object for CIK={cik}"
+                    raise SecProviderError(
+                        SecFailureKind.MALFORMED,
+                        f"SEC submissions non-object for CIK={cik}",
                     )
                 return raw
 
@@ -252,33 +356,71 @@ class SecReportedPeriodAdapter:
     def get_most_recent_reported_period_sync(
         self,
         ticker: str,
+        *,
+        ttl_seconds: int = SUBMISSIONS_TTL_SECONDS,
     ) -> date | None:
         """Sync path for plan-synthesis gather / thread-pool contexts.
 
-        Uses blocking httpx — safe outside the event loop. Does **not**
-        touch the async cache table (avoids MissingGreenlet).
+        Uses blocking httpx — safe outside the event loop. Durably caches
+        submissions JSON on disk. Routes every HTTP start through the
+        process-global SEC rate limiter (same budget as the async path).
         """
         sym = (ticker or "").strip()
         if not sym:
             return None
-        headers = _default_headers()
+        # Fail fast on missing contact email — distinguishable config error.
+        try:
+            headers = _default_headers()
+        except SecContactEmailUnsetError:
+            raise
+        except ValueError as exc:
+            # Legacy callers / older helpers.
+            raise SecContactEmailUnsetError(str(exc)) from exc
+
         with httpx.Client(
             timeout=self._timeout, headers=headers, follow_redirects=True
         ) as client:
             want = _normalize_sec_ticker(sym)
-            cik = _sync_ticker_map(client).get(want)
+            try:
+                cik = _sync_ticker_map(client).get(want)
+            except SecProviderError:
+                raise
+            except httpx.TimeoutException as exc:
+                raise SecTimeoutError(str(exc)) from exc
             if not cik:
-                raise MissingDataSourceError(
-                    f"SEC ticker map has no CIK for ticker={sym!r}"
+                raise SecProviderError(
+                    SecFailureKind.NO_CIK,
+                    f"SEC ticker map has no CIK for ticker={sym!r}",
                 )
-            time.sleep(self._request_interval_seconds)
+
+            cache_key = f"submissions_CIK{cik}"
+            cached = _read_disk_cache(cache_key, ttl_seconds=ttl_seconds)
+            if cached is not None:
+                return latest_reported_period_from_submissions(cached)
+
+            wait_for_sec_request_slot_sync(
+                interval_seconds=self._request_interval_seconds,
+            )
             url = f"{DATA_SEC_BASE}/submissions/CIK{cik}.json"
-            sr = client.get(url)
-            if sr.status_code != 200:
-                raise MissingDataSourceError(
-                    f"SEC submissions HTTP {sr.status_code} for {sym}"
+            try:
+                sr = client.get(url)
+            except httpx.TimeoutException as exc:
+                raise SecTimeoutError(f"{sym}: {exc}") from exc
+            _raise_for_http_status(sr.status_code, context=f"submissions {sym}")
+            try:
+                payload = sr.json()
+            except Exception as exc:  # noqa: BLE001
+                raise SecProviderError(
+                    SecFailureKind.MALFORMED,
+                    f"SEC submissions non-JSON for {sym}: {exc}",
+                ) from exc
+            if not isinstance(payload, dict):
+                raise SecProviderError(
+                    SecFailureKind.MALFORMED,
+                    f"SEC submissions non-object for {sym}",
                 )
-            return latest_reported_period_from_submissions(sr.json())
+            _write_disk_cache(cache_key, payload)
+            return latest_reported_period_from_submissions(payload)
 
 
 __all__ = [

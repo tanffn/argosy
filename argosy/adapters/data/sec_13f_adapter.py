@@ -98,6 +98,7 @@ SEC_CONTACT_EMAIL_ENV = "ARGOSY_SEC_CONTACT_EMAIL"
 def _user_agent() -> str:
     """Polite, SEC-required User-Agent identifying Argosy + contact."""
     from argosy import __version__
+    from argosy.adapters.data.sec_errors import SecContactEmailUnsetError
 
     contact_email = os.environ.get(SEC_CONTACT_EMAIL_ENV, "").strip()
     domain = (
@@ -111,7 +112,9 @@ def _user_agent() -> str:
         or domain == "local"
         or domain.endswith(".local")
     ):
-        raise ValueError(
+        # Named config error — must not collapse into "issuer has no
+        # reported period" at the vintage gate.
+        raise SecContactEmailUnsetError(
             f"{SEC_CONTACT_EMAIL_ENV} must be set to a non-local SEC "
             "contact email before any EDGAR request"
         )

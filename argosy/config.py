@@ -235,6 +235,12 @@ class Settings(BaseSettings):
     #     surfaced plan reflects the verdict. Set True to only annotate.
     deployment_funnel_enabled: bool = Field(default=True)
     deployment_funnel_shadow: bool = Field(default=False)
+    # Stream A — evaluate current vintage at deploy/decision choke points
+    # (not only pre-existing remediation rows). Default OFF until SEC
+    # contact email is configured and equity provenance liveness is real;
+    # flipping this ON while equities are 0% pass freezes every equity BUY.
+    # Read via ARGOSY_INTEGRITY_VINTAGE_ENFORCE.
+    integrity_vintage_enforce: bool = Field(default=False)
     # Increment 2 — LIVE fleet adjudication of NEEDS_FLEET_REVIEW candidates.
     # MASTER kill-switch. The actual per-call opt-in is the /deploy-cash
     # `fleet_review=true` query param (expensive: several agent LLM calls per held

@@ -87,6 +87,9 @@ def _source_independence_violation(payload: dict[str, Any]) -> str | None:
     ``financials_as_of`` may come from yfinance/Finnhub; reported period
     must come from SEC (Option C). If both sides name the same family,
     the lag check is not independent.
+
+    Missing source labels on a payload that carries both dates is also a
+    violation — unlabeled provenance must never read as satisfied.
     """
     data_src = str(payload.get("financials_as_of_source") or "").strip()
     reported_src = str(
@@ -94,6 +97,17 @@ def _source_independence_violation(payload: dict[str, Any]) -> str | None:
         or payload.get("reported_period_source")
         or ""
     ).strip()
+    has_data_date = parse_date(payload.get("financials_as_of")) is not None
+    has_reported_date = parse_date(
+        payload.get("most_recent_reported_period")
+    ) is not None
+    # Two dates without source labels → not an independent check.
+    if has_data_date and has_reported_date and (not data_src or not reported_src):
+        return (
+            "independence_violation: both period dates present but provenance "
+            f"source labels missing (financials_as_of_source={data_src!r}, "
+            f"most_recent_reported_period_source={reported_src!r})"
+        )
     if not data_src or not reported_src:
         return None
     if data_src == reported_src:
@@ -124,6 +138,52 @@ def _source_independence_violation(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _sec_enrichment_outcome(
+    payload: dict[str, Any],
+    *,
+    ticker: str,
+    cls: ProvenanceClass,
+    rule: FiscalVintageRule,
+    data_period: date | None,
+) -> VintageGateResult | None:
+    """Map enrichment sidecar to a gate result when SEC did not yield a period.
+
+    Outage policy (Stream A): confirmed SEC provider outages (403 / 429 /
+    timeout / other HTTP) FAIL OPEN with a loud named exemption
+    ``sec_provider_outage``. Failing closed would freeze every equity
+    recommendation during an EDGAR outage. The exemption is recoverable
+    (next gather retries) and must surface on actionable recommendations.
+
+    Misconfiguration (``ARGOSY_SEC_CONTACT_EMAIL`` unset) FAIL CLOSED —
+    that is an operator error, not an issuer data fact.
+    """
+    enrich = str(payload.get("reported_period_enrichment") or "").strip()
+    err = str(payload.get("reported_period_enrichment_error") or "")[:200]
+    if enrich == "sec_contact_email_unset":
+        return VintageGateResult(
+            ok=False,
+            ticker=ticker,
+            data_period=data_period,
+            reason=(
+                f"sec_config_error:{ticker}: ARGOSY_SEC_CONTACT_EMAIL unset "
+                f"or local — not an issuer data outcome. {err}"
+            ).strip(),
+            blocked_by="sec_config_error",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
+        )
+    if enrich == "sec_provider_outage":
+        return VintageGateResult(
+            ok=True,
+            ticker=ticker,
+            data_period=data_period,
+            reason=f"exempt:sec_provider_outage:{err or 'SEC unreachable'}",
+            provenance_class=cls.value,
+            fiscal_vintage_rule=rule.value,
+        )
+    return None
+
+
 def evaluate_vintage_gate(
     ticker: str,
     fields: dict[str, Any] | None,
@@ -133,23 +193,18 @@ def evaluate_vintage_gate(
     require_load_bearing: bool = True,
     provenance_class: ProvenanceClass | str | None = None,
 ) -> VintageGateResult:
-    """Fail closed on unknown or stale financial provenance (class-aware)."""
+    """Fail closed on unknown or stale financial provenance (class-aware).
+
+    ``provenance_class`` kwarg is accepted for back-compat but **ignored** for
+    classification — class always derives from system-owned
+    ``classify_from_fields`` (never from a payload- or caller-supplied label).
+    """
     t = (ticker or "").strip().upper()
     payload = dict(fields) if isinstance(fields, dict) else {}
     del most_recent_earnings_date
+    del provenance_class  # never trusted — see classify_from_fields
 
-    if provenance_class is not None:
-        try:
-            cls = (
-                provenance_class
-                if isinstance(provenance_class, ProvenanceClass)
-                else ProvenanceClass(str(provenance_class))
-            )
-        except ValueError:
-            cls = ProvenanceClass.UNKNOWN
-        payload["provenance_class"] = cls.value
-    else:
-        cls = classify_from_fields(t, payload)
+    cls = classify_from_fields(t, payload)
     annotate_provenance_class(t, payload)
     rule = FiscalVintageRule(payload["fiscal_vintage_rule"])
 
@@ -188,6 +243,14 @@ def evaluate_vintage_gate(
     reported = most_recent_reported_period or parse_date(
         payload.get("most_recent_reported_period")
     )
+
+    # SEC config / outage outcomes before treating missing period as data fact.
+    if reported is None:
+        sec_outcome = _sec_enrichment_outcome(
+            payload, ticker=t, cls=cls, rule=rule, data_period=data_period,
+        )
+        if sec_outcome is not None:
+            return sec_outcome
 
     indep = _source_independence_violation(payload)
     if indep:

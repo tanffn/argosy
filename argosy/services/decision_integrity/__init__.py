@@ -19,8 +19,10 @@ from argosy.services.decision_integrity.confidence_cap import (
 )
 from argosy.services.decision_integrity.exclusions import (
     IntegrityExclusion,
+    exclusions_for_current_vintage,
     exclusions_for_open_remediations,
     exclusions_for_open_remediations_async,
+    resolve_integrity_exclusions,
 )
 from argosy.services.decision_integrity.gates import (
     IntegrityGateResult,
@@ -73,8 +75,10 @@ __all__ = [
     "debate_action_contradicts_winning_side",
     "evaluate_green_light_integrity",
     "evaluate_vintage_gate",
+    "exclusions_for_current_vintage",
     "exclusions_for_open_remediations",
     "exclusions_for_open_remediations_async",
+    "resolve_integrity_exclusions",
     "format_as_of_label",
     "format_field_for_prompt",
     "has_open_remediation",

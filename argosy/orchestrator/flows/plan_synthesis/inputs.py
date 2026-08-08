@@ -692,7 +692,11 @@ def assemble_phase1_inputs(
     #    to an empty payload.
     if inputs.tickers:
         try:
-            inputs.fundamentals_payload = _gather_fundamentals(inputs.tickers)
+            # yfinance fallback ON — Finnhub is often unavailable and
+            # financials_as_of otherwise never lands (Stream A liveness).
+            inputs.fundamentals_payload = _gather_fundamentals(
+                inputs.tickers, with_yfinance_fallback=True,
+            )
             # Stream A blocker 3 — persist vintage/provenance failures so
             # deploy-cash / inbox buy lists cannot treat tainted names as
             # actionable (filter_tickers_with_open_remediations).
@@ -1436,80 +1440,71 @@ def _persist_plan_synthesis_provenance_remediations(
 ) -> None:
     """Persist open remediations for tickers that fail the vintage gate.
 
-    Best-effort: never raises into the gather assembler. Missing tables
-    (pre-migration test DBs) are logged and skipped.
+    Fail closed: a write failure after we observed vintage blocks must not
+    leave actionable deploy paths with zero remediation rows.
     """
     if not fundamentals_payload:
         return
-    try:
-        from argosy.agents.remediation import RemediationRequest
-        from argosy.services.decision_integrity.remediation_store import (
-            persist_remediation_requests,
-        )
-        from argosy.services.decision_integrity.vintage_gate import (
-            evaluate_vintage_gate,
-        )
+    from argosy.agents.remediation import RemediationRequest
+    from argosy.services.decision_integrity.remediation_store import (
+        persist_remediation_requests,
+    )
+    from argosy.services.decision_integrity.vintage_gate import (
+        evaluate_vintage_gate,
+    )
 
-        reqs: list[RemediationRequest] = []
-        for ticker, fields in fundamentals_payload.items():
-            if not isinstance(fields, dict):
-                continue
-            vintage = evaluate_vintage_gate(ticker, fields)
-            if not vintage.block:
-                continue
-            kind = (
-                "vintage_stale"
-                if vintage.blocked_by == "vintage_stale"
-                else "data_integrity"
-            )
-            reqs.append(
-                RemediationRequest(
-                    kind=kind,
-                    target_role="fundamentals",
-                    reason=vintage.reason,
-                    ticker=ticker.upper(),
-                )
-            )
-        if not reqs:
-            return
-        persist_remediation_requests(
-            session, user_id=user_id, requests=reqs,
+    reqs: list[RemediationRequest] = []
+    for ticker, fields in fundamentals_payload.items():
+        if not isinstance(fields, dict):
+            continue
+        vintage = evaluate_vintage_gate(ticker, fields)
+        if not vintage.block:
+            continue
+        kind = (
+            "vintage_stale"
+            if vintage.blocked_by == "vintage_stale"
+            else "data_integrity"
         )
-        session.commit()
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "plan_synthesis.inputs.provenance_remediation_persist_failed",
-            error=str(exc)[:200],
+        reqs.append(
+            RemediationRequest(
+                kind=kind,
+                target_role="fundamentals",
+                reason=vintage.reason,
+                ticker=ticker.upper(),
+            )
         )
+    if not reqs:
+        return
+    persist_remediation_requests(
+        session, user_id=user_id, requests=reqs,
+    )
+    session.commit()
 
 
 def _gather_fundamentals(
     tickers: list[str],
     *,
-    with_yfinance_fallback: bool = False,
+    with_yfinance_fallback: bool = True,
 ) -> dict[str, dict[str, Any]]:
-    """Per-ticker Finnhub fundamentals (W3b.E).
+    """Per-ticker fundamentals + provenance enrichment (production entry).
 
-    Calls ``FinnhubAdapter.get_company_financials`` for up to the first
-    25 tickers. Same defensive shape as ``_gather_news``: API-key /
-    missing-package failures abort the loop (they're global), individual
-    ticker failures log + continue. Israeli ETFs and other non-US
-    listings typically return empty ``metric`` blocks, surface as
-    ``MissingDataSourceError`` per-ticker, get skipped, do not raise.
-
-    ``with_yfinance_fallback`` (2026-05-31, /consult long-hold mode):
-    when set, tickers that Finnhub returned no payload for get a
-    second attempt via ``yfinance.Ticker(ticker).info`` (free, no API
-    key). yfinance covers PE / EV-EBITDA / dividend yield / D/E / RoE
-    / growth / sector for most US listings; the long-hold consult
-    cannot function without these inputs, and the default Finnhub-only
-    path leaves the analyst with empty payload. Plan-synthesis keeps
-    the default behaviour (``False``) — its other analysts cover the
-    gaps and we don't want to silently shift its data source.
+    Finnhub first (when keyed), then yfinance fallback (default ON — Stream A
+    liveness: without it ``financials_as_of`` never lands when Finnhub is
+    unavailable). Processes **all** requested tickers — a silent 25-cap that
+    dropped SOFI/TEM/TSLA and funds from the integrity check was itself a
+    defect. Empty stubs are retained for every ticker so class-aware SEC
+    enrichment still runs for funds/cash exemptions.
     """
     from argosy.adapters import (
         MissingAPIKeyError as AdapterMissingAPIKeyError,
         MissingDataSourceError,
+    )
+
+    requested = list(tickers)
+    log.info(
+        "plan_synthesis.inputs.fundamentals_gather_start",
+        ticker_count=len(requested),
+        with_yfinance_fallback=with_yfinance_fallback,
     )
 
     out: dict[str, dict[str, Any]] = {}
@@ -1517,7 +1512,7 @@ def _gather_fundamentals(
         from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
 
         adapter = FinnhubAdapter()
-        for ticker in tickers[:25]:
+        for ticker in requested:
             try:
                 payload = asyncio.run(
                     adapter.get_company_financials(ticker)
@@ -1563,13 +1558,17 @@ def _gather_fundamentals(
         )
 
     if with_yfinance_fallback:
-        _yfinance_fundamentals_fallback(tickers, out)
+        _yfinance_fundamentals_fallback(requested, out)
+
+    # Ensure every requested ticker has a row so class-aware enrichment
+    # (fund/cash exemptions, SEC for equities) cannot silently omit names.
+    for ticker in requested:
+        out.setdefault(ticker, {})
 
     # Stream A — attach provenance sidecar WITHOUT wrapping scalars
     # (blocker 8). Missing periods stay missing so the vintage gate
     # fails closed (blocker 1). Then enrich ``most_recent_reported_period``
-    # via the *synchronous* Finnhub earnings-calendar SDK call (no
-    # asyncio.run — safe under to_thread / sync gather).
+    # via SEC EDGAR sync (no asyncio.run — safe under to_thread).
     from argosy.services.decision_integrity.as_of import (
         attach_provenance_sidecar,
     )
@@ -1584,28 +1583,32 @@ def _enrich_reported_periods_sync(
 ) -> None:
     """Option C: class-aware reported-period enrichment.
 
-    * ``single_name_equity`` — ``most_recent_reported_period`` from SEC
-      EDGAR submissions ``reportDate`` (never Finnhub calendar).
-    * ``fund_etf_index`` / ``cash_tbill`` — stamp the named exemption; do
+    * `single_name_equity` — `most_recent_reported_period` from SEC
+      EDGAR submissions `reportDate` (never Finnhub calendar).
+    * `fund_etf_index` / `cash_tbill` — stamp the named exemption; do
       not call SEC.
-    * ``unknown`` — leave reported period absent (gate fails closed) unless
+    * `unknown` — leave reported period absent (gate fails closed) unless
       SEC resolves a CIK, in which case promote to single-name equity.
 
-    yfinance ``mostRecentQuarter`` is recorded only as an *independent
+    yfinance `mostRecentQuarter` is recorded only as an *independent
     second reading* for lag detection — it never satisfies the reported-
     period side when SEC already populated it (and never both sides).
 
-    Sync HTTP only — never ``asyncio.run``. Failures stay visible.
+    Sync HTTP only — never `asyncio.run`. Failures stay visible.
+    Missing `ARGOSY_SEC_CONTACT_EMAIL` is stamped as
+    `sec_contact_email_unset` (config error), never as unsourced data.
     """
     if not payload:
         return
     try:
+        from argosy.adapters.data.sec_errors import (
+            SEC_OUTAGE_KINDS,
+            SecContactEmailUnsetError,
+            SecFailureKind,
+            SecProviderError,
+        )
         from argosy.adapters.data.sec_reported_period import (
             SecReportedPeriodAdapter,
-        )
-        from argosy.services.decision_integrity.as_of import (
-            extract_earnings_date_from_yf_info,
-            parse_date,
         )
         from argosy.services.decision_integrity.instrument_class import (
             ProvenanceClass,
@@ -1622,19 +1625,20 @@ def _enrich_reported_periods_sync(
         except Exception:  # noqa: BLE001
             yf = None
 
+        # Classify + exempt funds/cash FIRST so a mid-loop SEC config
+        # failure cannot skip their durable exemption stamps.
+        equity_tickers: list[str] = []
         for ticker, fields in payload.items():
             if not isinstance(fields, dict):
                 continue
             annotate_provenance_class(ticker, fields)
             cls = classify_from_fields(ticker, fields)
-
             if cls in (
                 ProvenanceClass.FUND_ETF_INDEX,
                 ProvenanceClass.CASH_TBILL,
             ):
                 fields["reported_period_enrichment"] = f"exempt:{cls.value}"
                 continue
-
             if fields.get("most_recent_reported_period"):
                 fields.setdefault("most_recent_reported_period_sourced", True)
                 fields.setdefault(
@@ -1642,14 +1646,56 @@ def _enrich_reported_periods_sync(
                     fields.get("most_recent_reported_period_source")
                     or "pre_set",
                 )
-                # Still attach independent second reading when possible.
+                _attach_yf_second_reading(ticker, fields, yf)
+                continue
+            equity_tickers.append(ticker)
+
+        sec_disabled_reason: str | None = None
+        for ticker in equity_tickers:
+            fields = payload[ticker]
+            if sec_disabled_reason is not None:
+                fields["reported_period_enrichment"] = sec_disabled_reason
+                fields.setdefault(
+                    "reported_period_enrichment_error",
+                    "SEC contact email unset — operator configuration error",
+                )
                 _attach_yf_second_reading(ticker, fields, yf)
                 continue
 
-            # Equity or unknown: try SEC. CIK hit promotes unknown → equity.
             try:
                 period = adapter.get_most_recent_reported_period_sync(ticker)
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, SecContactEmailUnsetError) or (
+                    isinstance(exc, SecProviderError)
+                    and exc.kind is SecFailureKind.CONTACT_EMAIL_UNSET
+                ):
+                    sec_disabled_reason = "sec_contact_email_unset"
+                    fields["reported_period_enrichment"] = (
+                        "sec_contact_email_unset"
+                    )
+                    fields["reported_period_enrichment_error"] = str(exc)[:200]
+                    log.error(
+                        "plan_synthesis.inputs.sec_contact_email_unset",
+                        ticker=ticker,
+                        error=str(exc)[:200],
+                    )
+                    _attach_yf_second_reading(ticker, fields, yf)
+                    continue
+
+                if isinstance(exc, SecProviderError) and exc.kind in SEC_OUTAGE_KINDS:
+                    fields["reported_period_enrichment"] = "sec_provider_outage"
+                    fields["reported_period_enrichment_error"] = (
+                        f"{exc.kind.value}: {exc}"
+                    )[:200]
+                    log.warning(
+                        "plan_synthesis.inputs.sec_provider_outage",
+                        ticker=ticker,
+                        kind=exc.kind.value,
+                        error=str(exc)[:200],
+                    )
+                    _attach_yf_second_reading(ticker, fields, yf)
+                    continue
+
                 fields["reported_period_enrichment"] = "failed"
                 fields["reported_period_enrichment_error"] = (
                     f"{type(exc).__name__}: {exc}"
@@ -1663,6 +1709,10 @@ def _enrich_reported_periods_sync(
 
             if period is None:
                 fields["reported_period_enrichment"] = "unsourced"
+                fields["reported_period_enrichment_error"] = (
+                    "sec_no_reported_period: issuer submissions have no "
+                    "usable 10-Q/10-K reportDate"
+                )
                 _attach_yf_second_reading(ticker, fields, yf)
                 continue
 
@@ -1672,11 +1722,9 @@ def _enrich_reported_periods_sync(
                 "sec.submissions.reportDate"
             )
             fields["reported_period_enrichment"] = "ok"
-            if cls is ProvenanceClass.UNKNOWN:
-                fields["provenance_class"] = (
-                    ProvenanceClass.SINGLE_NAME_EQUITY.value
-                )
-                annotate_provenance_class(ticker, fields)
+            # Re-annotate: SEC source promotes unknown → equity inside
+            # classify_from_fields (stricter, never a fund exemption spoof).
+            annotate_provenance_class(ticker, fields)
             _attach_yf_second_reading(ticker, fields, yf)
     except Exception as exc:  # noqa: BLE001
         for fields in payload.values():
@@ -1708,7 +1756,9 @@ def _attach_yf_second_reading(
     if fields.get("independence_second_reading"):
         return
     try:
-        info = yf_mod.Ticker(ticker).info or {}
+        from argosy.adapters.data.symbols import to_yahoo_symbol
+
+        info = yf_mod.Ticker(to_yahoo_symbol(ticker)).info or {}
     except Exception as exc:  # noqa: BLE001
         fields.setdefault(
             "independence_second_reading_error",
@@ -1796,7 +1846,7 @@ def _yfinance_fundamentals_fallback(
         log.warning("plan_synthesis.inputs.fundamentals_yfinance_unavailable")
         return
 
-    for ticker in tickers[:25]:
+    for ticker in tickers:
         existing = out.get(ticker)
         if existing is not None and all(
             existing.get(k) is not None for k in _YF_ANCHOR_FIELDS
