@@ -40,6 +40,7 @@ _AGENT_ROLE_LABELS: dict[str, str] = {
     "bull_researcher": "bull case",
     "bear_researcher": "bear case",
     "researcher_facilitator": "research synthesis",
+    "premise_check": "premise check",
     # Phase 3 / 4 synthesis + risk
     "plan_synthesizer": "plan synthesizer",
     "plan_critique": "plan critique",

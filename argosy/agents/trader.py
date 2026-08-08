@@ -65,15 +65,24 @@ _FALSIFIER_RULE = (
     "deadline. BAD: prose 'data-center growth below 20% for two quarters' paired "
     "with metric_condition(revenue_growth, <, 20) — fires on consolidated growth "
     "after one quarter; keep it qualitative instead.\n"
-    "  - **FORWARD-ONLY: NEVER ARM A TRIPWIRE THAT IS ALREADY TRUE.** Every "
-    "numeric threshold must be sanity-checked against the CURRENT reported "
-    "value and must represent NEW deterioration from today, not the status "
-    "quo. Confirm each threshold is not already breached before emitting it. "
-    "If actual TTM FCF is already -$7.6B, a falsifier 'FCF falls below $15B' "
-    "is dead on arrival — it fires immediately and signals nothing. Set the "
-    "threshold on the deteriorating side of today's actual (e.g. 'FCF stays "
-    "negative AND worsens for two more quarters'), and cite the current value "
-    "you checked against in the falsifier text or reasoning.\n"
+    "  - **FORWARD-ONLY NUMERIC TRIPWIRES: NEVER ARM A METRIC THRESHOLD THAT "
+    "IS ALREADY TRUE.** Every numeric threshold must be sanity-checked against "
+    "the CURRENT reported value and must represent NEW deterioration from "
+    "today, not the status quo. Confirm each threshold is not already breached "
+    "before emitting it. If actual TTM FCF is already -$7.6B, a falsifier "
+    "'FCF falls below $15B' is dead on arrival — it fires immediately and "
+    "signals nothing. Set the threshold on the deteriorating side of today's "
+    "actual (e.g. 'FCF stays negative AND worsens for two more quarters'), "
+    "and cite the current value you checked against in the falsifier text or "
+    "reasoning.\n"
+    "  - **PREMISE OBSOLESCENCE (backward-looking; required when the thesis "
+    "rests on a dated/pending catalyst).** Include at least one falsifier of "
+    "the form: 'what would show this thesis is ALREADY obsolete?' — e.g. the "
+    "catalyst already occurred, was rejected, or the premise no longer holds "
+    "as of today. Forward-looking invalidation triggers alone are not enough "
+    "when the bull case is a pending regulatory/trial/merger coin-flip. This "
+    "is distinct from numeric tripwires (those stay forward-only); premise "
+    "obsolescence asks whether the thesis framing is already false.\n"
     "  - **EXCLUDE ONE-TIME / NON-OPERATING ITEMS BEFORE ANY FUNDAMENTALS "
     "CALL.** Before concluding that profitability or margins improved or "
     "deteriorated, identify and strip one-time and non-operating items — asset "
@@ -213,6 +222,7 @@ class TraderAgent(BaseAgent[TraderProposal]):
         tier: str | None = None,
         ticker: str = "",
         mode: Literal["tactical_trade", "long_hold"] = "tactical_trade",
+        premise_status: dict | None = None,
     ) -> tuple[str, str]:
         """Build the trader's prompt.
 
@@ -415,9 +425,30 @@ class TraderAgent(BaseAgent[TraderProposal]):
             payload = {k: v for k, v in r.items() if k not in ("agent_role", "role")}
             report_blocks.append(f"### Analyst: {role}\n{payload}")
 
+        premise_block = ""
+        ps = premise_status or (
+            debate_outcome.get("premise_status")
+            if isinstance(debate_outcome, dict) else None
+        )
+        if ps:
+            from argosy.agents.researcher import _render_premise_block
+            premise_block = _render_premise_block(ps)
+        disagreements = []
+        if isinstance(debate_outcome, dict):
+            disagreements = list(debate_outcome.get("premise_disagreements") or [])
+        disagreement_block = ""
+        if disagreements:
+            disagreement_block = (
+                "PREMISE DISAGREEMENTS (structural — do not ignore):\n"
+                + "\n".join(f"  - {d}" for d in disagreements)
+                + "\n\n"
+            )
+
         user = (
             f"Tier: {tier}\n"
             f"Ticker: {ticker or '(infer from analyst reports if unambiguous)'}\n\n"
+            f"{premise_block}"
+            f"{disagreement_block}"
             "USER CONSTRAINTS:\n"
             f"{user_constraints}\n\n"
             "POSITIONS SNAPSHOT:\n"

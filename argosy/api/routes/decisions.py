@@ -274,7 +274,7 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
     # If the trader returned INSUFFICIENT_DATA, enqueue an auto-retry
     # row so the daily pending_reevaluation job re-fires the consult
     # when fresh data lands.
-    if outcome.blocked_by == "trader_insufficient_data":
+    if outcome.blocked_by in ("trader_insufficient_data", "premise_unverified"):
         try:
             await enqueue_pending_reevaluation(
                 user_id=body.user_id,

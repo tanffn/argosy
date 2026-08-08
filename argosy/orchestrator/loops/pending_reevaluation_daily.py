@@ -216,8 +216,8 @@ class PendingReevaluationDailyLoop(CadenceLoop):
             status = getattr(resp, "status", None)
             run_id = getattr(resp, "decision_run_id", None)
 
-            if blocked_by == "trader_insufficient_data":
-                # Still insufficient — record attempt + maybe abandon.
+            if blocked_by in ("trader_insufficient_data", "premise_unverified"):
+                # Still insufficient / unverified — record attempt + maybe abandon.
                 new_attempt = await record_attempt(
                     row_id=row.id,
                     failure_reason=getattr(resp, "blocked_reason", "")[:500],
@@ -226,7 +226,7 @@ class PendingReevaluationDailyLoop(CadenceLoop):
                     await mark_abandoned(
                         row_id=row.id,
                         final_reason=(
-                            f"INSUFFICIENT_DATA persisted across {new_attempt} attempts"
+                            f"{blocked_by} persisted across {new_attempt} attempts"
                         ),
                     )
                     abandoned += 1

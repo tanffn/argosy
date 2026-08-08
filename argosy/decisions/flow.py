@@ -23,6 +23,7 @@ so tests construct mocked subclasses without touching the SDK.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ from typing import Any, Callable, Literal
 from argosy.agent_settings import AgentSettings, load_agent_settings
 from argosy.agents.base import AgentReport
 from argosy.agents.fund_manager import FundManagerAgent, FundManagerDecision
+from argosy.agents.premise_check import PremiseCheckAgent
 from argosy.agents.researcher import (
     BearResearcherAgent,
     BullResearcherAgent,
@@ -68,6 +70,21 @@ _log = get_logger("argosy.decisions.flow")
 # ----------------------------------------------------------------------
 
 
+def researcher_turn_dump(report: AgentReport) -> dict:
+    """Serialize a researcher AgentReport for debate + disagreement detection.
+
+    Always attaches ``tool_retrieved_urls`` from the report — the citation
+    gate for structural disagreements depends on this field arriving. A
+    future refactor that drops the attach must fail the plumbing canary.
+    """
+    return {
+        **report.output.model_dump(),
+        "tool_retrieved_urls": list(
+            getattr(report, "tool_retrieved_urls", None) or []
+        ),
+    }
+
+
 @dataclass
 class ApprovedProposal:
     """Fund manager green-lit. Flow returns this and a `Proposal` row."""
@@ -89,7 +106,7 @@ class BlockedProposal:
     # and the recommendation is to wait; INSUFFICIENT_DATA means the
     # analysis couldn't complete because load-bearing inputs were
     # missing or flagged-unusable AFTER remediation.
-    blocked_by: str  # 'fund_manager' | 'risk_team' | 'plan_critique_red' | 'trader_hold' | 'trader_insufficient_data'
+    blocked_by: str  # 'fund_manager' | 'risk_team' | 'plan_critique_red' | 'trader_hold' | 'trader_insufficient_data' | 'premise_unverified' | 'sleeve_fit_invalid'
     fund_manager: FundManagerDecision | None = None
     risk_outcome: RiskOutcome | None = None
     debate_outcome: DebateOutcome | None = None
@@ -141,6 +158,7 @@ class FlowConfig:
 _BullFactory = Callable[[str], BullResearcherAgent]
 _BearFactory = Callable[[str], BearResearcherAgent]
 _ResearcherFacFactory = Callable[[str], ResearcherFacilitatorAgent]
+_PremiseCheckFactory = Callable[[str], PremiseCheckAgent]
 _TraderFactory = Callable[[str, str], TraderAgent]  # (user_id, tier)
 _RiskFactory = Callable[[str, Perspective], RiskOfficerAgent]
 _RiskFacFactory = Callable[[str], RiskFacilitatorAgent]
@@ -257,6 +275,7 @@ class DecisionFlow:
     bull_factory: _BullFactory | None = None
     bear_factory: _BearFactory | None = None
     researcher_facilitator_factory: _ResearcherFacFactory | None = None
+    premise_check_factory: _PremiseCheckFactory | None = None
     trader_factory: _TraderFactory | None = None
     risk_officer_factory: _RiskFactory | None = None
     risk_facilitator_factory: _RiskFacFactory | None = None
@@ -277,6 +296,12 @@ class DecisionFlow:
         return (
             self.researcher_facilitator_factory
             or (lambda u: ResearcherFacilitatorAgent(user_id=u))
+        )(self.user_id)
+
+    def _premise_check(self) -> PremiseCheckAgent:
+        return (
+            self.premise_check_factory
+            or (lambda u: PremiseCheckAgent(user_id=u))
         )(self.user_id)
 
     def _trader(self, tier: str) -> TraderAgent:
@@ -375,14 +400,108 @@ class DecisionFlow:
                     phase="analysts", run_id=decision_run_id, error=str(exc),
                 )
 
-        # ---------------- Researcher debate ----------------
+        # ---------------- Premise check + researcher debate ----------------
+        # Premise check runs BEFORE bull/bear open so a stale "pending"
+        # catalyst is surfaced as contestable evidence (TRLV scar). Failure
+        # degrades to an explicit unverified state that blocks green_light —
+        # it must NOT abort the whole flow, and must NOT pass silently.
         debate_outcome: DebateOutcome | None = None
         bull_turns: list[dict] = []
         bear_turns: list[dict] = []
         debate_ids: list[int] = []
         debate_side: dict[int, str] = {}
         debate_round: dict[int, int] = {}
+        premise_status: dict | None = None
+        premise_unverified = False
+        premise_unverified_reason = ""
         if tier in (Tier.T1, Tier.T2, Tier.T3):
+            premise_started_at = clock()
+            try:
+                from argosy.services.fleet_reliability import (
+                    PREMISE_CHECK_CONFIG,
+                    call_reliably_async,
+                )
+
+                async def _premise_attempt():
+                    return await self._premise_check().run(
+                        ticker=ticker,
+                        analyst_reports=analyst_dicts,
+                    )
+
+                premise_report = await call_reliably_async(
+                    _premise_attempt,
+                    scope="premise_check",
+                    config=PREMISE_CHECK_CONFIG,
+                )
+                premise_ids = await self._persist_agent_reports(
+                    decision_run_id, [premise_report]
+                )
+                premise_status = premise_report.output.model_dump()  # type: ignore[assignment]
+                premise_status["status"] = "ok"
+                try:
+                    await record_negotiation_phase(
+                        user_id=self.user_id, decision_run_id=decision_run_id,
+                        kind="premise_check", started_at=premise_started_at,
+                        finished_at=clock(), agent_report_ids=premise_ids,
+                        verdict=premise_report.output,
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    _log.warning(
+                        "decision_flow.record_phase_failed",
+                        phase="premise_check", run_id=decision_run_id,
+                        error=str(exc),
+                    )
+            except Exception as exc:  # noqa: BLE001 — degrade, don't abort
+                premise_unverified = True
+                premise_unverified_reason = (
+                    f"premise_check failed after reliability envelope: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                _log.warning(
+                    "decision_flow.premise_check_unverified",
+                    run_id=decision_run_id,
+                    ticker=ticker,
+                    error=str(exc)[:300],
+                )
+                premise_status = {
+                    "status": "unverified",
+                    "reason": premise_unverified_reason,
+                    "ticker": ticker,
+                    "premises": [],
+                    "summary": (
+                        "Premise check did not complete; catalyst status is "
+                        "unverified. Debate proceeds with contestable-empty "
+                        "premise evidence; green_light is blocked."
+                    ),
+                    "confidence": "LOW",
+                    "cited_sources": [],
+                    "blocks_green_light": True,
+                }
+                await self._merge_decision_run_notes(
+                    decision_run_id,
+                    {
+                        "premise_check": {
+                            "status": "unverified",
+                            "reason": premise_unverified_reason,
+                            "blocks_green_light": True,
+                        }
+                    },
+                )
+
+            if premise_status is not None and not premise_unverified:
+                await self._merge_decision_run_notes(
+                    decision_run_id,
+                    {
+                        "premise_check": {
+                            "status": "ok",
+                            "blocks_green_light": False,
+                            "premises_count": len(
+                                premise_status.get("premises") or []
+                            ),
+                        }
+                    },
+                )
+
             debate_started_at = clock()
             n_rounds = self._rounds_for(tier)
             for r_idx in range(1, n_rounds + 1):
@@ -394,6 +513,7 @@ class DecisionFlow:
                     round_index=r_idx,
                     n_max=n_rounds,
                     ticker=ticker,
+                    premise_status=premise_status,
                 )
                 bull_ids = await self._persist_agent_reports(
                     decision_run_id, [bull_turn]
@@ -402,7 +522,7 @@ class DecisionFlow:
                 for bid in bull_ids:
                     debate_side[bid] = "bull"
                     debate_round[bid] = r_idx
-                bull_turns.append(bull_turn.output.model_dump())
+                bull_turns.append(researcher_turn_dump(bull_turn))
 
                 bear_agent = self._bear()
                 prior = _interleave(bull_turns, bear_turns)
@@ -412,6 +532,7 @@ class DecisionFlow:
                     round_index=r_idx,
                     n_max=n_rounds,
                     ticker=ticker,
+                    premise_status=premise_status,
                 )
                 bear_ids = await self._persist_agent_reports(
                     decision_run_id, [bear_turn]
@@ -420,7 +541,7 @@ class DecisionFlow:
                 for bid in bear_ids:
                     debate_side[bid] = "bear"
                     debate_round[bid] = r_idx
-                bear_turns.append(bear_turn.output.model_dump())
+                bear_turns.append(researcher_turn_dump(bear_turn))
 
             facilitator = self._researcher_fac()
             fac_report = await facilitator.run(
@@ -428,12 +549,66 @@ class DecisionFlow:
                 bear_turns=bear_turns,
                 rounds_run=n_rounds,
                 ticker=ticker,
+                premise_status=premise_status,
             )
             fac_ids = await self._persist_agent_reports(
                 decision_run_id, [fac_report]
             )
             debate_ids.extend(fac_ids)
             debate_outcome = fac_report.output  # type: ignore[assignment]
+            # Structural disagreement merge — do not rely on facilitator prose.
+            # Missing/empty catalyst_status_claims while premises exist is the
+            # silent-empty failure class: surface as premise_unverified.
+            from argosy.agents.researcher import (
+                authoritative_premise_disagreements,
+                detect_premise_disagreements,
+                missing_catalyst_status_claims_reason,
+            )
+
+            claims_err = missing_catalyst_status_claims_reason(
+                premise_status,
+                bear_turns=bear_turns,
+                bull_turns=bull_turns,
+            )
+            if claims_err and not premise_unverified:
+                premise_unverified = True
+                premise_unverified_reason = (
+                    f"researcher catalyst_status_claims incomplete: {claims_err}"
+                )
+                _log.warning(
+                    "decision_flow.premise_claims_unverified",
+                    run_id=decision_run_id,
+                    ticker=ticker,
+                    reason=claims_err[:300],
+                )
+                await self._merge_decision_run_notes(
+                    decision_run_id,
+                    {
+                        "premise_check": {
+                            "status": "unverified",
+                            "reason": premise_unverified_reason,
+                            "blocks_green_light": True,
+                            "cause": "missing_catalyst_status_claims",
+                        }
+                    },
+                )
+            else:
+                structural = detect_premise_disagreements(
+                    premise_status,
+                    bear_turns=bear_turns,
+                    bull_turns=bull_turns,
+                )
+                # Validated set is authoritative — facilitator cannot reintroduce
+                # uncited/unretrieved claims via its own premise_disagreements.
+                fac_raw = list(
+                    getattr(debate_outcome, "premise_disagreements", None) or []
+                )
+                authoritative = authoritative_premise_disagreements(
+                    structural, fac_raw,
+                )
+                debate_outcome = debate_outcome.model_copy(
+                    update={"premise_disagreements": authoritative}
+                )
             try:
                 await record_negotiation_phase(
                     user_id=self.user_id, decision_run_id=decision_run_id,
@@ -452,14 +627,23 @@ class DecisionFlow:
         # ---------------- Trader ----------------
         trader_started_at = clock()
         trader = self._trader(tier.value)
+        debate_for_trader = (
+            debate_outcome.model_dump() if debate_outcome else {}
+        )
+        if premise_status is not None:
+            debate_for_trader = {
+                **debate_for_trader,
+                "premise_status": premise_status,
+            }
         trader_report = await trader.run(
             analyst_reports=analyst_dicts,
-            debate_outcome=(debate_outcome.model_dump() if debate_outcome else {}),
+            debate_outcome=debate_for_trader,
             positions_snapshot=positions_summary,
             user_constraints=user_constraints,
             tier=tier.value,
             mode=consult_mode,
             ticker=ticker,
+            premise_status=premise_status,
         )
         trader_ids = await self._persist_agent_reports(
             decision_run_id, [trader_report]
@@ -712,6 +896,28 @@ class DecisionFlow:
                     decision_run_id=decision_run_id,
                 )
 
+        # Premise-check unverified → block green_light (buy/sell), but the
+        # run has already completed debate + trader for inspection. HOLD
+        # proceeds (no green_light). Explicit, never silent.
+        if (
+            premise_unverified
+            and trader_proposal.action in ("buy", "sell", "add")
+        ):
+            await self._close_decision_run(
+                decision_run_id, finished_at=clock(), status="blocked", fm="block"
+            )
+            return BlockedProposal(
+                reason=(
+                    "Premise check unverified — green_light blocked. "
+                    + (premise_unverified_reason or "see decision_runs.notes_json")
+                ),
+                blocked_by="premise_unverified",
+                fund_manager=fm_decision,
+                risk_outcome=risk_outcome,
+                debate_outcome=debate_outcome,
+                decision_run_id=decision_run_id,
+            )
+
         # ---------------- Build the proposal ----------------
         # Phase 5 routing matrix (SDD §10.1): T0/T1 in the limited account
         # auto-promote past `awaiting_human` straight to `approved` so the
@@ -962,6 +1168,39 @@ class DecisionFlow:
                 row.proposal_id = proposal_id
             await session.commit()
 
+    async def _merge_decision_run_notes(
+        self, run_id: int, patch: dict[str, Any]
+    ) -> None:
+        """Merge ``patch`` into ``decision_runs.notes_json`` (shallow top-level).
+
+        Used to persist an explicit premise_check unverified/ok state so
+        Stream A can later wire open remediation rows from it. Never raises
+        into the caller — provenance must not fail the flow.
+        """
+        if self.config.skip_persistence or run_id == 0:
+            return
+        try:
+            async with db_mod.get_session() as session:
+                row = await session.get(DecisionRun, run_id)
+                if row is None:
+                    return
+                existing: dict[str, Any] = {}
+                if row.notes_json:
+                    try:
+                        parsed = json.loads(row.notes_json)
+                        if isinstance(parsed, dict):
+                            existing = parsed
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        existing = {}
+                existing.update(patch)
+                row.notes_json = json.dumps(existing, ensure_ascii=False)
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.warning(
+                "decision_flow.merge_notes_failed",
+                run_id=run_id, error=str(exc)[:200],
+            )
+
     async def _persist_agent_reports(
         self, decision_run_id: int, reports: list[AgentReport]
     ) -> list[int]:
@@ -1107,4 +1346,5 @@ __all__ = [
     "BlockedProposal",
     "DecisionFlow",
     "FlowConfig",
+    "researcher_turn_dump",
 ]

@@ -44,6 +44,227 @@ from argosy.logging import get_logger
 from argosy.secrets import get_secret
 
 
+# URLs observed in SUCCESSFUL tool *results* (WebSearch / WebFetch). Used to
+# ground citations and derive bear independence. Never trust AssistantMessage
+# text or ToolUseBlock.input (those are requests / narration — laundering path).
+_HTTP_URL_RE = re.compile(r"https?://[^\s\"'<>\]\)]+")
+
+
+def extract_http_urls(value: Any) -> list[str]:
+    """Collect http(s) URLs from nested text / dict / list payloads.
+
+    Does NOT walk object ``.input`` attributes — callers that need to
+    inspect tool-result content must pass the content value explicitly.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(url: str) -> None:
+        cleaned = url.rstrip(".,;:)")
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            found.append(cleaned)
+
+    def _walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            for m in _HTTP_URL_RE.findall(node):
+                _add(m)
+            return
+        if isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+            return
+        if isinstance(node, (list, tuple)):
+            for v in node:
+                _walk(v)
+            return
+
+    _walk(value)
+    return found
+
+
+def normalize_url_for_match(url: str) -> str:
+    """Normalise a URL for citation ↔ tool-result comparison.
+
+    Handles scheme case, host case, default ports, trailing slash, and
+    common tracking query params so genuine retrievals are not silently
+    downgraded to ``shared_payload`` on near-miss formatting.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    raw = (url or "").strip().rstrip(".,;:)")
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    scheme = (parts.scheme or "https").lower()
+    # Treat http and https as the same resource for citation matching
+    # (redirects / mixed scheme cites must not silently downgrade).
+    if scheme in ("http", "https"):
+        scheme = "https"
+    host = (parts.hostname or "").lower()
+    if not host and "://" not in raw:
+        # Bare host/path — leave as lowered strip.
+        return raw.lower().rstrip("/")
+    port = parts.port
+    # Default ports for either scheme are dropped after https coercion.
+    if port is not None and port not in (80, 443):
+        netloc = f"{host}:{port}"
+    else:
+        netloc = host
+    # Drop only unambiguous tracking query params. Do NOT drop `ref` /
+    # `ref_src` — those are often meaningful resource identifiers
+    # (`?ref=123` ≠ `?ref=456`). Keep the fragment so hash-routed SPA
+    # articles remain distinct resources.
+    _DROP_QS = {
+        "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+        "utm_id", "fbclid", "gclid", "mc_cid", "mc_eid",
+    }
+    qs = [
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k.lower() not in _DROP_QS
+    ]
+    query = urlencode(qs, doseq=True)
+    path = parts.path or ""
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    fragment = parts.fragment or ""
+    return urlunsplit((scheme, netloc, path, query, fragment))
+
+
+def urls_match(a: str, b: str) -> bool:
+    """True if two URLs refer to the same resource after normalisation."""
+    na, nb = normalize_url_for_match(a), normalize_url_for_match(b)
+    return bool(na) and na == nb
+
+
+def _tool_result_block_succeeded(block: Any) -> bool:
+    """True unless the tool-result block is an explicit failure.
+
+    Structural defense against URL laundering is reading URLs only from
+    result-block *content* (never ToolUseBlock.input, never assistant
+    narration). ``is_error`` is a secondary filter:
+
+      * ``is_error is True`` → failed fetch; reject.
+      * ``is_error is False`` OR ``None``/unset → tool returned a result;
+        accept. The installed SDK defaults ``is_error`` to ``None`` and
+        only sets ``True`` on failure — requiring ``False`` silently
+        discards every real WebFetch/WebSearch success.
+
+    Dict and object branches follow the same rule.
+    """
+    if isinstance(block, dict):
+        if block.get("is_error") is True or block.get("error"):
+            return False
+        return True
+    is_error = getattr(block, "is_error", None)
+    if is_error is True:
+        return False
+    return True
+
+
+def collect_tool_retrieved_urls_from_sdk_message(message: Any) -> list[str]:
+    """Pull URLs from successful tool **result** payloads only.
+
+    Accepts:
+      * ``UserMessage`` whose ``content`` contains ``ToolResultBlock`` /
+        ``ServerToolResultBlock`` (or dicts with type tool_result) unless
+        ``is_error is True``.
+      * ``UserMessage.tool_use_result`` when it is not an explicit failure.
+
+    Rejects (never treated as retrieved):
+      * Any ``AssistantMessage`` (narration / ToolUseBlock.input is a request).
+      * Failed tool results (``is_error=True``).
+      * ``ToolUseBlock.input`` URLs (fetch *requests*, not results).
+    """
+    # Hard gate: assistant turns never contribute retrieved URLs.
+    cls_name = type(message).__name__
+    if cls_name == "AssistantMessage":
+        return []
+    # Only UserMessage (and plain dicts shaped like one) are considered.
+    if cls_name not in ("UserMessage", "dict") and not isinstance(message, dict):
+        # Duck-type: must look like a user tool-result carrier.
+        if not hasattr(message, "tool_use_result") and not hasattr(message, "content"):
+            return []
+        # If it has a `model` attr it's almost certainly AssistantMessage-like.
+        if hasattr(message, "model") and getattr(message, "model", None):
+            return []
+
+    urls: list[str] = []
+
+    def _from_result_content(content: Any) -> None:
+        urls.extend(extract_http_urls(content))
+
+    content = getattr(message, "content", None)
+    if isinstance(message, dict):
+        content = message.get("content", content)
+
+    if isinstance(content, list):
+        for block in content:
+            btype = getattr(block, "type", None) or (
+                block.get("type") if isinstance(block, dict) else None
+            )
+            bname = type(block).__name__
+            is_tool_result = (
+                bname in ("ToolResultBlock", "ServerToolResultBlock")
+                or btype in ("tool_result", "server_tool_result")
+            )
+            if not is_tool_result:
+                # Explicitly skip TextBlock, ToolUseBlock, ThinkingBlock, etc.
+                continue
+            if bname == "ServerToolResultBlock" or btype == "server_tool_result":
+                # ServerToolResultBlock has no is_error field — content dict
+                # may carry error. Confirm success via content shape.
+                block_content = (
+                    getattr(block, "content", None)
+                    if not isinstance(block, dict)
+                    else block.get("content")
+                )
+                if isinstance(block_content, dict) and (
+                    block_content.get("is_error") is True
+                    or block_content.get("error")
+                ):
+                    continue
+                if block_content is None:
+                    continue
+                _from_result_content(block_content)
+                continue
+            # ToolResultBlock — reject only explicit failures.
+            if not _tool_result_block_succeeded(block):
+                continue
+            block_content = (
+                getattr(block, "content", None)
+                if not isinstance(block, dict)
+                else block.get("content")
+            )
+            if block_content is None:
+                continue
+            _from_result_content(block_content)
+    elif isinstance(content, str):
+        # Bare string user content is not a tool result.
+        pass
+
+    tool_use_result = getattr(message, "tool_use_result", None)
+    if isinstance(message, dict):
+        tool_use_result = message.get("tool_use_result", tool_use_result)
+    if isinstance(tool_use_result, dict):
+        if tool_use_result.get("is_error") is True or tool_use_result.get("error"):
+            pass  # failed — not retrieved
+        else:
+            # is_error False / unset — accept (same rule as ToolResultBlock).
+            _from_result_content(tool_use_result)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        key = normalize_url_for_match(u)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(u)
+    return out
+
+
 def _probe_anthropic_adaptive_thinking_support() -> tuple[str, bool]:
     """Return ``(version, supports_adaptive)`` for the installed anthropic SDK.
 
@@ -258,6 +479,10 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "bull_researcher": "claude-opus-4-8",
     "bear_researcher": "claude-opus-4-8",
     "researcher_facilitator": "claude-opus-4-8",
+    # Premise check — live catalyst status before bull/bear debate opens
+    # (stream B / TRLV scar). Opus: status call is load-bearing for the
+    # whole debate; a wrong "still pending" frames both sides.
+    "premise_check": "claude-opus-4-8",
     "trader": "claude-opus-4-8",
     "risk_officer": "claude-opus-4-8",
     "risk_facilitator": "claude-opus-4-8",
@@ -398,6 +623,7 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     "bull_researcher":         "high",
     "bear_researcher":         "high",
     "researcher_facilitator":  "high",
+    "premise_check":           "high",
     "risk_officer":            "high",
     "risk_facilitator":        "high",
     "audit":                   "high",
@@ -497,6 +723,7 @@ DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
     "bull_researcher":        8000,
     "bear_researcher":        8000,
     "researcher_facilitator": 8000,
+    "premise_check":          8000,
     "risk_officer":           8000,
     "risk_facilitator":       8000,
     # FM-objection ZigZag verdict
@@ -553,6 +780,7 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     "bull_researcher":        64000,
     "bear_researcher":        64000,
     "researcher_facilitator": 64000,
+    "premise_check":          64000,
     "risk_officer":           64000,
     "risk_facilitator":       64000,
     "fund_manager_dialogue_verdict": 64000,
@@ -636,6 +864,9 @@ DEFAULT_SDK_TIMEOUT_BY_ROLE: dict[str, int] = {
     # sits just above it so the CLI never lingers minutes if the wrapper is
     # ever bypassed.
     "deployment_author": 180,  # 3 min
+    # Premise check — must not sit on the default 600s * inner retries path;
+    # outer fleet_reliability wrapper owns long backoff. Keep this snappy.
+    "premise_check": 90,  # 1.5 min — outer wrapper retries; keep total wall bounded
 }
 
 # Per-role Citations API enablement. Source consumers + synthesizers get
@@ -654,6 +885,7 @@ DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
     "concentration": True,
     # Synthesizers (attribute back to inputs)
     "bull_researcher": True, "bear_researcher": True,
+    "premise_check": True,
     "trader": True, "fund_manager": True, "audit": True,
     "plan_synthesizer": True,
     # No-citation agents
@@ -929,6 +1161,10 @@ class ModelCall:
       * ``cache_creation_tokens`` -- input tokens newly written to cache.
       * ``thinking_tokens``       -- extended-thinking output tokens.
       * ``citations_json``        -- raw Citations API extraction, JSON string.
+      * ``tool_retrieved_urls``   -- https URLs observed in WebSearch /
+        WebFetch (or other tool) results during this invocation. Used by
+        the hallucinated-sources detector and by bear independence
+        derivation — capability alone never grounds a URL.
     """
 
     text: str
@@ -940,6 +1176,7 @@ class ModelCall:
     cache_creation_tokens: int = 0
     thinking_tokens: int = 0
     citations_json: str | None = None
+    tool_retrieved_urls: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -991,6 +1228,11 @@ class AgentReport:
     # the output — flagging is preferred so downstream consumers can
     # decide whether to surface, demote, or accept the citation.
     hallucinated_sources: list[str] = field(default_factory=list)
+    # Stream B — URLs observed in successful tool results for THIS
+    # invocation (from ModelCall.tool_retrieved_urls). Attached to debate
+    # turn dumps so structural disagreement promotion can require
+    # independent retrieval at claim level.
+    tool_retrieved_urls: list[str] = field(default_factory=list)
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -1034,6 +1276,33 @@ class BaseAgent(Generic[T]):
     #: ``max_turns`` to at least 6 — tool use consumes agent-loop turns
     #: (see the max_turns history comment in that function).
     claude_code_allowed_tools: ClassVar[tuple[str, ...]] = ()
+
+    def _finalize_sources_json(
+        self,
+        sources_json: str | None,
+        output: BaseModel,
+        *,
+        tool_retrieved_urls: list[str] | None = None,
+    ) -> str | None:
+        """Optional post-parse hook to enrich persisted ``sources_json``.
+
+        Default is identity. ``BearResearcherAgent`` merges independently
+        cited primary-source URLs that appear in the tool-use record.
+        """
+        return sources_json
+
+    def _derive_output_independence(
+        self,
+        output: BaseModel,
+        *,
+        tool_retrieved_urls: list[str] | None = None,
+    ) -> BaseModel:
+        """Optional post-parse hook. Default identity.
+
+        Researchers override to DERIVE ``CitedPoint.independence`` from
+        the tool-use record rather than trusting the model's self-attestation.
+        """
+        return output
 
     # Number of EXTRA attempts to make when the model's output fails
     # schema validation (ValidationError / not-valid-JSON). 0 (default)
@@ -1365,10 +1634,24 @@ class BaseAgent(Generic[T]):
             if self.require_citations:
                 self._validate_citations(output)
 
+            tool_urls = list(getattr(call, "tool_retrieved_urls", None) or [])
+
+            # Derive independence BEFORE hallucination flagging / source
+            # enrichment so self-attested "independent" claims cannot
+            # launder fabricated URLs into sources_json.
+            output = self._derive_output_independence(
+                output, tool_retrieved_urls=tool_urls,
+            )
+
             # W7 — flag (don't strip) source_ids the model invented. The
             # AgentReport carries the list; D4 in fleet self-review reads
             # from it directly instead of regex-scanning response_text.
-            hallucinated = self._detect_hallucinated_sources(output, sources)
+            # WebSearch capability alone does NOT ground URLs — only URLs
+            # that appear in the tool-use record (or supplied source
+            # content) are exempt.
+            hallucinated = self._detect_hallucinated_sources(
+                output, sources, tool_retrieved_urls=tool_urls,
+            )
             if hallucinated:
                 self._log.warning(
                     "agent.hallucinated_sources",
@@ -1376,6 +1659,10 @@ class BaseAgent(Generic[T]):
                     count=len(hallucinated),
                     ids=hallucinated[:10],
                 )
+
+            sources_json = self._finalize_sources_json(
+                sources_json, output, tool_retrieved_urls=tool_urls,
+            )
 
             confidence = self._extract_confidence(output)
             cost = self._estimate_usd(
@@ -1413,6 +1700,7 @@ class BaseAgent(Generic[T]):
                 user_prompt=user_prompt,
                 # W7 — flagged citations the model invented (vs supplied sources).
                 hallucinated_sources=hallucinated,
+                tool_retrieved_urls=list(tool_urls),
             )
 
             # W1.C-v2 — synthesis-flow forensic trail moved to batch
@@ -1794,6 +2082,7 @@ class BaseAgent(Generic[T]):
                 ProcessError,
                 ResultMessage,
                 TextBlock,
+                UserMessage,
                 query,
             )
         except ImportError as exc:  # pragma: no cover - install-time error
@@ -2052,6 +2341,9 @@ class BaseAgent(Generic[T]):
         # sets this low (1) so one wrapper attempt can't burn its whole 150s hard
         # timeout on stacked internal retries before the fresh-process retry fires.
         _MAX_RETRIES = getattr(self, "claude_code_max_retries", 3)
+        # Survives across attempt rebinds so ModelCall always has a list even
+        # if an early path somehow skips the per-attempt init (should not).
+        tool_retrieved_urls: list[str] = []
 
         async def _bump_retry_and_backoff(trigger_label: str) -> None:
             """Increment the shared retry counter and sleep one backoff step.
@@ -2093,6 +2385,9 @@ class BaseAgent(Generic[T]):
             # max_turns > 1 with thinking/tool turns — emits several messages
             # into ONE turn buffer; the final answer is the last of them).
             assistant_msg_texts: list[str] = []
+            # URLs observed in tool results this attempt (WebSearch/WebFetch).
+            tool_retrieved_urls: list[str] = []
+            _tool_url_seen: set[str] = set()
 
             # Reset the captured-stderr buffer on each attempt so the
             # transient-flake detector below only inspects this attempt's
@@ -2123,6 +2418,17 @@ class BaseAgent(Generic[T]):
                 # caught below as another retry trigger.
                 async with asyncio.timeout(self.sdk_timeout_seconds):
                     async for message in query(prompt=sdk_prompt, options=options):
+                        # Tool-retrieved URLs: ONLY from UserMessage successful
+                        # tool_result payloads — never AssistantMessage text or
+                        # ToolUseBlock.input (request ≠ result).
+                        if isinstance(message, UserMessage):
+                            for u in collect_tool_retrieved_urls_from_sdk_message(
+                                message
+                            ):
+                                key = normalize_url_for_match(u)
+                                if key and key not in _tool_url_seen:
+                                    _tool_url_seen.add(key)
+                                    tool_retrieved_urls.append(u)
                         if isinstance(message, AssistantMessage):
                             _msg_parts = [
                                 block.text
@@ -2423,8 +2729,17 @@ class BaseAgent(Generic[T]):
                     f"\n[claude.exe stderr]\n{stderr_tail}" if stderr_tail
                     else "\n[claude.exe stderr was empty]"
                 )
+                # Include an explicit "timeout" token when wrapping
+                # TimeoutError so fleet_reliability.is_transient_fleet_error
+                # classifies the AgentRunError as transient even if the
+                # cause chain is stripped by an intermediate wrapper.
+                timeout_tag = (
+                    " (timeout)"
+                    if isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    else ""
+                )
                 raise AgentRunError(
-                    f"{self.agent_role}: claude-agent-sdk error: {exc}"
+                    f"{self.agent_role}: claude-agent-sdk error{timeout_tag}: {exc}"
                     f"{stderr_suffix}"
                 ) from exc
 
@@ -2461,6 +2776,7 @@ class BaseAgent(Generic[T]):
             cache_input_tokens=cache_input_tokens,
             cache_creation_tokens=cache_creation_tokens,
             thinking_tokens=thinking_tokens,
+            tool_retrieved_urls=list(tool_retrieved_urls),
         )
 
     @staticmethod
@@ -2915,6 +3231,7 @@ class BaseAgent(Generic[T]):
         self,
         output: BaseModel,
         sources: list[tuple[str, str]] | None,
+        tool_retrieved_urls: list[str] | None = None,
     ) -> list[str]:
         """Return source_ids cited by the model that don't appear in ``sources``.
 
@@ -2941,10 +3258,11 @@ class BaseAgent(Generic[T]):
           * A citation that appears verbatim inside a supplied source's
             CONTENT (e.g. the model cites the article URL carried in the
             ``news/ELF`` payload body) — the model read it in its inputs.
-          * A URL-form citation from an agent that has live WebSearch
-            (``claude_code_allowed_tools``): web URLs join
-            ``cited_sources`` by instruction, and the allowlist cannot
-            know them in advance.
+          * A URL-form citation that appears in ``tool_retrieved_urls`` —
+            i.e. observed in a real WebSearch/WebFetch tool result for
+            THIS invocation. Having WebSearch in ``claude_code_allowed_tools``
+            is NOT sufficient on its own (that exemption laundered
+            fabricated URLs — TRLV scar / stream-B blocker 1).
         """
         if not sources:
             return []
@@ -2953,9 +3271,10 @@ class BaseAgent(Generic[T]):
         except Exception:
             return []
         known = {sid for sid, _content in sources}
-        has_web_search = "WebSearch" in tuple(
-            getattr(self, "claude_code_allowed_tools", ()) or ()
-        )
+        tool_urls = {
+            u for u in (tool_retrieved_urls or [])
+            if isinstance(u, str) and u.startswith(("http://", "https://"))
+        }
 
         cited: list[str] = []
 
@@ -2983,8 +3302,9 @@ class BaseAgent(Generic[T]):
             seen.add(sid)
             if sid.startswith(("http://", "https://")):
                 # Grounded if the URL appears in any supplied source's
-                # content, or the agent legitimately searched the live web.
-                if has_web_search or any(
+                # content, OR it was observed in a successful tool result
+                # this call (normalised match).
+                if any(urls_match(sid, u) for u in tool_urls) or any(
                     sid in content for _sid, content in sources
                 ):
                     continue

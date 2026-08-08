@@ -2,9 +2,13 @@
 
 verify-run finding (2026-07-06): the detector compared citations against
 supplied source_ids ONLY, so (a) a model citing the full article URL that
-sits INSIDE a payload body (supplied id: ``news/ELF``) and (b) analysts
-citing live WebSearch URLs (they're instructed to) were both flagged as
-hallucinated. Invented non-URL ids must STILL be flagged.
+sits INSIDE a payload body (supplied id: ``news/ELF``) was flagged. Invented
+non-URL ids must STILL be flagged.
+
+Stream-B fix iteration 1: WebSearch *capability* alone must NOT ground an
+unknown URL — only URLs observed in the tool-use record for that invocation
+(or present in supplied source content) are exempt. The prior blanket
+``claude_code_allowed_tools`` exemption laundered fabricated citations.
 """
 from __future__ import annotations
 
@@ -69,18 +73,33 @@ def test_unknown_url_flagged_without_web_access() -> None:
     ]
 
 
-def test_unknown_url_grounded_with_web_search() -> None:
-    """An agent with live WebSearch cites URLs the allowlist can't know."""
+def test_unknown_url_flagged_even_with_web_search_capability() -> None:
+    """WebSearch in the allowlist is NOT enough — no tool-use record ⇒ hallucinated."""
     agent = _WebAgent(user_id="t")
     out = _Out(cited_sources=["https://reuters.com/some-live-story"])
-    assert agent._detect_hallucinated_sources(out, SOURCES) == []
+    assert agent._detect_hallucinated_sources(out, SOURCES) == [
+        "https://reuters.com/some-live-story"
+    ]
+
+
+def test_unknown_url_grounded_when_in_tool_retrieved_urls() -> None:
+    """A URL observed in this invocation's tool results is grounded."""
+    agent = _WebAgent(user_id="t")
+    out = _Out(cited_sources=["https://reuters.com/some-live-story"])
+    assert agent._detect_hallucinated_sources(
+        out,
+        SOURCES,
+        tool_retrieved_urls=["https://reuters.com/some-live-story"],
+    ) == []
 
 
 def test_invented_non_url_id_flagged_even_with_web_search() -> None:
-    """WebSearch access only excuses URL-form citations — invented ids stay
-    flagged."""
+    """WebSearch access only excuses URL-form citations that were retrieved —
+    invented ids stay flagged."""
     agent = _WebAgent(user_id="t")
     out = _Out(cited_sources=["robotaxi/FSD/Optimus"])
-    assert agent._detect_hallucinated_sources(out, SOURCES) == [
-        "robotaxi/FSD/Optimus"
-    ]
+    assert agent._detect_hallucinated_sources(
+        out,
+        SOURCES,
+        tool_retrieved_urls=["https://reuters.com/some-live-story"],
+    ) == ["robotaxi/FSD/Optimus"]

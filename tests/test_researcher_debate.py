@@ -202,7 +202,7 @@ def test_bull_researcher_build_prompt_omits_directive_section_when_empty() -> No
 def test_bear_researcher_build_prompt_includes_user_directive_when_provided() -> None:
     """Bear researcher symmetric to bull."""
     agent = BearResearcherAgent(user_id="ariel")
-    sys, usr = agent.build_prompt(
+    result = agent.build_prompt(
         analyst_reports=[{"agent_role": "fundamentals"}],
         prior_rounds=None,
         round_index=1,
@@ -210,6 +210,8 @@ def test_bear_researcher_build_prompt_includes_user_directive_when_provided() ->
         ticker="AAPL",
         user_directive=_DIRECTIVE,
     )
+    assert len(result) == 3
+    sys, usr, _sources = result
     assert "USER DIRECTIVE PRESENT" in sys
     assert "AGREED: NVDA concentration capped at 12%." in usr
     assert "DISAGREED: tax-loss harvest is NOT urgent" in usr
@@ -226,8 +228,11 @@ def test_bear_researcher_build_prompt_omits_directive_section_when_empty() -> No
         n_max=2,
         ticker="AAPL",
     )
-    sys_a, usr_a = agent.build_prompt(**base)
-    sys_b, usr_b = agent.build_prompt(**base, user_directive="")
+    result_a = agent.build_prompt(**base)
+    result_b = agent.build_prompt(**base, user_directive="")
+    assert len(result_a) == 3 and len(result_b) == 3
+    sys_a, usr_a, _ = result_a
+    sys_b, usr_b, _ = result_b
     assert sys_a == sys_b
     assert usr_a == usr_b
     assert "USER DIRECTIVE" not in sys_a

@@ -108,6 +108,9 @@ class FleetRetryConfig:
     backoff_base_s: float = 20.0         # 20s, then 40s
     backoff_cap_s: float = 60.0
     hard_timeout_s: float | None = None  # sync path per-attempt wall clock; None = no outer cap
+    # Total wall-clock across ALL attempts + backoffs. When exceeded, stop
+    # retrying and raise the last error (prevents stacked inner+outer burns).
+    total_wall_clock_s: float | None = None
 
 
 #: Consult per-ticker analysts. No outer hard timeout — BaseAgent's own
@@ -118,6 +121,14 @@ CONSULT_ANALYST_CONFIG = FleetRetryConfig()
 #: 240s is generous headroom while still killing a genuine hang.
 DEPLOY_REVIEWER_CONFIG = FleetRetryConfig(hard_timeout_s=240.0)
 
+#: Pre-debate premise check (async). Outer long-backoff envelope; hang
+#: authority remains BaseAgent's per-role sdk_timeout (90s for premise_check).
+#: retries=1 + inner max_retries=0 + total_wall_clock_s=240 → ≤ ~4 min.
+#: Failure degrades to explicit unverified, not abort.
+PREMISE_CHECK_CONFIG = FleetRetryConfig(
+    retries=1, backoff_base_s=20.0, total_wall_clock_s=240.0,
+)
+
 
 # The exit-1 fingerprint, mirrored from BaseAgent's in-call detector: word-bounded
 # so "exit code 137" never matches; the parenthesized form is exact-string.
@@ -126,12 +137,26 @@ _EXIT1_RE = re.compile(r"\bexit code 1\b")
 
 def is_transient_fleet_error(exc: BaseException) -> bool:
     """True only for the KNOWN transient class: the claude.exe exit-1 flake
-    (as surfaced through ``AgentRunError``'s message) or a timeout. Everything
-    else is deterministic and must surface unretried."""
+    (as surfaced through ``AgentRunError``'s message), a timeout, or an
+    ``AgentRunError`` whose ``__cause__`` is a timeout. Everything else is
+    deterministic and must surface unretried."""
     if isinstance(exc, (FleetCallTimeout, asyncio.TimeoutError, TimeoutError)):
         return True
-    text = str(exc)
-    return bool(_EXIT1_RE.search(text) or "(exit code: 1)" in text)
+    # Walk the cause chain — BaseAgent wraps asyncio.TimeoutError in
+    # AgentRunError; without this the outer reliability wrapper never
+    # retries the failure mode it was added for.
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, (asyncio.TimeoutError, TimeoutError, FleetCallTimeout)):
+            return True
+        cause = cause.__cause__ or cause.__context__
+    text = str(exc).lower()
+    if "timeout" in text or "timed out" in text:
+        return True
+    text_raw = str(exc)
+    return bool(_EXIT1_RE.search(text_raw) or "(exit code: 1)" in text_raw)
 
 
 def _backoff_delay(attempt: int, config: FleetRetryConfig) -> float:
@@ -188,6 +213,7 @@ async def call_reliably_async(
         raise FleetCallUnavailable(f"{scope}: circuit breaker open")
 
     last_exc: BaseException | None = None
+    started = time.monotonic()
     for attempt in range(cfg.retries + 1):
         try:
             result = await attempt_factory()
@@ -197,7 +223,24 @@ async def call_reliably_async(
             last_exc = exc
             if not is_transient_fleet_error(exc) or attempt >= cfg.retries:
                 break
+            if (
+                cfg.total_wall_clock_s is not None
+                and (time.monotonic() - started) >= cfg.total_wall_clock_s
+            ):
+                _log.warning(
+                    "fleet_reliability.total_wall_clock_exhausted",
+                    scope=scope,
+                    elapsed_s=round(time.monotonic() - started, 1),
+                    budget_s=cfg.total_wall_clock_s,
+                )
+                break
             delay = _backoff_delay(attempt, cfg)
+            remaining = None
+            if cfg.total_wall_clock_s is not None:
+                remaining = cfg.total_wall_clock_s - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                delay = min(delay, remaining)
             _log.warning(
                 "fleet_reliability.transient_retry",
                 scope=scope, attempt=attempt + 1, max_attempts=cfg.retries + 1,
@@ -248,6 +291,7 @@ def call_reliably_sync(
             ) from exc
 
     last_exc: BaseException | None = None
+    started = time.monotonic()
     for attempt in range(cfg.retries + 1):
         try:
             result = _one_attempt()
@@ -257,7 +301,23 @@ def call_reliably_sync(
             last_exc = exc
             if not is_transient_fleet_error(exc) or attempt >= cfg.retries:
                 break
+            if (
+                cfg.total_wall_clock_s is not None
+                and (time.monotonic() - started) >= cfg.total_wall_clock_s
+            ):
+                _log.warning(
+                    "fleet_reliability.total_wall_clock_exhausted",
+                    scope=scope,
+                    elapsed_s=round(time.monotonic() - started, 1),
+                    budget_s=cfg.total_wall_clock_s,
+                )
+                break
             delay = _backoff_delay(attempt, cfg)
+            if cfg.total_wall_clock_s is not None:
+                remaining = cfg.total_wall_clock_s - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                delay = min(delay, remaining)
             _log.warning(
                 "fleet_reliability.transient_retry",
                 scope=scope, attempt=attempt + 1, max_attempts=cfg.retries + 1,
@@ -274,6 +334,7 @@ def call_reliably_sync(
 __all__ = [
     "CONSULT_ANALYST_CONFIG",
     "DEPLOY_REVIEWER_CONFIG",
+    "PREMISE_CHECK_CONFIG",
     "CircuitBreaker",
     "FleetCallTimeout",
     "FleetCallUnavailable",

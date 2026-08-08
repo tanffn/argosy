@@ -2,15 +2,23 @@
 
 Bounds the bull/bear debate, runs N rounds, and extracts the prevailing
 position into a structured `DebateOutcome`. Default Sonnet.
+
+Independence weighing (2026-08 stream B / TRLV scar): points marked
+``independence=shared_payload`` are restatements of the shared analyst
+payload and do not count as independent cross-checks. Prefer evidence
+the bear (or either side) retrieved from primary sources. Optional
+WebSearch lets the facilitator spot-check contested material figures
+rather than converging on a shared error.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
+from argosy.agents.researcher import _render_premise_block
 
 
 class DebateOutcome(BaseModel):
@@ -28,6 +36,17 @@ class DebateOutcome(BaseModel):
         description="Distinct cited evidence strings carried over from the "
         "winning case; used by the trader and the fund manager downstream.",
     )
+    # Stream B / TRLV — structural, not prompt-only. Record every material
+    # contradiction between a researcher turn and the premise-check report
+    # so the trader can see it even if synthesis prose omits it.
+    premise_disagreements: list[str] = Field(
+        default_factory=list,
+        description="Explicit disagreements with the premise-check report "
+        "(e.g. premise said pending, bear independently showed "
+        "already_happened). Empty when none. MUST be populated when the "
+        "bear (or bull) contradicts a premise-check status with cited "
+        "independent evidence — do not suppress to force convergence.",
+    )
     rounds_run: int = Field(ge=1, description="Number of full rounds completed.")
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
     cited_sources: list[str] = Field(
@@ -37,11 +56,16 @@ class DebateOutcome(BaseModel):
 
 
 class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
-    """Sonnet-class facilitator. Reads the full debate transcript and verdicts."""
+    """Facilitator. Reads the full debate transcript and verdicts.
+
+    WebSearch is available for spot-checking contested material figures
+    when both sides rest on the same shared payload (accuracy over cost).
+    """
 
     agent_role = "researcher_facilitator"
     output_model = DebateOutcome
     require_citations = True
+    claude_code_allowed_tools: ClassVar[tuple[str, ...]] = ("WebSearch",)
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (16000).
 
     def build_prompt(
@@ -52,6 +76,7 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
         rounds_run: int,
         ticker: str = "",
         user_directive: str = "",
+        premise_status: dict | None = None,
     ) -> tuple[str, str]:
         """Build the prompt.
 
@@ -60,6 +85,7 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
             bear_turns: list of `ResearcherTurn` dicts (bear side, in order).
             rounds_run: total rounds completed.
             ticker: optional informational header.
+            premise_status: optional premise-check report dict.
         """
         system = (
             "You are the researcher facilitator on the Argosy fleet. You "
@@ -69,6 +95,25 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
             "  - 'bull' wins iff the bull case carried with cited evidence "
             "the bear could not refute. 'bear' wins symmetrically. 'split' "
             "if neither side dominated or if both rely on contested data.\n"
+            "  - INDEPENDENCE WEIGHING: each cited point may carry "
+            "`independence` = `independent` (derived: cites a URL observed "
+            "in that researcher's WebSearch tool results) or `shared_payload` "
+            "(restatement of the shared analyst reports). Weigh `independent` "
+            "evidence ABOVE `shared_payload` restatement. A bear point that "
+            "only cites fundamentals/TICKER (or other shared-payload ids) is "
+            "NOT an independent cross-check — do not treat agreement between "
+            "bull and bear on a shared-payload figure as confirmation.\n"
+            "  - When both sides rest on the same shared figure and it is "
+            "material to the verdict, you MAY use WebSearch to spot-check "
+            "the figure against a primary source rather than converging on "
+            "a shared error. Cite any URL you use.\n"
+            "  - PREMISE CHECK (when present) is contestable evidence from "
+            "another agent, NOT ground truth. If the bear independently "
+            "retrieves a primary source that contradicts the premise check "
+            "(e.g. premise says pending, bear cites already_happened), "
+            "preserve that disagreement in `premise_disagreements` AND in "
+            "your synthesis — do not suppress it to force convergence on "
+            "the premise-check framing.\n"
             "  - Synthesis is the prevailing thesis in 2-4 sentences. Be "
             "concrete; the trader will act on this.\n"
             "  - Cite specific evidence strings from the winning side; "
@@ -122,8 +167,11 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
                 + "\n\n"
             )
 
+        premise_prefix = _render_premise_block(premise_status)
+
         user = (
             f"{directive_prefix}"
+            f"{premise_prefix}"
             f"Ticker under debate: {ticker or '(unspecified)'}\n"
             f"Rounds run: {rounds_run}\n\n"
             "=== BULL SIDE ===\n" + _render(bull_turns, "bull") + "\n\n"

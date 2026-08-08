@@ -294,6 +294,7 @@ _ROLE_TO_PHASE_FALLBACK: dict[str, str] = {
     "bull_researcher": "phase_2",
     "bear_researcher": "phase_2",
     "researcher_facilitator": "phase_2",
+    "premise_check": "phase_2",
     # Phase 3 synthesis
     "plan_synthesizer": "phase_3",
     # Phase 4 risk

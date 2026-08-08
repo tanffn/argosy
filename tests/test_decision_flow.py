@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from argosy.agents.base import AgentReport, ConfidenceBand, ModelCall
 from argosy.agents.fund_manager import FundManagerAgent, FundManagerDecision
+from argosy.agents.premise_check import PremiseCheckAgent
 from argosy.agents.researcher import (
     BearResearcherAgent,
     BullResearcherAgent,
@@ -97,10 +98,19 @@ _BEAR_CANNED = {
     "cited_sources": ["analyst:technical"],
 }
 
+_PREMISE_CANNED = {
+    "ticker": "AAPL",
+    "premises": [],
+    "summary": "No dated/pending catalysts identified.",
+    "confidence": "MEDIUM",
+    "cited_sources": [],
+}
+
 _DEBATE_CANNED = {
     "winning_side": "bull",
     "synthesis": "Bull carries.",
     "cited_evidence": ["fundamentals up"],
+    "premise_disagreements": [],
     "rounds_run": 1,
     "confidence": "MEDIUM",
     "cited_sources": ["analyst:fundamentals"],
@@ -205,6 +215,9 @@ def _make_flow(
         bear_factory=lambda u: _mock_agent(BearResearcherAgent, _BEAR_CANNED)(user_id=u),
         researcher_facilitator_factory=lambda u: _mock_agent(
             ResearcherFacilitatorAgent, _DEBATE_CANNED
+        )(user_id=u),
+        premise_check_factory=lambda u: _mock_agent(
+            PremiseCheckAgent, _PREMISE_CANNED
         )(user_id=u),
         trader_factory=lambda u, t: _mock_agent(TraderAgent, trader_canned)(
             user_id=u, tier=t
@@ -416,3 +429,173 @@ async def test_decision_run_links_proposal(engine: None) -> None:
         prow = await session.get(ProposalRow, outcome.proposal.id)
         assert prow is not None
         assert prow.tier == "T2"
+
+
+@pytest.mark.asyncio
+async def test_empty_premises_no_catalyst_proceeds_to_proposal(engine: None) -> None:
+    """Explicit premises=[] earns the no-catalyst waiver → ApprovedProposal.
+
+    FAILS if explicit empty list is treated as omitted silence.
+    """
+    await _seed_user()
+    # _PREMISE_CANNED already has premises=[] EXPLICITLY and cited_sources=[].
+    assert "premises" in _PREMISE_CANNED
+    assert _PREMISE_CANNED["premises"] == []
+    assert _PREMISE_CANNED["cited_sources"] == []
+    assert PremiseCheckAgent.require_citations is True
+
+    flow = _make_flow()
+    outcome = await flow.run(
+        ticker="AAPL", tier=Tier.T1, analyst_reports=_analyst_dummy()
+    )
+    assert isinstance(outcome, ApprovedProposal)
+    assert outcome.proposal.ticker == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_omitted_premises_field_surfaces_premise_unverified(engine: None) -> None:
+    """Omitted premises ≠ explicit [] — silence routes to premise_unverified.
+
+    FAILS if default_factory=list waives citations for an omitted field.
+    Exercises the production PremiseCheckAgent validator + DecisionFlow
+    except path (no bypass).
+    """
+    await _seed_user()
+
+    # JSON deliberately omits the premises key.
+    omitted_body = {
+        "ticker": "AAPL",
+        "summary": "I forgot to list premises.",
+        "confidence": "MEDIUM",
+        "cited_sources": [],
+    }
+    assert "premises" not in omitted_body
+
+    class _OmitPremise(PremiseCheckAgent):
+        async def _call_model(self, *, system: str, user: str, **_e: Any) -> ModelCall:
+            return ModelCall(
+                text=json.dumps(omitted_body),
+                tokens_in=10,
+                tokens_out=10,
+                model=self.model,
+            )
+
+    # Agent-level: omitted premises is a parse/validation failure.
+    from argosy.agents.errors import AgentRunError
+
+    with pytest.raises(AgentRunError, match="premises field omitted"):
+        await _OmitPremise(user_id="ariel").run(
+            ticker="AAPL", analyst_reports=[{"agent_role": "fundamentals"}]
+        )
+
+    # Flow-level: same failure is recoverable premise_unverified (not abort).
+    flow = DecisionFlow(
+        user_id="ariel",
+        config=FlowConfig(
+            debate_rounds_t1=1,
+            debate_rounds_t2=1,
+            debate_rounds_t3=1,
+        ),
+        premise_check_factory=lambda u: _OmitPremise(user_id=u),
+        bull_factory=lambda u: _mock_agent(BullResearcherAgent, _BULL_CANNED)(
+            user_id=u
+        ),
+        bear_factory=lambda u: _mock_agent(BearResearcherAgent, _BEAR_CANNED)(
+            user_id=u
+        ),
+        researcher_facilitator_factory=lambda u: _mock_agent(
+            ResearcherFacilitatorAgent, _DEBATE_CANNED
+        )(user_id=u),
+        trader_factory=lambda u, t: _mock_agent(TraderAgent, _TRADER_BUY)(
+            user_id=u, tier=t
+        ),
+        risk_officer_factory=lambda u, p: _mock_agent(
+            RiskOfficerAgent, _RISK_APPROVE
+        )(user_id=u, perspective=p),
+        risk_facilitator_factory=lambda u: _mock_agent(
+            RiskFacilitatorAgent, _RISK_OUTCOME_APPROVE
+        )(user_id=u),
+        fund_manager_factory=lambda u: _mock_agent(FundManagerAgent, _FM_GREEN)(
+            user_id=u
+        ),
+    )
+    outcome = await flow.run(
+        ticker="AAPL", tier=Tier.T1, analyst_reports=_analyst_dummy()
+    )
+    assert isinstance(outcome, BlockedProposal)
+    assert outcome.blocked_by == "premise_unverified"
+    assert "omitted" in outcome.reason.lower() or "unverified" in outcome.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_nonempty_uncited_premise_is_rejected() -> None:
+    """Non-empty premises require well-formed http(s) URL citations.
+
+    FAILS if blank strings or non-URL tokens (analyst:fundamentals) satisfy
+    the citation gate — those still inject ungrounded premises into debate.
+    """
+    from argosy.agents.errors import AgentRunError
+
+    async def _run_premises(cited: list[str], *, top: list[str] | None = None):
+        body = {
+            "ticker": "TRLV",
+            "premises": [
+                {
+                    "catalyst": "Schedule III / 280E relief",
+                    "status": "already_happened",
+                    "as_of": "2026-04-23",
+                    "evidence": "Said so.",
+                    "cited_sources": cited,
+                }
+            ],
+            "summary": "Already happened.",
+            "confidence": "HIGH",
+            "cited_sources": list(top if top is not None else cited),
+        }
+
+        class _A(PremiseCheckAgent):
+            async def _call_model(
+                self, *, system: str, user: str, **_e: Any
+            ) -> ModelCall:
+                return ModelCall(
+                    text=json.dumps(body),
+                    tokens_in=10,
+                    tokens_out=10,
+                    model=self.model,
+                )
+
+        return await _A(user_id="ariel").run(
+            ticker="TRLV", analyst_reports=[{"agent_role": "fundamentals"}]
+        )
+
+    for bad in ([], [""], [" "], ["analyst:fundamentals"]):
+        with pytest.raises(AgentRunError, match="http|cited_sources|citations"):
+            await _run_premises(bad)
+
+    ok_url = "https://www.dea.gov/press-releases/2026/04/23/schedule-iii"
+    rep = await _run_premises([ok_url])
+    assert rep.output.premises[0].premise_id == "p0"
+    assert ok_url in rep.output.premises[0].cited_sources
+
+    # Empty premises still waive.
+    empty = {
+        "ticker": "AAPL",
+        "premises": [],
+        "summary": "No dated catalysts.",
+        "confidence": "MEDIUM",
+        "cited_sources": [],
+    }
+
+    class _Empty(PremiseCheckAgent):
+        async def _call_model(self, *, system: str, user: str, **_e: Any) -> ModelCall:
+            return ModelCall(
+                text=json.dumps(empty),
+                tokens_in=10,
+                tokens_out=10,
+                model=self.model,
+            )
+
+    rep_empty = await _Empty(user_id="ariel").run(
+        ticker="AAPL", analyst_reports=[{"agent_role": "fundamentals"}]
+    )
+    assert rep_empty.output.premises == []

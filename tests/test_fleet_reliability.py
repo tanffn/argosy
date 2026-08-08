@@ -44,6 +44,23 @@ def test_timeouts_are_transient():
     assert is_transient_fleet_error(asyncio.TimeoutError())
 
 
+def test_agent_run_error_wrapping_timeout_is_transient():
+    """BaseAgent wraps TimeoutError in AgentRunError — must still retry.
+
+    FAILS if classification only checks isinstance(exc, TimeoutError) and
+    ignores the cause chain / 'timeout' token in the message.
+    """
+    wrapped = AgentRunError(
+        "premise_check: claude-agent-sdk error (timeout): "
+    )
+    wrapped.__cause__ = asyncio.TimeoutError()
+    assert is_transient_fleet_error(wrapped)
+    # Even without __cause__, the explicit timeout tag must classify.
+    assert is_transient_fleet_error(
+        AgentRunError("bear_researcher: claude-agent-sdk error (timeout): hung")
+    )
+
+
 def test_deterministic_errors_are_not_transient():
     assert not is_transient_fleet_error(ValueError("bad schema"))
     assert not is_transient_fleet_error(AgentRunError("model returned 400 invalid_request"))

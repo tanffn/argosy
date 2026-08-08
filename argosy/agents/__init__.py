@@ -46,6 +46,11 @@ from argosy.agents.researcher import (
     CitedPoint,
     ResearcherTurn,
 )
+from argosy.agents.premise_check import (
+    CatalystPremise,
+    PremiseCheckAgent,
+    PremiseCheckReport,
+)
 from argosy.agents.researcher_facilitator import (
     DebateOutcome,
     ResearcherFacilitatorAgent,
@@ -102,11 +107,14 @@ __all__ = [
     "BullResearcherAgent",
     "CitedConcern",
     "CitedPoint",
+    "CatalystPremise",
     "DebateOutcome",
     "ExpectedImpact",
     "FundManagerAgent",
     "FundManagerDecision",
     "Perspective",
+    "PremiseCheckAgent",
+    "PremiseCheckReport",
     "ResearcherFacilitatorAgent",
     "ResearcherTurn",
     "RiskFacilitatorAgent",
