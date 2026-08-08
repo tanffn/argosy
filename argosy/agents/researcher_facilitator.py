@@ -13,6 +13,38 @@ from pydantic import BaseModel, Field
 from argosy.agents.base import BaseAgent, ConfidenceBand
 
 
+class FacilitatorCondition(BaseModel):
+    """Machine-representable condition attached to a facilitator verdict.
+
+    When the facilitator would otherwise write "pending a domain-refresh
+    of flagged fundamentals" into prose, it MUST emit a structured
+    condition instead. The orchestrator persists these as open
+    ``remediation_requests`` rows that BLOCK green_light until cleared.
+    Stream A — TRLV 2026-08-07 failure class.
+    """
+
+    kind: Literal[
+        "domain_refresh",
+        "data_refresh",
+        "pending_remediation",
+        "vintage_check",
+    ] = Field(
+        description=(
+            "What must happen before the verdict may drive a green_light. "
+            "domain_refresh / data_refresh = re-pull the named data; "
+            "pending_remediation = an analyst-flagged integrity break "
+            "must clear; vintage_check = financials must post-date earnings."
+        ),
+    )
+    ticker: str | None = Field(
+        default=None,
+        description="Ticker the condition applies to (None = whole run).",
+    )
+    description: str = Field(
+        description="One-sentence machine+human readable condition.",
+    )
+
+
 class DebateOutcome(BaseModel):
     """Facilitator's verdict on the bull/bear debate."""
 
@@ -33,6 +65,15 @@ class DebateOutcome(BaseModel):
     cited_sources: list[str] = Field(
         default_factory=list,
         description="Top-level cited sources, required for the citation gate.",
+    )
+    conditions: list[FacilitatorCondition] = Field(
+        default_factory=list,
+        description=(
+            "Blocking conditions that must clear before green_light. "
+            "Empty means the verdict is unconditional. NEVER put "
+            "'pending refresh' language into synthesis without also "
+            "emitting a matching condition here."
+        ),
     )
 
 
@@ -72,7 +113,14 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
             "  - Synthesis is the prevailing thesis in 2-4 sentences. Be "
             "concrete; the trader will act on this.\n"
             "  - Cite specific evidence strings from the winning side; "
-            "preserve the source citations attached to each.\n\n"
+            "preserve the source citations attached to each.\n"
+            "  - CONDITIONS (Stream A): if your verdict depends on a "
+            "data refresh, domain refresh, or clearing a flagged "
+            "integrity break, emit a structured entry on ``conditions`` "
+            "(kind + ticker + description). Do NOT bury that dependency "
+            "only in ``synthesis`` prose — unrecorded conditions will "
+            "not block green_light. Leave ``conditions`` empty when the "
+            "verdict is unconditional.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{DebateOutcome.model_json_schema()}\n"
         )
@@ -133,4 +181,8 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
         return system, user
 
 
-__all__ = ["DebateOutcome", "ResearcherFacilitatorAgent"]
+__all__ = [
+    "DebateOutcome",
+    "FacilitatorCondition",
+    "ResearcherFacilitatorAgent",
+]

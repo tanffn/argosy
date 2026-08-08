@@ -164,7 +164,7 @@ class FinnhubAdapter:
                     )
                 # Curated subset; keys match the FundamentalsAnalystAgent
                 # prompt advertised fields. Missing source values stay None.
-                return {
+                out = {
                     "pe_ratio_ttm": metric.get("peTTM"),
                     "pe_normalized_annual": metric.get("peNormalizedAnnual"),
                     "pe_ratio": metric.get("peTTM") or metric.get("peNormalizedAnnual"),
@@ -185,6 +185,12 @@ class FinnhubAdapter:
                     "beta": metric.get("beta"),
                     "source_url": f"https://finnhub.io/api/v1/stock/metric?symbol={symbol}",
                 }
+                # Stream A — period the metrics cover, from quarterly series
+                # when Finnhub supplies it (genuinely sourced, not invented).
+                period = _latest_quarterly_period_from_series(raw.get("series"))
+                if period is not None:
+                    out["financials_as_of"] = period
+                return out
 
             payload = await cached_call(
                 kind=CacheKind.NEWS,
@@ -320,29 +326,63 @@ class FinnhubAdapter:
         ttl_seconds: int = 60 * 60 * 24,  # SDD §8.3: 24h fundamentals-class
     ) -> list[dict[str, Any]]:
         """Return list of earnings events between [start, end]."""
-        client = self._resolve_client()
         key = f"earnings:{symbol or '*'}:{start.isoformat()}:{end.isoformat()}"
-
-        def _fetch() -> list[dict[str, Any]]:
-            raw = client.earnings_calendar(
-                _from=start.isoformat(),
-                to=end.isoformat(),
-                symbol=symbol or "",
-                international=False,
-            )
-            if isinstance(raw, dict):
-                return list(raw.get("earningsCalendar", []) or [])
-            if isinstance(raw, list):
-                return raw
-            return []
 
         return await cached_call(
             kind=CacheKind.NEWS,
             provider=self.PROVIDER,
             key=key,
             ttl_seconds=ttl_seconds,
-            fetch=_fetch,
+            fetch=lambda: self.fetch_earnings_calendar_sync(
+                start=start, end=end, symbol=symbol,
+            ),
         )
+
+    def fetch_earnings_calendar_sync(
+        self,
+        *,
+        start: date,
+        end: date,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Synchronous Finnhub earnings calendar — safe in sync gather /
+        ``asyncio.to_thread`` contexts. Does **not** use ``asyncio.run``.
+        """
+        client = self._resolve_client()
+        raw = client.earnings_calendar(
+            _from=start.isoformat(),
+            to=end.isoformat(),
+            symbol=symbol or "",
+            international=False,
+        )
+        if isinstance(raw, dict):
+            return list(raw.get("earningsCalendar", []) or [])
+        if isinstance(raw, list):
+            return raw
+        return []
+
+
+def _latest_quarterly_period_from_series(series: Any) -> str | None:
+    """Latest ``period`` ISO date from Finnhub ``series.quarterly`` rows.
+
+    Returns None when series is absent/empty — never invents a period.
+    """
+    if not isinstance(series, dict):
+        return None
+    quarterly = series.get("quarterly")
+    if not isinstance(quarterly, dict):
+        return None
+    periods: list[str] = []
+    for rows in quarterly.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            p = row.get("period")
+            if isinstance(p, str) and len(p) >= 10:
+                periods.append(p[:10])
+    return max(periods) if periods else None
 
 
 __all__ = ["FinnhubAdapter"]

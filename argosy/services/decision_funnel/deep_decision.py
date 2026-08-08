@@ -194,6 +194,17 @@ async def run_deep_decision(
             blocked_reason=str(exc)[:200], blocked_by="analysts_error",
         )
 
+    # Stream A iter-2 #2 — scheduled funnel is the dominant green_light
+    # path; thread gathered fundamentals so provenance is enforced (absent
+    # / incomplete fields block — never silently skipped).
+    meta = dict(funnel_meta or {})
+    payload = result.fundamentals_payload or {}
+    meta["fundamentals_fields"] = (
+        payload.get(ticker.upper())
+        or payload.get(ticker)
+        or {}
+    )
+
     flow = DecisionFlow(user_id=user_id)
     try:
         outcome = await flow.run(
@@ -206,7 +217,7 @@ async def run_deep_decision(
             decision_run_id=pre_opened,
             persist_input_analysts=False,
             consult_mode=consult_mode,
-            funnel_meta=funnel_meta,
+            funnel_meta=meta,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("decision_funnel.deep_flow_error", ticker=ticker, error=str(exc)[:200])

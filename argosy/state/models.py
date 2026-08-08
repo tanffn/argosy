@@ -4716,3 +4716,97 @@ class InstrumentPlanClass(Base):
         ),
         Index("ix_instrument_plan_classes_user", "user_id"),
     )
+
+
+class RemediationRequestRecord(Base):
+    """Persisted, blocking data-integrity remediation request.
+
+    Analysts emit structured ``RemediationRequest`` objects; the
+    orchestrator persists them here. An ``open`` row on a ticker BLOCKS
+    green_light until ``resolved`` or ``overridden`` (with
+    ``override_reason``). Migration 0095 — Stream A (TRLV failure class).
+    """
+
+    __tablename__ = "remediation_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticker: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    agent_report_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("agent_reports.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_role: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # open | resolved | overridden
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="open", server_default="open"
+    )
+    override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_remediation_requests_user_ticker_status",
+            "user_id",
+            "ticker",
+            "status",
+        ),
+        Index("ix_remediation_requests_decision_run", "decision_run_id"),
+    )
+
+
+class DecisionOverride(Base):
+    """Explicit, queryable override when the fleet breaks its own ladder.
+
+    Covers (a) fund_manager trade direction contradicting
+    ``researcher_facilitator.winning_side``, and (b) confidence-cap
+    adjustments when a downstream agent emitted above its input floor.
+    Migration 0095 — Stream A.
+    """
+
+    __tablename__ = "decision_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    decision_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    # debate_winner_contradiction | confidence_cap
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    winning_side: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    trade_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    prior_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    capped_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_decision_overrides_decision_run", "decision_run_id"),
+        Index("ix_decision_overrides_user_ticker", "user_id", "ticker"),
+    )

@@ -311,13 +311,47 @@ def _cached_buy_sleeve_candidates(user_id: str):
 
     try:
         from argosy.api.routes.portfolio import _load_discovery_state
+        from argosy.services.decision_integrity.actionable import (
+            filter_tickers_with_open_remediations,
+        )
+        from argosy.state import db as db_mod
 
         picks, _estimated, _last = _load_discovery_state(user_id)
     except Exception:  # noqa: BLE001 — cached read is best-effort; fall back to seeds
         return None
+    buy_tickers = [
+        (p.ticker or "").upper()
+        for p in picks
+        if (p.verdict or "").upper() == "BUY" and p.ticker
+    ]
+    blocked: set[str] = set()
+    try:
+        _ = db_mod.get_engine()
+    except Exception:
+        blocked = set()
+    else:
+        try:
+            from sqlalchemy.orm import sessionmaker
+
+            url = str(db_mod.get_engine().url)
+            async_eng = db_mod.get_engine()
+            sync_eng = getattr(async_eng, "sync_engine", None) or async_eng
+            sf = sessionmaker(bind=sync_eng, expire_on_commit=False)
+            sess = sf()
+            try:
+                blocked = filter_tickers_with_open_remediations(
+                    sess, user_id=user_id, tickers=buy_tickers,
+                )
+            finally:
+                sess.close()
+        except Exception:  # noqa: BLE001 — DB present but check failed
+            blocked = set(buy_tickers)
+
     cands: list[SleeveCandidate] = []
     for p in picks:
         if (p.verdict or "").upper() != "BUY":
+            continue
+        if (p.ticker or "").upper() in blocked:
             continue
         cands.append(SleeveCandidate(
             ticker=p.ticker,

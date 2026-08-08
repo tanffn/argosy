@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
 from argosy.agents.remediation import RemediationRequest
+from argosy.services.decision_integrity.as_of import format_field_for_prompt
 
 
 class TickerFundamentals(BaseModel):
@@ -206,7 +207,17 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             "report's ``remediation_requests`` list — never write the "
             "recommendation into ``summary`` prose. Include the affected "
             "ticker and a one-sentence reason citing the specific "
-            "inconsistency you observed.\n"
+            "inconsistency you observed. Use ``kind='data_integrity'`` "
+            "for market_cap/price divergence (or other demonstrated "
+            "internal inconsistency) and ``kind='price_stale'`` / "
+            "``kind='fundamentals_stale'`` for the cases above. These "
+            "requests are persisted as BLOCKING rows — do not rely on "
+            "prose alone.\n"
+            "  - AS-OF LABELS: numeric payload fields may arrive as "
+            "``<value> (as of YYYY-MM-DD)``. Preserve that as_of label "
+            "in ``notes`` / ``summary`` whenever you cite the figure. "
+            "Never present a Q1 (or earlier) figure as current when an "
+            "as_of label shows it predates a later earnings release.\n"
             "  - WEB SEARCH: you have the WebSearch tool. You SHOULD run "
             "1-3 targeted web searches for MATERIAL recent developments "
             "on the tickers in scope — earnings surprises, regulatory or "
@@ -245,11 +256,11 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             # free_cashflow — decision_run 126's "no per-share anchor").
             for key in _PAYLOAD_KEY_ORDER:
                 if key in data and data[key] is not None:
-                    lines.append(f"  - {key}: {data[key]}")
+                    lines.append(f"  - {key}: {format_field_for_prompt(data, key)}")
                     rendered.add(key)
             for key in sorted(data):
                 if key not in rendered and data[key] is not None:
-                    lines.append(f"  - {key}: {data[key]}")
+                    lines.append(f"  - {key}: {format_field_for_prompt(data, key)}")
             sources.append((f"fundamentals/{t}", "\n".join(lines)))
 
         ref_list = (

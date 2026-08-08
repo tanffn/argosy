@@ -693,6 +693,14 @@ def assemble_phase1_inputs(
     if inputs.tickers:
         try:
             inputs.fundamentals_payload = _gather_fundamentals(inputs.tickers)
+            # Stream A blocker 3 — persist vintage/provenance failures so
+            # deploy-cash / inbox buy lists cannot treat tainted names as
+            # actionable (filter_tickers_with_open_remediations).
+            _persist_plan_synthesis_provenance_remediations(
+                session,
+                user_id=user_id,
+                fundamentals_payload=inputs.fundamentals_payload,
+            )
         except Exception as exc:  # noqa: BLE001 - defensive
             log.warning(
                 "plan_synthesis.inputs.fundamentals_failed",
@@ -1420,6 +1428,61 @@ def _yfinance_news_fallback(
             out[ticker] = headlines
 
 
+def _persist_plan_synthesis_provenance_remediations(
+    session: Any,
+    *,
+    user_id: str,
+    fundamentals_payload: dict[str, dict[str, Any]],
+) -> None:
+    """Persist open remediations for tickers that fail the vintage gate.
+
+    Best-effort: never raises into the gather assembler. Missing tables
+    (pre-migration test DBs) are logged and skipped.
+    """
+    if not fundamentals_payload:
+        return
+    try:
+        from argosy.agents.remediation import RemediationRequest
+        from argosy.services.decision_integrity.remediation_store import (
+            persist_remediation_requests,
+        )
+        from argosy.services.decision_integrity.vintage_gate import (
+            evaluate_vintage_gate,
+        )
+
+        reqs: list[RemediationRequest] = []
+        for ticker, fields in fundamentals_payload.items():
+            if not isinstance(fields, dict):
+                continue
+            vintage = evaluate_vintage_gate(ticker, fields)
+            if not vintage.block:
+                continue
+            kind = (
+                "vintage_stale"
+                if vintage.blocked_by == "vintage_stale"
+                else "data_integrity"
+            )
+            reqs.append(
+                RemediationRequest(
+                    kind=kind,
+                    target_role="fundamentals",
+                    reason=vintage.reason,
+                    ticker=ticker.upper(),
+                )
+            )
+        if not reqs:
+            return
+        persist_remediation_requests(
+            session, user_id=user_id, requests=reqs,
+        )
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.inputs.provenance_remediation_persist_failed",
+            error=str(exc)[:200],
+        )
+
+
 def _gather_fundamentals(
     tickers: list[str],
     *,
@@ -1501,7 +1564,108 @@ def _gather_fundamentals(
 
     if with_yfinance_fallback:
         _yfinance_fundamentals_fallback(tickers, out)
-    return out
+
+    # Stream A — attach provenance sidecar WITHOUT wrapping scalars
+    # (blocker 8). Missing periods stay missing so the vintage gate
+    # fails closed (blocker 1). Then enrich ``most_recent_reported_period``
+    # via the *synchronous* Finnhub earnings-calendar SDK call (no
+    # asyncio.run — safe under to_thread / sync gather).
+    from argosy.services.decision_integrity.as_of import (
+        attach_provenance_sidecar,
+    )
+
+    annotated = attach_provenance_sidecar(out)
+    _enrich_reported_periods_sync(annotated)
+    return attach_provenance_sidecar(annotated)  # recompute provenance_complete
+
+
+def _enrich_reported_periods_sync(
+    payload: dict[str, dict[str, Any]],
+) -> None:
+    """Set sourced ``most_recent_reported_period`` from Finnhub calendar.
+
+    Uses ``FinnhubAdapter.fetch_earnings_calendar_sync`` — never
+    ``asyncio.run``. Only accepts events with explicit quarter+year
+    (iter-2: never invent a period from a date-only release).
+
+    Failure mode is fail-closed and *visible*: the field stays absent so
+    ``provenance_complete`` is false and the vintage gate blocks. A
+    warning is logged; we do not pretend enrichment succeeded.
+    """
+    if not payload:
+        return
+    try:
+        from datetime import date, timedelta
+
+        from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
+        from argosy.services.decision_integrity.as_of import (
+            parse_date,
+            reported_period_from_earnings_event,
+        )
+
+        adapter = FinnhubAdapter()
+        if not hasattr(adapter, "fetch_earnings_calendar_sync"):
+            # Test doubles that only stub get_company_financials — do not
+            # mutate the payload (preserves gather unit-test contracts).
+            return
+        end = date.today()
+        start = end - timedelta(days=180)
+        for ticker, fields in payload.items():
+            if not isinstance(fields, dict):
+                continue
+            if fields.get("most_recent_reported_period"):
+                fields.setdefault("most_recent_reported_period_sourced", True)
+                continue
+            try:
+                events = adapter.fetch_earnings_calendar_sync(
+                    start=start, end=end, symbol=ticker,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Visible fail-closed: leave period absent; gate blocks.
+                fields["reported_period_enrichment"] = "failed"
+                fields["reported_period_enrichment_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )[:200]
+                log.warning(
+                    "plan_synthesis.inputs.earnings_calendar_failed",
+                    ticker=ticker, error=str(exc)[:200],
+                )
+                continue
+            periods: list[date] = []
+            release_dates: list[date] = []
+            for ev in events or []:
+                if not isinstance(ev, dict):
+                    continue
+                period = reported_period_from_earnings_event(ev)
+                if period is not None and period <= end:
+                    periods.append(period)
+                rel = parse_date(ev.get("date") or ev.get("reportDate"))
+                if rel is not None and rel <= end:
+                    release_dates.append(rel)
+            if periods:
+                fields["most_recent_reported_period"] = max(periods).isoformat()
+                fields["most_recent_reported_period_sourced"] = True
+                fields["reported_period_enrichment"] = "ok"
+            else:
+                # Calendar returned nothing usable (date-only or empty).
+                fields["reported_period_enrichment"] = "unsourced"
+            if release_dates and not fields.get("most_recent_earnings_date"):
+                fields["most_recent_earnings_date"] = max(release_dates).isoformat()
+    except Exception as exc:  # noqa: BLE001
+        # Global failure (e.g. missing API key) — mark every ticker so
+        # the sidecar shows enrichment did not silently succeed.
+        for fields in payload.values():
+            if isinstance(fields, dict) and not fields.get(
+                "most_recent_reported_period"
+            ):
+                fields["reported_period_enrichment"] = "failed"
+                fields["reported_period_enrichment_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )[:200]
+        log.warning(
+            "plan_synthesis.inputs.earnings_enrichment_failed",
+            error=str(exc)[:200],
+        )
 
 
 # Per-share fair-value ANCHOR fields — without at least price + an EPS
@@ -1582,12 +1746,24 @@ def _yfinance_fundamentals_fallback(
         if not info:
             continue
         anchors = _extract_yf_anchors(info)
+        # Stream A — financials_as_of = period the numbers cover
+        # (mostRecentQuarter). Do NOT also set most_recent_earnings_date
+        # from the same value: that date must come from an independent
+        # earnings-calendar / news source so the vintage gate can detect
+        # feed lag (TRLV: Q1 figures still served after Q2 released).
+        from argosy.services.decision_integrity.as_of import (
+            extract_earnings_date_from_yf_info,
+        )
+
+        period_dt = extract_earnings_date_from_yf_info(info)
         if existing is not None:
             # Finnhub covered the ratios — backfill only the missing
             # anchor fields; never overwrite the primary source.
             for k, v in anchors.items():
                 if existing.get(k) is None:
                     existing[k] = v
+            if period_dt is not None and existing.get("financials_as_of") is None:
+                existing["financials_as_of"] = period_dt.isoformat()
             continue
         payload = {
             "pe_ratio": info.get("trailingPE"),
@@ -1604,6 +1780,8 @@ def _yfinance_fundamentals_fallback(
             **anchors,
             "source_url": f"yfinance:{ticker}",
         }
+        if period_dt is not None:
+            payload["financials_as_of"] = period_dt.isoformat()
         # Drop None-valued keys to keep the prompt tight.
         out[ticker] = {k: v for k, v in payload.items() if v is not None}
 

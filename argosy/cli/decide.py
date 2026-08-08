@@ -109,6 +109,25 @@ def decide(
 
         user_constraints, risk_caps = resolve_risk_inputs(user_id)
 
+        # Stream A iter-2 #2 — CLI is a green_light entry path; gather
+        # fundamentals so provenance is enforced (never silently skipped).
+        funnel_meta: dict = {}
+        try:
+            from argosy.decisions.per_ticker_analysts import (
+                _refresh_fundamentals_payload,
+            )
+
+            payload = await asyncio.to_thread(
+                _refresh_fundamentals_payload, [ticker],
+            )
+            funnel_meta["fundamentals_fields"] = (
+                payload.get(ticker.upper())
+                or payload.get(ticker)
+                or {}
+            )
+        except Exception:  # noqa: BLE001 — empty fields still blocks at gate
+            funnel_meta["fundamentals_fields"] = {}
+
         flow = DecisionFlow(user_id=user_id, settings=settings)
         outcome = await flow.run(
             ticker=ticker,
@@ -118,6 +137,7 @@ def decide(
             user_constraints=user_constraints,
             risk_caps=risk_caps,
             account_class=account_class,  # type: ignore[arg-type]
+            funnel_meta=funnel_meta,
         )
 
         if isinstance(outcome, ApprovedProposal):

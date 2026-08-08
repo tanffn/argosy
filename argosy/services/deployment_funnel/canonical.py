@@ -96,19 +96,34 @@ def _class_label_for_symbol(doc, symbol: str) -> str:
     return "High-growth potential"
 
 
-def deploy_plan_to_buy_list(plan: DeploymentPlan, doc) -> list[dict[str, Any]]:
+def deploy_plan_to_buy_list(
+    plan: DeploymentPlan,
+    doc,
+    *,
+    user_id: str = "ariel",
+    blocked_tickers: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Project the canonical plan into the inbox buy list: one row per deployed
     BUY line across ALL tiers (core / medium / high sleeve / …), carrying the
     instrument, the asset class it fills, the dollar amount, the tier, and the
     rationale. The rows sum to ``plan.deployed_total_usd`` — every deployed dollar
-    is shown exactly once, none dropped or double-counted."""
+    is shown exactly once, none dropped or double-counted.
+
+    Stream A — drop instruments with open remediation_requests so a
+    plan-synthesis integrity warning cannot become an actionable inbox
+    buy (blocker 3). ``blocked_tickers`` lets callers (and tests) inject
+    the set; when None we load open remediations from the DB.
+    """
+    if blocked_tickers is not None:
+        blocked = {t.upper() for t in blocked_tickers}
+    else:
+        blocked = _blocked_tickers_for_deploy(plan, user_id=user_id)
+
     rows: list[dict[str, Any]] = []
     for tier in plan.tiers:
         for line in tier.lines:
-            # The sleeve a line fills can differ from its symbol when the engine
-            # tops up a held substitute (FWRA filling the EXUS sleeve): derive the
-            # asset class from the ``plan_target:`` cite first, so the buy-list row
-            # labels the sleeve, not the substitute's own (missing) doc entry.
+            if (line.symbol or "").upper() in blocked:
+                continue
             sleeve_sym = line.symbol
             for cite in getattr(line, "cites", ()) or ():
                 if cite.startswith("plan_target:"):
@@ -124,6 +139,40 @@ def deploy_plan_to_buy_list(plan: DeploymentPlan, doc) -> list[dict[str, Any]]:
                 }
             )
     return rows
+
+
+def _blocked_tickers_for_deploy(plan: DeploymentPlan, *, user_id: str) -> set[str]:
+    try:
+        from argosy.state import db as db_mod
+
+        _ = db_mod.get_engine()
+    except Exception:
+        return set()
+    try:
+        from sqlalchemy.orm import sessionmaker
+
+        from argosy.services.decision_integrity.actionable import (
+            filter_tickers_with_open_remediations,
+        )
+
+        symbols = [line.symbol for tier in plan.tiers for line in tier.lines]
+        async_eng = db_mod.get_engine()
+        sync_eng = getattr(async_eng, "sync_engine", None) or async_eng
+        sf = sessionmaker(bind=sync_eng, expire_on_commit=False)
+        sess = sf()
+        try:
+            return filter_tickers_with_open_remediations(
+                sess, user_id=user_id, tickers=symbols,
+            )
+        finally:
+            sess.close()
+    except Exception:  # noqa: BLE001 — DB present but check failed: fail closed
+        return {
+            (line.symbol or "").upper()
+            for tier in plan.tiers
+            for line in tier.lines
+            if line.symbol
+        }
 
 
 __all__ = ["build_canonical_deploy_plan", "deploy_plan_to_buy_list"]

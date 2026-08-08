@@ -170,7 +170,7 @@ def build_buy_list(db, user_id: str, excess_usd: float, today: date) -> list[dic
             user_id=user_id, snapshot_prices=snapshot_prices,
             funnel_enabled=get_settings().deployment_funnel_enabled,
         )
-        return deploy_plan_to_buy_list(plan, doc)
+        return deploy_plan_to_buy_list(plan, doc, user_id=user_id)
     except Exception:  # noqa: BLE001 — never break the directive on the buy build
         _log.exception("period_directive.buy_list_failed", extra={"user_id": user_id})
         return None

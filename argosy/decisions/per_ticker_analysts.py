@@ -156,6 +156,8 @@ class PerTickerAnalystsResult:
     reports: list[AgentReport]
     succeeded_roles: list[str]
     skipped_roles: list[tuple[str, str]]  # (role, reason)
+    # Stream A — stamped (sidecar) fundamentals for the integrity choke point.
+    fundamentals_payload: dict[str, Any] | None = None
 
 
 async def open_decision_run_for_consult(
@@ -374,7 +376,13 @@ async def run_per_ticker_analysts(
         the refreshed payload now has content (different / non-empty)
         from the original — i.e. worth re-running the analyst against."""
         nonlocal payloads
-        if kind in ("price_stale", "fundamentals_stale"):
+        if kind in (
+            "price_stale",
+            "fundamentals_stale",
+            "data_integrity",
+            "vintage_stale",
+            "facilitator_condition",
+        ):
             new = await asyncio.to_thread(
                 _refresh_fundamentals_payload, [t]
             )
@@ -459,6 +467,19 @@ async def run_per_ticker_analysts(
         refresh_payload=_refresh_payload,
     )
 
+    # 5b) Stream A — persist remediation requests as BLOCKING rows (not
+    # prose). Includes unresolved post-remediation requests AND any
+    # requests still present on surviving analyst outputs. Also run the
+    # vintage gate against the stamped fundamentals payload.
+    await _persist_integrity_remediations(
+        user_id=user_id,
+        ticker=ticker,
+        decision_run_id=decision_run_id,
+        reports=surviving,
+        unresolved=unresolved_remediations,
+        fundamentals_payload=payloads.get("fundamentals") or {},
+    )
+
     # 6) Persist surviving reports under decision_run_id.
     await _persist_reports(decision_run_id, surviving)
 
@@ -478,6 +499,7 @@ async def run_per_ticker_analysts(
         reports=surviving,
         succeeded_roles=succeeded_roles,
         skipped_roles=skipped_roles,
+        fundamentals_payload=payloads.get("fundamentals") or {},
     )
 
 
@@ -797,6 +819,117 @@ async def _persist_reports(decision_run_id: int, reports: list[AgentReport]) -> 
             ids.append(row.id)
         await session.commit()
     return ids
+
+
+async def _persist_integrity_remediations(
+    *,
+    user_id: str,
+    ticker: str,
+    decision_run_id: int,
+    reports: list[AgentReport],
+    unresolved: list,
+    fundamentals_payload: dict[str, Any],
+) -> None:
+    """Persist analyst remediation requests + vintage failures as open rows.
+
+    Best-effort: never fails the analyst orchestrator. Stream A.
+    """
+    if decision_run_id == 0:
+        return
+    try:
+        from argosy.agents.remediation import RemediationRequest
+        from argosy.services.decision_integrity.remediation_store import (
+            persist_remediation_requests,
+        )
+        from argosy.services.decision_integrity.vintage_gate import (
+            evaluate_vintage_gate,
+        )
+        from argosy.orchestrator.flows.per_ticker_remediation import (
+            _collect_remediation_requests,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "per_ticker_analysts.integrity_import_failed",
+            error=str(exc)[:200],
+        )
+        return
+
+    to_persist: list[RemediationRequest] = []
+    # Unresolved after remediation rounds.
+    for req in unresolved or []:
+        if isinstance(req, RemediationRequest):
+            to_persist.append(req)
+    # Still present on surviving reports (including freshly flagged).
+    for req in _collect_remediation_requests(reports):
+        to_persist.append(req)
+
+    # Vintage gate on stamped fundamentals for this ticker.
+    fields = (
+        fundamentals_payload.get(ticker)
+        or fundamentals_payload.get(ticker.upper())
+        or {}
+    )
+    vintage = evaluate_vintage_gate(ticker, fields if isinstance(fields, dict) else {})
+    if vintage.block:
+        to_persist.append(
+            RemediationRequest(
+                kind="vintage_stale",
+                target_role="fundamentals",
+                reason=vintage.reason,
+                ticker=ticker.upper(),
+            )
+        )
+
+    if not to_persist:
+        return
+
+    # Dedup by (kind, target_role, reason[:80]).
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[RemediationRequest] = []
+    for req in to_persist:
+        key = (req.kind, req.target_role, req.reason[:80])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(req)
+
+    try:
+        import sqlalchemy as sa
+        from sqlalchemy.orm import sessionmaker
+
+        url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
+        sf = sessionmaker(
+            bind=sa.create_engine(url, connect_args={"check_same_thread": False}),
+            expire_on_commit=False,
+        )
+        sess = sf()
+        try:
+            rows = persist_remediation_requests(
+                sess,
+                user_id=user_id,
+                requests=unique,
+                decision_run_id=decision_run_id,
+                default_ticker=ticker.upper(),
+            )
+            sess.commit()
+            log.info(
+                "per_ticker_analysts.remediations_persisted",
+                ticker=ticker,
+                decision_run_id=decision_run_id,
+                count=len(rows),
+            )
+        finally:
+            sess.close()
+    except Exception as exc:
+        # Blocker 2 — persistence failure must not silently continue.
+        log.error(
+            "per_ticker_analysts.remediation_persist_failed_closed",
+            ticker=ticker,
+            error=str(exc)[:300],
+        )
+        raise RuntimeError(
+            f"failed to persist remediation_requests (fail-closed): {exc}"
+        ) from exc
 
 
 __all__ = [

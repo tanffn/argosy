@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import asc, desc, func, select
@@ -38,17 +38,19 @@ from argosy.decisions.per_ticker_analysts import (
     run_per_ticker_analysts,
 )
 from argosy.logging import get_logger
+from argosy.security import totp as totp_mod
 from argosy.services.pending_reevaluation import enqueue_pending_reevaluation
-
-_log = get_logger(__name__)
-from argosy.decisions.tiers import Tier, TierContext, apply_override_mode, resolve_tier
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AgentReport as AgentReportRow,
     DecisionPhase,
     DecisionRun,
+    TOTPSecret,
     UserFile,
 )
+from argosy.decisions.tiers import Tier, TierContext, apply_override_mode, resolve_tier
+
+_log = get_logger(__name__)
 
 router = APIRouter(prefix="/decisions", tags=["decisions"])
 
@@ -241,6 +243,10 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
             raise
         analyst_reports = result.reports
         persist_input_analysts = False
+        # Stream A — carry sidecar fundamentals into the integrity choke point.
+        _per_ticker_fundamentals = result.fundamentals_payload
+    else:
+        _per_ticker_fundamentals = None
 
     flow = DecisionFlow(user_id=body.user_id, settings=settings)
     # Thread structural BUY gate inputs via funnel_meta (flow already accepts it).
@@ -248,6 +254,15 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
         "named_sleeve": body.named_sleeve,
         "live_valuation": body.live_valuation or {},
     }
+    # Thread gathered fundamentals when present. Report-ID / T0 / empty
+    # paths leave fields absent → provenance_unknown blocks (iter-2 #2).
+    if _per_ticker_fundamentals is not None:
+        ticker_key = body.ticker.upper()
+        _funnel_meta["fundamentals_fields"] = (
+            _per_ticker_fundamentals.get(ticker_key)
+            or _per_ticker_fundamentals.get(body.ticker)
+            or {}
+        )
     outcome = await flow.run(
         ticker=body.ticker,
         tier=tier,
@@ -301,15 +316,16 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
 async def _load_analyst_reports(user_id: str, ids: list[int]) -> list[AgentReport]:
     """Load `agent_reports` rows by id and reconstruct minimal AgentReport.
 
-    The decision flow only reads `agent_role` + `output.model_dump()` from
-    each, so we wrap the row's response_text into a generic dict-shaped
-    output. This keeps the API simple without requiring the user to
-    serialize full pydantic instances back over JSON.
+    The decision flow reads ``agent_role`` + ``output.model_dump()`` —
+    including structured ``remediation_requests`` when present on the
+    persisted JSON (Stream A blocker 4). Those must surface as model
+    fields, not only inside a nested ``report`` string, or the integrity
+    choke point never sees them.
     """
     if not ids:
         return []
 
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 
     class _Anonymous(BaseModel):
         agent_role: str = "analyst"
@@ -317,6 +333,8 @@ async def _load_analyst_reports(user_id: str, ids: list[int]) -> list[AgentRepor
         confidence: ConfidenceBand = ConfidenceBand.MEDIUM
         # Carry the raw payload as a string so trader/researcher prompts can read it.
         report: str = ""
+        # Structured remediations from the original JSON — choke-point surface.
+        remediation_requests: list[Any] = Field(default_factory=list)
 
     async with db_mod.get_session() as session:
         rows = (
@@ -333,6 +351,9 @@ async def _load_analyst_reports(user_id: str, ids: list[int]) -> list[AgentRepor
                 if isinstance(payload, dict):
                     payload.setdefault("cited_sources", ["agent_reports"])
                     payload.setdefault("agent_role", r.agent_role)
+                    rem = payload.get("remediation_requests") or []
+                    if not isinstance(rem, list):
+                        rem = []
                     obj = _Anonymous(
                         agent_role=r.agent_role,
                         cited_sources=payload.get("cited_sources", []),
@@ -340,6 +361,7 @@ async def _load_analyst_reports(user_id: str, ids: list[int]) -> list[AgentRepor
                         if r.confidence
                         else ConfidenceBand.MEDIUM,
                         report=json.dumps(payload),
+                        remediation_requests=rem,
                     )
                 else:
                     raise ValueError("not dict payload")
@@ -1049,6 +1071,163 @@ async def get_plan_freshness(user_id: str = Query("ariel")) -> dict[str, Any]:
                 s.close()
 
         return await anyio.to_thread.run_sync(_run)
+
+
+class RemediationActionBody(BaseModel):
+    user_id: str = "ariel"
+    override_reason: str | None = Field(
+        default=None,
+        description="Required for /override — recorded reason to unblock.",
+    )
+
+
+async def _require_totp_for_remediation(
+    *,
+    user_id: str,
+    x_totp_code: str | None,
+) -> None:
+    """Same bar as proposal approve: clearing a safety block needs TOTP.
+
+    Always required (not only T3) — remediations gate trading green_lights.
+    """
+    if not x_totp_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Remediation resolve/override requires X-TOTP-Code header.",
+        )
+    async with db_mod.get_session(user_id) as session:
+        secret_row = await session.get(TOTPSecret, user_id)
+        if secret_row is None or not secret_row.secret_encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "user has no TOTP secret enrolled; "
+                    "POST /api/security/totp/setup first."
+                ),
+            )
+        last_used_counter: int | None = None
+        if secret_row.last_verified_at is not None:
+            last_used_counter = int(
+                secret_row.last_verified_at.timestamp()
+                // totp_mod.DEFAULT_STEP_SECONDS
+            )
+        try:
+            totp_mod.verify_code(
+                secret_row.secret_encrypted,
+                x_totp_code,
+                last_used_counter=last_used_counter,
+            )
+            from datetime import timezone as _tz
+
+            secret_row.last_verified_at = datetime.now(_tz.utc).replace(
+                microsecond=0
+            )
+            await session.commit()
+        except totp_mod.TOTPVerificationError as exc:
+            raise HTTPException(
+                status_code=401, detail=f"TOTP failed: {exc}"
+            ) from exc
+
+
+@router.get("/remediations/open")
+async def list_open_remediation_requests(
+    user_id: str = Query("ariel"),
+    ticker: str | None = Query(None),
+) -> list[dict[str, Any]]:
+    """List open remediation_requests (operator surface — blocker 4)."""
+    from argosy.services.decision_integrity.remediation_store import (
+        list_open_remediations,
+    )
+
+    async with db_mod.get_session(user_id) as session:
+        def _run(sync_session: Any) -> list[dict[str, Any]]:
+            rows = list_open_remediations(
+                sync_session, user_id=user_id, ticker=ticker,
+            )
+            return [
+                {
+                    "id": r.id,
+                    "ticker": r.ticker,
+                    "kind": r.kind,
+                    "target_role": r.target_role,
+                    "reason": r.reason,
+                    "status": r.status,
+                    "decision_run_id": r.decision_run_id,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ]
+
+        return await session.run_sync(_run)
+
+
+@router.post("/remediations/{remediation_id}/resolve")
+async def resolve_remediation_request(
+    remediation_id: int,
+    body: RemediationActionBody | None = None,
+    x_totp_code: str | None = Header(default=None, alias="X-TOTP-Code"),
+) -> dict[str, Any]:
+    """Mark a remediation resolved — TOTP + ownership required (iter-2 #1)."""
+    from argosy.services.decision_integrity.remediation_store import (
+        resolve_remediation,
+    )
+
+    user_id = (body.user_id if body else "ariel")
+    await _require_totp_for_remediation(user_id=user_id, x_totp_code=x_totp_code)
+    async with db_mod.get_session(user_id) as session:
+        def _run(sync_session: Any) -> dict[str, Any]:
+            row = resolve_remediation(
+                sync_session, remediation_id, user_id=user_id,
+            )
+            if row is None:
+                raise HTTPException(
+                    status_code=404, detail="remediation not found",
+                )
+            sync_session.commit()
+            return {"id": row.id, "status": row.status}
+
+        return await session.run_sync(_run)
+
+
+@router.post("/remediations/{remediation_id}/override")
+async def override_remediation_request(
+    remediation_id: int,
+    body: RemediationActionBody,
+    x_totp_code: str | None = Header(default=None, alias="X-TOTP-Code"),
+) -> dict[str, Any]:
+    """Explicit override — TOTP + ownership required (iter-2 #1)."""
+    from argosy.services.decision_integrity.remediation_store import (
+        override_remediation,
+    )
+
+    if not (body.override_reason or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="override_reason is required",
+        )
+    await _require_totp_for_remediation(
+        user_id=body.user_id, x_totp_code=x_totp_code,
+    )
+    async with db_mod.get_session(body.user_id) as session:
+        def _run(sync_session: Any) -> dict[str, Any]:
+            row = override_remediation(
+                sync_session,
+                remediation_id,
+                user_id=body.user_id,
+                override_reason=body.override_reason or "",
+            )
+            if row is None:
+                raise HTTPException(
+                    status_code=404, detail="remediation not found",
+                )
+            sync_session.commit()
+            return {
+                "id": row.id,
+                "status": row.status,
+                "override_reason": row.override_reason,
+            }
+
+        return await session.run_sync(_run)
 
 
 __all__ = ["router"]

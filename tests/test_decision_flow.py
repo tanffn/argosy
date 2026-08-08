@@ -187,6 +187,18 @@ _FM_BLOCK = {
 # ----------------------------------------------------------------------
 
 
+# Fresh provenance so approve paths clear the integrity choke point
+# (Stream A iter-2 — absent fields block by default).
+_FRESH_FUNNEL_META: dict = {
+    "fundamentals_fields": {
+        "financials_as_of": "2026-06-30",
+        "most_recent_reported_period": "2026-06-30",
+        "current_price": 100.0,
+        "revenue_growth_yoy": 0.1,
+    }
+}
+
+
 def _make_flow(
     *,
     trader_canned: dict = _TRADER_BUY,
@@ -266,6 +278,7 @@ async def test_t0_skips_debate_and_risk_team(engine: None) -> None:
         tier=Tier.T0,
         analyst_reports=_analyst_dummy(),
         positions_summary="",
+        funnel_meta=_FRESH_FUNNEL_META,
     )
     assert isinstance(outcome, ApprovedProposal)
     assert outcome.debate_outcome is None
@@ -282,6 +295,7 @@ async def test_t1_includes_one_round_debate_and_neutral_risk(engine: None) -> No
         ticker="AAPL",
         tier=Tier.T1,
         analyst_reports=_analyst_dummy(),
+        funnel_meta=_FRESH_FUNNEL_META,
     )
     assert isinstance(outcome, ApprovedProposal)
     assert outcome.debate_outcome is not None
@@ -297,6 +311,7 @@ async def test_t2_full_stack(engine: None) -> None:
         ticker="AAPL",
         tier=Tier.T2,
         analyst_reports=_analyst_dummy(),
+        funnel_meta=_FRESH_FUNNEL_META,
     )
     assert isinstance(outcome, ApprovedProposal)
     # T2 runs all 3 perspectives; verify multiple risk_officer agent_reports rows.
@@ -320,6 +335,7 @@ async def test_t3_proposal_lands_in_cooling(engine: None) -> None:
         ticker="AAPL",
         tier=Tier.T3,
         analyst_reports=_analyst_dummy(),
+        funnel_meta=_FRESH_FUNNEL_META,
     )
     assert isinstance(outcome, ApprovedProposal)
     assert outcome.proposal.status.value == "cooling"
@@ -395,7 +411,8 @@ async def test_decision_run_links_proposal(engine: None) -> None:
     await _seed_user()
     flow = _make_flow()
     outcome = await flow.run(
-        ticker="AAPL", tier=Tier.T2, analyst_reports=_analyst_dummy()
+        ticker="AAPL", tier=Tier.T2, analyst_reports=_analyst_dummy(),
+        funnel_meta=_FRESH_FUNNEL_META,
     )
     assert isinstance(outcome, ApprovedProposal)
     async with db_mod.get_session() as session:

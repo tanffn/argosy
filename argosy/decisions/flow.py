@@ -434,6 +434,12 @@ class DecisionFlow:
             )
             debate_ids.extend(fac_ids)
             debate_outcome = fac_report.output  # type: ignore[assignment]
+            # Stream A — persist facilitator conditions as blocking remediation rows.
+            await self._persist_facilitator_conditions(
+                decision_run_id=decision_run_id,
+                ticker=ticker,
+                debate_outcome=debate_outcome,
+            )
             try:
                 await record_negotiation_phase(
                     user_id=self.user_id, decision_run_id=decision_run_id,
@@ -459,6 +465,16 @@ class DecisionFlow:
             user_constraints=user_constraints,
             tier=tier.value,
             mode=consult_mode,
+            ticker=ticker,
+        )
+        # Stream A — observe confidence delta only (never mutate; blocker 6).
+        await self._observe_confidence_delta(
+            report=trader_report,
+            input_confidences=[
+                *(getattr(r, "confidence", None) for r in analyst_reports),
+                getattr(debate_outcome, "confidence", None) if debate_outcome else None,
+            ],
+            decision_run_id=decision_run_id,
             ticker=ticker,
         )
         trader_ids = await self._persist_agent_reports(
@@ -642,6 +658,17 @@ class DecisionFlow:
                 user_constraints=user_constraints,
                 tier=tier.value,
             )
+            # Stream A — observe confidence delta only (never mutate; blocker 6).
+            await self._observe_confidence_delta(
+                report=fm_report,
+                input_confidences=[
+                    getattr(trader_proposal, "confidence", None),
+                    getattr(debate_outcome, "confidence", None) if debate_outcome else None,
+                    getattr(risk_outcome, "confidence", None) if risk_outcome else None,
+                ],
+                decision_run_id=decision_run_id,
+                ticker=ticker,
+            )
             fm_ids = await self._persist_agent_reports(
                 decision_run_id, [fm_report]
             )
@@ -671,6 +698,52 @@ class DecisionFlow:
                     debate_outcome=debate_outcome,
                     decision_run_id=decision_run_id,
                 )
+
+            # Stream A — record debate-loser override when FM green-lights
+            # a trade that contradicts researcher_facilitator.winning_side.
+            if fm_decision.decision == "green_light":
+                await self._maybe_record_debate_override(
+                    decision_run_id=decision_run_id,
+                    ticker=ticker,
+                    debate_outcome=debate_outcome,
+                    trade_action=trader_proposal.action,
+                    fm_reason=getattr(fm_decision, "reason", "") or "",
+                )
+
+        # Stream A — provenance integrity choke point (blocker 5). Every
+        # entry path that can green_light goes through DecisionFlow.run;
+        # inspect in-memory remediations on input reports + DB opens +
+        # vintage. Infrastructure failure → fail CLOSED (blocker 2).
+        integrity = await self._evaluate_integrity_gate(
+            ticker=ticker,
+            decision_run_id=decision_run_id,
+            fundamentals_fields=(funnel_meta or {}).get("fundamentals_fields"),
+            analyst_reports=analyst_reports,
+            debate_outcome=debate_outcome,
+            # Default ON — absent provenance blocks. Tests may set
+            # funnel_meta.require_fundamentals_provenance=False explicitly.
+            require_fundamentals_provenance=(
+                (funnel_meta or {}).get("require_fundamentals_provenance", True)
+            ),
+        )
+        if integrity.block:
+            await self._close_decision_run(
+                decision_run_id,
+                finished_at=clock(),
+                status="blocked",
+                fm="block",
+            )
+            return BlockedProposal(
+                reason=integrity.reason,
+                blocked_by=integrity.blocked_by or "data_integrity",
+                fund_manager=fm_decision,
+                risk_outcome=risk_outcome,
+                debate_outcome=debate_outcome,
+                decision_run_id=decision_run_id,
+            )
+        # Vintage-scoped auto-resolve already ran inside the gate (iter-2
+        # item 3). No second pass here — that would either be unreachable
+        # on block or over-clear on pass.
 
         # Item B — structural BUY gates AFTER the existing gate chain so
         # risk_team / plan_critique_red / fund_manager keep blocked_by
@@ -841,6 +914,245 @@ class DecisionFlow:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _persist_facilitator_conditions(
+        self,
+        *,
+        decision_run_id: int,
+        ticker: str,
+        debate_outcome: DebateOutcome | None,
+    ) -> None:
+        """Persist facilitator ``conditions`` as open remediation rows.
+
+        Persistence failure is fail-CLOSED: raises so the flow cannot
+        green_light with unrecorded conditions (blocker 2).
+        """
+        if (
+            self.config.skip_persistence
+            or decision_run_id == 0
+            or debate_outcome is None
+        ):
+            return
+        conditions = getattr(debate_outcome, "conditions", None) or []
+        if not conditions:
+            return
+        from argosy.agents.remediation import RemediationRequest
+        from argosy.services.decision_integrity.remediation_store import (
+            persist_remediation_requests,
+        )
+
+        reqs = [
+            RemediationRequest(
+                kind="facilitator_condition",
+                target_role="researcher_facilitator",
+                reason=getattr(c, "description", None)
+                or (c.get("description") if isinstance(c, dict) else str(c)),
+                ticker=(
+                    getattr(c, "ticker", None)
+                    or (c.get("ticker") if isinstance(c, dict) else None)
+                    or ticker
+                ),
+            )
+            for c in conditions
+        ]
+        async with db_mod.get_session() as session:
+            def _run(sync_session: Any) -> None:
+                persist_remediation_requests(
+                    sync_session,
+                    user_id=self.user_id,
+                    requests=reqs,
+                    decision_run_id=decision_run_id,
+                    default_ticker=ticker.upper(),
+                )
+                sync_session.commit()
+
+            await session.run_sync(_run)
+
+    async def _observe_confidence_delta(
+        self,
+        *,
+        report: AgentReport,
+        input_confidences: list[Any],
+        decision_run_id: int,
+        ticker: str,
+    ) -> None:
+        """Record confidence rise above input floor — never mutate (blocker 6)."""
+        try:
+            from argosy.agents.base import ConfidenceBand
+            from argosy.services.decision_integrity.confidence_cap import (
+                observe_confidence_delta,
+            )
+            from argosy.services.decision_integrity.overrides import (
+                record_confidence_delta,
+            )
+
+            emitted = report.confidence
+            if hasattr(report.output, "confidence"):
+                emitted = getattr(report.output, "confidence", emitted)
+            emitted_band, rose, floor = observe_confidence_delta(
+                emitted, input_confidences
+            )
+            if not rose or emitted_band is None or floor is None:
+                return
+            if self.config.skip_persistence or not decision_run_id:
+                return
+            async with db_mod.get_session() as session:
+                def _run(sync_session: Any) -> None:
+                    record_confidence_delta(
+                        sync_session,
+                        user_id=self.user_id,
+                        decision_run_id=decision_run_id,
+                        ticker=ticker,
+                        emitted_confidence=emitted_band.value,
+                        input_floor_confidence=floor.value,
+                        reason=(
+                            f"agent emitted {emitted_band.value} above input floor "
+                            f"{floor.value}; recorded for review (not mutated)"
+                        ),
+                    )
+                    sync_session.commit()
+
+                await session.run_sync(_run)
+        except Exception as exc:  # noqa: BLE001 — observation is best-effort
+            _log.warning(
+                "decision_flow.confidence_delta_observe_failed",
+                error=str(exc)[:200],
+            )
+
+    async def _maybe_record_debate_override(
+        self,
+        *,
+        decision_run_id: int,
+        ticker: str,
+        debate_outcome: DebateOutcome | None,
+        trade_action: str,
+        fm_reason: str,
+    ) -> None:
+        if self.config.skip_persistence or decision_run_id == 0 or debate_outcome is None:
+            return
+        try:
+            from argosy.services.decision_integrity.overrides import (
+                debate_action_contradicts_winning_side,
+                record_debate_winner_override,
+            )
+
+            winning = getattr(debate_outcome, "winning_side", None)
+            if not debate_action_contradicts_winning_side(
+                winning_side=winning, trade_action=trade_action
+            ):
+                return
+            reason = (
+                fm_reason.strip()
+                or (
+                    f"fund_manager green_light action={trade_action} "
+                    f"contradicts researcher_facilitator.winning_side="
+                    f"{winning}"
+                )
+            )
+            async with db_mod.get_session() as session:
+                def _run(sync_session: Any) -> None:
+                    record_debate_winner_override(
+                        sync_session,
+                        user_id=self.user_id,
+                        decision_run_id=decision_run_id,
+                        ticker=ticker,
+                        winning_side=str(winning),
+                        trade_action=str(trade_action).upper(),
+                        reason=reason,
+                    )
+                    sync_session.commit()
+
+                await session.run_sync(_run)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "decision_flow.debate_override_record_failed",
+                error=str(exc)[:200],
+            )
+
+    async def _evaluate_integrity_gate(
+        self,
+        *,
+        ticker: str,
+        decision_run_id: int,
+        fundamentals_fields: dict[str, Any] | None = None,
+        analyst_reports: list[AgentReport] | None = None,
+        debate_outcome: DebateOutcome | None = None,
+        require_fundamentals_provenance: bool = True,
+    ):
+        """Provenance choke point. Always returns a result; never None.
+
+        Fail CLOSED on infrastructure errors (blocker 2).
+        Uses ``db_mod.get_session().run_sync`` so in-memory test DBs and
+        the live engine share one connection (creating a fresh sync
+        engine from the URL would open a *different* ``:memory:`` DB).
+        """
+        from argosy.services.decision_integrity.gates import (
+            IntegrityGateResult,
+            collect_facilitator_conditions,
+            collect_remediation_requests_from_reports,
+            evaluate_green_light_integrity,
+        )
+        from argosy.services.decision_integrity.remediation_store import (
+            persist_remediation_requests,
+        )
+
+        if self.config.skip_persistence:
+            return evaluate_green_light_integrity(
+                None,
+                user_id=self.user_id,
+                ticker=ticker,
+                decision_run_id=decision_run_id,
+                fundamentals_fields=fundamentals_fields,
+                analyst_reports=analyst_reports or [],
+                debate_outcome=debate_outcome,
+                skip_db=True,
+                require_fundamentals_provenance=require_fundamentals_provenance,
+            )
+
+        try:
+            async with db_mod.get_session() as session:
+                def _run(sync_session: Any):
+                    discovered = collect_remediation_requests_from_reports(
+                        analyst_reports or []
+                    )
+                    discovered.extend(
+                        collect_facilitator_conditions(debate_outcome)
+                    )
+                    if discovered:
+                        persist_remediation_requests(
+                            sync_session,
+                            user_id=self.user_id,
+                            requests=discovered,
+                            decision_run_id=decision_run_id,
+                            default_ticker=ticker.upper(),
+                        )
+                        sync_session.commit()
+                    return evaluate_green_light_integrity(
+                        sync_session,
+                        user_id=self.user_id,
+                        ticker=ticker,
+                        decision_run_id=decision_run_id,
+                        fundamentals_fields=fundamentals_fields,
+                        analyst_reports=analyst_reports or [],
+                        debate_outcome=debate_outcome,
+                        skip_db=False,
+                        require_fundamentals_provenance=require_fundamentals_provenance,
+                    )
+
+                return await session.run_sync(_run)
+        except Exception as exc:  # noqa: BLE001 — fail CLOSED
+            _log.error(
+                "decision_flow.integrity_gate_failed_closed",
+                error=str(exc)[:300],
+            )
+            return IntegrityGateResult(
+                block=True,
+                blocked_by="integrity_gate_error",
+                reason=(
+                    f"integrity gate infrastructure failure: "
+                    f"{type(exc).__name__}: {exc}"
+                )[:500],
+            )
 
     async def _record_settled_verdict(
         self,

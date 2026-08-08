@@ -39,6 +39,15 @@ RemediationKind = Literal[
     # the analyst can't classify the issue more precisely. Orchestrator
     # re-fires the full per-ticker gather.
     "data_refresh",
+    # Internal numeric inconsistency (e.g. market_cap vs price divergence
+    # >10%). Persisted as a BLOCKING remediation_requests row — Stream A.
+    "data_integrity",
+    # Researcher facilitator conditioned its verdict on a domain /
+    # data refresh. Machine-representable; blocks green_light until
+    # cleared — Stream A (TRLV "pending domain-refresh" prose failure).
+    "facilitator_condition",
+    # Load-bearing financial field as_of predates most recent earnings.
+    "vintage_stale",
 ]
 
 

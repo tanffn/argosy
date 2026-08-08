@@ -34,6 +34,7 @@ from argosy.decisions.per_ticker_analysts import (
 )
 from argosy.logging import get_logger
 from argosy.services.contracts import FleetPick
+from argosy.state import db as db_mod
 
 log = get_logger(__name__)
 
@@ -150,6 +151,51 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
     except Exception:
         await _close_decision_run(decision_run_id=run_id, status="blocked")
         raise
+
+    # Stream A — discovery FleetPick(BUY) becomes fleet_validated inbox
+    # guidance without DecisionFlow. Refuse actionable BUY when provenance
+    # / open remediations would block green_light (blocker 2).
+    verdict = (out.verdict or "").upper()
+    if verdict == "BUY":
+        from argosy.services.decision_integrity.actionable import (
+            evaluate_actionable_buy_integrity,
+        )
+
+        fields = (
+            (result.fundamentals_payload or {}).get(ticker.upper())
+            or (result.fundamentals_payload or {}).get(ticker)
+            or {}
+        )
+        try:
+            async with db_mod.get_session() as session:
+                def _gate(sync_session):
+                    return evaluate_actionable_buy_integrity(
+                        sync_session,
+                        user_id=user_id,
+                        ticker=ticker,
+                        fundamentals_fields=fields if fields else None,
+                        analyst_reports=list(result.reports),
+                        skip_db=False,
+                    )
+
+                gate = await session.run_sync(_gate)
+        except Exception as exc:  # noqa: BLE001 — fail CLOSED for BUY
+            await _close_decision_run(decision_run_id=run_id, status="blocked")
+            log.info(
+                "discovery_grader.integrity_gate_error",
+                ticker=ticker, error=str(exc)[:200],
+            )
+            return None
+        if gate.block:
+            await _close_decision_run(decision_run_id=run_id, status="blocked")
+            log.info(
+                "discovery_grader.integrity_blocked_buy",
+                ticker=ticker,
+                blocked_by=gate.blocked_by,
+                reason=gate.reason[:200],
+            )
+            return None
+
     await _close_decision_run(decision_run_id=run_id, status="completed")
 
     return FleetPick(
