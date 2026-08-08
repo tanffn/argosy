@@ -7,7 +7,7 @@ changed, a fresh portfolio picture is the old snapshot's quantities re-priced
 
 Same-code-path contract: the cron cadence and the manual trigger both go
 through :meth:`tick`. Quote/FX fetches are blocking network calls that use
-``asyncio.run`` internally, so the work runs via ``asyncio.to_thread``.
+``run_coro_sync`` internally, so the work runs via ``asyncio.to_thread``.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from argosy.adapters.data.async_bridge import mismatch_count
 from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.jobs.registry import JobMetadata
@@ -104,7 +105,21 @@ class SnapshotRefreshJob(CadenceLoop):
                 session.close()
             return res.summary() if hasattr(res, "summary") else dict(res or {})
 
+        before_infra = mismatch_count()
         summary = await asyncio.to_thread(_work)
+        delta = mismatch_count() - before_infra
+        if delta > 0:
+            summary = dict(summary)
+            summary["infra_degraded"] = True
+            summary["infra_data_failures"] = delta
+            # Back-compat alias used by earlier Stream E summaries.
+            summary["event_loop_mismatches"] = delta
+            _log.error(
+                "snapshot_refresh.infra_degraded",
+                infra_data_failures=delta,
+                repriced=summary.get("repriced"),
+                carried=summary.get("carried"),
+            )
         self.last_output_summary = summary
         _log.info("snapshot_refresh.tick.done", **summary)
         return summary

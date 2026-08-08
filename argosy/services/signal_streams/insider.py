@@ -9,7 +9,6 @@ threshold cluster is non-zero while stronger clusters retain headroom.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -1547,7 +1546,9 @@ class YFinanceInsiderMarketProvider:
 
     def __call__(self, ticker: str) -> InsiderMarketSnapshot:
         adapter = self._adapter or YFinanceAdapter()
-        payload = asyncio.run(adapter.get_quote_with_fundamentals(ticker))
+        from argosy.adapters.data.async_bridge import run_coro_sync
+
+        payload = run_coro_sync(adapter.get_quote_with_fundamentals(ticker))
         return InsiderMarketSnapshot(
             price=payload.get("price"),
             market_cap=payload.get("market_cap"),
@@ -1624,7 +1625,9 @@ class InsiderClusterStream:
             for row in existing_rows
         }
 
-        fetched_rows = asyncio.run(
+        from argosy.adapters.data.async_bridge import run_coro_sync
+
+        fetched_rows = run_coro_sync(
             self.sec_adapter.get_form4_for_date_range(
                 pull_start,
                 through,

@@ -228,4 +228,39 @@ def invalidate_home_brief(user_id: str) -> None:
         _log.warning("home_greeting.dirty_from_brief_failed", user_id=user_id)
 
 
-__all__ = ["CacheKind", "cached_call", "invalidate_home_brief", "purge_cache_entry"]
+def cached_call_sync(
+    *,
+    kind: CacheKind,
+    provider: str,
+    key: str,
+    ttl_seconds: int,
+    fetch: Callable[[], Any] | Callable[[], Awaitable[Any]],
+    now: Callable[[], datetime] = _utcnow,
+) -> Any:
+    """Sync entry point for ``cached_call`` (worker threads / sync jobs).
+
+    Marshals onto the long-lived adapter bridge / app main loop via
+    ``run_coro_sync`` — never ``asyncio.run`` — so the shared aiosqlite
+    pool is not rebound to a fresh event loop.
+    """
+    from argosy.adapters.data.async_bridge import run_coro_sync
+
+    return run_coro_sync(
+        cached_call(
+            kind=kind,
+            provider=provider,
+            key=key,
+            ttl_seconds=ttl_seconds,
+            fetch=fetch,
+            now=now,
+        )
+    )
+
+
+__all__ = [
+    "CacheKind",
+    "cached_call",
+    "cached_call_sync",
+    "invalidate_home_brief",
+    "purge_cache_entry",
+]

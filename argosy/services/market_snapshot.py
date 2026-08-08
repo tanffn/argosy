@@ -12,17 +12,17 @@ Keys:
   - ``boi_rate`` — Bank of Israel policy rate % (FRED IRSTCI01ILM156N)
   - ``cpi_yoy``  — US CPI YoY % change (FRED CPIAUCSL, computed from level index)
 
-Invocation pattern mirrors ``argosy.orchestrator.flows.plan_synthesis.inputs``
-(synchronous function, uses ``asyncio.run`` to bridge async adapters).
+Invocation pattern: synchronous function; bridges async adapters via
+``run_coro_sync`` (never ``asyncio.run`` — shared aiosqlite pool safety).
 The ``session`` parameter is accepted for API consistency but is not used
 in the current implementation (all data comes via the FRED/BoI adapters).
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from argosy.adapters.data.async_bridge import run_coro_sync
 from argosy.adapters.data.boi_adapter import BoiAdapter
 from argosy.adapters.data.fred_adapter import FredAdapter
 from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
@@ -272,7 +272,7 @@ def market_snapshot(
 
     for field, series_id in _fred_series:
         try:
-            rows = asyncio.run(fred.get_series(series_id))
+            rows = run_coro_sync(fred.get_series(series_id))
         except Exception as exc:
             _log.warning(
                 "market_snapshot.fred_series_failed",
@@ -318,7 +318,7 @@ def market_snapshot(
     # rather than surface 0 (which zeroes every USD→NIS conversion) we use the
     # last-known cached rate, stamped with ITS real age so staleness stays honest.
     try:
-        fx_data = asyncio.run(boi.get_usd_nis())
+        fx_data = run_coro_sync(boi.get_usd_nis())
         rate = float(fx_data.get("rate", 0.0))
         source = fx_data.get("source", "boi")
         as_of = fx_data.get("as_of", "")

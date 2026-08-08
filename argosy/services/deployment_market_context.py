@@ -14,7 +14,6 @@ See docs/superpowers/plans/2026-06-12-deployment-advisor-p2.md §Pinned technica
 """
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -121,7 +120,7 @@ def verify_nvda(session: Any) -> NvdaVerification:
     """Fetch NVDA price + shares outstanding + market cap and verify consistency.
 
     Uses ``YFinanceAdapter.get_quote_with_fundamentals`` (async, bridged via
-    ``asyncio.run`` mirroring the ``inputs.py`` pattern).
+    ``run_coro_sync`` — never ``asyncio.run`` against the shared cache pool).
 
     Returns a ``NvdaVerification`` in all cases — never raises:
     - If the fetch succeeds: ``consistent`` is the result of ``nvda_consistency``.
@@ -136,8 +135,10 @@ def verify_nvda(session: Any) -> NvdaVerification:
     _log = get_logger("argosy.services.deployment_market_context")
 
     try:
+        from argosy.adapters.data.async_bridge import run_coro_sync
+
         adapter = YFinanceAdapter()
-        data: dict[str, Any] = asyncio.run(
+        data: dict[str, Any] = run_coro_sync(
             adapter.get_quote_with_fundamentals("NVDA")
         )
         price_raw = data.get("price")

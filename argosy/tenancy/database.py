@@ -29,6 +29,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy import event
 
 from argosy.config import get_settings
 
@@ -53,6 +55,34 @@ def _tenant_database_url(user_id: str) -> str:
     return f"sqlite+aiosqlite:///{path.as_posix()}"
 
 
+def _create_tenant_engine(url: str) -> AsyncEngine:
+    """Same NullPool / StaticPool rule as ``argosy.state.db`` (Stream E).
+
+    Tenant engines previously used the default AsyncAdaptedQueuePool —
+    the exact pool whose loop-bound queue produced the 1,065 production
+    cross-loop errors on the global engine.
+    """
+    kwargs: dict = {"echo": False, "future": True}
+    if url.startswith("sqlite"):
+        if ":memory:" in url:
+            kwargs["poolclass"] = StaticPool
+            kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            kwargs["poolclass"] = NullPool
+    eng = create_async_engine(url, **kwargs)
+    if url.startswith("sqlite") and ":memory:" not in url:
+
+        @event.listens_for(eng.sync_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection, _connection_record):  # noqa: ANN001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=60000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+
+    return eng
+
+
 def get_tenant_engine(user_id: str) -> AsyncEngine:
     """Return (creating if needed) the AsyncEngine for a tenant."""
     with _LOCK:
@@ -60,7 +90,7 @@ def get_tenant_engine(user_id: str) -> AsyncEngine:
         if eng is not None:
             return eng
         url = _tenant_database_url(user_id)
-        eng = create_async_engine(url, echo=False, future=True)
+        eng = _create_tenant_engine(url)
         _ENGINES[user_id] = eng
         _FACTORIES[user_id] = async_sessionmaker(eng, expire_on_commit=False)
         return eng

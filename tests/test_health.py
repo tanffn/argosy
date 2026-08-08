@@ -18,6 +18,7 @@ async def test_health_returns_ok(client: AsyncClient) -> None:
     assert body["status"] == "ok"
     assert body["db"] == "ok"
     assert body["version"] == __version__
+    assert body.get("event_loop_mismatches_recent", 0) == 0
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,26 @@ _argosy_configure_logging()
 
 
 @pytest.fixture(autouse=True)
+def _reset_async_bridge_state():
+    """Prevent Stream E mismatch counters / captured loops from bleeding
+    across tests (health would otherwise latch to ``degraded`` after the
+    loop-safety suite deliberately provokes a mismatch)."""
+    try:
+        from argosy.adapters.data.async_bridge import reset_for_tests
+
+        reset_for_tests()
+    except Exception:  # noqa: BLE001 — module may be unavailable mid-collection
+        pass
+    yield
+    try:
+        from argosy.adapters.data.async_bridge import reset_for_tests
+
+        reset_for_tests()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _guard_alternatives_phase(request, monkeypatch):
     """Never let ``run_synthesis`` fire the REAL alternatives phase in tests.
 

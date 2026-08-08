@@ -1,7 +1,6 @@
 """Government-contract early-signal stream backed by USAspending."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -429,7 +428,9 @@ class ArgosyMarketSnapshotProvider:
         fundamentals = gatherer(
             [ticker], with_yfinance_fallback=True
         ).get(ticker, {})
-        market = asyncio.run(adapter.get_quote_with_fundamentals(ticker))
+        from argosy.adapters.data.async_bridge import run_coro_sync
+
+        market = run_coro_sync(adapter.get_quote_with_fundamentals(ticker))
         revenue = fundamentals.get("revenue_ttm")
         return MarketSnapshot(
             price=(

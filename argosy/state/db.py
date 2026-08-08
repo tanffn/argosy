@@ -9,6 +9,22 @@ parameter. When the env var `ARGOSY_TENANCY=per-tenant` is set, the
 session is scoped to that tenant's DB (per
 `argosy.tenancy.tenant_db_path`). Phase 1-5 callers omit `user_id` and
 get the legacy global engine; this is the default in dev and tests.
+
+Cross-loop safety (Stream E / 2026-08)
+--------------------------------------
+aiosqlite pooled connections bind futures to the event loop that
+checked them out. Sync callers that used ``asyncio.run`` against the
+shared pool raised ``Queue is bound to a different event loop``
+(1,065 log hits through 2026-08-07).
+
+Per SQLAlchemy's asyncio docs, a shared ``AsyncEngine`` that may be
+touched from more than one loop must use ``NullPool`` so no connection
+is reused across loops. File-backed SQLite therefore uses ``NullPool``;
+``:memory:`` keeps ``StaticPool`` so every checkout sees the same DB.
+
+Sync callers should still prefer
+``argosy.adapters.data.async_bridge.run_coro_sync`` over ``asyncio.run``
+so work lands on the app/bridge long-lived loop (no loop churn).
 """
 
 from __future__ import annotations
@@ -24,6 +40,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool, StaticPool
 
 from argosy.config import get_settings
 
@@ -40,7 +57,17 @@ def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
         if settings.db_file.parent and not str(settings.db_file).startswith(":memory:"):
             settings.db_file.parent.mkdir(parents=True, exist_ok=True)
         url = settings.database_url
-    _engine = create_async_engine(url, echo=echo, future=True)
+
+    # Pool choice: see module docstring (cross-loop aiosqlite safety).
+    engine_kwargs: dict = {"echo": echo, "future": True}
+    if url.startswith("sqlite"):
+        if ":memory:" in url:
+            engine_kwargs["poolclass"] = StaticPool
+            engine_kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            engine_kwargs["poolclass"] = NullPool
+
+    _engine = create_async_engine(url, **engine_kwargs)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     # SQLite WAL + busy_timeout + synchronous=NORMAL — critical under
@@ -103,6 +130,14 @@ async def get_session(user_id: str | None = None) -> AsyncIterator[AsyncSession]
         request), uses the global engine — Phase 1-5 compatibility.
       - Otherwise (no per-tenant mode): always uses the global engine.
     """
+    # Remember the app loop so sync→async bridges can marshal onto it.
+    try:
+        from argosy.adapters.data.async_bridge import capture_main_loop
+
+        capture_main_loop()
+    except Exception:  # noqa: BLE001 — bridge is optional at import time
+        pass
+
     if _per_tenant_mode():
         if user_id is None:
             # Try the request-scoped contextvar before falling back.

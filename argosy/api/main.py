@@ -30,6 +30,7 @@ from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 
 from argosy import __version__
+from argosy.adapters.data.async_bridge import capture_main_loop
 from argosy.api.events import subscribe
 from argosy.api.routes.advisor import router as advisor_router
 from argosy.api.routes.agent_activity import router as agent_activity_router
@@ -232,6 +233,11 @@ def create_app() -> FastAPI:
     # the home page doesn't render forever-running rows. Runs synchronously
     # at create_app() time so the first /api/decisions/recent request after
     # a restart already sees the cleaned state.
+    @app.on_event("startup")
+    async def _capture_async_bridge_main_loop() -> None:
+        """Remember the FastAPI loop for sync→async adapter/cache bridges."""
+        capture_main_loop()
+
     @app.on_event("startup")
     async def _orphan_sweep_at_startup() -> None:
         from datetime import datetime, timedelta, timezone

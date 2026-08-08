@@ -149,16 +149,21 @@ class EvaluatorSummary:
     skipped_existing: int = 0
     unparseable: int = 0
     adapter_errors: int = 0
+    event_loop_mismatches: int = 0
     by_kind: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "evaluated": self.evaluated,
             "skipped_existing": self.skipped_existing,
             "unparseable": self.unparseable,
             "adapter_errors": self.adapter_errors,
             "by_kind": dict(self.by_kind),
         }
+        if self.event_loop_mismatches:
+            out["event_loop_mismatches"] = self.event_loop_mismatches
+            out["infra_degraded"] = True
+        return out
 
 
 class EvaluatorAdapterError(RuntimeError):
@@ -466,8 +471,6 @@ def default_price_fetcher(
     fake price-fetcher (the common case for ``test_predictions_evaluator``).
     """
     try:
-        import asyncio
-
         from argosy.adapters import MissingDataSourceError
         from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
     except ImportError as exc:  # pragma: no cover - heavy deps
@@ -476,16 +479,28 @@ def default_price_fetcher(
         ) from exc
 
     adapter = YFinanceAdapter()
+    from argosy.adapters.data.async_bridge import (
+        is_event_loop_mismatch,
+        note_event_loop_mismatch,
+        run_coro_sync,
+    )
+
     try:
         # The adapter's get_eod_prices is async and uses the cached
-        # call path; run it on a private loop so we don't depend on
-        # the caller's event-loop state.
-        payload = asyncio.run(
+        # call path; bridge via run_coro_sync so we never rebind the
+        # shared aiosqlite pool to a fresh asyncio.run loop.
+        payload = run_coro_sync(
             adapter.get_eod_prices([ticker], start, end)
         )
     except MissingDataSourceError:
         return None
     except Exception as exc:  # pragma: no cover - transient
+        if is_event_loop_mismatch(exc):
+            note_event_loop_mismatch(
+                scope="predictions.evaluator.price_fetcher",
+                error=str(exc),
+                ticker=ticker,
+            )
         raise EvaluatorAdapterError(
             f"yfinance fetch failed for {ticker} "
             f"[{start.isoformat()}, {end.isoformat()}]: {exc}"
@@ -1270,12 +1285,25 @@ def run_evaluator_batch(
             )
         except EvaluatorAdapterError as exc:
             summary.adapter_errors += 1
-            _log.warning(
-                "predictions.evaluator.adapter_error",
-                prediction_id=prediction.id,
-                ticker=prediction.ticker,
-                error=str(exc),
-            )
+            from argosy.adapters.data.async_bridge import is_event_loop_mismatch
+
+            if is_event_loop_mismatch(exc):
+                summary.event_loop_mismatches += 1
+                _log.error(
+                    "predictions.evaluator.adapter_error",
+                    prediction_id=prediction.id,
+                    ticker=prediction.ticker,
+                    error=str(exc),
+                    infra_loop_mismatch=True,
+                    infra_degraded=True,
+                )
+            else:
+                _log.warning(
+                    "predictions.evaluator.adapter_error",
+                    prediction_id=prediction.id,
+                    ticker=prediction.ticker,
+                    error=str(exc),
+                )
             continue
         except Exception as exc:  # pragma: no cover - defensive
             # Any other exception is a bug we want to learn about, but

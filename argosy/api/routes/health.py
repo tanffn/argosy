@@ -26,11 +26,18 @@ router = APIRouter()
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok", "error"]
+    status: Literal["ok", "error", "degraded"]
     db: Literal["ok", "error"]
     version: str
     git_sha: str
     started_at: str  # ISO 8601 UTC
+    # Recency-scoped infra data-path failures (loop mismatch, bridge
+    # timeout, same-loop misuse) inside the health window (default 15 min).
+    # Drives status=degraded. Recovers to ok when the window empties.
+    event_loop_mismatches_recent: int = 0
+    # Lifetime total since process boot (informational; does not latch status).
+    event_loop_mismatches_lifetime: int = 0
+    event_loop_mismatch_window_s: float = 0.0
 
 
 class DbSizeResponse(BaseModel):
@@ -57,6 +64,14 @@ def _format_bytes(n: int) -> str:
 
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    from argosy.adapters.data.async_bridge import (
+        capture_main_loop,
+        mismatch_count,
+        mismatch_health_window_s,
+        recent_mismatch_count,
+    )
+
+    capture_main_loop()
     db_status: Literal["ok", "error"] = "ok"
     try:
         engine = get_engine()
@@ -65,13 +80,24 @@ async def health() -> HealthResponse:
     except Exception:
         db_status = "error"
 
-    overall: Literal["ok", "error"] = "ok" if db_status == "ok" else "error"
+    recent = recent_mismatch_count()
+    lifetime = mismatch_count()
+    window_s = mismatch_health_window_s()
+    if db_status == "error":
+        overall: Literal["ok", "error", "degraded"] = "error"
+    elif recent:
+        overall = "degraded"
+    else:
+        overall = "ok"
     return HealthResponse(
         status=overall,
         db=db_status,
         version=VERSION,
         git_sha=GIT_SHA,
         started_at=STARTED_AT.isoformat(),
+        event_loop_mismatches_recent=recent,
+        event_loop_mismatches_lifetime=lifetime,
+        event_loop_mismatch_window_s=window_s,
     )
 
 

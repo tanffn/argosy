@@ -164,12 +164,40 @@ def _price_summary(bars: list) -> dict[str, Any]:
 def default_gather_feeds(holding: dict[str, Any], *, now: datetime) -> dict[str, Any]:
     """Best-effort per-ticker feed bundle (news + price + insider). Every adapter
     call is guarded so a feed outage degrades to an empty section rather than
-    failing the run."""
+    failing the run.
+
+    Uses ``run_coro_sync`` (never ``asyncio.run``) so the shared aiosqlite
+    cache pool is not rebound from the thesis-monitor worker thread.
+    """
+    from argosy.adapters.data.async_bridge import (
+        is_bridge_timeout,
+        is_event_loop_mismatch,
+        is_infra_data_failure,
+        note_event_loop_mismatch,
+        note_infra_data_failure,
+        run_coro_sync,
+    )
+
     ticker = holding["ticker"]
     bundle: dict[str, Any] = {**holding, "news": [], "insider": [], "price": {}}
     end = now.date()
     news_start = end - timedelta(days=30)
     price_start = end - timedelta(days=400)
+    infra_failures = 0
+
+    def _note_feed_exc(scope: str, exc: BaseException) -> None:
+        nonlocal infra_failures
+        if is_event_loop_mismatch(exc):
+            infra_failures += 1
+            note_event_loop_mismatch(scope=scope, error=str(exc), ticker=ticker)
+        elif is_bridge_timeout(exc):
+            # run_coro_sync already noted; still count toward the bundle.
+            infra_failures += 1
+        elif is_infra_data_failure(exc):
+            infra_failures += 1
+            note_infra_data_failure(
+                kind="bridge_failure", scope=scope, error=str(exc), ticker=ticker
+            )
 
     async def _gather() -> None:
         try:
@@ -178,25 +206,53 @@ def default_gather_feeds(holding: dict[str, Any], *, now: datetime) -> dict[str,
                 ticker, start=news_start, end=end
             ) or []
         except Exception as exc:  # noqa: BLE001 — feed outage is non-fatal
-            log.warning("thesis_monitor.feed.news_failed", ticker=ticker, error=str(exc))
+            _note_feed_exc("thesis_monitor.feed.news", exc)
+            log.warning(
+                "thesis_monitor.feed.news_failed",
+                ticker=ticker,
+                error=str(exc),
+                infra_degraded=is_infra_data_failure(exc),
+            )
         try:
             from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
             eod = await YFinanceAdapter().get_eod_prices([ticker], price_start, end) or {}
             bundle["price"] = _price_summary(eod.get(ticker, []))
         except Exception as exc:  # noqa: BLE001
-            log.warning("thesis_monitor.feed.price_failed", ticker=ticker, error=str(exc))
+            _note_feed_exc("thesis_monitor.feed.price", exc)
+            log.warning(
+                "thesis_monitor.feed.price_failed",
+                ticker=ticker,
+                error=str(exc),
+                infra_degraded=is_infra_data_failure(exc),
+            )
         try:
             from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
             bundle["insider"] = await SecForm4Adapter().get_recent_form4_for_ticker(
                 ticker, days=30
             ) or []
         except Exception as exc:  # noqa: BLE001
-            log.warning("thesis_monitor.feed.insider_failed", ticker=ticker, error=str(exc))
+            _note_feed_exc("thesis_monitor.feed.insider", exc)
+            log.warning(
+                "thesis_monitor.feed.insider_failed",
+                ticker=ticker,
+                error=str(exc),
+                infra_degraded=is_infra_data_failure(exc),
+            )
 
     try:
-        asyncio.run(_gather())
+        run_coro_sync(_gather())
     except Exception as exc:  # noqa: BLE001
-        log.warning("thesis_monitor.feed.gather_failed", ticker=ticker, error=str(exc))
+        _note_feed_exc("thesis_monitor.feed.gather", exc)
+        log.warning(
+            "thesis_monitor.feed.gather_failed",
+            ticker=ticker,
+            error=str(exc),
+            infra_degraded=is_infra_data_failure(exc),
+        )
+    if infra_failures:
+        bundle["infra_loop_mismatches"] = infra_failures
+        bundle["infra_data_failures"] = infra_failures
+        bundle["infra_degraded"] = True
     return bundle
 
 
@@ -482,6 +538,22 @@ class ThesisMonitorLoop(CadenceLoop):
                     1 for h in holdings if h.get("watchlist")
                 )
             bundles = [self._gather_fn(h, now=run_at) for h in holdings]
+            infra_holdings = sum(1 for b in bundles if b.get("infra_degraded"))
+            infra_failures = sum(
+                int(b.get("infra_data_failures") or b.get("infra_loop_mismatches") or 0)
+                for b in bundles
+            )
+            if infra_holdings:
+                summary["infra_degraded"] = True
+                summary["infra_degraded_holdings"] = infra_holdings
+                summary["infra_data_failures"] = infra_failures
+                summary["event_loop_mismatches"] = infra_failures
+                log.error(
+                    "thesis_monitor.infra_degraded",
+                    user_id=self.user_id,
+                    infra_degraded_holdings=infra_holdings,
+                    infra_data_failures=infra_failures,
+                )
             agent = self._agent_factory() if self._agent_factory else _default_agent(self.user_id)
             report = asyncio.run(agent.run(bundles=bundles))
             assessments = list(getattr(report.output, "assessments", []))

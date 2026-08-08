@@ -165,13 +165,13 @@ async def _catalog_pdf(*, user_id: str, raw_bytes: bytes, name: str) -> Any:
 def _catalog_pdf_sync(*, user_id: str, raw_bytes: bytes, name: str) -> Any:
     """Sync wrapper so the (sync) ingest loop can call the async catalog helper.
 
-    ``catalog_upload`` opens its own async sessions, so it must run on a fresh
-    event loop, never nested inside one. The ingest service is invoked from the
-    sync scheduler tick / route thread, so a plain ``asyncio.run`` is correct.
+    ``catalog_upload`` opens its own async sessions. Bridging via
+    ``run_coro_sync`` (never ``asyncio.run``) keeps those sessions on the
+    app/bridge long-lived loop so the shared aiosqlite pool is not rebound.
     """
-    import asyncio
+    from argosy.adapters.data.async_bridge import run_coro_sync
 
-    return asyncio.run(
+    return run_coro_sync(
         _catalog_pdf(user_id=user_id, raw_bytes=raw_bytes, name=name)
     )
 
@@ -234,9 +234,32 @@ def ingest_payslips(
                 _ingest_one(user_id, pdf, name=name, factory=factory, summary=summary)
             except Exception as exc:  # noqa: BLE001 — one bad PDF never sinks the batch
                 summary["errors"].append(f"{pdf.name}: {exc}")
-                log.warning(
-                    "payslip_ingest.file_failed", file=str(pdf), error=str(exc)
+                from argosy.adapters.data.async_bridge import (
+                    is_event_loop_mismatch,
+                    note_event_loop_mismatch,
                 )
+
+                if is_event_loop_mismatch(exc):
+                    summary["infra_degraded"] = True
+                    summary["event_loop_mismatches"] = (
+                        int(summary.get("event_loop_mismatches") or 0) + 1
+                    )
+                    note_event_loop_mismatch(
+                        scope="payslip_ingest.file",
+                        error=str(exc),
+                        file=str(pdf),
+                    )
+                    log.error(
+                        "payslip_ingest.file_failed",
+                        file=str(pdf),
+                        error=str(exc),
+                        infra_loop_mismatch=True,
+                        infra_degraded=True,
+                    )
+                else:
+                    log.warning(
+                        "payslip_ingest.file_failed", file=str(pdf), error=str(exc)
+                    )
     finally:
         if engine is not None:
             engine.dispose()

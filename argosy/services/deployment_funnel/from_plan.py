@@ -3,7 +3,6 @@ and holdings into a deterministic preflight run. This is the glue Task 7 wires
 into `GET /api/portfolio/deploy-cash` behind the kill switch."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Iterable
 
@@ -108,17 +107,28 @@ class SnapshotOrLiveProvider:
         if symbol in self._live:
             return self._live[symbol]
         price: float | None = None
+        from argosy.adapters.data.async_bridge import (
+            is_event_loop_mismatch,
+            note_event_loop_mismatch,
+            run_coro_sync,
+        )
         try:
             from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
             adapter = YFinanceAdapter()
             for suffix in self._YF_QUOTE_SUFFIXES:
-                q = asyncio.run(adapter.get_quote(f"{symbol}{suffix}"))
+                q = run_coro_sync(adapter.get_quote(f"{symbol}{suffix}"))
                 p = float(getattr(q, "price", None)) if q is not None and getattr(q, "price", None) is not None else None
                 if p is not None:
                     price = p
                     break
         except Exception as exc:  # noqa: BLE001 — best-effort; stale => defer
+            if is_event_loop_mismatch(exc):
+                note_event_loop_mismatch(
+                    scope="deploy_funnel.quote",
+                    error=str(exc),
+                    symbol=symbol,
+                )
             _log.info("deploy_funnel.quote_miss", extra={"symbol": symbol, "err": str(exc)})
             price = None
         if price is None:

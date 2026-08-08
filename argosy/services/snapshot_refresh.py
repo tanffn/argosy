@@ -41,7 +41,6 @@ Rules (fail-safe, never fabricate):
 
 from __future__ import annotations
 
-import asyncio
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -136,19 +135,52 @@ def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | Non
     Tries the exchange-hinted listing first, then the standard suffix chain.
     A listing whose quote currency disagrees with the position currency is
     skipped (next suffix), never unit-converted — we don't fabricate prices.
+
+    Uses ``run_coro_sync`` (never ``asyncio.run``) so the shared aiosqlite
+    cache pool is not rebound to a fresh event loop from the job worker
+    thread.
     """
+    from argosy.adapters.data.async_bridge import (
+        is_bridge_timeout,
+        is_event_loop_mismatch,
+        is_infra_data_failure,
+        note_event_loop_mismatch,
+        note_infra_data_failure,
+        run_coro_sync,
+    )
     from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
     yf_symbol = symbol.strip().upper().replace("/", "-").replace(".", "-")
     adapter = YFinanceAdapter()
     for suffix in _hinted_suffixes(details):
+        sym = f"{yf_symbol}{suffix}"
         try:
-            q = asyncio.run(adapter.get_quote(f"{yf_symbol}{suffix}"))
+            q = run_coro_sync(adapter.get_quote(sym))
         except Exception as exc:  # noqa: BLE001 — best-effort per listing
+            if is_event_loop_mismatch(exc):
+                note_event_loop_mismatch(
+                    scope="snapshot_refresh.quote",
+                    error=str(exc),
+                    symbol=sym,
+                )
+            elif is_bridge_timeout(exc):
+                # note_infra already fired inside run_coro_sync; still tag
+                # the log line so operators can grep quote_error for timeouts.
+                pass
+            elif is_infra_data_failure(exc):
+                note_infra_data_failure(
+                    kind="bridge_failure",
+                    scope="snapshot_refresh.quote",
+                    error=str(exc),
+                    symbol=sym,
+                )
             _log.info(
                 "snapshot_refresh.quote_error",
-                symbol=f"{yf_symbol}{suffix}",
+                symbol=sym,
                 err=str(exc),
+                infra_loop_mismatch=is_event_loop_mismatch(exc),
+                infra_bridge_timeout=is_bridge_timeout(exc),
+                infra_degraded=is_infra_data_failure(exc),
             )
             continue
         price = getattr(q, "price", None)
@@ -157,7 +189,7 @@ def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | Non
         if not _currencies_agree(currency, getattr(q, "currency", None)):
             _log.info(
                 "snapshot_refresh.quote_currency_mismatch",
-                symbol=f"{yf_symbol}{suffix}",
+                symbol=sym,
                 position_currency=currency,
                 quote_currency=getattr(q, "currency", None),
             )
@@ -174,24 +206,69 @@ def default_fx_fn() -> dict[str, float | None]:
     TSV's convention). A failed leg returns None — the caller carries the
     stored rate and records the miss.
     """
+    from argosy.adapters.data.async_bridge import (
+        is_bridge_timeout,
+        is_event_loop_mismatch,
+        is_infra_data_failure,
+        note_event_loop_mismatch,
+        note_infra_data_failure,
+        run_coro_sync,
+    )
+
     out: dict[str, float | None] = {"usd_nis": None, "usd_eur": None}
     try:
         from argosy.adapters.data.boi_adapter import BoiAdapter
         from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
-        payload = asyncio.run(BoiAdapter(yf=YFinanceAdapter()).get_usd_nis())
+        payload = run_coro_sync(BoiAdapter(yf=YFinanceAdapter()).get_usd_nis())
         rate = payload.get("rate")
         out["usd_nis"] = float(rate) if rate else None
     except Exception as exc:  # noqa: BLE001 — carry the stored rate
-        _log.warning("snapshot_refresh.fx_usd_nis_failed", err=str(exc))
+        if is_event_loop_mismatch(exc):
+            note_event_loop_mismatch(
+                scope="snapshot_refresh.fx_usd_nis", error=str(exc)
+            )
+        elif is_bridge_timeout(exc):
+            pass  # already noted inside run_coro_sync
+        elif is_infra_data_failure(exc):
+            note_infra_data_failure(
+                kind="bridge_failure",
+                scope="snapshot_refresh.fx_usd_nis",
+                error=str(exc),
+            )
+        _log.warning(
+            "snapshot_refresh.fx_usd_nis_failed",
+            err=str(exc),
+            infra_loop_mismatch=is_event_loop_mismatch(exc),
+            infra_bridge_timeout=is_bridge_timeout(exc),
+            infra_degraded=is_infra_data_failure(exc),
+        )
     try:
         from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
-        q = asyncio.run(YFinanceAdapter().get_quote("EURUSD=X"))
+        q = run_coro_sync(YFinanceAdapter().get_quote("EURUSD=X"))
         price = getattr(q, "price", None)
         out["usd_eur"] = (1.0 / float(price)) if price else None
     except Exception as exc:  # noqa: BLE001 — carry the stored rate
-        _log.warning("snapshot_refresh.fx_usd_eur_failed", err=str(exc))
+        if is_event_loop_mismatch(exc):
+            note_event_loop_mismatch(
+                scope="snapshot_refresh.fx_usd_eur", error=str(exc)
+            )
+        elif is_bridge_timeout(exc):
+            pass
+        elif is_infra_data_failure(exc):
+            note_infra_data_failure(
+                kind="bridge_failure",
+                scope="snapshot_refresh.fx_usd_eur",
+                error=str(exc),
+            )
+        _log.warning(
+            "snapshot_refresh.fx_usd_eur_failed",
+            err=str(exc),
+            infra_loop_mismatch=is_event_loop_mismatch(exc),
+            infra_bridge_timeout=is_bridge_timeout(exc),
+            infra_degraded=is_infra_data_failure(exc),
+        )
     return out
 
 
