@@ -168,7 +168,7 @@ class TestRouteWiring:
 
         snap = _live_prefill_snapshot()
         monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                            lambda user_id: (self._doc(), {}, 170_874.0))
+                            lambda user_id, db=None: (self._doc(), {}, 170_874.0))
         monkeypatch.setattr(portfolio, "get_latest_snapshot_row",
                             lambda db, user_id: object())
         monkeypatch.setattr(portfolio, "row_to_snapshot", lambda row: snap)
@@ -191,7 +191,7 @@ class TestRouteWiring:
         from argosy.api.main import create_app
 
         monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                            lambda user_id: (self._doc(), {}, 0.0))
+                            lambda user_id, db=None: (self._doc(), {}, 0.0))
         monkeypatch.setattr(portfolio, "get_latest_snapshot_row",
                             lambda db, user_id: None)
 

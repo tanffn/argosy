@@ -790,6 +790,8 @@ def test_same_account_catastrophic_drop_still_rejected(fixture_db):
 
 
 def test_load_total_book_degraded_when_empty_and_incomplete(fixture_db):
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
     incomplete = [_pos("CSPX", 400.0, location="ibi")]
     book = load_total_book(fixture_db, "ariel", incomplete)
     assert book.degraded is True
@@ -797,6 +799,8 @@ def test_load_total_book_degraded_when_empty_and_incomplete(fixture_db):
 
 
 def test_estate_gate_refuses_degraded_with_none_not_zero(fixture_db):
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
     _add_snap(
         fixture_db,
         positions=[_pos("CSPX", 400.0, location="ibi")],
@@ -810,6 +814,8 @@ def test_estate_gate_refuses_degraded_with_none_not_zero(fixture_db):
 
 
 def test_estate_surface_unavailable_when_degraded(fixture_db):
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
     snap = _add_snap(
         fixture_db,
         positions=[_pos("CSPX", 400.0, location="ibi")],
@@ -1357,6 +1363,10 @@ def test_compositions_unavailable_not_empty_when_degraded(fixture_db):
     """Finding 3 — UI must not see 'no positions' when the book is degraded."""
     from argosy.services.wealth_dashboard import _compositions
 
+    # Explicit policy is required for the NVDA-must-restore integrity gate —
+    # DEFAULT alone must not invent it (that degraded every partial seed).
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    fixture_db.commit()
     snap = _add_snap(
         fixture_db,
         positions=[_pos("CSPX", 400.0, location="ibi")],

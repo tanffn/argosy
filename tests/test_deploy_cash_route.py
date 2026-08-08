@@ -62,7 +62,7 @@ def test_deploy_cash_returns_tiered_plan(monkeypatch):
 
     import argosy.api.routes.portfolio as portfolio
     monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                        lambda user_id: (_doc(), {}, 0.0))
+                        lambda user_id, db=None: (_doc(), {}, 0.0))
     try:
         client = TestClient(create_app())
         resp = client.get("/api/portfolio/deploy-cash", params={"cash_usd": 10000})
@@ -80,7 +80,7 @@ def test_deploy_cash_returns_tiered_plan(monkeypatch):
 def test_deploy_cash_no_plan_returns_empty_with_note(monkeypatch):
     import argosy.api.routes.portfolio as portfolio
     monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                        lambda user_id: (None, {}, 0.0))
+                        lambda user_id, db=None: (None, {}, 0.0))
     client = TestClient(create_app())
     resp = client.get("/api/portfolio/deploy-cash", params={"cash_usd": 10000})
     assert resp.status_code == 200
@@ -99,7 +99,7 @@ def test_deploy_cash_live_true_returns_market_context(monkeypatch):
     fake_ctx = _make_fake_market_context()
 
     monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                        lambda user_id: (_doc(), {}, 0.0))
+                        lambda user_id, db=None: (_doc(), {}, 0.0))
     monkeypatch.setattr(_dmc, "assemble_deployment_market_context",
                         lambda session, **kwargs: fake_ctx)
 
@@ -152,7 +152,7 @@ def test_deploy_cash_live_omitted_no_market_context(monkeypatch):
         raise AssertionError("assemble_deployment_market_context must not be called when live=false")
 
     monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                        lambda user_id: (_doc(), {}, 0.0))
+                        lambda user_id, db=None: (_doc(), {}, 0.0))
     monkeypatch.setattr(_dmc, "assemble_deployment_market_context",
                         _should_not_be_called)
 
@@ -179,7 +179,7 @@ def test_deploy_cash_live_false_explicit_no_market_context(monkeypatch):
         raise AssertionError("assembler must not be called when live=false")
 
     monkeypatch.setattr(portfolio, "_load_current_doc_and_holdings",
-                        lambda user_id: (_doc(), {}, 0.0))
+                        lambda user_id, db=None: (_doc(), {}, 0.0))
     monkeypatch.setattr(_dmc, "assemble_deployment_market_context",
                         _should_not_be_called)
 

@@ -151,8 +151,12 @@ def total_net_worth_incl_residence(
                 parse_positions_json,
             )
 
+            snap_date = getattr(snapshot, "snapshot_date", None)
+            raw = parse_positions_json(snapshot.positions_json)
             book = load_total_book(
-                session, user_id, parse_positions_json(snapshot.positions_json),
+                session, user_id, raw,
+                snapshot_date=snap_date,
+                today=snap_date,  # as-of snapshot valuation
             )
             if book.degraded:
                 log.warning(
@@ -160,7 +164,16 @@ def total_net_worth_incl_residence(
                     user_id, book.degrade_reason,
                 )
                 return None, None
-            base_k = investable_usd_k(book.total)
+            book_k = investable_usd_k(book.total)
+            snap_k = investable_usd_k(raw)
+            # Durable restores add value beyond the snapshot positions —
+            # use the book. Otherwise prefer totals_json (authoritative
+            # aggregate on a complete snapshot; may intentionally differ
+            # from a partial position sum in seeds / legacy rows).
+            if book_k > snap_k + 0.05:
+                base_k = book_k
+            else:
+                base_k = None  # fall through to totals_json
         except Exception as exc:  # noqa: BLE001
             log.warning("net_worth_bases.total_book_failed err=%s", exc)
             base_k = None

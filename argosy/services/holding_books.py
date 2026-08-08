@@ -416,13 +416,10 @@ def merge_positions_per_account(
                     f"collapse (a rename must never delete money)",
                 )
 
-        # Safe to canonicalize now that dual-alias is ruled out.
-        for d in inc_rows:
-            raw_sym = str(d.get("symbol") or "")
-            canon = normalize_symbol_identity(raw_sym)
-            if canon != raw_sym:
-                d["symbol"] = canon
-
+        # Canonical form is a MERGE KEY only — never mutate the stored
+        # symbol string. Rewriting ``מחקה ת"א-200`` → ``ת"א-200`` silently
+        # breaks symbol-keyed consumers (instrument_plan_classes, tests,
+        # classification). Keep the feed's original symbol authoritative.
         prior_by_sym: dict[str, dict[str, Any]] = {}
         for d in prior_rows:
             sk = _symbol_key_for_merge(str(d.get("symbol") or ""))
@@ -439,8 +436,8 @@ def merge_positions_per_account(
             if sk not in inc_by_sym:
                 inc_by_sym[sk] = d
 
-        # Explicit alias renames already applied via normalize_symbol_identity
-        # on incoming. Record them when prior had the old name.
+        # Record known renames when prior had the old name and the feed
+        # carries any alias of the canonical identity (raw symbol preserved).
         for old_sym, new_sym in KNOWN_SYMBOL_RENAMES.items():
             old_k = _symbol_key_for_merge(old_sym)
             new_k = _symbol_key_for_merge(new_sym)
@@ -547,6 +544,32 @@ def parse_explicit_managed_flag(p: Any) -> bool | None:
     ):
         return False
     return None
+
+
+def load_explicit_policy_symbols(session: Any, user_id: str) -> frozenset[str]:
+    """Configured unmanaged-symbol policy ONLY — empty when none configured.
+
+    Unlike ``load_policy_symbols``, does NOT fall back to
+    ``DEFAULT_UNMANAGED_SYMBOLS``. Integrity checks that would refuse to
+    publish a book must use this: an empty policy table must not invent an
+    NVDA-must-be-present requirement that degrades every partial seed.
+    """
+    if session is None:
+        return frozenset()
+    try:
+        from sqlalchemy import select
+
+        from argosy.state.models import UnmanagedSymbolPolicy
+
+        rows = session.execute(
+            select(UnmanagedSymbolPolicy.symbol).where(
+                UnmanagedSymbolPolicy.user_id == user_id
+            )
+        ).scalars().all()
+        return frozenset(str(s).strip().upper() for s in rows if s)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("holding_books.explicit_policy_load_failed", err=str(exc)[:160])
+        return frozenset()
 
 
 def load_policy_symbols(session: Any, user_id: str) -> frozenset[str]:
@@ -1024,6 +1047,7 @@ def load_total_book(
     """
     ref = today or date.today()
     policy = load_policy_symbols(session, user_id)
+    explicit_policy = load_explicit_policy_symbols(session, user_id)
     load = load_unmanaged_holding_rows(session, user_id, active_only=True)
 
     # Resolve FX for USD conversion of non-USD durable rows (NVDA is USD).
@@ -1076,7 +1100,9 @@ def load_total_book(
     integ_degraded, integ_reason = assess_total_book_integrity(
         stamped_positions,
         load=load,
-        policy_symbols=policy,
+        # Only ENFORCED when the operator configured policy rows — never
+        # invent an NVDA-must-restore gate from DEFAULT_UNMANAGED_SYMBOLS.
+        policy_symbols=explicit_policy,
         today=ref,
         reprice_failures=reprice_failures,
     )
@@ -1496,6 +1522,29 @@ def books_match_for_restore(
     return abs(ta - tb) <= tol_usd_k
 
 
+def _require_unmanaged_holdings_schema(session: Any) -> None:
+    """Fail closed when migration 0097 tables are absent.
+
+    Restoring the book without ``unmanaged_holdings`` would bring NVDA back
+    as MANAGED — the exact sleeve-math distortion this stream removes.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    bind = session.get_bind()
+    insp = sa_inspect(bind)
+    missing = [
+        name for name in ("unmanaged_holdings", "unmanaged_symbol_policy")
+        if not insp.has_table(name)
+    ]
+    if missing:
+        raise RuntimeError(
+            "prerequisite missing: "
+            + ", ".join(missing)
+            + " (alembic revision 0097_unmanaged_holdings). "
+            "Refusing to restore — policy holdings would return as managed."
+        )
+
+
 def backfill_restored_holdings_book(
     session: Any,
     *,
@@ -1516,10 +1565,16 @@ def backfill_restored_holdings_book(
 
     Does not touch any DB the caller did not hand it — operators must
     point the session at a COPY, never the live ``db/argosy.db`` casually.
+
+    Fail-closed: refuses to write when ``unmanaged_holdings`` /
+    ``unmanaged_symbol_policy`` are missing, or when durable unmanaged sync
+    cannot upsert a policy holding.
     """
     from argosy.services.portfolio_snapshot_store import (
         get_latest_snapshot_row,
     )
+
+    _require_unmanaged_holdings_schema(session)
 
     reconstructed = resolve_prior_positions_by_account_coverage(session, user_id)
     n = len(reconstructed)
@@ -1542,19 +1597,28 @@ def backfill_restored_holdings_book(
         )
 
     latest = get_latest_snapshot_row(session, user_id)
+    latest_accounts: frozenset[str] = frozenset()
     if latest is not None:
         try:
             current = json.loads(latest.positions_json or "[]")
         except (TypeError, ValueError, json.JSONDecodeError):
             current = []
+        latest_accounts = accounts_covered_from_positions(current)
         if books_match_for_restore(current, reconstructed):
+            carried = sorted(a for a in accounts if a not in latest_accounts)
             return {
                 "status": "noop",
                 "position_count": n,
                 "total_usd_k": round(total, 1),
                 "accounts": accounts,
+                "accounts_covered": accounts,
+                "accounts_carried": carried,
                 "latest_snapshot_id": getattr(latest, "id", None),
             }
+
+    # Accounts absent from the pre-restore latest are the ones this restore
+    # is carrying forward from earlier covering snapshots.
+    accounts_carried = sorted(a for a in accounts if a not in latest_accounts)
 
     # Stamp management flags; keep per-row observed/valued dates intact.
     policy = load_policy_symbols(session, user_id)
@@ -1603,7 +1667,7 @@ def backfill_restored_holdings_book(
             "total_usd_value_k": total,
             "cash_balances_usd_k": cash_balances,
             "accounts_covered": accounts,
-            "accounts_carried": [],
+            "accounts_carried": accounts_carried,
             "feed_position_count": n,
             "merged_position_count": n,
             "restored_by": actor,
@@ -1613,15 +1677,23 @@ def backfill_restored_holdings_book(
         fx_usd_eur=fx_eur,
         parse_warnings_json=json.dumps([
             f"BOOK_RESTORE actor={actor} positions={n} "
-            f"total_usd_k={total:.1f} accounts={','.join(accounts)}"
+            f"total_usd_k={total:.1f} accounts={','.join(accounts)} "
+            f"carried={','.join(accounts_carried) or 'none'}"
         ]),
     )
     session.add(row)
     # Sync durable unmanaged rows from restored positions, preserving
     # each row's own observed_as_of (never re-date carried quantities).
-    sync_unmanaged_from_positions(
+    sync_result = sync_unmanaged_from_positions(
         session, user_id, stamped, commit=False, valued_as_of=snap_date,
     )
+    if sync_result.get("errors", 0) > 0:
+        session.rollback()
+        raise RuntimeError(
+            "unmanaged_holdings sync failed during restore "
+            f"(errors={sync_result.get('errors')}; detail={sync_result}). "
+            "Refusing to commit — policy holdings must not return as managed."
+        )
 
     # Self-verify before commit.
     written = json.loads(row.positions_json or "[]")
@@ -1654,6 +1726,8 @@ def backfill_restored_holdings_book(
         "position_count": written_n,
         "total_usd_k": round(written_total, 1),
         "accounts": accounts,
+        "accounts_covered": accounts,
+        "accounts_carried": accounts_carried,
         "snapshot_id": getattr(row, "id", None),
         "snapshot_date": str(snap_date),
     }
@@ -1918,6 +1992,7 @@ __all__ = [
     "implied_nvda_weight_frac",
     "investable_usd_k",
     "is_managed_position",
+    "load_explicit_policy_symbols",
     "load_policy_symbols",
     "load_total_and_managed_books",
     "load_total_book",

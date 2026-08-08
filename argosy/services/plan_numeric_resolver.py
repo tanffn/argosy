@@ -586,7 +586,11 @@ def _resolve_net_worth(
         raw_positions = parse_positions_json(snap.positions_json)
     except Exception:  # noqa: BLE001
         raw_positions = []
-    book = load_total_book(session, user_id, raw_positions)
+    book = load_total_book(
+        session, user_id, raw_positions,
+        snapshot_date=getattr(snap, "snapshot_date", None),
+        today=getattr(snap, "snapshot_date", None),
+    )
     if book.degraded:
         return ResolvedValue.unavailable(
             key, "nis",
@@ -1513,7 +1517,11 @@ def _apply_us_situs_estate(
             values[key] = ResolvedValue.pending(key, "nis", loc)
             return
         raw_positions = parse_positions_json(snap.positions_json)
-        book = load_total_book(session, user_id, raw_positions)
+        book = load_total_book(
+            session, user_id, raw_positions,
+            snapshot_date=getattr(snap, "snapshot_date", None),
+            today=getattr(snap, "snapshot_date", None),
+        )
         if book.degraded:
             # NEVER publish a HIGH-confidence understated estate figure.
             values[key] = ResolvedValue.unavailable(
@@ -1594,7 +1602,11 @@ def _apply_nvda_current_weight(
         if snap is None:
             return  # leave whatever the role resolver set (likely pending)
         raw_positions = parse_positions_json(snap.positions_json)
-        book = load_total_book(session, user_id, raw_positions)
+        book = load_total_book(
+            session, user_id, raw_positions,
+            snapshot_date=getattr(snap, "snapshot_date", None),
+            today=getattr(snap, "snapshot_date", None),
+        )
         if book.degraded:
             values[value_key] = ResolvedValue.unavailable(
                 value_key, "nis",
@@ -1924,7 +1936,11 @@ def _apply_nvda_deconcentration(
             .order_by(PortfolioSnapshotRow.id.desc()).limit(1)
         ).scalar_one_or_none()
         raw = parse_positions_json(snap.positions_json if snap else None)
-        book = load_total_book(session, user_id, raw)
+        book = load_total_book(
+            session, user_id, raw,
+            snapshot_date=getattr(snap, "snapshot_date", None) if snap else None,
+            today=getattr(snap, "snapshot_date", None) if snap else None,
+        )
         if book.degraded:
             for k in keys:
                 values[k] = ResolvedValue.unavailable(

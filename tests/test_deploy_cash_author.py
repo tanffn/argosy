@@ -33,7 +33,7 @@ def _patch_doc(monkeypatch):
     import argosy.api.routes.portfolio as portfolio
     monkeypatch.setattr(
         portfolio, "_load_current_doc_and_holdings",
-        lambda user_id: (_doc(), {"NVDA": 600_000.0, "SCHD": 264_000.0}, 0.0),
+        lambda user_id, db=None: (_doc(), {"NVDA": 600_000.0, "SCHD": 264_000.0}, 0.0),
     )
 
 
