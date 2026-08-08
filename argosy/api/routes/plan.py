@@ -2286,7 +2286,11 @@ def _compute_nvda_trajectory(
                 ))
             past_sales_raw.sort(key=lambda x: x.date)
     except Exception:  # noqa: BLE001 — best-effort
-        today_shares = None
+        # Only the SALES history is best-effort. today_shares comes from the
+        # persisted book above and must survive a failure in here: clearing it
+        # threw away the trusted share count because an unrelated part of the
+        # TSV would not parse.
+        past_sales_raw = []
 
     # Prefer the authoritative Schwab sale records (nvda_sale_progress.sales_2026,
     # ingested from the Equity Awards Transactions CSV) over the TSV's sale block,

@@ -337,6 +337,43 @@ def test_nvda_trajectory_reports_the_book_not_the_file_on_disk(
     )
 
 
+def test_nvda_trajectory_keeps_the_book_value_when_tsv_parsing_fails(
+    monkeypatch, session, tmp_path,
+):
+    """A failure in the SALES block must not discard the trusted share count.
+
+    The two reads share one try/except, whose handler cleared `today_shares`.
+    So an unrelated parse error threw away a good value from the book: a review
+    reproduced 10,940 becoming None.
+
+    Revert detector: clear `today_shares` in that handler again → this fails.
+    """
+    from argosy.api.routes import plan as plan_routes
+
+    persist_snapshot(
+        session,
+        user_id="ariel",
+        snapshot=_snap([_pos("NVDA", "schwab", 10940.0, 2307.9)]),
+    )
+
+    tsv = tmp_path / "broken.tsv"
+    tsv.write_text("dummy", encoding="utf-8")
+
+    def _explode(*_a, **_k):
+        raise ValueError("sales block is malformed")
+
+    monkeypatch.setattr("argosy.ingest.tsv.parse_portfolio_tsv", _explode)
+
+    resp = plan_routes._compute_nvda_trajectory(  # noqa: SLF001
+        user_id="ariel", db=session, tsv=tsv,
+    )
+
+    assert resp.today_shares == 10940, (
+        "a broken TSV must not discard the book's share count, got "
+        f"{resp.today_shares}"
+    )
+
+
 def test_portfolio_summary_does_not_reparse_a_rejected_feed(
     monkeypatch, session, tmp_path,
 ):

@@ -212,6 +212,34 @@ def test_gate_backup_missing_an_unrelated_table_is_rejected(tmp_path, mod):
     )
     assert "CONTENT" in detail_edit
 
+    # A TEXT value replaced by a BLOB of the SAME bytes is a type change, not a
+    # no-op. Revert detector: use a plain bytes text_factory → this fails.
+    retyped = tmp_path / "book.db.retyped"
+    mod.sqlite_consistent_backup(src, retyped)
+    con = sqlite3.connect(str(retyped))
+    con.execute("UPDATE proposals SET note = CAST(note AS BLOB)")
+    con.commit()
+    con.close()
+    ok_ty, detail_ty = mod.verify_backup_against_source(src, retyped, "ariel")
+    assert ok_ty is False, f"TEXT -> BLOB must not verify: {detail_ty}"
+
+    # A changed VIEW definition is a schema change the rollback point must keep.
+    # Revert detector: fingerprint only type='table' rows → this fails.
+    con = sqlite3.connect(str(src))
+    con.execute("CREATE VIEW v_open AS SELECT id FROM proposals")
+    con.commit()
+    con.close()
+    viewed = tmp_path / "book.db.viewed"
+    mod.sqlite_consistent_backup(src, viewed)
+    con = sqlite3.connect(str(viewed))
+    con.execute("DROP VIEW v_open")
+    con.execute("CREATE VIEW v_open AS SELECT note FROM proposals")
+    con.commit()
+    con.close()
+    ok_v, detail_v = mod.verify_backup_against_source(src, viewed, "ariel")
+    assert ok_v is False, f"a changed view must not verify: {detail_v}"
+    assert "schema" in detail_v
+
     # Control: a faithful backup still passes.
     good = tmp_path / "book.db.good"
     mod.sqlite_consistent_backup(src, good)
@@ -425,6 +453,34 @@ def test_gate_unidentifiable_argosy_db_is_refused_without_a_designation(
     assert mod.refuse_reason(oddly_named, override=False) is not None, (
         "a production DB under a non-standard name must not be accepted"
     )
+
+
+def test_gate_staged_copy_can_never_authorize_the_live_database(
+    tmp_path, monkeypatch, mod,
+):
+    """The most dangerous possible regression: the harmless flag opening prod.
+
+    `--staged-copy` is meant to be safe to type. If it were ever accepted for a
+    database we can identify as live, the safe habit would become the loaded
+    gun. Only `--i-really-mean-the-live-db` may pass the live database.
+
+    Revert detector: check `staged_copy` before the identity branch, or accept
+    either flag → this fails.
+    """
+    live = tmp_path / "home" / "db" / "argosy.db"
+    live.parent.mkdir(parents=True)
+    _book_db(live, _POSITIONS)
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path / "home"))
+
+    assert mod.is_live_db_path(live) is True, "precondition: identity-matched"
+
+    reason = mod.refuse_reason(live, override=False, staged_copy=True)
+    assert reason is not None, (
+        "--staged-copy must NOT authorize the live database"
+    )
+    assert "live database" in reason
+    # Only the explicit live override gets through.
+    assert mod.refuse_reason(live, override=True, staged_copy=False) is None
 
 
 def test_gate_staged_copy_designation_is_distinct_from_the_live_override(

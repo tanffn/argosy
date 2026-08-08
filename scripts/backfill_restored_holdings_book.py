@@ -43,7 +43,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from sqlalchemy import create_engine, inspect as sa_inspect
+from sqlalchemy import create_engine, inspect as sa_inspect, text as sa_text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -239,15 +239,38 @@ def database_fingerprint(db_file: Path) -> dict:
     XOR, so that two identical rows do not cancel each other out.
     """
     con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
-    con.text_factory = bytes
+    # text_factory is consulted ONLY for TEXT values, so tagging them here keeps
+    # a TEXT 'abc' distinguishable from a BLOB x'616263'. Without the tag both
+    # arrive as identical bytes and a type change fingerprints as no change.
+    con.text_factory = lambda b: b"\x00T\x00" + b
     try:
         tables = [
-            r[0].decode("utf-8") for r in con.execute(
+            r[0].decode("utf-8", "replace").replace("\x00T\x00", "")
+            for r in con.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
         ]
+        # Views, indexes, triggers and table DDL are part of what a rollback
+        # point has to restore; comparing only table rows let a changed view
+        # definition through.
+        def _clean(v: Any) -> str:
+            if isinstance(v, bytes):
+                return v.decode("utf-8", "replace").replace("\x00T\x00", "")
+            return str(v)
+
+        schema_objs: dict[str, str] = {}
+        for typ, name, tbl_name, sql in con.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ):
+            key = f"{_clean(typ)}:{_clean(name)}"
+            schema_objs[key] = hashlib.sha256(
+                repr((_clean(tbl_name), _clean(sql))).encode("utf-8", "replace")
+            ).hexdigest()[:16]
+
         digests: dict[str, Any] = {}
+        unreadable: list[str] = []
         for t in tables:
             try:
                 acc = 0
@@ -265,12 +288,21 @@ def database_fingerprint(db_file: Path) -> dict:
                     ) % (1 << 256)
                 digests[t] = f"{count}:{acc:064x}"
             except sqlite3.Error as exc:
-                digests[t] = f"ERROR {exc}"
+                # Must not become a comparable string: two unreadable databases
+                # would then reconcile against each other.
+                unreadable.append(f"{t} ({exc})")
+                digests[t] = f"UNREADABLE {t}"
+        if unreadable:
+            raise sqlite3.DatabaseError(
+                f"{len(unreadable)} unreadable table(s): {unreadable[:5]}"
+            )
+        integrity = con.execute("PRAGMA quick_check(1)").fetchone()[0]
+        if isinstance(integrity, bytes):
+            integrity = integrity.decode("utf-8", "replace").replace("\x00T\x00", "")
         return {
-            "integrity": con.execute(
-                "PRAGMA quick_check(1)"
-            ).fetchone()[0].decode("utf-8", "replace"),
+            "integrity": integrity,
             "table_count": len(tables),
+            "schema": schema_objs,
             "row_counts": digests,
         }
     finally:
@@ -314,6 +346,17 @@ def verify_backup_against_source(
         return False, f"cannot fingerprint the whole database ({exc})"
     if bak_db["integrity"] != "ok":
         return False, f"backup integrity={bak_db['integrity']!r}"
+    if src_db["schema"] != bak_db["schema"]:
+        src_s, bak_s = src_db["schema"], bak_db["schema"]
+        gone = sorted(set(src_s) - set(bak_s))
+        added = sorted(set(bak_s) - set(src_s))
+        changed = sorted(
+            k for k in set(src_s) & set(bak_s) if src_s[k] != bak_s[k]
+        )
+        return False, (
+            "schema differs — the backup is not an equivalent database: "
+            f"missing={gone[:5]} added={added[:5]} changed={changed[:5]}"
+        )
     missing = sorted(set(src_db["row_counts"]) - set(bak_db["row_counts"]))
     if missing:
         return False, f"backup is MISSING {len(missing)} table(s): {missing[:8]}"
@@ -439,12 +482,12 @@ class InterloperWatch:
     What this DOES guarantee: if anything else commits between ``start()`` and
     a ``moved()`` call, we find out and can refuse.
 
-    What it does NOT guarantee: mutual exclusion. Holding an EXCLUSIVE lock for
-    the whole repair is not available to us, because ``sqlite3``'s backup API
-    blocks when the source connection is inside a write transaction (measured:
-    it hangs indefinitely). Prevention is therefore operational — the backend
-    and scheduler must be stopped — and this class is the check that tells us,
-    loudly, if that was not actually done.
+    What it does NOT guarantee: mutual exclusion. This is only the check that
+    covers the BACKUP, which cannot be taken under a lock — ``sqlite3``'s backup
+    API hangs when the source connection is inside a write transaction
+    (measured). The RESTORE does not share that constraint and is performed
+    under ``BEGIN IMMEDIATE``, so the window this watch covers ends the moment
+    that lock is taken; from there the exclusion is structural, not observed.
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -693,13 +736,32 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        # Last look before we write. This closes the gap between verifying the
-        # backup and starting the restore; after this point our own ORM commits
-        # move the counter too, so it can no longer distinguish us from them.
+        # Close the window by construction rather than by observation. The
+        # BACKUP cannot hold a lock (sqlite3's backup API hangs when the source
+        # connection is inside a write transaction — measured), but the RESTORE
+        # can: taking IMMEDIATE here means no other connection can write from
+        # this point until we commit. An earlier version only re-checked and
+        # hoped, which left a real commit window between the check and the
+        # write.
+        try:
+            session.execute(sa_text("BEGIN IMMEDIATE"))
+        except Exception as exc:  # noqa: BLE001 — operator surface
+            watch.close()
+            print(
+                f"ERROR: could not take the write lock for the restore ({exc}). "
+                "Another connection holds the database. Stop the backend and "
+                "scheduler, then re-run.",
+                file=sys.stderr,
+            )
+            return 1
+
+        # With the lock held, one last look back over the unlocked stretch
+        # (backup + verification). Nothing can move it from here on.
         moved, detail = watch.moved()
         watch.close()
-        print(f"interloper check (pre-restore): {detail}")
+        print(f"interloper check (pre-restore, lock held): {detail}")
         if moved:
+            session.rollback()
             print(
                 f"ERROR: {detail} after the backup was verified. Refusing to "
                 "restore over a database that changed under us.",
