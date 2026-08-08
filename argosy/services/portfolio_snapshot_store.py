@@ -21,6 +21,15 @@ This module persists the parsed shape so:
 JSON encoding mirrors the PortfolioSnapshot pydantic model so the
 hydration step in `to_dto(...)` can ``PortfolioSnapshot(**...)`` over
 the round-trip.
+
+Ingest semantics (stream D repair):
+  * Per-account merge — a feed that omits an account carries no information
+    about it; those holdings are carried forward with their own
+    ``observed_as_of``.
+  * Coverage metadata is recorded on ``totals_json.accounts_covered`` /
+    ``accounts_carried`` so consumers can tell coverage from emptiness.
+  * Stale-date and within-coverage catastrophic-drop guards refuse destructive
+    writes unless an audited override (with a required reason) is passed.
 """
 
 from __future__ import annotations
@@ -28,12 +37,34 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from argosy.ingest.tsv import PortfolioSnapshot
-from argosy.state.models import PortfolioSnapshotRow
+from argosy.ingest.tsv import PortfolioPosition, PortfolioSnapshot
+from argosy.state.models import AuditLog, PortfolioSnapshotRow
+
+
+def _record_ingest_audit(
+    session: Session,
+    *,
+    user_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    entity_id: str = "",
+) -> None:
+    """Durable audit_log row for ingest accept/reject (sync session)."""
+    session.add(
+        AuditLog(
+            user_id=user_id,
+            event_type=event_type,
+            entity_type="portfolio_snapshot",
+            entity_id=str(entity_id or ""),
+            payload_json=json.dumps(payload, default=str),
+            created_at=datetime.now(timezone.utc),
+        )
+    )
 
 
 def persist_snapshot(
@@ -65,30 +96,127 @@ def persist_snapshot(
 
     Ingest guards (the Jul-13 NVDA-wipe class of failure):
       * reject ``snapshot_date`` older than the current latest
-      * reject a silent catastrophic drop in position count / securities value
+      * reject a silent catastrophic drop WITHIN accounts the feed covers
+      * merge per-account so uncovered accounts are carried forward
     Pass ``allow_stale`` / ``allow_catastrophic_drop`` only for deliberate
-    repairs (self-refresh carry of a known-good book is dated today and
-    passes; a re-import of an older incomplete TSV does not).
+    repairs, and always with a non-empty ``override_reason``.
     """
     from argosy.services.holding_books import (
         SnapshotIngestRejected,
+        accounts_covered_from_positions,
         assess_snapshot_ingest,
         load_policy_symbols,
+        merge_positions_per_account,
         stamp_management_flags,
         sync_unmanaged_from_positions,
     )
 
+    if (allow_stale or allow_catastrophic_drop) and not (override_reason or "").strip():
+        raise SnapshotIngestRejected(
+            "override_reason_required",
+            "allow_stale / allow_catastrophic_drop require a non-empty "
+            "override_reason for the audit trail",
+        )
+
     latest = get_latest_snapshot_row(session, user_id)
-    assess_snapshot_ingest(
-        latest_row=latest,
-        new_positions=snapshot.positions,
-        new_snapshot_date=snapshot.snapshot_date,
-        allow_stale=allow_stale,
-        allow_catastrophic_drop=allow_catastrophic_drop,
+    incoming_positions = list(snapshot.positions)
+    covered = accounts_covered_from_positions(incoming_positions)
+
+    try:
+        assess_snapshot_ingest(
+            latest_row=latest,
+            new_positions=incoming_positions,
+            new_snapshot_date=snapshot.snapshot_date,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            accounts_covered=sorted(covered),
+        )
+    except SnapshotIngestRejected as exc:
+        from argosy.logging import get_logger
+        get_logger("argosy.portfolio_snapshot_store").warning(
+            "snapshot_ingest.rejected",
+            user_id=user_id,
+            code=exc.code,
+            detail=exc.detail,
+            actor=actor,
+            override_reason=override_reason,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            accounts_covered=sorted(covered),
+            snapshot_date=str(snapshot.snapshot_date),
+        )
+        _record_ingest_audit(
+            session,
+            user_id=user_id,
+            event_type="snapshot.ingest.rejected",
+            payload={
+                "code": exc.code,
+                "detail": exc.detail,
+                "actor": actor,
+                "override_reason": override_reason,
+                "allow_stale": allow_stale,
+                "allow_catastrophic_drop": allow_catastrophic_drop,
+                "accounts_covered": sorted(covered),
+                "snapshot_date": str(snapshot.snapshot_date),
+                "source_path": snapshot.source_path,
+            },
+        )
+        if commit:
+            session.commit()
+        else:
+            session.flush()
+        raise
+
+    # Per-account merge onto the prior book.
+    prior_positions: list = []
+    prior_date = None
+    if latest is not None:
+        try:
+            prior_positions = json.loads(latest.positions_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            prior_positions = []
+        prior_date = latest.snapshot_date
+
+    merge = merge_positions_per_account(
+        prior_positions=prior_positions,
+        incoming_positions=incoming_positions,
+        incoming_snapshot_date=snapshot.snapshot_date,
+        prior_snapshot_date=prior_date,
     )
 
     policy = load_policy_symbols(session, user_id)
-    stamped = _normalized_position_dicts(snapshot.positions, policy_symbols=policy)
+    stamped = stamp_management_flags(merge.positions, policy_symbols=policy)
+    # Re-normalize asset types against the instrument reference.
+    stamped = _normalized_position_dicts(
+        [_dict_as_position(p) for p in stamped],
+        policy_symbols=policy,
+    )
+
+    # Rebuild totals from the MERGED book (not the raw feed).
+    total_usd_k = 0.0
+    cash_balances = 0.0
+    for p in stamped:
+        try:
+            usd = float(p.get("usd_value_k") or 0.0)
+        except (TypeError, ValueError):
+            usd = 0.0
+        total_usd_k += usd
+        at = str(p.get("asset_type") or "").lower()
+        if "cash" in at:
+            cash_balances += usd
+
+    warns = list(snapshot.parse_warnings)
+    if merge.accounts_carried:
+        warns.append(
+            "ACCOUNT_MERGE carried_forward="
+            + ",".join(merge.accounts_carried)
+            + " covered="
+            + ",".join(merge.accounts_covered)
+        )
+    for old_s, new_s, acct, sh in merge.renames:
+        warns.append(
+            f"SYMBOL_RENAME old={old_s!r} new={new_s!r} account={acct} shares={sh}"
+        )
 
     row = PortfolioSnapshotRow(
         user_id=user_id,
@@ -112,17 +240,23 @@ def persist_snapshot(
             [pe.model_dump() for pe in snapshot.pensions], default=str,
         ),
         totals_json=json.dumps({
-            "total_usd_value_k": snapshot.total_usd_value_k,
-            "cash_balances_usd_k": snapshot.cash_balances_usd_k(),
+            "total_usd_value_k": total_usd_k,
+            "cash_balances_usd_k": cash_balances,
+            "accounts_covered": list(merge.accounts_covered),
+            "accounts_carried": list(merge.accounts_carried),
+            "feed_position_count": len(incoming_positions),
+            "merged_position_count": len(stamped),
         }),
         fx_usd_nis=snapshot.fx_usd_nis,
         fx_usd_eur=snapshot.fx_usd_eur,
-        parse_warnings_json=json.dumps(list(snapshot.parse_warnings)),
+        parse_warnings_json=json.dumps(warns),
     )
     session.add(row)
     # Lifecycle sync in SAVEPOINTs — never rolls back this snapshot write.
     # Account closure is NOT tied to catastrophic-drop — use
     # retire_unmanaged_account for an explicit single-account retirement.
+    # Sync against the FEED positions for covered accounts (sales), not the
+    # carried-forward book — unmanaged sync already keeps absent accounts.
     sync_result = sync_unmanaged_from_positions(
         session, user_id, stamped, commit=False,
         valued_as_of=snapshot.snapshot_date,
@@ -133,39 +267,68 @@ def persist_snapshot(
             "unmanaged_sync_errors", **sync_result,
         )
     if allow_stale or allow_catastrophic_drop:
-        # Auditable override — stamp the persisted row's warnings with enough
-        # to reconstruct who bypassed what and why.
         try:
-            warns = json.loads(row.parse_warnings_json or "[]")
+            row_warns = json.loads(row.parse_warnings_json or "[]")
         except (TypeError, ValueError, json.JSONDecodeError):
-            warns = []
+            row_warns = []
         would_have: list[str] = []
         if allow_stale:
             would_have.append("stale_snapshot_date")
         if allow_catastrophic_drop:
             would_have.append("catastrophic_position_or_value_drop")
-        actor = actor or "unspecified"
-        reason = override_reason or "unspecified"
-        warns.append(
+        actor_s = actor or "unspecified"
+        reason_s = (override_reason or "").strip()
+        row_warns.append(
             "INGEST_OVERRIDE "
-            f"actor={actor} "
-            f"reason={reason} "
+            f"actor={actor_s} "
+            f"reason={reason_s} "
             f"allow_stale={allow_stale} "
             f"allow_catastrophic_drop={allow_catastrophic_drop} "
             f"guards_bypassed={','.join(would_have) or 'none'} "
             f"snapshot_date={snapshot.snapshot_date}"
         )
-        row.parse_warnings_json = json.dumps(warns)
+        row.parse_warnings_json = json.dumps(row_warns)
         from argosy.logging import get_logger
         get_logger("argosy.portfolio_snapshot_store").warning(
             "snapshot_ingest.override",
             user_id=user_id,
-            actor=actor,
-            reason=reason,
+            actor=actor_s,
+            reason=reason_s,
             allow_stale=allow_stale,
             allow_catastrophic_drop=allow_catastrophic_drop,
             guards_bypassed=would_have,
             snapshot_date=str(snapshot.snapshot_date),
+        )
+        _record_ingest_audit(
+            session,
+            user_id=user_id,
+            event_type="snapshot.ingest.override",
+            payload={
+                "actor": actor_s,
+                "override_reason": reason_s,
+                "allow_stale": allow_stale,
+                "allow_catastrophic_drop": allow_catastrophic_drop,
+                "guards_bypassed": would_have,
+                "snapshot_date": str(snapshot.snapshot_date),
+                "accounts_covered": list(merge.accounts_covered),
+                "accounts_carried": list(merge.accounts_carried),
+                "source_path": snapshot.source_path,
+            },
+        )
+    else:
+        _record_ingest_audit(
+            session,
+            user_id=user_id,
+            event_type="snapshot.ingest.accepted",
+            payload={
+                "actor": actor,
+                "snapshot_date": str(snapshot.snapshot_date),
+                "accounts_covered": list(merge.accounts_covered),
+                "accounts_carried": list(merge.accounts_carried),
+                "merged_position_count": len(stamped),
+                "feed_position_count": len(incoming_positions),
+                "source_path": snapshot.source_path,
+            },
         )
     if commit:
         session.commit()
@@ -177,6 +340,13 @@ def persist_snapshot(
 
 # Re-export for callers that need to catch the guard.
 from argosy.services.holding_books import SnapshotIngestRejected  # noqa: E402
+
+
+def _dict_as_position(d: dict) -> PortfolioPosition:
+    """Best-effort coerce a merged dict into PortfolioPosition for normalize."""
+    known = {f for f in PortfolioPosition.model_fields}
+    payload = {k: v for k, v in d.items() if k in known}
+    return PortfolioPosition(**payload)
 
 
 def dedup_nvda_sale_dicts(rows: list) -> list:
@@ -327,14 +497,16 @@ def latest_matches_snapshot(
     # total value is the same parse output for our purposes.
     try:
         positions = json.loads(row.positions_json or "[]")
-        if len(positions) != len(snapshot.positions):
-            return False
+        # Compare against FEED size stored in totals when present; else merged.
         totals = json.loads(row.totals_json or "{}")
-        if abs(
-            float(totals.get("total_usd_value_k", 0.0))
-            - float(snapshot.total_usd_value_k)
-        ) > 1e-6:
+        feed_n = totals.get("feed_position_count")
+        if feed_n is not None:
+            if int(feed_n) != len(snapshot.positions):
+                return False
+        elif len(positions) != len(snapshot.positions):
             return False
+        # Don't compare total_usd_value_k against feed total — merged book
+        # totals diverge from the raw feed when accounts are carried.
     except (ValueError, TypeError):
         return False
     return True

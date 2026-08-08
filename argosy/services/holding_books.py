@@ -80,7 +80,8 @@ def _as_mapping(p: Any) -> Mapping[str, Any] | None:
                 "usd_value_k", "shares", "current_price", "currency",
                 "location", "asset_type", "details", "avg_price",
                 "current_value_local", "pct_change", "pct_yearly",
-                "review_status",
+                "review_status", "observed_as_of", "valued_as_of",
+                "carried_forward", "mark_stale",
             )
             if hasattr(p, k)
         }
@@ -124,6 +125,17 @@ QUANTITY_STALE_DAYS = 90
 # migrate to quantity_is_stale / live reprice. Kept so older tests import.
 STALE_VALUATION_DAYS = QUANTITY_STALE_DAYS
 
+# A stored mark older than this must be live-repriced before it can publish
+# as current money — whether the symbol is present in the snapshot or restored
+# from the durable unmanaged book. 0 = must be valued today.
+MARK_STALE_DAYS = 0
+
+# Display-name renames that are NOT sales (same account, same units).
+# Keys/values are exact TSV symbol strings (Hebrew preserved).
+KNOWN_SYMBOL_RENAMES: dict[str, str] = {
+    'מחקה ת"א-200': 'ת"א-200',
+}
+
 
 def _as_date(value: Any) -> date | None:
     if value is None:
@@ -154,6 +166,48 @@ def quantity_is_stale(
     return (ref - d).days > max_age_days
 
 
+def mark_is_stale(
+    valued_as_of: Any,
+    *,
+    today: date | None = None,
+    max_age_days: int = MARK_STALE_DAYS,
+) -> bool:
+    """True when a stored PRICE/mark is too old to publish as current money.
+
+    Undated marks return False here — callers that know the snapshot as-of
+    MUST stamp ``valued_as_of`` / ``observed_as_of`` first (see
+    ``load_total_book``). An undated mark with ``mark_stale=True`` is still
+    refused by the merge path.
+    """
+    d = _as_date(valued_as_of)
+    if d is None:
+        return False
+    ref = today or date.today()
+    return (ref - d).days > max_age_days
+
+
+def stamp_mark_dates(
+    positions: Sequence[Any] | None,
+    *,
+    snapshot_date: date | None,
+) -> list[dict[str, Any]]:
+    """Fill missing valued/observed dates from the snapshot as-of."""
+    as_of = _as_date(snapshot_date)
+    out: list[dict[str, Any]] = []
+    for p in positions or []:
+        m = _as_mapping(p)
+        if m is None:
+            continue
+        d = dict(m)
+        if as_of is not None:
+            if d.get("valued_as_of") is None:
+                d["valued_as_of"] = as_of
+            if d.get("observed_as_of") is None:
+                d["observed_as_of"] = as_of
+        out.append(d)
+    return out
+
+
 def valuation_is_stale(
     valued_as_of: Any, *, today: date | None = None, max_age_days: int = QUANTITY_STALE_DAYS,
 ) -> bool:
@@ -162,6 +216,188 @@ def valuation_is_stale(
     Kept for callers/tests; prefer ``quantity_is_stale`` + live reprice.
     """
     return quantity_is_stale(valued_as_of, today=today, max_age_days=max_age_days)
+
+
+def normalize_symbol_identity(symbol: str) -> str:
+    """Map known renames onto the canonical symbol string."""
+    s = (symbol or "").strip()
+    return KNOWN_SYMBOL_RENAMES.get(s, s)
+
+
+def accounts_covered_from_positions(positions: Sequence[Any] | None) -> frozenset[str]:
+    """Account keys the feed actually mentioned (coverage ≠ emptiness)."""
+    return frozenset(
+        location_account_key(_location_of(p))
+        for p in (positions or [])
+        if location_account_key(_location_of(p))
+    )
+
+
+def _position_shares(p: Any) -> float | None:
+    m = _as_mapping(p) or {}
+    raw = m.get("shares")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _symbol_key_for_merge(symbol: str) -> str:
+    """Identity key: renamed symbols collapse; bare hyphen stays distinct."""
+    s = normalize_symbol_identity(symbol)
+    if s == "-":
+        return "-"
+    return s.strip().upper()
+
+
+@dataclass(frozen=True)
+class AccountMergeResult:
+    """Per-account merge of an incoming feed onto the prior book."""
+
+    positions: list[dict[str, Any]]
+    accounts_covered: tuple[str, ...]
+    accounts_carried: tuple[str, ...]
+    renames: tuple[tuple[str, str, str, float], ...]  # old, new, account, shares
+
+
+def merge_positions_per_account(
+    *,
+    prior_positions: Sequence[Any] | None,
+    incoming_positions: Sequence[Any] | None,
+    incoming_snapshot_date: date | None,
+    prior_snapshot_date: date | None = None,
+) -> AccountMergeResult:
+    """Merge an incoming feed onto the prior book by account coverage.
+
+    Lifecycle (matches ``unmanaged_holdings``):
+      * A feed that does not mention an account carries NO information about
+        it — those holdings are carried forward with their own
+        ``observed_as_of``.
+      * Within a covered account, disappearance of a symbol is a sale.
+      * Known renames (and 1:1 same-shares replacements) are NOT scored as
+        sale + purchase.
+    """
+    incoming_date = _as_date(incoming_snapshot_date)
+    prior_date = _as_date(prior_snapshot_date)
+    covered = accounts_covered_from_positions(incoming_positions)
+
+    prior_by_acct: dict[str, list[dict[str, Any]]] = {}
+    for p in prior_positions or []:
+        m = _as_mapping(p)
+        if m is None:
+            continue
+        d = dict(m)
+        ak = location_account_key(_location_of(d))
+        if not ak:
+            continue
+        # Preserve prior observation dates if already stamped.
+        if d.get("observed_as_of") is None and prior_date is not None:
+            d["observed_as_of"] = prior_date
+        if d.get("valued_as_of") is None and prior_date is not None:
+            d["valued_as_of"] = prior_date
+        prior_by_acct.setdefault(ak, []).append(d)
+
+    incoming_by_acct: dict[str, list[dict[str, Any]]] = {}
+    for p in incoming_positions or []:
+        m = _as_mapping(p)
+        if m is None:
+            continue
+        d = dict(m)
+        ak = location_account_key(_location_of(d))
+        if not ak:
+            continue
+        raw_sym = str(d.get("symbol") or "")
+        canon = normalize_symbol_identity(raw_sym)
+        if canon != raw_sym:
+            d["symbol"] = canon
+        d["observed_as_of"] = incoming_date
+        d["valued_as_of"] = incoming_date
+        d["carried_forward"] = False
+        incoming_by_acct.setdefault(ak, []).append(d)
+
+    merged: list[dict[str, Any]] = []
+    carried_accounts: list[str] = []
+    renames: list[tuple[str, str, str, float]] = []
+
+    # Carry accounts the feed did not cover.
+    for ak, rows in prior_by_acct.items():
+        if ak in covered:
+            continue
+        carried_accounts.append(ak)
+        for d in rows:
+            c = dict(d)
+            c["carried_forward"] = True
+            merged.append(c)
+
+    # Replace covered accounts from the feed; detect renames vs sales.
+    for ak in sorted(covered):
+        prior_rows = prior_by_acct.get(ak) or []
+        inc_rows = incoming_by_acct.get(ak) or []
+
+        prior_by_sym: dict[str, dict[str, Any]] = {}
+        for d in prior_rows:
+            sk = _symbol_key_for_merge(str(d.get("symbol") or ""))
+            if sk and sk not in prior_by_sym:
+                prior_by_sym[sk] = d
+
+        inc_by_sym: dict[str, dict[str, Any]] = {}
+        for d in inc_rows:
+            sk = _symbol_key_for_merge(str(d.get("symbol") or ""))
+            # Keep empty / hyphen keys distinct per occurrence order.
+            if not sk:
+                sk = f"__anon:{len(inc_by_sym)}"
+            if sk not in inc_by_sym:
+                inc_by_sym[sk] = d
+
+        # Explicit alias renames already applied via normalize_symbol_identity
+        # on incoming. Record them when prior had the old name.
+        for old_sym, new_sym in KNOWN_SYMBOL_RENAMES.items():
+            old_k = _symbol_key_for_merge(old_sym)
+            new_k = _symbol_key_for_merge(new_sym)
+            if old_k in prior_by_sym and new_k in inc_by_sym:
+                sh = _position_shares(inc_by_sym[new_k])
+                if sh is not None:
+                    renames.append((old_sym, new_sym, ak, sh))
+
+        # Heuristic: within this account, unmatched prior↔incoming with equal
+        # shares (exactly one pair) is a rename, not a sale+buy.
+        gone = {
+            sk: prior_by_sym[sk]
+            for sk in prior_by_sym
+            if sk not in inc_by_sym and sk not in {"", "-"}
+        }
+        appeared = {
+            sk: inc_by_sym[sk]
+            for sk in inc_by_sym
+            if sk not in prior_by_sym and not sk.startswith("__anon:")
+            and sk not in {"", "-"}
+        }
+        if len(gone) == 1 and len(appeared) == 1:
+            (old_k, old_d), = gone.items()
+            (new_k, new_d), = appeared.items()
+            old_sh = _position_shares(old_d)
+            new_sh = _position_shares(new_d)
+            if (
+                old_sh is not None and new_sh is not None
+                and abs(old_sh - new_sh) < 1e-9
+            ):
+                renames.append((
+                    str(old_d.get("symbol") or old_k),
+                    str(new_d.get("symbol") or new_k),
+                    ak,
+                    float(new_sh),
+                ))
+
+        merged.extend(inc_by_sym[sk] for sk in inc_by_sym)
+
+    return AccountMergeResult(
+        positions=merged,
+        accounts_covered=tuple(sorted(covered)),
+        accounts_carried=tuple(sorted(set(carried_accounts))),
+        renames=tuple(renames),
+    )
 
 
 def dedupe_positions_by_symbol_location(
@@ -403,6 +639,51 @@ def _reprice_durable_row(
     return pos
 
 
+def _reprice_position_dict(
+    pos: dict[str, Any],
+    *,
+    quote_fn: Any | None,
+    fx_usd_nis: float | None,
+    fx_usd_eur: float | None,
+    today: date,
+) -> dict[str, Any] | None:
+    """Live-reprice one snapshot position dict; None on miss / unpriceable."""
+    from argosy.services.snapshot_refresh import reprice_quantity
+
+    shares = pos.get("shares")
+    try:
+        sh = float(shares) if shares is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    if sh <= 0:
+        return None
+    priced = reprice_quantity(
+        symbol=str(pos.get("symbol") or ""),
+        shares=sh,
+        currency=str(pos.get("currency") or "USD"),
+        details=str(pos.get("details") or ""),
+        old_price=pos.get("current_price"),
+        quote_fn=quote_fn,
+        fx_usd_nis=fx_usd_nis,
+        fx_usd_eur=fx_usd_eur,
+    )
+    if priced is None:
+        return None
+    price, usd_k = priced
+    out = dict(pos)
+    out["current_price"] = price
+    out["current_value_local"] = sh * price
+    out["usd_value_k"] = usd_k
+    out["valued_as_of"] = today
+    out["mark_stale"] = False
+    out["repriced"] = True
+    return out
+
+
+def _position_mark_date(pos: Mapping[str, Any] | dict[str, Any]) -> Any:
+    return pos.get("valued_as_of") or pos.get("observed_as_of")
+
+
 def merge_total_book_positions(
     snapshot_positions: Sequence[Any] | None,
     *,
@@ -418,22 +699,81 @@ def merge_total_book_positions(
     """Total book = deduped snapshot + durable quantities REPRICED live.
 
     Share counts with ``observed_as_of`` within ``QUANTITY_STALE_DAYS`` are
-    durable facts. Their value is always computed via the managed-book
-    reprice path — never by publishing a stored mark as current money.
-    Quantity-stale rows are skipped (integrity marks degraded). Quote misses
-    are recorded on ``reprice_failures`` so the caller can degrade loud.
+    durable facts. Stored marks — whether the symbol is present in the
+    snapshot or restored from the durable book — are never published as
+    current money when stale: they are live-repriced, or omitted with a
+    failure recorded on ``reprice_failures``.
     """
     ref = today or date.today()
     stamped = stamp_management_flags(
         dedupe_positions_by_symbol_location(snapshot_positions),
         policy_symbols=policy_symbols,
     )
+    failures = reprice_failures if reprice_failures is not None else []
+
+    # Reprice (or refuse) stale marks on positions ALREADY in the snapshot.
+    refreshed: list[dict[str, Any]] = []
+    for pos in stamped:
+        mark_date = _position_mark_date(pos)
+        needs_reprice = (
+            bool(pos.get("mark_stale"))
+            or mark_is_stale(mark_date, today=ref)
+        )
+        if not needs_reprice:
+            refreshed.append(pos)
+            continue
+        at = str(pos.get("asset_type") or "").lower()
+        sym = _symbol_of(pos)
+        # Cash / unpriceable / shareless rows: cannot live-reprice. Keep the
+        # quantity-shaped row but never pretend the mark is fresh.
+        from argosy.services.snapshot_refresh import _PRICEABLE_SYMBOL_RE
+        priceable = bool(sym) and bool(_PRICEABLE_SYMBOL_RE.match(sym))
+        shares_ok = False
+        try:
+            shares_ok = float(pos.get("shares") or 0) > 0
+        except (TypeError, ValueError):
+            shares_ok = False
+        if "cash" in at or not priceable or not shares_ok:
+            stripped = dict(pos)
+            stripped["mark_stale"] = True
+            refreshed.append(stripped)
+            # Policy symbols must not publish stale money even if unpriceable.
+            policy = policy_symbols if policy_symbols is not None else DEFAULT_UNMANAGED_SYMBOLS
+            if sym in policy:
+                failures.append(
+                    f"stale_mark_unpriceable:{sym}@"
+                    f"{_norm_location(_location_of(pos)) or 'unknown'} "
+                    f"(valued_as_of={mark_date})"
+                )
+                stripped["usd_value_k"] = None
+            continue
+        priced = _reprice_position_dict(
+            pos, quote_fn=quote_fn,
+            fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur, today=ref,
+        )
+        if priced is None:
+            failures.append(
+                f"stale_mark_reprice_miss:{sym}@"
+                f"{_norm_location(_location_of(pos)) or 'unknown'} "
+                f"(valued_as_of={mark_date})"
+            )
+            if include_stale:
+                refreshed.append(pos)
+            else:
+                stripped = dict(pos)
+                stripped["usd_value_k"] = None
+                stripped["current_price"] = None
+                stripped["mark_stale"] = True
+                refreshed.append(stripped)
+            continue
+        refreshed.append(priced)
+    stamped = refreshed
+
     present = {
         (_symbol_of(p), _norm_location(_location_of(p)))
         for p in stamped
         if _symbol_of(p)
     }
-    failures = reprice_failures if reprice_failures is not None else []
     for row in unmanaged_rows or []:
         if getattr(row, "status", STATUS_ACTIVE) not in (STATUS_ACTIVE, None, ""):
             continue
@@ -473,7 +813,8 @@ def assess_total_book_integrity(
       * durable load failed, OR
       * a policy symbol is absent from the snapshot and there is no durable
         quantity within QUANTITY_STALE_DAYS to restore, OR
-      * a policy symbol needs restore but live reprice/FX failed.
+      * a policy symbol needs restore but live reprice/FX failed, OR
+      * a stale stored mark could not be live-repriced (present OR absent).
     """
     if not load.ok:
         return True, f"unmanaged_holdings load failed: {load.error or 'unknown'}"
@@ -493,14 +834,15 @@ def assess_total_book_integrity(
             active_by_sym.setdefault(sym, []).append(row)
 
     if reprice_failures:
-        # Quote/FX infrastructure failed for a needed restore — loud, real.
         return True, (
-            "live reprice unavailable for durable unmanaged quantity — "
+            "live reprice unavailable for current-money marks — "
             + "; ".join(reprice_failures)
         )
 
     for sym in policy_symbols:
         if sym in snap_syms:
+            # Present — stale-mark refusal is enforced in merge via live
+            # reprice (failures recorded on reprice_failures above).
             continue
         durable = active_by_sym.get(sym) or []
         fresh_qty = [
@@ -572,11 +914,14 @@ def load_total_book(
     quote_fn: Any | None = None,
     fx_usd_nis: float | None = None,
     fx_usd_eur: float | None = None,
+    snapshot_date: date | None = None,
 ) -> TotalBookResult:
     """Single entry point for total/managed books + integrity.
 
     Durable unmanaged quantities are REPRICED live (managed-book path). A
     missing quote / FX is a real infrastructure failure and marks degraded.
+    ``snapshot_date`` stamps missing mark dates so a July position in a
+    July-dated snapshot cannot publish as current money on a later day.
     """
     ref = today or date.today()
     policy = load_policy_symbols(session, user_id)
@@ -585,28 +930,37 @@ def load_total_book(
     # Resolve FX for USD conversion of non-USD durable rows (NVDA is USD).
     fx_nis = fx_usd_nis
     fx_eur = fx_usd_eur
-    if fx_nis is None and session is not None:
+    snap_date = _as_date(snapshot_date)
+    if session is not None:
         try:
             from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
             snap = get_latest_snapshot_row(session, user_id)
             if snap is not None:
-                fx_nis = float(snap.fx_usd_nis) if snap.fx_usd_nis else None
-                fx_eur = float(snap.fx_usd_eur) if snap.fx_usd_eur else None
+                if fx_nis is None:
+                    fx_nis = float(snap.fx_usd_nis) if snap.fx_usd_nis else None
+                if fx_eur is None:
+                    fx_eur = float(snap.fx_usd_eur) if snap.fx_usd_eur else None
+                if snap_date is None:
+                    snap_date = _as_date(getattr(snap, "snapshot_date", None))
         except Exception:  # noqa: BLE001
             pass
+
+    stamped_positions = stamp_mark_dates(
+        snapshot_positions, snapshot_date=snap_date,
+    )
 
     reprice_failures: list[str] = []
     # Catch double-counting on the RAW snapshot BEFORE merge drops duplicates.
     degraded = False
     reason: str | None = None
     try:
-        books_consistency_check_positions(snapshot_positions)
+        books_consistency_check_positions(stamped_positions)
     except AssertionError as exc:
         degraded = True
         reason = f"duplicate snapshot rows: {exc}"
 
     total, managed = positions_for_books(
-        snapshot_positions,
+        stamped_positions,
         unmanaged_rows=load.rows if load.ok else [],
         policy_symbols=policy,
         today=ref,
@@ -616,7 +970,7 @@ def load_total_book(
         reprice_failures=reprice_failures,
     )
     integ_degraded, integ_reason = assess_total_book_integrity(
-        snapshot_positions,
+        stamped_positions,
         load=load,
         policy_symbols=policy,
         today=ref,
@@ -1110,8 +1464,19 @@ def assess_snapshot_ingest(
     new_snapshot_date: Any | None,
     allow_stale: bool = False,
     allow_catastrophic_drop: bool = False,
+    accounts_covered: Sequence[str] | None = None,
 ) -> None:
-    """Raise ``SnapshotIngestRejected`` when the write would be destructive."""
+    """Raise ``SnapshotIngestRejected`` when the write would be destructive.
+
+    Stale-date rule: an incoming feed whose ``snapshot_date`` precedes the
+    current book's date must NOT become current. An older observation cannot
+    supersede a newer one — quarantine/override is the only path
+    (``allow_stale``). Same-date re-imports are allowed.
+
+    Catastrophic-drop rule is scoped to accounts the feed **covers**. A
+    Leumi-only feed that omits Schwab is incomplete coverage, not a
+    catastrophic wipe of Schwab — per-account merge carries those holdings.
+    """
     if latest_row is None:
         return
     if not allow_stale:
@@ -1121,7 +1486,8 @@ def assess_snapshot_ingest(
                 raise SnapshotIngestRejected(
                     "stale_snapshot_date",
                     f"incoming snapshot_date {new_snapshot_date} precedes "
-                    f"latest {old_date}",
+                    f"latest {old_date}; refusing to let an older feed "
+                    f"become current (pass allow_stale with a reason to override)",
                 )
     if allow_catastrophic_drop:
         return
@@ -1129,20 +1495,43 @@ def assess_snapshot_ingest(
         old_positions = json.loads(getattr(latest_row, "positions_json", None) or "[]")
     except (TypeError, ValueError, json.JSONDecodeError):
         old_positions = []
-    old_n = _named_position_count(old_positions)
-    new_n = _named_position_count(new_positions)
+
+    covered = {
+        location_account_key(a) for a in (accounts_covered or [])
+        if location_account_key(a)
+    }
+    if not covered:
+        covered = set(accounts_covered_from_positions(new_positions))
+
+    if covered:
+        old_in_covered = [
+            p for p in old_positions
+            if location_account_key(_location_of(p)) in covered
+        ]
+        new_in_covered = [
+            p for p in (new_positions or [])
+            if location_account_key(_location_of(p)) in covered
+        ]
+    else:
+        old_in_covered = old_positions
+        new_in_covered = list(new_positions or [])
+
+    old_n = _named_position_count(old_in_covered)
+    new_n = _named_position_count(new_in_covered)
     if old_n >= _CATASTROPHIC_MIN_OLD_POSITIONS and new_n < old_n * _CATASTROPHIC_FRACTION:
         raise SnapshotIngestRejected(
             "catastrophic_position_drop",
-            f"named positions {old_n} → {new_n} "
+            f"named positions in covered accounts {sorted(covered) or ['(all)']} "
+            f"{old_n} → {new_n} "
             f"(below {_CATASTROPHIC_FRACTION:.0%} retention)",
         )
-    old_v = _securities_usd_k(old_positions)
-    new_v = _securities_usd_k(new_positions)
+    old_v = _securities_usd_k(old_in_covered)
+    new_v = _securities_usd_k(new_in_covered)
     if old_v >= _CATASTROPHIC_MIN_OLD_USD_K and new_v < old_v * _CATASTROPHIC_FRACTION:
         raise SnapshotIngestRejected(
             "catastrophic_value_drop",
-            f"securities usd_k {old_v:.1f} → {new_v:.1f} "
+            f"securities usd_k in covered accounts {sorted(covered) or ['(all)']} "
+            f"{old_v:.1f} → {new_v:.1f} "
             f"(below {_CATASTROPHIC_FRACTION:.0%} retention)",
         )
 
@@ -1186,14 +1575,18 @@ def books_consistency_check(
 
 __all__ = [
     "DEFAULT_UNMANAGED_SYMBOLS",
+    "KNOWN_SYMBOL_RENAMES",
+    "MARK_STALE_DAYS",
     "STATUS_ACTIVE",
     "STATUS_RETIRED",
     "QUANTITY_STALE_DAYS",
     "STALE_VALUATION_DAYS",
+    "AccountMergeResult",
     "SnapshotIngestRejected",
     "TotalBookDegraded",
     "TotalBookResult",
     "UnmanagedLoadResult",
+    "accounts_covered_from_positions",
     "assess_snapshot_ingest",
     "assess_total_book_integrity",
     "backfill_unmanaged_from_snapshots",
@@ -1210,7 +1603,10 @@ __all__ = [
     "load_unmanaged_holding_rows",
     "location_account_key",
     "managed_positions",
+    "mark_is_stale",
+    "merge_positions_per_account",
     "merge_total_book_positions",
+    "normalize_symbol_identity",
     "parse_explicit_managed_flag",
     "parse_positions_json",
     "position_usd_value_k",
@@ -1218,6 +1614,7 @@ __all__ = [
     "quantity_is_stale",
     "retire_unmanaged_account",
     "stamp_management_flags",
+    "stamp_mark_dates",
     "symbol_value_usd_k",
     "sync_unmanaged_from_positions",
     "total_positions",

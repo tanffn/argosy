@@ -119,6 +119,11 @@ class PortfolioPosition(BaseModel):
     # Explicit book membership. None = infer (NVDA → unmanaged by convention).
     managed: bool | None = None
     excluded_from_sleeve_math: bool | None = None
+    # Observation / mark provenance (per-account merge + stale-mark refusal).
+    observed_as_of: date | None = None
+    valued_as_of: date | None = None
+    carried_forward: bool | None = None
+    mark_stale: bool | None = None
 
 
 class RealEstatePosition(BaseModel):

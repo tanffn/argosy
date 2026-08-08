@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -553,7 +553,6 @@ def _resolve_snapshot_root() -> Path:
 @router.post(
     "/upload-snapshot",
     response_model=UploadSnapshotResponse,
-    dependencies=[Depends(require_admin_token)],
 )
 def upload_snapshot(
     file: UploadFile = File(...),
@@ -562,41 +561,44 @@ def upload_snapshot(
     allow_stale: bool = Form(False),
     allow_catastrophic_drop: bool = Form(False),
     override_reason: str = Form(""),
+    x_argosy_admin: str | None = Header(default=None, alias="X-Argosy-Admin"),
     db: Session = Depends(get_db),
 ) -> UploadSnapshotResponse:
     """Upload a monthly portfolio snapshot.
 
-    Accepts two upload shapes, selected by content sniffing:
-
-      * **Family Finances Status TSV** -- the long-standing path. Parsed
-        by ``parse_portfolio_tsv``, persisted under the scan root,
-        detector fires.
-      * **Leumi monthly portfolio XLS** (SpreadsheetML 2003 envelope) --
-        positions-only export from Leumi web banking. Routed through
-        ``xls_osh_pair.handle_xls_upload`` which either synthesizes a
-        merged TSV from a paired Leumi Osh statement + the most-recent
-        prior TSV (positions / cash / allocation block recomputed,
-        non-Leumi rows preserved verbatim) and fires the detector, OR
-        queues the snapshot as ``status=pending_pair`` when no Osh
-        statement is in window. The Osh-side hook resolves the pair
-        when a matching Osh subsequently arrives. (Codex zigzag
-        2026-05-29, session xls-osh-pair-design.)
-
-    The route's contract:
-      1. Read the multipart file bytes; SHA-256 returned to caller.
-      2. Sniff content shape.
-      3. Dispatch to the TSV path or XLS path.
-      4. Optionally fire the windfall detector synchronously
-         (default on; pass ``fire_detector=false`` to suppress).
+    Ordinary uploads are open to the signed-in client (no admin header).
+    Privileged bypasses (`allow_stale` / `allow_catastrophic_drop`)
+    require `X-Argosy-Admin` + a non-empty `override_reason`. Account
+    closure remains on a separate admin-gated endpoint.
     """
+    if allow_stale or allow_catastrophic_drop:
+        import hmac as _hmac
+        settings = get_settings()
+        expected = settings.admin_token
+        if not expected:
+            raise HTTPException(
+                status_code=401, detail={"error": "admin_token_unconfigured"},
+            )
+        if not x_argosy_admin:
+            raise HTTPException(
+                status_code=401, detail={"error": "admin_token_required"},
+            )
+        if not _hmac.compare_digest(x_argosy_admin, expected):
+            raise HTTPException(
+                status_code=401, detail={"error": "admin_token_invalid"},
+            )
+        if not (override_reason or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "override_reason is required when allow_stale or "
+                    "allow_catastrophic_drop is set"
+                ),
+            )
+
     contents = file.file.read()
     sha = hashlib.sha256(contents).hexdigest()
 
-    # Cheap sniff against the first ~4KB.
-    head_text = contents[:4096].decode("utf-8", errors="ignore")
-
-    # XLS sniff first: SpreadsheetML envelope + Leumi-specific Hebrew
-    # title marker. is_leumi_portfolio_xls handles both.
     from argosy.services.portfolio_ingest.xls_osh_pair import (
         handle_xls_upload,
         is_leumi_portfolio_xls,
@@ -607,9 +609,6 @@ def upload_snapshot(
             fire_detector=fire_detector, sha=sha,
         )
 
-    # Write to a temp file so parse_portfolio_tsv can read by path.
-    # The parser is path-based today; refactoring it to accept bytes
-    # would be a larger change.
     import tempfile
     with tempfile.NamedTemporaryFile(
         mode="wb", suffix=".tsv", delete=False,
@@ -652,15 +651,13 @@ def upload_snapshot(
         target_name = _normalize_tsv_filename(file.filename or "", snap)
         target_path = target_root / target_name
 
-        # File FIRST to a sibling temp, then DB, then atomic rename — so a
-        # filesystem failure never leaves an authoritative DB row without a
-        # source file, and a rejected ingest never claims success.
         from argosy.services.portfolio_snapshot_store import (
             SnapshotIngestRejected,
             write_through_if_changed,
         )
 
         staging_path = target_path.with_suffix(target_path.suffix + ".staging")
+        backup_path = target_path.with_suffix(target_path.suffix + ".bak")
         try:
             staging_path.write_bytes(contents)
         except OSError as exc:
@@ -677,7 +674,7 @@ def upload_snapshot(
                 sha256=sha,
             )
 
-        actor = "admin-token"
+        actor = "admin-token" if (allow_stale or allow_catastrophic_drop) else "upload"
         try:
             written = write_through_if_changed(
                 db, user_id=user_id, snapshot=snap,
@@ -699,6 +696,9 @@ def upload_snapshot(
             _log.warning(
                 "portfolio_snapshot.ingest_rejected",
                 user_id=user_id, code=exc.code, detail=exc.detail,
+                actor=actor, override_reason=override_reason or None,
+                allow_stale=allow_stale,
+                allow_catastrophic_drop=allow_catastrophic_drop,
             )
             return UploadSnapshotResponse(
                 tsv_persisted=False,
@@ -738,7 +738,15 @@ def upload_snapshot(
                 sha256=sha,
             )
 
+        had_prior = target_path.exists()
         try:
+            if had_prior:
+                try:
+                    if backup_path.exists():
+                        backup_path.unlink()
+                except OSError:
+                    pass
+                target_path.replace(backup_path)
             staging_path.replace(target_path)
         except OSError as exc:
             try:
@@ -749,6 +757,11 @@ def upload_snapshot(
                 staging_path.unlink()
             except OSError:
                 pass
+            if had_prior and backup_path.exists() and not target_path.exists():
+                try:
+                    backup_path.replace(target_path)
+                except OSError:
+                    pass
             return UploadSnapshotResponse(
                 tsv_persisted=False,
                 persisted_path=None,
@@ -772,18 +785,37 @@ def upload_snapshot(
                 db.rollback()
             except Exception:  # noqa: BLE001
                 pass
+            try:
+                if target_path.exists():
+                    target_path.unlink()
+            except OSError:
+                pass
+            if had_prior and backup_path.exists():
+                try:
+                    backup_path.replace(target_path)
+                except OSError:
+                    pass
             return UploadSnapshotResponse(
                 tsv_persisted=False,
-                persisted_path=str(target_path),
+                persisted_path=None,
                 snapshot_date=(
                     snap.snapshot_date.isoformat() if snap.snapshot_date else None
                 ),
                 detect_status="skipped",
                 event=None,
                 plan=None,
-                detail=f"DB commit failed after file write: {exc}",
+                detail=(
+                    f"DB commit failed after staging — prior file restored, "
+                    f"refusing to claim success: {exc}"
+                ),
                 sha256=sha,
             )
+
+        try:
+            if backup_path.exists():
+                backup_path.unlink()
+        except OSError:
+            pass
 
         if written is not None:
             _warm_derived_cache(user_id)
@@ -797,11 +829,6 @@ def upload_snapshot(
             override_reason=override_reason or None,
         )
 
-        # Synchronous windfall detection via the shared snapshot-change detector
-        # (identical routine the Leumi Osh-arrival resolution path uses, so a
-        # snapshot triggers detection no matter which path produced it). Codex
-        # zigzag failure contract: TSV persist succeeds even when the detector
-        # fails; the detector reports 'failed' independently and never raises.
         _det = run_windfall_detection_on_snapshot(
             db, user_id=user_id, target_path=target_path, fire=fire_detector,
         )
@@ -823,7 +850,7 @@ def upload_snapshot(
                 else (
                     "INGEST_OVERRIDE "
                     f"actor={actor} "
-                    f"reason={override_reason or 'unspecified'} "
+                    f"reason={override_reason} "
                     f"allow_stale={allow_stale} "
                     f"allow_catastrophic_drop={allow_catastrophic_drop}"
                 )
@@ -831,7 +858,6 @@ def upload_snapshot(
             sha256=sha,
         )
     finally:
-        # Clean up the temp file regardless of success/failure path.
         try:
             tmp_path.unlink()
         except OSError:
