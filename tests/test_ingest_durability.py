@@ -295,6 +295,48 @@ def test_plan_synthesis_does_not_build_inputs_from_a_rejected_feed(
     ), f"the rejection must be logged loudly, got: {log.errors}"
 
 
+def test_nvda_trajectory_reports_the_book_not_the_file_on_disk(
+    monkeypatch, session, tmp_path,
+):
+    """A user-visible share count must come from the persisted book.
+
+    The route parsed the newest TSV off disk, so a feed the store had REFUSED
+    for erasing accounts still set `today_shares` — and NVDA is exactly the
+    position such a feed erases. A review demonstrated `today_shares=999` from
+    a rejected feed.
+
+    Revert detector: read NVDA from `parse_portfolio_tsv` again → this fails,
+    because the route reports 999 instead of the book's 10,940.
+    """
+    from argosy.api.routes import plan as plan_routes
+
+    # The book holds the truth: NVDA 10,940 shares.
+    persist_snapshot(
+        session,
+        user_id="ariel",
+        snapshot=_snap([_pos("NVDA", "schwab", 10940.0, 2307.9)]),
+    )
+
+    # A rejected export on disk claims something else entirely.
+    tsv = tmp_path / "rejected.tsv"
+    tsv.write_text("dummy", encoding="utf-8")
+    monkeypatch.setattr(
+        "argosy.ingest.tsv.parse_portfolio_tsv",
+        lambda *a, **k: _snap([_pos("NVDA", "leumi", 999.0, 200.0)]),
+    )
+
+    resp = plan_routes._compute_nvda_trajectory(  # noqa: SLF001
+        user_id="ariel", db=session, tsv=tsv,
+    )
+
+    assert resp.today_shares != 999, (
+        "the rejected file on disk must not set a user-visible share count"
+    )
+    assert resp.today_shares == 10940, (
+        f"expected the book's NVDA position, got {resp.today_shares}"
+    )
+
+
 def test_portfolio_summary_does_not_reparse_a_rejected_feed(
     monkeypatch, session, tmp_path,
 ):

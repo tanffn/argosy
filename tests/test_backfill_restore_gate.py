@@ -109,6 +109,57 @@ def test_gate_backup_verification_rejects_a_copy2_backup(tmp_path, mod):
         writer.close()
 
 
+def test_gate_interloper_watch_detects_a_commit_a_fresh_connection_misses(
+    tmp_path, mod,
+):
+    """`PRAGMA data_version` only means anything on a HELD connection.
+
+    The first version of this guard opened a fresh connection per sample, which
+    made the comparison inert: a review reproduced an intervening commit reading
+    2 -> 2. This pins both halves — the fresh-connection approach missing it,
+    and the held connection catching it.
+
+    Revert detector: sample from a new connection each time → this fails.
+    """
+    src = tmp_path / "watched.db"
+    _book_db(src, _POSITIONS)
+
+    def fresh_sample() -> int:
+        con = sqlite3.connect(str(src), timeout=5)
+        try:
+            return con.execute("PRAGMA data_version").fetchone()[0]
+        finally:
+            con.close()
+
+    before_fresh = fresh_sample()
+
+    watch = mod.InterloperWatch(src)
+    watch.start()
+    try:
+        moved, detail = watch.moved()
+        assert moved is False, f"nothing has happened yet: {detail}"
+
+        intruder = sqlite3.connect(str(src), timeout=10)
+        intruder.execute(
+            "INSERT INTO portfolio_snapshots (user_id, positions_json) "
+            "VALUES ('scheduler', '[]')"
+        )
+        intruder.commit()
+        intruder.close()
+
+        moved, detail = watch.moved()
+    finally:
+        watch.close()
+
+    after_fresh = fresh_sample()
+    assert before_fresh == after_fresh, (
+        "precondition: a fresh connection per sample cannot see the commit "
+        f"({before_fresh} -> {after_fresh}) — that was the original bug"
+    )
+    assert moved is True, f"the held watch must see the commit: {detail}"
+    assert "data_version" in detail
+
+
 def test_gate_backup_missing_an_unrelated_table_is_rejected(tmp_path, mod):
     """A rollback point is the WHOLE database, not just the latest book.
 
@@ -146,6 +197,20 @@ def test_gate_backup_missing_an_unrelated_table_is_rejected(tmp_path, mod):
     con.close()
     ok2, detail2 = mod.verify_backup_against_source(src, thinned, "ariel")
     assert ok2 is False, f"row-count loss must not verify: {detail2}"
+
+    # A row-count-preserving CONTENT change must also fail.
+    # Revert detector: reconcile COUNT(*) instead of hashing rows → this fails.
+    edited = tmp_path / "book.db.edited"
+    mod.sqlite_consistent_backup(src, edited)
+    con = sqlite3.connect(str(edited))
+    con.execute("UPDATE proposals SET note = 'approve NVDA SELL ALL'")
+    con.commit()
+    con.close()
+    ok_edit, detail_edit = mod.verify_backup_against_source(src, edited, "ariel")
+    assert ok_edit is False, (
+        f"an altered row with an unchanged count must not verify: {detail_edit}"
+    )
+    assert "CONTENT" in detail_edit
 
     # Control: a faithful backup still passes.
     good = tmp_path / "book.db.good"
@@ -352,6 +417,15 @@ def test_gate_unidentifiable_argosy_db_is_refused_without_a_designation(
     assert reason is not None, "an unidentifiable argosy.db must be refused"
     assert "--staged-copy" in reason
 
+    # And the hole a basename heuristic leaves: a production database that is
+    # simply named something else must ALSO be refused.
+    # Revert detector: guard on `db_path.name == "argosy.db"` → this fails.
+    oddly_named = tmp_path / "some" / "deployment" / "production.sqlite"
+    _book_db(oddly_named, _POSITIONS)
+    assert mod.refuse_reason(oddly_named, override=False) is not None, (
+        "a production DB under a non-standard name must not be accepted"
+    )
+
 
 def test_gate_staged_copy_designation_is_distinct_from_the_live_override(
     tmp_path, mod,
@@ -365,12 +439,13 @@ def test_gate_staged_copy_designation_is_distinct_from_the_live_override(
     staged.parent.mkdir(parents=True)
     _book_db(staged, _POSITIONS)
 
-    # Rehearsal: the harmless affirmation is enough.
+    # Rehearsal: the harmless affirmation is enough, and is NOT the live flag.
     assert mod.refuse_reason(staged, override=False, staged_copy=True) is None
-    # And a copy that is not named like a deployment needs nothing at all.
     plain = tmp_path / "rehearsal_copy.db"
     _book_db(plain, _POSITIONS)
-    assert mod.refuse_reason(plain, override=False) is None
+    assert mod.refuse_reason(plain, override=False, staged_copy=True) is None
+    # But nothing is accepted without SOME designation — no guessing.
+    assert mod.refuse_reason(plain, override=False) is not None
 
 
 def test_gate_guard_refuses_a_hardlink_alias_of_the_live_db(tmp_path, mod, monkeypatch):

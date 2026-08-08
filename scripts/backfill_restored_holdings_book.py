@@ -114,20 +114,20 @@ def refuse_reason(
     decides it — a test asserting on ``is_live_db_path`` alone would still pass
     if a basename check were reintroduced here.
 
-    Two distinct hazards, deliberately given two DIFFERENT flags:
+    Every target needs a positive designation; there is no path where the tool
+    guesses. Exactly one of two flags applies:
 
-    * The target IS a database we can identify as live ⇒ needs
+    * The target IS a database we can identify as live ⇒
       ``--i-really-mean-the-live-db``.
-    * The target merely LOOKS like a deployment (named ``argosy.db``) but is not
-      one of the locations we enumerate — an install with ``ARGOSY_HOME`` unset,
-      a mapped drive, an alternate deployment — ⇒ needs ``--staged-copy``.
+    * Anything else ⇒ ``--staged-copy``, affirming it is a throwaway.
 
-    Identity alone was not enough: it cannot protect a production database whose
-    path this tool does not know about. But refusing every file named
-    ``argosy.db`` outright was worse, because it pushed operators into passing
-    the LIVE override during rehearsals and made a rehearsal indistinguishable
-    from the real repair. Requiring a separate, harmless affirmation keeps the
-    two situations apart.
+    Both weaker designs failed. Identity alone cannot protect a production
+    database at a path we do not enumerate. Adding "and refuse anything named
+    ``argosy.db``" only moved the hole: a review pointed the tool at an
+    unenumerated ``production.sqlite`` and it was accepted with no flag at all,
+    because the guard was guessing from a filename. Guessing is now gone — the
+    operator states which situation this is, and the two situations never share
+    a flag, so a rehearsal cannot train the fingers that run the real repair.
     """
     if is_live_db_path(db_path) and not override:
         return (
@@ -135,12 +135,12 @@ def refuse_reason(
             "samefile identity match). Pass --i-really-mean-the-live-db only "
             "for the scheduled production repair; rehearse on a copy instead."
         )
-    if not override and not staged_copy and db_path.name == "argosy.db":
+    if not override and not staged_copy:
         return (
-            f"REFUSING: {db_path} is named argosy.db but is not a location this "
-            "tool can identify, so it may be a deployment we cannot see "
-            "(ARGOSY_HOME unset, mapped drive, alternate install). Pass "
-            "--staged-copy to affirm it is a throwaway copy, or "
+            f"REFUSING: {db_path} is not a location this tool can identify, so "
+            "it may be a production database we cannot see (ARGOSY_HOME unset, "
+            "mapped drive, alternate install, a file simply named something "
+            "else). Pass --staged-copy to affirm it is a throwaway copy, or "
             "--i-really-mean-the-live-db for the real repair."
         )
     return None
@@ -225,33 +225,53 @@ def book_fingerprint(db_file: Path, user_id: str) -> dict:
 
 
 def database_fingerprint(db_file: Path) -> dict:
-    """Row counts for EVERY table, plus the structural check.
+    """Content hash of EVERY row of EVERY table, plus the structural check.
 
-    The book fingerprint alone is not a rollback point: a backup can carry a
-    byte-identical latest snapshot while having lost the ``proposals`` table
-    entirely, and reconciling only the book would bless it. A rollback point has
-    to be the whole database.
+    Two weaker versions of this were not enough. Reconciling only the latest
+    book blessed a backup that had lost the ``proposals`` table entirely.
+    Reconciling table names and ROW COUNTS then blessed a backup in which a
+    ``proposals.note`` had been altered while the count stayed the same. A
+    rollback point has to match on content, so every row is hashed.
+
+    Per-row digests are combined by summation rather than concatenation, so the
+    fingerprint does not depend on the order rows come back in (a copy made by
+    some other mechanism may lay pages out differently). Summation rather than
+    XOR, so that two identical rows do not cancel each other out.
     """
     con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    con.text_factory = bytes
     try:
         tables = [
-            r[0] for r in con.execute(
+            r[0].decode("utf-8") for r in con.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
         ]
-        counts: dict[str, Any] = {}
+        digests: dict[str, Any] = {}
         for t in tables:
             try:
-                counts[t] = con.execute(
-                    f'SELECT COUNT(*) FROM "{t}"'
-                ).fetchone()[0]
+                acc = 0
+                count = 0
+                for row in con.execute(f'SELECT * FROM "{t}"'):
+                    count += 1
+                    acc = (
+                        acc
+                        + int.from_bytes(
+                            hashlib.sha256(
+                                repr(row).encode("utf-8", "replace")
+                            ).digest(),
+                            "big",
+                        )
+                    ) % (1 << 256)
+                digests[t] = f"{count}:{acc:064x}"
             except sqlite3.Error as exc:
-                counts[t] = f"ERROR {exc}"
+                digests[t] = f"ERROR {exc}"
         return {
-            "integrity": con.execute("PRAGMA quick_check(1)").fetchone()[0],
+            "integrity": con.execute(
+                "PRAGMA quick_check(1)"
+            ).fetchone()[0].decode("utf-8", "replace"),
             "table_count": len(tables),
-            "row_counts": counts,
+            "row_counts": digests,
         }
     finally:
         con.close()
@@ -298,20 +318,21 @@ def verify_backup_against_source(
     if missing:
         return False, f"backup is MISSING {len(missing)} table(s): {missing[:8]}"
     differing = [
-        f"{t}: source={src_db['row_counts'][t]} backup={bak_db['row_counts'][t]}"
+        f"{t}: source={src_db['row_counts'][t][:24]}… "
+        f"backup={bak_db['row_counts'][t][:24]}…"
         for t in sorted(src_db["row_counts"])
         if src_db["row_counts"][t] != bak_db["row_counts"][t]
     ]
     if differing:
         return False, (
-            f"{len(differing)} table(s) differ in row count -> "
+            f"{len(differing)} table(s) differ in CONTENT -> "
             + "; ".join(differing[:6])
         )
     return True, (
         f"reconciled: snapshot {src_fp['snapshot_id']}, {src_fp['positions']} "
         f"positions / ${src_fp['total_usd_k']}k, accounts={src_fp['accounts']}, "
         f"row_hash={src_fp['row_hash']}; whole-DB: {src_db['table_count']} "
-        "tables, all row counts match"
+        "tables, every row hashed and matching"
     )
 
 
@@ -405,15 +426,63 @@ def checkpoint_wal(db_path: Path) -> tuple[bool, str]:
         con.close()
 
 
-def db_data_version(db_path: Path) -> int | None:
-    """Snapshot of the cross-connection change counter, for after-the-fact use."""
-    con = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        return int(con.execute("PRAGMA data_version").fetchone()[0])
-    except sqlite3.Error:
-        return None
-    finally:
-        con.close()
+class InterloperWatch:
+    """Detects commits by ANY other connection, across a window we do not write.
+
+    ``PRAGMA data_version`` only carries meaning when compared across samples
+    taken on the SAME connection: SQLite documents it as changing when another
+    connection commits, as observed by one held connection. An earlier version
+    opened a fresh connection per sample, which made the comparison inert — a
+    review reproduced an intervening commit reading 2 -> 2, undetected. The
+    connection is therefore held open for the life of the watch.
+
+    What this DOES guarantee: if anything else commits between ``start()`` and
+    a ``moved()`` call, we find out and can refuse.
+
+    What it does NOT guarantee: mutual exclusion. Holding an EXCLUSIVE lock for
+    the whole repair is not available to us, because ``sqlite3``'s backup API
+    blocks when the source connection is inside a write transaction (measured:
+    it hangs indefinitely). Prevention is therefore operational — the backend
+    and scheduler must be stopped — and this class is the check that tells us,
+    loudly, if that was not actually done.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+        self._con: sqlite3.Connection | None = None
+        self._baseline: int | None = None
+
+    def start(self) -> int | None:
+        self._con = sqlite3.connect(str(self._db_path), timeout=5.0)
+        self._baseline = self._read()
+        return self._baseline
+
+    def _read(self) -> int | None:
+        if self._con is None:
+            return None
+        try:
+            return int(self._con.execute("PRAGMA data_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def moved(self) -> tuple[bool, str]:
+        """True if someone else committed since ``start()``."""
+        if self._baseline is None:
+            return False, "data_version unavailable — no interloper check"
+        current = self._read()
+        if current is None:
+            return False, "data_version unavailable — no interloper check"
+        if current != self._baseline:
+            return True, (
+                f"another connection committed (data_version "
+                f"{self._baseline} -> {current})"
+            )
+        return False, f"no other connection committed (data_version {current})"
+
+    def close(self) -> None:
+        if self._con is not None:
+            self._con.close()
+            self._con = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -590,11 +659,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        # Change counter around the backup window. We do not write during the
-        # backup, so any movement here is somebody else — which would mean the
-        # backup is not a faithful rollback point for what we are about to
-        # overwrite.
-        version_before = db_data_version(db_path)
+        # Watch the whole no-write window: we do not write between here and the
+        # start of the restore, so ANY commit in it belongs to someone else and
+        # means the backup no longer describes what we are about to overwrite.
+        watch = InterloperWatch(db_path)
+        watch.start()
 
         # Gate step 3 — content-verified backup.
         backup = timestamped_backup_path(db_path)
@@ -612,13 +681,28 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        version_after_backup = db_data_version(db_path)
-        if version_before is not None and version_after_backup != version_before:
+        moved, detail = watch.moved()
+        print(f"interloper check (post-backup): {detail}")
+        if moved:
+            watch.close()
             print(
-                f"ERROR: another connection wrote during the backup "
-                f"(data_version {version_before} -> {version_after_backup}). "
-                "The backup does not match what we are about to overwrite. "
-                "Refusing.",
+                f"ERROR: {detail} during the backup. The backup does not "
+                "describe what we are about to overwrite. Refusing — stop the "
+                "backend and scheduler, then re-run.",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Last look before we write. This closes the gap between verifying the
+        # backup and starting the restore; after this point our own ORM commits
+        # move the counter too, so it can no longer distinguish us from them.
+        moved, detail = watch.moved()
+        watch.close()
+        print(f"interloper check (pre-restore): {detail}")
+        if moved:
+            print(
+                f"ERROR: {detail} after the backup was verified. Refusing to "
+                "restore over a database that changed under us.",
                 file=sys.stderr,
             )
             return 1

@@ -2217,6 +2217,26 @@ def _compute_nvda_trajectory(
     # can plot the user's actual sell history, not just the future plan.
     today_shares: int | None = None
     past_sales_raw: list[NvdaSaleEvent] = []
+
+    # today_shares comes from the PERSISTED book, never from the file on disk.
+    # Reading the raw TSV here published whatever the newest export happened to
+    # say, including a feed the store had REFUSED for erasing accounts — and
+    # NVDA is precisely the position such a feed erases, so this surface could
+    # show a share count the book had explicitly rejected.
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    _row = get_latest_snapshot_row(db, user_id)
+    if _row is not None:
+        try:
+            for _pos in json.loads(_row.positions_json or "[]"):
+                if (_pos.get("symbol") or "").upper() == "NVDA" and _pos.get(
+                    "shares"
+                ):
+                    today_shares = int(float(_pos["shares"]))
+                    break
+        except (TypeError, ValueError, json.JSONDecodeError):
+            today_shares = None
+
     try:
         from argosy.ingest.tsv import parse_portfolio_tsv
 
@@ -2228,10 +2248,6 @@ def _compute_nvda_trajectory(
             tsv = _find_latest_tsv()
         if tsv is not None:
             snap = parse_portfolio_tsv(tsv)
-            for pos in snap.positions:
-                if (pos.symbol or "").upper() == "NVDA" and pos.shares:
-                    today_shares = int(pos.shares)
-                    break
 
             # NVDA sales — the parser emits {month, shares, price}. Month is
             # the bare English name (Jan/Feb/...); convert to a YYYY-MM
