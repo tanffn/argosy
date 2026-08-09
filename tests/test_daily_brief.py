@@ -83,9 +83,10 @@ async def test_default_gather_inputs_form4_outage_degrades(
     class _FakeSnap:
         positions = [_FakePos("NVDA"), _FakePos("AAPL")]
 
-    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
-    import argosy.ingest.tsv as ingest_tsv
-    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+    from argosy.services import portfolio_snapshot_store as pss
+    monkeypatch.setattr(
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnap()
+    )
 
     # Failing Form 4 adapter — first ticker outage must NOT abort the
     # loop; subsequent tickers must continue to be attempted.
@@ -200,9 +201,10 @@ async def test_default_gather_inputs_capitoltrades_outage_degrades(
     class _FakeSnap:
         positions = [_FakePos("NVDA"), _FakePos("AAPL")]
 
-    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
-    import argosy.ingest.tsv as ingest_tsv
-    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+    from argosy.services import portfolio_snapshot_store as pss
+    monkeypatch.setattr(
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnap()
+    )
 
     class _OutageCT:
         def __init__(self) -> None:
@@ -256,9 +258,10 @@ async def test_default_gather_inputs_persists_capitoltrades_events(
     class _FakeSnap:
         positions = [_FakePos("NVDA")]
 
-    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
-    import argosy.ingest.tsv as ingest_tsv
-    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+    from argosy.services import portfolio_snapshot_store as pss
+    monkeypatch.setattr(
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnap()
+    )
 
     class _StubCT:
         async def list_trades_for_ticker(
@@ -321,9 +324,10 @@ async def test_default_gather_inputs_persists_news_events(
     class _FakeSnap:
         positions = [_FakePos("NVDA")]
 
-    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
-    import argosy.ingest.tsv as ingest_tsv
-    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+    from argosy.services import portfolio_snapshot_store as pss
+    monkeypatch.setattr(
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnap()
+    )
 
     class _StubFinnhub:
         async def get_company_news(self, symbol, *, start, end, ttl_seconds=900):
@@ -379,9 +383,10 @@ async def test_default_gather_inputs_persists_investor_events(
     class _FakeSnap:
         positions = [_FakePos("NVDA")]
 
-    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
-    import argosy.ingest.tsv as ingest_tsv
-    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+    from argosy.services import portfolio_snapshot_store as pss
+    monkeypatch.setattr(
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnap()
+    )
 
     class _StubForm4:
         async def get_recent_form4_for_ticker(
@@ -478,9 +483,10 @@ async def test_default_gather_inputs_dedups_repeat_pulls(
     class _FakeSnap:
         positions = [_FakePos("NVDA")]
 
-    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
-    import argosy.ingest.tsv as ingest_tsv
-    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+    from argosy.services import portfolio_snapshot_store as pss
+    monkeypatch.setattr(
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnap()
+    )
 
     class _StubForm4:
         async def get_recent_form4_for_ticker(

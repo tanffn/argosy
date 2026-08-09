@@ -321,28 +321,31 @@ def _shares_sold_from_snapshot(
         return None
 
 
-def _shares_sold_from_tsv(*, as_of: date, since: date | None = None) -> int:
-    """Fallback: parse the latest Family Finances Status TSV, sum YTD
-    ``nvda_sales`` rows whose month resolves into the current year.
+def _shares_sold_from_book(
+    session: Session, user_id: str, *, as_of: date, since: date | None = None
+) -> int:
+    """Last-resort fallback: sum YTD ``nvda_sales`` from the guarded DB book.
 
-    Returns 0 when the TSV is unreachable / unparseable / has no NVDA
-    sales block. Dedups identical ``(month, shares, price)`` rows because
-    the TSV occasionally repeats the same row verbatim (observed in run
-    #25's snapshot and the May/Jun-2026 exports' double Apr row).
+    Reads the current guarded/restored snapshot book via
+    ``load_current_book_snapshot`` (the merged, ingest-guarded book) rather
+    than re-walking whatever raw TSV is newest under ``ARGOSY_HOME``. Returns
+    0 when there is no book / no NVDA sales block. Dedups identical
+    ``(month, shares, price)`` rows because the source occasionally repeats
+    the same row verbatim (run #25's snapshot; the double Apr-2026 row).
     """
     try:
-        from argosy.api.routes.portfolio import _find_latest_tsv
-        from argosy.ingest.tsv import parse_portfolio_tsv
+        from argosy.services.portfolio_snapshot_store import (
+            load_current_book_snapshot,
+        )
 
-        tsv = _find_latest_tsv()
-        if tsv is None:
-            log.info("nvda_sales_history.tsv_fallback_no_tsv")
-            return 0
-        snap = parse_portfolio_tsv(tsv)
+        snap = load_current_book_snapshot(session, user_id)
     except Exception as exc:  # noqa: BLE001 — defensive
         log.warning(
-            "nvda_sales_history.tsv_fallback_failed", error=str(exc),
+            "nvda_sales_history.book_fallback_failed", error=str(exc),
         )
+        return 0
+    if snap is None:
+        log.info("nvda_sales_history.book_fallback_no_book", user_id=user_id)
         return 0
 
     sales = getattr(snap, "nvda_sales", None) or []
@@ -377,8 +380,9 @@ def compute_nvda_shares_sold_ytd(
       2. ``fills`` table when it has at least one NVDA row for ``user_id``.
       3. The latest portfolio snapshot's ``nvda_sales_json`` block —
          internal state (the TSV is OUTPUT-only). Month-granular.
-      4. Fallback to the latest Family Finances Status TSV's
-         ``nvda_sales`` block. (Month-granular; current-year only.)
+      4. Fallback to the guarded/restored DB snapshot book's ``nvda_sales``
+         block via ``load_current_book_snapshot`` (month-granular). Reads
+         the ingest-guarded book, not a raw TSV re-walk.
 
     Returns 0 when no source produces data (the caller surfaces that
     as "no fills found" rather than crashing synthesis).
@@ -416,12 +420,14 @@ def compute_nvda_shares_sold_ytd(
         )
         return snap_total
 
-    tsv_total = _shares_sold_from_tsv(as_of=today, since=since)
-    log.info(
-        "nvda_sales_history.shares_sold_ytd_from_tsv",
-        user_id=user_id, total=tsv_total,
+    book_total = _shares_sold_from_book(
+        session, user_id, as_of=today, since=since
     )
-    return tsv_total
+    log.info(
+        "nvda_sales_history.shares_sold_ytd_from_book",
+        user_id=user_id, total=book_total,
+    )
+    return book_total
 
 
 def _annual_nvda_target_from_plan(plan_version: Any | None) -> int:

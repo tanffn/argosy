@@ -12,6 +12,7 @@ in Leumi?" without conditional logic on broker type.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from argosy.adapters.brokers.types import (
     CancellationResult,
@@ -21,7 +22,6 @@ from argosy.adapters.brokers.types import (
     Position,
     ProposedOrder,
 )
-from argosy.ingest.tsv import parse_portfolio_tsv
 
 
 class LeumiTSVAdapter:
@@ -35,15 +35,34 @@ class LeumiTSVAdapter:
         user_id: str,
         tsv_path: str | Path | None = None,
         default_account_id: str = "leumi",
+        session: Any | None = None,
     ) -> None:
         self.user_id = user_id
         self.tsv_path = Path(tsv_path) if tsv_path else None
         self.default_account_id = default_account_id
+        # Optional sync SQLAlchemy session for reading the guarded DB book.
+        # The execution router constructs this adapter without one today, so
+        # the DB-book read stays opt-in and get_positions preserves its
+        # current empty result until a session (or tsv_path) is provided.
+        self._session = session
 
     def _snapshot(self) -> object | None:
-        if self.tsv_path is None or not self.tsv_path.is_file():
-            return None
-        return parse_portfolio_tsv(self.tsv_path)
+        from argosy.services.portfolio_snapshot_store import (
+            load_current_book_snapshot,
+        )
+
+        # Explicit configured TSV → parsed via the single guarded accessor.
+        if self.tsv_path is not None:
+            if not self.tsv_path.is_file():
+                return None
+            return load_current_book_snapshot(
+                None, self.user_id, tsv_path=self.tsv_path
+            )
+        # No configured TSV: read the guarded/restored DB book when a session
+        # was injected; otherwise preserve the current empty behavior.
+        if self._session is not None:
+            return load_current_book_snapshot(self._session, self.user_id)
+        return None
 
     # --- Read -----------------------------------------------------------
     def get_positions(self, account_id: str) -> list[Position]:

@@ -19,7 +19,6 @@ from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.config import get_settings
 from argosy.ingest.plan import parse_plan_markdown
-from argosy.ingest.tsv import parse_portfolio_tsv
 
 
 def critique(
@@ -89,9 +88,15 @@ async def _run_critique(
     snapshot_label = "(no snapshot provided)"
     snapshot_summary = "(no portfolio snapshot was supplied to this run)"
     if snapshot is not None:
-        snap = parse_portfolio_tsv(snapshot)
+        from argosy.services.portfolio_snapshot_store import (
+            load_current_book_snapshot,
+        )
+
+        # Explicit --snapshot path → parsed via the single guarded accessor.
+        snap = load_current_book_snapshot(None, user_id, tsv_path=snapshot)
         snapshot_label = snapshot.name
-        snapshot_summary = snap.summary_text()
+        if snap is not None:
+            snapshot_summary = snap.summary_text()
 
     # Pull user context YAML.
     async with db_mod.get_session() as session:

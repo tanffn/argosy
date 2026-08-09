@@ -235,27 +235,25 @@ async def _gather_news(
     return out
 
 
-def _load_portfolio_snapshot() -> tuple[list[str], str]:
-    """Best-effort portfolio snapshot from the newest TSV under ARGOSY_HOME.
+def _load_portfolio_snapshot(user_id: str = "ariel") -> tuple[list[str], str]:
+    """Best-effort portfolio snapshot from the guarded/restored DB book.
 
-    Returns (tickers, positions_summary). Both empty if no TSV exists
-    or parsing fails — the runner gracefully degrades.
+    Returns (tickers, positions_summary). Both empty if no book exists or
+    the read fails — the runner gracefully degrades. Reads the merged,
+    ingest-guarded book via ``load_current_book_snapshot`` rather than
+    re-walking whatever raw TSV is newest under ``ARGOSY_HOME``.
     """
     try:
-        from argosy.config import get_settings
-
-        settings = get_settings()
-        candidates = sorted(
-            settings.home.rglob("*.tsv"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
+        from argosy.services.portfolio_snapshot_store import (
+            load_current_book_snapshot,
         )
-        if not candidates:
-            return ([], "")
-        tsv_path = candidates[0]
-        from argosy.ingest.tsv import parse_portfolio_tsv
 
-        snapshot = parse_portfolio_tsv(tsv_path)
+        snapshot = load_current_book_snapshot(user_id=user_id)
+        if snapshot is None:
+            return ([], "")
+        # NOTE: pre-existing attribute mismatch — PortfolioPosition exposes
+        # ``.symbol``/``.shares``, not ``.ticker``/``.quantity``; left as-is
+        # per scope (source migration only). Kept behavior.
         tickers = sorted({p.ticker for p in snapshot.positions if p.ticker})
         lines: list[str] = []
         for p in snapshot.positions:
@@ -266,7 +264,7 @@ def _load_portfolio_snapshot() -> tuple[list[str], str]:
             lines.append(f"  {tk:<8} qty={qty}  value={val}  acct={acct}")
         return (tickers, "\n".join(lines) or "(no positions)")
     except Exception as exc:  # pragma: no cover - defensive fallback
-        _log.warning("daily_brief_runner.tsv_load_failed", error=str(exc))
+        _log.warning("daily_brief_runner.book_load_failed", error=str(exc))
         return ([], "")
 
 

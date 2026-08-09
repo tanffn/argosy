@@ -131,19 +131,24 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
             )
         ).scalar_one_or_none()
 
-    # 1. Portfolio snapshot from latest TSV under ARGOSY_HOME.
+    # 1. Portfolio snapshot from the guarded/restored DB book (NOT a raw
+    #    re-walk of the newest TSV under ARGOSY_HOME).
     try:
-        tsv_path = _find_latest_tsv()
-        if tsv_path is not None:
-            from argosy.ingest.tsv import parse_portfolio_tsv
+        from argosy.services.portfolio_snapshot_store import (
+            load_current_book_snapshot,
+        )
 
-            snapshot = parse_portfolio_tsv(tsv_path)
+        snapshot = load_current_book_snapshot(user_id=user_id)
+        if snapshot is not None:
+            # NOTE: pre-existing attribute mismatch — PortfolioPosition exposes
+            # ``.symbol``, not ``.ticker`` (and ``.shares``, not ``.quantity``);
+            # left as-is per scope (source migration only). Kept behavior.
             tickers = sorted({p.ticker for p in snapshot.positions if p.ticker})
             positions_summary = _summarize_positions(snapshot)
         else:
-            _log.warning("daily_brief.no_tsv_found", user_id=user_id)
+            _log.warning("daily_brief.no_book", user_id=user_id)
     except Exception:  # pragma: no cover - defensive (fallback to empty)
-        _log.exception("daily_brief.tsv_parse_failed", user_id=user_id)
+        _log.exception("daily_brief.book_load_failed", user_id=user_id)
 
     # 2. News via Finnhub (best-effort).
     news_payload: dict[str, list[dict[str, Any]]] = {}

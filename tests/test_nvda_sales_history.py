@@ -250,18 +250,18 @@ def test_compute_is_idempotent(session_with_user, monkeypatch, tmp_path):
     assert n1 == n2 == 500
 
 
-def test_tsv_fallback_when_fills_empty(
+def test_book_fallback_when_fills_empty(
     session_with_user, monkeypatch, tmp_path,
 ):
-    """Fills empty → TSV ``nvda_sales`` block becomes the source.
+    """Fills empty → the guarded DB book's ``nvda_sales`` block is the source.
 
     This guards the live-DB case: ``fills`` table is empty in prod today,
     so without the fallback ConcentrationAnalyst would still get 0. The
-    parser already exposes ``nvda_sales`` rows from the Family Finances
-    Status TSV — we just need to follow the same code path that the
-    /api/plan/draft/nvda-trajectory endpoint uses.
+    fallback now reads the merged, ingest-guarded book via
+    ``load_current_book_snapshot`` instead of re-walking a raw TSV.
     """
     from argosy.services import nvda_sales_history
+    from argosy.services import portfolio_snapshot_store as pss
 
     class _FakeSale:
         def __init__(self, month: str, shares: int) -> None:
@@ -279,16 +279,8 @@ def test_tsv_fallback_when_fills_empty(
         ]
         positions: list = []
 
-    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
-    fake_tsv = tmp_path / "fake.tsv"
-    fake_tsv.write_text("placeholder")
     monkeypatch.setattr(
-        "argosy.api.routes.portfolio._find_latest_tsv", lambda: fake_tsv,
-    )
-    import argosy.ingest.tsv as tsv_mod
-
-    monkeypatch.setattr(
-        tsv_mod, "parse_portfolio_tsv", lambda _p: _FakeSnapshot()
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnapshot()
     )
 
     n = nvda_sales_history.compute_nvda_shares_sold_ytd(
@@ -320,11 +312,12 @@ def test_sum_monthly_sales_dedups_identical_tuple_only():
     assert _sum_monthly_sales(distinct, anchor_year=2026, as_of=as_of) == 1040
 
 
-def test_tsv_fallback_excludes_months_past_as_of(
+def test_book_fallback_excludes_months_past_as_of(
     session_with_user, monkeypatch, tmp_path,
 ):
     """A sale logged for December must NOT count when as_of is in May."""
     from argosy.services import nvda_sales_history
+    from argosy.services import portfolio_snapshot_store as pss
 
     class _FakeSale:
         def __init__(self, month: str, shares: int) -> None:
@@ -340,16 +333,8 @@ def test_tsv_fallback_excludes_months_past_as_of(
         ]
         positions: list = []
 
-    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
-    fake_tsv = tmp_path / "fake.tsv"
-    fake_tsv.write_text("placeholder")
     monkeypatch.setattr(
-        "argosy.api.routes.portfolio._find_latest_tsv", lambda: fake_tsv,
-    )
-    import argosy.ingest.tsv as tsv_mod
-
-    monkeypatch.setattr(
-        tsv_mod, "parse_portfolio_tsv", lambda _p: _FakeSnapshot()
+        pss, "load_current_book_snapshot", lambda *a, **k: _FakeSnapshot()
     )
 
     n = nvda_sales_history.compute_nvda_shares_sold_ytd(

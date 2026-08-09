@@ -8,7 +8,6 @@ from pathlib import Path
 import typer
 
 from argosy.ingest.plan import parse_plan_markdown
-from argosy.ingest.tsv import parse_portfolio_tsv
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -32,7 +31,10 @@ def ingest_tsv(
     in Phase 2). The parser produces a `PortfolioSnapshot` that the
     plan-critique agent consumes via `argosy critique`.
     """
-    snap = parse_portfolio_tsv(path)
+    from argosy.services.portfolio_snapshot_store import load_current_book_snapshot
+
+    # Explicit path → parsed via the single guarded accessor (parse THIS file).
+    snap = load_current_book_snapshot(None, user_id, tsv_path=path)
     if show_summary:
         typer.echo(snap.summary_text())
     typer.echo("")

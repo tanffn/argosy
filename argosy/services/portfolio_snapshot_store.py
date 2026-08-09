@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -556,6 +558,78 @@ def row_to_snapshot(row: PortfolioSnapshotRow) -> PortfolioSnapshot:
     )
 
 
+@contextmanager
+def _open_sync_read_session() -> Iterator[Session]:
+    """Short-lived READ-ONLY sync session on the configured DB.
+
+    Used only by ``load_current_book_snapshot`` when a caller has no session
+    to lend (async loops / low-level adapters). Never commits; the engine is
+    disposed on exit. All failures are the caller's to swallow.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+
+    settings = get_settings()
+    sync_url = settings.database_url.replace("+aiosqlite", "")
+    engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def load_current_book_snapshot(
+    session: Session | None = None,
+    user_id: str = "ariel",
+    *,
+    tsv_path: Path | str | None = None,
+) -> PortfolioSnapshot | None:
+    """Return the current book as a ``PortfolioSnapshot`` — the single guarded
+    entry point every consumer should use instead of re-parsing raw TSV.
+
+    Source precedence:
+
+      1. An explicit ``tsv_path`` (a CLI ``--snapshot`` / ``ingest`` path, or a
+         broker adapter's configured file) is parsed directly — the "parse
+         THIS file" contract those entry points already have.
+      2. Otherwise the guarded/restored DB snapshot book
+         (``get_latest_snapshot_row`` + ``row_to_snapshot``). This is the
+         merged, ingest-guarded book — NOT a re-walk of whatever ``*.tsv`` is
+         newest under ``ARGOSY_HOME`` (which can be a stale or truncated view
+         the ingest guards already rejected — the read-consistency gap this
+         accessor closes).
+
+    ``session`` is a sync SQLAlchemy session (the DB read is sync). When the
+    caller has none to lend (async loops, low-level adapters), pass ``None``
+    and a short-lived read-only session is opened internally; any failure
+    there degrades to ``None`` rather than raising. Returns ``None`` when no
+    snapshot has been persisted for ``user_id``. Read-only; never persists.
+    """
+    if tsv_path is not None:
+        from argosy.ingest.tsv import parse_portfolio_tsv
+
+        return parse_portfolio_tsv(tsv_path)
+    if session is not None:
+        row = get_latest_snapshot_row(session, user_id)
+        return row_to_snapshot(row) if row is not None else None
+    try:
+        with _open_sync_read_session() as s:
+            row = get_latest_snapshot_row(s, user_id)
+            return row_to_snapshot(row) if row is not None else None
+    except Exception:  # noqa: BLE001 — no session to lend + DB unreachable → degrade
+        from argosy.logging import get_logger
+
+        get_logger("argosy.portfolio_snapshot_store").warning(
+            "load_current_book_snapshot.autosession_failed", user_id=user_id,
+        )
+        return None
+
+
 def persist_snapshot_from_tsv(
     session: Session, *, user_id: str, tsv_path: Path | str
 ) -> PortfolioSnapshotRow:
@@ -644,6 +718,7 @@ __all__ = [
     "feed_content_digest",
     "get_latest_snapshot_row",
     "latest_matches_snapshot",
+    "load_current_book_snapshot",
     "persist_snapshot",
     "persist_snapshot_from_tsv",
     "row_to_snapshot",
