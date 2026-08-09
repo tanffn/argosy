@@ -89,6 +89,100 @@ def find_stalled_runs(
     return out
 
 
+def _persist_stall_alert(
+    session: Session,
+    *,
+    user_id: str,
+    run: DecisionRun,
+    last: datetime,
+    quiet: float,
+    now_dt: datetime,
+) -> None:
+    """Upsert the monitor flag + inbox row for one stalled run.
+
+    Isolated so :func:`write_stall_alerts` can wrap it best-effort: the
+    DURABLE alert is the WARNING log line (emitted before this call);
+    persisting the flag/inbox is the richer-but-fragile channel that may
+    be blocked precisely when a stall jams the DB.
+    """
+    dedup = STALL_DEDUP.format(user_id=user_id, decision_run_id=run.id)
+    summary = (
+        f"Synthesis stall: run {run.id} quiet {quiet:.0f} min "
+        f"(last heartbeat {last.isoformat()})"
+    )
+    payload = {
+        "decision_run_id": run.id,
+        "last_activity": last.isoformat(),
+        "quiet_minutes": round(quiet, 1),
+        "message": (
+            "synthesis in flight, no heartbeat "
+            f"{quiet:.0f} minutes"
+        ),
+    }
+    rationale = (
+        f"**Synthesis in flight, no heartbeat {quiet:.0f} minutes.**\n\n"
+        f"Run `{run.id}` is still `running` but has had no "
+        f"`decision_phases` activity since {last.isoformat()}. "
+        "If the backend died, restart the supervised wrapper; the "
+        "liveness reaper alone cannot help while nothing is alive to "
+        "call it."
+    )
+
+    existing_flag = session.execute(
+        select(MonitorFlag).where(
+            MonitorFlag.user_id == user_id,
+            MonitorFlag.dedup_key == dedup,
+            MonitorFlag.status == "active",
+        )
+    ).scalar_one_or_none()
+    if existing_flag is None:
+        session.add(
+            MonitorFlag(
+                user_id=user_id,
+                kind=STALL_KIND,
+                severity="critical",
+                payload=json.dumps(payload),
+                dedup_key=dedup,
+                status="active",
+                surfaced_at=now_dt,
+            )
+        )
+    else:
+        existing_flag.payload = json.dumps(payload)
+        existing_flag.surfaced_at = now_dt
+
+    existing_prop = session.execute(
+        select(ActionProposal).where(
+            ActionProposal.user_id == user_id,
+            ActionProposal.dedup_key == dedup,
+            ActionProposal.status == "open",
+        )
+    ).scalar_one_or_none()
+    if existing_prop is None:
+        session.add(
+            ActionProposal(
+                user_id=user_id,
+                summary=summary,
+                rationale_md=rationale,
+                suggested_payload=json.dumps(payload),
+                severity="critical",
+                surfaced_at=now_dt,
+                expires_at=now_dt + timedelta(days=7),
+                status="open",
+                kind="note_only",
+                dedup_key=dedup,
+                execution_state="proposed",
+            )
+        )
+    else:
+        existing_prop.summary = summary
+        existing_prop.rationale_md = rationale
+        existing_prop.suggested_payload = json.dumps(payload)
+        existing_prop.surfaced_at = now_dt
+
+    session.flush()
+
+
 def write_stall_alerts(
     session: Session,
     *,
@@ -96,98 +190,58 @@ def write_stall_alerts(
     now: datetime | None = None,
     alert_minutes: int | None = None,
 ) -> list[int]:
-    """Upsert monitor flags + inbox rows for stalled runs. Returns run ids."""
+    """Alert on stalled synthesis runs. Returns the DETECTED run ids.
+
+    Reliability contract (the reason this detector exists — a stall you
+    can't be told about is how a zombie eats 7.5h):
+
+    * Detection is a READ; under WAL it never blocks on a writer, so a
+      stall is *always* observable even while the DB is jammed.
+    * The DURABLE alert is the ``synthesis_stall.alerted`` WARNING log,
+      emitted BEFORE any write. It cannot be lost to a locked DB.
+    * The richer monitor-flag + inbox row is best-effort: if that write
+      is blocked (``database is locked``) or otherwise fails, we log
+      ``synthesis_stall.persist_degraded`` and MOVE ON — we never throw
+      out of the tick, because throwing would drop the alert entirely.
+
+    The returned ids reflect what was DETECTED (== what was alerted on
+    the log channel), not what persisted — the log line is the alert.
+    """
     now_dt = _as_utc(now or datetime.now(UTC))
     stalled = find_stalled_runs(
         session, user_id=user_id, now=now_dt, alert_minutes=alert_minutes,
     )
     alerted: list[int] = []
     for run, last, quiet in stalled:
-        dedup = STALL_DEDUP.format(user_id=user_id, decision_run_id=run.id)
-        summary = (
-            f"Synthesis stall: run {run.id} quiet {quiet:.0f} min "
-            f"(last heartbeat {last.isoformat()})"
-        )
-        payload = {
-            "decision_run_id": run.id,
-            "last_activity": last.isoformat(),
-            "quiet_minutes": round(quiet, 1),
-            "message": (
-                "synthesis in flight, no heartbeat "
-                f"{quiet:.0f} minutes"
-            ),
-        }
-        rationale = (
-            f"**Synthesis in flight, no heartbeat {quiet:.0f} minutes.**\n\n"
-            f"Run `{run.id}` is still `running` but has had no "
-            f"`decision_phases` activity since {last.isoformat()}. "
-            "If the backend died, restart the supervised wrapper; the "
-            "liveness reaper alone cannot help while nothing is alive to "
-            "call it."
-        )
-
-        existing_flag = session.execute(
-            select(MonitorFlag).where(
-                MonitorFlag.user_id == user_id,
-                MonitorFlag.dedup_key == dedup,
-                MonitorFlag.status == "active",
-            )
-        ).scalar_one_or_none()
-        if existing_flag is None:
-            session.add(
-                MonitorFlag(
-                    user_id=user_id,
-                    kind=STALL_KIND,
-                    severity="critical",
-                    payload=json.dumps(payload),
-                    dedup_key=dedup,
-                    status="active",
-                    surfaced_at=now_dt,
-                )
-            )
-        else:
-            existing_flag.payload = json.dumps(payload)
-            existing_flag.surfaced_at = now_dt
-
-        existing_prop = session.execute(
-            select(ActionProposal).where(
-                ActionProposal.user_id == user_id,
-                ActionProposal.dedup_key == dedup,
-                ActionProposal.status == "open",
-            )
-        ).scalar_one_or_none()
-        if existing_prop is None:
-            session.add(
-                ActionProposal(
-                    user_id=user_id,
-                    summary=summary,
-                    rationale_md=rationale,
-                    suggested_payload=json.dumps(payload),
-                    severity="critical",
-                    surfaced_at=now_dt,
-                    expires_at=now_dt + timedelta(days=7),
-                    status="open",
-                    kind="note_only",
-                    dedup_key=dedup,
-                    execution_state="proposed",
-                )
-            )
-        else:
-            existing_prop.summary = summary
-            existing_prop.rationale_md = rationale
-            existing_prop.suggested_payload = json.dumps(payload)
-            existing_prop.surfaced_at = now_dt
-
-        alerted.append(run.id)
+        # DURABLE alert FIRST — log before any write so a jammed DB can
+        # never swallow the notification.
         _log.warning(
             "synthesis_stall.alerted",
             user_id=user_id,
             decision_run_id=run.id,
             quiet_minutes=round(quiet, 1),
+            last_activity=last.isoformat(),
         )
+        alerted.append(run.id)
 
-    if alerted:
-        session.flush()
+        # Richer surface (monitor flag + inbox) is best-effort.
+        try:
+            _persist_stall_alert(
+                session,
+                user_id=user_id,
+                run=run,
+                last=last,
+                quiet=quiet,
+                now_dt=now_dt,
+            )
+        except Exception as exc:  # noqa: BLE001 — never drop the alert
+            session.rollback()
+            _log.warning(
+                "synthesis_stall.persist_degraded",
+                user_id=user_id,
+                decision_run_id=run.id,
+                error=str(exc)[:200],
+            )
     return alerted
 
 

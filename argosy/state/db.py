@@ -17,7 +17,9 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+import sqlalchemy as sa
 from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,6 +31,65 @@ from argosy.config import get_settings
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+#: Busy-timeout the project applies to EVERY file-backed SQLite connection
+#: — async engine and every short-lived sync engine alike. Writers still
+#: serialize under WAL, but each waits up to this long for the lock instead
+#: of raising ``database is locked`` immediately. Must match the async
+#: engine window so sync writers (cache purge, plan routes, the stall-alert
+#: loop) don't fail-fast while the async path patiently waits.
+SQLITE_BUSY_TIMEOUT_MS = 60_000
+
+
+def _install_sqlite_pragmas(
+    listen_on: object, url: str, *, busy_timeout_ms: int = SQLITE_BUSY_TIMEOUT_MS
+) -> None:
+    """Attach WAL + busy_timeout + synchronous=NORMAL to a SQLite engine.
+
+    ``listen_on`` is the object the ``connect`` event fires on — the async
+    engine's ``.sync_engine`` for the global engine, or a plain sync
+    :class:`~sqlalchemy.engine.Engine` for :func:`create_sync_engine`.
+    No-op for non-SQLite / ``:memory:`` URLs (the pragmas are irrelevant
+    or would break the shared in-memory test DB).
+    """
+    if not url.startswith("sqlite") or ":memory:" in url:
+        return
+
+    @event.listens_for(listen_on, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
+
+def create_sync_engine(
+    url: str | None = None, *, check_same_thread: bool = False, **kwargs
+) -> Engine:
+    """Build a synchronous SQLAlchemy engine with the project's SQLite
+    reliability pragmas applied (WAL + ``busy_timeout`` + ``synchronous=NORMAL``).
+
+    Many sync code paths (plan/portfolio routes, the synthesis flow, the
+    adapter-cache purge, the stall-alert loop) construct a short-lived sync
+    engine by stripping the ``+aiosqlite`` driver from the async URL. Built
+    with a bare ``sa.create_engine`` those connections get SQLite's default
+    ``busy_timeout=0`` and raise ``database is locked`` INSTANTLY on any
+    write contention — while the async engine (which sets 60 s) patiently
+    waits. This helper is the single seam that keeps every sync engine
+    consistent with :func:`init_engine`.
+
+    ``url`` defaults to the settings' database URL with the async driver
+    segment stripped.
+    """
+    if url is None:
+        url = get_settings().database_url.replace("+aiosqlite", "")
+    connect_args = dict(kwargs.pop("connect_args", {}))
+    if url.startswith("sqlite"):
+        connect_args.setdefault("check_same_thread", check_same_thread)
+    engine = sa.create_engine(url, connect_args=connect_args, **kwargs)
+    _install_sqlite_pragmas(engine, url)
+    return engine
 
 
 def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
@@ -57,14 +118,7 @@ def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
     # synchronous=NORMAL (vs the default FULL) skips per-write fsync on the
     # WAL file, dropping per-INSERT latency from ~30 ms to ~3 ms; still
     # durable on app crash, only loses uncommitted txns on OS crash.
-    if url.startswith("sqlite") and ":memory:" not in url:
-        @event.listens_for(_engine.sync_engine, "connect")
-        def _set_sqlite_pragmas(dbapi_connection, _connection_record):
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=60000")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
+    _install_sqlite_pragmas(_engine.sync_engine, url)
 
     return _engine
 

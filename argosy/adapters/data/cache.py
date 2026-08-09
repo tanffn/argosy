@@ -187,13 +187,17 @@ def purge_cache_entry(provider: str, key: str) -> None:
     stripping the ``+aiosqlite`` driver segment — the same pattern used
     by ``argosy.api.routes.plan.get_db``.
     """
-    from sqlalchemy import create_engine, delete
+    from sqlalchemy import delete
 
-    from argosy.config import get_settings
+    from argosy.state.db import create_sync_engine
 
-    settings = get_settings()
-    sync_url = settings.database_url.replace("+aiosqlite", "")
-    engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+    # Build via the shared helper so this sync DELETE inherits the
+    # WAL + busy_timeout pragmas. A bare sync engine gets busy_timeout=0
+    # and raises `database is locked` INSTANTLY when the kv_cache write
+    # contends with the async writers (fleet + scheduler) — the concurrency
+    # lock this path was observed to throw. busy_timeout makes it wait for
+    # the (fast, serialized) writer ahead of it instead of failing.
+    engine = create_sync_engine()
     try:
         with engine.begin() as conn:
             conn.execute(

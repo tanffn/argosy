@@ -183,8 +183,16 @@ class RegisteredScheduler(Scheduler):
                 manual_trigger=manual_trigger,
                 triggered_by=triggered_by,
             )
-        except Exception:  # pragma: no cover - DB unavailable path
-            # Spec §1.7 final row: open-fail → log + skip this tick.
+        except Exception:
+            # Audit-row open failed (typically DB contention — the fleet +
+            # scheduler + kv_cache writers starving the writer lock). The
+            # original Spec §1.7 behaviour SILENTLY SKIPPED the whole tick
+            # here — which meant the ``synthesis_stall_alert`` loop (whose
+            # entire job is to be the last line of defence when the DB is
+            # jammed) never ran, so a 7.5 h stall produced no alert. We
+            # can't open an audit row, but we MUST still run the tick so a
+            # self-alerting loop can surface via its own (log-first)
+            # channel. Best-effort, never raises on the scheduled path.
             _log.exception(
                 "jobs.open_job_run_failed",
                 loop=loop.name,
@@ -192,6 +200,7 @@ class RegisteredScheduler(Scheduler):
             )
             if force:
                 raise
+            await self._run_tick_without_audit(loop)
             return
 
         try:
@@ -273,6 +282,35 @@ class RegisteredScheduler(Scheduler):
         # Step 4 — parent's pointer write (success branch). Runs even
         # if step 3 raised.
         await self._record_tick(loop.name, status=TickStatus.OK, error=None)
+
+    async def _run_tick_without_audit(self, loop: CadenceLoop) -> None:
+        """Run a loop's tick when no ``job_runs`` audit row could be opened.
+
+        Fallback path for the ``jobs.open_job_run_failed`` case: the audit
+        bookkeeping is unavailable (DB contention), but self-alerting loops
+        (notably ``synthesis_stall_alert``) MUST still get a chance to fire.
+        We run the tick and record the cadence-state outcome so the loop's
+        own side effects (its log-first alert, any writes that DO land)
+        happen. No audit row is written — that's the deliberate trade-off
+        versus silently dropping the tick. Never raises.
+        """
+        try:
+            tick_result = await loop.tick(now=self.clock)
+        except Exception as exc:  # noqa: BLE001 — scheduled path never raises
+            _log.exception("cadence.tick_failed_no_audit", loop=loop.name)
+            await self._record_tick(
+                loop.name, status=TickStatus.ERROR, error=str(exc)
+            )
+            return
+        derived_status, derived_reason = derive_run_status(tick_result)
+        if derived_status != OK_STATUS:
+            await self._record_tick(
+                loop.name, status=TickStatus.ERROR, error=derived_reason
+            )
+        else:
+            await self._record_tick(
+                loop.name, status=TickStatus.OK, error=None
+            )
 
     async def _close_safely(
         self,

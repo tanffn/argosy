@@ -40,12 +40,17 @@ def synthesis_stall_alert_metadata() -> JobMetadata:
 
 
 def _default_session_factory() -> sessionmaker:
-    import sqlalchemy as sa
-
     from argosy.state import db as db_mod
 
+    # Use the shared sync-engine builder so this loop's OWN writes (the
+    # monitor flag + inbox row it raises the alert with) inherit the
+    # WAL + busy_timeout pragmas. A bare sync engine gets busy_timeout=0
+    # and raises `database is locked` the instant the fleet/scheduler
+    # contend — precisely when a synthesis stall is most likely — so the
+    # alert would silently fail to surface (the bug this loop exists to
+    # prevent).
     url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
-    engine = sa.create_engine(url, connect_args={"check_same_thread": False})
+    engine = db_mod.create_sync_engine(url)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
