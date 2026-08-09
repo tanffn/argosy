@@ -26,6 +26,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -4819,4 +4820,99 @@ class InstrumentPlanClass(Base):
             "user_id", "symbol", name="uq_instrument_plan_classes_user_symbol"
         ),
         Index("ix_instrument_plan_classes_user", "user_id"),
+    )
+
+
+class IntegrityVerdict(Base):
+    """One immutable pass/fail conservation verdict per snapshot evaluation.
+
+    The SPINE's integrity floor (operating-model spec §2A/§3). Append-only:
+    a re-evaluation NEVER mutates a prior row — it appends a new row with a
+    higher ``verdict_seq`` and CAS-advances :class:`IntegrityVerdictHead`.
+
+    ``snapshot_content_hash`` is a commitment to the *exact normalized snapshot
+    bytes* the verdict assessed (see
+    ``argosy.services.spine.integrity.compute_snapshot_content_hash``), so a
+    later reader can prove the verdict covered the bytes it is about to trust —
+    a pass over a different normalization can never authorize other bytes.
+    ``verdict_seq`` is a monotonic per-snapshot integer (NEVER a timestamp) that
+    orders verdicts and breaks ``authored_at`` ties. Migration: alembic 0098.
+    """
+
+    __tablename__ = "integrity_verdict"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("portfolio_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    result: Mapped[str] = mapped_column(String(8), nullable=False)
+    snapshot_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Monotonic per-snapshot ordinal — currency of a verdict is decided by this,
+    # NEVER by ``authored_at`` (ties are possible on append-only rows).
+    verdict_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Provenance is MANDATORY (spec §3): a provenance-free pass is forbidden.
+    threshold_policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_json: Mapped[str] = mapped_column(Text, nullable=False)
+    authored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "result IN ('pass','fail')", name="ck_integrity_verdict_result"
+        ),
+        UniqueConstraint(
+            "snapshot_id", "verdict_seq", name="uq_integrity_verdict_snapshot_seq"
+        ),
+        # Composite-unique target so the head's composite FK can bind
+        # (snapshot_id, current_verdict_id) — the DB then refuses a head pointed
+        # at a DIFFERENT snapshot's verdict (defect 4).
+        UniqueConstraint(
+            "snapshot_id", "id", name="uq_integrity_verdict_snapshot_id"
+        ),
+        Index("ix_integrity_verdict_snapshot", "snapshot_id"),
+        Index("ix_integrity_verdict_user", "user_id"),
+    )
+
+
+class IntegrityVerdictHead(Base):
+    """The single authoritative (current) verdict per snapshot — CAS-advanced.
+
+    Exactly one row per ``snapshot_id`` (PK). Appending any verdict CAS-advances
+    this row's ``current_verdict_id`` + ``seq`` to the new verdict in the same
+    transaction, only when the new ``seq`` exceeds the stored one — so a later
+    ``fail`` demotes a prior ``pass`` and two racing re-evaluations cannot both
+    win. Migration: alembic 0098.
+    """
+
+    __tablename__ = "integrity_verdict_head"
+
+    snapshot_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("portfolio_snapshots.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    current_verdict_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        # Composite FK: the head may ONLY point at a verdict of the SAME snapshot
+        # (defect 4). A single-column FK to integrity_verdict.id let a snapshot's
+        # head be aimed at another snapshot's pass verdict.
+        ForeignKeyConstraint(
+            ["snapshot_id", "current_verdict_id"],
+            ["integrity_verdict.snapshot_id", "integrity_verdict.id"],
+            name="fk_integrity_verdict_head_same_snapshot",
+        ),
     )

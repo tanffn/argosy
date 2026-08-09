@@ -21,10 +21,12 @@ re-introduced per-surface.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from argosy.logging import get_logger
 from argosy.services.holding_books import (
     TotalBookResult,
     UnmanagedLoadResult,
@@ -33,8 +35,20 @@ from argosy.services.holding_books import (
     symbol_value_usd_k,
 )
 
+log = get_logger(__name__)
+
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
+
+
+def _spine_gate_enabled() -> bool:
+    """Feature flag ``ARGOSY_SPINE_GATE`` — default OFF (behavior unchanged)."""
+    return os.environ.get("ARGOSY_SPINE_GATE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _to_float(v: Any) -> float | None:
@@ -160,6 +174,29 @@ def load_current_book(
             snapshot_date=None, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
         )
     raw = parse_positions_json(snap.positions_json)
+    # SPINE GATE (spec §2A) — OPT-IN via ARGOSY_SPINE_GATE. When on, consult the
+    # validated-snapshot accessor and LOG when it would refuse (no pass-head or
+    # content-mismatch). Behavior is otherwise UNCHANGED: this slice only
+    # demonstrates the gate, it does not yet block the read.
+    if _spine_gate_enabled():
+        try:
+            from argosy.services.spine.validated_snapshot import (
+                read_validated_snapshot,
+            )
+
+            validated = read_validated_snapshot(session, user_id, snap)
+            if validated is None:
+                log.warning(
+                    "current_book.spine_gate_would_refuse",
+                    user_id=user_id,
+                    snapshot_id=getattr(snap, "id", None),
+                )
+        except Exception as exc:  # noqa: BLE001 — the flag must never break loads
+            log.warning(
+                "current_book.spine_gate_error",
+                snapshot_id=getattr(snap, "id", None),
+                err=str(exc)[:160],
+            )
     result = load_total_book(
         session, user_id, raw,
         snapshot_date=getattr(snap, "snapshot_date", None),
