@@ -8,16 +8,23 @@ where is value added or lost?"* Today this is a narrative, not a number — ther
 is **no realized-return or benchmark-comparison logic anywhere** (verified).
 
 **Input contract:** this scorecard is Component C of the Argosy operating model
-(`docs/design/argosy_operating_model_spec.md`). Any **headline / proof** return
-number it publishes reads **only** `validated_snapshot_period` spine records over
-per-item-bound `validated_snapshot` records (that spec §2A) — never raw
-`portfolio_snapshots` directly. A spine period exists only if its snapshots passed
-the conservation gate **and** their per-item integrity binding verified **and** each
-normalized item was bound to an independent source record with expected-set
-completeness proven (spec §2A `item_source_binding` / `expected_set_completeness` —
-the fix for ingest-time sub-threshold corruption the Merkle binding alone cannot
-catch), its flows reconciled to dated provenance IDs, and its prices are fresh
-(below). **A missing
+(`docs/design/argosy_operating_model_spec.md`). Any **headline / proof** total-return
+number it publishes reads **only** the `validated_snapshot_period` spine records
+emitted by the **integrity-period finalizer** (spec §2A Producer 2) over per-item-bound
+`validated_snapshot` records — never raw `portfolio_snapshots` directly. That finalizer
+freezes a period on **integrity of the book alone** (bounding `validated_snapshot`s +
+complete event manifest + dated-flow reconciliation + price freshness — **no benchmark,
+no decisions, no exposure**), so **total TWR publishes on integrity alone — the
+integrity-only gate is operationally true, not merely claimed.** Any **attribution /
+B↔C** number instead reads the **attribution finalizer**'s (spec §2A Producer 3)
+**current-head** `contribution_ledger` (filtered to
+`attribution_finalization_head.current_attribution_finalization_id`, §2.5). A spine
+period exists only if its snapshots passed the conservation gate **and** their per-item
+integrity binding verified **and** each normalized item was bound to an independent
+source record with expected-set completeness proven (spec §2A `item_source_binding` /
+`expected_set_completeness` — the fix for ingest-time sub-threshold corruption the
+Merkle binding alone cannot catch), its flows reconciled to dated provenance IDs, and
+its prices are fresh (below). **A missing
 required field or a failed integrity verdict yields NO period and NO return number
 — never a "degraded confidence" figure.** A pre-spine computation is permitted
 **only** as an explicitly-labelled non-headline diagnostic (§6 0a) that may not
@@ -156,12 +163,16 @@ to a "confidence warning":
   `proposals.executed_live` row is **not** sufficient — it has no fill price,
   timestamp, or quantity binding and could bless a corrupted deletion) or the period
   is quarantined fail-loud. Never auto-classified as flow.
-- **Partial drop (NEW — the amendment the old banner missed).** A drop of **more
-  than X% of positions or of total value** between snapshots that is *not*
+- **Partial drop (NEW — the amendment the old banner missed).** A drop **at or
+  beyond 20% of positions or of total value** between snapshots that is *not*
   reconciled to executed sales/withdrawals is a candidate corruption event and
-  **fails loud**, exactly like a full zero-out. The prior "zero-shares" guard only
-  caught total deletions; a 40% silent shrink would still have laundered through as
-  a flow. Partial damage now fails loud too.
+  **fails loud**, exactly like a full zero-out. **The threshold is a concrete `≥ 20%`
+  (not the earlier unspecified "X", and not a strict `>` — an exactly-at-threshold
+  shrink fails too), and it is the SAME value as the operating-model conservation
+  drop-guard (spec §3)** — one policy number shared across both docs, not two. The
+  prior "zero-shares" guard only caught total deletions; a 40% silent shrink would
+  still have laundered through as a flow, and the earlier `>50%` boundary let an
+  exactly-half erasure pass. Partial damage now fails loud too.
 - **Stale prices.** If any `current_price` in the pair is older than the freshness
   threshold (a re-import that carried forward stale marks), the sub-period **fails
   loud** — a return computed on stale prices is fiction, not low-confidence.
@@ -268,9 +279,37 @@ overlap and repeated HOLD reaffirmations double-count the same exposure; an
 unmanaged holding (NVDA) has **no** B bet yet still drives C's selection effect; and
 per-bet deltas are unweighted by position size whereas a portfolio selection effect
 is weight-weighted. An unweighted sum is therefore the wrong identity. **Correct
-relationship:** both C and B derive from the **same canonical position/return
-primitives** in the `validated_snapshot` / `validated_snapshot_period` records,
-joined through **one persisted, versioned `exposure_allocation` record** (spec §8):
+relationship — a shared-ledger IDENTITY, not two measures plus a tolerance.** C and
+B are not two independent computations checked for approximate agreement; and simply
+sharing rows and weights is **not** enough, because naive geometric linking does not
+commute with grouping (a 50%-weight name at +10%/day for two days gives 10.5%
+link-then-weight vs 10.25% weight-then-link — a residual from ordering alone). The
+identity is made exact by a **canonical ADDITIVE attribution field**: both
+**consume the same immutable, current-head `contribution_ledger` rows** the spine's
+**attribution finalizer** emits (spec §2A Producer 3) — both filter to
+`attribution_finalization_head.current_attribution_finalization_id` **AND require that
+finalization's `input_integrity_period_id` to equal the boundary's current
+`integrity_period_head.current_integrity_period_id`** (spec §2A, finding 1), so a
+superseded finalization's rows — or one stranded over a corrected (superseded) integrity
+period — are never summed, and stale attribution is UNAVAILABLE (not stale-served) against
+fresh TWR until re-finalized; stale/current rows are non-mixable — one row
+per position-day carrying stable
+account/instrument IDs, the source-record commitments, the versioned valuation/FX
+formula, the bounding `event_ids`, the single `daily_capital_weight`, the
+`position_return`, the `benchmark_return`, the `ownership_class` +
+`governing_decision_id`, and — decisively — the **`linked_active_contribution`**: the
+smoothed (Cariño/Menchero, under `linking_algorithm_version`) per-id number that
+**sums exactly** to the period's total linked active return. **C aggregates
+`SUM(linked_active_contribution)` by class; B aggregates the SAME column by decision**
+(B's per-decision `vs_benchmark_delta` is a DB-derived aggregate over its
+`decision_contribution_map` set, spec §2A(c) — not an independently authored scalar).
+Because grouping a sum commutes, `link-then-group` and `group-then-link` are identical;
+cost/FX/interaction residuals are **explicit named ledger lines**
+(`residual_cost`/`residual_fx`/`residual_interaction`) each carrying their own
+`linked_active_contribution` share, not smeared into selection — all specified in the
+ledger (spec §2A), so the two aggregations reconcile **by construction with zero
+linking residual.** `exposure_allocation`'s ownership/precedence semantics (spec §8) are
+**materialized into the ledger's `ownership_class` + `governing_decision_id`**:
 position-day ownership (which `validated_decision`, if any, governs each position-day
 and its effective window), the decision→exposure mapping (shares × window per
 decision), and an overlap-precedence rule (so no position-day is double-owned or
@@ -296,11 +335,15 @@ is what makes the reconciliation well-posed, while the closed classification kee
 (ii) from absorbing a coverage bug. **Governance is unchanged:** B's per-bet
 vs-benchmark delta remains the atomic source of truth the learning loop (spec §5/§8)
 reads; C's selection figure (identity iii) is the proof-surface aggregate, never an
-independent input to learning. **Divergence of identity (i) from B beyond a stated
-tolerance — after the `exposure_allocation` weights, windows, and precedence are
-applied — is a fail-loud flag that blocks publishing either number**, never two
-coexisting "selection" figures with no adjudication ("which number is right?" must
-not return).
+independent input to learning. **Any nonzero residual between identity (i) and B —
+beyond de-minimis floating-point rounding — is a REAL LEDGER ERROR, not a tolerance
+band.** Because both are GROUP-BYs of the identical additive `linked_active_
+contribution` column, a residual is **impossible from linking order** and can only mean
+a mis-linked window, a double-owned or orphaned position-day, or a lost decision; it is
+a **fail-loud flag localized to the offending `contribution_id`s that blocks publishing
+the managed-selection number**, never a tolerance that quietly absorbs a modeling
+disagreement and never two coexisting "selection" figures with no adjudication ("which
+number is right?" must not return).
 
 ### 2.6 Currency — *why NIS base with FX isolated*
 The family retires in ILS, so return must be reported in **NIS** (their spending
@@ -328,7 +371,7 @@ nvda_sales_json, real_estate_json, pensions_json, totals_json, fx_usd_nis,
 fx_usd_eur`. `positions_json[]` carries `symbol, shares, current_price,
 current_value_local, usd_value_k, currency` — **this is what enables §2.2**.
 `totals_json = {total_usd_value_k, cash_balances_usd_k}`.
-- **48 rows, 2026-03-24 → 2026-08-07.** IRREGULAR: one March point, a hole to
+- **53 rows, 2026-03-24 → 2026-08-09.** IRREGULAR: one March point, a hole to
   2026-06-12, then dense (multiple rows/day). Reads are latest-only
   (`ORDER BY imported_at DESC`). **GAP #1:** must dedup to one canonical
   period-end per date and accept an irregular, ~4.5-month, hole-bearing series.
@@ -337,8 +380,8 @@ current_value_local, usd_value_k, currency` — **this is what enables §2.2**.
 - **`rsu_vest_events`** — 80 rows, `vest_date` 2022-06-15 → 2026-06-17,
   `shares_net, fmv_per_share_usd`. The ONLY clean dated external inflow (June-2026
   rows are `source='derived:...'` reconstructions). **USABLE.**
-- **`fx_rates`** — 459 rows USD/NIS daily 2024-10 → 2026-08. **USABLE** for §2.6.
-- **`proposals`** — 18 rows (9 `executed_live`) but **no fill price/timestamp**
+- **`fx_rates`** — 460 rows USD/NIS daily 2024-10 → 2026-08. **USABLE** for §2.6.
+- **`proposals`** — 21 rows (9 `executed_live`) but **no fill price/timestamp**
   (only `created_at/updated_at`). Cross-check only.
 - **`fills` / `lots` / `daily_account_pnl` / `investor_events` — 0 rows (EMPTY).**
 - `closed_loop.py` parses fills from TSV prose; applied via one-off scripts, not
@@ -369,7 +412,7 @@ so the scorecard is reproducible and not dependent on live yfinance every load.
   (`instrument_plan_class.py:149`) → canonical sleeve per symbol (owner>fleet>plan).
 - `plan_versions.target_allocation_json` → `TargetAllocationDoc`
   (`target_allocation_doc.py:93`): `classes[].{label, target_pct, instruments[]}`.
-  89 `plan_versions` rows give target-history over time.
+  90 `plan_versions` rows give target-history over time.
 - **USABLE** — the attribution mapping layer is real; per-sleeve benchmark ETFs
   can be drawn from `classes[].instruments[].symbol` or a curated sleeve→ETF map.
 
@@ -384,22 +427,44 @@ so the scorecard is reproducible and not dependent on live yfinance every load.
 
 ## 4. Computation pipeline (what the build would do — not built)
 
-**Proof vs. diagnostic — which inputs each surface may read.** Any **headline /
-proof** number ("are we beating the market?") reads **only** validated spine
-periods (`validated_snapshot_period` over per-item-bound `validated_snapshot`s, with
-dated-provenance flow reconciliation — spec §2A) and must pass the §2.5 B↔C
-reconciliation gate. The steps below that read `portfolio_snapshots` directly
-(step 1) are the **pre-spine diagnostic** path (§6 0a): their output is labelled
-diagnostic-only, may not feed learning, and may not be shown on a proof surface.
-Once the spine exists, the same pipeline runs over spine records and its output is
-eligible to be a proof number.
+**Proof vs. diagnostic — and TWR is NOT blocked on the decision ledger.** There are
+**two distinct proof surfaces with two distinct gates** — the earlier draft
+over-blocked by gating *all* headline numbers on B↔C reconciliation:
+- **Total-portfolio TWR headline** reads **only** the **integrity-period finalizer**'s
+  `validated_snapshot_period` records (over per-item-bound `validated_snapshot`s, with
+  dated-provenance flow reconciliation and event-set completeness — spec §2A Producer 2).
+  Because that finalizer freezes on **integrity of the book alone** — no benchmark, no
+  decisions, no exposure — the headline **publishes as soon as the snapshot/flow
+  INTEGRITY gate passes**; it does **NOT** wait on the attribution finalizer or on B↔C,
+  because total return + conservation are a property of the book and do not require any
+  position-day to carry a gradable decision. **This is what makes "integrity-only TWR"
+  operationally true and not merely asserted:** total TWR no longer shares a writer with
+  the attribution ledger. It **must carry an explicit attribution-COVERAGE percentage**
+  (the value-weighted share of the book whose position-days are `decision_owned` and
+  reconciled in the current attribution finalization), so the number is honest about how
+  much is skill-attributed.
+- **Managed-selection attribution (Brinson selection, §2.5) and any learning input**
+  read the **attribution finalizer**'s current-head `contribution_ledger` **whose
+  `input_integrity_period_id` matches the boundary's current `integrity_period_head`**
+  (spec §2A, finding 1 — after an integrity correction the stale attribution is
+  UNAVAILABLE, never served against the fresh TWR, until re-finalized) and are the
+  **only** surfaces gated on the §2.5 B↔C `contribution_ledger` reconciliation.
+  A ledger residual, or any `expected_but_missing` position-day weight, blocks the
+  managed-selection number — never the total-TWR headline (which simply reports lower
+  attribution coverage until the ledger is clean).
+
+The steps below that read `portfolio_snapshots` directly (step 1) are the **pre-spine
+diagnostic** path (§6 0a): their output is labelled diagnostic-only, may not feed
+learning, and may not be shown on a proof surface. Once the spine exists, the same
+pipeline runs over spine records; total TWR is eligible to be a proof number on
+integrity alone, and managed selection additionally requires the B↔C gate.
 
 1. **Canonical value series:** dedup `portfolio_snapshots` to one period-end per
    date; backfill pre-June via `net_worth_backfill` archived TSVs. Split into
    liquid-investable vs pension/real-estate buckets.
 2. **Flow derivation + corruption gate:** per consecutive pair, per position, split
    Δvalue into market-return vs share-flow (§2.2); run the fail-loud reconciliation
-   gates (zero-out / partial-drop >X% / stale price / split-spinoff / cross-account
+   gates (zero-out / partial-drop ≥20% / stale price / split-spinoff / cross-account
    internal-transfer) and **quarantine any period that fails** — no return for it;
    reconcile surviving flows against **dated provenance** (`rsu_vest_events` +
    fill/transfer IDs; an `executed_live` proposal is a cross-check, not provenance,
@@ -423,7 +488,17 @@ eligible to be a proof number.
    `GET /api/portfolio/performance`; UI `/performance` card.
 
 New tables: `benchmark_prices` (durable), `portfolio_return_periods` (derived
-cache). No changes to existing ingest.
+cache). C also **consumes** (does not author) the spine's current-head
+`contribution_ledger` (spec §2A) — the shared position-day rows it and B both
+aggregate, filtered to the current `attribution_finalization_id`; C never writes
+spine tables (the snapshot validator, the integrity-period finalizer, and the
+attribution finalizer are the three sole writers, spec §2A). **Ingest is NOT unchanged: the raw-snapshot write paths now ADD an
+`integrity_verdict` (conservation gate, spec §3) on every write and, where a
+broker-signed feed exists, produce the independent source / event manifests that
+`item_source_binding` and `expected_event_set_completeness` reconcile against (spec
+§2A).** The scorecard itself authors no ingest change — it consumes those spine
+outputs — but the operating-model spec's producers do alter the ingest path, so the
+old "no changes to existing ingest" claim is retracted.
 
 ---
 
@@ -436,7 +511,7 @@ cache). No changes to existing ingest.
   are NOT a confidence band.** A genuinely approximate figure (a modest mid-period
   flow whose date is known but imprecise) gets a data-confidence score per period.
   Two things are categorically different and get **no** confidence score:
-  - a **corruption event** (a zero-out, an unreconciled partial drop >X%, stale
+  - a **corruption event** (a zero-out, an unreconciled partial drop ≥20%, stale
     prices, an unadjusted split/spinoff, an unmatched cross-account internal
     transfer — §2.2) **fails loud and quarantines the period**; and
   - an **unclassified cash movement** (§2.3) or a **flow with no dated provenance**
@@ -461,15 +536,25 @@ cache). No changes to existing ingest.
   its output is an explicitly-labelled *diagnostic* — it may NOT be shown on any
   "are we beating the market?" proof surface and may NOT feed learning.** This
   resolves the earlier contradiction with §9 (a headline is diagnostic-only until it
-  reads validated spine periods and reconciles with B). It is a build/plumbing
-  smoke, not the product number.
-- **0a-proof — Headline over the spine:** the same computation run over
-  `validated_snapshot_period` records (dated-provenance flows, per-item binding),
-  passing the §2.5 B↔C reconciliation gate. **This** is the number a proof surface
-  may show. Requires the spine (spec §2A) to exist.
+  reads validated spine periods). **The total-TWR headline is gated on snapshot/flow
+  INTEGRITY alone and does NOT wait on B↔C reconciliation** (Finding 4 / §4); only
+  managed-selection attribution and learning are gated on the B↔C ledger identity. It
+  is a build/plumbing smoke, not the product number.
+- **0a-proof — Total-TWR headline over the spine:** the same computation run over the
+  **integrity-period finalizer**'s `validated_snapshot_period` records (dated-provenance
+  flows, per-item binding, event-set completeness — integrity inputs only, no benchmark/
+  decisions/exposure). **This total-portfolio TWR is a proof number on INTEGRITY alone —
+  it does NOT require the attribution finalizer or the B↔C gate** (Finding 4 / §4); it
+  publishes with an explicit attribution-coverage %. Requires the integrity-period
+  finalizer (spec §2A Producer 2) to exist; the attribution finalizer is not on this
+  path.
 - **0b — Policy benchmark + Brinson attribution** (allocation/selection/cash/FX)
-  via the sleeve map. This is the "is our stock-picking costing us?" answer, and it
-  reads spine periods (proof surface).
+  via the sleeve map. This is the "is our stock-picking costing us?" answer; its
+  **managed-selection** figure reads the **attribution finalizer**'s current-head
+  `contribution_ledger` and is the surface gated on the §2.5 B↔C reconciliation (a
+  residual blocks *this* number, not the total-TWR headline). Requires the attribution
+  finalizer (spec §2A Producer 3) — benchmark version + exposure ownership +
+  decision-completeness manifest frozen — over an already-integrity-finalized period.
 - **0c — Risk-adjusted + history backfill** (net_worth_backfill) + durable
   `portfolio_return_periods` + `/performance` API/UI + IRR.
 

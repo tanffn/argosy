@@ -104,20 +104,371 @@ into single mutable records:
    graded outcome is **appended**, never written back into the event. "Scoring
    mutates the event" is forbidden by construction.
 
+### The SPINE PRODUCERS — THREE state machines, not one monolith (NEW)
+Spine records are emitted by **exactly three producers, each in its own module** — and
+by **nothing else.** The earliest draft named a single "materializer" that supposedly
+emitted `validated_snapshot` + `validated_snapshot_period` + the contribution ledger
+**in one transaction on the snapshot's verdict-pass.** That is an **unsatisfiable
+temporal dependency**: contribution rows need a `governing_decision_id`, an exposure
+allocation, an event manifest, and a benchmark version — and validated decisions,
+event manifests, and benchmarks legitimately arrive **later** than the snapshot they
+sit between. The round-2 draft split it into two (validator + a period finalizer that
+wrote **both** `validated_snapshot_period` and `contribution_ledger`), but that
+**re-coupled total TWR to attribution**: because the one finalizer wrote
+`validated_snapshot_period` only after benchmark + exposure + governing decisions
+froze, and total TWR reads `validated_snapshot_period`, TWR could not publish until
+attribution inputs arrived — the "integrity-only TWR" claim was not operationally
+true. The concerns are therefore split into **three** contracts with three state
+machines, so the integrity period (what TWR reads) is finalized on integrity **alone**,
+and attribution is a **separately-versioned** finalization layered on top:
+
+- **Producer 1 — the SNAPSHOT VALIDATOR (`argosy/services/spine/snapshot_validator.py`,
+  to build).** Raw snapshot → `integrity_verdict` → `validated_snapshot`. This is the
+  **only** thing gated on snapshot-pass, and it runs **immediately** on pass. It writes
+  `validated_snapshot` + its `per_item_integrity_binding` **only**; it does **not**
+  touch `validated_snapshot_period`, `contribution_ledger`, or any attribution record.
+- **Producer 2 — the INTEGRITY-PERIOD FINALIZER
+  (`argosy/services/spine/integrity_period_finalizer.py`, to build).** The **sole**
+  writer of `validated_snapshot_period` **and of the `integrity_period_head` table**
+  (below). It finalizes a period on
+  **integrity-of-the-book ONLY**: the two bounding `validated_snapshot`s, a **complete
+  event manifest** (`expected_event_set_completeness`), **dated-flow reconciliation**
+  (`flow_reconciliation_status`), and **price freshness**. It reads **no** benchmark,
+  **no** governing decisions, and **no** exposure allocation. This is what total TWR
+  reads → **TWR publishes on integrity alone, truly** (scorecard §4/§6). On finalizing a
+  period it **CAS-advances `integrity_period_head`** for that boundary to the new
+  `integrity_period_version` (monotonic `seq`, mirroring the verdict/attribution heads),
+  so there is exactly one current integrity version per boundary. It never
+  touches `contribution_ledger` or attribution.
+- **Producer 3 — the ATTRIBUTION FINALIZER
+  (`argosy/services/spine/attribution_finalizer.py`, to build).** The **sole** writer
+  of `contribution_ledger` (+ its `linked_active_contribution`) and of the attribution
+  head/version records below. It runs on a **separate, versioned
+  `attribution_finalization` contract** (point 3 below) that fires only once the
+  **benchmark version**, the **exposure ownership** (`exposure_mapping_version`, §8), and
+  the **decision-completeness watermark** (the closed decision manifest, point 3b) are
+  all frozen — layered **over** an already-finalized `validated_snapshot_period`, never
+  on snapshot-pass and never on integrity-period finalization. Contribution rows are
+  **never** emitted on a snapshot transition or an integrity-period finalization.
+  **Every `attribution_finalization` row FK-binds the EXACT integrity-period version it
+  was computed over** (`input_integrity_period_id` NOT NULL FK, point 3b), which is what
+  couples the two version axes: when an integrity correction advances
+  `integrity_period_head`, the prior attribution — computed over the superseded integrity
+  version — is no longer served (the consumer view of point 3 drops it) until Producer 3
+  re-finalizes over the new integrity version.
+
+The concrete laundering paths both close: real code still reads raw `positions_json`
+(`argosy/services/current_book.py:162` via `parse_positions_json`;
+`decision_funnel/position_context.py`) and a **second direct snapshot writer** exists
+(`holding_books.py:1865`). Both producers' contracts are stated as enforceable
+mechanisms, not rules:
+
+1. **Single writer per table, one transaction.** The snapshot validator is the
+   **only** code with INSERT rights on `validated_snapshot`; the **integrity-period
+   finalizer** is the **only** code with INSERT rights on `validated_snapshot_period`;
+   the **attribution finalizer** is the **only** code with INSERT rights on
+   `contribution_ledger`, `decision_contribution_map`, and the
+   `attribution_finalization` / `attribution_finalization_head` tables. The validator
+   reads a raw `portfolio_snapshots` row **plus**
+   its `integrity_verdict` (below) and, **only if the CURRENT-HEAD verdict reads pass
+   AND commits to exactly the bytes being materialized (finding 1, below)**, emits the
+   normalized record and its per-item binding **in a single DB transaction**. A verdict
+   that is pending, superseded, stale, content-mismatched, or failed yields NO
+   `validated_snapshot`. There is no second code path that authors either kind of
+   record.
+2. **Content-hash-bound verdict check (the fix for stale/superseded pass).** A verdict
+   is append-only, so "latest by `authored_at`" is a fragile query convention — ties
+   are possible, and a stale pass `V1` could authorize bytes even after a fail `V2` was
+   appended, because the old FK only checked that the *referenced* row said `pass`, not
+   that it was **current** or that it assessed **these exact bytes**. Closed three ways:
+   - **(a) `integrity_verdict.snapshot_content_hash`** — every verdict carries a hash
+     over the **exact normalized snapshot bytes it assessed** (the canonicalized
+     positions/accounts payload, not the raw JSON blob). A verdict is thus a commitment
+     to *content*, not merely to a `snapshot_id`.
+   - **(b) The validator computes the content-hash of the bytes it is about to
+     materialize and binds `validated_snapshot.integrity_verdict_id` to the verdict
+     whose `snapshot_content_hash` EQUALS that hash** — proving the bound verdict
+     assessed exactly those bytes. A pass verdict over a *different* normalization can
+     never authorize this snapshot.
+   - **(c) Exactly-one-authoritative verdict, enforced.** An `integrity_verdict_head`
+     table holds **one row per `snapshot_id`** (`PRIMARY KEY(snapshot_id)`,
+     `current_verdict_id` FK). Appending any verdict for a snapshot CAS-advances that
+     head row to the new verdict in the same transaction (fail-loud if the head moved
+     concurrently); a re-evaluation appends a new row and moves the head, so a later
+     `fail` becomes head and demotes the prior `pass`. Ties on `authored_at` are broken
+     by a **monotonic `verdict_seq` (autoincrement integer), never a timestamp.** The
+     insert trigger on `validated_snapshot` requires the referenced verdict be **ALL
+     of**: (i) the **current head** for its `snapshot_id` (`integrity_verdict_head.
+     current_verdict_id = validated_snapshot.integrity_verdict_id`), (ii) `result =
+     'pass'`, and (iii) `snapshot_content_hash =` the validated_snapshot's own committed
+     content-hash. A stale, superseded, or content-mismatched verdict fails the trigger.
+3. **TWO separately-versioned finalization contracts — Producer 2's and Producer 3's
+   state machines.** The single "period_finalization" of the round-2 draft is split so
+   the integrity period (what TWR reads) never waits on attribution inputs.
+
+   **3a. `integrity_period_finalization` — Producer 2's state machine (integrity ONLY).**
+   A period is a record with lifecycle `open → integrity_inputs_frozen → integrity_finalized`,
+   under an `integrity_period_version`. Its inputs are **integrity-of-the-book only**:
+   - **`open`** — the period exists but cannot produce a number while ANY of these is
+     missing: the two bounding `validated_snapshot`s, the independent **event manifest**
+     (`expected_event_set_completeness`), the **dated-flow reconciliation**
+     (`flow_reconciliation_status`), and **price freshness**. **No benchmark, no
+     decisions, no exposure gate this state** — those are attribution inputs (3b), not
+     integrity inputs. It is honestly `open`, never a silently-wrong frozen row.
+   - **`integrity_inputs_frozen`** — snapshots the exact integrity input version-set
+     (the two snapshot ids, the event-manifest id, the flow-reconciliation id).
+   - **`integrity_finalized`** — Producer 2 emits **`validated_snapshot_period`** in one
+     transaction and **CAS-advances `integrity_period_head`** for the boundary to this
+     `integrity_period_version` in the same transaction, and records the frozen
+     integrity-input-set on the period. This is the
+     record total TWR reads; **it publishes on integrity alone** (scorecard §4/§6).
+
+     **The `integrity_period_head` — one row per period boundary, CAS-advanced,
+     monotonic.** A table `integrity_period_head(period_boundary_id PRIMARY KEY,
+     current_integrity_period_id FK, seq)` names the **current** integrity version for
+     each boundary — the concrete home of "the current `integrity_period_version`",
+     mirroring `attribution_finalization_head` and `integrity_verdict_head`.
+     `integrity_period_id` (= a specific `integrity_period_version` row) carries a
+     **monotonic autoincrement `seq` (never `authored_at`)**. Every finalization
+     CAS-advances the head from the prior id to the new one (fail-loud if the head moved
+     concurrently), so two racing re-finalizations cannot both win.
+
+     **Late-arrival / retry rule:** a corrected snapshot, event manifest, or flow record
+     opens a **new `integrity_period_version`** over the same boundary, re-frozen and
+     re-finalized, and **CAS-advances `integrity_period_head`** to it — superseding the
+     prior via the head-table / supersession discipline of
+     §2A(c). A finalized integrity period is immutable; correction is a new version.
+     **Coupling to attribution (finding 1):** advancing the integrity head is exactly the
+     event that renders any attribution computed over the prior integrity version
+     UNAVAILABLE (point 3, consumer rule) and triggers a new attribution finalization
+     over the fresh integrity version — the two version axes are never allowed to drift
+     apart.
+
+   **3b. `attribution_finalization` — Producer 3's state machine (layered OVER an
+   `integrity_finalized` period).** Lifecycle `open → attribution_inputs_frozen →
+   attribution_finalized`, under a monotonic `attribution_finalization_id` (below). It
+   may not even open until the underlying `validated_snapshot_period` is
+   `integrity_finalized`. **It also binds the EXACT integrity version it layers over —
+   `input_integrity_period_id` NOT NULL FK to the `integrity_period_head`-current
+   `integrity_period_version` at open — which is a first-class frozen input (below) and the
+   coupling that finding 1 requires.** Its inputs are the **attribution** inputs only:
+   - **`open`** — stays open while ANY of these is missing: the **`input_integrity_period_id`**
+     (the current `integrity_period_head` version it computes over), the pinned
+     **`benchmark_version`**, the versioned **exposure ownership**
+     (`exposure_mapping_version`, §8), and the **decision-completeness manifest**
+     (`decision_manifest`, below) certifying **every** governing decision whose effect
+     window overlaps the period is in a terminal state. A missing governing decision
+     keeps attribution `open`; the integrity period underneath is unaffected and TWR
+     still publishes.
+   - **DECISION MANIFEST / watermark (the fix for "completeness is unprovable" AND
+     "completeness is a certificate over an unclosed source", finding 2).**
+     Freezing the *currently-visible* set of governing decisions cannot prove none is
+     missing — "all overlapping decisions terminal" is meaningless without a closed
+     definition of what "all" is. Two mechanisms close it:
+     - **(a) A monotonic DECISION-INGRESS SEQUENCE.** Every `observed_decision` is stamped
+       with a durable, monotonic `ingress_seq` **at authoring** (autoincrement, never a
+       timestamp), independent of validation. This is the closed source watermark: the
+       decision_manifest is **closed at a specific `ingress_seq` watermark**, and certifies
+       that **ALL `observed_decision`s with `ingress_seq <= watermark` AND an effect window
+       overlapping the period are in a terminal state** — either a produced
+       `validated_decision` (gradable) **or** `permanently-unscorable`
+       (`unvalidated:missing-predictive-term-at-birth`, §2A(b)). Completeness is now provable
+       **relative to the closed ingress watermark**, not "whatever was visible."
+     - **(b) The manifest enumerates BOTH terminal sets in the window**, all bound to the
+       `attribution_finalization_id`: the governing **`validated_decision_id`s** that grade,
+       AND the **permanently-unscorable `observed_decision_id`s** (which have no validated
+       ID yet are inside the completeness claim). Enumerating only validated IDs would be a
+       certificate that silently omits the permanently-unscorable decisions its own claim
+       covers; both sets are listed so the claim matches its enumeration.
+     Producer 3 therefore requires this **closed, versioned `decision_manifest`**
+     certificate before it may freeze: a producer-authored record, referenced by
+     `attribution_finalization_id`, carrying `{ingress_seq_watermark,
+     validated_decision_ids[], permanently_unscorable_observed_decision_ids[]}`. Until the
+     manifest certifies completeness at its watermark, attribution **cannot finalize** — a
+     currently-visible subset is not a proof of completeness. A
+     decision **arriving after the watermark** (a higher `ingress_seq`) is not back-attached;
+     it opens a **new `attribution_finalization_id`** (below) whose manifest re-certifies at
+     a higher watermark over the larger set.
+   - **`attribution_inputs_frozen`** — snapshots the exact attribution input version-set:
+     **`input_integrity_period_id`**, `benchmark_version`, `exposure_mapping_version`,
+     the `decision_manifest` id (with its `ingress_seq_watermark`), and the manifest's
+     enumerated `validated_decision_id` **and** permanently-unscorable
+     `observed_decision_id` sets. Only from this state may
+     `contribution_ledger` rows be authored, and they are authored **against the frozen
+     set** and stamped with the current `attribution_finalization_id`.
+   - **`attribution_finalized`** — Producer 3 emits `contribution_ledger` (+
+     `linked_active_contribution`) and `decision_contribution_map` in one transaction,
+     every row FK-stamped with this `attribution_finalization_id`, and CAS-advances the
+     head (below).
+
+   **The `attribution_finalization_head` — one row per period boundary, CAS-advanced.**
+   A table `attribution_finalization_head(period_id PRIMARY KEY,
+   current_attribution_finalization_id FK, seq)` names the **current** attribution
+   version for each integrity-period boundary. `attribution_finalization_id` carries a
+   **monotonic autoincrement `seq` (never `authored_at`)**, exactly as the verdict/outcome
+   heads (§2A(c), §3). The enumerated events that open a **new**
+   `attribution_finalization_id` (higher `seq`) over the same period, re-run the manifest +
+   freeze, and **CAS-advance the head from the prior id to the new one in the same
+   transaction** (fail-loud if the head moved concurrently) are: a **late decision** (one
+   arriving above the prior manifest's `ingress_seq` watermark), a **benchmark revision**,
+   an **exposure re-map**, **and — the finding-1 addition — an integrity-period correction
+   (a new `integrity_period_version`, i.e. `integrity_period_head` advanced).** Old
+   `contribution_ledger` / `decision_contribution_map` rows are **never deleted or
+   mutated** — they remain, FK-bound to the superseded `attribution_finalization_id`, but
+   are **never selected**, because:
+   - **Every C and B consumer VIEW filters to the current head AND requires the integrity
+     axes to agree.** The view joins through
+     `attribution_finalization_head` and selects only rows whose
+     `attribution_finalization_id = current_attribution_finalization_id` for the period
+     **AND whose finalization's `input_integrity_period_id` equals the boundary's current
+     `integrity_period_head.current_integrity_period_id`.** This second clause is the
+     **finding-1 version-dependency contract, expressed as a constraint on the view:** the
+     instant an integrity correction advances the integrity head, the current attribution
+     head — still computed over the *superseded* integrity version — no longer satisfies the
+     equality, so it is **UNAVAILABLE (returns no rows / no attribution), never silently
+     served against fresh TWR**, until Producer 3 re-finalizes a new
+     `attribution_finalization_id` whose `input_integrity_period_id` matches the fresh
+     integrity head and CAS-advances the attribution head. Stale attribution can therefore
+     never be summed against a newer integrity period.
+     Stale (superseded) and current rows are also **non-mixable**: a query can never
+     sum a v1 row and a v2 row together.
+   - **Economic-position-day uniqueness within the current finalization.** Because v1 and
+     v2 carry **different `contribution_id`s** for the same economic position-day (account
+     × instrument × day), a duplicated economic position-day is detectable: a UNIQUE
+     constraint `(attribution_finalization_id, account_id, instrument_stable_id, date)` on
+     `contribution_ledger` forbids two rows for the same economic position-day **within one
+     finalization**, and the current-head filter guarantees exactly one finalization is
+     ever summed — so no economic position-day is double-counted across versions.
+4. **Enforcement is a DB constraint AND a single service boundary — not prose.**
+   (a) `validated_snapshot.integrity_verdict_id` is a **NOT NULL FK** guarded by the
+   three-part trigger of point 2(c) (current-head AND pass AND content-matching), so the
+   database itself refuses a spine row over a non-authoritative or content-mismatched
+   verdict. (b) All INSERTs to the spine tables are funnelled through the three producer
+   modules; a repo-guard test fails the build if any file other than the snapshot validator writes
+   `validated_snapshot`, any file other than the **integrity-period finalizer** writes
+   `validated_snapshot_period` / `integrity_period_head`, any file other than the
+   **attribution finalizer** writes
+   `contribution_ledger` / `decision_contribution_map` / `attribution_finalization[_head]`.
+   (c) **The raw-read guard is an AST/import ALLOW-LIST, not a helper-name grep (finding 4).**
+   The earlier draft's guard only caught the single helper `parse_positions_json`, which is
+   trivially bypassable — **~19 production files today decode `positions_json` directly** via
+   `json.loads(...)` (e.g. `decision_funnel/position_context.py:55`,
+   `decision_funnel/orchestrator.py:122`, `closed_loop.py:268`), completely invisible to a
+   `parse_positions_json` grep. The guard is therefore restated as a static allow-list rule
+   enforced by an AST/import check in CI, over **every** way `positions_json` can be
+   dereferenced:
+   - **Every dereference of `positions_json`** — `parse_positions_json(...)`,
+     `json.loads(<snapshot>.positions_json)`, and any **ORM column access** to
+     `PortfolioSnapshotRow.positions_json` — **outside the sanctioned spine-materializer
+     boundary (the snapshot validator, Producer 1) or the explicitly-labelled pre-spine
+     diagnostic path (§6 0a) is FORBIDDEN.** The check keys on the AST node (attribute
+     access / call), not a function name, so renaming the accessor cannot slip past it.
+   - **Every snapshot WRITE** — `session.add(PortfolioSnapshotRow(...))` / any INSERT of
+     `PortfolioSnapshotRow` — **outside the single sanctioned raw-ingest writer is
+     FORBIDDEN**, which catches the **second direct writer** (`holding_books.py:1865`) the
+     helper-grep never saw.
+   The allow-list names the sanctioned modules; the build fails on any dereference or write
+   from an unlisted module. This replaces the bypassable single-function grep with a
+   dependency rule the migration backlog (point 5) must clear before the guard turns on.
+5. **Migration path (the ~19 raw decoders + the second writer must route through it BEFORE
+   the guard turns on).** This is a required, enumerated cut-over, not an aspiration — and
+   it is the explicit backlog the finding-4 AST allow-list (point 4c) blocks the build on:
+   - **The two direct WRITERS.** `holding_books.py:1865` (the second snapshot writer) and
+     `portfolio_snapshot_store.persist_snapshot` (the "intentionally dumb — always
+     writes" path, §3) are demoted to **raw-ingest only**: they may land a raw
+     `portfolio_snapshots` row and MUST emit an `integrity_verdict`, but they may
+     **not** write a `validated_snapshot`. Until then the write allow-list lists exactly
+     the single sanctioned raw-ingest writer, and CI fails on the un-migrated second writer.
+   - **The ~19 direct DECODERS (the migration backlog, named).** Every current
+     `json.loads(positions_json)` / `parse_positions_json` / `PortfolioSnapshotRow.
+     positions_json` consumer that feeds a **proof-grade** number is repointed to read
+     `validated_snapshot`. The direct-decode backlog to route is (per an AST sweep of
+     `argosy/`): `services/holding_books.py`, `services/wealth_dashboard.py`,
+     `services/retirement/safety_gates.py`, `services/net_worth_bases.py`,
+     `services/raw_holdings_block.py`, `services/portfolio_snapshot_store.py`,
+     `services/nvda_sales_history.py`, `services/nvda_projection.py`,
+     `api/routes/wealth_dashboard.py`, `api/routes/plan.py`,
+     `services/decision_funnel/orchestrator.py` (:122),
+     `services/decision_funnel/position_context.py` (:55), `services/home_greeting.py`,
+     `services/overview_assembler.py`, `services/action_item_evidence.py`,
+     `services/closed_loop.py` (:268), `services/retirement/sigma_calibration.py`,
+     `services/rsu_prevest_planner.py`, and `services/retirement/rebalancing.py`.
+     Diagnostic-only surfaces (Component C §6 0a) may keep a raw read **only** from within
+     an allow-listed diagnostic module behind the explicit diagnostic label.
+   - **Post-materialization, ANY `positions_json` dereference on a proof surface — decode,
+     helper, or ORM column access — is prohibited** and caught by the AST allow-list of
+     point 4c, not by a helper-name grep. The prohibition is a test, not a comment; the
+     guard turns on only once every module above has been migrated or explicitly
+     allow-listed as diagnostic.
+
+Until all three producers and their constraints land, the spine is design-only and no
+number in this doc is proof-grade; the diagnostic path (§6 0a) is all that runs.
+
 ### `validated_snapshot` — the canonical point-in-time book (NEW)
 The immutable, normalized position/account facts a component reads **instead of**
-raw `portfolio_snapshots.positions_json`. A/B/C never dereference the raw JSON;
-they read this record, which is A's canonical point-in-time input. One record per
-snapshot that passed the integrity gate. Required fields — **all mandatory; any
-absent ⇒ no `validated_snapshot` and no component evaluates that book state:**
+raw `portfolio_snapshots.positions_json`, **emitted solely by the snapshot validator
+(Producer 1, above).** A/B/C never dereference the raw JSON; they read this record, which is A's
+canonical point-in-time input. One record per snapshot that passed the integrity
+gate. Required fields — **all mandatory; any absent ⇒ no `validated_snapshot` and no
+component evaluates that book state:**
 
 - `snapshot_id` — the raw input row it normalizes.
-- `positions[]` — normalized `{instrument, account, shares, price, price_as_of,
-  currency, value_local, value_usd}` per position. These are the canonical facts A
-  evaluates and B/C compute returns from.
-- `accounts[]` — normalized `{account_id, custodian, cash_by_currency}`.
-- `integrity_verdict_id` — a **passed** conservation verdict (§3). Failed or
-  missing ⇒ no `validated_snapshot`.
+- `positions[]` — normalized per position, with **every field below bound** (the old
+  binding covered only shares/price/cash, which let a faulty normalization pass while
+  the derived value was wrong):
+  `{instrument_stable_id, instrument_display, account_id, shares, price,
+  price_as_of, currency, contract_multiplier, value_local, value_usd,
+  fx_rate_id, corporate_action_lineage_id}`. Concretely:
+  - `instrument_stable_id` — a **stable, non-symbol identifier** (ISIN / CUSIP /
+    broker contract ID), not the display ticker. A ticker can be reused or renamed;
+    the stable ID is what corporate-action lineage and the rename check (below) key
+    on. A position with no resolvable stable ID is `identity:unbound` and cannot
+    reach a proof-grade `validated_snapshot`.
+  - `value_local` — **committed WITH its formula**: `value_local = shares × price ×
+    contract_multiplier`, re-derived and checked inside the snapshot-validator transaction.
+    Binding shares and price alone does **not** bind the product — a normalization bug
+    that halves `value_usd` while shares/price look right (a wrong multiplier, a
+    dropped multiplier for a futures/options-style contract) passes a shares/price
+    binding but fails this one. `contract_multiplier` defaults to 1 for cash equities
+    and MUST be explicit for anything else.
+  - `value_usd` — `value_local` converted at a **VERSIONED FX rate** identified by
+    `fx_rate_id` (a specific dated row of `fx_rates`, not an ambient "today's rate").
+    The conversion is reproducible: given `value_local` and `fx_rate_id`, `value_usd`
+    re-derives exactly, and a later FX correction is a new `fx_rate_id`, never a silent
+    re-mark of a committed record.
+  - `corporate_action_lineage_id` — links the position to any split/reverse-split/
+    spinoff/merger that changed its share count or identity, so a corporate-action
+    share change is never mistaken for a trade (scorecard §2.2) and a renamed line can
+    be proven-continuous (below).
+  These are the canonical facts A evaluates and B/C compute returns from.
+- `accounts[]` — normalized `{account_id, custodian, cash_by_currency,
+  broker_reported_account_total, account_total_reconciliation}`.
+  `broker_reported_account_total` is the **account-level total the broker itself
+  reports** (from the signed source record, below); `account_total_reconciliation`
+  attests that the sum of the account's normalized positions + cash equals that broker
+  total within a de-minimis rounding tolerance, or the account is
+  `account:unreconciled` and cannot reach a proof-grade `validated_snapshot`.
+  Per-item binding can be internally consistent yet collectively wrong (a whole
+  account under-weighted proportionally); reconciling to the broker's own account total
+  is the independent cross-foot that catches it.
+- **Rename detection requires evidence, never equal-shares inference.** A symbol
+  disappearing while a new symbol appears with equal shares is **not** treated as a
+  rename on that coincidence — that heuristic is unsafe without stable IDs (two
+  unrelated positions can carry equal shares). A rename/re-identification is accepted
+  **only** when the two lines share the same `instrument_stable_id` (ISIN/CUSIP/contract
+  carried across) **or** carry a `corporate_action_lineage_id` documenting the
+  re-registration/merger. Absent that evidence, the vanished line is an
+  `expected_but_missing` item (not a silent rename), which fails
+  `expected_set_completeness` loud.
+- `content_hash` — the hash over **this record's canonicalized normalized bytes**
+  (the same normalization the conservation gate assessed; the `per_item_integrity_
+  binding` Merkle root is computed over exactly these bytes). This is the value the
+  integrity verdict must have committed to.
+- `integrity_verdict_id` — a conservation verdict (§3) that is **all three of**:
+  the **current head** for this `snapshot_id`, `result='pass'`, and whose
+  `snapshot_content_hash` **equals** this record's `content_hash` (§2A point 2,
+  enforced by trigger). A failed, missing, superseded, or content-mismatched verdict ⇒
+  no `validated_snapshot`.
 - `per_item_integrity_binding` — a cryptographic commitment over **each**
   normalized position and **each** account individually (e.g. a Merkle root over
   the per-item facts, with the per-item hashes retained), stored in and attested by
@@ -160,19 +511,27 @@ proof-grade `validated_snapshot` and never an input to a headline number, a
 `validated_decision`, or learning. No prose closes this; the missing manifest is the
 gate.
 
-### `validated_snapshot_period` — one window over two `validated_snapshot`s
-One canonical record per period boundary (t0→t1) of the liquid book. It
-*references* facts (two `validated_snapshot`s), it does not restate them. Required
-fields — **all mandatory; any absent ⇒ the period is not constructed and no
-component produces a number for it:**
+### `validated_snapshot_period` — one INTEGRITY window over two `validated_snapshot`s
+The **sole output of the integrity-period finalizer (Producer 2, §2A)** — one canonical
+record **per integrity-period finalization** of a boundary (t0→t1) of the liquid book,
+named by `integrity_period_version` and tracked by that finalizer's own versioned head.
+It is emphatically **not** "one record per boundary for all time": a corrected integrity
+input opens a new `integrity_period_version` that supersedes the prior via the head
+discipline (§2A point 3a), and **attribution has its own separate versioned head**
+(`attribution_finalization_head`) layered on top — the two are not the same record and
+not the same version axis. This record *references* facts (two `validated_snapshot`s), it
+does not restate them, and it carries **integrity inputs ONLY** — **no `benchmark_version`,
+no governing decisions, no exposure allocation** live here (those are attribution inputs,
+frozen by Producer 3 on the `contribution_ledger`, §2A). This is exactly what makes total
+TWR readable on integrity alone. Required fields — **all mandatory; any absent ⇒ the
+period is not integrity-finalized and no component produces a number for it:**
 
-- `period_id`, `t0_validated_snapshot_id`, `t1_validated_snapshot_id` — the two
-  canonical `validated_snapshot` records (each already integrity- and per-item-
-  verified, above).
+- `period_id`, `integrity_period_version`, `t0_validated_snapshot_id`,
+  `t1_validated_snapshot_id` — the version and the two canonical `validated_snapshot`
+  records (each already integrity- and per-item-verified, above).
 - `coverage_denominator` — count + value of positions in scope, and the count +
   value of any position that could **not** be evaluated (so coverage can never
   look cleaner than reality).
-- `benchmark_version` — the exact benchmark/policy-index revision used.
 - `flow_reconciliation_status` — see the strengthened definition immediately
   below; **every** share/cash delta must carry machine-verifiable provenance or the
   period is quarantined.
@@ -217,6 +576,92 @@ the deltas we *saw* are dated, but only a broker-authored event manifest proves
 there were no *other* events (the net-zero round-trip) we never saw. A period whose
 event set cannot be independently closed is quarantined to the diagnostic path (§9),
 never a headline "return". (This is the shared contract the scorecard §2.2 reads.)
+
+### `contribution_ledger` — the ONE canonical position-day ledger B and C both consume (NEW)
+The single highest-leverage record. B (grade decision-window vs alternative) and C
+(position-day Brinson selection) were two **independent** measures joined by an
+"agree within tolerance" gate. **Sharing the same rows and the same `daily_capital_
+weight` is necessary but NOT sufficient for an identity** — because naive
+**geometric linking does not commute with grouping.** Concretely: one 50%-weight
+position returning +10%/day for two days gives `link-then-weight = 0.5 × 21% = 10.5%`
+but `weight-then-link = 1.05² − 1 = 10.25%` — same rows, same weight, a nonzero
+residual purely from *ordering* the link and the grouping differently. So "both read
+the same rows, therefore they reconcile" is still false, and a tolerance would be
+masking exactly this linking-order noise. The fix is a **canonical ADDITIVE
+attribution algorithm** whose per-id contributions **sum exactly** to the total, so
+B-by-decision and C-by-class are two *sums* of the identical per-id numbers — equal by
+construction with **zero** linking residual.
+
+The **attribution finalizer** (Producer 3, §2A) emits, for each period, **one
+`contribution_ledger` row per position-day** (per account × instrument × day within the
+period), under the current `attribution_finalization_id`. Each row is immutable and carries:
+- `contribution_id` — stable identity B and C both cite. **Distinct across attribution
+  versions:** v1 and v2 of the same economic position-day carry **different**
+  `contribution_id`s, which is what lets a duplicated economic position-day be detected
+  rather than silently summed.
+- `attribution_finalization_id` — **NOT NULL FK** to the `attribution_finalization`
+  version that authored this row (§2A point 3b). Every B/C consumer VIEW filters to the
+  row whose `attribution_finalization_id` equals the period's
+  `attribution_finalization_head.current_attribution_finalization_id`, so **stale and
+  current rows are never mixed in one sum.** A UNIQUE constraint
+  `(attribution_finalization_id, account_id, instrument_stable_id, date)` forbids two
+  rows for the same **economic position-day** within one finalization; combined with the
+  current-head filter, no economic position-day is ever double-counted across versions.
+- `account_id`, `instrument_stable_id` — stable (ISIN/CUSIP/contract) IDs, same as
+  `validated_snapshot`.
+- `date`, `period_id` — the position-day and its owning integrity period.
+- `source_record_commitments` — the `validated_snapshot` per-item binding IDs (t0/t1)
+  and the dated flow-provenance IDs (`flow_reconciliation_status`) this day's value
+  rests on, so every number is traceable to committed source.
+- `valuation` — `shares_held_that_day`, `price`, `contract_multiplier`,
+  `value_local`, `fx_rate_id`, `value_usd` (same versioned-FX formula as §2A).
+- `event_ids` — the intra-period event(s) (buy/sell/vest/transfer/corporate-action)
+  bounding this position-day's effective holding window.
+- `daily_capital_weight` — the position's share of the period's **canonical
+  denominator** (the period's total invested capital that day). **This one
+  denominator is the shared basis** — B's weighting and C's weighting are the same
+  numbers because they read this field, not two independently-computed weights.
+- `position_return` — this position-day's **simple return over its actual effective
+  window** (`event_ids` bound it), so a share held only part of the day/period is
+  returned only over the days held (the mid-period-buy case, scorecard §2.2).
+- `benchmark_return` — the sleeve/policy benchmark's return for that position-day,
+  at `benchmark_version`.
+- `linked_active_contribution` — **THE canonical, additive per-id number** (below):
+  this position-day's contribution to the period's total **linked active return**,
+  computed by the smoothing algorithm so that `Σ linked_active_contribution` over all
+  rows of a period **equals** the period's total linked active return exactly. B and C
+  both read **this same field**; they never re-link independently.
+- `ownership_class` + `governing_decision_id` — the CLOSED classification (§8):
+  `decision_owned` (+ the `validated_decision_id` that governs the day),
+  `deliberately_unmanaged:<policy-id>`, or `expected_but_missing:<reason>`.
+
+**Return-linking is a NAMED ADDITIVE algorithm, computed once in the ledger — not left
+to each consumer, and not naive geometric linking.** The attribution finalizer computes
+`linked_active_contribution` using a **canonical logarithmic smoothing (Cariño /
+Menchero linking)** under a recorded `linking_algorithm_version`: it distributes the
+multi-period geometric compounding across the single-period arithmetic active
+contributions with per-period smoothing coefficients such that the **sum of the
+smoothed per-day, per-position active contributions equals the total geometrically-
+linked active return** with **no residual**. This is the additive coordinate system in
+which grouping commutes: because every consumer aggregates the *same* additive
+`linked_active_contribution` values, `link-then-group` and `group-then-link` yield the
+identical total regardless of grouping order — the 10.5%-vs-10.25% artifact above
+cannot arise. FX is separated per §2.6 (NIS-basis minus USD-basis, both re-derived from
+`fx_rate_id`), and any **cost/FX/interaction residual is booked as an explicit named
+ledger line** (`residual_cost`, `residual_fx`, `residual_interaction`) that carries its
+own `linked_active_contribution` share, not smeared into selection.
+
+**Consequence for the B↔C gate (see §8):** the "agree within tolerance" gate is
+**removed entirely** for the managed identity and replaced by a **shared-ledger
+SUM-identity**. B's per-decision `vs_benchmark_delta` and C's per-class selection are
+both defined as **`SUM(linked_active_contribution)` over a `contribution_id` set** —
+just grouped differently (B by `governing_decision_id`, C by class). Neither is an
+independently authored number. Because both are sums of the identical additive per-id
+values, a nonzero residual between them is **impossible from linking**; any residual is
+a **real ledger/mapping defect** (a mis-linked window, a double-owned position-day, a
+lost decision) **localized to specific `contribution_id`s**, and the gate blocks on any
+residual beyond de-minimis floating-point rounding. There is **no** remaining
+"agree within tolerance" language for the managed identity.
 
 ### The decision records — OBSERVED → VALIDATED → OUTCOME (three records)
 A single mutable `validated_decision_event` was self-contradictory: this section
@@ -263,6 +708,13 @@ hard rule:
 Fields:
 - `observed_decision_id`, `authored_at`, `instrument`, `decision_kind`, `verdict`,
   `conviction`.
+- `ingress_seq` — a **durable, monotonic autoincrement integer stamped at authoring**
+  (never a timestamp), assigned to **every** `observed_decision` regardless of validation
+  status. This is the **decision-ingress watermark** the `decision_manifest` closes against
+  (§2A point 3b, finding 2): a manifest certifies completeness for all `ingress_seq <=`
+  its `ingress_seq_watermark`, so "all overlapping decisions terminal" is provable relative
+  to a closed source rather than "whatever was visible." A decision authored later carries a
+  higher `ingress_seq` and forces a new attribution finalization at a higher watermark.
 - `predictive_terms_at_birth` — the forward, hindsight-vulnerable terms
   (`target_band`, `alternative_at_birth`, `stop`, `falsifiers_json`,
   `revisit_triggers_json`, `evaluation_due_at`), **each frozen at authoring or
@@ -351,17 +803,69 @@ Required fields:
   tax-aware grade.
 - `metadata_freshness` — for A2 events, the age/source of the fee/tracking/AUM
   metadata the switch relied on; stale ⇒ the switch cannot be graded as proven.
+- `equivalence_evidence` — **for A2 vehicle-switch events, the full reproducible
+  record of the §4 equivalence gate, or no `validated_decision` for the switch.** The
+  old schema omitted this, so the mandatory A2 gate was not reproducible from the
+  spine — a switch could be graded without any record of *why* X and Y were deemed the
+  same exposure. Required sub-fields, each frozen at authoring and each sourced from
+  the named `instrument_metadata` store (§7), never inferred: `held_instrument_id`,
+  `candidate_instrument_id` (stable IDs); `metadata_source` + `metadata_as_of` (the
+  provider and date the facts were pulled); the **index-identity facts** (`index_id`
+  / methodology, `weighting_method`, `esg_screens`, `replication_method`,
+  `hedge_status`) for BOTH instruments; the **committed quantitative inputs** — the
+  top-N holdings lists for X and Y and the aligned daily price series the numbers were
+  computed from (referenced by content-committed IDs, so the result is reproducible,
+  not asserted); the **quantitative results** (`holdings_overlap_pct` on the policy's
+  top-N + total weight, `return_correlation` + `correlation_window` + `correlation_
+  frequency`); and — crucially — the **`equivalence_policy_version`** whose floors were
+  applied and the derived `overlap_gate_result` / `correlation_gate_result` /
+  `index_identity_gate_result ∈ {pass, reject:<field>}`. **The thresholds are NOT
+  authored on this record; they are read from the versioned `equivalence_policy` (§4)
+  named by `equivalence_policy_version`** — the producer cannot record a `0` floor. A
+  record whose `equivalence_policy_version` is unknown, whose committed inputs are
+  absent, or whose `metadata_as_of` exceeds the policy TTL is not a proven switch.
+  Grading (B2) reads this and **refuses** to grade a switch "proven" unless
+  `index_identity_gate_result = pass`, the committed inputs are present, and the
+  quantitative results met the **policy's** floors on within-TTL metadata. A switch
+  whose `equivalence_evidence` is absent or references metadata that does not exist
+  stays an `observed_decision`.
 
 **(c) `validated_decision_outcome` — append-only, exactly-once, fully-provenanced
 grade.** Scoring attaches by **appending** an outcome record that references the
 `validated_decision`; it **never mutates the event.** Fields:
 - `outcome_id` — unique identity for this settled outcome (so E can dedupe and a
   retry cannot silently double-append).
-- `validated_decision_id`, `scored_at`, `outcome_kind`, `vs_benchmark_delta`,
+- `validated_decision_id`, `scored_at`, `outcome_kind`,
   `post_mortem_category`, `regime_tag`, `is_shadow`.
+- **`vs_benchmark_delta` is NOT an independently-authored number — it is a DB-DERIVED
+  AGGREGATE over the decision's committed `contribution_id` set.** The old schema let
+  scoring *author* this delta, which meant B's persisted number had no enforced
+  membership in the ledger and could drift from the position-days it supposedly
+  summarized. Instead: a `decision_contribution_map(validated_decision_id,
+  contribution_id, attribution_finalization_id)` table (FK to all three, and authored by
+  the **attribution finalizer**, §2A) records **exactly which** ledger position-days a
+  decision governs **within a given attribution finalization** (materialized from
+  `exposure_allocation`, §8; a `contribution_id` may map to at most one `decision_owned`
+  decision — enforced UNIQUE, so no double-ownership). Because a late decision or
+  re-map opens a **new `attribution_finalization_id`**, the map is re-materialized under
+  the new id and the old rows are superseded, not mutated. `vs_benchmark_delta` is then a
+  **VIEW / enforced generated aggregate**: `SUM(contribution_ledger.linked_active_
+  contribution)` over exactly that mapped set, **filtered to the current head — and, per
+  finding 1, requiring the current attribution head's `input_integrity_period_id` to equal
+  the boundary's current `integrity_period_head.current_integrity_period_id`.** The VIEW
+  joins `attribution_finalization_head` and selects only `contribution_id`s and map rows
+  whose `attribution_finalization_id = current_attribution_finalization_id` for the period
+  **and whose finalization was computed over the current integrity version**, so a
+  superseded finalization — or one stranded over a superseded integrity period after a
+  correction — can never contribute (B's delta is simply UNAVAILABLE until re-finalized,
+  never stale-served). It is the same current-head additive
+  field C sums by class. B's number and C's number are therefore two GROUP-BYs of one
+  current-head column, equal by construction; there is no authored scalar to drift and no
+  stale/current mixing.
 - **Full calculation provenance** — `evaluation_window_id` (the exact window IDs
-  scored), `benchmark_version`, `exposure_mapping_version` (§8), and
-  `calculator_version`. Every number the outcome asserts is reproducible from these.
+  scored), `benchmark_version`, `exposure_mapping_version` (§8), `linking_algorithm_
+  version`, and `calculator_version`. Every number the outcome asserts is reproducible
+  from these plus the mapped `contribution_id` set.
 
 **Exactly-once, enforced — not asserted.** "A `validated_decision` accrues exactly
 one settled outcome" is a *guarantee the schema must enforce*, or a scoring-job retry
@@ -470,10 +974,43 @@ work — this spec consumes the verdicts, it does not re-implement the repair):
 
 - **Conservation gate before persist, on ALL snapshot write paths.** Block or
   quarantine a write that drops an account/location, drops a cash currency, or
-  shrinks total value / position count beyond a threshold vs the prior live row,
-  and emit a per-snapshot `integrity_verdict`.
+  shrinks total value / position count **at or beyond** the threshold vs the prior
+  live row, and emit a per-snapshot `integrity_verdict`.
+  **The comparison is `≥`, not `>`.** The current guard rejects only a drop
+  *strictly* beyond 50%, so an **exactly-half** erasure passes — the wrong boundary.
+  The threshold is a **concrete, named policy value: reject at or beyond a 20% drop
+  in total value OR position count vs the prior live row** (justification: a >20%
+  single-snapshot shrink in a long-hold book with no dated executed sale is
+  overwhelmingly a corruption, not a legitimate move; the July erasure was 59%).
+  This is a *quarantine-and-alert* threshold, not a silent drop: a real large
+  reconciled outflow clears by attaching dated flow provenance (§2A). The 20% figure
+  is the single source of truth shared with the scorecard's partial-drop gate
+  (§2.2), replacing that doc's unspecified "X".
   (`portfolio_snapshot_store.persist_snapshot` is currently "intentionally dumb —
-  always writes"; this makes it emit a verdict every write.) **The aggregate
+  always writes"; this makes it emit a verdict every write.)
+
+**The `integrity_verdict` record (NEW — the verdict the snapshot validator checks at
+commit).** One immutable row per conservation evaluation, authored by the conservation
+gate: `{integrity_verdict_id, verdict_seq, snapshot_id, snapshot_content_hash, result
+∈ {pass, fail}, checks_json (which of drop-guard / currency-drop / account-drop /
+count-drop fired), threshold_policy_version, authored_at}`. Two fields make it a
+binding commitment, not a loose query target:
+- **`snapshot_content_hash`** — a hash over the **exact normalized snapshot bytes the
+  verdict assessed** (the canonicalized positions/accounts payload). The verdict is a
+  commitment to *content*: a validated_snapshot may bind to it **only** when the
+  content-hash of the bytes being materialized equals this field (§2A finding 1). A pass
+  verdict over a different normalization cannot authorize these bytes.
+- **`verdict_seq`** — a **monotonic autoincrement integer** used to order verdicts and
+  break `authored_at` ties. Currency of a verdict is **never** decided by timestamp.
+
+It is **append-only and never mutated** — a re-evaluation appends a new row (higher
+`verdict_seq`) and CAS-advances the per-snapshot `integrity_verdict_head` row
+(`PRIMARY KEY(snapshot_id)`, `current_verdict_id`) to it in the same transaction, so a
+later `fail` demotes a prior `pass`. The snapshot validator binds **only** the verdict
+that is the current head, `result='pass'`, AND content-hash-matching (§2A point 2). The
+three-part insert trigger on `validated_snapshot` (current-head AND pass AND
+content-matching) is what the database enforces against this row — a stale, superseded,
+or content-mismatched verdict can never be observed as an authorizing `pass`. **The aggregate
   threshold is not sufficient on its own** — a sub-threshold partial corruption
   (one position zeroed, one account's cash understated) can pass it, and the
   post-commitment per-item binding cannot catch it either (it proves only
@@ -564,11 +1101,47 @@ into two questions:
      **A mismatch on ANY one = rejected as a hidden factor bet, regardless of how
      high its overlap or correlation is.** This gate does not rank; it admits or
      rejects.
-  2. **QUANTITATIVE gate (survivors of gate 1 only).** (a) **holdings overlap** ≥ a
-     threshold on the top-N constituents and total weight, AND (b) **return
-     correlation** ≥ a threshold over a common window. This is a *secondary*
-     confirmation that two same-index funds actually track alike — never a
-     substitute for the identity facts above.
+  2. **QUANTITATIVE gate (survivors of gate 1 only) — reads a VERSIONED POLICY, not
+     producer-chosen thresholds.** The floors are **not** free parameters the
+     comparator may pick per run (a producer could record `overlap_threshold=0` and
+     "pass" anything). They live in a **versioned `equivalence_policy`** record
+     (identified by `equivalence_policy_version`, which is recorded verbatim into
+     `equivalence_evidence`, §2A), with **concrete named minimums**:
+     - **holdings overlap ≥ 90% by weight** on the **top-50 constituents** (the
+       `top_n` definition is part of the policy), measured on committed holdings
+       inputs;
+     - **return correlation ≥ 0.99** on **daily** returns over a **3-year** trailing
+       window (or the full common history if shorter, which itself downgrades the
+       result to *candidate — insufficient history*);
+     - **metadata TTL ≤ 90 days** — the holdings/index facts must be no staler than
+       this or the gate yields *stale, cannot prove*.
+     The gate **reads the policy** and compares against it; the producer supplies only
+     the measured values and the **committed inputs** (the underlying top-N holdings
+     lists for X and Y and the aligned daily price series) that those values were
+     computed from, so the numbers are reproducible and the thresholds cannot be
+     dialled down. Tightening a floor is a **new `equivalence_policy_version`**, never
+     an in-run override. This is a *secondary* confirmation that two same-index funds
+     actually track alike — never a substitute for the identity facts above.
+
+  - **The floors are protected by DB constraints + a single-writer boundary — a
+    zero-floor policy CANNOT be authored.** Reading the floor from a versioned record is
+    not enough on its own: a service with policy-write access could still insert a new
+    `equivalence_policy_version` with `overlap_floor = 0` and "pass" anything. The
+    `equivalence_policy` table is therefore **IMMUTABLE / append-only behind a single
+    policy-writer service boundary** (grep-gated in CI, mirroring the producer boundaries
+    of §2A), and every row is guarded by **DB CHECK constraints** that make an
+    out-of-range floor unrepresentable:
+    - `CHECK(overlap_floor >= 0.90)`
+    - `CHECK(correlation_floor >= 0.99)`
+    - `CHECK(metadata_ttl_days <= 90)`
+    Plus a **monotonic-tightening rule**, enforced by an insert trigger that reads the
+    prior `equivalence_policy_version` (highest `policy_seq`): a successor may only make
+    floors **STRICTER** — `CHECK(new.overlap_floor >= prior.overlap_floor)`,
+    `CHECK(new.correlation_floor >= prior.correlation_floor)`,
+    `CHECK(new.metadata_ttl_days <= prior.metadata_ttl_days)`. Versions are ordered by a
+    monotonic `policy_seq` (never `authored_at`), exactly as the verdict/outcome heads.
+    A row that would loosen any floor, or breach a constant floor, **fails the insert** —
+    so no zero-floor (or any weaker) policy can exist for a producer to cite.
 
   The five-axis cost/tracking/tax scoring runs *only on candidates that clear both
   sub-gates.* Equivalence is a hard precondition, not a fleet opinion.
@@ -592,6 +1165,23 @@ into two questions:
   do not yet exist). Phase-0 flags estate exposure and, at most, *candidate* UCITS
   alternatives with identity **unverified**; full A2 verifies equivalence and
   recommends.
+
+- **A2 phase-0 EXPLICITLY QUARANTINES the unverified UCITS-twin claims already in
+  production.** Two live surfaces already assert equivalence with **no** index-identity
+  evidence and must be **disabled/relabelled as "candidate — identity unverified" the
+  moment A2 phase-0 ships**, not silently carried forward as fact:
+  - `per_position_thesis.py:62` (`_US_DOMICILED_UCITS_SWAP`) hardcodes twin mappings
+    (VOO→CSPX, SCHD→FUSA, VEA→EXUS, VNQ→DPYA, …) that drive TRIM/SELL cards purely on
+    domicile, with no methodology/weighting/screen/replication/hedge check.
+  - `allocation_plan.py:218` already **admits FUSA is not an exact SCHD twin** ("There
+    is no exact SCHD twin in UCITS form … tilts slightly more mega-cap/quality-growth")
+    — i.e. a self-declared *inexact* equivalence presented as a plan target.
+  Until the §7 equivalence datasets exist and the §4 index-identity gate has run and
+  written `equivalence_evidence` (§2A), A2 phase-0 treats **every** entry in that swap
+  map and the FUSA/SCHD substitution as an **unverified candidate flag only** — never
+  an "equivalent" label, never an auto-generated switch/TRIM/SELL rationale that claims
+  like-for-like. This is a phase-0 deliverable: quarantine the existing claims, do not
+  inherit them.
 
 - **Mechanism:** map each held ETF → category via `resolve_sleeve_label`
   (`instrument_plan_class.py`); build the same-category candidate universe; run
@@ -691,27 +1281,127 @@ never entrench itself into permanent suppression:
   ledger has proven edge" would suppress every low-history BUY → those signals
   never trade → they never generate outcomes → they are suppressed forever. A
   biased base ("index-only") becomes self-fulfilling. This is unacceptable.
-- **EXPLORATION — a signal earns proof without being allowed to trade first.**
-  Suppressed and low-history signals are **shadow-scored on paper**: their would-be
-  bets are recorded as `validated_decision`s and graded at maturity — via an
-  appended `validated_decision_outcome` with `is_shadow=true` (§2A) — exactly like
-  live bets, but with no capital at risk. A shadow track record is how a new
-  or currently-out-of-favor signal *earns* the right to go live — the gate reads
-  paper outcomes, not just realized ones.
-- **Decay old priors.** Source weights decay with age so a stale historical prior
-  cannot dominate forever; recent (post-fix) evidence is weighted over old.
-- **Regime awareness.** A miss in one regime does not permanently condemn a signal;
-  post-mortems are tagged by regime and the gate does not extrapolate a bear-market
-  miss into a blanket suppression.
-- **Counterfactuals required.** Every suppression must carry the counterfactual it
-  is being tested against (what the shadow track would have earned), so "suppress"
-  is a falsifiable claim, not a terminal state.
-- **Minimum-N and quarantine of the contaminated prior.** The gate may suppress a
-  signal class only after a **minimum N of cleanly-scored (post-fix) outcomes**;
-  the pre-fix ledger (the 38% long hit-rate computed on only the ~40% that parsed —
-  the unparseable ~60% are **not** missing-at-random) is **quarantined and excluded
-  from the gate entirely**. A permanently-degraded evaluator **escalates to an
-  owner action item**, not a quiet "degraded" job status.
+The parameters below are **concrete, named policy values** (versioned as
+`learning_policy_version`), not adjectives — the earlier draft named these knobs but
+set none, so "shadow scoring / decay / min-N / exploration" could not actually be
+implemented or tested. Tune the numbers with evidence; the point is they are stated
+and enforced, and the **suppressor never controls its own escape hatch**:
+
+- **FORCED EXPLORATION QUOTA — bounded coverage, independent of the suppressor's
+  scoring.** The quota must actually *guarantee* every suppressed class is revisited —
+  a fixed 10% of slots cannot do that when the number of suppressed classes exceeds the
+  quota slots (some class gets zero coverage). Two mechanisms, together, close it:
+  1. **Adequate, coverage-driven sizing.** The exploration budget is **`max(10% of the
+     cycle's candidate slots, |currently-suppressed classes| / K)`** rounded up — i.e.
+     it **scales with the number of suppressed classes** so the slots are never fewer
+     than needed to reach every class within the revisit bound.
+  2. **Bounded round-robin over a PERSISTENT rotation cursor.** Exploration slots are
+     filled by **round-robin over the suppressed classes in a stable, deterministic
+     ordering**, so with `S` suppressed classes and `E` exploration slots per cycle
+     **every suppressed class is revisited at least once within `⌈S / E⌉` cycles** (with
+     the sizing above, `K` bounds this to at most `K` cycles). The rotation position is
+     **durable state, not recomputed from scratch each run:** an
+     `exploration_rotation_cursor` row (`{learning_policy_version, cursor_index,
+     class_ordering_hash, updated_at}`) stores the cycle index and a hash of the
+     **stable class ordering** (classes sorted by a fixed deterministic key —
+     e.g. `class_id`, never insertion order), and is advanced and persisted every cycle.
+     **This survives restart** so the rotation resumes where it left off rather than
+     restarting at class 0 — without it, a process that restarts each cycle would forever
+     re-select the first few classes and starve the tail. When the suppressed set changes,
+     the cursor is carried over the re-sorted stable ordering (the `class_ordering_hash`
+     detects the change) so newly-suppressed classes join the rotation without resetting
+     progress on the rest.
+  3. **Class → shadow-candidate GENERATOR (a suppressed class must yield an evaluable
+     bet, or a logged gap).** Selecting a class is not enough; the cycle must produce an
+     **evaluable shadow decision** for it. The generator, for a selected suppressed class,
+     (i) draws the class's members from a **named candidate universe** (the
+     `candidate_universe` store, a HARD PREREQUISITE added to §7 — the DB has **no**
+     candidate table today, so this cannot run until it lands), (ii) applies the class's
+     signal rule to pick the highest-ranked eligible member as the shadow candidate, and
+     (iii) emits a shadow `observed_decision` → `validated_decision` for it, graded via an
+     appended `is_shadow=true` outcome by the normal shadow pipeline (§2A).
+  4. **NO-CANDIDATE record (the gap is visible, and rotation still advances).** When a
+     selected class produces **no** eligible candidate that cycle (empty universe slice,
+     all members ineligible, or missing data), the generator writes an immutable
+     **`exploration_no_candidate` record** `{learning_policy_version, cycle_index,
+     class_id, reason, observed_at}` and **advances the cursor anyway.** A class counts as
+     **"revisited" only when it produced an evaluable shadow decision OR a logged
+     `exploration_no_candidate`** — never merely by being *selected*. This keeps the
+     revisit bound honest (a class cannot be silently skipped and counted as covered) and
+     surfaces coverage gaps (a class that logs no-candidate every cycle is a visible data
+     gap, not an invisible starvation).
+  5. **CURSOR ADVANCE + EVIDENCE ARE ONE ATOMIC, CAS-GUARDED, IDEMPOTENT TRANSACTION
+     (finding 3).** The three steps **read cursor → emit evidence (shadow
+     `observed_decision`/`validated_decision` **or** `exploration_no_candidate`) → advance
+     cursor** are **a SINGLE DB transaction**, never three separate writes. The failure the
+     earlier draft left open: a crash *after* advancing the cursor but *before* writing the
+     evidence would silently skip a class (it looks revisited but produced nothing), and two
+     concurrent cycles reading the same `cursor_index` would both select the same class and
+     duplicate its shadow bet. Closed by three properties, stated explicitly:
+     - **Atomic:** the evidence record and the `exploration_rotation_cursor` advance
+       **commit together or not at all.** A crash rolls back both — the class is neither
+       counted as revisited nor left with an orphan cursor gap; the cycle simply re-runs it.
+       "Revisited" is therefore true **only when the evidence row AND the cursor advance are
+       committed in the same transaction.**
+     - **CAS on the cursor seq (serializes concurrent cycles):** the advance is a
+       compare-and-swap — `UPDATE exploration_rotation_cursor SET cursor_index = :next,
+       ... WHERE cursor_index = :read_index AND class_ordering_hash = :read_hash`. If a
+       concurrent cycle already advanced it, the swap matches zero rows and this cycle's
+       transaction **fails loud and retries from the re-read cursor** — two cycles can never
+       both consume the same cursor position, so no class is double-selected or duplicated.
+     - **Idempotent / crash-safe:** the emitted evidence carries the deterministic
+       `(learning_policy_version, cycle_index, class_id)` identity (a UNIQUE key on both the
+       shadow `observed_decision` exploration-origin and `exploration_no_candidate`), so a
+       retry of an already-committed cycle-step is a no-op rather than a second shadow bet.
+     Only with all three does a class count as "revisited" exactly once, crash-safely, with
+     the cursor and its evidence provably in lock-step.
+  **Precise independence (resolving the earlier contradiction).** "Independent of the
+  suppressor" does **not** mean blind to *which* classes are suppressed — it means the
+  explorer **reads only the LIST of currently-suppressed classes** (published state,
+  needed to guarantee coverage) and **never reads the suppressor's scoring / decision
+  FUNCTION** (the weights or ranking that decided to suppress). The explorer cannot be
+  vetoed or re-ranked by the suppressor: it deterministically rotates over the list, and
+  its candidates are graded by the **normal shadow pipeline**, not by the suppressor. So
+  a biased suppressor can put a class *on* the list but can neither keep it off the
+  rotation nor veto its shadow evaluation — it cannot starve its own falsification.
+- **SHADOW-SCORING BUDGET + always-available path back.** Every quota candidate (and
+  every low-history signal) is **shadow-scored on paper**: its would-be bet is a
+  `validated_decision` graded at maturity via an appended
+  `validated_decision_outcome` with `is_shadow=true` (§2A), no capital at risk. The
+  shadow budget is **uncapped for the forced-exploration quota** (a suppressed signal
+  is *guaranteed* a shadow track) and rate-limited only for opportunistic extra
+  shadows. **A suppressed signal therefore always retains a shadow path back to
+  production** — suppression can never be terminal.
+- **PROMOTION RULE (shadow → live) — explicit.** A shadow signal is promoted to live
+  eligibility when, on **cleanly-scored post-fix** outcomes, it clears BOTH: (a)
+  **minimum N = 30** matured shadow outcomes for that class (below), and (b) a
+  vs-benchmark edge that is **statistically significant AFTER the multiple-testing
+  correction** below. Demotion is symmetric: a live signal falling below the same
+  corrected bar for N consecutive outcomes returns to shadow (not to permanent
+  suppression).
+- **MINIMUM-N = 30 cleanly-scored post-fix outcomes** before the gate may either
+  suppress or promote a signal class. Below N, the class stays in forced exploration —
+  never suppressed on thin evidence.
+- **DECAY HALF-LIFE.** Source/signal weights decay with a **12-month half-life** (an
+  outcome's weight is `0.5^(age_months/12)`), so a stale prior cannot dominate and
+  recent post-fix evidence is weighted over old.
+- **REGIME-SAMPLING POLICY.** Post-mortems are tagged by regime (§B3 `regime_tag`),
+  and the gate requires the minimum-N to include **at least a stated minimum
+  representation across regimes** (default: no single regime may supply >70% of the N,
+  and at least 2 distinct regimes present) before a suppression generalizes; a
+  single-regime (e.g. bear-market) miss cannot extrapolate to blanket suppression.
+- **MULTIPLE-TESTING CORRECTION.** Because many signal classes are tested at once,
+  edge significance uses a **Benjamini-Hochberg FDR control at q = 0.10** across the
+  classes evaluated in a cycle (not per-class naive p<0.05), so a class is neither
+  promoted nor suppressed on noise that survives only because many were tried.
+- **Counterfactuals required.** Every suppression carries the counterfactual it is
+  tested against (what the shadow track earned), so "suppress" is a falsifiable claim
+  re-evaluated every cycle, not a terminal state.
+- **Quarantine of the contaminated prior.** The pre-fix ledger (the 38% long
+  hit-rate computed on only the ~40% that parsed — the unparseable ~60% are **not**
+  missing-at-random) is **quarantined and excluded from the gate entirely**. A
+  permanently-degraded evaluator **escalates to an owner action item**, not a quiet
+  "degraded" job status.
 
 ### B4. Honest by construction (guards against the exact failures found)
 - Score **all** bets incl. the ones that went nowhere (no survivorship bias).
@@ -748,9 +1438,14 @@ tells B/A whether active selection is *adding or destroying* wealth vs indexing.
 | **Independent source manifest** (per-item broker-signed export / source record for `item_source_binding` + `expected_set_completeness`) | **NO / Partial** | **gap for §2A.** Broker-signed exports exist for some accounts, not all. **HARD PREREQUISITE for a proof-grade `validated_snapshot`:** without per-item source binding a book yields a *diagnostic* snapshot only (Component C §6 0a), never a proof-grade record. Merkle immutability alone does NOT prove ingest-time completeness/correctness. |
 | **Independent broker activity/transaction manifest** (complete intra-period EVENT set for `validated_snapshot_period.expected_event_set_completeness`) | **NO** | **gap for §2A period contract + scorecard §2.2.** A per-account broker activity/NAV feed listing *every* intra-period buy/sell/vest/transfer/corporate-action. **HARD PREREQUISITE for a proof-grade period:** dated provenance for observed net deltas does NOT prove the event set is complete — a net-zero round-trip (sell then rebuy) is invisible to endpoints. Even after `fills` populate, without this a period is *diagnostic* only, never a headline return. |
 | **ETF metadata** (fee/domicile/tracking/AUM) | **Partial** | domicile + exposure exist in `instrument_reference.py`; **TER / tracking / dist-vs-acc / AUM-spread exist NOWHERE** — must source + persist `instrument_metadata` |
-| **Exposure-allocation join** (`exposure_allocation`: position-day ownership + decision→exposure mapping + overlap precedence, versioned) | **NO** | **new — the persisted, versioned join B and C reconcile through (§8, scorecard §2.5). Without it, C-vs-B is comparing totals and fails forever (NVDA in C, not B).** |
-| **A2 equivalence datasets** (holdings, index identity/methodology, weighting, ESG/screens, replication, hedge policy) | **NO** | **gap for the §4 A2 index-identity gate** — these discrete facts exist NOWHERE today; domicile/exposure tags are NOT a substitute. **Required prerequisite before any "equivalent" label can be asserted (incl. the first-dollar UCITS-equivalence check).** |
+| **Exposure-allocation join** (`exposure_allocation`: position-day ownership + decision→exposure mapping + overlap precedence, versioned) | **NO** | **new — the versioned join B and C reconcile through (§8, scorecard §2.5); its result is MATERIALIZED into the `contribution_ledger`'s `ownership_class` + `governing_decision_id`. Without it, C-vs-B is comparing totals and fails forever (NVDA in C, not B).** |
+| **Contribution ledger** (`contribution_ledger`: one immutable position-day row B and C both consume — stable IDs, `attribution_finalization_id` FK, source commitments, versioned valuation/FX, event IDs, `daily_capital_weight`, `position_return`, `benchmark_return`, **`linked_active_contribution`** (additive Cariño/Menchero), ownership class, governing decision) | **NO** | **new — emitted by the ATTRIBUTION FINALIZER (Producer 3, §2A); the shared additive basis that makes B↔C a by-construction SUM-identity, not a tolerance (§8, scorecard §2.5). Every row FK-bound to its `attribution_finalization_id`; consumers filter to the current head, with a UNIQUE `(attribution_finalization_id, account_id, instrument_stable_id, date)` forbidding a duplicated economic position-day within a finalization.** |
+| **Integrity-period head** (`integrity_period_head`: one-row-per-boundary `{period_boundary_id PK, current_integrity_period_id FK, seq}`, CAS-advanced, monotonic `seq`) | **NO** | **new (finding 1) — the concrete home of "the current `integrity_period_version`", written ONLY by the integrity-period finalizer (Producer 2, §2A).** Mirrors `attribution_finalization_head` / `integrity_verdict_head`. Advancing it on an integrity correction is the event that renders stale attribution UNAVAILABLE (the consumer view requires `attribution_finalization.input_integrity_period_id = current_integrity_period_id`) and triggers a new attribution finalization. |
+| **Attribution finalization head + decision manifest** (`attribution_finalization` versions each FK-binding `input_integrity_period_id`, one-row-per-boundary `attribution_finalization_head` (CAS, monotonic `seq`), and the closed `decision_manifest` completeness certificate) | **NO** | **new — Producer 3's versioned state (§2A point 3b).** Each `attribution_finalization` FK-binds the exact `input_integrity_period_id` it was computed over (finding 1); consumers select the current attribution head ONLY IF that id equals the current `integrity_period_head`. The `decision_manifest` is **closed at an `ingress_seq_watermark`** over the monotonic decision-ingress sequence (finding 2 — every `observed_decision` gets a durable `ingress_seq` at authoring) and enumerates BOTH the governing `validated_decision_id`s AND the permanently-unscorable `observed_decision_id`s in the window, certifying every `ingress_seq <= watermark` decision with an overlapping effect window is terminal BEFORE attribution may freeze. A decision above the watermark, or an integrity-period correction, opens a new `attribution_finalization_id` that supersedes via the CAS head. Completeness is provable relative to the closed watermark, not "freeze what's visible." |
+| **Spine producers + `integrity_verdict`** (THREE writers: snapshot validator → `validated_snapshot`; **integrity-period finalizer** → `validated_snapshot_period` + `integrity_period_head` (integrity inputs only); **attribution finalizer** → `contribution_ledger` + `decision_contribution_map` + `attribution_finalization[_head]`. Immutable pass/fail verdict, content-hash-committed, current-head-tracked) | **NO** | **new (§2A/§3).** Enforced by a three-part insert trigger on `validated_snapshot` (verdict is **current head** AND `result='pass'` AND `snapshot_content_hash` matches the committed bytes), a monotonic `verdict_seq` (never `authored_at`) for tie-breaking, an `integrity_verdict_head` table, and a per-table single-writer INSERT boundary. **Raw-read/write enforcement is an AST/import ALLOW-LIST, not a helper-name grep (finding 4):** every `positions_json` dereference (json.loads / `parse_positions_json` / `PortfolioSnapshotRow.positions_json` ORM access) and every `PortfolioSnapshotRow` write outside the sanctioned modules fails CI. **Total TWR reads the integrity-period finalizer's `validated_snapshot_period` → publishes on integrity alone; attribution/B↔C reads the attribution finalizer's current-head `contribution_ledger`.** Migration backlog = the ~19 direct decoders (e.g. `decision_funnel/position_context.py:55`, `decision_funnel/orchestrator.py:122`, `closed_loop.py:268`, `current_book.py:162`) + the second direct writer (`holding_books.py:1865`) — all routed through the spine before the guard turns on (§2A point 5). |
+| **A2 equivalence datasets** (holdings, index identity/methodology, weighting, ESG/screens, replication, hedge policy) → the named **`instrument_metadata`** store | **NO** | **gap for the §4 A2 index-identity gate + the `validated_decision.equivalence_evidence` field (§2A).** `instrument_reference.py` carries only **coarse** `sector`/`region`/`estate_safe` — it classifies VOO and equal-weight XZEW both as "Broad Index / US" and has **no** methodology/weighting/ESG/replication/hedge fields. These discrete facts exist NOWHERE today; domicile/exposure tags are NOT a substitute. **`instrument_metadata` MUST be sourced and populated BEFORE A2 runs** — A2 reads it, freezes it into `equivalence_evidence`, and cannot assert any "equivalent" label (incl. the first-dollar UCITS check) until it exists. |
 | **Same-category candidate ETF universe** | **NO** | **gap for A2** — curated per-category universe |
+| **Learning candidate universe + exploration rotation state** (`candidate_universe`: per-class members the class→shadow-candidate generator draws from; `exploration_rotation_cursor`: durable rotation position; `exploration_no_candidate`: logged gaps) | **NO** | **new — HARD PREREQUISITE for §5 B3 forced exploration.** The DB has **no** candidate table today, so exploration cannot generate an evaluable shadow bet until `candidate_universe` lands. `exploration_rotation_cursor` persists the round-robin index across restarts (else early classes are re-selected forever); `exploration_no_candidate` records a "no-candidate-this-cycle" gap so a selected class still advances the cursor and the coverage gap is visible. A class counts as revisited only on an evaluable shadow decision OR a logged no-candidate. **read cursor → emit evidence → advance cursor is ONE atomic, CAS-guarded, idempotent transaction (finding 3, §5 B3.5):** evidence + cursor advance commit together (crash-safe), the advance is a CAS on `(cursor_index, class_ordering_hash)` so concurrent cycles serialize and cannot double-select, and a `(learning_policy_version, cycle_index, class_id)` UNIQUE key makes retries no-ops. |
 | **Cost basis** (for HOLD/switch grading) | **NO** | `lots` empty; needs Schwab cost-basis CSV — **fatally blocks** tax-aware A2 switch-now + HOLD grading (§4/§5) |
 | Benchmark price history | Partial | live-fetch only; scorecard needs a durable `benchmark_prices` table |
 
@@ -778,15 +1473,37 @@ tells B/A whether active selection is *adding or destroying* wealth vs indexing.
   exposure; (ii) an unmanaged holding (NVDA) has **no** B bet at all yet still drives
   C's selection effect; (iii) per-bet deltas are unweighted by position size while a
   portfolio selection effect is weight-weighted. An unweighted sum is therefore the
-  wrong identity. **Correct relationship:** C and B are **not** defined as one being
-  the sum of the other. Both derive from the **same canonical position/return
-  primitives** in the `validated_snapshot`/`validated_snapshot_period` records, joined
-  through **one persisted, versioned exposure-allocation record** (`exposure_allocation`,
-  below) that makes the mapping explicit instead of implied. The pre-fix framing
-  reconciled "weighted, window-aligned, mapping-resolved contributions" but never said
-  where that mapping was persisted, who owned a position-day, how overlaps resolved, or
-  which subset was compared — so comparing totals could only fail forever (NVDA is in C,
-  not B). `exposure_allocation` and three named identities fix that.
+  wrong identity. **Correct relationship — a shared-ledger IDENTITY, not two
+  measures plus a tolerance.** C and B are **not** defined as one being the sum of the
+  other, and they are **not** two independent computations checked for approximate
+  agreement — and simply *sharing the same rows and weights is still not enough*,
+  because naive geometric linking does not commute with grouping (a 50%-weight name at
+  +10%/day for two days gives 10.5% link-then-weight vs 10.25% weight-then-link — a
+  residual from ordering alone, §2A). The identity is made exact by a **canonical
+  ADDITIVE attribution field.** Both **consume the same immutable `contribution_ledger`
+  rows** (§2A) — via the current-head consumer view that also **requires the finalization's
+  `input_integrity_period_id` to equal the boundary's current `integrity_period_head`**
+  (finding 1, so stale attribution over a corrected integrity period is UNAVAILABLE, never
+  served against fresh TWR) — the one canonical position-day ledger the **attribution
+  finalizer** emits,
+  carrying stable IDs, source-record commitments, the versioned valuation/FX formula,
+  the bounding `event_ids`, the single `daily_capital_weight`, the `position_return`,
+  the `benchmark_return`, and — decisively — the **`linked_active_contribution`**: the
+  smoothed (Cariño/Menchero, under `linking_algorithm_version`) additive per-id number
+  that **sums exactly** to the period's total linked active return. B's per-decision
+  `vs_benchmark_delta` and C's per-class selection are both `SUM(linked_active_
+  contribution)` — the SAME column, grouped by `governing_decision_id` vs by class.
+  Because grouping a sum commutes, `link-then-group` and `group-then-link` are
+  identical; cost/FX/interaction residuals are explicit ledger lines each carrying their
+  own `linked_active_contribution` share (§2A). Because both numbers are GROUP-BYs of
+  one additive column, **they reconcile by construction with zero linking residual** —
+  the mapping is no longer "implied," "persisted somewhere," or "compared over some
+  subset," and neither delta is independently authored (the decision's delta is a
+  DB-derived aggregate over its `decision_contribution_map` set, §2A(c)).
+  `exposure_allocation`'s
+  ownership/precedence semantics are **materialized into the ledger's `ownership_class`
+  + `governing_decision_id`** (it remains the versioned join spec below; the ledger is
+  where its result is committed).
 
   **`exposure_allocation` — the persisted, VERSIONED join (NEW).** Per period it stores,
   immutably and under an `exposure_mapping_version`: **position-day ownership** (for each
@@ -834,10 +1551,14 @@ tells B/A whether active selection is *adding or destroying* wealth vs indexing.
   and the actionability gate ever read; C's selection effect (identity iii) is the
   proof-surface aggregate, never an independent input to learning. That preserves the
   "exactly one number trains the gate" governance while dropping the false equality.
-  **Divergence of identity (i) from B beyond a stated tolerance, after the
-  `exposure_allocation` weights/windows/precedence are applied, is a fail-loud flag**
-  that blocks publishing either number — never two coexisting numbers with no
-  adjudication.
+  **Any nonzero residual between identity (i) and B — beyond de-minimis
+  floating-point rounding — is a REAL LEDGER ERROR, not tolerable linking noise.**
+  Because both are aggregations of the same `contribution_id` set over the same
+  `daily_capital_weight`, a residual can only mean a mis-linked window, a
+  double-owned or orphaned position-day, or a lost decision; it is a **fail-loud flag
+  localized to the offending `contribution_id`s** that blocks publishing either
+  number — never a tolerance band that quietly absorbs a modeling disagreement, and
+  never two coexisting numbers with no adjudication.
 - **Spine underneath everything (§2A):** conservation + loud-failure + full
   provenance guarantee A/B/C/E read a true, fully-attributed book and can never
   mistake a failed run — or a missing field — for a clean one.
@@ -859,8 +1580,10 @@ existed, which would train the gate on unaudited grades.
    downstream reads raw inputs after this.
 3. **Cost-basis / fill ingestion** (Schwab lot-level CSV → `lots`; persist fills).
    This is what unblocks tax-aware grading; it must land *before* learning.
-4. **A2-phase-0 — domicile-only estate flags** (existing data; no tax-number
-   claim). The smallest real-dollar move (§ below).
+4. **A2-phase-0 — domicile-only estate INVENTORY/LABEL** (existing data; no
+   tax-number claim, no equivalence label). This **does not move a dollar** — it is an
+   inventory of exposure that already ships (§ below); the first actual dollar-mover is
+   step 5, gated as named there.
 5. **Full A2 vehicle selection** — equivalence gate → five-axis comparator →
    tax-aware switch-now (now unblocked by step 3), fleet sanity-check on survivors.
 6. **B/C grading + learning, together** (B2/B3 + Component C attribution), driven
@@ -869,19 +1592,44 @@ existed, which would train the gate on unaudited grades.
 
 Component C's **early TWR** may be computed before the spine exists, but **only as
 an explicitly non-headline diagnostic** — it may not be shown on any "are we
-beating the market?" proof surface and may not feed learning. A **headline / proof**
-return number requires validated spine periods (each with reconciled, provenance-
-backed flows, §2A) and reconciliation with B under the §8 gate. This matches
-Component C §4/§6: the diagnostic and the proof number are different surfaces, and
-the diagnostic never gets promoted implicitly.
+beating the market?" proof surface and may not feed learning.
 
-**Smallest thing that moves a real dollar first** — before the full scorecard or
-full A2, and aligned to the reviewer's list:
-1. the **enforced conservation gate** (a true book, verdicts emitted);
+**Two proof surfaces gated INDEPENDENTLY — total TWR is NOT blocked on the decision
+ledger.** The earlier draft refused all headline numbers until B↔C reconciled, which
+over-blocked: total-portfolio TWR and conservation are a property of the
+snapshot/flow book and do **not** require every position-day to carry a gradable
+decision. Split the gates:
+- **Total-portfolio TWR (+ conservation)** publishes as a **headline** as soon as
+  the **snapshot/flow INTEGRITY** gate passes — validated spine periods with per-item
+  binding, dated-provenance flow reconciliation, event-set completeness, and price
+  freshness (§2A). It does **not** wait on B↔C. It **must carry an explicit
+  attribution-COVERAGE percentage** (the value-weighted share of the book whose
+  position-days are `decision_owned` and successfully reconciled), so the number is
+  honest about how much of it is skill-attributed vs merely measured.
+- **MANAGED-selection attribution and learning** are the **only** things blocked by a
+  B↔C `contribution_ledger` residual (§8). A ledger residual, or any
+  `expected_but_missing` position-day weight, blocks the managed-selection number and
+  E's learning — never the total-TWR headline. Total TWR simply reports lower
+  attribution coverage until the ledger is clean.
+
+This matches Component C §4/§6/§8: the diagnostic, the total-TWR headline, and the
+managed-attribution proof are different surfaces with different gates, and the
+diagnostic never gets promoted implicitly.
+
+**What ships first — and an HONEST label of which steps move a dollar.** The earlier
+draft called the phase-0 estate flag "the smallest real-dollar move." **That was
+wrong: phase-0 moves no dollar.** US-situs labelling of existing exposure is **already
+shipped** (`wealth_dashboard.py` / `retirement/safety_gates.py`, sizing the current
+**~$518K of US-situs ETFs**); re-inventorying it changes no position. The actual first
+dollar-mover is the **tax-aware UCITS switch (step 5)**, and it is gated on data that
+does **not exist yet**. Stated honestly, aligned to the reviewer's list:
+1. the **enforced conservation gate** (a true book, verdicts emitted) — infrastructure,
+   moves no dollar;
 2. **complete holding coverage** (every position carries a stance; coverage
-   denominator visible);
-3. a **US-situs ETF estate inventory** (`_US_SITUS_TICKERS`) sizing the estate-tax
-   tail;
+   denominator visible) — infrastructure, moves no dollar;
+3. a **US-situs ETF estate INVENTORY/LABEL** (`_US_SITUS_TICKERS`, ~$518K) sizing the
+   estate-tax tail — **this is a label of existing exposure, NOT a trade.** It already
+   partially ships; it does not move a dollar;
 4. a **known-UCITS-equivalent check** for each US-situs sleeve — but **only once the
    §4 A2 index-identity gate can run**, which requires the equivalence datasets
    (holdings, index identity/methodology, weighting, ESG/screens, replication, hedge
@@ -896,11 +1644,15 @@ full A2, and aligned to the reviewer's list:
    recommendation.
 
 Steps 1–3 ship on existing data (domicile + exposure exist; no tax-number claim,
-no equivalence label). Step 4's **equivalence** label waits on the A2 equivalence
-datasets (§7); the tax-aware *switch-now* number waits on cost-basis ingestion. The
-estate-inventory flags are the true zero-new-data, first-order-dollar move; the
-equivalence and switch steps have named data prerequisites and do **not** ship on
-existing data.
+no equivalence label) and are all **labels/infrastructure that move no dollar.**
+Step 4's **equivalence** label waits on the A2 equivalence datasets (`instrument_metadata`,
+§7); step 5's tax-aware *switch-now* number waits on **both** cost-basis ingestion
+(Schwab lot-level CSV → `lots`, build-order step 3) **and** those equivalence datasets.
+**The ACTUAL first dollar-mover is step 5 — a verified US-situs→UCITS switch — and it
+is gated on exactly two missing datasets: (a) lot-level cost basis (for the tax-aware
+switching cost) and (b) the `instrument_metadata` equivalence facts (for the §4
+index-identity gate).** Until both land, nothing here recommends a real trade;
+everything that ships on existing data is inventory/label, not a dollar moved.
 
 ## 10. Explicitly out of scope / deferred
 - Rebuilding the plan/allocation engine (regime-robust IPS already exists).
@@ -925,11 +1677,15 @@ existing data.
 5. **Learning-loop safety:** does the exploration/shadow-scoring + decay + minimum-N
    + regime tagging (§5 B3) actually prevent the doom loop, or is there a residual
    path to permanent self-suppression?
-6. **B↔C reconciliation:** is the weight-/window-/mapping-based reconciliation of
-   C's selection effect against B's per-bet deltas (§8) — NOT an unweighted-sum
-   equality — sound given overlapping windows, repeated HOLDs, and unmanaged NVDA?
-   Is the fail-loud-on-divergence tolerance the right mechanism, or does it hide a
-   real modeling disagreement?
+6. **B↔C reconciliation:** is the **shared additive `contribution_ledger` identity**
+   (§8/§2A) — B and C both defined as `SUM(linked_active_contribution)` over the SAME
+   position-day rows, grouped by decision vs by class, so grouping commutes and a
+   residual is a real ledger/mapping error rather than tolerated linking noise — sound
+   given overlapping windows, repeated HOLDs, and unmanaged NVDA? Is the
+   Cariño/Menchero smoothing (`linking_algorithm_version`) plus explicit
+   cost/FX/interaction residual lines enough to keep `Σ per-id = total linked active
+   return` exact for every grouping, or is there a residual source the ledger does not
+   name?
 7. **Is the loop honest end-to-end** given the audit? Point at any component that
    could still report success while its input was silently wrong or incompletely
    provenanced.
