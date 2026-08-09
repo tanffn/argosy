@@ -7,34 +7,21 @@ the family's wealth"): a measured answer to *"are we beating the market, and
 where is value added or lost?"* Today this is a narrative, not a number — there
 is **no realized-return or benchmark-comparison logic anywhere** (verified).
 
----
-
-## REVISIONS — adversarial review 2026-08-08 (BINDING; apply before build)
-
-An independent adversarial review (verified against the live DB) found one
-**critical** flaw in this design. These amendments override the sections they name.
-
-- **[CRITICAL] §2.2 must NOT auto-classify a position going to zero shares as a
-  "flow".** The share/price decomposition treats `(shares_t1−shares_t0)×price` as
-  an excluded external flow. But a *silent deletion* (the July book erasure — 16
-  positions → 0 shares) is arithmetically identical to a *withdrawal*, so the
-  scorecard would exclude the erasure and report a **pristine TWR straight through
-  a $2.7M loss** — silent success reborn inside the tool built to catch it.
-  **Amendment:** any position dropping to zero shares (or an entire account
-  disappearing) is a **candidate corruption event** — it must be reconciled
-  against a real sale/vest (proposals `executed_live` / `rsu_vest_events`) or
-  **quarantined and the period flagged fail-loud**, never silently classified as
-  flow. A sub-period containing an unreconciled zero-out does not produce a return
-  number.
-- **[CRITICAL] Integrity floor is an INPUT CONTRACT, not an assumption.** C must
-  read a per-snapshot integrity verdict (the conservation gate) and **refuse /
-  quarantine, fail-loud,** any period whose snapshot did not pass. C never
-  computes a return on a book that failed conservation.
-- **[HIGH] Reconcile with the ledger (Component B) or fail loud.** C's Brinson
-  selection effect and B's per-bet grading are two truth systems over the same
-  trades with different windows/prices. They must be reconciled to a tolerance;
-  divergence beyond it is a fail-loud flag, not two coexisting numbers (else the
-  "which number is right?" ambiguity returns).
+**Input contract:** this scorecard is Component C of the Argosy operating model
+(`docs/design/argosy_operating_model_spec.md`). Any **headline / proof** return
+number it publishes reads **only** `validated_snapshot_period` spine records over
+per-item-bound `validated_snapshot` records (that spec §2A) — never raw
+`portfolio_snapshots` directly. A spine period exists only if its snapshots passed
+the conservation gate **and** their per-item integrity binding verified **and** each
+normalized item was bound to an independent source record with expected-set
+completeness proven (spec §2A `item_source_binding` / `expected_set_completeness` —
+the fix for ingest-time sub-threshold corruption the Merkle binding alone cannot
+catch), its flows reconciled to dated provenance IDs, and its prices are fresh
+(below). **A missing
+required field or a failed integrity verdict yields NO period and NO return number
+— never a "degraded confidence" figure.** A pre-spine computation is permitted
+**only** as an explicitly-labelled non-headline diagnostic (§6 0a) that may not
+feed learning or any "are we beating the market?" proof surface.
 
 ---
 
@@ -86,31 +73,158 @@ position's value change deterministically:
 
 ```
 Δvalue = (price_t1 − price_t0) × shares_held   ← MARKET RETURN (what we measure)
-       + (shares_t1 − shares_t0) × price_t1     ← FLOW (buy/sell/vest — excluded)
+       + (shares_t1 − shares_t0) × price_t1     ← SHARE-DELTA NOTIONAL (see caveat)
 ```
 
-This turns the missing-ledger blocker into a solved problem for **security
-holdings**: market return is computed directly from prices on shares actually
-held, and share deltas are treated as flows. We do **not** need a fill ledger to
-get security-level TWR. (Cross-check: reconstructed flows should reconcile with
-`rsu_vest_events` for NVDA-family inflows and with `proposals(status=
-executed_live)` for the 9 known trades — a validation, not a dependency.)
+**The share-delta term is NOT an "external flow," and treating it as one is a second
+error the earlier draft made.** `(shares_t1 − shares_t0) × price_t1` is the notional
+of whatever changed the share count. A TWR external flow is only a **deposit,
+withdrawal, or vest** — cash the *investor* moved in or out. An **internal buy or
+sell** (rotating between two held securities) moves no cash into or out of the
+portfolio and is **not** an external TWR flow at all; excluding its notional as if it
+were double-counts. Worse, endpoint decomposition cannot measure return on a share
+**held for only part of the period**: buy 1 share for $100 at mid-period, end at $110,
+and the true position return is +10% with **zero** external flow — yet
+`(shares_t1−shares_t0)×price_t1 = $110` gets booked as an excluded flow and the
+mid-period gain is misclassified. The endpoints simply do not carry the information.
 
-- **Method:** **Modified Dietz** per sub-period (snapshot t0→t1), where flows are
-  the share-delta cashflows above, time-weighted within the period. With
-  snapshot boundaries at each import, flows sit ≈ at the boundary, so Modified
-  Dietz ≈ true TWR; we flag any sub-period with a large mid-period flow as
-  lower-confidence. Link sub-period returns geometrically → cumulative TWR.
-  *Why Modified Dietz:* it is the accepted approximation when you have
-  period-boundary market values + flows but not a daily NAV — exactly our case.
+This decomposition is a useful **diagnostic**, but it is **not, by itself, proof**
+of return, and the previous draft over-claimed when it called it "a solved problem"
+that needs "no fill ledger." Two things are false as stated:
+
+- **Snapshot endpoints do not pin down what happened between them.** The pair
+  (shares_t0·price_t0, shares_t1·price_t1) is *identical* whether a share was bought
+  at $100 near t0 or at $110 just before t1. Endpoints alone cannot distinguish
+  market return earned on shares *held through* the period from return on shares
+  *traded within* it — so the market-return / flow split is an assumption unless the
+  intra-period flows are dated.
+- **A `proposals` row is not fill evidence.** It has no fill price, no fill
+  timestamp, and no binding of quantity to a specific share delta. A stale or
+  mismatched proposal can therefore "bless" a corrupted deletion as a legitimate
+  sale. `proposals(status=executed_live)` is a weak cross-check, **never**
+  sale-provenance for a delta.
+
+Therefore: **proof-quality TWR requires machine-verifiable, dated flow provenance —
+dated fill/vest/transfer/corporate-action records (amount + price) for every
+share/cash delta, or broker-authored NAV/transaction data.** This is exactly what
+`validated_snapshot_period.flow_reconciliation_status` (spec §2A) now requires: a
+delta without a dated provenance ID is unreconciled and the period is quarantined.
+**Without dated flows or broker NAV, a computed period is a diagnostic, not proof,
+and is labelled as such — never a headline "return."**
+
+**Dated provenance of the OBSERVED deltas is still not enough — the intra-period
+EVENT SET must be provably complete (`expected_event_set_completeness`, spec §2A).**
+Flow provenance dates every delta *visible in the endpoints*; it cannot see an event
+that leaves the endpoints unchanged. **NET-ZERO round-trips are the motivating
+failure:** a position **sold then repurchased within the same period** (offsetting
+cash) leaves identical begin/end shares and identical cash, so every
+endpoint / share-diff / provenance check passes while the scorecard wrongly treats
+the name as **continuously held** — silently corrupting the effective holding window
+and therefore the §2.5 selection attribution on a period that otherwise looks
+proof-valid. This is the period analogue of the position-level
+`expected_set_completeness`. Therefore a **proof-grade** period requires an
+**INDEPENDENT broker activity/transaction manifest** (or broker-authored
+NAV/activity data) attesting the *complete set* of intra-period events — every buy,
+sell, vest, transfer, and corporate action — not merely dated provenance for the
+observed net deltas. **Even after `fills` are populated, a period without event-set
+completeness is DIAGNOSTIC, not proof:** populated fills date the deltas we *saw*,
+but only a broker-authored event manifest proves there were no *other* events (the
+net-zero round-trip) we never saw. C reads
+`validated_snapshot_period.expected_event_set_completeness` and refuses to publish a
+headline return for any period whose event set is not independently closed. (This is still narrower than
+"no cost data is needed anywhere": the operating model's **tax-aware** grading —
+HOLD-vs-alternative and A2 switch-now, spec §5 B2 / §4 A2 — is *separately and
+fatally* blocked on lot-level cost basis. TWR measures return; it licenses no
+after-tax switch or grade.)
+
+**The decomposition is dangerous, and here is the guard.** Reading a share
+delta as an "excluded flow" is exactly how a *silent corruption* launders into a
+pristine return: `(shares_t1−shares_t0)×price` for a position that dropped to zero
+is arithmetically identical to a clean withdrawal, so a naive scorecard would
+exclude the July book erasure (16 positions → 0 shares) and report a **pristine
+TWR straight through a $2.7M loss** — silent success reborn inside the tool built
+to catch it. A full deletion is only the loudest case; the same laundering happens
+on partial damage and bad prices. Therefore, before any sub-period return is
+computed, the period must pass these **fail-loud reconciliation gates** — a
+failure QUARANTINES the sub-period (no return number), it is **never** downgraded
+to a "confidence warning":
+
+- **Full zero-out / account disappearance** — a position going to zero shares, or
+  an entire account vanishing, is a **candidate corruption event**. It must be
+  reconciled to a **dated sale/vest/transfer provenance record** (a fill or
+  `rsu_vest_events` row carrying date + amount + price; a bare
+  `proposals.executed_live` row is **not** sufficient — it has no fill price,
+  timestamp, or quantity binding and could bless a corrupted deletion) or the period
+  is quarantined fail-loud. Never auto-classified as flow.
+- **Partial drop (NEW — the amendment the old banner missed).** A drop of **more
+  than X% of positions or of total value** between snapshots that is *not*
+  reconciled to executed sales/withdrawals is a candidate corruption event and
+  **fails loud**, exactly like a full zero-out. The prior "zero-shares" guard only
+  caught total deletions; a 40% silent shrink would still have laundered through as
+  a flow. Partial damage now fails loud too.
+- **Stale prices.** If any `current_price` in the pair is older than the freshness
+  threshold (a re-import that carried forward stale marks), the sub-period **fails
+  loud** — a return computed on stale prices is fiction, not low-confidence.
+- **Split / spinoff / share-count change from a corporate action.** A share count
+  that changed because of a split, reverse-split, or spinoff (not a trade) will
+  read as a giant spurious flow. Such events must be detected and the shares
+  **adjusted to a common basis** before decomposition, or the period **fails
+  loud** — never silently absorbed as a flow (the NOW 5:1-class events).
+- **Internal transfer misread as a buy/sell (NEW).** A position moving *between the
+  family's own accounts* (an in-kind transfer, an ACATS, a re-registration) nets to
+  zero at book level but at the per-position/per-account grain looks like a clean
+  sell in one account and a clean buy in another — i.e. two mislabeled "flows" that
+  never touch the market and were never trades. The decomposition would exclude both
+  as external flows and quietly reshape the return. A share-delta that reconciles to
+  **neither** a dated executed sale/withdrawal fill **nor** a vest
+  (`rsu_vest_events`) — yet is offset by an equal-and-opposite share-delta in another
+  account of the same book — is a candidate internal transfer: it must be **matched
+  and netted to zero flow across accounts** (ideally against a dated transfer/ACATS
+  provenance ID), or the period **fails loud**. It is never booked as an external
+  flow on the strength of the single-account view.
+
+The `validated_snapshot_period.flow_reconciliation_status` and `price_freshness`
+fields (operating-model spec §2A) are exactly these verdicts, and
+`flow_reconciliation_status` requires a **dated provenance ID for every share/cash
+delta** (not just "reconciled to a proposal"); C reads them and refuses any period
+that did not pass. **A period with an unreconciled zero-out, an unexplained partial
+drop, stale prices, an unadjusted corporate action, or any delta lacking dated
+provenance does not produce a return number.**
+
+- **Method (proof path):** **segment holdings at dated events, then Modified Dietz on
+  external flows only.** Concretely: (1) using the dated fill/vest/transfer provenance
+  IDs (`validated_snapshot_period.flow_reconciliation_status`, spec §2A), cut each
+  position's holding into **effective sub-windows** bounded by its actual dated
+  events, and compute a **position-period return over each ACTUAL effective window** —
+  a share held only part of the period is returned only over the days it was held, so
+  the mid-period-buy case above is measured correctly instead of misbooked. (2) Feed
+  Modified Dietz **only genuine external contributions/withdrawals** (deposits,
+  withdrawals, vests — dated, time-weighted at their real dates), **never internal
+  trade notionals** (an internal buy/sell is not an external flow). Link sub-period
+  returns geometrically → cumulative TWR. *Why Modified Dietz:* it is the accepted
+  approximation when you have period-boundary market values **and dated flows** but
+  not a daily NAV — which is our case **only once flows carry dated provenance.**
+- **Without dated fills there is no proof path.** Snapshot endpoints alone do not date
+  flows, cannot segment part-period holdings, and cannot separate an internal rotation
+  from an external flow. A period reconstructed from endpoints only is therefore a
+  **diagnostic, not a proof number** (§6 0a) — consistent with the §2.2 proof gate and
+  the input contract; it is **not** silently treated as boundary-dated, because an
+  undated intra-period flow can move the true return materially.
 
 ### 2.3 Cash and non-security assets
 - **Cash** (`totals_json.cash_balances_usd_k`, plus cash positions): its balance
   changes from (a) external deposits/withdrawals — flows to exclude — and (b)
-  interest/T-bill yield — return to include. External cash flows are
-  reconstructed from `rsu_vest_events` (dated, clean) and, where a cash-balance
-  change is not explained by a security flow or known vest, flagged as an
-  **unattributed flow** (confidence-scored, surfaced honestly — see §5).
+  interest/T-bill yield — return to include. External cash flows are reconstructed
+  from `rsu_vest_events` (dated, clean) and matching dated fill/transfer provenance.
+  **An unexplained cash movement is NOT laundered through a confidence score.** The
+  spine state is binary (a period is proof-valid or it is not), and a
+  "confidence-scored unattributed flow" would let repeated sub-threshold cash
+  understatements accumulate to a material error while each period still looked fine.
+  Therefore an unexplained cash change is retained as an **UNCLASSIFIED observation**
+  and **blocks the proof/headline return for that period** unless independent
+  evidence (a dated deposit/withdrawal/interest record) classifies it. There is no
+  "small residual → silent pass." A period whose cash change is not fully classified
+  yields a diagnostic, not a proof number (see §5).
 - **Pensions / real estate** (`pensions_json`, `real_estate_json`): tracked in a
   SEPARATE bucket. They are illiquid, valued sporadically, and not part of the
   "beat the market with our investing" question. The headline scorecard is the
@@ -143,6 +257,50 @@ Decompose **active return (portfolio − policy benchmark)** into:
 maximize-wealth plan (allocation / selection / cash / FX). It tells us not just
 *if* but *where* — e.g. "selection cost 2.1%, allocation added 0.6%, cash drag
 −0.3%." Sleeve mapping is the strongest part of the foundation (§3.4).
+
+**Reconciliation with the ledger (Component B) — a gate, not a hope, and not a
+naive sum.** C's Brinson **selection effect** and Component B's per-bet grading
+(operating-model spec §5) are two truth systems over the same book. "They use the
+same benchmark, so they agree" is false. The previous draft's fix — *defining* C's
+aggregate selection effect as **equal to the sum of B's per-bet vs-benchmark
+deltas** — is **also wrong and mathematically invalid:** B's evaluation windows
+overlap and repeated HOLD reaffirmations double-count the same exposure; an
+unmanaged holding (NVDA) has **no** B bet yet still drives C's selection effect; and
+per-bet deltas are unweighted by position size whereas a portfolio selection effect
+is weight-weighted. An unweighted sum is therefore the wrong identity. **Correct
+relationship:** both C and B derive from the **same canonical position/return
+primitives** in the `validated_snapshot` / `validated_snapshot_period` records,
+joined through **one persisted, versioned `exposure_allocation` record** (spec §8):
+position-day ownership (which `validated_decision`, if any, governs each position-day
+and its effective window), the decision→exposure mapping (shares × window per
+decision), and an overlap-precedence rule (so no position-day is double-owned or
+orphaned). **Ownership is a CLOSED classification — the mapper may not fail open.**
+Every position-day carries exactly one of `decision_owned` |
+`deliberately_unmanaged:<policy-id>` | `expected_but_missing:<reason>` (spec §8). Only
+the first two may publish or contribute to reconciliation; **`expected_but_missing`
+(a holding whose governing decision was lost/failed/omitted by the mapper — e.g. an
+AAPL mapping bug) MUST block reconciliation and appear in a value-weighted coverage
+denominator.** Without this, a lost decision would be silently reclassified as
+"unmanaged," total-C would stay unchanged, B would be compared only to the reduced
+managed subset, and the gate would pass despite its own coverage bug. From the
+classification, three **separately-named identities** are computed: **(i)
+managed / B-attributable selection** (over `decision_owned` position-days), **(ii)
+unmanaged selection** (over `deliberately_unmanaged` position-days ONLY, e.g. NVDA —
+not a catch-all for decisionless holdings), and **(iii) total C selection = (i) +
+(ii)**, publishable only when no `expected_but_missing` weight remains.
+**Reconciliation checks identity (i) against B over aligned windows — NEVER total-C
+against B, and only once the coverage denominator shows zero `expected_but_missing`
+weight.** Comparing total-C to B must fail forever
+because NVDA is in C's selection but has no B bet; excluding (ii) from the comparison
+is what makes the reconciliation well-posed, while the closed classification keeps
+(ii) from absorbing a coverage bug. **Governance is unchanged:** B's per-bet
+vs-benchmark delta remains the atomic source of truth the learning loop (spec §5/§8)
+reads; C's selection figure (identity iii) is the proof-surface aggregate, never an
+independent input to learning. **Divergence of identity (i) from B beyond a stated
+tolerance — after the `exposure_allocation` weights, windows, and precedence are
+applied — is a fail-loud flag that blocks publishing either number**, never two
+coexisting "selection" figures with no adjudication ("which number is right?" must
+not return).
 
 ### 2.6 Currency — *why NIS base with FX isolated*
 The family retires in ILS, so return must be reported in **NIS** (their spending
@@ -186,13 +344,19 @@ current_value_local, usd_value_k, currency` — **this is what enables §2.2**.
 - `closed_loop.py` parses fills from TSV prose; applied via one-off scripts, not
   persisted. `nvda_sales_json` is **month-label only** (no year/date) — unusable
   as a flow.
-- **GAP #2 (primary risk):** no clean dated cashflow ledger. Mitigation: §2.2
-  derives security flows from snapshot share-diffs (no ledger needed);
-  `rsu_vest_events` covers RSU inflows; residual cash moves are flagged
-  unattributed. The design is feasible *because* §2.2 sidesteps the ledger — but
-  the reviewer must scrutinize the share-diff flow logic and the
-  unattributed-cash handling. This is where the design most needs adversarial
-  review.
+- **GAP #2 (primary risk):** no clean dated cashflow ledger — and this is a
+  **hard proof-blocker, not a mitigated inconvenience.** The earlier draft claimed
+  §2.2 "derives security flows from snapshot share-diffs (no ledger needed)" and that
+  "the design is feasible *because* §2.2 sidesteps the ledger." **Both claims are
+  deleted as false** (see §2.2): a snapshot share-diff is not a dated flow, it cannot
+  place a mid-period trade in time, and an internal buy/sell is not even an external
+  TWR flow. `rsu_vest_events` covers dated RSU inflows and `fx_rates` covers FX, but
+  every other buy/sell/transfer flow needs **dated fill provenance that does not yet
+  exist.** Consequence: without dated fills, C produces a **diagnostic only** (§6 0a),
+  never a proof/headline return. The share-diff decomposition is a corruption
+  *detector* and a rough diagnostic — it is **not** a substitute for a fill ledger.
+  This gap, and the unattributed-cash handling, are where the design most needs
+  adversarial review.
 
 ### 3.3 Benchmark prices
 `yfinance_adapter.get_eod_prices(tickers, start, end)` (`:224`) — live fetch into
@@ -220,15 +384,35 @@ so the scorecard is reproducible and not dependent on live yfinance every load.
 
 ## 4. Computation pipeline (what the build would do — not built)
 
+**Proof vs. diagnostic — which inputs each surface may read.** Any **headline /
+proof** number ("are we beating the market?") reads **only** validated spine
+periods (`validated_snapshot_period` over per-item-bound `validated_snapshot`s, with
+dated-provenance flow reconciliation — spec §2A) and must pass the §2.5 B↔C
+reconciliation gate. The steps below that read `portfolio_snapshots` directly
+(step 1) are the **pre-spine diagnostic** path (§6 0a): their output is labelled
+diagnostic-only, may not feed learning, and may not be shown on a proof surface.
+Once the spine exists, the same pipeline runs over spine records and its output is
+eligible to be a proof number.
+
 1. **Canonical value series:** dedup `portfolio_snapshots` to one period-end per
    date; backfill pre-June via `net_worth_backfill` archived TSVs. Split into
    liquid-investable vs pension/real-estate buckets.
-2. **Flow derivation:** per consecutive pair, per position, split Δvalue into
-   market-return vs share-flow (§2.2); reconcile flows against `rsu_vest_events`
-   + `executed_live` proposals; residual cash-balance change → yield vs
-   unattributed flow (confidence-scored).
-3. **Sub-period returns:** Modified Dietz per pair, USD and NIS (`fx_rates`);
-   geometric link → cumulative TWR; also solve IRR (MWR) on the flow set.
+2. **Flow derivation + corruption gate:** per consecutive pair, per position, split
+   Δvalue into market-return vs share-flow (§2.2); run the fail-loud reconciliation
+   gates (zero-out / partial-drop >X% / stale price / split-spinoff / cross-account
+   internal-transfer) and **quarantine any period that fails** — no return for it;
+   reconcile surviving flows against **dated provenance** (`rsu_vest_events` +
+   fill/transfer IDs; an `executed_live` proposal is a cross-check, not provenance,
+   §2.2). A residual cash-balance change that is not classified by a dated
+   interest/deposit/withdrawal record is an **UNCLASSIFIED observation that blocks
+   the proof number for that period** (§2.3) — it is **not** downgraded to a
+   "small residual, confidence-scored" pass.
+3. **Sub-period returns:** segment holdings at dated events (§2.2), compute
+   position-period returns over actual effective windows, then Modified Dietz on
+   **external flows only** (deposits/withdrawals/vests — not internal trade
+   notionals), USD and NIS (`fx_rates`); geometric link → cumulative TWR; also solve
+   IRR (MWR) on the external-flow set. (Proof path only — needs dated fills; endpoint-
+   only pairs are diagnostic, §6 0a.)
 4. **Benchmarks:** fetch + PERSIST ACWI/VT and per-sleeve ETF closes to
    `benchmark_prices`; build the policy-index return from `target_allocation_json`
    weights; rebalance to target at each period.
@@ -248,21 +432,44 @@ cache). No changes to existing ingest.
   headline must carry a **confidence band + N periods**; results are provisional
   and firm up as history accrues. Do NOT annualize a 4.5-month return without a
   loud caveat.
-- **Reconstructed flows are approximate.** Every unattributed cash move and every
-  large mid-period flow is flagged; the scorecard shows a data-confidence score
-  per period, not a false-precision single number. (This is Argosy's output-trust
-  doctrine: every number auditable to raw rows.)
+- **Reconstructed flows are approximate — but corruption and unclassified movements
+  are NOT a confidence band.** A genuinely approximate figure (a modest mid-period
+  flow whose date is known but imprecise) gets a data-confidence score per period.
+  Two things are categorically different and get **no** confidence score:
+  - a **corruption event** (a zero-out, an unreconciled partial drop >X%, stale
+    prices, an unadjusted split/spinoff, an unmatched cross-account internal
+    transfer — §2.2) **fails loud and quarantines the period**; and
+  - an **unclassified cash movement** (§2.3) or a **flow with no dated provenance**
+    (§2.2) **blocks the proof number** for that period — it is retained as an
+    unclassified observation, never smoothed into a "small residual, lower
+    confidence" pass.
+  The distinction is load-bearing — the old design's mistakes were letting a silent
+  deletion ride as "lower confidence," and letting repeated sub-threshold cash
+  understatements accumulate under a confidence label. Confidence scores are for real
+  approximation; corruption and unclassified/undated movements yield no proof number.
+  (Argosy's output-trust doctrine: every number auditable to raw rows.)
 - **Benchmark choice is a judgment** (ACWI vs VT vs a NIS-hedged blend) — make it
   explicit and configurable; show which was used.
 
 ---
 
 ## 6. Phased build (each phase independently shippable)
-- **0a — Headline (MVP):** dedup series → position-decomposition TWR (USD+NIS) vs
-  ACWI, with confidence band. Ships "are we beating the market?" as a number.
-  Data: existing snapshots + new `benchmark_prices`. Lowest risk.
+- **0a — Pre-spine DIAGNOSTIC (renamed; NOT a headline/proof number):** dedup
+  series → position-decomposition TWR (USD+NIS) vs ACWI, with confidence band, on
+  existing snapshots + new `benchmark_prices`. **Because it reads raw snapshots
+  without the spine's per-item integrity binding and without dated flow provenance,
+  its output is an explicitly-labelled *diagnostic* — it may NOT be shown on any
+  "are we beating the market?" proof surface and may NOT feed learning.** This
+  resolves the earlier contradiction with §9 (a headline is diagnostic-only until it
+  reads validated spine periods and reconciles with B). It is a build/plumbing
+  smoke, not the product number.
+- **0a-proof — Headline over the spine:** the same computation run over
+  `validated_snapshot_period` records (dated-provenance flows, per-item binding),
+  passing the §2.5 B↔C reconciliation gate. **This** is the number a proof surface
+  may show. Requires the spine (spec §2A) to exist.
 - **0b — Policy benchmark + Brinson attribution** (allocation/selection/cash/FX)
-  via the sleeve map. This is the "is our stock-picking costing us?" answer.
+  via the sleeve map. This is the "is our stock-picking costing us?" answer, and it
+  reads spine periods (proof surface).
 - **0c — Risk-adjusted + history backfill** (net_worth_backfill) + durable
   `portfolio_return_periods` + `/performance` API/UI + IRR.
 
@@ -273,8 +480,11 @@ cache). No changes to existing ingest.
    price-return vs share-flow sound given snapshots can carry stale/re-imported
    prices and multiple rows per date? Where could it double-count or misattribute
    a corporate action (split/spin — e.g. the NOW 5:1-class events)?
-2. **Unattributed cash (§3.2):** is confidence-flagging honest enough, or must we
-   build the real cashflow ledger (persist `fills`) before claiming TWR at all?
+2. **Unattributed cash (§2.3, §3.2):** the design now **blocks** the proof number on
+   any unclassified cash movement rather than confidence-flagging it. Is that the
+   right line, or is there a class of small, provably-bounded cash noise that should
+   be allowed to pass with a caveat? (Note the accumulation risk: many sub-threshold
+   passes sum to a material error.)
 3. **Base currency:** NIS headline with USD secondary — agreed? Or NIS-hedged
    policy benchmark to strip FX from the *skill* comparison?
 4. **Benchmark selection:** ACWI vs VT vs a custom blend matching the plan's
