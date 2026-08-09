@@ -158,12 +158,17 @@ def _seed_synthesis_run(
 
 
 def _real_db_session():
+    """Open the LIVE ``db/argosy.db`` — OPT-IN ONLY.
+
+    Reading the live money DB in the default test run is unsafe (tests must
+    never touch live financial data), so this returns ``None`` unless a
+    developer explicitly sets ``ARGOSY_ALLOW_LIVE_DB_TESTS=1`` for a manual
+    legacy-schema spot check. There is deliberately NO hardcoded
+    ``D:/…/argosy.db`` fallback — the path is taken only from ``ARGOSY_HOME``.
+    """
+    if os.environ.get("ARGOSY_ALLOW_LIVE_DB_TESTS") != "1":
+        return None
     db_path = Path(os.environ.get("ARGOSY_HOME", ".")) / "db" / "argosy.db"
-    if not db_path.exists():
-        # Try the project-relative default.
-        alt = Path("D:/Projects/financial-advisor/db/argosy.db")
-        if alt.exists():
-            db_path = alt
     if not db_path.exists():
         return None
     engine = sa.create_engine(
@@ -177,7 +182,10 @@ def _real_db_session():
 def test_build_agent_tree_for_existing_run_23() -> None:
     sess = _real_db_session()
     if sess is None:
-        pytest.skip("real db/argosy.db not available; skipping live-DB check")
+        pytest.skip(
+            "live-DB check is opt-in (set ARGOSY_ALLOW_LIVE_DB_TESTS=1); "
+            "default runs never touch live db/argosy.db"
+        )
     try:
         tree = build_agent_tree(sess, decision_run_id=23)
     finally:

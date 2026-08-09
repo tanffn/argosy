@@ -134,6 +134,43 @@ def test_name_for_plain_english_description_line():
     assert name_for("ZZZUNKNOWN") == ""   # uncurated → no second line
 
 
+def test_fallback_label_names_symbol_less_unmanaged_rows():
+    # The four opaque book rows (blank/"-" Symbol) must get a human label so
+    # surfaces never render a bare "-"/blank. Values/currency/classification
+    # are untouched — this is a display label only.
+    from argosy.services.instrument_reference import fallback_label
+    assert fallback_label(
+        location="Aborad", currency="USD", asset_type="Real estate", symbol="-"
+    ) == "Aborad property"
+    # Two Leumi cash rows disambiguated by currency; NIS renders as ILS.
+    assert fallback_label(
+        location="Leumi", currency="NIS", asset_type="Cash", symbol=""
+    ) == "Leumi ILS cash"
+    assert fallback_label(
+        location="Leumi", currency="USD", asset_type="Cash", symbol=""
+    ) == "Leumi USD cash"
+    assert fallback_label(
+        location="schwab 876", currency="USD", asset_type="Cash", symbol="-"
+    ) == "Schwab 876 USD cash"
+
+
+def test_fallback_label_empty_for_real_ticker():
+    # A row that carries a real ticker defers to name_for (returns "").
+    from argosy.services.instrument_reference import fallback_label
+    assert fallback_label(
+        location="Leumi", currency="USD", asset_type="Equity", symbol="NVDA"
+    ) == ""
+
+
+def test_fallback_label_generic_symbol_less_row():
+    # An unknown symbol-less asset class still yields "<Location> <asset_type>",
+    # never blank.
+    from argosy.services.instrument_reference import fallback_label
+    assert fallback_label(
+        location="Aborad", currency="EUR", asset_type="Commodity", symbol="-"
+    ) == "Aborad Commodity"
+
+
 def test_codex_corrections_megacap_gics_sectors():
     # Mega-caps are NOT all "Tech" (codex GICS review).
     assert lookup("GOOG", "x").sector == "Communication Services"

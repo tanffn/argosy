@@ -164,8 +164,13 @@ class TestLivePath:
 # ---------------------------------------------------------------------------
 
 
-class TestCachedFallbackViaRealDB:
-    """When market_snapshot raises, fall back to AgentReport rows; age surfaced."""
+class TestCachedFallbackViaFixtureDB:
+    """When market_snapshot raises, fall back to AgentReport rows; age surfaced.
+
+    Runs entirely against the ``alembic_engine_at_head`` FIXTURE DB (a fresh
+    temp SQLite under a tmp ARGOSY_HOME) — never the live ``db/argosy.db``. The
+    seeded ``AgentReport`` rows are real ORM rows in that temp DB.
+    """
 
     @pytest.fixture(autouse=True)
     def _patch_live_failing(self, monkeypatch):

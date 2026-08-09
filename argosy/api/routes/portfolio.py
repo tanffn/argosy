@@ -203,6 +203,18 @@ def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapsh
             p.symbol or "", p.details or "", fallback=asset_type
         )
         name = instrument_reference.name_for(p.symbol or "", p.details or "")
+        if not name:
+            # Symbol-less unmanaged rows (physical cash balances, the
+            # owner-estimate real-estate stub) have no ticker to name — give
+            # them a human label from account + currency + asset class so the
+            # surface never shows a bare "-"/blank. Display only; does not
+            # change value/currency/classification.
+            name = instrument_reference.fallback_label(
+                location=p.location or "",
+                currency=p.currency or "",
+                asset_type=asset_type,
+                symbol=p.symbol or "",
+            )
         sleeve = resolve_sleeve_label(
             p.symbol or "",
             asset_type=asset_type,

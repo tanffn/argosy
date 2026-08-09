@@ -36,6 +36,34 @@ def test_physical_cash_row_has_no_estate_marker_and_is_not_flagged():
     pos = dto.positions[0]
     assert pos.estate_safe is None            # physical cash → no marker
     assert pos.classified is True             # no real ticker → not flagged
+    assert pos.name == "Leumi ILS cash"       # fallback label, not blank
+    assert dto.classification_warnings == []
+
+
+def test_symbol_less_rows_get_human_fallback_labels():
+    # The four opaque book rows (blank/"-" Symbol) surface a human name in the
+    # DTO instead of a blank — display only; value/estate flags untouched.
+    dto = _dto([
+        PortfolioPosition(location="Aborad", currency="USD",
+                          asset_type="Real estate", details="Real estate",
+                          symbol="-", usd_value_k=69.0),
+        PortfolioPosition(location="Leumi", currency="NIS",
+                          asset_type="Cash", details="", symbol="",
+                          usd_value_k=17.66),
+        PortfolioPosition(location="Leumi", currency="USD",
+                          asset_type="Cash", details="", symbol="",
+                          usd_value_k=5.45),
+        PortfolioPosition(location="schwab 876", currency="USD",
+                          asset_type="Cash", details="Cash", symbol="-",
+                          usd_value_k=5.89),
+    ])
+    names = [p.name for p in dto.positions]
+    assert names == [
+        "Aborad property",
+        "Leumi ILS cash",
+        "Leumi USD cash",
+        "Schwab 876 USD cash",
+    ]
     assert dto.classification_warnings == []
 
 

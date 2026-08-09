@@ -357,6 +357,50 @@ def name_for(symbol: str, details: str = "") -> str:
     return _INSTRUMENT_NAMES.get(sym, "")
 
 
+# Currency display normalization for the symbol-less cash-row fallback label:
+# the snapshot stores shekels as "NIS", but the human-facing convention is ILS.
+_CURRENCY_DISPLAY: dict[str, str] = {"NIS": "ILS", "ILS": "ILS"}
+
+
+def fallback_label(
+    location: str = "",
+    currency: str = "",
+    asset_type: str = "",
+    symbol: str = "",
+) -> str:
+    """Human-readable label for an UNMANAGED, symbol-less book row — physical
+    cash balances and the owner-estimate real-estate stub — whose Symbol cell
+    is blank or the placeholder ``"-"``, so a surface never renders a bare
+    ``"-"`` / blank where a name belongs (e.g. the Aborad property row, the two
+    Leumi ILS/USD cash rows, the Schwab-876 cash row).
+
+    Keyed off account (``location``) + ``currency`` + asset class — NOT a
+    resolvable ticker; real tickers go through :func:`name_for`. Returns ``""``
+    when the row carries a real ticker (the caller already has ``name_for`` for
+    that) or there is nothing to build a label from, so callers can safely do
+    ``name_for(...) or fallback_label(...)``.
+
+    This is a DISPLAY label only: it does not change the row's value, currency,
+    or its unmanaged / untradeable classification.
+    """
+    sym = (symbol or "").strip()
+    if sym and sym != "-":
+        return ""  # real ticker → name_for is the authority
+    loc = (location or "").strip()
+    if loc:
+        loc = loc[:1].upper() + loc[1:]
+    atype = (asset_type or "").strip()
+    atype_l = atype.lower()
+    if atype_l == "real estate":
+        return f"{loc} property".strip()
+    if atype_l == "cash":
+        ccy_raw = (currency or "").strip().upper()
+        ccy = _CURRENCY_DISPLAY.get(ccy_raw, ccy_raw)
+        return " ".join(part for part in (loc, ccy, "cash") if part)
+    # Generic symbol-less row: "<Location> <asset_type>" (either may be empty).
+    return " ".join(part for part in (loc, atype) if part)
+
+
 def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
     """The canonical per-account "Type" label: ``"<structure> · <sector>"``
     (e.g. ``"Stock · Tech"``, ``"ETF · Broad Index"``, ``"REIT · Real Estate"``).
@@ -377,5 +421,6 @@ def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
 
 
 __all__ = ["InstrumentRef", "lookup", "known_symbols", "estate_safe_for",
-           "type_label", "name_for", "REGION_US", "REGION_ISRAEL",
-           "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL", "REGION_OTHER"]
+           "type_label", "name_for", "fallback_label", "REGION_US",
+           "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL",
+           "REGION_OTHER"]
