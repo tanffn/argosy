@@ -292,6 +292,16 @@ def _stub_fleet(monkeypatch, captured: dict):
     monkeypatch.setattr(dd_mod, "run_per_ticker_analysts", _analysts)
     monkeypatch.setattr(dd_mod, "DecisionFlow", _FakeFlow)
     monkeypatch.setattr(dd_mod, "position_context_block", _no_pos)
+    # Isolate the pushback gate from the LIVE verdict registry (see the
+    # position-context test): a real settled verdict would short-circuit before
+    # the stage-3 packet is built. These tests exercise packet building, not the
+    # gate — force "not defended" (imported locally, so patch the source).
+    import argosy.services.verdict_registry as _vr_mod
+
+    monkeypatch.setattr(
+        _vr_mod, "check_pushback_gate",
+        lambda *a, **k: SimpleNamespace(defended=False, standing=None, reason=""),
+    )
 
 
 @pytest.mark.asyncio

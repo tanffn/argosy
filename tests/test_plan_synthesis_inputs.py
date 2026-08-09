@@ -760,6 +760,11 @@ def test_nvda_shares_sold_ytd_populates_from_fills(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
     monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
     monkeypatch.delenv("FRED_API_KEY", raising=False)
+    # Isolate the on-disk Schwab CSV sale source — it is the AUTHORITATIVE
+    # real-sale source and outranks fills BY DESIGN, so if the real
+    # ARGOSY_EXPENSE_SAMPLES_ROOT leaks in, its real NVDA sales (e.g. 3,380 sh)
+    # correctly outrank the seeded 520 fill this test means to exercise.
+    monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
     try:
         from argosy.config import reload_settings
 

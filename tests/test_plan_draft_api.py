@@ -1620,10 +1620,16 @@ def _seed_snapshot_with_nvda_sales(client_with_db, sales: list[dict]) -> None:
         sess.close()
 
 
-def test_current_structured_nvda_pace_falls_back_to_plan_and_sales(client_with_db):
+def test_current_structured_nvda_pace_falls_back_to_plan_and_sales(
+    client_with_db, monkeypatch
+):
     """No pending draft + a current plan WITHOUT a synthesis run: pace binds
     to the plan's glide target + the snapshot's actual sales history instead
     of rendering '— / awaiting plan'. Dev-DB dup rows (double Apr) dedup."""
+    # Isolate the on-disk Schwab CSV sale source: it outranks the snapshot
+    # nvda_sales BY DESIGN, so the real ARGOSY_EXPENSE_SAMPLES_ROOT (3,380 sh)
+    # would override the seeded 1,600 this test means to exercise.
+    monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
     _seed_current_plan_with_nvda_glide(client_with_db, annual_shares=9270)
     _seed_snapshot_with_nvda_sales(client_with_db, [
         {"month": "Jan", "shares": 560, "price": 191.0},
@@ -1648,11 +1654,14 @@ def test_current_structured_nvda_pace_falls_back_to_plan_and_sales(client_with_d
 
 
 def test_current_structured_nvda_pace_glide_carries_plan_window_metadata(
-    client_with_db,
+    client_with_db, monkeypatch
 ):
     """With a TargetAllocationDoc glide the pace payload must say so:
     ``basis='glide'`` + ``plan_start`` + the calendar context figure — the
     UI labels these numbers 'day N of the plan year', never 'YTD'."""
+    # Isolate the on-disk Schwab CSV sale source (outranks snapshot sales by
+    # design) so the real ARGOSY_EXPENSE_SAMPLES_ROOT doesn't override the seed.
+    monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
     from datetime import date, datetime, timezone
 
     from argosy.state.models import PlanVersion, User

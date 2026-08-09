@@ -203,6 +203,19 @@ def _stub_fleet(monkeypatch, captured: dict):
     monkeypatch.setattr(dd_mod, "open_decision_run_for_consult", _open)
     monkeypatch.setattr(dd_mod, "run_per_ticker_analysts", _analysts)
     monkeypatch.setattr(dd_mod, "DecisionFlow", _FakeFlow)
+    # Isolate the pushback gate from the LIVE verdict registry: without this the
+    # gate reads a real settled verdict for the ticker (e.g. SOFI defended from
+    # prior fleet runs) and short-circuits BEFORE the stage-3 packet is built,
+    # so flow.run() is never called and the captured kwargs are empty. These
+    # tests exercise PACKET BUILDING, not the gate (which has its own tests);
+    # force "not defended". It's imported locally inside run_deep_decision, so
+    # patch the source module.
+    import argosy.services.verdict_registry as _vr_mod
+
+    monkeypatch.setattr(
+        _vr_mod, "check_pushback_gate",
+        lambda *a, **k: SimpleNamespace(defended=False, standing=None, reason=""),
+    )
 
 
 @pytest.mark.asyncio
