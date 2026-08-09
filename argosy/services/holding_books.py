@@ -125,10 +125,39 @@ QUANTITY_STALE_DAYS = 90
 # migrate to quantity_is_stale / live reprice. Kept so older tests import.
 STALE_VALUATION_DAYS = QUANTITY_STALE_DAYS
 
-# A stored mark older than this must be live-repriced before it can publish
-# as current money — whether the symbol is present in the snapshot or restored
-# from the durable unmanaged book. 0 = must be valued today.
-MARK_STALE_DAYS = 0
+# Staleness of a stored PRICE/mark is GRADUATED (2026-08 fix — the fail-closed
+# MARK_STALE_DAYS=0 rule degraded the whole book on any non-today mark, so a
+# normal weekend/holiday gap or a single transient reprice miss made estate /
+# net-worth / plan surfaces return "degraded" instead of a value):
+#
+#   * age <= MARK_STALE_DAYS         -> FRESH: the mark is current money as-is;
+#                                       no live reprice is even attempted. Covers
+#                                       a standard Fri->Mon weekend plus a market
+#                                       holiday (no newer close exists yet).
+#   * MARK_STALE_DAYS < age <= MARK_HARD_STALE_DAYS
+#                                    -> SOFT: a live reprice is PREFERRED (to pick
+#                                       up today's price), but if no quote_fn is
+#                                       supplied or the reprice misses, DEGRADE
+#                                       GRACEFULLY — keep the last known close,
+#                                       flag ``mark_stale=True``, and DO NOT mark
+#                                       the whole book degraded. This is the
+#                                       "normal staleness" the reviewer asked to
+#                                       tolerate.
+#   * age > MARK_HARD_STALE_DAYS      -> HARD: genuinely stale (weeks). A mark this
+#                                       old must be live-repriced; if it can't be,
+#                                       DEGRADE LOUDLY — null the value and record
+#                                       a reprice failure so the consumer refuses
+#                                       to publish it as current money.
+#   * missing date                    -> treated as HARD (undated marks never read
+#                                       as current — BLOCKER 6).
+#
+# PRODUCTION NOTE: in a live run every mark IS repriced from the yfinance quote
+# cache, so ``degraded=False`` because quotes SUCCEED — not because the rule is
+# lax. A real quote outage still degrades: a fresh feed within MARK_STALE_DAYS
+# publishes its last close (graceful), but anything older than a few weeks with
+# no reachable quote fails loudly, exactly as before.
+MARK_STALE_DAYS = 4
+MARK_HARD_STALE_DAYS = 14
 
 # Display-name renames that are NOT sales (same account, same units).
 # Keys/values are exact TSV symbol strings (Hebrew preserved).
@@ -184,6 +213,35 @@ def mark_is_stale(
         return True
     ref = today or date.today()
     return (ref - d).days > max_age_days
+
+
+def mark_staleness_tier(
+    mark_date: Any,
+    *,
+    today: date | None = None,
+    soft_days: int = MARK_STALE_DAYS,
+    hard_days: int = MARK_HARD_STALE_DAYS,
+) -> str:
+    """Classify a stored mark's age into a graduated staleness tier.
+
+    Returns one of:
+      * ``"missing"`` — undated (never publishes as current money),
+      * ``"fresh"``   — within ``soft_days`` (current as-is, no reprice needed),
+      * ``"soft"``    — normal staleness: reprice-preferred, but degrade
+        GRACEFULLY (keep last close, flag) if it can't be repriced,
+      * ``"hard"``    — genuinely stale (weeks): degrade LOUDLY if it can't be
+        repriced.
+    """
+    d = _as_date(mark_date)
+    if d is None:
+        return "missing"
+    ref = today or date.today()
+    age = (ref - d).days
+    if age <= soft_days:
+        return "fresh"
+    if age <= hard_days:
+        return "soft"
+    return "hard"
 
 
 def stamp_mark_dates(
@@ -254,6 +312,13 @@ def resolve_prior_positions_by_account_coverage(
         select(PortfolioSnapshotRow)
         .where(PortfolioSnapshotRow.user_id == user_id)
         .order_by(
+            # Newest OBSERVATION first, not merely newest import: a snapshot
+            # imported later can still cover an EARLIER as-of date (a backfilled
+            # or re-ingested historical feed). Ordering by imported_at alone let
+            # such a row shadow the true latest coverage of an account. Rank by
+            # (snapshot_date, imported_at) so the account's most recent real
+            # observation wins; imported_at + id only break ties.
+            desc(PortfolioSnapshotRow.snapshot_date),
             desc(PortfolioSnapshotRow.imported_at),
             desc(PortfolioSnapshotRow.id),
         )
@@ -852,6 +917,14 @@ def merge_total_book_positions(
         if not needs_reprice:
             refreshed.append(pos)
             continue
+        # Graduated staleness: SOFT marks (normal weekend/holiday/transient
+        # miss) degrade GRACEFULLY (keep last close, flag) instead of failing
+        # the whole book; only HARD (weeks-stale) / MISSING marks fail loudly.
+        # An explicit ``mark_stale`` with no date is treated as MISSING.
+        tier = "missing" if (explicit_stale and mark_date is None) else (
+            mark_staleness_tier(mark_date, today=ref)
+        )
+        soft_ok = tier == "soft"
         at = str(pos.get("asset_type") or "").lower()
         sym = _symbol_of(pos)
         # Cash / unpriceable / shareless rows: cannot live-reprice. Keep the
@@ -867,9 +940,11 @@ def merge_total_book_positions(
             stripped = dict(pos)
             stripped["mark_stale"] = True
             # Cash balances ARE the mark — quantity-shaped cash can keep value.
-            # Every other unpriceable stale row must NOT publish last-known money
-            # as current: null it and record a loud reprice failure.
-            if "cash" in at:
+            # A SOFT (normal-staleness) mark on any row keeps its last known
+            # value flagged — no live quote is available/needed for a
+            # weekend/holiday gap. Only a HARD/MISSING unpriceable mark must NOT
+            # publish last-known money as current: null it + fail loudly.
+            if "cash" in at or soft_ok:
                 refreshed.append(stripped)
                 continue
             failures.append(
@@ -886,6 +961,13 @@ def merge_total_book_positions(
             fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur, today=ref,
         )
         if priced is None:
+            # SOFT: a transient reprice miss on a recent mark — keep the last
+            # close, flag it, but do NOT degrade the book.
+            if soft_ok:
+                stripped = dict(pos)
+                stripped["mark_stale"] = True
+                refreshed.append(stripped)
+                continue
             failures.append(
                 f"stale_mark_reprice_miss:{sym}@"
                 f"{_norm_location(_location_of(pos)) or 'unknown'} "
@@ -923,9 +1005,27 @@ def merge_total_book_positions(
             fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur, today=ref,
         )
         if priced is None:
+            # Graduated staleness for the restored quantity's stored MARK: a
+            # FRESH/SOFT mark (weekend/holiday/transient miss) degrades
+            # GRACEFULLY — publish the last known close, flagged — instead of
+            # dropping the holding and degrading the whole book. Only a
+            # genuinely stale (HARD) or unusable stored mark fails loudly.
+            row_mark = (
+                getattr(row, "valued_as_of", None)
+                or getattr(row, "observed_as_of", None)
+            )
+            tier = mark_staleness_tier(row_mark, today=ref)
+            stored_usd_k = getattr(row, "usd_value_k", None)
+            if tier in ("fresh", "soft") and stored_usd_k is not None:
+                fallback = unmanaged_row_to_position(row)
+                fallback["mark_stale"] = True
+                fallback["repriced"] = False
+                stamped.append(fallback)
+                present.add((sym, loc))
+                continue
             failures.append(
                 f"reprice_miss:{sym}@{loc or 'unknown'} "
-                f"(observed_as_of={obs})"
+                f"(observed_as_of={obs}; valued_as_of={row_mark})"
             )
             continue
         stamped.append(priced)
@@ -1981,6 +2081,7 @@ __all__ = [
     "EXPECTED_RESTORED_USD_K",
     "EXPECTED_RESTORED_USD_K_TOL",
     "KNOWN_SYMBOL_RENAMES",
+    "MARK_HARD_STALE_DAYS",
     "MARK_STALE_DAYS",
     "STATUS_ACTIVE",
     "STATUS_RETIRED",
@@ -2012,6 +2113,7 @@ __all__ = [
     "location_account_key",
     "managed_positions",
     "mark_is_stale",
+    "mark_staleness_tier",
     "merge_positions_per_account",
     "merge_total_book_positions",
     "normalize_symbol_identity",

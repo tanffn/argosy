@@ -50,7 +50,11 @@ def _seed_snapshot(
     session.add(
         PortfolioSnapshotRow(
             user_id=user_id,
-            snapshot_date=date(2026, 5, 1),
+            # A REAL snapshot is recent — dating it "today" keeps its marks
+            # inside the normal-staleness window so the total book values them
+            # (an intentionally weeks-old fixture would degrade-loud, which is
+            # the correct production behavior, not what these gate tests probe).
+            snapshot_date=date.today(),
             imported_at=datetime.now(timezone.utc),
             source_path="/tmp/seed.tsv",
             positions_json=json.dumps(positions),

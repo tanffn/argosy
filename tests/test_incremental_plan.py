@@ -74,10 +74,15 @@ def _seed_plan(session, *, margin: float = -250_000.0, age: int = 47) -> int:
         {"symbol": "", "asset_type": "Cash", "currency": "NIS",
          "usd_value_k": 200.0, "details": "Bank cash"},
     ]
+    # A real snapshot is recent — date it "now" so its marks are inside the
+    # normal-staleness window and the total book values them (a weeks-old
+    # fixture would degrade-loud, which is correct production behavior but not
+    # what this graph-hydration test exercises).
+    _now = datetime.now(timezone.utc)
     session.add(PortfolioSnapshotRow(
         user_id=USER_ID,
-        snapshot_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-        imported_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        snapshot_date=_now,
+        imported_at=_now,
         positions_json=json.dumps(positions),
         fx_usd_nis=3.6,
     ))

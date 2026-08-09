@@ -832,13 +832,20 @@ def test_estate_surface_unavailable_when_degraded(fixture_db):
 
 
 def test_incremental_graph_raises_on_degraded_not_zero(fixture_db):
+    # A GENUINELY stale book (weeks old, unpriceable mark, no live quote) must
+    # degrade LOUDLY — the incremental graph raises rather than zeroing net
+    # worth. (A normal weekend/holiday-fresh book now degrades gracefully; this
+    # test pins the hard-stale end of the graduated rule.)
+    _snapshot_positions_fx = __import__(
+        "argosy.orchestrator.flows.incremental_plan",
+        fromlist=["_snapshot_positions_fx"],
+    )._snapshot_positions_fx
     _add_snap(
         fixture_db,
-        positions=[_pos("CSPX", 400.0, location="ibi")],
-        snap_date=date(2026, 8, 7),
+        positions=[_pos("CSPX", 400.0, location="ibi")],  # no shares -> unpriceable
+        snap_date=date.today() - timedelta(days=60),  # weeks-stale -> hard
         totals_k=400.0,
     )
-    from argosy.orchestrator.flows.incremental_plan import _snapshot_positions_fx
 
     with pytest.raises(TotalBookDegraded):
         _snapshot_positions_fx(fixture_db, "ariel")

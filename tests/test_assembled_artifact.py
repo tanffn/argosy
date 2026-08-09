@@ -79,7 +79,11 @@ def _seed_full_plan(s) -> None:
     s.add(
         PortfolioSnapshotRow(
             user_id="ariel",
-            snapshot_date=date(2026, 5, 26),
+            # Recent snapshot: marks inside the normal-staleness window so the
+            # body/resolver surface values NVDA (a weeks-old fixture would
+            # degrade-loud — correct production behavior, not what this
+            # every-surface assembly test probes).
+            snapshot_date=date.today(),
             imported_at=datetime.now(UTC),
             fx_usd_nis=3.10,
             fx_usd_eur=0.92,
@@ -93,6 +97,15 @@ def _seed_full_plan(s) -> None:
                         "currency": "USD",
                         "current_price": 175.0,
                         "shares": 13140,
+                        # This test asserts the body (resolver) surface reports a
+                        # concrete NVDA sleeve weight that AGREES with the
+                        # dashboard. Under the deliberately-unmanaged-NVDA policy
+                        # the resolver reports an *unmanaged* NVDA as ``excluded``
+                        # (no sleeve weight) — a legitimately different surface
+                        # role. Pin this fixture's NVDA as a MANAGED holding so
+                        # the cross-surface weight-agreement this test exists to
+                        # prove is exercised on a reported name.
+                        "managed": True,
                     },
                     {
                         "symbol": "VOO",
