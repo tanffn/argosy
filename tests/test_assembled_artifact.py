@@ -97,15 +97,15 @@ def _seed_full_plan(s) -> None:
                         "currency": "USD",
                         "current_price": 175.0,
                         "shares": 13140,
-                        # This test asserts the body (resolver) surface reports a
-                        # concrete NVDA sleeve weight that AGREES with the
-                        # dashboard. Under the deliberately-unmanaged-NVDA policy
-                        # the resolver reports an *unmanaged* NVDA as ``excluded``
-                        # (no sleeve weight) — a legitimately different surface
-                        # role. Pin this fixture's NVDA as a MANAGED holding so
-                        # the cross-surface weight-agreement this test exists to
-                        # prove is exercised on a reported name.
-                        "managed": True,
+                        # NVDA is deliberately UNMANAGED (held at Schwab, out of
+                        # the tradeable sleeve) — the real policy, NOT pinned
+                        # managed. Present-but-unmanaged is a CONCENTRATION fact:
+                        # the resolver must still report NVDA's ~63.8% weight of
+                        # the tradeable book (2299/(2299+1301)) on the body
+                        # surface, so the cross-surface weight-agreement this
+                        # test proves is exercised on the genuinely unmanaged
+                        # name (regression guard for the ``excluded``/0.0 bug
+                        # that zeroed the deconcentration math).
                     },
                     {
                         "symbol": "VOO",

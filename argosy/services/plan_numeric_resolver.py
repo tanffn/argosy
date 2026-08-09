@@ -1570,14 +1570,22 @@ def _apply_nvda_current_weight(
 ) -> None:
     """Override ``concentration.nvda_current_pct`` with a DETERMINISTIC,
     snapshot-derived value (stored as a fraction 0–1, matching the unit
-    convention) — OR an explicit excluded/unavailable status.
+    convention) — OR an explicit unavailable status.
 
-    NVDA is deliberately unmanaged (excluded from sleeve math). Reporting
-    its sleeve weight as 0.0 because it is absent from the managed book is
-    a lie; when the total book has NVDA but it is unmanaged, status is
-    ``excluded``. When NVDA is missing from the total book entirely, status
-    is ``unavailable`` — never a silent 0.0. Absolute NVDA value for FI
-    shock / estate is published separately as ``concentration.nvda_value_nis``.
+    NVDA is deliberately UNMANAGED (held at Schwab, out of the tradeable
+    sleeve), but present-but-unmanaged is a CONCENTRATION fact, not an
+    absence: NVDA COUNTS toward the single-name concentration weight (and
+    toward US-situs estate). The weight is measured against the TOTAL book's
+    tradeable-securities denominator (which INCLUDES the unmanaged NVDA
+    position), so it resolves to the true ~58% — never ``excluded``/0.0,
+    which would make the downstream deconcentration / cap / quota math run
+    against zero. NVDA remaining OUT of the managed / tradeable / sell-eligible
+    sleeve (never a BUY/SELL) is enforced separately by ``book.managed`` /
+    ``is_managed_position``.
+
+    When NVDA is missing from the total book entirely, status is
+    ``unavailable`` — never a silent 0.0. Absolute NVDA value for FI shock /
+    estate is published separately as ``concentration.nvda_value_nis``.
     """
     key = "concentration.nvda_current_pct"
     value_key = "concentration.nvda_value_nis"
@@ -1656,38 +1664,52 @@ def _apply_nvda_current_weight(
                 )
             return
 
-        # Find an NVDA row to check managed flag.
+        # NVDA COUNTS toward concentration even when it is deliberately
+        # UNMANAGED (held at Schwab, out of the tradeable sleeve). Its share of
+        # the TOTAL investable book is exactly what drives the deconcentration /
+        # cap / quota math, so reporting it as ``excluded`` (value=None) made
+        # that math run against 0 and hid a ~58% single-name concentration. The
+        # weight is computed against the TOTAL book's tradeable-securities
+        # denominator (which INCLUDES the unmanaged NVDA position) — the same
+        # ~58% the estate / net-worth surfaces already see. Present-but-unmanaged
+        # is a CONCENTRATION fact, not an absence. NVDA staying OUT of the
+        # managed/tradeable/sell-eligible sleeve (never a BUY/SELL) is enforced
+        # separately by ``book.managed`` / ``is_managed_position`` — it must NOT
+        # be expressed by zeroing this weight.
         nvda_rows = [
             p for p in total
             if str(p.get("symbol") or "").upper() == "NVDA"
         ]
-        if nvda_rows and not is_managed_position(nvda_rows[0]):
-            values[key] = ResolvedValue.excluded(
-                key, "pct",
-                f"{loc} — NVDA deliberately unmanaged / excluded_from_sleeve_math "
-                f"(snapshot id={snap.id})",
-                formula=(
-                    "excluded from sleeve-weight reporting; absolute value in "
-                    "concentration.nvda_value_nis; estate/NW/shock use TOTAL book"
-                ),
-            )
-            return
+        unmanaged = bool(nvda_rows) and not is_managed_position(nvda_rows[0])
 
         pct = nvda_concentration_pct(total)
         if pct is None:
             return
+        formula = (
+            "NVDA usd_value_k ÷ tradeable securities book (excl. cash + "
+            "physical real estate), snapshot-derived — % of tradeable book"
+        )
+        if unmanaged:
+            formula += (
+                "; NVDA present-but-UNMANAGED — counted for concentration + "
+                "US-situs estate on the TOTAL book, held OUT of the managed / "
+                "tradeable / sell-eligible sleeve (never emitted as a BUY/SELL)"
+            )
+        loc_note = (
+            f"{loc} — present-but-UNMANAGED (counted for concentration; "
+            f"excluded from the managed sleeve) (snapshot id={snap.id})"
+            if unmanaged
+            else f"{loc} (snapshot id={snap.id})"
+        )
         values[key] = ResolvedValue(
             key=key,
             value=pct / 100.0,  # stored as a fraction (0–1), unit "pct"
             unit="pct",
             status="resolved",
-            source_locator=f"{loc} (snapshot id={snap.id})",
+            source_locator=loc_note,
             agent_report_id=None,
             confidence="HIGH",
-            formula=(
-                "NVDA usd_value_k ÷ tradeable securities book (excl. cash + "
-                "physical real estate), snapshot-derived — % of tradeable book"
-            ),
+            formula=formula,
         )
     except TotalBookDegraded as exc:
         values[value_key] = ResolvedValue.unavailable(

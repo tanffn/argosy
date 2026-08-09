@@ -1118,6 +1118,120 @@ def test_us_situs_estate_falls_back_to_snapshot_fx_when_boi_cold(session):
     assert abs(float(est.value) - 1000.0 * 1000.0 * 2.94) < 5_000, f"got {est.value}"
 
 
+# ---------------------------------------------------------------------------
+# Present-but-UNMANAGED NVDA — the concentration/estate visibility bug.
+#
+# NVDA is deliberately UNMANAGED (held at Schwab, out of the tradeable
+# sleeve), but present-but-unmanaged is a CONCENTRATION fact, not an absence:
+# it MUST count toward the single-name concentration weight and toward
+# US-situs estate (denominator = the total investable book incl. the unmanaged
+# NVDA), while STAYING OUT of the managed/tradeable/sell-eligible sleeve. The
+# resolver used to report nvda_current_pct as ``excluded``/None, which made the
+# downstream deconcentration / cap / quota math run against 0.
+# ---------------------------------------------------------------------------
+
+
+def _seed_unmanaged_nvda_book(session):
+    """Snapshot: ~58% NVDA (unmanaged, no explicit managed flag → policy
+    default unmanaged) + VOO core + SGOV cash, at Schwab. NVDA $2,450.1k /
+    tradeable $4,191.4k (VOO $1,741.3k) ≈ 58.5%."""
+    import json as _json
+    from datetime import date as _date
+
+    from argosy.state.models import FxRate, PortfolioSnapshotRow
+    from decimal import Decimal
+
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 1),
+        snapshot_date=_date.today(), fx_usd_nis=3.10,
+        positions_json=_json.dumps([
+            # NVDA: deliberately unmanaged (NO managed flag — policy default).
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 2450.1,
+             "asset_type": "Individual stocks", "location": "Schwab US",
+             "current_price": 175.0, "shares": 14000},
+            {"symbol": "VOO", "currency": "USD", "usd_value_k": 1741.3,
+             "asset_type": "Core equity", "location": "Schwab US"},
+            {"symbol": "SGOV", "currency": "USD", "usd_value_k": 300.0,
+             "asset_type": "Cash", "location": "Schwab US"},
+        ]),
+    ))
+    session.add(FxRate(date=_date.today(), currency="USD", rate=Decimal("3.10"), source="boi"))
+    session.flush()
+
+
+def test_unmanaged_nvda_counts_toward_concentration(session):
+    """The headline concentration weight must resolve to ~58.5% — NOT
+    ``excluded``/None — even though NVDA is deliberately unmanaged. This is
+    the precondition for the deconcentration / cap / quota math."""
+    _seed_unmanaged_nvda_book(session)
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+
+    cur = res.get("concentration.nvda_current_pct")
+    assert cur is not None
+    assert cur.status == "resolved", (
+        f"unmanaged NVDA must still resolve a concentration weight, got "
+        f"status={cur.status} ({cur.source_locator})"
+    )
+    # 2450.1 / (2450.1 + 1741.3) = 0.5845 (SGOV cash excluded from the book).
+    assert cur.value == pytest.approx(2450.1 / (2450.1 + 1741.3), rel=1e-3)
+    assert cur.value > 0.55  # a real ~58% single-name concentration, not 0
+    # Provenance names the present-but-unmanaged treatment.
+    assert "UNMANAGED" in cur.source_locator or "unmanaged" in (cur.formula or "")
+
+    # Absolute NVDA value (for FI shock / estate) is published resolved too.
+    val = res.get("concentration.nvda_value_nis")
+    assert val is not None and val.status == "resolved"
+    assert val.value == pytest.approx(2450.1 * 1000.0 * 3.10, rel=1e-3)
+
+
+def test_unmanaged_nvda_counted_in_us_situs_estate(session):
+    """US-situs estate must INCLUDE the unmanaged NVDA (US-domiciled) —
+    estate tax does not care which book manages the asset."""
+    _seed_unmanaged_nvda_book(session)
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+
+    est = res.get("concentration.us_situs_estate_exposure_nis")
+    assert est is not None and est.status == "resolved"
+    # NVDA ($2,450.1k) + VOO ($1,741.3k) are US-domiciled → both US-situs;
+    # SGOV cash excluded. Estate must be at LEAST the NVDA contribution.
+    nvda_nis = 2450.1 * 1000.0 * 3.10
+    assert float(est.value) >= nvda_nis * 0.99, (
+        f"US-situs estate must include the unmanaged NVDA ({nvda_nis:,.0f}); "
+        f"got {est.value:,.0f}"
+    )
+
+
+def test_unmanaged_nvda_stays_out_of_managed_tradeable_set(session):
+    """NVDA must NEVER enter the managed/tradeable/sell-eligible sleeve even
+    though it counts for concentration + estate — no BUY/SELL is authored
+    against it."""
+    from argosy.services.holding_books import (
+        load_total_book,
+        parse_positions_json,
+        is_managed_position,
+    )
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    _seed_unmanaged_nvda_book(session)
+    session.commit()
+    row = get_latest_snapshot_row(session, "ariel")
+    book = load_total_book(
+        session, "ariel", parse_positions_json(row.positions_json),
+        snapshot_date=row.snapshot_date, today=row.snapshot_date,
+    )
+    assert not book.degraded
+    # Present in the TOTAL book…
+    assert any(str(p.get("symbol") or "").upper() == "NVDA" for p in book.total)
+    # …but NOT in the MANAGED (tradeable / sell-eligible) set.
+    assert not any(
+        str(p.get("symbol") or "").upper() == "NVDA" for p in book.managed
+    ), "unmanaged NVDA must not be in the managed/tradeable sleeve"
+    nvda_row = next(
+        p for p in book.total if str(p.get("symbol") or "").upper() == "NVDA"
+    )
+    assert not is_managed_position(nvda_row)
+
+
 def test_net_worth_synth_label_states_liquid_basis():
     """The resolver's portfolio.net_worth_nis is the LIQUID/investable basis
     (USD assets x BOI FX + NIS-native cash, EXCLUDING Israel real-estate
