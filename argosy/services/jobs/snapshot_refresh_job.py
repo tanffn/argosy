@@ -36,16 +36,19 @@ def _build_default_session_factory() -> sessionmaker:
     db_file changes). Mirrors ``holdings_review`` — the refresh service needs a
     sync Session."""
     global _SESSION_FACTORY
-    import sqlalchemy as sa
 
     from argosy.config import get_settings
+    from argosy.state.db import create_sync_engine
 
     db_file = str(get_settings().db_file)
     if _SESSION_FACTORY is not None and _SESSION_FACTORY[0] == db_file:
         return _SESSION_FACTORY[1]
-    engine = sa.create_engine(
-        f"sqlite:///{db_file}", connect_args={"check_same_thread": False}
-    )
+    # This job WRITES a new snapshot (money path). A bare create_engine gets
+    # SQLite's default busy_timeout=0 and raises `database is locked` INSTANTLY
+    # when the async engine holds the write lock — go through the reliability
+    # seam (WAL + 60 s busy_timeout) like every other sync money writer
+    # (Sol BLOCK-8: this was one of the bare sites the seam had not adopted).
+    engine = create_sync_engine(f"sqlite:///{db_file}")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     _SESSION_FACTORY = (db_file, factory)
     return factory

@@ -156,7 +156,10 @@ def total_net_worth_incl_residence(
             book = load_total_book(
                 session, user_id, raw,
                 snapshot_date=snap_date,
-                today=snap_date,  # as-of snapshot valuation
+                # Real current date, never the snapshot's own: today=snap_date
+                # backdated every mark's age to 0 so a weeks-stale book read as
+                # fresh net worth (Sol BLOCK-1). Real today degrades a genuinely
+                # stale book instead of publishing it.
             )
             if book.degraded:
                 log.warning(
@@ -164,16 +167,25 @@ def total_net_worth_incl_residence(
                     user_id, book.degrade_reason,
                 )
                 return None, None
+            # NEVER UNDERSTATE net worth: use the LARGER of the conserved book
+            # sum and the snapshot's own totals_json aggregate. Falling back to
+            # totals_json whenever book_k did not EXCEED the raw position sum
+            # understated to a smaller aggregate (book $1.0m vs totals_json
+            # $0.9m → published $0.9m; Sol round-5 #5). In production
+            # persist_snapshot writes totals_json as the INDEPENDENT sum of
+            # positions, so book_k (= positions + durable restore) >=
+            # totals_json always and this reduces to book_k; the max only
+            # matters for legacy/seed rows whose totals_json exceeds a partial
+            # position list, where the aggregate is authoritative.
             book_k = investable_usd_k(book.total)
-            snap_k = investable_usd_k(raw)
-            # Durable restores add value beyond the snapshot positions —
-            # use the book. Otherwise prefer totals_json (authoritative
-            # aggregate on a complete snapshot; may intentionally differ
-            # from a partial position sum in seeds / legacy rows).
-            if book_k > snap_k + 0.05:
-                base_k = book_k
-            else:
-                base_k = None  # fall through to totals_json
+            try:
+                _tj = json.loads(snapshot.totals_json or "{}").get(
+                    "total_usd_value_k"
+                )
+                _tj_k = float(_tj) if _tj is not None else None
+            except (json.JSONDecodeError, TypeError, ValueError):
+                _tj_k = None
+            base_k = book_k if _tj_k is None else max(book_k, _tj_k)
         except Exception as exc:  # noqa: BLE001
             log.warning("net_worth_bases.total_book_failed err=%s", exc)
             base_k = None

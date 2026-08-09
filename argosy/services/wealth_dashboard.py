@@ -510,10 +510,17 @@ def compute_current_age(date_of_birth: str | None, *, today: date | None = None)
 
 
 def _latest_snapshot(session: Session, user_id: str) -> PortfolioSnapshotRow | None:
+    # Head selection MUST match the canonical accessor
+    # (portfolio_snapshot_store.get_latest_snapshot_row) and the concentration
+    # resolver: (imported_at DESC, id DESC). Ordering by snapshot_date DESC
+    # here diverged — a later-imported book RESTORE carries an older
+    # snapshot_date (max observed date) than a freshly-dated partial feed, so
+    # snapshot_date DESC could surface the partial feed over the restore and
+    # disagree with /portfolio + the plan resolver (Sol BLOCK-6).
     return session.execute(
         select(PortfolioSnapshotRow)
         .where(PortfolioSnapshotRow.user_id == user_id)
-        .order_by(desc(PortfolioSnapshotRow.snapshot_date), desc(PortfolioSnapshotRow.id))
+        .order_by(desc(PortfolioSnapshotRow.imported_at), desc(PortfolioSnapshotRow.id))
         .limit(1)
     ).scalar_one_or_none()
 
@@ -825,7 +832,7 @@ def _cash_runway(
             months_of_runway=None,
             missing_reasons=["no portfolio snapshot"],
         )
-    positions, degrade = _total_book_positions(
+    positions, degrade, stale = _total_book_positions(
         snapshot=snapshot, session=session, user_id=user_id,
     )
     if degrade:
@@ -878,7 +885,7 @@ def _cash_runway(
         sgov_nis=sgov_nis,
         defensive_total_nis=defensive,
         months_of_runway=months,
-        missing_reasons=missing,
+        missing_reasons=missing + _stale_reasons(stale),
     )
 
 
@@ -925,21 +932,21 @@ def _total_book_positions(
     plus a reason so callers can surface missing_reasons instead of a wrong
     HIGH-confidence number.
 
-    Valuation mode: dashboard math is **as-of the snapshot date**. Passing
-    ``today=snapshot_date`` keeps stored marks fresh relative to that as-of
-    (so seeded / historical valuations stay deterministic) while still
-    live-repricing durable restores that are absent from the snapshot.
-    Live "current money" publication (``/portfolio/snapshot``) uses real
-    ``date.today()`` via ``_apply_total_book_to_snap`` instead.
+    Valuation mode: REAL ``date.today()`` (never backdated to the snapshot's
+    own date). Passing ``today=snapshot_date`` set every mark's age to 0 so a
+    weeks-stale book read as fresh dashboard money (cash runway, concentration,
+    FX exposure, US-situs estate, compositions) with no degradation/staleness
+    signal (Sol round-5 #3). Real today degrades a genuinely stale book and
+    live-reprices; a daily-refreshed production book is genuinely fresh.
     """
     if snapshot is None:
-        return [], "no portfolio snapshot"
+        return [], "no portfolio snapshot", ()
     try:
         raw = json.loads(snapshot.positions_json or "[]")
     except json.JSONDecodeError:
         raw = []
     if session is None or user_id is None:
-        return raw if isinstance(raw, list) else [], None
+        return raw if isinstance(raw, list) else [], None, ()
     from argosy.services.holding_books import load_total_book
 
     snap_date = getattr(snapshot, "snapshot_date", None)
@@ -948,11 +955,25 @@ def _total_book_positions(
         user_id,
         raw if isinstance(raw, list) else [],
         snapshot_date=snap_date,
-        today=snap_date,  # as-of snapshot; not live reprice of present marks
+        # Real current date, never the snapshot's own — see the docstring +
+        # Sol round-5 #3. Stale marks degrade/reprice instead of publishing.
     )
     if book.degraded:
-        return [], book.degrade_reason or "total book degraded"
-    return book.total, None
+        return [], book.degrade_reason or "total book degraded", ()
+    # Surface soft-stale marks so dashboard blocks reduce confidence instead of
+    # publishing weeks-stale cash / concentration / FX / estate with no signal
+    # (Sol round-6 #5).
+    return book.total, None, book.stale_marks
+
+
+def _stale_reasons(stale_marks: tuple[str, ...]) -> list[str]:
+    """A missing_reasons entry when the book carried soft-stale marks."""
+    if not stale_marks:
+        return []
+    return [
+        "confidence reduced — soft-stale marks in book: "
+        + ", ".join(stale_marks)
+    ]
 
 
 def nvda_concentration_pct(
@@ -993,12 +1014,13 @@ def _concentration(
     if snapshot is None:
         missing.append("no portfolio snapshot")
     else:
-        positions, degrade = _total_book_positions(
+        positions, degrade, stale = _total_book_positions(
             snapshot=snapshot, session=session, user_id=user_id,
         )
         if degrade:
             missing.append(f"total book unavailable: {degrade}")
         else:
+            missing.extend(_stale_reasons(stale))
             # Canonical denominator: the tradeable securities book (excl. cash and
             # physical real estate), the same definition the plan resolver uses —
             # one NVDA weight across surfaces, not three. TOTAL book so a durable
@@ -1088,7 +1110,7 @@ def _fx_exposure(
         return FxExposureBlock(
             buckets=[], usd_pct=None, missing_reasons=["no portfolio snapshot"],
         )
-    positions, degrade = _total_book_positions(
+    positions, degrade, stale = _total_book_positions(
         snapshot=snapshot, session=session, user_id=user_id,
     )
     if degrade:
@@ -1096,6 +1118,7 @@ def _fx_exposure(
             buckets=[], usd_pct=None,
             missing_reasons=[f"total book unavailable: {degrade}"],
         )
+    _fx_stale = _stale_reasons(stale)
 
     by_currency: dict[str, float] = {}
     for p in positions:
@@ -1121,7 +1144,7 @@ def _fx_exposure(
     for cur, v in sorted(by_currency.items(), key=lambda kv: -kv[1]):
         buckets.append(FxBucket(currency=cur, value_nis=v, pct=(v / total) * 100.0))
     usd_pct = next((b.pct for b in buckets if b.currency == "USD"), 0.0)
-    return FxExposureBlock(buckets=buckets, usd_pct=usd_pct, missing_reasons=[])
+    return FxExposureBlock(buckets=buckets, usd_pct=usd_pct, missing_reasons=_fx_stale)
 
 
 def _rsu_income(
@@ -1247,7 +1270,7 @@ def _estate_exposure(
             estate_safe_pct_of_securities=None,
             missing_reasons=["no portfolio snapshot"],
         )
-    positions, degrade = _total_book_positions(
+    positions, degrade, stale = _total_book_positions(
         snapshot=snapshot, session=session, user_id=user_id,
     )
     if degrade:
@@ -1290,7 +1313,7 @@ def _estate_exposure(
         securities_book_usd=book_usd,
         us_situs_pct_of_securities=us_pct,
         estate_safe_pct_of_securities=safe_pct,
-        missing_reasons=[],
+        missing_reasons=_stale_reasons(stale),
     )
 
 
@@ -1308,7 +1331,11 @@ def _compositions(
     """
     if snapshot is None:
         return [], [], [], "no portfolio snapshot"
-    positions, degrade = _total_book_positions(
+    # Compositions are proportions (sum to 100%), not absolute money — a
+    # soft-stale mark shifts them only marginally, so we don't block them on
+    # stale (unlike the cash/estate/concentration money figures); capture and
+    # ignore the stale signal.
+    positions, degrade, _stale = _total_book_positions(
         snapshot=snapshot, session=session, user_id=user_id,
     )
     if degrade:

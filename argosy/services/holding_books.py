@@ -62,6 +62,22 @@ class TotalBookResult:
     # restore it — OR the durable load failed outright.
     degraded: bool
     degrade_reason: str | None = None
+    # Positions published on a SOFT-stale last-known mark (a normal
+    # weekend/holiday/transient quote miss) instead of a fresh live reprice.
+    # The book is NOT ``degraded`` for these (that would nuke estate/NW on
+    # every weekend), but a consumer that stamps HIGH-confidence CURRENT money
+    # (e.g. the concentration resolver) MUST downgrade confidence for any of
+    # these symbols — publishing a stale mark as HIGH-confidence current money
+    # is the exact silent-republish Sol BLOCK-1 caught. Entries are
+    # ``"SYMBOL@location"`` (symbol upper-cased, location normalized).
+    stale_marks: tuple[str, ...] = ()
+
+    def is_mark_stale(self, symbol: str) -> bool:
+        """True when any published lot of ``symbol`` rode a soft-stale mark."""
+        want = (symbol or "").strip().upper()
+        return any(
+            m.split("@", 1)[0].strip().upper() == want for m in self.stale_marks
+        )
 
 
 def _as_mapping(p: Any) -> Mapping[str, Any] | None:
@@ -447,7 +463,18 @@ def merge_positions_per_account(
         d["observed_as_of"] = (
             _carried_obs if _as_date(_carried_obs) is not None else incoming_date
         )
-        d["valued_as_of"] = incoming_date  # the fresh mark date — legitimately today
+        # The MARK date is ROW-FIRST: a row that already carries a valued_as_of
+        # KEEPS it; only a row with none (a fresh feed row, e.g. a TSV parse)
+        # takes the incoming feed date. Overwriting a carried date to
+        # incoming_date LAUNDERS a stale mark fresh — whether it was flagged
+        # mark_stale (reprice miss) OR an unchanged carry-only balance whose
+        # value was never re-observed (Sol BLOCK-3, both the priceable-miss AND
+        # the carry-only persistence paths). A repriced row's valued_as_of is
+        # already today, so this is a no-op for it.
+        _carried_val = d.get("valued_as_of")
+        d["valued_as_of"] = (
+            _carried_val if _as_date(_carried_val) is not None else incoming_date
+        )
         d["carried_forward"] = False
         incoming_by_acct.setdefault(ak, []).append(d)
 
@@ -578,11 +605,25 @@ def dedupe_positions_by_symbol_location(
         sym = _symbol_of(d)
         loc = _norm_location(_location_of(d))
         if not sym:
-            # Each unnamed lot (blank-symbol cash / real-estate) is its own
-            # money and must never collide with another unnamed lot in the same
-            # location. The old ("", loc) key collapsed two Leumi cash rows and
-            # silently dropped $5,446.93 from every net-worth/estate surface.
-            key = ("", f"__anon:{len(order)}")
+            # Blank-symbol lots (cash / real-estate stub) have no symbol to key
+            # on. Two DISTINCT lots must both survive — the old ("", loc) key
+            # collapsed two different Leumi cash rows and silently dropped
+            # $5,446.93 (Finding 3). But the SAME source row appearing twice
+            # must collapse — a per-occurrence key double-counted it (Sol
+            # BLOCK-5). The source-line ordinal (raw_line) is the reliable
+            # disambiguator: identical raw_line = the same parsed row (collapse);
+            # distinct raw_line = distinct source lots (keep both). Content-key
+            # was WRONG — it silently drops two legitimately-identical lots
+            # (Sol round-2 #3). The ambiguous case (distinct raw_line but
+            # byte-identical content) is caught FAIL-LOUD by
+            # books_consistency_check_positions, never silently guessed.
+            # Key includes LOCATION: two different accounts can reuse the same
+            # source-line ordinal after per-account/history merges — keying on
+            # raw_line alone collapsed a Leumi and a UBS lot that shared
+            # raw_line and silently dropped one (Sol round-5 #1). Location +
+            # source-line ordinal keeps distinct-account lots distinct.
+            rl = d.get("raw_line")
+            key = ("__anon__", loc, f"raw_line:{rl}" if rl else f"pos:{len(order)}")
         else:
             key = (sym, loc)
         if key in acc:
@@ -885,6 +926,7 @@ def merge_total_book_positions(
     fx_usd_nis: float | None = None,
     fx_usd_eur: float | None = None,
     reprice_failures: list[str] | None = None,
+    stale_marks: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Total book = deduped snapshot + durable quantities REPRICED live.
 
@@ -893,6 +935,12 @@ def merge_total_book_positions(
     snapshot or restored from the durable book — are never published as
     current money when stale: they are live-repriced, or omitted with a
     failure recorded on ``reprice_failures``.
+
+    SOFT-stale marks (a normal weekend/holiday/transient quote miss) publish
+    their last-known value flagged ``mark_stale`` WITHOUT degrading the book,
+    but the symbol is recorded on ``stale_marks`` so HIGH-confidence current-
+    money consumers can downgrade (Sol BLOCK-1: a soft-stale value must not
+    republish as HIGH-confidence current money).
     """
     ref = today or date.today()
     stamped = stamp_management_flags(
@@ -900,6 +948,7 @@ def merge_total_book_positions(
         policy_symbols=policy_symbols,
     )
     failures = reprice_failures if reprice_failures is not None else []
+    stale = stale_marks if stale_marks is not None else []
 
     # Reprice (or refuse) stale marks on positions ALREADY in the snapshot.
     refreshed: list[dict[str, Any]] = []
@@ -945,6 +994,16 @@ def merge_total_book_positions(
             # weekend/holiday gap. Only a HARD/MISSING unpriceable mark must NOT
             # publish last-known money as current: null it + fail loudly.
             if "cash" in at or soft_ok:
+                # Cash can't be live-repriced (the balance IS the mark), so a
+                # stale cash mark — SOFT or HARD — is kept but recorded on
+                # stale_marks so consumers downgrade; it must not publish as
+                # HIGH current money (Sol round-5 #4: hard-stale cash bypassed
+                # both degradation AND the confidence downgrade).
+                if soft_ok or ("cash" in at and tier != "fresh"):
+                    stale.append(
+                        f"{sym or '-'}@"
+                        f"{_norm_location(_location_of(pos)) or 'unknown'}"
+                    )
                 refreshed.append(stripped)
                 continue
             failures.append(
@@ -962,10 +1021,15 @@ def merge_total_book_positions(
         )
         if priced is None:
             # SOFT: a transient reprice miss on a recent mark — keep the last
-            # close, flag it, but do NOT degrade the book.
+            # close, flag it, but do NOT degrade the book. Record the symbol so
+            # HIGH-confidence current-money consumers downgrade (BLOCK-1).
             if soft_ok:
                 stripped = dict(pos)
                 stripped["mark_stale"] = True
+                stale.append(
+                    f"{sym or '-'}@"
+                    f"{_norm_location(_location_of(pos)) or 'unknown'}"
+                )
                 refreshed.append(stripped)
                 continue
             failures.append(
@@ -1020,6 +1084,11 @@ def merge_total_book_positions(
                 fallback = unmanaged_row_to_position(row)
                 fallback["mark_stale"] = True
                 fallback["repriced"] = False
+                # ``fresh`` (<= MARK_STALE_DAYS) is genuinely current money;
+                # only ``soft`` (published last-close without a live reprice)
+                # must downgrade a HIGH-confidence consumer (BLOCK-1).
+                if tier == "soft":
+                    stale.append(f"{sym or '-'}@{loc or 'unknown'}")
                 stamped.append(fallback)
                 present.add((sym, loc))
                 continue
@@ -1114,6 +1183,7 @@ def positions_for_books(
     fx_usd_nis: float | None = None,
     fx_usd_eur: float | None = None,
     reprice_failures: list[str] | None = None,
+    stale_marks: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     policy = policy_symbols if policy_symbols is not None else DEFAULT_UNMANAGED_SYMBOLS
     total = merge_total_book_positions(
@@ -1126,6 +1196,7 @@ def positions_for_books(
         fx_usd_nis=fx_usd_nis,
         fx_usd_eur=fx_usd_eur,
         reprice_failures=reprice_failures,
+        stale_marks=stale_marks,
     )
     managed = [p for p in total if is_managed_position(p, policy_symbols=policy)]
     return total, managed
@@ -1190,6 +1261,7 @@ def load_total_book(
             p["mark_stale"] = True
 
     reprice_failures: list[str] = []
+    stale_marks: list[str] = []
     # Catch double-counting on the RAW snapshot BEFORE merge drops duplicates.
     degraded = False
     reason: str | None = None
@@ -1208,6 +1280,7 @@ def load_total_book(
         fx_usd_nis=fx_nis,
         fx_usd_eur=fx_eur,
         reprice_failures=reprice_failures,
+        stale_marks=stale_marks,
     )
     integ_degraded, integ_reason = assess_total_book_integrity(
         stamped_positions,
@@ -1242,6 +1315,7 @@ def load_total_book(
     return TotalBookResult(
         total=total, managed=managed, load=load,
         degraded=degraded, degrade_reason=reason,
+        stale_marks=tuple(dict.fromkeys(stale_marks)),
     )
 
 
@@ -1559,10 +1633,18 @@ def backfill_unmanaged_from_snapshots(
                 session.add(UnmanagedSymbolPolicy(user_id=uid, symbol=sym))
 
         policy = load_policy_symbols(session, uid)
+        # ``seen`` makes the FIRST row per (symbol, location) the head-pick, so
+        # ordering is material — use the canonical head ordering
+        # (imported_at DESC, id DESC), NOT bare id.desc(): a higher-id but
+        # older-import backfill/restore row could otherwise seed a stale
+        # quantity as the durable head (Sol round-5 #2).
         snaps = session.execute(
             select(PortfolioSnapshotRow)
             .where(PortfolioSnapshotRow.user_id == uid)
-            .order_by(PortfolioSnapshotRow.id.desc())
+            .order_by(
+                PortfolioSnapshotRow.imported_at.desc(),
+                PortfolioSnapshotRow.id.desc(),
+            )
         ).scalars().all()
         seen: set[tuple[str, str]] = set()
         for snap in snaps:
@@ -1591,8 +1673,18 @@ def backfill_unmanaged_from_snapshots(
                     asset_type=str(p.get("asset_type") or ""),
                     details=str(p.get("details") or ""),
                     reason="backfill_from_historical_snapshot",
-                    valued_as_of=_as_date(getattr(snap, "snapshot_date", None)),
-                    observed_as_of=_as_date(getattr(snap, "snapshot_date", None)),
+                    # Preserve each position's OWN mark/observation dates; only
+                    # fall back to the snapshot date when the row carries none.
+                    # Stamping both from snapshot_date laundered a stale mark /
+                    # quantity date fresh (Sol round-5 #2).
+                    valued_as_of=(
+                        _as_date(p.get("valued_as_of"))
+                        or _as_date(getattr(snap, "snapshot_date", None))
+                    ),
+                    observed_as_of=(
+                        _as_date(p.get("observed_as_of"))
+                        or _as_date(getattr(snap, "snapshot_date", None))
+                    ),
                 ) is not None:
                     n += 1
     session.commit()
@@ -2045,9 +2137,36 @@ def books_consistency_check_positions(positions: Sequence[Any] | None) -> None:
     ``load_total_book``.
     """
     seen: set[tuple[str, str]] = set()
+    # Blank-symbol lots can't be uniqueness-checked by (symbol, location). Two
+    # byte-identical NONZERO blank lots are AMBIGUOUS — either a source
+    # double-entry (would double-count) or two genuinely distinct lots (must
+    # not be dropped). We cannot tell which, so we FAIL LOUD (degrade) rather
+    # than silently collapse or double-count (Sol BLOCK-5 + round-2 #3).
+    blank_content: dict[tuple, list[Any]] = {}
     for p in positions or []:
         sym = _symbol_of(p)
         if not sym:
+            m = _as_mapping(p) or {}
+            raw_val = m.get("usd_value_k")
+            try:
+                vk = round(float(raw_val), 6) if raw_val is not None else 0.0
+            except (TypeError, ValueError):
+                vk = 0.0
+            if vk == 0.0:
+                continue  # zero-value blank lots cannot double-count money
+            ck = (
+                _norm_location(_location_of(p)),
+                str(m.get("asset_type") or "").strip().lower(),
+                str(m.get("currency") or "").strip().upper(),
+                vk,
+                str(m.get("details") or "").strip().lower(),
+            )
+            # Normalize the model's default ``raw_line=0`` (and None) to a
+            # single MISSING sentinel: dedupe treats 0 as falsy (per-occurrence,
+            # both survive), so the check must treat 0 as missing too, else two
+            # identical raw_line=0 cash rows publish double (Sol round-7 #4).
+            _rl = m.get("raw_line")
+            blank_content.setdefault(ck, []).append(_rl if _rl else None)
             continue
         key = (sym, _norm_location(_location_of(p)))
         if key in seen:
@@ -2055,6 +2174,23 @@ def books_consistency_check_positions(positions: Sequence[Any] | None) -> None:
                 f"duplicate position after merge: {key[0]} @ {key[1]!r}"
             )
         seen.add(key)
+    for ck, raw_lines in blank_content.items():
+        if len(raw_lines) < 2:
+            continue
+        # SAME non-null source-line ordinal shared by all rows = the same parsed
+        # row re-emitted (dedupe collapses it cleanly) → BENIGN, not ambiguous.
+        # Only >1 DISTINCT raw_line (or a missing one) is genuinely ambiguous:
+        # can't tell a source double-entry from two real identical lots
+        # (Sol round-6 #6 — same-raw_line re-emission must not falsely degrade).
+        distinct = set(raw_lines)
+        if len(distinct) == 1 and None not in distinct:
+            continue
+        raise AssertionError(
+            f"ambiguous duplicate blank-symbol lots: {len(raw_lines)}× {ck} "
+            f"across raw_lines {sorted(str(x) for x in distinct)} — cannot "
+            f"distinguish a source double-entry from two real identical lots; "
+            f"refusing to silently drop or double-count"
+        )
 
 
 def books_consistency_check(

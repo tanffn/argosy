@@ -152,8 +152,41 @@ def compute_nra_estate_gate(*, user_id: str, session: Session) -> GateVerdict:
 
     snapshot = _latest_snapshot(session, user_id)
     if snapshot is None:
-        value = 0.0
-        situs_note = "No portfolio snapshot found; gate evaluated as PASS (no exposure)."
+        # A MISSING book is UNKNOWN — never "no exposure". Certifying PASS $0
+        # here would green-light estate safety right after a data-loss wipe
+        # (Sol round-6 #1: missing ≠ zero). Refuse to score, like a degraded
+        # book, so the gate cannot say "no action needed" when we simply have
+        # no data.
+        return GateVerdict(
+            gate_id="nra_estate",
+            status="FAIL",
+            value=ValueWithRationale(
+                value=None, unit="USD", source_id=None,
+                rationale=(
+                    "No portfolio snapshot — cannot evaluate US-situs estate "
+                    "exposure (missing ≠ zero)."
+                ),
+                confidence="high",
+            ),
+            threshold=ValueWithRationale(
+                value=exemption, unit="USD", source_id="us_nra_estate_tax",
+                rationale=(
+                    "IRS NRA estate-tax exemption — gate refuses to score when "
+                    "the book is unavailable."
+                ),
+                confidence="high",
+            ),
+            suggested_action=ValueWithRationale(
+                value="Import a portfolio snapshot before re-running the estate gate.",
+                unit="action", source_id=None,
+                rationale="Refuse a silent 'no exposure' PASS when the book is missing.",
+                confidence="high",
+            ),
+            detail_summary=(
+                "No portfolio snapshot — US-situs estate gate refused "
+                "(missing ≠ zero)."
+            ),
+        )
     else:
         try:
             from argosy.services.holding_books import (

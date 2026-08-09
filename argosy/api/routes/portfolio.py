@@ -84,6 +84,11 @@ class PositionDTO(BaseModel):
     usd_value_k: float | None
     estate_safe: bool | None = None  # True=non-US-situs, False=US-situs, None=n/a (cash)
     classified: bool = True    # False = not in the instrument reference (fail-loud: needs curation)
+    # True = this row's PRICE/mark is soft-stale (last-known close published
+    # without a live reprice — weekend/holiday/transient quote miss). The value
+    # is shown but a consumer must NOT treat it as HIGH-confidence current money
+    # (Sol BLOCK-2: mark_stale was internal-only and invisible to consumers).
+    mark_stale: bool = False
 
 
 class AllocationDTO(BaseModel):
@@ -255,6 +260,7 @@ def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapsh
                 usd_value_k=p.usd_value_k,
                 estate_safe=estate_safe,
                 classified=classified,
+                mark_stale=bool(getattr(p, "mark_stale", None)),
             )
         )
     if classification_warnings:

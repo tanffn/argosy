@@ -51,6 +51,17 @@ def _install_sqlite_pragmas(
     :class:`~sqlalchemy.engine.Engine` for :func:`create_sync_engine`.
     No-op for non-SQLite / ``:memory:`` URLs (the pragmas are irrelevant
     or would break the shared in-memory test DB).
+
+    ``synchronous=NORMAL`` (not FULL) is a DELIBERATE, defended choice for the
+    money DB, not an unexamined default (Sol BLOCK-8 flagged it as weaker than
+    FULL). Under WAL, NORMAL is crash-SAFE: an application crash cannot lose a
+    committed transaction and the DB can never be corrupted; only a host
+    OS/power loss can drop the very last committed txn (still no corruption).
+    Every Argosy write is re-derivable — re-ingest the source TSV / re-run
+    synthesis — so that residual risk is recoverable, whereas FULL's per-write
+    fsync raised per-INSERT latency ~10× and previously LOST concurrent
+    analyst-persistence writes under the ThreadPoolExecutor (run #9). We keep
+    the crash-safe, contention-safe setting on purpose.
     """
     if not url.startswith("sqlite") or ":memory:" in url:
         return
@@ -76,8 +87,15 @@ def create_sync_engine(
     with a bare ``sa.create_engine`` those connections get SQLite's default
     ``busy_timeout=0`` and raise ``database is locked`` INSTANTLY on any
     write contention — while the async engine (which sets 60 s) patiently
-    waits. This helper is the single seam that keeps every sync engine
-    consistent with :func:`init_engine`.
+    waits. This helper is the seam every sync money-writer SHOULD build
+    through to stay consistent with :func:`init_engine`.
+
+    NOTE: adoption is not yet universal — a number of read-mostly sync
+    ``create_engine`` sites have not been migrated (tracked as mechanical
+    follow-up). Sol BLOCK-8 was right that the "every sync engine" claim
+    overstated coverage; the hot money-WRITERS (plan/portfolio routes, the
+    synthesis flow, the stall-alert loop, the snapshot-refresh job) go through
+    here, which is what the lock-fail correctness guarantee actually covers.
 
     ``url`` defaults to the settings' database URL with the async driver
     segment stripped.

@@ -242,6 +242,19 @@ def _to_float(v: object) -> float | None:
         return None
 
 
+def _head_snapshot_row(session: "Session", user_id: str):
+    """Canonical current-book head pick for EVERY money resolver.
+
+    (imported_at DESC, id DESC) via the ONE store accessor. A bare
+    ``id.desc()`` diverged from /portfolio + the dashboard + the repair
+    script — a backfilled/restore row with a higher id but older import could
+    surface a different book than the plan (Sol BLOCK-6/#4). Imported lazily to
+    avoid a module import cycle with portfolio_snapshot_store.
+    """
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+    return get_latest_snapshot_row(session, user_id)
+
+
 def _resolve_withdrawal_sequencer(
     data: dict, report_id: int | None
 ) -> list[ResolvedValue]:
@@ -554,12 +567,7 @@ def _resolve_net_worth(
     """
     key = "portfolio.net_worth_nis"
     try:
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        snap = _head_snapshot_row(session, user_id)
     except Exception as exc:  # noqa: BLE001 — defensive
         log.warning("plan_numeric_resolver.snapshot_query_failed err=%s", exc)
         snap = None
@@ -589,7 +597,7 @@ def _resolve_net_worth(
     book = load_total_book(
         session, user_id, raw_positions,
         snapshot_date=getattr(snap, "snapshot_date", None),
-        today=getattr(snap, "snapshot_date", None),
+        # Real current date, never the snapshot's own — see Sol BLOCK-1.
     )
     if book.degraded:
         return ResolvedValue.unavailable(
@@ -601,6 +609,15 @@ def _resolve_net_worth(
             ),
         )
     positions = book.total
+    # A soft-stale mark in the book means net worth isn't fully current money —
+    # downgrade from HIGH rather than republish stale as HIGH (Sol BLOCK-1).
+    _nw_conf = "MEDIUM" if book.stale_marks else "HIGH"
+    _nw_stale_note = (
+        f" [STALE MARK — soft-stale marks in book "
+        f"({', '.join(book.stale_marks)}); confidence downgraded from HIGH]"
+        if book.stale_marks
+        else ""
+    )
     for p in positions:
         v = _to_float(p.get("usd_value_k")) or 0.0
         if (p.get("currency") or "").upper() == "USD":
@@ -632,7 +649,8 @@ def _resolve_net_worth(
 
     return ResolvedValue(
         key=key, value=value, unit="nis", status="resolved",
-        source_locator=loc, agent_report_id=None, confidence="HIGH", formula=formula,
+        source_locator=loc + _nw_stale_note, agent_report_id=None,
+        confidence=_nw_conf, formula=formula,
     )
 
 
@@ -645,11 +663,7 @@ def _apply_total_net_worth(session, user_id, values):
     from argosy.services.net_worth_bases import total_net_worth_incl_residence
     key = "portfolio.total_net_worth_incl_residence_nis"
     try:
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc()).limit(1)
-        ).scalar_one_or_none()
+        snap = _head_snapshot_row(session, user_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("plan_numeric_resolver.total_net_worth_query_failed err=%s", exc)
         snap = None
@@ -670,10 +684,17 @@ def _apply_total_net_worth(session, user_id, values):
     if nw_nis is None:
         values[key] = ResolvedValue.pending(key, "nis", "total net worth unavailable")
         return
+    # Downgrade from HIGH when the book carries a soft-stale mark (Sol round-5
+    # #5: total NW hard-coded HIGH regardless of staleness).
+    from argosy.services.current_book import load_current_book
+    _cb = load_current_book(session, user_id)
+    _tnw_conf = "MEDIUM" if _cb.stale_marks else "HIGH"
     values[key] = ResolvedValue(
         key=key, value=float(nw_nis), unit="nis", status="resolved",
-        source_locator="net_worth_bases.total_net_worth_incl_residence",
-        confidence="HIGH",
+        source_locator=(
+            "net_worth_bases.total_net_worth_incl_residence" + _cb.stale_note()
+        ),
+        confidence=_tnw_conf,
         formula="investable net worth + real-estate net equity (incl. primary residence)")
 
 
@@ -750,12 +771,7 @@ def _resolve_liquid_net_worth(
     """
     key = "portfolio.liquid_net_worth_nis"
     try:
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        snap = _head_snapshot_row(session, user_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("plan_numeric_resolver.liquid_nw_query_failed err=%s", exc)
         snap = None
@@ -767,12 +783,21 @@ def _resolve_liquid_net_worth(
     if not fx or fx <= 0:
         return ResolvedValue.pending(key, "nis", "no FX available")
 
-    try:
-        positions = json.loads(snap.positions_json or "[]")
-    except (json.JSONDecodeError, ValueError, TypeError):
-        positions = []
+    # Go through the book loader (real today) so a stale/degraded book cannot
+    # publish liquid net worth as HIGH-confidence current money (Sol BLOCK-1);
+    # book.total also includes durable unmanaged holdings the raw snapshot may
+    # omit (the understatement guard net worth already uses).
+    from argosy.services.holding_books import load_total_book, parse_positions_json
+    _book = load_total_book(
+        session, user_id, parse_positions_json(snap.positions_json),
+        snapshot_date=getattr(snap, "snapshot_date", None),
+    )
+    if _book.degraded:
+        return ResolvedValue.unavailable(
+            key, "nis", f"portfolio_snapshot DEGRADED: {_book.degrade_reason}",
+        )
     usd_assets_usd, nis_native_nis, re_excluded_nis = liquid_components_from_positions(
-        positions, fx=fx, snap_fx=snap_fx,
+        _book.total, fx=fx, snap_fx=snap_fx,
     )
 
     if usd_assets_usd <= 0 and nis_native_nis <= 0:
@@ -785,9 +810,15 @@ def _resolve_liquid_net_worth(
         f"₪{nis_native_nis:,.0f}, EXCLUDING ₪{re_excluded_nis:,.0f} real estate; "
         f"holdings as of {as_of} (provisional)"
     )
+    _liq_conf = "MEDIUM" if _book.stale_marks else "HIGH"
+    _liq_note = (
+        " [STALE MARK — soft-stale marks in book; confidence downgraded from HIGH]"
+        if _book.stale_marks
+        else ""
+    )
     return ResolvedValue(
         key=key, value=value, unit="nis", status="resolved",
-        source_locator=loc, agent_report_id=None, confidence="HIGH",
+        source_locator=loc + _liq_note, agent_report_id=None, confidence=_liq_conf,
         formula="net worth EXCLUDING asset_type='Real estate' positions",
     )
 
@@ -811,12 +842,7 @@ def _resolve_usd_exposure(
     """
     key = "portfolio.usd_exposure_nis"
     try:
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        snap = _head_snapshot_row(session, user_id)
     except Exception as exc:  # noqa: BLE001 — defensive
         log.warning("plan_numeric_resolver.usd_exposure_snapshot_query_failed err=%s", exc)
         snap = None
@@ -828,13 +854,27 @@ def _resolve_usd_exposure(
     if not fx or fx <= 0:
         return ResolvedValue.pending(key, "nis", "no FX available")
 
+    # Real today via the book loader — a stale/degraded book must not publish
+    # USD exposure as HIGH (Sol BLOCK-1); book.total includes durable unmanaged
+    # holdings (NVDA is USD) the raw snapshot may omit.
+    from argosy.services.holding_books import load_total_book, parse_positions_json
+    _book = load_total_book(
+        session, user_id, parse_positions_json(snap.positions_json),
+        snapshot_date=getattr(snap, "snapshot_date", None),
+    )
+    if _book.degraded:
+        return ResolvedValue.unavailable(
+            key, "nis", f"portfolio_snapshot DEGRADED: {_book.degrade_reason}",
+        )
+    _usd_conf = "MEDIUM" if _book.stale_marks else "HIGH"
+    _usd_note = (
+        " [STALE MARK — soft-stale marks in book; confidence downgraded from HIGH]"
+        if _book.stale_marks
+        else ""
+    )
     usd_assets_usd = 0.0
-    try:
-        positions = json.loads(snap.positions_json or "[]")
-    except (json.JSONDecodeError, ValueError, TypeError):
-        positions = []
     saw_currency = False
-    for p in positions:
+    for p in _book.total:
         if (p.get("currency") or "").upper() == "USD":
             saw_currency = True
             usd_assets_usd += (_to_float(p.get("usd_value_k")) or 0.0) * 1000.0
@@ -864,7 +904,8 @@ def _resolve_usd_exposure(
 
     return ResolvedValue(
         key=key, value=value, unit="nis", status="resolved",
-        source_locator=loc, agent_report_id=None, confidence="HIGH", formula=formula,
+        source_locator=loc + _usd_note, agent_report_id=None,
+        confidence=_usd_conf, formula=formula,
     )
 
 
@@ -1507,12 +1548,7 @@ def _apply_us_situs_estate(
         )
         from argosy.services.retirement.safety_gates import _us_situs_assets_usd
 
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        snap = _head_snapshot_row(session, user_id)
         if snap is None:
             values[key] = ResolvedValue.pending(key, "nis", loc)
             return
@@ -1520,7 +1556,12 @@ def _apply_us_situs_estate(
         book = load_total_book(
             session, user_id, raw_positions,
             snapshot_date=getattr(snap, "snapshot_date", None),
-            today=getattr(snap, "snapshot_date", None),
+            # today defaults to the REAL current date — NEVER the snapshot's own
+            # date. Backdating today=snapshot_date set every mark's age to 0, so
+            # an 8-day-old book read as "fresh", no reprice fired, stale_marks
+            # stayed empty, and estate/concentration republished stale money as
+            # HIGH (Sol BLOCK-1). Real today lets soft-stale downgrade / hard
+            # degrade honestly; a daily-refreshed book is genuinely fresh.
         )
         if book.degraded:
             # NEVER publish a HIGH-confidence understated estate figure.
@@ -1544,14 +1585,29 @@ def _apply_us_situs_estate(
         if not usd or not fx or usd <= 0 or fx <= 0:
             values[key] = ResolvedValue.pending(key, "nis", loc)
             return
+        # A soft-stale mark anywhere in the total book (NVDA dominates US-situs)
+        # means this estate figure isn't fully current money — downgrade from
+        # HIGH instead of republishing stale as HIGH (Sol BLOCK-1, estate half).
+        _stale = book.stale_marks
+        _conf = "MEDIUM" if _stale else "HIGH"
+        _stale_note = (
+            f" [STALE MARK — total book carries soft-stale marks "
+            f"({', '.join(_stale)}); live reprice unavailable, confidence "
+            f"downgraded from HIGH]"
+            if _stale
+            else ""
+        )
         values[key] = ResolvedValue(
             key=key,
             value=usd * fx,
             unit="nis",
             status="resolved",
-            source_locator=f"{loc} = {fx_src} {fx:.3f} (snapshot id={snap.id}; total book)",
+            source_locator=(
+                f"{loc} = {fx_src} {fx:.3f} (snapshot id={snap.id}; total book)"
+                + _stale_note
+            ),
             agent_report_id=None,
-            confidence="HIGH",
+            confidence=_conf,
             formula=(
                 "Σ US-domiciled securities across ALL brokers (TOTAL book incl. "
                 "deliberately unmanaged NVDA; by instrument domicile: NVDA + US "
@@ -1599,21 +1655,30 @@ def _apply_nvda_current_weight(
             parse_positions_json,
             symbol_value_usd_k,
         )
+        from argosy.services.portfolio_snapshot_store import (
+            get_latest_snapshot_row,
+        )
         from argosy.services.wealth_dashboard import nvda_concentration_pct
 
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        # Head-snapshot selection MUST match every other current-money surface
+        # (portfolio route, dashboard, the repair script). A bare id.desc()
+        # here diverged from the canonical (imported_at DESC, id DESC), so a
+        # backfilled row with a higher id but older import could surface a
+        # different NVDA % than /portfolio and bypass the repaired head
+        # (Sol BLOCK-6). Route through the one canonical accessor.
+        snap = get_latest_snapshot_row(session, user_id)
         if snap is None:
             return  # leave whatever the role resolver set (likely pending)
         raw_positions = parse_positions_json(snap.positions_json)
         book = load_total_book(
             session, user_id, raw_positions,
             snapshot_date=getattr(snap, "snapshot_date", None),
-            today=getattr(snap, "snapshot_date", None),
+            # today defaults to the REAL current date — NEVER the snapshot's own
+            # date. Backdating today=snapshot_date set every mark's age to 0, so
+            # an 8-day-old book read as "fresh", no reprice fired, stale_marks
+            # stayed empty, and estate/concentration republished stale money as
+            # HIGH (Sol BLOCK-1). Real today lets soft-stale downgrade / hard
+            # degrade honestly; a daily-refreshed book is genuinely fresh.
         )
         if book.degraded:
             values[value_key] = ResolvedValue.unavailable(
@@ -1626,6 +1691,30 @@ def _apply_nvda_current_weight(
             )
             return
         total = book.total
+        # A SOFT-stale NVDA mark (last-close published without a live reprice —
+        # weekend/holiday/transient quote miss) does NOT degrade the book, but
+        # it must NOT republish as HIGH-confidence CURRENT money (Sol BLOCK-1).
+        # Downgrade confidence + annotate; the value still publishes (graceful).
+        # NVDA VALUE (absolute) downgrades only when NVDA's OWN mark is stale.
+        nvda_val_stale = book.is_mark_stale("NVDA")
+        _val_conf = "MEDIUM" if nvda_val_stale else "HIGH"
+        _val_note = (
+            " [STALE MARK — NVDA published on a soft-stale last-known price; "
+            "live reprice unavailable, confidence downgraded from HIGH]"
+            if nvda_val_stale
+            else ""
+        )
+        # NVDA WEIGHT = NVDA ÷ tradeable book: ANY soft-stale mark makes the
+        # DENOMINATOR stale, so the weight downgrades on the whole book, not
+        # just NVDA (Sol round-5 #6).
+        _wt_conf = "MEDIUM" if book.stale_marks else "HIGH"
+        _wt_note = (
+            f" [STALE MARK — tradeable-book denominator includes soft-stale "
+            f"marks ({', '.join(book.stale_marks)}); confidence downgraded "
+            f"from HIGH]"
+            if book.stale_marks
+            else ""
+        )
         snap_fx = _to_float(snap.fx_usd_nis) or 0.0
         fx, fx_src = _current_boi_usd_nis(session, snap_fx)
 
@@ -1638,10 +1727,10 @@ def _apply_nvda_current_weight(
                 status="resolved",
                 source_locator=(
                     f"Σ NVDA usd_value_k on TOTAL book × {fx_src} {fx:.3f} "
-                    f"(snapshot id={snap.id})"
+                    f"(snapshot id={snap.id}){_val_note}"
                 ),
                 agent_report_id=None,
-                confidence="HIGH",
+                confidence=_val_conf,
                 formula="NVDA usd_value_k × 1000 × current BOI USD/NIS (total book)",
             )
         elif has_symbol(total, "NVDA"):
@@ -1706,9 +1795,9 @@ def _apply_nvda_current_weight(
             value=pct / 100.0,  # stored as a fraction (0–1), unit "pct"
             unit="pct",
             status="resolved",
-            source_locator=loc_note,
+            source_locator=loc_note + _wt_note,
             agent_report_id=None,
-            confidence="HIGH",
+            confidence=_wt_conf,
             formula=formula,
         )
     except TotalBookDegraded as exc:
@@ -1945,6 +2034,7 @@ def _apply_nvda_deconcentration(
             values[k] = ResolvedValue.pending(k, "shares", "nvda weight/cap pending")
         return
     nvda_sh = nvda_px = None
+    _book_stale = False
     try:
         from argosy.services.holding_books import (
             TotalBookDegraded,
@@ -1952,16 +2042,12 @@ def _apply_nvda_deconcentration(
             parse_positions_json,
         )
 
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc()).limit(1)
-        ).scalar_one_or_none()
+        snap = _head_snapshot_row(session, user_id)
         raw = parse_positions_json(snap.positions_json if snap else None)
         book = load_total_book(
             session, user_id, raw,
             snapshot_date=getattr(snap, "snapshot_date", None) if snap else None,
-            today=getattr(snap, "snapshot_date", None) if snap else None,
+            # Real current date, never the snapshot's own — see Sol BLOCK-1.
         )
         if book.degraded:
             for k in keys:
@@ -1972,6 +2058,7 @@ def _apply_nvda_deconcentration(
                 )
             return
         total = book.total
+        _book_stale = bool(book.stale_marks)
         for p in total:
             if str(p.get("symbol", "")).upper() == "NVDA":
                 nvda_sh = _to_float(p.get("shares"))
@@ -1995,15 +2082,25 @@ def _apply_nvda_deconcentration(
         nvda_sh=int(nvda_sh), nvda_px_usd=nvda_px, nvda_weight=float(nvda_weight),
         target_w=_NVDA_IPS_TARGET_W, cap=float(cap.value),
     )
+    # Actionable sell/target shares can be no more confident than the NVDA
+    # weight they derive from (MEDIUM when that weight rode a soft-stale mark)
+    # nor the book they read — don't launder a downgrade into HIGH (Sol #3).
+    _w_conf = getattr(w, "confidence", "HIGH") or "HIGH"
+    _deconf = "HIGH" if (_w_conf == "HIGH" and not _book_stale) else "MEDIUM"
+    _deconf_note = (
+        " [confidence inherited from a stale/downgraded NVDA weight or book]"
+        if _deconf != "HIGH"
+        else ""
+    )
     for k, field in (("concentration.nvda_target_sh", "nvda_target_sh"),
                      ("concentration.nvda_sell_sh", "nvda_sell_sh")):
         values[k] = ResolvedValue(
             key=k, value=dec[field].value, unit="shares", status="resolved",
             source_locator=(
                 f"derive_nvda_deconcentration ({_NVDA_TARGET_PCT:g}% "
-                "cap-derived IPS target)"
+                "cap-derived IPS target)" + _deconf_note
             ),
-            agent_report_id=None, confidence="HIGH", formula=dec[field].formula,
+            agent_report_id=None, confidence=_deconf, formula=dec[field].formula,
         )
     elig = None
     try:

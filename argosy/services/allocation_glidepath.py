@@ -858,7 +858,7 @@ def _latest_portfolio_snapshot(
         db.execute(
             select(PortfolioSnapshotRow)
             .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(desc(PortfolioSnapshotRow.imported_at))
+            .order_by(desc(PortfolioSnapshotRow.imported_at), desc(PortfolioSnapshotRow.id))  # canonical head ordering (imported_at DESC, id DESC) — matches get_latest_snapshot_row; the id tie-break stops a backfill/restore row from disagreeing with the plan/dashboard (Sol round-5 #7)
             .limit(1)
         )
     ).scalar_one_or_none()

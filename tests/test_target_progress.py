@@ -96,10 +96,14 @@ def _seed_snapshot(
         },
     ]
     totals = {"total_usd_value_k": total_usd_k}
+    # Fresh marks (today): _summarize_snapshot now sources positions from the
+    # conserved current-book accessor, which degrades a hard-stale/unrepriceable
+    # snapshot to "no data" (UNKNOWN). A current date keeps this fixture
+    # exercising the target-classification math, not the degrade path.
     row = PortfolioSnapshotRow(
         user_id="ariel",
-        snapshot_date=datetime(2026, 5, 27).date(),
-        imported_at=datetime(2026, 5, 27, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_date=datetime.now(timezone.utc).date(),
+        imported_at=datetime.now(timezone.utc),
         positions_json=json.dumps(positions),
         totals_json=json.dumps(totals),
         fx_usd_nis=fx_usd_nis,

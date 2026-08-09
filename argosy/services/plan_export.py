@@ -561,7 +561,7 @@ def build_plan_export_markdown(
             _snap = db.execute(
                 _select(PortfolioSnapshotRow)
                 .where(PortfolioSnapshotRow.user_id == user_id)
-                .order_by(PortfolioSnapshotRow.id.desc())
+                .order_by(PortfolioSnapshotRow.imported_at.desc(), PortfolioSnapshotRow.id.desc())  # canonical head ordering (imported_at DESC, id DESC) — matches get_latest_snapshot_row; a bare id.desc() could pick a backfill/restore row over the true head (Sol BLOCK-6)
                 .limit(1)
             ).scalar_one_or_none()
             _re_eq = real_estate_equity_for_snapshot(

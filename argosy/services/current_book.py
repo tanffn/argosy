@@ -1,0 +1,187 @@
+"""Canonical current-book accessor — the ONE way every money surface loads
+the user's current holdings.
+
+Before this, ~20 surfaces each re-implemented four things, each subtly wrong
+(Sol BLOCK rounds 1-5):
+
+  (a) HEAD-PICK — some ordered by ``id.desc()``, some by ``snapshot_date`` —
+      so a backfilled/restore row with a higher id but older import could make
+      one surface publish a different book than the plan / dashboard.
+  (b) STALENESS — some passed ``today=snapshot_date`` to the book loader,
+      backdating every mark's age to zero so a weeks-stale book read as fresh.
+  (c) RAW READ — some read ``positions_json`` directly, bypassing conservation
+      + the durable-unmanaged restore (understating when Schwab NVDA was
+      omitted) and the reprice/degrade path.
+  (d) CONFIDENCE — some hard-coded ``HIGH`` regardless of staleness/degrade.
+
+This module centralizes all four. A surface asks ONCE via
+:func:`load_current_book` and gets a conserved, REAL-today, confidence-aware
+book plus helpers that stamp the right confidence, so the four bugs cannot be
+re-introduced per-surface.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from typing import Any
+
+from argosy.services.holding_books import (
+    TotalBookResult,
+    UnmanagedLoadResult,
+    load_total_book,
+    parse_positions_json,
+    symbol_value_usd_k,
+)
+
+HIGH = "HIGH"
+MEDIUM = "MEDIUM"
+
+
+def _to_float(v: Any) -> float | None:
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class CurrentBook:
+    """The user's canonical current book + integrity + confidence.
+
+    ``snapshot is None`` means the user has no snapshot at all — callers must
+    treat that as PENDING (never zero). ``degraded`` means the book could not
+    publish current-money marks (a policy holding unrestorable, a hard-stale
+    unrepriceable mark, a conservation break) — callers must return
+    unavailable, never a HIGH figure.
+    """
+
+    snapshot: Any
+    result: TotalBookResult
+    snapshot_id: int | None
+    snapshot_date: date | None
+    fx_usd_nis: float | None
+    fx_usd_eur: float | None
+
+    # --- book views -------------------------------------------------------
+    @property
+    def total(self) -> list[dict[str, Any]]:
+        return self.result.total
+
+    @property
+    def managed(self) -> list[dict[str, Any]]:
+        return self.result.managed
+
+    @property
+    def degraded(self) -> bool:
+        return self.result.degraded
+
+    @property
+    def degrade_reason(self) -> str | None:
+        return self.result.degrade_reason
+
+    @property
+    def stale_marks(self) -> tuple[str, ...]:
+        return self.result.stale_marks
+
+    @property
+    def is_empty(self) -> bool:
+        return self.snapshot is None
+
+    # --- confidence -------------------------------------------------------
+    def book_confidence(self) -> str:
+        """``HIGH`` only when NO mark in the book is soft-stale.
+
+        Use for any figure whose value spans more than one symbol — net worth,
+        US-situs estate, or the DENOMINATOR of a ratio (e.g. NVDA weight is
+        NVDA ÷ tradeable book, so a stale AAPL still degrades it).
+        """
+        return MEDIUM if self.result.stale_marks else HIGH
+
+    def symbol_confidence(self, symbol: str) -> str:
+        """``HIGH`` unless THIS symbol's own mark is soft-stale.
+
+        Use for a single-symbol ABSOLUTE value (e.g. NVDA value in NIS): it may
+        stay HIGH when only some other symbol is stale.
+        """
+        return MEDIUM if self.result.is_mark_stale(symbol) else HIGH
+
+    def stale_note(self) -> str:
+        """Human suffix for a downgraded ``source_locator`` (empty if fresh)."""
+        if not self.result.stale_marks:
+            return ""
+        return (
+            f" [STALE MARK — soft-stale marks in book "
+            f"({', '.join(self.result.stale_marks)}); confidence downgraded "
+            f"from HIGH]"
+        )
+
+    # --- money helpers ----------------------------------------------------
+    def symbol_usd_k(self, symbol: str) -> float:
+        return symbol_value_usd_k(self.total, symbol)
+
+
+def _empty_result() -> TotalBookResult:
+    return TotalBookResult(
+        total=[], managed=[],
+        load=UnmanagedLoadResult(rows=[], ok=True),
+        degraded=False, degrade_reason=None, stale_marks=(),
+    )
+
+
+def load_current_book(
+    session: Any,
+    user_id: str,
+    *,
+    today: date | None = None,
+    quote_fn: Any | None = None,
+    fx_usd_nis: float | None = None,
+    fx_usd_eur: float | None = None,
+) -> CurrentBook:
+    """Load the user's canonical current book — the single money-surface entry.
+
+    * HEAD-PICK via the ONE accessor ``get_latest_snapshot_row``
+      (``imported_at DESC, id DESC``) — every surface agrees on the head.
+    * REAL-today staleness: ``today`` defaults to ``date.today()`` inside the
+      book loader; it is NEVER backdated to the snapshot's own date.
+    * Full conservation + durable-unmanaged (Schwab NVDA) restore + reprice.
+    * ``stale_marks`` / ``degraded`` for the confidence helpers.
+
+    ``snapshot is None`` (empty book) is returned as a non-degraded empty book;
+    callers must treat it as pending.
+    """
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    snap = get_latest_snapshot_row(session, user_id)
+    if snap is None:
+        return CurrentBook(
+            snapshot=None, result=_empty_result(), snapshot_id=None,
+            snapshot_date=None, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
+        )
+    raw = parse_positions_json(snap.positions_json)
+    result = load_total_book(
+        session, user_id, raw,
+        snapshot_date=getattr(snap, "snapshot_date", None),
+        today=today,  # None -> real date.today() inside load_total_book
+        quote_fn=quote_fn,
+        fx_usd_nis=fx_usd_nis,
+        fx_usd_eur=fx_usd_eur,
+    )
+    return CurrentBook(
+        snapshot=snap,
+        result=result,
+        snapshot_id=getattr(snap, "id", None),
+        snapshot_date=getattr(snap, "snapshot_date", None),
+        fx_usd_nis=(
+            fx_usd_nis if fx_usd_nis is not None
+            else _to_float(getattr(snap, "fx_usd_nis", None))
+        ),
+        fx_usd_eur=(
+            fx_usd_eur if fx_usd_eur is not None
+            else _to_float(getattr(snap, "fx_usd_eur", None))
+        ),
+    )
+
+
+__all__ = ["CurrentBook", "load_current_book", "HIGH", "MEDIUM"]

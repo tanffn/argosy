@@ -131,12 +131,14 @@ def _seed_plan(sf, doc=None):
 
 
 def _seed_snapshot(sf, positions):
+    # Fresh marks (today): the funnel book flows through the conserved
+    # current-book accessor, which degrades a hard-stale snapshot to empty.
     with sf() as s:
         s.add(
             PortfolioSnapshotRow(
                 user_id="ariel",
-                snapshot_date=date(2026, 7, 9),
-                imported_at=datetime(2026, 7, 9, tzinfo=UTC),
+                snapshot_date=date.today(),
+                imported_at=datetime.now(UTC),
                 positions_json=json.dumps(positions),
             )
         )

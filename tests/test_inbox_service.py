@@ -411,6 +411,12 @@ def test_trade_plan_overview_built_from_raw_rows(db):
                      "usd_value_k": 5.0, "asset_type": "Stock"},
                     {"symbol": "SGOV", "shares": 10.0, "current_price": 100.0,
                      "usd_value_k": 1.0, "asset_type": "Defensive"},
+                    # A real cash-balance POSITION (blank symbol, asset_type
+                    # Cash) — trade_plan now sizes cash from the conserved book,
+                    # not totals_json's phantom cash figure (Sol round-6 #2), so
+                    # the fixture carries cash where it actually lives.
+                    {"symbol": "-", "usd_value_k": 2.0, "asset_type": "Cash",
+                     "location": "leumi", "currency": "USD"},
                 ]
             ),
             totals_json=_json.dumps(

@@ -51,12 +51,14 @@ def _latest_snapshot(db: Session, user_id: str):
     return db.execute(
         select(PortfolioSnapshotRow)
         .where(PortfolioSnapshotRow.user_id == user_id)
-        .order_by(PortfolioSnapshotRow.id.desc())
+        .order_by(PortfolioSnapshotRow.imported_at.desc(), PortfolioSnapshotRow.id.desc())  # canonical head ordering (imported_at DESC, id DESC) — matches get_latest_snapshot_row; a bare id.desc() could pick a backfill/restore row over the true head (Sol BLOCK-6)
         .limit(1)
     ).scalar_one_or_none()
 
 
-def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
+def build_trade_plan(
+    db: Session, user_id: str, *, today: "date | None" = None
+) -> dict[str, Any] | None:
     """The overview table, or ``None`` when no trade decision is open."""
     from argosy.state.models import ActionProposal, Proposal
 
@@ -79,13 +81,41 @@ def build_trade_plan(db: Session, user_id: str) -> dict[str, Any] | None:
     if not rows:
         return None
 
-    snap = _latest_snapshot(db, user_id)
+    from datetime import date  # noqa: F401  (used in the signature annotation)
+
+    from argosy.services.current_book import load_current_book
+
+    # Respect the caller's ``today`` (threaded from build_inbox) so the
+    # staleness clock uses the actual evaluation date — NOT date.today()
+    # hardcoded. This is legitimate time-simulation (the snapshot is dated
+    # relative to that same today), distinct from the backdating bug where
+    # today was set to the SNAPSHOT's own date to hide staleness.
+    book = load_current_book(db, user_id, today=today)
+    snap = book.snapshot
     if snap is None:
         return None
-    positions = json.loads(snap.positions_json or "[]")
-    totals = json.loads(snap.totals_json or "{}")
-    book_usd = float(totals.get("total_usd_value_k") or 0.0) * 1000.0
-    cash_usd = float(totals.get("cash_balances_usd_k") or 0.0) * 1000.0
+    # A degraded book cannot publish current money (durable unmanaged NVDA
+    # unrestorable / a hard-stale unrepriceable mark / a conservation break).
+    # Rather than republish an understated concentration + cash figure, degrade
+    # the whole projection exactly as a missing snapshot does (Sol round-5 #3).
+    if book.degraded:
+        _log.warning("trade_plan.book_degraded reason=%s", book.degrade_reason)
+        return None
+    # Positions come from the CONSERVED book (incl. durable unmanaged NVDA),
+    # not raw positions_json which understates when Schwab NVDA is absent.
+    positions = book.total
+    # Denominator = the conserved book sum, NOT totals_json's total (which omits
+    # the durable unmanaged NVDA and would understate every concentration %).
+    book_usd = sum(float(p.get("usd_value_k") or 0.0) for p in positions) * 1000.0
+    # Cash from the CONSERVED book's cash-balance rows, NOT totals_json's
+    # ``cash_balances_usd_k`` — a stale/phantom totals_json cash figure inflated
+    # current cash + every downstream cash_after / parking / deploy sizing
+    # (Sol round-6 #2). The book is the single source of truth.
+    cash_usd = sum(
+        float(p.get("usd_value_k") or 0.0) * 1000.0
+        for p in positions
+        if "cash" in str(p.get("asset_type") or "").lower()
+    )
 
     # Aggregate held value / shares / price per symbol.
     held: dict[str, dict[str, float]] = {}

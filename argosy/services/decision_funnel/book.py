@@ -10,7 +10,6 @@ surface's job, not the per-name decision funnel's.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -38,16 +37,24 @@ def load_book(session: Session, *, user_id: str) -> list[BookHolding]:
     Empty list when there is no snapshot or no tradeable book — the funnel
     then has nothing to route and no-ops cleanly.
     """
-    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+    from argosy.services.current_book import load_current_book
     from argosy.services.wealth_dashboard import tradeable_securities_usd_k
 
-    snap = get_latest_snapshot_row(session, user_id)
-    if snap is None:
+    book = load_current_book(session, user_id)
+    if book.snapshot is None:
         return []
-    try:
-        positions = json.loads(snap.positions_json or "[]")
-    except (json.JSONDecodeError, TypeError):
-        positions = []
+    # NEVER route on an understated/degraded book: after the truncated-book
+    # incident, routing the wrong holdings (e.g. missing the durable unmanaged
+    # NVDA) is the exact risk. Degrade to the same empty/no-book result so the
+    # funnel no-ops rather than acting on a partial sum (Sol round-6 #3).
+    if book.degraded:
+        _log.warning(
+            "decision_funnel.book_degraded",
+            user_id=user_id,
+            reason=book.degrade_reason,
+        )
+        return []
+    positions = book.total
 
     book_k = tradeable_securities_usd_k(positions)
     if book_k <= 0:

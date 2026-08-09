@@ -131,7 +131,7 @@ def _latest_snapshot(session: Session, user_id: str) -> PortfolioSnapshotRow | N
     return session.execute(
         select(PortfolioSnapshotRow)
         .where(PortfolioSnapshotRow.user_id == user_id)
-        .order_by(desc(PortfolioSnapshotRow.snapshot_date), desc(PortfolioSnapshotRow.id))
+        .order_by(desc(PortfolioSnapshotRow.imported_at), desc(PortfolioSnapshotRow.id))  # canonical head ordering (imported_at DESC, id DESC) — matches get_latest_snapshot_row so a backfill/restore row can't disagree with the plan/dashboard (Sol round-5 #7)
         .limit(1)
     ).scalar_one_or_none()
 
@@ -258,40 +258,59 @@ class _SnapshotMath:
 
 
 def _summarize_snapshot(
+    session: Session,
+    user_id: str,
     snapshot: PortfolioSnapshotRow | None,
     *,
     fallback_fx: float | None,
 ) -> _SnapshotMath | None:
     """Roll the snapshot into the handful of scalars used by the target
-    matcher below. Returns None when no snapshot exists.
+    matcher below. Returns None when there is no usable book.
     """
     if snapshot is None:
         return None
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except json.JSONDecodeError:
-        positions = []
+    from argosy.services.current_book import load_current_book
+
+    # Source positions from the CANONICAL conserved book, not raw
+    # positions_json: the raw snapshot omits the durable unmanaged NVDA
+    # (~$2m), which would understate US-situs and NVDA share/weight. NEVER
+    # publish that partial sum — a degraded or empty book returns None so
+    # every dependent target renders UNKNOWN, exactly as "no snapshot" does
+    # (Sol round-6 #4: raw Schwab $100k vs conserved $2.1m US-situs flips a
+    # $200k ceiling).
+    book = load_current_book(session, user_id)
+    if book.snapshot is None or book.degraded:
+        return None
+    positions = book.total
     try:
         totals = json.loads(snapshot.totals_json or "{}")
     except json.JSONDecodeError:
         totals = {}
 
+    # Denominator = the CONSERVED book sum (never understate), NOT raw
+    # totals_json alone: a stale/partial totals_json made NVDA progress read
+    # 2,000% instead of ~95% (Sol round-7 #2). max() mirrors net_worth_bases —
+    # in production totals_json == Σpositions so this reduces to the book sum.
+    book_total_usd = (
+        sum(float(p.get("usd_value_k") or 0.0) for p in positions) * 1000.0
+    )
     total_usd_k = totals.get("total_usd_value_k")
-    total_usd = float(total_usd_k) * 1000.0 if total_usd_k is not None else None
+    _tj_usd = float(total_usd_k) * 1000.0 if total_usd_k is not None else None
+    total_usd = book_total_usd if _tj_usd is None else max(book_total_usd, _tj_usd)
     fx = snapshot.fx_usd_nis or fallback_fx
+
+    from argosy.services import instrument_reference
 
     nvda_usd = 0.0
     nvda_shares: float | None = None
     sgov_usd = 0.0
     cash_usd = 0.0
-    us_situs_usd = 0.0
     us_etf_aggregate_usd = 0.0
     for p in positions:
         if not isinstance(p, dict):
             continue
         sym = (p.get("symbol") or "").upper()
         atype = (p.get("asset_type") or "").lower()
-        loc = (p.get("location") or "").lower()
         v_k = float(p.get("usd_value_k") or 0.0)
         v_usd = v_k * 1000.0
         if sym == "NVDA":
@@ -303,19 +322,28 @@ def _summarize_snapshot(
             sgov_usd += v_usd
         elif atype == "cash" or sym == "-" or sym == "":
             cash_usd += v_usd
-        # US-situs heuristic: anything held at Schwab.
-        if "schwab" in loc:
-            us_situs_usd += v_usd
-        # US-domiciled ETF aggregate (excl. NVDA + SGOV — both have their
-        # own dedicated targets in the medium-horizon plan; folding them
-        # into this aggregate would double-count). Heuristic: ETF assets
-        # held at Schwab or with an explicit US-domicile flag.
+        # US-domiciled ETF aggregate (excl. NVDA + SGOV — dedicated targets),
+        # classified by INSTRUMENT DOMICILE, NOT broker: a US ETF held at the
+        # Israeli broker is still US-situs; a UCITS at Schwab is not (Sol
+        # round-7 #3 — the "schwab in loc" heuristic missed both).
+        est_safe = instrument_reference.estate_safe_for(
+            sym, str(p.get("details") or "")
+        )
         if (
             sym not in ("NVDA", "SGOV", "")
             and atype in ("etf", "fund")
-            and "schwab" in loc
+            and est_safe is False
         ):
             us_etf_aggregate_usd += v_usd
+
+    # US-situs TOTAL via the ONE canonical instrument-domicile classifier the
+    # estate gate/resolver use (NVDA + US ETFs + US single names across ALL
+    # brokers; UCITS / Israeli / cash excluded) — NOT "held at Schwab", which
+    # missed US-domiciled holdings at the Israeli broker and counted Israeli
+    # holdings at Schwab (Sol round-7 #3).
+    from argosy.services.retirement.safety_gates import _us_situs_assets_usd
+
+    us_situs_usd = _us_situs_assets_usd(positions)
 
     return _SnapshotMath(
         snapshot_date=(
@@ -669,7 +697,9 @@ def compute_target_progress_for_plan(
     """
     fallback_fx = _user_context_fx(session, user_id)
     snapshot = _latest_snapshot(session, user_id)
-    snapshot_math = _summarize_snapshot(snapshot, fallback_fx=fallback_fx)
+    snapshot_math = _summarize_snapshot(
+        session, user_id, snapshot, fallback_fx=fallback_fx
+    )
     household = _latest_household_budget_payload(session, user_id)
     concentration = _latest_concentration_payload(
         session, user_id, plan.decision_run_id

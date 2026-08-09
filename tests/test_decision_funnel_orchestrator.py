@@ -36,8 +36,12 @@ def sf():
     s.add(User(id="ariel", plan="free"))
     s.add(
         PortfolioSnapshotRow(
+            # Fresh marks (today): the funnel book now flows through the
+            # conserved current-book accessor, which degrades a hard-stale /
+            # unrepriceable snapshot to empty (nothing to route). A current
+            # date keeps this fixture exercising the routing path.
             user_id="ariel",
-            snapshot_date=date(2026, 6, 22),
+            snapshot_date=date.today(),
             imported_at=NOW,
             positions_json=json.dumps([
                 {"symbol": "NVDA", "asset_type": "Individual Stocks", "usd_value_k": 600},

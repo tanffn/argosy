@@ -293,7 +293,10 @@ def _seed_snapshot(
         ]
     row = PortfolioSnapshotRow(
         user_id=user_id,
-        snapshot_date=snapshot_date or date(2026, 5, 1),
+        # Default to TODAY: the seeded positions carry no valued_as_of, so an
+        # old snapshot_date would (correctly, post Sol BLOCK-1) make every mark
+        # HARD-stale and degrade the book. Production's current book is fresh.
+        snapshot_date=snapshot_date or date.today(),
         imported_at=datetime.now(timezone.utc),
         source_path="/tmp/seed.tsv",
         positions_json=json.dumps(positions),

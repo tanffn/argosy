@@ -970,7 +970,10 @@ def test_net_worth_marks_to_boi_current_fx(session):
 
     session.add(PortfolioSnapshotRow(
         user_id="ariel", imported_at=datetime(2026, 3, 24),
-        snapshot_date=_date(2026, 3, 24), fx_usd_nis=2.94,
+        # Fresh mark date (production reprices daily); an old snapshot_date would
+        # (correctly) make these undated marks HARD-stale and degrade. Intent
+        # here is the current-BOI-FX basis, not staleness.
+        snapshot_date=_date.today(), fx_usd_nis=2.94,
         totals_json=_json.dumps({"total_usd_value_k": 1100.0}),
         positions_json=_json.dumps([
             {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
@@ -1000,7 +1003,7 @@ def test_usd_exposure_sums_usd_positions_at_current_boi_fx(session):
 
     session.add(PortfolioSnapshotRow(
         user_id="ariel", imported_at=datetime(2026, 6, 1),
-        snapshot_date=_date(2026, 6, 1), fx_usd_nis=2.94,  # stale stored fx
+        snapshot_date=_date.today(), fx_usd_nis=2.94,  # stale stored fx; fresh mark
         totals_json=_json.dumps({"total_usd_value_k": 1300.0}),
         positions_json=_json.dumps([
             {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
@@ -1028,7 +1031,7 @@ def test_liquid_net_worth_excludes_real_estate(session):
 
     session.add(PortfolioSnapshotRow(
         user_id="ariel", imported_at=datetime(2026, 6, 1),
-        snapshot_date=_date(2026, 6, 1), fx_usd_nis=3.0,
+        snapshot_date=_date.today(), fx_usd_nis=3.0,  # fresh mark (see net-worth test)
         totals_json=_json.dumps({"total_usd_value_k": 1069.0}),
         positions_json=_json.dumps([
             {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
@@ -1075,8 +1078,14 @@ def test_us_situs_estate_marks_to_current_boi_fx(session):
         snapshot_date=_date(2026, 6, 1), fx_usd_nis=2.94,  # STALE stored fx
         totals_json=_json.dumps({"total_usd_value_k": 1000.0}),
         # NVDA is US-domiciled → counted as US-situs by the IRS-NRA classifier.
+        # Fresh mark date: production keeps valued_as_of current via the daily
+        # reprice; without it the resolver (correctly) treats a 2026-06-01 mark
+        # read today as HARD-stale and degrades. This test's intent is the
+        # FX-basis, not staleness.
         positions_json=_json.dumps([
-            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0,
+             "valued_as_of": _date.today().isoformat(),
+             "observed_as_of": _date.today().isoformat()},
         ]),
     ))
     # Current BOI rate (dated today so the walkback finds it regardless of
@@ -1106,8 +1115,12 @@ def test_us_situs_estate_falls_back_to_snapshot_fx_when_boi_cold(session):
         user_id="ariel", imported_at=datetime(2026, 6, 1),
         snapshot_date=_date(2026, 6, 1), fx_usd_nis=2.94,
         totals_json=_json.dumps({"total_usd_value_k": 1000.0}),
+        # Fresh mark (see the companion test) so the staleness guard doesn't
+        # degrade — this test checks the BOI-cold FX fallback, not staleness.
         positions_json=_json.dumps([
-            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0,
+             "valued_as_of": _date.today().isoformat(),
+             "observed_as_of": _date.today().isoformat()},
         ]),
     ))
     session.flush()  # NO FxRate seeded → BOI cache cold.

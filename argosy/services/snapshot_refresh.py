@@ -468,7 +468,10 @@ def refresh_portfolio_snapshot(
             carried = _carry(p)
             # Preserve prior mark date — do not launder a stale mark into today.
             if carried.valued_as_of is None:
-                carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+                # Row-first (see the reprice-miss branches below): keep the
+                # position's own mark date; fall back to prior_as_of only when
+                # the row never had one.
+                carried.valued_as_of = getattr(p, "valued_as_of", None) or prior_as_of
             if carried.observed_as_of is None:
                 carried.observed_as_of = (
                     getattr(p, "observed_as_of", None) or prior_as_of
@@ -478,7 +481,12 @@ def refresh_portfolio_snapshot(
             continue
         if not _internally_consistent(p):
             carried = _carry(p)
-            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            # ROW-FIRST: keep the position's OWN (true, possibly stale) mark
+            # date; only fall back to prior_as_of when the row never had one.
+            # prior_as_of-first laundered a July-13 mark into Aug-8 on the
+            # SECOND consecutive quote miss (each refresh advanced prior_as_of),
+            # defeating the staleness guard (Sol BLOCK-3, upstream source).
+            carried.valued_as_of = getattr(p, "valued_as_of", None) or prior_as_of
             carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
             carried.mark_stale = True
             new_positions.append(carried)
@@ -489,7 +497,12 @@ def refresh_portfolio_snapshot(
         price = quote_fn(p.symbol, currency=p.currency, details=p.details)
         if price is None or price <= 0:
             carried = _carry(p)
-            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            # ROW-FIRST: keep the position's OWN (true, possibly stale) mark
+            # date; only fall back to prior_as_of when the row never had one.
+            # prior_as_of-first laundered a July-13 mark into Aug-8 on the
+            # SECOND consecutive quote miss (each refresh advanced prior_as_of),
+            # defeating the staleness guard (Sol BLOCK-3, upstream source).
+            carried.valued_as_of = getattr(p, "valued_as_of", None) or prior_as_of
             carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
             carried.mark_stale = True
             new_positions.append(carried)
@@ -498,7 +511,12 @@ def refresh_portfolio_snapshot(
             continue
         if p.current_price and not _within_band(price / p.current_price, _PRICE_RATIO_BAND):
             carried = _carry(p)
-            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            # ROW-FIRST: keep the position's OWN (true, possibly stale) mark
+            # date; only fall back to prior_as_of when the row never had one.
+            # prior_as_of-first laundered a July-13 mark into Aug-8 on the
+            # SECOND consecutive quote miss (each refresh advanced prior_as_of),
+            # defeating the staleness guard (Sol BLOCK-3, upstream source).
+            carried.valued_as_of = getattr(p, "valued_as_of", None) or prior_as_of
             carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
             carried.mark_stale = True
             new_positions.append(carried)
@@ -512,7 +530,12 @@ def refresh_portfolio_snapshot(
         )
         if usd_k is None:
             carried = _carry(p)
-            carried.valued_as_of = prior_as_of or getattr(p, "valued_as_of", None)
+            # ROW-FIRST: keep the position's OWN (true, possibly stale) mark
+            # date; only fall back to prior_as_of when the row never had one.
+            # prior_as_of-first laundered a July-13 mark into Aug-8 on the
+            # SECOND consecutive quote miss (each refresh advanced prior_as_of),
+            # defeating the staleness guard (Sol BLOCK-3, upstream source).
+            carried.valued_as_of = getattr(p, "valued_as_of", None) or prior_as_of
             carried.observed_as_of = getattr(p, "observed_as_of", None) or prior_as_of
             carried.mark_stale = True
             new_positions.append(carried)

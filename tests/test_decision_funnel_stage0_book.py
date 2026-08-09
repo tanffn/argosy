@@ -31,11 +31,14 @@ def session():
 def _add_snapshot(session, positions):
     from datetime import date, datetime, timezone
 
+    # Fresh marks (today): load_book now sources the conserved current book,
+    # which degrades a hard-stale/unrepriceable snapshot to empty. A current
+    # date keeps this fixture exercising the weight math, not the degrade path.
     session.add(
         PortfolioSnapshotRow(
             user_id="ariel",
-            snapshot_date=date(2026, 6, 22),
-            imported_at=datetime(2026, 6, 22, tzinfo=timezone.utc),
+            snapshot_date=date.today(),
+            imported_at=datetime.now(timezone.utc),
             positions_json=json.dumps(positions),
         )
     )

@@ -56,7 +56,9 @@ def _seed_snapshot(
     try:
         snap = PortfolioSnapshotRow(
             user_id=user_id,
-            snapshot_date=date(2026, 5, 26),
+            # Today: the seeded marks are undated, so an old snapshot_date would
+            # (correctly, post Sol BLOCK-1) degrade the book as HARD-stale.
+            snapshot_date=date.today(),
             imported_at=datetime.now(timezone.utc),
             fx_usd_nis=fx_usd_nis,
             fx_usd_eur=0.92,

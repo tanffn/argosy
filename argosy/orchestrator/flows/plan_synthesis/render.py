@@ -908,21 +908,21 @@ def _fi_fx_fragility(
         return None, None
     fx_spot = float(fx_rv.value)
     try:
-        from sqlalchemy import select
-        from argosy.state.models import PortfolioSnapshotRow
+        from argosy.services.current_book import load_current_book
         from argosy.services.plan_numeric_resolver import (
             liquid_components_from_positions,
         )
 
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if snap is None:
+        book = load_current_book(session, user_id)
+        snap = book.snapshot
+        # No snapshot -> pending; degraded -> the book cannot publish current
+        # money (durable unmanaged NVDA absent / hard-stale mark), so refuse to
+        # quote an understated fragility figure. Either way the caller degrades
+        # to a qualitative caveat.
+        if snap is None or book.degraded:
             return None, None
-        positions = json.loads(snap.positions_json or "[]")
+        # Conserved book (incl. durable unmanaged NVDA), not raw positions_json.
+        positions = book.total
         snap_fx = float(snap.fx_usd_nis or fx_spot)
         usd_assets_usd, nis_assets_nis, _re_excluded_nis = (
             liquid_components_from_positions(
@@ -1542,17 +1542,16 @@ def render_number_derivations_appendix(
     holdings_as_of = None
     if session is not None and fx_spot:
         try:
-            from sqlalchemy import select
-            from argosy.state.models import PortfolioSnapshotRow
-            snap = session.execute(
-                select(PortfolioSnapshotRow)
-                .where(PortfolioSnapshotRow.user_id == user_id)
-                .order_by(PortfolioSnapshotRow.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-            if snap is not None:
+            from argosy.services.current_book import load_current_book
+            book = load_current_book(session, user_id)
+            snap = book.snapshot
+            # A degraded book must NOT render a HIGH, understated net worth
+            # (durable unmanaged NVDA absent / hard-stale mark); leave the whole
+            # FX-risk block unrendered, exactly as a missing snapshot does.
+            if snap is not None and not book.degraded:
                 holdings_as_of = getattr(snap, "snapshot_date", None)
-                positions = json.loads(snap.positions_json or "[]")
+                # Conserved book (incl. durable unmanaged NVDA), not raw JSON.
+                positions = book.total
                 snap_fx = float(snap.fx_usd_nis or fx_spot)
                 # Bind to the SAME liquid-basis decomposition the resolver uses
                 # (excludes real-estate rows) so the FX-risk net worth + FI gap

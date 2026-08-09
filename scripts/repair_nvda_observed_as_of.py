@@ -98,12 +98,21 @@ def main() -> int:
     print("-" * 60)
 
     # ---- (a) unmanaged_holdings ------------------------------------------
+    # SCOPED to (user_id, status='active'): an unscoped UPDATE on symbol +
+    # observed_as_of alone would rewrite ANY user's — or a RETIRED — NVDA row
+    # that happens to carry the corrupted date in a multi-tenant/historical DB
+    # (Sol BLOCK-7). The snapshot side was already user-scoped; match it here.
     uh_rows = cur.execute(
-        "SELECT id, symbol, shares, valued_as_of, observed_as_of "
-        "FROM unmanaged_holdings WHERE symbol = ? AND observed_as_of = ?",
-        (SYMBOL, OLD_DATE),
+        "SELECT id, symbol, shares, valued_as_of, observed_as_of, location "
+        "FROM unmanaged_holdings "
+        "WHERE user_id = ? AND symbol = ? AND status = 'active' "
+        "AND observed_as_of = ?",
+        (args.user, SYMBOL, OLD_DATE),
     ).fetchall()
-    print(f"[unmanaged_holdings] rows matching {SYMBOL} observed_as_of={OLD_DATE}: {len(uh_rows)}")
+    print(
+        f"[unmanaged_holdings] active rows for user={args.user} matching "
+        f"{SYMBOL} observed_as_of={OLD_DATE}: {len(uh_rows)}"
+    )
     for r in uh_rows:
         print(
             f"  id={r['id']} shares={r['shares']} "
@@ -140,8 +149,9 @@ def main() -> int:
     # ---- apply -----------------------------------------------------------
     cur.execute(
         "UPDATE unmanaged_holdings SET observed_as_of = ? "
-        "WHERE symbol = ? AND observed_as_of = ?",
-        (NEW_DATE, SYMBOL, OLD_DATE),
+        "WHERE user_id = ? AND symbol = ? AND status = 'active' "
+        "AND observed_as_of = ?",
+        (NEW_DATE, args.user, SYMBOL, OLD_DATE),
     )
     uh_written = cur.rowcount
     if json_changed:

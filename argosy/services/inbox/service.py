@@ -594,7 +594,7 @@ def build_inbox(
     try:
         from argosy.services.inbox.trade_plan import build_trade_plan
 
-        trade_plan = build_trade_plan(db, user_id)
+        trade_plan = build_trade_plan(db, user_id, today=today)
     except Exception:  # noqa: BLE001
         _log.exception("inbox.trade_plan_failed", extra={"user_id": user_id})
 

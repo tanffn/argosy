@@ -1356,7 +1356,7 @@ def test_dashboard_total_book_includes_fresh_durable_nvda(fixture_db):
         snap_date=today,
         totals_k=400.0,
     )
-    positions, degrade = _total_book_positions(
+    positions, degrade, _stale = _total_book_positions(
         snapshot=incomplete, session=fixture_db, user_id="ariel",
     )
     assert degrade is None

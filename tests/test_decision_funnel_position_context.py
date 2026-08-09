@@ -46,11 +46,15 @@ def session():
 def _add_snapshot(session, positions):
     from datetime import date
 
+    # Fresh marks (today): the funnel book now flows through the canonical
+    # conserved-book accessor, which degrades a hard-stale/unrepriceable
+    # snapshot to an empty book. A current date keeps this fixture exercising
+    # the weight/context math rather than the (correct) degrade path.
     session.add(
         PortfolioSnapshotRow(
             user_id="ariel",
-            snapshot_date=date(2026, 7, 7),
-            imported_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+            snapshot_date=date.today(),
+            imported_at=datetime.now(timezone.utc),
             positions_json=json.dumps(positions),
         )
     )
