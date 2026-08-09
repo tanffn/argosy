@@ -2,8 +2,18 @@
 
 Self-contained handoff for the next LLM. A $2.4M/59% data-loss bug was repaired on
 production; this covers what shipped, the corrected numbers, and the one deliverable
-left (regenerate the plan) — **assuming codex is permanently dead** (it is: 401, no
-`~/.codex/auth.json`; it is a *fleet* dependency, not just review tooling).
+left (regenerate the plan).
+
+> **UPDATE 2026-08-09 — CODEX IS RESTORED (supersedes the "codex is dead" framing below).**
+> Ariel re-logged in (`~/.codex/auth.json` present; `codex login status` = "Logged in
+> using ChatGPT"). **The model is `gpt-5.5`, NOT a literal `sol`** — a ChatGPT-account
+> codex rejects `--model sol` with HTTP 400. Pass `--model gpt-5.5` or omit `--model`
+> (account default = gpt-5.5). The fleet's synthesis second-opinion
+> (`plan_synthesis/codex_second_opinion.py`) passes no `--model` → default gpt-5.5 →
+> **works now**. So **regen precondition B no longer needs the in-harness substitute** —
+> the real codex math-gate runs. (Keep the in-harness re-derivation as a belt-and-braces
+> cross-check if you like, but codex is live.) Everywhere below that says "codex is dead"
+> / "assume codex doesn't work" is now historical.
 
 ---
 
