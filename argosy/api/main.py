@@ -939,6 +939,33 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # VerdictTriggerSweepLoop (2026-08) — cheap deterministic settled-verdict
+        # trigger sweep that ESCALATES: a TRIPPED typed trigger fires a full
+        # re-verdict (run_deep_decision), citing the trigger as the new fact.
+        # 07:30 IDT daily (just after the 07:00 unlock loop). Idempotent per
+        # verdict; only tripped names pay the LLM cost.
+        try:
+            from argosy.orchestrator.loops.verdict_trigger_sweep import (  # noqa: PLC0415
+                VerdictTriggerSweepLoop,
+                verdict_trigger_sweep_metadata,
+            )
+
+            vsweep_loop = VerdictTriggerSweepLoop(
+                enabled=True,
+                user_id="ariel",
+            )
+            scheduler.register_loop(vsweep_loop)
+            registry.register(
+                job=vsweep_loop,
+                metadata=verdict_trigger_sweep_metadata(),
+            )
+            log.info("scheduler.verdict_trigger_sweep_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.verdict_trigger_sweep_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # SynthesisStallAlertLoop (Item I, 2026-07-12) — every 5 min, alert
         # when a plan_revision run is in flight with no phase heartbeat.
         try:
