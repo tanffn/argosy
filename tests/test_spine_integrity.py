@@ -409,13 +409,20 @@ def test_ambiguous_blank_lots_fail(session):
     assert "ambiguous" in (res.reason or "").lower()
 
 
-def test_item_value_mismatch_fails(session):
+def test_item_value_mismatch_is_diagnostic_not_fail(session):
+    # shares*price != value_local is EXPECTED for real rows whose contract
+    # multiplier != 1 (e.g. Leumi index funds); with no per-instrument
+    # multiplier feed, per-item reconciliation is a DIAGNOSTIC, not a hard gate —
+    # else the whole legitimate live book false-refuses (found on prod snapshot
+    # 54: 3 real Leumi index funds). Record the mismatch; do not FAIL on it.
     bad = _pos("AAPL", 100, 200.0)
-    bad["current_value_local"] = 10000.0  # should be 20000 -> gross mismatch
+    bad["current_value_local"] = 10000.0  # shares*price=20000 -> mismatch
     row = _add_snapshot(session, [bad, _pos("MSFT", 50, 400.0)])
     res = assess_snapshot_integrity(session, USER, row)
-    assert res.result == RESULT_FAIL
-    assert "value" in (res.reason or "").lower()
+    assert res.result == RESULT_PASS  # diagnostic, never a hard gate
+    assert res.detail["checks"]["per_item_value_local"].startswith("diagnostic")
+    assert res.detail["per_item_value_diagnostics"]  # the mismatch is recorded
+    assert any("contract_multiplier" in u for u in res.detail["unavailable_checks"])
 
 
 def test_read_validated_snapshot_returns_positions_on_pass_match(session):

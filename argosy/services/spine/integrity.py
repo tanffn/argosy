@@ -76,6 +76,13 @@ _UNAVAILABLE_CHECKS: tuple[str, ...] = (
     "instrument_stable_id:no-ISIN/CUSIP/contract-id-feed (spec §2A)",
     "broker_reported_account_total:no-signed-account-total-feed (spec §2A)",
     "expected_event_set_completeness:no-broker-activity-manifest (spec §2A)",
+    # Per-item value reconciliation is value_local = shares × price ×
+    # contract_multiplier (spec §2A). We have no per-instrument multiplier feed,
+    # so shares × price != value_local is EXPECTED for real rows whose
+    # multiplier != 1 (e.g. the Leumi index funds). Per-item is therefore a
+    # DIAGNOSTIC, not a hard gate; the reliable value defense is
+    # broker_reported_account_total (also unavailable).
+    "contract_multiplier:no-per-instrument-multiplier-feed (spec §2A value_local=shares×price×multiplier)",
 )
 
 RESULT_PASS = "pass"
@@ -579,10 +586,17 @@ def assess_snapshot_integrity(
     except Exception as exc:  # noqa: BLE001 — surfaced loudly as a FAIL verdict
         _fail("book_degraded", f"book load error: {type(exc).__name__}: {exc}")
 
-    # 6. Per-item value sanity (shares × price ≈ value_local).
+    # 6. Per-item value reconciliation — DIAGNOSTIC ONLY, never a hard gate.
+    # value_local = shares × price × contract_multiplier (spec §2A); with no
+    # per-instrument multiplier feed, shares×price != value_local is EXPECTED
+    # for real rows whose multiplier != 1 (Leumi index funds etc.). Record any
+    # mismatch for a human, but do NOT fail the book on a check we cannot run
+    # reliably without the multiplier data — that would false-refuse the whole
+    # legitimate book. The reliable value defense (broker-total reconciliation)
+    # is a named unavailable prerequisite.
     mismatches = _assess_item_value_sanity(positions)
     if mismatches:
-        _fail("per_item_value_local", "per-item value mismatch: " + "; ".join(mismatches))
+        checks["per_item_value_local"] = f"diagnostic:unreconciled({len(mismatches)})"
     else:
         _ok("per_item_value_local")
 
@@ -594,6 +608,7 @@ def assess_snapshot_integrity(
         "position_count": len(positions),
         "prior_snapshot_id": getattr(prior, "id", None),
         "unavailable_checks": list(_UNAVAILABLE_CHECKS),
+        "per_item_value_diagnostics": mismatches,
     }
     return IntegrityResult(
         result=result,
