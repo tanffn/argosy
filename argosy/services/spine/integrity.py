@@ -730,6 +730,181 @@ def record_integrity_verdict(session: Any, user_id: str, snapshot_row: Any):
     return verdict
 
 
+def record_integrity_verdict_if_absent(session: Any, user_id: str, snapshot_row: Any):
+    """Record the FIRST verdict for a snapshot exactly-once — constraint-arbitrated.
+
+    :func:`record_integrity_verdict` ALWAYS appends (``max+1``); its CAS prevents
+    a lost head update but NOT a double-record. A check-then-``max+1`` seam is
+    racy in a way no exception surfaces: a concurrent writer can COMMIT ``seq=1``
+    in the window after our absence check but before ``max+1`` reads ``prior_max``;
+    the reader then sees ``prior_max=1``, appends ``seq=2`` and advances the head
+    normally — leaving a silent duplicate ``[1, 2]``. The AUTOMATIC paths (persist
+    hook, backfill) want at-most-once, so this seam does NOT delegate to ``max+1``.
+
+    Instead the DB UNIQUE constraint is the sole arbiter: we CLAIM
+    ``verdict_seq = 1`` for this snapshot in ONE transaction —
+
+      1. INSERT the verdict with ``verdict_seq = 1``. ``UNIQUE(snapshot_id,
+         verdict_seq)`` lets exactly ONE writer win; a racing second ``seq=1``
+         INSERT raises :class:`~sqlalchemy.exc.IntegrityError`.
+      2. INSERT the head (PK ``snapshot_id``) pointing at that verdict; a racing
+         head insert likewise collides.
+      3. commit.
+
+    On ANY :class:`~sqlalchemy.exc.IntegrityError` / :class:`IntegrityHeadRaced`
+    (a concurrent writer won the ``seq=1`` claim or created the head) the whole
+    transaction is rolled back and we SKIP (return ``None``) — treated as
+    already-recorded, never raised out. Two concurrent if-absent calls: exactly
+    one wins the ``seq=1`` INSERT + head; the loser collides, rolls back, skips.
+
+    A fast-path absence check short-circuits the common re-run/backfill case, but
+    correctness rides on the constraint, not the check. Deliberate re-assessment
+    still goes through :func:`record_integrity_verdict` (``max+1`` + CAS), which
+    legitimately appends ``seq>=2`` and supersedes — that path is unchanged.
+
+    Returns the newly-recorded ``IntegrityVerdict``, or ``None`` when a verdict
+    was already present (or won by a concurrent writer).
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from argosy.state.models import IntegrityVerdict, IntegrityVerdictHead
+
+    snapshot_id = getattr(snapshot_row, "id", None)
+    if snapshot_id is None:
+        raise ValueError("record_integrity_verdict_if_absent: snapshot_row has no id")
+    # Cross-tenant authorship is a programming error, NOT a race — raise (mirrors
+    # record_integrity_verdict). Never author a verdict over another's snapshot.
+    snap_owner = getattr(snapshot_row, "user_id", None)
+    if snap_owner != user_id:
+        raise CrossTenantVerdict(
+            f"user_id {user_id!r} may not author a verdict for snapshot "
+            f"{snapshot_id} owned by {snap_owner!r}"
+        )
+
+    # Fast path only — the UNIQUE claim below is the real arbiter.
+    if session.get(IntegrityVerdictHead, snapshot_id) is not None:
+        return None
+
+    content_hash = compute_snapshot_content_hash(snapshot_row)
+    assessment = assess_snapshot_integrity(session, user_id, snapshot_row)
+
+    verdict = IntegrityVerdict(
+        user_id=user_id,
+        snapshot_id=snapshot_id,
+        result=assessment.result,
+        snapshot_content_hash=content_hash,
+        verdict_seq=1,  # the CLAIM — UNIQUE(snapshot_id, verdict_seq) arbitrates
+        threshold_policy_version=THRESHOLD_POLICY_VERSION,
+        reason=assessment.reason,
+        detail_json=json.dumps(assessment.detail, ensure_ascii=False),
+        authored_at=datetime.now(timezone.utc),
+    )
+    try:
+        session.add(verdict)
+        session.flush()  # UNIQUE(snapshot_id, verdict_seq=1) enforced here
+        session.add(
+            IntegrityVerdictHead(
+                snapshot_id=snapshot_id,
+                current_verdict_id=verdict.id,
+                seq=1,
+            )
+        )
+        session.flush()  # head PK(snapshot_id) enforced here
+        session.commit()
+    except (IntegrityError, IntegrityHeadRaced) as exc:
+        # A concurrent writer won the seq=1 claim (or created the head) between
+        # our absence check and this insert — exactly-once holds via the DB.
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        log.info(
+            "spine.integrity.verdict_already_present",
+            snapshot_id=snapshot_id,
+            reason=f"{type(exc).__name__}",
+        )
+        return None
+    except Exception:
+        session.rollback()
+        raise
+
+    log.info(
+        "spine.integrity.verdict_recorded",
+        snapshot_id=snapshot_id,
+        verdict_id=verdict.id,
+        result=verdict.result,
+        verdict_seq=1,
+        content_hash=content_hash[:12],
+        threshold_policy_version=THRESHOLD_POLICY_VERSION,
+        exactly_once=True,
+    )
+    return verdict
+
+
+def backfill_integrity_verdicts(session: Any, user_id: str | None = None) -> dict[str, int]:
+    """Record a verdict for every snapshot that has NO current verdict head.
+
+    Idempotent + re-runnable: a snapshot that already carries an
+    ``integrity_verdict_head`` is SKIPPED (never re-appended), so a second run
+    over the same book is a no-op. Optionally scope to a single ``user_id``;
+    otherwise every user's snapshots are covered (each verdict is authored under
+    the snapshot's OWN ``user_id``, so cross-tenant authorship never occurs).
+
+    Writes ONLY the spine tables (``integrity_verdict`` / ``integrity_verdict_head``)
+    — never the money tables. Each snapshot is recorded in its own transaction
+    (``record_integrity_verdict`` commits per row) via the exactly-once
+    :func:`record_integrity_verdict_if_absent` seam, so it can safely race a live
+    persist hook. A single row's failure — INCLUDING a failed head-existence
+    lookup — is logged and does NOT abort the backfill. Returns a
+    ``{recorded, skipped, failed, total}`` tally.
+    """
+    from sqlalchemy import select
+
+    from argosy.state.models import PortfolioSnapshotRow
+
+    q = select(PortfolioSnapshotRow)
+    if user_id is not None:
+        q = q.where(PortfolioSnapshotRow.user_id == user_id)
+    rows = session.execute(q.order_by(PortfolioSnapshotRow.id)).scalars().all()
+
+    recorded = skipped = failed = 0
+    for row in rows:
+        snapshot_id = getattr(row, "id", None)
+        if snapshot_id is None:
+            failed += 1
+            continue
+        try:
+            # Head-existence check lives INSIDE the try (via record-if-absent) so
+            # a DB error during the lookup counts as one failed row, never an
+            # aborted run. record-if-absent returns None when already headed.
+            verdict = record_integrity_verdict_if_absent(session, row.user_id, row)
+            if verdict is None:
+                skipped += 1
+            else:
+                recorded += 1
+        except Exception as exc:  # noqa: BLE001 — one bad row must not abort backfill
+            failed += 1
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            log.warning(
+                "spine.integrity.backfill_row_failed",
+                snapshot_id=snapshot_id,
+                user_id=getattr(row, "user_id", None),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    tally = {
+        "recorded": recorded,
+        "skipped": skipped,
+        "failed": failed,
+        "total": len(rows),
+    }
+    log.info("spine.integrity.backfill_complete", **tally, scoped_user=user_id)
+    return tally
+
+
 __all__ = [
     "IntegrityResult",
     "IntegrityHeadRaced",
@@ -740,4 +915,6 @@ __all__ = [
     "compute_snapshot_content_hash",
     "assess_snapshot_integrity",
     "record_integrity_verdict",
+    "record_integrity_verdict_if_absent",
+    "backfill_integrity_verdicts",
 ]

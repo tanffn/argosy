@@ -493,6 +493,7 @@ class DecisionFlow:
                 reasoning_md=trader_proposal.rationale_summary or "",
                 falsifiers=_hold_fals,
                 revisit_triggers=_hold_trigs,
+                stop=trader_proposal.stop_price,
             )
             return BlockedProposal(
                 reason=f"Trader returned HOLD: {trader_proposal.rationale_summary}",
@@ -814,6 +815,7 @@ class DecisionFlow:
             named_sleeve=(funnel_meta or {}).get("named_sleeve"),
             falsifiers=_appr_fals,
             revisit_triggers=_appr_trigs,
+            stop=trader_proposal.stop_price,
         )
 
         try:
@@ -853,6 +855,7 @@ class DecisionFlow:
         named_sleeve: str | None = None,
         falsifiers: list[str] | None = None,
         revisit_triggers: list[dict] | None = None,
+        stop: float | None = None,
     ) -> None:
         """Write settled verdict + retract contradictory open proposals atomically.
 
@@ -912,6 +915,36 @@ class DecisionFlow:
         except Exception as exc:  # noqa: BLE001 — registry write must not fail the flow
             _log.warning(
                 "decision_flow.verdict_registry_write_failed",
+                ticker=ticker, error=str(exc)[:200],
+            )
+
+        # Phase-2 spine — record the SAME settled verdict as an immutable
+        # observed_decision alongside the registry write (spec §2A). Fully
+        # isolated (its own session) + best-effort: a spine failure can never
+        # alter the verdict registry write above nor the decision flow. Additive
+        # only — never changes what the fleet decided.
+        try:
+            from argosy.services.spine.fleet_recording import (
+                record_fleet_decision_best_effort,
+            )
+
+            record_fleet_decision_best_effort(
+                user_id=self.user_id,
+                subject=ticker,
+                action=verdict,
+                conviction=conviction or "MED",
+                decision_run_id=decision_run_id or None,
+                stop=stop,
+                # target_band / alternative_at_birth are not authored by the
+                # trader today → explicit null → honestly, permanently unscorable.
+                target_band=None,
+                alternative_at_birth=None,
+                falsifiers=falsifiers or [],
+                revisit_triggers=revisit_triggers or [],
+            )
+        except Exception as exc:  # noqa: BLE001 — belt-and-suspenders; wrapper already swallows
+            _log.warning(
+                "decision_flow.spine_decision_record_failed",
                 ticker=ticker, error=str(exc)[:200],
             )
 

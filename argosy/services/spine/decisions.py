@@ -137,6 +137,7 @@ def observe_decision(
     source_input_id: str | None = None,
     input_fingerprint: str,
     conviction: str | None = None,
+    source_decision_run_id: int | None = None,
 ):
     """Write an immutable :class:`ObservedDecision`. ALWAYS writes.
 
@@ -144,6 +145,13 @@ def observe_decision(
     ``UNIQUE(user_id, ingress_seq)`` conflict (a concurrent observe grabbed the same
     seq), roll back the savepoint, re-read MAX+1, and retry — so a concurrent observe
     is never LOST (defect 2). Does NOT commit the caller's session (defect 3).
+
+    ``source_decision_run_id`` (migration 0100) is the durable IDENTITY of a
+    per-ticker fleet decision — the fleet run, not the book. A partial UNIQUE index
+    on ``(user_id, subject, decision_kind, source_decision_run_id)`` makes a caller's
+    re-record of the same run idempotent; the caller catches that conflict and
+    re-selects (the run identity, unlike ``ingress_seq``, is caller-supplied so it is
+    NOT retried here — a genuine run-collision must surface, not silently re-seq).
     """
     from argosy.state.models import ObservedDecision
 
@@ -164,17 +172,26 @@ def observe_decision(
             validation_status_at_birth=status,
             observed_source_input_id=source_input_id,
             birth_input_fingerprint=input_fingerprint,
+            source_decision_run_id=source_decision_run_id,
             authored_at=datetime.now(timezone.utc),
         )
         try:
             with session.begin_nested():  # SAVEPOINT — flushes on release
                 session.add(observed)
-        except IntegrityError as exc:  # UNIQUE(user_id, ingress_seq) lost the race
-            last_err = exc
-            # Drop the rolled-back pending row so the next autoflush can't re-insert
-            # it (a stale object would collide again / duplicate).
+        except IntegrityError as exc:
+            # Only the ``ingress_seq`` UNIQUE race is retried (re-seq). Any OTHER
+            # UNIQUE (the caller-supplied ``source_decision_run_id`` run-identity
+            # index, migration 0100) is NOT a seq race — re-seqing would loop
+            # forever, so surface it so the caller can re-select the winner.
             if observed in session:
                 session.expunge(observed)
+            # Inspect the RAW DB message (``exc.orig``) — the SQLAlchemy str echoes
+            # the whole INSERT column list (which always names ``ingress_seq``), so
+            # only the driver message distinguishes WHICH unique constraint failed.
+            raw = str(getattr(exc, "orig", exc))
+            if "ingress_seq" not in raw:
+                raise
+            last_err = exc  # UNIQUE(user_id, ingress_seq) lost the race — retry
             continue
         log.info(
             "spine.decision.observed",

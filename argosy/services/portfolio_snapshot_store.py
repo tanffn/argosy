@@ -379,7 +379,60 @@ def persist_snapshot(
     else:
         session.flush()
     session.refresh(row)
+    # SPINE integrity floor (best-effort). Every durably-persisted snapshot gets
+    # a conservation verdict recorded to the spine tables. This is the single
+    # lowest common persist point — write_through_if_changed and
+    # persist_snapshot_from_tsv both route through here — so manual import,
+    # self-refresh and restore all pass through it once.
+    #
+    # Fired ONLY when we own the commit (``commit=True``): the row is durable and
+    # the caller has no other pending work, so record_integrity_verdict's own
+    # commit/rollback stays isolated and cannot poison anything. In a deferred
+    # batch (``commit=False``) the durable write happens at the caller's LATER
+    # commit; recording the verdict here would prematurely commit — or on failure
+    # roll back — the whole atomic batch. Those rows instead get their verdict
+    # from ``backfill_integrity_verdicts`` (idempotent, re-runnable). Recording is
+    # BEST-EFFORT by contract — a verdict failure NEVER breaks the snapshot write.
+    if commit:
+        _record_integrity_verdict_best_effort(session, user_id, row)
     return row
+
+
+def _record_integrity_verdict_best_effort(
+    session: Session, user_id: str, row: PortfolioSnapshotRow
+) -> None:
+    """Record the spine integrity verdict for ``row``; swallow EVERY failure.
+
+    The verdict is an integrity-floor observation, not part of the money write:
+    a failure here (spine tables absent, a lost CAS race, any error) is logged at
+    WARNING and NEVER propagated, so it can never break snapshot persistence, the
+    daily refresh, or a restore. Reuses the caller's already-committed session
+    cleanly, via the exactly-once ``record_integrity_verdict_if_absent`` seam so a
+    concurrent backfill can't cause a double-record. On ANY failure the caller's
+    session is rolled back before returning — the snapshot is already durably
+    committed, so the rollback only discards the failed verdict work and always
+    leaves the session usable (a DB error raised before the recorder's own
+    internal rollback-try would otherwise strand the caller in a failed txn).
+    """
+    try:
+        from argosy.services.spine.integrity import (
+            record_integrity_verdict_if_absent,
+        )
+
+        record_integrity_verdict_if_absent(session, user_id, row)
+    except Exception as exc:  # noqa: BLE001 — best-effort; ingest must not break
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        from argosy.logging import get_logger
+
+        get_logger("argosy.portfolio_snapshot_store").warning(
+            "spine.integrity.verdict_record_failed",
+            user_id=user_id,
+            snapshot_id=getattr(row, "id", None),
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _canonical_rows(items: Any) -> list[str]:

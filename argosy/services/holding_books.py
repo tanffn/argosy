@@ -1922,6 +1922,29 @@ def backfill_restored_holdings_book(
     if commit:
         session.commit()
         session.refresh(row)
+        # SPINE integrity floor (best-effort): a restored snapshot is a durable
+        # PortfolioSnapshotRow that never passes through persist_snapshot, so it
+        # would otherwise carry NO verdict until a manual backfill. Record one
+        # here, exactly-once and swallow-all — a verdict failure must NEVER break
+        # the restore. Fired only when we own the commit; a commit=False restore
+        # inside a surrounding batch gets its verdict from the caller / backfill.
+        try:
+            from argosy.services.spine.integrity import (
+                record_integrity_verdict_if_absent,
+            )
+
+            record_integrity_verdict_if_absent(session, user_id, row)
+        except Exception as exc:  # noqa: BLE001 — best-effort; restore must not break
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            get_logger("argosy.holding_books").warning(
+                "spine.integrity.verdict_record_failed",
+                user_id=user_id,
+                snapshot_id=getattr(row, "id", None),
+                error=f"{type(exc).__name__}: {exc}",
+            )
     else:
         session.flush()
 

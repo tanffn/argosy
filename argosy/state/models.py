@@ -4961,6 +4961,10 @@ class ObservedDecision(Base):
     validation_status_at_birth: Mapped[str] = mapped_column(Text, nullable=False)
     observed_source_input_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     birth_input_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    # Migration 0100 — the durable IDENTITY of a per-ticker fleet decision is the
+    # fleet RUN, not the book. The partial unique index below makes exactly-one
+    # observation per run race-safe (independent of snapshot-hash churn).
+    source_decision_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -4968,6 +4972,16 @@ class ObservedDecision(Base):
         ),
         Index("ix_observed_decision_user", "user_id"),
         Index("ix_observed_decision_subject", "subject"),
+        # Partial unique — run identity enforced only when a run id is present.
+        Index(
+            "uq_observed_decision_run",
+            "user_id",
+            "subject",
+            "decision_kind",
+            "source_decision_run_id",
+            unique=True,
+            sqlite_where=_sa_text("source_decision_run_id IS NOT NULL"),
+        ),
     )
 
 
