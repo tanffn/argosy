@@ -565,12 +565,18 @@ def build_weekly_digest(
     flags = [_serialize_flag(f) for f in flag_rows]
 
     # Open proposals — current state, severity-then-recency sorted.
+    # DEFECT A — exclude the all-holdings coverage sweep's internal cooldown
+    # markers (checked/retry) IN THE SQL, BEFORE the LIMIT, so a burst of markers
+    # can never crowd real proposals out of the digest body.
+    from argosy.services.verdict_coverage import coverage_marker_sql_exclusion
+
     proposal_rows = list(
         session.execute(
             select(ActionProposal)
             .where(
                 ActionProposal.user_id == user_id,
                 ActionProposal.status == "open",
+                coverage_marker_sql_exclusion(ActionProposal.dedup_key),
             )
             .order_by(
                 # Severity DESC is a synthetic ordering — SQL's text
@@ -619,12 +625,15 @@ def build_weekly_digest(
             ),
         )
 
-    # Overall summary numbers.
+    # Overall summary numbers. DEFECT A — exclude coverage markers from the open
+    # count too, so bookkeeping rows never inflate open_proposal_count /
+    # has_any_activity (which would send an "activity" digest with nothing real).
     open_count = session.scalar(
         select(__import__("sqlalchemy").func.count(ActionProposal.id))
         .where(
             ActionProposal.user_id == user_id,
             ActionProposal.status == "open",
+            coverage_marker_sql_exclusion(ActionProposal.dedup_key),
         )
     ) or 0
     flag_total = session.scalar(

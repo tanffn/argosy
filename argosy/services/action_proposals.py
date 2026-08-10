@@ -150,6 +150,15 @@ def list_open_action_proposals(
         .where(ActionProposal.status == "open")
     )
     rows = list(session.execute(stmt).scalars().all())
+    # DEFECT A — the all-holdings coverage sweep stores its per-symbol cooldown
+    # markers as ``status='open'`` action_proposals (reusing the dedup mechanism,
+    # no schema change). They are INTERNAL bookkeeping and must never surface as
+    # user-visible proposals/inbox chatter — filter them here (the single read
+    # site for the /proposals list, the inbox, and the home greeting). The
+    # cooldown logic still queries these rows directly by dedup_key + expires_at.
+    from argosy.services.verdict_coverage import is_coverage_marker_dedup_key
+
+    rows = [r for r in rows if not is_coverage_marker_dedup_key(getattr(r, "dedup_key", None))]
     severity_rank = {"critical": 0, "warning": 1, "info": 2}
     rows.sort(
         key=lambda r: (

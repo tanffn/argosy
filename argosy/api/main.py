@@ -966,6 +966,35 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # HoldingsCoverageSweepLoop (2026-08) — all-holdings verdict-coverage.
+        # thesis_monitor covers individual STOCKS only, so ETFs / funds / bonds
+        # / REITs (+ unmanaged NVDA) can sit with no standing verdict. This
+        # daily loop reads a deterministic coverage report over EVERY held
+        # symbol and escalates a full re-verdict for uncovered/stale names,
+        # capped by a per-run limit (most-overdue first). Cheap report; only
+        # capped names pay the LLM cost.
+        try:
+            from argosy.orchestrator.loops.holdings_coverage_sweep import (  # noqa: PLC0415
+                HoldingsCoverageSweepLoop,
+                holdings_coverage_sweep_metadata,
+            )
+
+            coverage_loop = HoldingsCoverageSweepLoop(
+                enabled=True,
+                user_id="ariel",
+            )
+            scheduler.register_loop(coverage_loop)
+            registry.register(
+                job=coverage_loop,
+                metadata=holdings_coverage_sweep_metadata(),
+            )
+            log.info("scheduler.holdings_coverage_sweep_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.holdings_coverage_sweep_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # SynthesisStallAlertLoop (Item I, 2026-07-12) — every 5 min, alert
         # when a plan_revision run is in flight with no phase heartbeat.
         try:
