@@ -24,15 +24,18 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    DDL,
     Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    event as _sa_event,
     text as _sa_text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -4916,3 +4919,263 @@ class IntegrityVerdictHead(Base):
             name="fk_integrity_verdict_head_same_snapshot",
         ),
     )
+
+
+class ObservedDecision(Base):
+    """The IMMUTABLE decision observation — ALWAYS written, incl. a dirty book.
+
+    PHASE 2 of the spine (operating-model spec §2A "the decision records"). It
+    records that a decision occurred and, immutably, the conditions at birth —
+    including the reasons it may be unscorable. No row is ever mutated after
+    authoring. Migration: alembic 0099.
+
+    ``ingress_seq`` is a durable, monotonic per-user ordinal stamped at authoring
+    (NEVER a timestamp) — the decision-manifest watermark (§2A point 3b).
+    ``predictive_terms_at_birth`` freezes the 6 forward terms (each a value or an
+    EXPLICIT null; a null is permanent). ``validation_status_at_birth`` records the
+    status AT AUTHORING; live gradability is derived from the existence of a
+    :class:`ValidatedDecision` child, never read from (or written back to) here.
+    """
+
+    __tablename__ = "observed_decision"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # §2A(a) provenance — conviction at authoring (Sol defect 6). Nullable.
+    conviction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    ingress_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    predictive_terms_at_birth: Mapped[dict] = mapped_column(JSON, nullable=False)
+    validation_status_at_birth: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_source_input_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    birth_input_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "ingress_seq", name="uq_observed_decision_user_ingress_seq"
+        ),
+        Index("ix_observed_decision_user", "user_id"),
+        Index("ix_observed_decision_subject", "subject"),
+    )
+
+
+class ValidatedDecision(Base):
+    """Immutable gradable terms — exists ONLY when the observation is gradable.
+
+    Constructed (spec §2A(b)) ONLY when the parent :class:`ObservedDecision` had
+    every predictive term non-null at birth (``validation_status_at_birth ==
+    'gradable'``) AND the birth-input fingerprint matches. One per observation
+    (``observed_decision_id`` UNIQUE). Migration: alembic 0099.
+    """
+
+    __tablename__ = "validated_decision"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    observed_decision_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("observed_decision.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # The validated_snapshot graded against — NOT NULL (Sol defect 1): a promotion
+    # MUST name the validated book. The validated_snapshot TABLE is a forthcoming
+    # Phase-1 enforcement, so this is a plain id ref (FK to come) for now.
+    input_validated_snapshot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # §2A(b) provenance columns (Sol defect 6) — nullable where the data is a
+    # deferred prerequisite, but the columns EXIST so records are complete.
+    instrument_stable_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conviction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cost_basis_completeness: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_freshness: Mapped[str | None] = mapped_column(Text, nullable=True)
+    equivalence_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The FULL validated terms (not just the 6 birth keys) — defect 6.
+    validated_terms: Mapped[dict] = mapped_column(JSON, nullable=False)
+    authored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "observed_decision_id", name="uq_validated_decision_observed"
+        ),
+        Index("ix_validated_decision_user", "user_id"),
+    )
+
+
+class ValidatedDecisionOutcome(Base):
+    """APPEND-ONLY, exactly-once, fully-provenanced grade (spec §2A(c)).
+
+    Scoring NEVER mutates the event — it appends this outcome. A UNIQUE key over
+    the 5 calc-provenance columns makes an identical retry a no-op; a re-grade
+    under a changed version appends a new row carrying ``supersedes_outcome_id``
+    (same ``validated_decision_id``) and CAS-advances
+    :class:`ValidatedDecisionOutcomeHead`. ``vs_benchmark_delta`` is DEFERRED (a
+    later attribution phase derives it from the contribution_ledger); it stays
+    NULL now. Migration: alembic 0099.
+    """
+
+    __tablename__ = "validated_decision_outcome"
+
+    outcome_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    validated_decision_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("validated_decision.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    evaluation_window_id: Mapped[str] = mapped_column(Text, nullable=False)
+    benchmark_version: Mapped[str] = mapped_column(Text, nullable=False)
+    exposure_mapping_version: Mapped[str] = mapped_column(Text, nullable=False)
+    calculator_version: Mapped[str] = mapped_column(Text, nullable=False)
+    linking_algorithm_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # §2A(c) provenance columns (Sol defect 6).
+    outcome_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_mortem_category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    regime: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shadow: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=_sa_text("0")
+    )
+    # DEFERRED — a later attribution phase derives this from the contribution_ledger.
+    # CHECK-pinned to NULL so a fabricated delta is impossible today (defect 5).
+    vs_benchmark_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    authored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    supersedes_outcome_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "vs_benchmark_delta IS NULL",
+            name="ck_validated_decision_outcome_delta_deferred",
+        ),
+        UniqueConstraint(
+            "validated_decision_id",
+            "evaluation_window_id",
+            "benchmark_version",
+            "exposure_mapping_version",
+            "calculator_version",
+            name="uq_validated_decision_outcome_idem",
+        ),
+        # Exactly one successor per superseded outcome — the chain cannot fork.
+        UniqueConstraint(
+            "supersedes_outcome_id",
+            name="uq_validated_decision_outcome_supersedes",
+        ),
+        # A supersession may not cross decisions.
+        ForeignKeyConstraint(
+            ["supersedes_outcome_id", "validated_decision_id"],
+            [
+                "validated_decision_outcome.outcome_id",
+                "validated_decision_outcome.validated_decision_id",
+            ],
+            name="fk_validated_decision_outcome_supersedes_same_decision",
+        ),
+        # Composite-unique target for the head's composite FK.
+        UniqueConstraint(
+            "validated_decision_id",
+            "outcome_id",
+            name="uq_validated_decision_outcome_decision_id",
+        ),
+        Index(
+            "ix_validated_decision_outcome_decision", "validated_decision_id"
+        ),
+        # One ROOT per decision — a partial unique index forbids a second
+        # disconnected supersedes-NULL chain root (Sol defect 4a).
+        Index(
+            "uq_vdo_root",
+            "validated_decision_id",
+            unique=True,
+            sqlite_where=_sa_text("supersedes_outcome_id IS NULL"),
+        ),
+    )
+
+
+class ValidatedDecisionOutcomeHead(Base):
+    """The single current outcome per ``validated_decision`` — CAS-advanced.
+
+    Exactly one row per decision (PK). A re-grade CAS-advances ``current_outcome_id``
+    + ``seq`` from the prior head to the superseding outcome in the same
+    transaction; the swap fails if the head moved concurrently, so two racing
+    re-grades cannot both win. Every proof surface / learning reads the current
+    outcome ONLY from here, even though the outcome rows are append-only. Mirrors
+    :class:`IntegrityVerdictHead`. Migration: alembic 0099.
+    """
+
+    __tablename__ = "validated_decision_outcome_head"
+
+    validated_decision_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("validated_decision.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    current_outcome_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        # Composite FK: the head may ONLY point at an outcome of the SAME decision.
+        ForeignKeyConstraint(
+            ["validated_decision_id", "current_outcome_id"],
+            [
+                "validated_decision_outcome.validated_decision_id",
+                "validated_decision_outcome.outcome_id",
+            ],
+            name="fk_validated_decision_outcome_head_same_decision",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# DB-level immutability triggers for the three append-only decision records
+# (Sol Phase-2 defect 3). Attached as DDL so BOTH ``create_all`` (tests) AND the
+# alembic 0099 migration (prod) install identical BEFORE UPDATE / BEFORE DELETE
+# guards. ``IF NOT EXISTS`` keeps it idempotent if a DB already carries them (e.g.
+# migration-then-create_all). The outcome HEAD table is intentionally excluded —
+# it is the sole mutable CAS surface.
+# ---------------------------------------------------------------------------
+for _immutable_model in (
+    ObservedDecision,
+    ValidatedDecision,
+    ValidatedDecisionOutcome,
+):
+    _tbl_name = _immutable_model.__tablename__
+    for _op_kind, _suffix in (("UPDATE", "no_update"), ("DELETE", "no_delete")):
+        _sa_event.listen(
+            _immutable_model.__table__,
+            "after_create",
+            DDL(
+                f"CREATE TRIGGER IF NOT EXISTS trg_{_tbl_name}_{_suffix} "
+                f"BEFORE {_op_kind} ON {_tbl_name} "
+                f"BEGIN SELECT RAISE(ABORT, 'append-only: {_tbl_name} is immutable'); "
+                f"END"
+            ),
+        )
+        _sa_event.listen(
+            _immutable_model.__table__,
+            "before_drop",
+            DDL(f"DROP TRIGGER IF EXISTS trg_{_tbl_name}_{_suffix}"),
+        )
