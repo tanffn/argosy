@@ -678,6 +678,90 @@ def _needs_you_from_flag(
 
 
 # ---------------------------------------------------------------------------
+# "How our calls did" — surfacing the decision-learning loop
+# ---------------------------------------------------------------------------
+
+
+def _fmt_signed_pct(v: float | None) -> str:
+    """"+4%" / "-6%" — whole-percent signed move; tiny moves read "flat"."""
+    if v is None:
+        return "flat"
+    if abs(v) < 0.5:
+        return "flat"
+    sign = "+" if v >= 0 else "-"
+    return f"{sign}{abs(v):.0f}%"
+
+
+def _verdict_call_line(o: Any) -> str:
+    """Plain-language "how did this call turn out" line.
+
+    Honest and non-hyping: a SELL/TRIM whose price fell (or a BUY/ADD that
+    rose, or a HOLD held through an up-move) reads "good call"; the inverse
+    reads "miss — worth revisiting"; a wash reads "too close to call". The
+    concrete underlying move is always shown so a win never hides a small
+    edge and a miss is never softened.
+    """
+    subject = (o.subject or o.direction or "the position").strip() or "the position"
+    verdict = (o.verdict or "CALL").strip() or "CALL"
+    when = _fmt_since(o.event_at) if o.event_at is not None else None
+    when_s = f" ({when})" if when else ""
+    move_s = _fmt_signed_pct(o.price_move_pct)
+    neutral = o.direction == "neutral"
+    if o.verdict_grade == "win":
+        judgment = "the hold worked" if neutral else "good call"
+    elif o.verdict_grade == "miss":
+        judgment = (
+            "the hold cost us — worth revisiting"
+            if neutral
+            else "miss — worth revisiting"
+        )
+    else:
+        judgment = "flat — the hold was neutral" if neutral else "too close to call"
+    return f"{verdict} {subject}{when_s}: {subject} {move_s} since — {judgment}"
+
+
+def _how_our_calls_did(
+    session: Session, user_id: str, *, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Bounded list of the most-recently-graded verdict outcomes.
+
+    Best-effort: any read failure yields an empty list so the greeting
+    never breaks on the learning-loop surface. Only GRADED outcomes reach
+    here (the reader excludes ungraded/open predictions)."""
+    try:
+        from argosy.services.predictions.reliability import (
+            recent_verdict_call_outcomes,
+        )
+
+        outcomes = recent_verdict_call_outcomes(session, user_id, limit=limit)
+    except Exception:  # noqa: BLE001 — surfacing only; must never sink greeting
+        _log.warning("home_greeting.how_our_calls_did_failed", exc_info=True)
+        return []
+    out: list[dict[str, Any]] = []
+    for o in outcomes:
+        try:
+            out.append(
+                {
+                    "id": f"verdict:{o.verdict_id}",
+                    "subject": o.subject,
+                    "verdict": o.verdict,
+                    "grade": o.verdict_grade,  # win / miss / neutral
+                    "move_pct": o.price_move_pct,
+                    "headline": _verdict_call_line(o),
+                    "as_of": (
+                        o.evaluated_at.date().isoformat()
+                        if o.evaluated_at is not None
+                        else None
+                    ),
+                }
+            )
+        except Exception:  # noqa: BLE001 — one bad row must not drop the section
+            _log.warning("home_greeting.call_line_failed", exc_info=True)
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
 
@@ -758,6 +842,10 @@ def build_greeting(
         },
         "needs_you": needs_you,
         "watching": watching,
+        # How our past deep-decision verdicts actually turned out — the
+        # decision-learning loop, wins AND misses, plain-language. Empty
+        # (best-effort) when nothing is graded yet or on any read error.
+        "how_our_calls_did": _how_our_calls_did(session, user_id),
         "quiet": not needs_you and not watching,
         "next_review_local": _next_review_local(user_id, now=now_dt),
     }
@@ -772,6 +860,8 @@ __all__ = [
     "build_greeting",
     "classify_flag",
     "headline_for_flag",
+    "_how_our_calls_did",
+    "_verdict_call_line",
     "classify_proposal",
     "is_internal_flag",
     "select_active_flags",

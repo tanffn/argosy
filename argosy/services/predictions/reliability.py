@@ -72,17 +72,19 @@ migration; this module trusts the view.
 """
 from __future__ import annotations
 
+import json
 import statistics
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from threading import RLock
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
+from argosy.services.predictions.writers import DEEP_DECISION_VERDICT_SOURCE
 from argosy.state.models import EvaluationMethod, Prediction, PredictionOutcome
 
 _log = get_logger("argosy.services.predictions.reliability")
@@ -826,17 +828,185 @@ def signal_source_scorecard(
     }
 
 
+# ---------------------------------------------------------------------------
+# Deep-decision verdict outcomes — "how our calls did" read side
+# ---------------------------------------------------------------------------
+#
+# The verdict bridge (writers.write_deep_decision_verdict_prediction) emits one
+# prediction per settled deep-decision verdict under the
+# DEEP_DECISION_VERDICT_SOURCE label; the LIVE evaluator grades it into a
+# ``prediction_outcomes`` row. This reader joins the two back so a surface
+# (the home greeting) can show the client how our PAST verdicts actually
+# turned out — wins AND misses, honestly.
+
+#: Graded outcome kinds a verdict can land in — ``unparseable`` (and any
+#: still-open/ungraded prediction, which has NO outcome row) are excluded.
+_GRADED_OUTCOME_KINDS: frozenset[str] = frozenset(
+    {
+        "hit_target",
+        "hit_stop",
+        "expired_positive",
+        "expired_negative",
+        "expired_neutral",
+    }
+)
+
+#: Outcome kinds where the call was VINDICATED (a SELL whose price fell, a
+#: BUY whose price rose, a HOLD held through an up-move).
+_WIN_OUTCOME_KINDS: frozenset[str] = frozenset({"hit_target", "expired_positive"})
+#: Outcome kinds where the call was a MISS (a SELL whose price rose, a BUY
+#: that fell, a HOLD that bled).
+_MISS_OUTCOME_KINDS: frozenset[str] = frozenset({"hit_stop", "expired_negative"})
+
+
+@dataclass(frozen=True)
+class VerdictCallOutcome:
+    """One graded deep-decision verdict outcome, ready for plain-language.
+
+    ``pnl_pct`` is the evaluator's DIRECTION-SIGNED fraction (positive =
+    the call was right, negative = wrong) exactly as stored on the outcome
+    row. ``price_move_pct`` is the HONEST raw underlying move over the
+    evaluation window, in PERCENT (e.g. ``-6.0`` = the ticker fell 6%),
+    derived from the outcome's entry/exit or reconstructed from the signed
+    pnl + direction. ``verdict_grade`` collapses the outcome_kind to
+    ``"win"`` / ``"miss"`` / ``"neutral"`` for the caller.
+    """
+
+    verdict_id: Any
+    subject: str
+    verdict: str
+    direction: str
+    outcome_kind: str
+    pnl_pct: Optional[float]
+    price_move_pct: Optional[float]
+    event_at: Optional[datetime]
+    evaluated_at: Optional[datetime]
+
+    @property
+    def verdict_grade(self) -> str:
+        if self.outcome_kind in _WIN_OUTCOME_KINDS:
+            return "win"
+        if self.outcome_kind in _MISS_OUTCOME_KINDS:
+            return "miss"
+        return "neutral"
+
+
+def _verdict_source_ref(prediction: Prediction) -> dict[str, Any]:
+    try:
+        parsed = json.loads(prediction.source_ref or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _raw_move_pct(
+    direction: str, outcome: PredictionOutcome, pnl_pct: Optional[float]
+) -> Optional[float]:
+    """The raw underlying move over the window, in PERCENT.
+
+    Prefer the outcome's stored entry/exit (the ground truth the evaluator
+    priced against). Fall back to reconstructing from the signed pnl: for a
+    ``short`` verdict the sign is flipped, so raw_return = -pnl; otherwise
+    raw_return = pnl.
+    """
+    entry = outcome.entry_price_used
+    exit_ = outcome.exit_price_used
+    if entry is not None and exit_ is not None:
+        try:
+            e = float(entry)
+            x = float(exit_)
+            if e != 0:
+                return (x - e) / e * 100.0
+        except (TypeError, ValueError):
+            pass
+    if pnl_pct is None:
+        return None
+    raw = -pnl_pct if direction == "short" else pnl_pct
+    return raw * 100.0
+
+
+def recent_verdict_call_outcomes(
+    session: Session,
+    user_id: str,
+    *,
+    limit: int = 5,
+) -> list[VerdictCallOutcome]:
+    """Most-recently-graded deep-decision verdict outcomes for a user.
+
+    Joins ``prediction_outcomes`` → ``predictions`` WHERE
+    ``source = DEEP_DECISION_VERDICT_SOURCE`` and the outcome is GRADED
+    (``outcome_kind`` in :data:`_GRADED_OUTCOME_KINDS`; ungraded/open
+    predictions have NO outcome row and never join). Picks ONE
+    authoritative outcome per prediction (latest ``evaluated_at``, then
+    highest outcome id) and returns the ``limit`` most-recently-graded,
+    newest first. Read-only.
+    """
+    rows = session.execute(
+        select(Prediction, PredictionOutcome)
+        .join(
+            PredictionOutcome,
+            PredictionOutcome.prediction_id == Prediction.id,
+        )
+        .where(
+            Prediction.user_id == user_id,
+            Prediction.source == DEEP_DECISION_VERDICT_SOURCE,
+            Prediction.archived == 0,
+            PredictionOutcome.outcome_kind.in_(sorted(_GRADED_OUTCOME_KINDS)),
+        )
+    ).all()
+
+    # One authoritative outcome per prediction (latest eval, then id).
+    best: dict[int, tuple[Prediction, PredictionOutcome]] = {}
+    for prediction, outcome in rows:
+        cur = best.get(prediction.id)
+        rank = (outcome.evaluated_at or datetime.min, int(outcome.id or 0))
+        if cur is None:
+            best[prediction.id] = (prediction, outcome)
+            continue
+        cur_rank = (cur[1].evaluated_at or datetime.min, int(cur[1].id or 0))
+        if rank > cur_rank:
+            best[prediction.id] = (prediction, outcome)
+
+    out: list[VerdictCallOutcome] = []
+    for prediction, outcome in best.values():
+        ref = _verdict_source_ref(prediction)
+        subject = str(ref.get("subject") or prediction.ticker or "").strip()
+        verdict = str(ref.get("verdict") or "").strip().upper()
+        pnl = float(outcome.pnl_pct) if outcome.pnl_pct is not None else None
+        out.append(
+            VerdictCallOutcome(
+                verdict_id=ref.get("verdict_id"),
+                subject=subject,
+                verdict=verdict,
+                direction=prediction.direction,
+                outcome_kind=outcome.outcome_kind,
+                pnl_pct=pnl,
+                price_move_pct=_raw_move_pct(prediction.direction, outcome, pnl),
+                event_at=prediction.event_at,
+                evaluated_at=outcome.evaluated_at,
+            )
+        )
+
+    out.sort(
+        key=lambda o: (o.evaluated_at or datetime.min, o.event_at or datetime.min),
+        reverse=True,
+    )
+    return out[:limit]
+
+
 __all__ = [
     "CACHE_TTL_SECONDS",
     "FULL_SAMPLE_SIZE",
     "MIN_SAMPLE_SIZE",
     "SourceReliability",
     "SignalFunnelContextPolicy",
+    "VerdictCallOutcome",
     "WEIGHT_CEIL",
     "WEIGHT_FLOOR",
     "get_source_reliability",
     "get_weight_for_source",
     "invalidate_reliability_cache",
+    "recent_verdict_call_outcomes",
     "reliability_annotation",
     "signal_scorecard_label",
     "signal_funnel_context_policy",
