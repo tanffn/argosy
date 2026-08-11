@@ -179,3 +179,152 @@ def test_rebuild_stances_drops_phantom_rows(monkeypatch, tmp_path):
     }
     assert persisted == {"NVDA", "CSPX"}
     s.close()
+
+
+# --------------------------------------------------------------------------- #
+# Divergence flagging (SEAM 2) — verdict/review-vs-plan conflicts are FLAGGED,
+# never silently False, and NEVER change which stance wins.
+# --------------------------------------------------------------------------- #
+
+
+def _divergence_session(tmp_path, name):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import Base, User
+
+    engine = create_engine(f"sqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+    return s
+
+
+def _card(ticker, verdict, *, shares=100.0):
+    from argosy.services.per_position_thesis import PositionThesis
+
+    return PositionThesis(
+        ticker=ticker,
+        current_shares=shares,
+        current_weight_pct=90.0,
+        current_usd_value=90000.0,
+        verdict=verdict,
+        conviction="HIGH",
+        reasoning_md="held",
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+
+
+def _rebuild(s, cards, monkeypatch):
+    monkeypatch.setattr(
+        "argosy.services.position_stance._plan_theses", lambda *a, **k: cards
+    )
+    pv = SimpleNamespace(id=1, decision_run_id=None)
+    snap = SimpleNamespace(
+        positions=[{"symbol": "NVDA", "shares": 100, "usd_value_k": 90}], as_of=None
+    )
+    return {r.symbol: r for r in rebuild_stances(s, "ariel", plan_version=pv, snapshot=snap)}
+
+
+def test_review_hold_vs_plan_sell_flags_divergence(monkeypatch, tmp_path):
+    """(i) A verified HOLD review against a plan SELL now sets divergence=True
+    (was silently False) — the stance shown STAYS the plan's SELL."""
+    from datetime import datetime, timezone
+
+    from argosy.state.models import HoldingReview
+
+    s = _divergence_session(tmp_path, "div_review.db")
+    s.add(HoldingReview(
+        user_id="ariel", symbol="NVDA", verdict="HOLD", confidence="HIGH",
+        outcome="hold", reviewed_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        reason="",
+    ))
+    s.commit()
+
+    rows = _rebuild(s, [_card("NVDA", "SELL")], monkeypatch)
+    nvda = rows["NVDA"]
+    assert nvda.stance == "SELL"  # stance unchanged — plan wins
+    assert nvda.divergence is True
+    assert "contradicts the plan" in nvda.reasoning_md
+    s.close()
+
+
+def test_settled_verdict_hold_vs_plan_sell_flags_divergence(monkeypatch, tmp_path):
+    """(ii) A DEFENDED settled Verdict=HOLD (no review) against a plan SELL is
+    flagged via the batched provenance/verdict read — stance stays SELL."""
+    from datetime import datetime, timezone
+
+    from argosy.state.models import Verdict
+
+    s = _divergence_session(tmp_path, "div_verdict.db")
+    s.add(Verdict(
+        user_id="ariel", subject="NVDA", verdict="HOLD", conviction="HIGH",
+        settled=True, created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    ))
+    s.commit()
+
+    rows = _rebuild(s, [_card("NVDA", "SELL")], monkeypatch)
+    nvda = rows["NVDA"]
+    assert nvda.stance == "SELL"
+    assert nvda.divergence is True
+    assert "settled fleet verdict" in nvda.reasoning_md.lower()
+    s.close()
+
+
+def test_spmv_hold_vs_hold_no_divergence(monkeypatch, tmp_path):
+    """SPMV carve-out untouched: a routine HOLD review over a plan HOLD overrides
+    without flagging divergence."""
+    from datetime import datetime, timezone
+
+    from argosy.state.models import HoldingReview
+
+    s = _divergence_session(tmp_path, "div_spmv.db")
+    s.add(HoldingReview(
+        user_id="ariel", symbol="NVDA", verdict="HOLD", confidence="HIGH",
+        outcome="hold", reviewed_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        reason="",
+    ))
+    s.commit()
+
+    rows = _rebuild(s, [_card("NVDA", "HOLD")], monkeypatch)
+    nvda = rows["NVDA"]
+    assert nvda.stance == "HOLD"
+    assert nvda.divergence is False
+    s.close()
+
+
+def test_buy_underweight_no_divergence(monkeypatch, tmp_path):
+    """A plan ADD (underweight) with no settled verdict stays divergence=False."""
+    s = _divergence_session(tmp_path, "div_buy.db")
+    rows = _rebuild(s, [_card("NVDA", "ADD")], monkeypatch)
+    nvda = rows["NVDA"]
+    assert nvda.stance == "ADD"
+    assert nvda.divergence is False
+    s.close()
+
+
+def test_revision_proposed_still_sets_divergence(monkeypatch, tmp_path):
+    """Phase-2 branch untouched: revision_proposed still flags divergence and
+    keeps the plan SELL."""
+    from datetime import datetime, timezone
+
+    from argosy.state.models import HoldingReview
+
+    s = _divergence_session(tmp_path, "div_phase2.db")
+    s.add(HoldingReview(
+        user_id="ariel", symbol="NVDA", verdict="HOLD", confidence="HIGH",
+        outcome="revision_proposed",
+        reviewed_at=datetime(2026, 7, 1, tzinfo=timezone.utc), reason="",
+    ))
+    s.commit()
+
+    rows = _rebuild(s, [_card("NVDA", "SELL")], monkeypatch)
+    nvda = rows["NVDA"]
+    assert nvda.stance == "SELL"
+    assert nvda.divergence is True
+    assert "stance revision proposed" in nvda.reasoning_md.lower()
+    s.close()

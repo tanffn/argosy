@@ -1,12 +1,13 @@
 """API / loop wiring tests for the verdict pushback gate (Item B)."""
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from argosy.state.models import ActionProposal, User
+from argosy.state.models import ActionProposal, PositionStance, User, Verdict
 
 
 @pytest.fixture
@@ -178,3 +179,154 @@ async def test_verdict_trigger_loop_default_quotes_path(session):
     out = await loop.tick()
     assert "error" not in out, out
     assert out.get("subjects") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — stale-verdict-contradicts-stance forced re-derivation (SEAM 1).
+# --------------------------------------------------------------------------- #
+
+_T0 = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+_T1 = _T0 + timedelta(days=1)
+_T2 = _T0 + timedelta(days=2)
+
+
+def _seed_verdict(session, *, subject, verdict, updated_at, falsifiers=None):
+    v = Verdict(
+        user_id="ariel",
+        subject=subject,
+        verdict=verdict,
+        conviction="HIGH",
+        settled=True,
+        falsifiers_json=json.dumps(falsifiers) if falsifiers else None,
+        created_at=updated_at,
+        updated_at=updated_at,  # explicit → onupdate does not override on INSERT
+    )
+    session.add(v)
+    session.commit()
+    return v
+
+
+def _seed_stance(session, *, symbol, stance, built_at):
+    st = PositionStance(
+        user_id="ariel",
+        symbol=symbol,
+        stance=stance,
+        stance_source="plan",
+        conviction="HIGH",
+        plan_verdict=stance,
+        reasoning_md="",
+        divergence=False,
+        built_at=built_at,
+    )
+    session.add(st)
+    session.commit()
+    return st
+
+
+def test_stale_keep_verdict_predates_reduce_stance_forces_once(session):
+    """Settled HOLD updated BEFORE a SELL stance → forced re-derivation, ONCE."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    v = _seed_verdict(session, subject="NVDA", verdict="HOLD", updated_at=_T0)
+    _seed_stance(session, symbol="NVDA", stance="SELL", built_at=_T1)
+
+    gate = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate.allowed is True
+    assert gate.reason == "stale_verdict_contradicts_stance"
+    assert gate.standing is not None and gate.standing.verdict == "HOLD"
+
+    # Loop bound: a forced re-run bumps updated_at to now (>= built_at) → the
+    # gate DEFENDS again. Simulate that bump and re-check: no repeat force.
+    v.updated_at = _T2
+    session.commit()
+    gate2 = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate2.allowed is False
+    assert gate2.reason.startswith("DEFENDED")
+
+
+def test_fresh_verdict_after_stance_defends(session):
+    """Verdict updated AFTER the stance's built_at → DEFENDED (it saw it)."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(session, subject="NVDA", verdict="HOLD", updated_at=_T1)
+    _seed_stance(session, symbol="NVDA", stance="SELL", built_at=_T0)
+
+    gate = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate.allowed is False
+    assert gate.reason.startswith("DEFENDED")
+
+
+def test_equal_timestamp_not_forced(session):
+    """updated_at == built_at → NOT forced (boundary fails SAFE)."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(session, subject="NVDA", verdict="HOLD", updated_at=_T1)
+    _seed_stance(session, symbol="NVDA", stance="SELL", built_at=_T1)
+
+    gate = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate.allowed is False
+
+
+def test_no_stance_row_defends(session):
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(session, subject="NVDA", verdict="HOLD", updated_at=_T0)
+    gate = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate.allowed is False
+
+
+def test_keep_stance_not_forced(session):
+    """Stance is a KEEP verb (HOLD) → not a contested reduction → DEFENDED."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(session, subject="NVDA", verdict="HOLD", updated_at=_T0)
+    _seed_stance(session, symbol="NVDA", stance="HOLD", built_at=_T1)
+    gate = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate.allowed is False
+
+
+def test_reduce_verdict_not_forced(session):
+    """Settled verdict is itself a REDUCE verb → nothing to reconcile → DEFENDED."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(session, subject="NVDA", verdict="SELL", updated_at=_T0)
+    _seed_stance(session, symbol="NVDA", stance="SELL", built_at=_T1)
+    gate = check_pushback_gate(session, user_id="ariel", subject="NVDA")
+    assert gate.allowed is False
+
+
+def test_positive_tripwire_precedes_stale_reason(session):
+    """A cited fact that hits a recorded falsifier wins the POSITIVE reason even
+    when a stale stance also exists (Phase 2 must still see a tripwire hit)."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(
+        session, subject="NVDA", verdict="HOLD", updated_at=_T0,
+        falsifiers=["GAAP profitability lost"],
+    )
+    _seed_stance(session, symbol="NVDA", stance="SELL", built_at=_T1)
+    gate = check_pushback_gate(
+        session, user_id="ariel", subject="NVDA",
+        cited_new_facts=["GAAP profitability lost this quarter"],
+    )
+    assert gate.allowed is True
+    assert gate.reason == "new_fact_hits_falsifier"
+
+
+def test_predates_tz_and_boundary():
+    """_predates: tz naive-vs-aware compares without error; equal/None → False."""
+    from argosy.services.verdict_registry import _predates
+
+    aware = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    naive_older = datetime(2026, 7, 1)
+    assert _predates(naive_older, aware) is True  # no TypeError
+    assert _predates(aware, aware) is False  # equal boundary → not forced
+    assert _predates(None, aware) is False
+    assert _predates(aware, None) is False
+
+
+def test_phase3_reason_not_a_positive_gate_reason():
+    """Phase 2 must keep REJECTING the new reason (not a committed-tripwire hit)."""
+    from argosy.decisions.stance_revision import _POSITIVE_GATE_REASONS
+
+    assert "stale_verdict_contradicts_stance" not in _POSITIVE_GATE_REASONS

@@ -290,6 +290,36 @@ def rebuild_stances(
     proposals = _open_proposals(db, user_id)
     snapshot_key = _snapshot_key_str(snapshot)
 
+    # (ii) Verdict-driven divergence: a DEFENDED settled Verdict=KEEP (e.g. NVDA
+    # HOLD) with NO fresh contradicting review row still contradicts a plan
+    # REDUCE stance. rebuild otherwise reads only plan theses + reviews +
+    # proposals — never the settled Verdict. ONE batched read (newest settled
+    # row per subject); best-effort — a failure never breaks the rebuild.
+    settled_verbs: dict[str, str] = {}
+    try:
+        from argosy.state.models import Verdict as _Verdict
+
+        _syms = sorted(
+            {(c.ticker or "").upper() for c in theses if (c.ticker or "").strip()}
+        )
+        if _syms:
+            _best: dict[str, tuple[int, str]] = {}
+            for _v in db.execute(
+                select(_Verdict).where(
+                    _Verdict.user_id == user_id,
+                    _Verdict.subject.in_(_syms),
+                    _Verdict.settled.is_(True),
+                )
+            ).scalars():
+                _subj = (_v.subject or "").upper()
+                _vid = int(_v.id or 0)
+                _prev = _best.get(_subj)
+                if _prev is None or _vid > _prev[0]:
+                    _best[_subj] = (_vid, (_v.verdict or "").strip().upper())
+            settled_verbs = {k: v[1] for k, v in _best.items()}
+    except Exception:  # noqa: BLE001 — divergence flagging must not break rebuild
+        settled_verbs = {}
+
     rows: list[PositionStance] = []
     for card in theses:
         sym = (card.ticker or "").upper()
@@ -325,6 +355,20 @@ def rebuild_stances(
                     stance_source = "review"
                     if hr.confidence:
                         conviction = _norm_conviction(hr.confidence)
+                elif rv in ("HOLD", "WAIT", "BUY") and plan_verdict in ("SELL", "TRIM"):
+                    # (i) Review-verb divergence: the latest verified review KEEPS
+                    # (HOLD/WAIT) while the plan STANDS a reduction. Precedence is
+                    # untouched — the stance shown remains the plan's SELL/TRIM
+                    # (SPMV's funded-by-schedule BUY/ADD path is preserved by the
+                    # overrides branch above). Previously this left divergence
+                    # silently False; now the conflict is FLAGGED, not hidden.
+                    divergence = True
+                    notes.append(
+                        f"**Fleet review vs plan ({str(hr.reviewed_at)[:10]}):** the "
+                        f"latest fleet review verb {rv} contradicts the plan's "
+                        f"standing {plan_verdict}; the stance shown is the plan's — "
+                        f"this conflict is flagged, not hidden.\n\n"
+                    )
             elif review_outcome == "revision_proposed":
                 # Phase 2 (argosy/decisions/stance_revision.py): a fleet-proposed
                 # stance revision that CLEARED the blind filter (positive
@@ -394,6 +438,26 @@ def rebuild_stances(
                 "**Underweight vs plan target** — funded by the "
                 "deployment schedule (proceeds route to the biggest-gap "
                 "sleeve first), not by an action needed from you now.\n\n"
+            )
+
+        # (ii) Verdict-driven divergence: when the settled verdict verb is a KEEP
+        # verb AND the resulting stance is a REDUCE verb AND no higher-precedence
+        # source moved the stance (still plan-derived; review/proposal would have
+        # set stance_source), flag the conflict. This never changes which stance
+        # wins — the plan SELL/TRIM stands. Guarded by ``not divergence`` so it
+        # never double-notes a Phase-2 / held_unverified / review-verb flag.
+        if (
+            not divergence
+            and stance_source == "plan"
+            and (stance or "").upper() in ("SELL", "TRIM")
+            and settled_verbs.get(sym) in ("HOLD", "BUY", "ADD", "WAIT")
+        ):
+            divergence = True
+            notes.append(
+                f"**Settled verdict vs plan:** the standing settled fleet verdict "
+                f"{settled_verbs.get(sym)} on {sym} contradicts the plan's "
+                f"{stance}; the stance shown is the plan's — this conflict is "
+                f"flagged, not hidden.\n\n"
             )
 
         rows.append(

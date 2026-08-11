@@ -297,6 +297,78 @@ def _fact_hits_trigger(fact: str, trigger: dict[str, Any]) -> bool:
     return False
 
 
+# Verbs that REDUCE a position (a standing stance the fleet may contest) and
+# verbs that KEEP it. A settled KEEP verdict that predates a REDUCE stance never
+# saw that stance — Phase 3 forces exactly one re-derivation so Phase 1's stance
+# reconciliation can run. ONE VOICE PER POSITION (Ariel, 2026-07-10).
+_STANCE_REDUCE_VERBS = frozenset({"SELL", "TRIM"})
+_VERDICT_KEEP_VERBS = frozenset({"HOLD", "BUY", "ADD", "WAIT"})
+
+
+def _predates(earlier: datetime | None, later: datetime | None) -> bool:
+    """``earlier < later``, tolerant of tz-naive/aware mismatch (SQLite stores
+    naive; the ORM columns are ``DateTime(timezone=True)``). Mirrors
+    ``verdict_coverage._updated_after``. Missing values, an equal boundary, or
+    any comparison error → False (fail SAFE — do NOT force a re-derivation)."""
+    if earlier is None or later is None:
+        return False
+    try:
+        return earlier < later
+    except TypeError:
+        try:
+            return earlier.replace(tzinfo=None) < later.replace(tzinfo=None)
+        except Exception:  # noqa: BLE001
+            return False
+
+
+def _stale_verdict_contradicts_stance(
+    session: Session, *, user_id: str, standing: Verdict
+) -> bool:
+    """True IFF the settled KEEP verdict PREDATES a stored REDUCE stance for the
+    same subject — i.e. the settled verdict never saw the stance, so the gate
+    must force ONE re-derivation (Phase 1 then reconciles). Best-effort: any
+    error → False (fall through to the existing DEFENDED behavior).
+
+    LOOP BOUND: a forced fleet re-run calls ``write_verdict`` → bumps
+    ``Verdict.updated_at`` to now (onupdate=_utcnow). After one forced run
+    ``updated_at >= built_at`` so ``_predates`` is False → the gate DEFENDS
+    again. At most ONE forced re-derivation per stance ``built_at``. A brand-new
+    REDUCE stance (fresh ``built_at`` from a plan/review/proposal/snapshot
+    change) legitimately grants exactly one more — that is desired, not a storm.
+    A raw ``<`` is NOT used (tz-naive/aware SQLite mismatch); the equal-timestamp
+    boundary fails SAFE (not forced) via ``_predates``.
+    """
+    try:
+        verb = _norm_verdict(standing.verdict)
+        if verb not in _VERDICT_KEEP_VERBS:
+            return False
+        # DIRECT single-row read of the stored stance — do NOT call
+        # position_stance.get_stances (it can trigger a heavy rebuild_stances
+        # delete+insert mid-gate).
+        stance = session.execute(
+            select(PositionStance)
+            .where(
+                PositionStance.user_id == user_id,
+                PositionStance.symbol == _norm_subject(standing.subject),
+            )
+            .order_by(PositionStance.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if stance is None:
+            return False
+        if (stance.stance or "").strip().upper() not in _STANCE_REDUCE_VERBS:
+            return False
+        return _predates(
+            getattr(standing, "updated_at", None), getattr(stance, "built_at", None)
+        )
+    except Exception:  # noqa: BLE001 — best-effort; never break the gate
+        _log.warning(
+            "verdict_registry.stale_stance_check_failed",
+            subject=getattr(standing, "subject", None),
+        )
+        return False
+
+
 def check_pushback_gate(
     session: Session,
     *,
@@ -307,7 +379,11 @@ def check_pushback_gate(
     """New-facts test against the settled verdict.
 
     No settled row → allowed (nothing to defend).
-    Settled + no matching cited fact → DEFENDED (``allowed=False``).
+    Settled + no matching cited fact → DEFENDED (``allowed=False``) UNLESS the
+    settled KEEP verdict predates a stored REDUCE stance, in which case the gate
+    forces ONE re-derivation (``stale_verdict_contradicts_stance``) so Phase 1
+    reconciles the standing stance — see ``_stale_verdict_contradicts_stance``
+    for the loop bound.
     Settled + cited fact hits falsifier/trigger → allowed (re-run may proceed).
     """
     standing = get_settled_verdict(session, user_id=user_id, subject=subject)
@@ -316,6 +392,17 @@ def check_pushback_gate(
 
     facts = [f.strip() for f in (cited_new_facts or []) if f and str(f).strip()]
     if not facts:
+        # A positive tripwire hit takes precedence (handled below when facts are
+        # cited); with no facts, force ONE re-derivation if the settled verdict
+        # is stale-and-contradicts the stance, else DEFEND.
+        if _stale_verdict_contradicts_stance(
+            session, user_id=user_id, standing=standing
+        ):
+            return PushbackGateResult(
+                allowed=True,
+                standing=standing,
+                reason="stale_verdict_contradicts_stance",
+            )
         return PushbackGateResult(
             allowed=False,
             standing=standing,
@@ -348,6 +435,15 @@ def check_pushback_gate(
                     reason="new_fact_hits_trigger",
                     matched_trigger=dict(trigger),
                 )
+
+    # No positive tripwire hit — force ONE re-derivation if the settled verdict
+    # is stale-and-contradicts the stance (loop-bounded), else DEFEND.
+    if _stale_verdict_contradicts_stance(session, user_id=user_id, standing=standing):
+        return PushbackGateResult(
+            allowed=True,
+            standing=standing,
+            reason="stale_verdict_contradicts_stance",
+        )
 
     return PushbackGateResult(
         allowed=False,
