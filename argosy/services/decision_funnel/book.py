@@ -54,6 +54,21 @@ def load_book(session: Session, *, user_id: str) -> list[BookHolding]:
             reason=book.degrade_reason,
         )
         return []
+    # SPINE GATE (Phase 3c) — money-critical surface. When enforcement is ON
+    # (``spine_gate_enforce``, default OFF) refuse a NON-validated book exactly
+    # like ``book.degraded`` above: routing the wrong holdings is the same risk
+    # whether the book is degraded or simply unverified. In the DEFAULT (warn)
+    # config this branch is dormant — zero behavior change.
+    if not book.validated:
+        from argosy.config import get_settings
+
+        if get_settings().spine_gate_enforce:
+            _log.warning(
+                "decision_funnel.book_not_validated_enforced",
+                user_id=user_id,
+                reason=book.validation_reason,
+            )
+            return []
     positions = book.total
 
     book_k = tradeable_securities_usd_k(positions)

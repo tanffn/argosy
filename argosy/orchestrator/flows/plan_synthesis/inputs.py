@@ -496,6 +496,33 @@ def _resolve_snapshot_for_inputs(*, session, user_id: str, log):
 
     snapshot = None
     row = get_latest_snapshot_row(session, user_id)
+    # SPINE GATE (Phase 3c) — money-critical input. When enforcement is ON
+    # (``spine_gate_enforce``, default OFF) REFUSE to build phase-1 inputs from a
+    # NON-validated head snapshot: no snapshot is safer than an unverified one
+    # (the same reasoning as the SnapshotIngestRejected drop below). DEFAULT
+    # (warn) config leaves this dormant — zero behavior change.
+    if row is not None:
+        try:
+            from argosy.config import get_settings
+
+            if get_settings().spine_gate_enforce:
+                from argosy.services.spine.validated_snapshot import (
+                    is_snapshot_validated,
+                )
+
+                if not is_snapshot_validated(
+                    session, user_id=user_id, snapshot=row
+                ):
+                    log.warning(
+                        "plan_synthesis.inputs.snapshot_not_validated_enforced",
+                        user_id=user_id, row_id=getattr(row, "id", None),
+                    )
+                    return None
+        except Exception as exc:  # noqa: BLE001 — the gate must not break inputs
+            log.warning(
+                "plan_synthesis.inputs.spine_gate_error",
+                user_id=user_id, error=str(exc)[:160],
+            )
     if row is not None:
         try:
             snapshot = row_to_snapshot(row)

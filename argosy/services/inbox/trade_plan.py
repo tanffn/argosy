@@ -101,6 +101,20 @@ def build_trade_plan(
     if book.degraded:
         _log.warning("trade_plan.book_degraded reason=%s", book.degrade_reason)
         return None
+    # SPINE GATE (Phase 3c) — money-critical projection. When enforcement is ON
+    # (``spine_gate_enforce``, default OFF) degrade the projection on a NON-
+    # validated book exactly as a degraded/missing snapshot does above, rather
+    # than publish a concentration + cash figure from an unverified book. DEFAULT
+    # (warn) config leaves this dormant — zero behavior change.
+    if not book.validated:
+        from argosy.config import get_settings
+
+        if get_settings().spine_gate_enforce:
+            _log.warning(
+                "trade_plan.book_not_validated_enforced reason=%s",
+                book.validation_reason,
+            )
+            return None
     # Positions come from the CONSERVED book (incl. durable unmanaged NVDA),
     # not raw positions_json which understates when Schwab NVDA is absent.
     positions = book.total

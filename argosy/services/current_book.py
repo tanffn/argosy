@@ -21,7 +21,6 @@ re-introduced per-surface.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -39,16 +38,6 @@ log = get_logger(__name__)
 
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
-
-
-def _spine_gate_enabled() -> bool:
-    """Feature flag ``ARGOSY_SPINE_GATE`` — default OFF (behavior unchanged)."""
-    return os.environ.get("ARGOSY_SPINE_GATE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 def _to_float(v: Any) -> float | None:
@@ -77,6 +66,23 @@ class CurrentBook:
     snapshot_date: date | None
     fx_usd_nis: float | None
     fx_usd_eur: float | None
+    # Spine gate (Phase 3c). ``validated`` = the head snapshot carries a PASS
+    # integrity verdict (same-snapshot/user/seq, content-hash matched). Set on
+    # every load from the validated-snapshot predicate; carried on the book so
+    # every surface that flows through ``load_current_book`` sees it. In WARN
+    # (default) it is INFORMATIONAL only — behavior is unchanged.
+    #
+    # ``load_current_book`` is the ONLY sanctioned constructor — it always sets
+    # ``validated`` explicitly from the predicate. The ``True`` default exists
+    # solely so the confidence-helper unit tests (and any future in-process
+    # constructor) mean "assume validated (warn-safe)" and never accidentally
+    # trip the enforce refusal. This IS a fail-OPEN default by design (an
+    # unset flag must never lock a money surface out); the flip side is that a
+    # future production constructor which forgets to set ``validated`` would
+    # silently be treated as validated — so DO NOT add another constructor,
+    # route new book loads through ``load_current_book``.
+    validated: bool = True
+    validation_reason: str = ""
 
     # --- book views -------------------------------------------------------
     @property
@@ -172,31 +178,40 @@ def load_current_book(
         return CurrentBook(
             snapshot=None, result=_empty_result(), snapshot_id=None,
             snapshot_date=None, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur,
+            validated=True, validation_reason="empty book (no snapshot)",
         )
     raw = parse_positions_json(snap.positions_json)
-    # SPINE GATE (spec §2A) — OPT-IN via ARGOSY_SPINE_GATE. When on, consult the
-    # validated-snapshot accessor and LOG when it would refuse (no pass-head or
-    # content-mismatch). Behavior is otherwise UNCHANGED: this slice only
-    # demonstrates the gate, it does not yet block the read.
-    if _spine_gate_enabled():
-        try:
-            from argosy.services.spine.validated_snapshot import (
-                read_validated_snapshot,
-            )
+    # SPINE GATE (Phase 3c, spec §2A) — WARN-FIRST, DEFAULT-OFF. Consult the
+    # validated-snapshot predicate on EVERY load and carry the flag on the book.
+    # When the head snapshot lacks a PASS integrity verdict (or its content hash
+    # no longer matches), log ``spine_gate.would_refuse`` and set
+    # ``validated=False`` — but DO NOT change behavior: the book is still built
+    # and returned exactly as before. Promotion to an actual refusal lives in the
+    # money-critical surfaces behind ``settings.spine_gate_enforce`` (default
+    # False). This absorbs the prior env-only ``ARGOSY_SPINE_GATE`` log seam.
+    book_validated = True
+    validation_reason = ""
+    try:
+        from argosy.services.spine.validated_snapshot import is_snapshot_validated
 
-            validated = read_validated_snapshot(session, user_id, snap)
-            if validated is None:
-                log.warning(
-                    "current_book.spine_gate_would_refuse",
-                    user_id=user_id,
-                    snapshot_id=getattr(snap, "id", None),
-                )
-        except Exception as exc:  # noqa: BLE001 — the flag must never break loads
+        book_validated = is_snapshot_validated(session, user_id=user_id, snapshot=snap)
+        if not book_validated:
+            validation_reason = "head snapshot has no PASS integrity verdict"
             log.warning(
-                "current_book.spine_gate_error",
+                "current_book.spine_gate.would_refuse",
+                user_id=user_id,
                 snapshot_id=getattr(snap, "id", None),
-                err=str(exc)[:160],
+                reason=validation_reason,
             )
+    except Exception as exc:  # noqa: BLE001 — the gate must NEVER break a load
+        # Fail-open in WARN: an unverifiable gate must not degrade a working load.
+        book_validated = True
+        validation_reason = ""
+        log.warning(
+            "current_book.spine_gate.error",
+            snapshot_id=getattr(snap, "id", None),
+            err=str(exc)[:160],
+        )
     result = load_total_book(
         session, user_id, raw,
         snapshot_date=getattr(snap, "snapshot_date", None),
@@ -218,6 +233,8 @@ def load_current_book(
             fx_usd_eur if fx_usd_eur is not None
             else _to_float(getattr(snap, "fx_usd_eur", None))
         ),
+        validated=book_validated,
+        validation_reason=validation_reason,
     )
 
 

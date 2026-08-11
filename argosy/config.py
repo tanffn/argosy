@@ -306,6 +306,19 @@ class Settings(BaseSettings):
     # ARGOSY_FACT_LITERAL_GATE_ENFORCE=true to promote to blocking.
     fact_literal_gate_enforce: bool = Field(default=False)
 
+    # Spine gate — Phase 3c "money surfaces refuse a NON-VALIDATED book" (spec
+    # §2A). WARN-FIRST, DEFAULT-OFF so it can NEVER lock Ariel out: with this
+    # False (default) every money surface consults the validated-snapshot
+    # predicate and LOGS ``spine_gate.would_refuse`` when the head snapshot lacks
+    # a PASS integrity verdict, but behavior is UNCHANGED. Set
+    # ARGOSY_SPINE_GATE_ENFORCE=true — a DELIBERATE change Ariel makes only after
+    # the live head validates — to promote the money-critical surfaces (decision
+    # funnel book, numeric resolver, trade-plan projection, plan-synthesis
+    # inputs) to REFUSE on a non-validated book. Read-only displays never refuse.
+    # Mirrors ``fact_literal_gate_enforce`` (warn default), NOT the enforce-by-
+    # default plan gate.
+    spine_gate_enforce: bool = Field(default=False)
+
     # Daily-news volatility trigger (news_daily Stage-2 gate). When Stage 1
     # ingests ZERO new items, Stage 2 (the LLM analyst) still fires if a HELD
     # single stock moved at least this many percent (absolute, close-over-

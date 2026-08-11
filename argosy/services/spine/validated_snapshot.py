@@ -196,4 +196,41 @@ def _verdict_unavailable_checks(verdict: Any) -> tuple[str, ...]:
     return ()
 
 
-__all__ = ["ValidatedSnapshot", "read_validated_snapshot"]
+def is_snapshot_validated(session: Any, *, user_id: str, snapshot: Any) -> bool:
+    """Best-effort predicate: is ``snapshot`` the current VALIDATED book?
+
+    Thin wrapper over ``read_validated_snapshot(...) is not None`` (a PASS
+    integrity head, same-snapshot/same-user/seq-matched, content-hash still
+    matching). This is the ONE seam the money surfaces that BYPASS
+    ``load_current_book`` (the numeric resolver's direct head loads, plan-
+    synthesis inputs) consult for the Phase 3c spine gate.
+
+    Error handling is mode-aware so the gate can NEVER break a load:
+    * WARN (``spine_gate_enforce`` False, the default) — any exception is
+      swallowed and treated as validated (``True``, fail-OPEN): an unverifiable
+      gate must not degrade a money surface that works today.
+    * ENFORCE (``spine_gate_enforce`` True) — an exception is treated as
+      NOT validated (``False``, fail-CLOSED) and logged: once Ariel has opted in,
+      an unverifiable book is refused rather than silently served.
+    """
+    try:
+        return read_validated_snapshot(session, user_id, snapshot) is not None
+    except Exception as exc:  # noqa: BLE001 — the gate must never break a load
+        enforce = False
+        try:
+            from argosy.config import get_settings
+
+            enforce = bool(get_settings().spine_gate_enforce)
+        except Exception:  # noqa: BLE001 — config read must not break the gate
+            enforce = False
+        log.warning(
+            "spine.gate.is_validated_error",
+            snapshot_id=getattr(snapshot, "id", None),
+            enforce=enforce,
+            err=str(exc)[:160],
+        )
+        # WARN → fail-open (True); ENFORCE → fail-closed (False).
+        return not enforce
+
+
+__all__ = ["ValidatedSnapshot", "read_validated_snapshot", "is_snapshot_validated"]

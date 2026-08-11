@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from sqlalchemy import select
 
@@ -253,6 +253,36 @@ def _head_snapshot_row(session: "Session", user_id: str):
     """
     from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
     return get_latest_snapshot_row(session, user_id)
+
+
+def _spine_gate_refuses(session: "Session", user_id: str, snap: Any) -> bool:
+    """SPINE GATE (Phase 3c) for the resolver's DIRECT head loads.
+
+    These money resolvers read the head snapshot straight from the store and
+    call ``load_total_book`` — they BYPASS ``load_current_book`` and so never
+    saw the ``CurrentBook.validated`` flag. Consult the shared predicate here.
+
+    Returns ``True`` only when enforcement is ON (``spine_gate_enforce``, default
+    OFF) AND the head snapshot is NOT validated — the caller then degrades to its
+    existing ``unavailable`` shape. In the DEFAULT (warn) config this ALWAYS
+    returns ``False`` (dormant) — zero behavior change.
+    """
+    try:
+        from argosy.config import get_settings
+
+        if not get_settings().spine_gate_enforce:
+            return False
+    except Exception:  # noqa: BLE001 — config read must not break resolution
+        return False
+    from argosy.services.spine.validated_snapshot import is_snapshot_validated
+
+    if is_snapshot_validated(session, user_id=user_id, snapshot=snap):
+        return False
+    log.warning(
+        "plan_numeric_resolver.spine_gate_refuse snapshot_id=%s",
+        getattr(snap, "id", None),
+    )
+    return True
 
 
 def _resolve_withdrawal_sequencer(
@@ -608,6 +638,11 @@ def _resolve_net_worth(
                 "when unmanaged book cannot restore a policy holding"
             ),
         )
+    if _spine_gate_refuses(session, user_id, snap):
+        return ResolvedValue.unavailable(
+            key, "nis", "spine gate: head snapshot not validated (no PASS verdict)",
+            formula="unavailable: spine_gate_enforce ON and book not validated",
+        )
     positions = book.total
     # A soft-stale mark in the book means net worth isn't fully current money —
     # downgrade from HIGH rather than republish stale as HIGH (Sol BLOCK-1).
@@ -669,6 +704,11 @@ def _apply_total_net_worth(session, user_id, values):
         snap = None
     if snap is None:
         values[key] = ResolvedValue.pending(key, "nis", "portfolio_snapshot (none)")
+        return
+    if _spine_gate_refuses(session, user_id, snap):
+        values[key] = ResolvedValue.unavailable(
+            key, "nis", "spine gate: head snapshot not validated (no PASS verdict)",
+        )
         return
     snap_fx = _to_float(snap.fx_usd_nis) or 0.0
     fx, _src = _current_boi_usd_nis(session, snap_fx)
@@ -796,6 +836,10 @@ def _resolve_liquid_net_worth(
         return ResolvedValue.unavailable(
             key, "nis", f"portfolio_snapshot DEGRADED: {_book.degrade_reason}",
         )
+    if _spine_gate_refuses(session, user_id, snap):
+        return ResolvedValue.unavailable(
+            key, "nis", "spine gate: head snapshot not validated (no PASS verdict)",
+        )
     usd_assets_usd, nis_native_nis, re_excluded_nis = liquid_components_from_positions(
         _book.total, fx=fx, snap_fx=snap_fx,
     )
@@ -865,6 +909,10 @@ def _resolve_usd_exposure(
     if _book.degraded:
         return ResolvedValue.unavailable(
             key, "nis", f"portfolio_snapshot DEGRADED: {_book.degrade_reason}",
+        )
+    if _spine_gate_refuses(session, user_id, snap):
+        return ResolvedValue.unavailable(
+            key, "nis", "spine gate: head snapshot not validated (no PASS verdict)",
         )
     _usd_conf = "MEDIUM" if _book.stale_marks else "HIGH"
     _usd_note = (
@@ -1552,6 +1600,12 @@ def _apply_us_situs_estate(
         if snap is None:
             values[key] = ResolvedValue.pending(key, "nis", loc)
             return
+        if _spine_gate_refuses(session, user_id, snap):
+            values[key] = ResolvedValue.unavailable(
+                key, "nis",
+                "spine gate: head snapshot not validated (no PASS verdict)",
+            )
+            return
         raw_positions = parse_positions_json(snap.positions_json)
         book = load_total_book(
             session, user_id, raw_positions,
@@ -1669,6 +1723,16 @@ def _apply_nvda_current_weight(
         snap = get_latest_snapshot_row(session, user_id)
         if snap is None:
             return  # leave whatever the role resolver set (likely pending)
+        if _spine_gate_refuses(session, user_id, snap):
+            values[value_key] = ResolvedValue.unavailable(
+                value_key, "nis",
+                "spine gate: head snapshot not validated (no PASS verdict)",
+            )
+            values[key] = ResolvedValue.unavailable(
+                key, "pct",
+                "spine gate: head snapshot not validated (no PASS verdict)",
+            )
+            return
         raw_positions = parse_positions_json(snap.positions_json)
         book = load_total_book(
             session, user_id, raw_positions,
@@ -2043,6 +2107,13 @@ def _apply_nvda_deconcentration(
         )
 
         snap = _head_snapshot_row(session, user_id)
+        if snap is not None and _spine_gate_refuses(session, user_id, snap):
+            for k in keys:
+                values[k] = ResolvedValue.unavailable(
+                    k, "shares",
+                    "spine gate: head snapshot not validated (no PASS verdict)",
+                )
+            return
         raw = parse_positions_json(snap.positions_json if snap else None)
         book = load_total_book(
             session, user_id, raw,
