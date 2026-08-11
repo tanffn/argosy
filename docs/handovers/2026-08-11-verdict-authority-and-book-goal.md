@@ -10,7 +10,10 @@
 - **master = origin/master = `2f32bd8`** (PUSHED, in sync). Migrations head **0100**. Backend healthy; no live-DB writes (all work on tmp SQLite / a hash-guarded DB copy).
 - Push note: `git push` is blocked by the harness auto-approve classifier — Ariel runs `! git push origin master` himself.
 
-## ACTIVE GOAL (Ariel's /goal, 2026-08-11)
+## GOAL CLOSED (2026-08-11) — both reviewers GOOD
+The verdict-authority checks shipped (`9711804`: #32 plan-number grounding + #33 freshness/substance floor, deterministic + fail-safe, Sol round-1 vetted the design & found 3 defects → all fixed; round-2 confirm self-verified during a codex outage). A NEW 6-position batch (NVDA/SOFI/OKLO/GOOG/TSLA/SCHD) was run against a hash-guarded DB copy and **dual-reviewed GOOD by BOTH Sol and Claude** (materially improved from POOR/MIXED). Verified live: NVDA HOLD→SELL one-voice with NO hallucinated number (concentration falsifier = "within the plan's target band"; 59.1% grounded); SOFI/OKLO/SCHD thin/zombie seeds force-refreshed to substantive testable verdicts (#33); GOOG/TSLA fresh verdicts correctly defended; DEFEND-vs-FORCE split 6/6 correct. **Both criteria met (defect classes fixed AND fresh batch reviews GOOD) → goal closed.** Remaining non-blocking follow-up **#35** (both reviewers named it): falsifier evidence-contract + distinguish SELL falsifiers from downside accelerants; populate authoritative 8/13 directly; ETF falsifiers need numeric thresholds; NVDA "FY26 Q2"→"Q2 FY2027" label; qualify SCHD "do not sell" re: the SCHD→FUSA estate migration. Does NOT overturn the 6 verdicts.
+
+## (superseded) ACTIVE GOAL (Ariel's /goal, 2026-08-11)
 Every position in the book carries a verdict you can trust: (1) one-voice (never contradicts the plan/stance), (2) fresh & substantive (no stale placeholder wearing "settled"), (3) accurately grounded (any plan number it cites is actually in the plan — no hallucinated "40%"), (4) calibrated & falsifiable. **"Closed" = the known defect classes are fixed (one-voice ✅ + #32 plan-number grounding + #33 freshness/substance floor) AND a fresh independent review of a NEW 5-position batch comes back GOOD — not MIXED.** That review coming back GOOD is the finish line.
 
 ## Done this session (all committed + PUSHED, Sol-passed)
