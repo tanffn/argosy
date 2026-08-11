@@ -966,6 +966,9 @@ class VerdictProvenance:
       * ``armed`` — falsifiers recorded; none have unlocked a revisit
       * ``fired`` — an open unlock inbox row exists for this subject
       * ``none_recorded`` — no falsifiers on the standing verdict (WARNING)
+
+    ``reasoning_md``: the settled verdict's reasoning text (populated when a
+    settled Verdict row exists); empty string when no settled verdict.
     """
 
     falsifier_state: FalsifierState
@@ -973,6 +976,7 @@ class VerdictProvenance:
     next_validation: str | None = None
     last_fleet_check_at: str | None = None
     verdict_id: int | None = None
+    reasoning_md: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -981,6 +985,7 @@ class VerdictProvenance:
             "next_validation": self.next_validation,
             "last_fleet_check_at": self.last_fleet_check_at,
             "verdict_id": self.verdict_id,
+            "reasoning_md": self.reasoning_md,
         }
 
 
@@ -1163,12 +1168,15 @@ def provenance_for_subjects(
         else:
             state = "armed"
 
+        verdict_reasoning = (row.reasoning_md or "") if row is not None else ""
+
         out[subj] = VerdictProvenance(
             falsifier_state=state,
             falsifiers=tuple(falsifiers),
             next_validation=next_val,
             last_fleet_check_at=last_check,
             verdict_id=verdict_id,
+            reasoning_md=verdict_reasoning,
         )
     return out
 

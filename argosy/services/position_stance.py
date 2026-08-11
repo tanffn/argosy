@@ -641,6 +641,17 @@ def project_thesis_dtos(
             d["falsifiers"] = list(prov.falsifiers)
             d["next_validation"] = prov.next_validation
             d["last_fleet_check_at"] = prov.last_fleet_check_at
+            # Prefer the settled verdict's rich reasoning_md over the plan-thesis
+            # fallback (which is empty when the draft plan has zero agent_reports).
+            # Stance-level notes (pending proposal, divergence, underweight) are
+            # kept visible by prepending them so they aren't silently dropped.
+            verdict_reasoning = prov.reasoning_md or ""
+            if verdict_reasoning:
+                stance_note = (d.get("reasoning_md") or "").strip()
+                if stance_note:
+                    d["reasoning_md"] = stance_note + "\n\n" + verdict_reasoning
+                else:
+                    d["reasoning_md"] = verdict_reasoning
         else:
             d["falsifier_state"] = "none_recorded"
             d["falsifiers"] = []

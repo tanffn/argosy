@@ -326,3 +326,136 @@ def test_projection_maps_stance_onto_dto(monkeypatch):
         assert dto.falsifier_state in ("armed", "fired", "none_recorded")
         assert isinstance(dto.falsifiers, list)
     s.close()
+
+
+# ---------------------------------------------------------------------------
+# Verdict reasoning surfaced on position cards (bug fix: v94 plan has zero
+# agent_reports so _assemble_reasoning returns "" — the settled verdict's
+# reasoning_md must fill the gap rather than leaving cards blank).
+# ---------------------------------------------------------------------------
+
+from argosy.services.verdict_registry import write_verdict  # noqa: E402
+from argosy.state.models import PositionStance as _PositionStance  # noqa: E402
+
+
+def _session_with_user():
+    """Fresh in-memory DB with the ariel user seeded."""
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+    return s
+
+
+def test_verdict_reasoning_surfaces_when_plan_reasoning_empty(monkeypatch):
+    """Subject WITH settled verdict: DTO reasoning_md == verdict reasoning, not ""."""
+    s = _session_with_user()
+
+    # Settled verdict with rich reasoning (simulates CSPX id=10 scenario).
+    write_verdict(
+        s,
+        user_id="ariel",
+        subject="CSPX",
+        verdict="HOLD",
+        conviction="MED",
+        falsifiers=["Valuation re-rates above 25x PE"],
+        reasoning_md="Detailed fleet analysis: CSPX is a core holding with broad EM exposure. "
+                     "Hold conviction is MED; revisit if valuation re-rates materially. "
+                     "Three agents concur: bear notes elevated duration risk, bull cites "
+                     "strong earnings momentum, fund_manager confirms within IPS bands.",
+        settled=True,
+    )
+    s.commit()
+
+    # Plan card with empty reasoning (no agent_reports on draft plan v94).
+    card = _card("CSPX", "HOLD")
+    card = PositionThesis(
+        ticker="CSPX",
+        current_shares=10.0,
+        current_weight_pct=0.12,
+        current_usd_value=5000.0,
+        verdict="HOLD",
+        conviction="LOW",
+        reasoning_md="",  # empty — the v94 bug condition
+    )
+    _patch_plan_layer(monkeypatch, [card])
+
+    dtos = ps.project_thesis_dtos(s, "ariel", plan_version=_PV(), snapshot=_Snap())
+    by = {d["ticker"]: d for d in dtos}
+
+    assert "CSPX" in by
+    reasoning = by["CSPX"]["reasoning_md"]
+    # Must not be empty — the verdict reasoning must fill the gap.
+    assert reasoning, "reasoning_md must not be empty when a settled verdict exists"
+    # Must contain the verdict's rich content.
+    assert "fleet analysis" in reasoning
+    assert "CSPX is a core holding" in reasoning
+    # Verdict badge stays from the stance (not changed by this fix).
+    assert by["CSPX"]["verdict"] == "HOLD"
+    s.close()
+
+
+def test_verdict_reasoning_prepends_stance_note(monkeypatch):
+    """When the stance carries its own note (e.g. pending proposal), it is
+    prepended before the verdict reasoning so neither is dropped."""
+    s = _session_with_user()
+
+    write_verdict(
+        s,
+        user_id="ariel",
+        subject="SPCX",
+        verdict="HOLD",
+        conviction="MED",
+        falsifiers=["Price drops below NAV"],
+        reasoning_md="Settled fleet verdict: SPCX HOLD. Broad market index fund; "
+                     "no idiosyncratic risk. Falsifier: price below NAV triggers review.",
+        settled=True,
+    )
+    # Open sell proposal so the stance note carries "Pending decision" text.
+    s.add(_sell_proposal("SPCX", size=40))
+    s.commit()
+
+    card = _card("SPCX", "HOLD")
+    _patch_plan_layer(monkeypatch, [card])
+
+    dtos = ps.project_thesis_dtos(s, "ariel", plan_version=_PV(), snapshot=_Snap())
+    by = {d["ticker"]: d for d in dtos}
+
+    reasoning = by["SPCX"]["reasoning_md"]
+    # Stance note ("Pending decision") must appear before verdict reasoning.
+    assert "Pending decision" in reasoning
+    assert "Settled fleet verdict" in reasoning
+    pending_pos = reasoning.index("Pending decision")
+    verdict_pos = reasoning.index("Settled fleet verdict")
+    assert pending_pos < verdict_pos, (
+        "stance note must be prepended before verdict reasoning"
+    )
+    s.close()
+
+
+def test_no_verdict_falls_back_to_plan_reasoning(monkeypatch):
+    """Subject with NO settled verdict: reasoning_md stays as the plan-thesis
+    value (unchanged current behavior)."""
+    s = _session_with_user()
+
+    # No verdict written for NVDA.
+    card = PositionThesis(
+        ticker="NVDA",
+        current_shares=100.0,
+        current_weight_pct=0.58,
+        current_usd_value=240_000.0,
+        verdict="HOLD",
+        conviction="HIGH",
+        reasoning_md="Plan-thesis reasoning: NVDA is the core concentration position.",
+    )
+    _patch_plan_layer(monkeypatch, [card])
+
+    dtos = ps.project_thesis_dtos(s, "ariel", plan_version=_PV(), snapshot=_Snap())
+    by = {d["ticker"]: d for d in dtos}
+
+    assert "NVDA" in by
+    reasoning = by["NVDA"]["reasoning_md"]
+    # Falls back to the plan-thesis text — not overwritten by a non-existent verdict.
+    assert "Plan-thesis reasoning" in reasoning
+    s.close()
