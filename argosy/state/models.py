@@ -1006,6 +1006,14 @@ class Fill(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False, index=True
     )
     paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    # Seam 4 (decision loop): the settled verdict that recommended this fill,
+    # resolved best-effort at reconcile time via
+    #   fills.proposal_id → proposals.decision_run_id ↔ verdicts.source_decision_run_id
+    # (+ same subject/user). NULL when no verdict is resolvable — execution
+    # never fails on a resolution miss. Plain nullable ref (not a DB-enforced
+    # FK) to keep the SQLite ADD COLUMN migration simple, mirroring
+    # proposals.plan_version_id. Migration: alembic 0101.
+    verdict_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
 
 class PendingOrder(Base):

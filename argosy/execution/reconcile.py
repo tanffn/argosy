@@ -32,6 +32,7 @@ from argosy.state.models import (
     PendingOrder,
     Proposal as ProposalRow,
     ProposalHistory,
+    Verdict as VerdictRow,
 )
 
 _log = get_logger("argosy.execution.reconcile")
@@ -99,10 +100,25 @@ class ReconcileLoop(CadenceLoop):
 
                 # Persist new fills.
                 for f in snapshot.fills:
+                    # Seam 4: link the fill back to the verdict that recommended
+                    # it. Best-effort — resolution NEVER fails the fill write.
+                    # Belt-and-suspenders: even if the resolver itself raised
+                    # (it shouldn't), the fill is still written with NULL.
+                    try:
+                        verdict_id = await _resolve_verdict_id(
+                            session,
+                            user_id=self.user_id,
+                            proposal_id=po.proposal_id,
+                            ticker=f.ticker,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _log.warning("reconcile.verdict_resolve_raised", exc_info=True)
+                        verdict_id = None
                     session.add(
                         FillRow(
                             user_id=self.user_id,
                             proposal_id=po.proposal_id,
+                            verdict_id=verdict_id,
                             broker=po.broker,
                             broker_order_id=po.broker_order_id,
                             ticker=f.ticker,
@@ -221,6 +237,98 @@ async def _maybe_async(maybe_coro: Any) -> Any:
     return maybe_coro
 
 
+# ----------------------------------------------------------------------
+# Seam 4: fill ↔ verdict linkage (best-effort resolve + read helpers)
+# ----------------------------------------------------------------------
+
+
+async def _resolve_verdict_id(
+    session: Any,
+    *,
+    user_id: str,
+    proposal_id: int | None,
+    ticker: str,
+) -> int | None:
+    """Resolve the settled verdict that recommended a fill.
+
+    Walks ``fills.proposal_id → proposals.decision_run_id`` then finds the
+    settled ``verdicts`` row with matching ``source_decision_run_id`` and the
+    same subject (ticker) + user. Returns the verdict id, or ``None`` when
+    nothing is resolvable (no proposal, no decision_run_id, no settled
+    verdict, blank ticker).
+
+    This is a MONEY-PATH best-effort helper: it NEVER raises. Any failure is
+    logged and swallowed so a resolution error can never break a fill write.
+    """
+    try:
+        if proposal_id is None:
+            return None
+        subject = (ticker or "").strip().upper()
+        if not subject:
+            return None
+        # READ-ONLY under no_autoflush: the caller has already dirtied
+        # pending_order.last_polled_at, and a plain session.get()/execute()
+        # would AUTOFLUSH that dirty row. Sol review: if that autoflush fails,
+        # the session flips rollback-only and the subsequent fill commit raises
+        # PendingRollbackError — DROPPING the fill. Disabling autoflush isolates
+        # this resolution from the fill-write transaction: no flush is triggered,
+        # so a resolution failure can never poison the fill write.
+        with session.no_autoflush:
+            proposal = await session.get(ProposalRow, proposal_id)
+            if proposal is None or proposal.decision_run_id is None:
+                return None
+            # NO settled filter: supersession sets the prior verdict's
+            # settled=False, but a fill from that still-live proposal was still
+            # recommended by that run's verdict. Match the verdict OWNED BY the
+            # run (source_decision_run_id) regardless of current settled state
+            # (subject + user still guarded); take the latest by id on ties.
+            return (
+                await session.execute(
+                    select(VerdictRow.id)
+                    .where(
+                        VerdictRow.user_id == user_id,
+                        VerdictRow.source_decision_run_id == proposal.decision_run_id,
+                        VerdictRow.subject == subject,
+                    )
+                    .order_by(VerdictRow.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 — best-effort; must not break the fill write
+        _log.warning(
+            "reconcile.verdict_resolve_failed",
+            proposal_id=proposal_id,
+            ticker=ticker,
+            exc_info=True,
+        )
+        return None
+
+
+async def fills_for_verdict(session: Any, *, verdict_id: int) -> list[FillRow]:
+    """All fills linked to ``verdict_id`` (oldest first).
+
+    The read side of seam 4 — a future "did the user act on verdict V?"
+    surface asks this. Returns [] when the verdict has no linked fills.
+    """
+    if verdict_id is None:
+        return []
+    rows = (
+        await session.execute(
+            select(FillRow)
+            .where(FillRow.verdict_id == verdict_id)
+            .order_by(FillRow.id)
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def verdict_for_fill(session: Any, fill: FillRow) -> VerdictRow | None:
+    """The verdict a ``fill`` traces back to, or ``None`` if unlinked."""
+    if fill is None or fill.verdict_id is None:
+        return None
+    return await session.get(VerdictRow, fill.verdict_id)
+
+
 def _default_factory(broker: str) -> Any:
     """Default adapter factory used when caller doesn't inject one."""
     if broker == "ibkr":
@@ -230,4 +338,4 @@ def _default_factory(broker: str) -> Any:
     return None
 
 
-__all__ = ["ReconcileLoop"]
+__all__ = ["ReconcileLoop", "fills_for_verdict", "verdict_for_fill"]
