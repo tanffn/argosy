@@ -26,7 +26,12 @@ import { useEffect, useState } from "react";
 import { LiveClock } from "@/components/live-clock";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
-import { api, type GreetingDTO, type GreetingNeedsYouItemDTO } from "@/lib/api";
+import {
+  api,
+  type GreetingCallOutcomeDTO,
+  type GreetingDTO,
+  type GreetingNeedsYouItemDTO,
+} from "@/lib/api";
 
 interface Props {
   userId: string;
@@ -214,6 +219,20 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
           </div>
         ) : null}
 
+        {/* How our calls did — the decision-learning scorecard */}
+        {(greeting.how_our_calls_did?.length ?? 0) > 0 ? (
+          <div className="flex flex-col gap-2" data-testid="calls-did">
+            <p className="font-mono text-sm font-semibold text-muted-foreground">
+              How our calls did:
+            </p>
+            <ul className="flex flex-col gap-1">
+              {greeting.how_our_calls_did!.map((outcome) => (
+                <CallOutcomeRow key={outcome.id} outcome={outcome} />
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         {/* Quiet line + next review */}
         <p
           className="text-xs text-muted-foreground font-mono"
@@ -246,6 +265,37 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/** Subtle colored dot: green = win, red = miss, gray = neutral/too-close. */
+function GradeDot({ grade }: { grade: GreetingCallOutcomeDTO["grade"] }) {
+  const cls =
+    grade === "win"
+      ? "text-success"
+      : grade === "miss"
+        ? "text-destructive"
+        : "text-muted-foreground";
+  return (
+    <span
+      className={`${cls} shrink-0 select-none`}
+      aria-label={grade}
+      data-testid={`grade-dot-${grade}`}
+    >
+      ●
+    </span>
+  );
+}
+
+function CallOutcomeRow({ outcome }: { outcome: GreetingCallOutcomeDTO }) {
+  return (
+    <li
+      className="flex items-start gap-2 font-mono text-xs text-foreground"
+      data-testid={`call-outcome-${outcome.id}`}
+    >
+      <GradeDot grade={outcome.grade} />
+      <span>{outcome.headline}</span>
+    </li>
   );
 }
 

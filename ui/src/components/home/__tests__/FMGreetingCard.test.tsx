@@ -225,6 +225,74 @@ describe("FMGreetingCard", () => {
   });
 });
 
+describe("how our calls did", () => {
+  it("renders win and miss outcomes with the right grade cue and headline", async () => {
+    homeGreeting.mockResolvedValueOnce({
+      ...QUIET_GREETING,
+      how_our_calls_did: [
+        {
+          id: "verdict:12",
+          subject: "NVDA",
+          verdict: "SELL NVDA",
+          grade: "win",
+          move_pct: -6.0,
+          headline: "SELL NVDA (Aug 8): NVDA -6% since — good call",
+          as_of: "2026-08-10",
+        },
+        {
+          id: "verdict:11",
+          subject: "META",
+          verdict: "HOLD META",
+          grade: "miss",
+          move_pct: 8.0,
+          headline: "HOLD META (Jul 20): META +8% since — miss — worth revisiting",
+          as_of: "2026-08-05",
+        },
+      ],
+    });
+    render(<FMGreetingCard userId="ariel" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("calls-did")).toBeInTheDocument(),
+    );
+    // Section heading
+    expect(screen.getByText("How our calls did:")).toBeInTheDocument();
+    // Both headlines are rendered
+    expect(
+      screen.getByText(/SELL NVDA.*good call/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/HOLD META.*worth revisiting/),
+    ).toBeInTheDocument();
+    // Grade dots carry the right aria-label
+    expect(screen.getByLabelText("win")).toBeInTheDocument();
+    expect(screen.getByLabelText("miss")).toBeInTheDocument();
+  });
+
+  it("renders nothing when how_our_calls_did is empty", async () => {
+    homeGreeting.mockResolvedValueOnce({
+      ...QUIET_GREETING,
+      how_our_calls_did: [],
+    });
+    render(<FMGreetingCard userId="ariel" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("quiet-line")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("calls-did")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing when how_our_calls_did is absent", async () => {
+    homeGreeting.mockResolvedValueOnce(QUIET_GREETING);
+    render(<FMGreetingCard userId="ariel" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("quiet-line")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("calls-did")).not.toBeInTheDocument();
+  });
+});
+
 describe("helpers", () => {
   it("salutation follows local time of day", () => {
     expect(salutation(8)).toBe("Good morning");

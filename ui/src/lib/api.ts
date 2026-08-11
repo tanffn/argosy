@@ -2265,6 +2265,17 @@ export interface GreetingWatchingItemDTO {
   note: string;
 }
 
+/** One graded deep-decision verdict outcome — the learning-loop scorecard. */
+export interface GreetingCallOutcomeDTO {
+  id: string;
+  subject: string;
+  verdict: string;
+  grade: "win" | "miss" | "neutral";
+  move_pct: number | null;
+  headline: string;
+  as_of: string | null;
+}
+
 export interface GreetingBookDTO {
   total_usd: number | null;
   on_plan: boolean;
@@ -2277,6 +2288,8 @@ export interface GreetingDTO {
   book: GreetingBookDTO;
   needs_you: GreetingNeedsYouItemDTO[];
   watching: GreetingWatchingItemDTO[];
+  // Optional — absent when nothing is graded yet or on a backend read error.
+  how_our_calls_did?: GreetingCallOutcomeDTO[];
   quiet: boolean;
   next_review_local: string | null;
 }
