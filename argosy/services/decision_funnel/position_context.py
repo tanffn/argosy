@@ -171,8 +171,71 @@ def _flag_lines(session: Session, *, user_id: str, ticker: str) -> list[str]:
     ]
 
 
+def _stance_lines(session: Session, *, user_id: str, ticker: str) -> list[str]:
+    """The STANDING PLAN STANCE for this ticker — the one-voice authoritative
+    decision the deep-decision fleet must reconcile with.
+
+    Root incident (NVDA, verdict id=34, 2026-08-10): the per-holding fleet ran
+    STRUCTURALLY BLIND to the position's standing plan stance, re-derived
+    "thesis intact → HOLD", and authored a settled Verdict that CONTRADICTED a
+    standing SELL (plan_verdict=SELL). Ariel's ruling — ONE VOICE PER POSITION,
+    MIRROR-OR-PROPOSE-REVISION: the verdict must DEFAULT to the standing stance;
+    the fleet may only diverge by explicitly PROPOSING a stance revision
+    justified by NEW FACTS, never by silently emitting a bare HOLD over a
+    standing SELL/TRIM.
+
+    Deterministic input plumbing (not a judgment gate); best-effort — a read
+    failure omits the block and never raises into the fleet.
+    """
+    try:
+        from argosy.services.position_stance import get_stances
+
+        stances = get_stances(session, user_id)
+    except Exception:  # noqa: BLE001 — stance read is enrichment, never fatal
+        _log.exception("decision_funnel.position_context_stance_failed", ticker=ticker)
+        return []
+
+    row = None
+    for s in stances:
+        if (getattr(s, "symbol", "") or "").strip().upper() == ticker:
+            row = s
+            break
+    if row is None:
+        return []
+
+    stance = (getattr(row, "stance", "") or "").strip().upper()
+    if not stance:
+        return []
+    source = (getattr(row, "stance_source", "") or "").strip() or "plan"
+    conviction = (getattr(row, "conviction", "") or "").strip() or "LOW"
+
+    lines = [
+        f"STANDING PLAN STANCE (one-voice, authoritative): {stance} — "
+        f"source={source}, conviction={conviction}.",
+    ]
+    if getattr(row, "divergence", False):
+        lines.append(
+            "- DIVERGENCE FLAGGED: a fleet review previously diverged from this "
+            "stance but the blind verification failed, so the stance shown is "
+            "the plan's (fail-closed) — do not treat the prior divergence as "
+            "license to override."
+        )
+    if stance in ("SELL", "TRIM"):
+        lines.append(
+            f"- This position is on an active plan trim/deconcentration pace "
+            f"(standing {stance}). Your verdict MUST reconcile with this "
+            f"standing decision: either MIRROR it — recommend continuing the "
+            f"reduction on the plan's pace — or, ONLY IF you have concrete NEW "
+            f"FACTS that the standing stance is now wrong, explicitly state a "
+            f"'PROPOSED STANCE REVISION:' with that justification. A bare HOLD "
+            f"that contradicts this standing {stance} is NOT permitted; "
+            f"thesis-intact alone is NOT grounds to HOLD over it."
+        )
+    return lines
+
+
 def build_position_context(session: Session, *, user_id: str, ticker: str) -> str:
-    """The full position + active-flag context block for one ticker."""
+    """The full position + active-flag + standing-stance context block."""
     t = (ticker or "").strip().upper()
     if not t:
         return ""
@@ -180,6 +243,9 @@ def build_position_context(session: Session, *, user_id: str, ticker: str) -> st
     flag_block = _flag_lines(session, user_id=user_id, ticker=t)
     if flag_block:
         blocks.append(flag_block)
+    stance_block = _stance_lines(session, user_id=user_id, ticker=t)
+    if stance_block:
+        blocks.append(stance_block)
     return "\n".join("\n".join(b) for b in blocks if b)
 
 

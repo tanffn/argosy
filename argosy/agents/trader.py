@@ -88,6 +88,27 @@ _FALSIFIER_RULE = (
 )
 
 
+# One-voice-per-position reconciliation (NVDA verdict-34 contradiction,
+# 2026-08-10). When the packet carries a STANDING PLAN STANCE of SELL/TRIM for
+# this ticker, the verdict must DEFAULT to that standing decision — the fleet
+# may only diverge by explicitly PROPOSING a stance revision justified by NEW
+# FACTS, never by silently emitting a bare HOLD over a standing SELL/TRIM.
+_STANCE_RECONCILE_RULE = (
+    "  - **RECONCILE WITH THE STANDING PLAN STANCE (one voice per position).** "
+    "The USER CONSTRAINTS / POSITIONS SNAPSHOT may carry a 'STANDING PLAN "
+    "STANCE' line for this ticker (the plan's authoritative decision). If that "
+    "standing stance is SELL or TRIM, you MUST NOT output a bare HOLD that "
+    "contradicts it. Do ONE of two things: (a) MIRROR — recommend continuing "
+    "the reduction on the plan's pace (your verdict reflects the standing "
+    "SELL/TRIM); or (b) ONLY IF you have concrete NEW FACTS that the standing "
+    "stance is now wrong, explicitly state a 'PROPOSED STANCE REVISION:' in "
+    "your rationale with that new-facts justification — never silently "
+    "override. A thesis that is merely intact is NOT grounds to HOLD over a "
+    "standing SELL/TRIM. When there is NO standing SELL/TRIM stance, a HOLD "
+    "remains perfectly valid under the normal rules.\n"
+)
+
+
 class RevisitTrigger(BaseModel):
     """One typed tripwire the fleet arms alongside a verdict.
 
@@ -358,7 +379,9 @@ class TraderAgent(BaseAgent[TraderProposal]):
                 "If they do hold it, say 'keep the existing position'. "
                 "If positions context is empty, default to the 'do "
                 "not initiate' framing — /consult is most often used "
-                "to evaluate new candidates.\n\n"
+                "to evaluate new candidates.\n"
+                + _STANCE_RECONCILE_RULE
+                + "\n"
                 + _FALSIFIER_RULE
                 + "OUTPUT must be a JSON object conforming to this schema:\n"
                 f"{TraderProposal.model_json_schema()}\n"
@@ -403,7 +426,9 @@ class TraderAgent(BaseAgent[TraderProposal]):
                 "Refresh agent re-pull X' or 'have the news pipeline "
                 "retry'. The fleet handles its own remediation "
                 "internally — your job is to produce the verdict with "
-                "whatever inputs landed.\n\n"
+                "whatever inputs landed.\n"
+                + _STANCE_RECONCILE_RULE
+                + "\n"
                 + _FALSIFIER_RULE
                 + "OUTPUT must be a JSON object conforming to this schema:\n"
                 f"{TraderProposal.model_json_schema()}\n"

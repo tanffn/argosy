@@ -28,7 +28,13 @@ from sqlalchemy.orm import sessionmaker
 from argosy.services.decision_funnel import deep_decision as dd_mod
 from argosy.services.decision_funnel.deep_decision import run_deep_decision
 from argosy.services.decision_funnel.position_context import build_position_context
-from argosy.state.models import Base, MonitorFlag, PortfolioSnapshotRow, User
+from argosy.state.models import (
+    Base,
+    MonitorFlag,
+    PortfolioSnapshotRow,
+    PositionStance,
+    User,
+)
 
 
 @pytest.fixture
@@ -174,6 +180,112 @@ def test_multi_account_positions_are_all_listed_and_summed(session):
     assert "Leumi" in block
     assert "IBKR" in block
     assert "$45,460 total" in block
+
+
+# ---------------------------------------------------------------------------
+# STANDING PLAN STANCE block (one-voice reconciliation, NVDA verdict-34 fix)
+# ---------------------------------------------------------------------------
+
+
+def _add_stance(session, *, symbol, stance, source="plan", conviction="LOW",
+                divergence=False):
+    """Seed a PositionStance row that get_stances will serve WITHOUT rebuilding.
+
+    A rebuild would delete-and-reinsert from the plan layer (and drop our seed
+    when there's no plan). We force get_stances down the "serve stored rows"
+    path by making the stance non-stale: built now, plan_version_id/snapshot_key
+    matching the no-plan / no-snapshot fingerprint the freshness check computes.
+    """
+    session.add(
+        PositionStance(
+            user_id="ariel",
+            symbol=symbol,
+            stance=stance,
+            stance_source=source,
+            conviction=conviction,
+            plan_verdict=stance,
+            divergence=divergence,
+            reasoning_md="",
+            plan_version_id=None,
+            snapshot_key="None|0|0.0",
+            built_at=datetime.now(timezone.utc),
+        )
+    )
+    session.commit()
+
+
+def _freeze_stance_sources(monkeypatch):
+    """Neutralize the plan/snapshot freshness inputs so the seeded stance row
+    is served as-is (no rebuild)."""
+    import argosy.services.position_stance as ps_mod
+
+    monkeypatch.setattr(ps_mod, "_load_plan_version", lambda db, uid: None)
+    monkeypatch.setattr(ps_mod, "_load_portfolio_snapshot", lambda uid, db=None: None)
+
+
+def test_standing_sell_stance_renders_reconcile_block(session, monkeypatch):
+    _freeze_stance_sources(monkeypatch)
+    _add_snapshot(session, _SOFI_POSITIONS)
+    _add_stance(session, symbol="NVDA", stance="SELL", source="plan",
+                conviction="LOW")
+    block = build_position_context(session, user_id="ariel", ticker="NVDA")
+    assert "STANDING PLAN STANCE (one-voice, authoritative): SELL" in block
+    assert "source=plan" in block
+    assert "conviction=LOW" in block
+    assert "active plan trim/deconcentration pace" in block
+    assert "MIRROR" in block
+    assert "PROPOSED STANCE REVISION:" in block
+    assert "bare HOLD" in block
+
+
+def test_standing_trim_stance_renders_reconcile_block(session, monkeypatch):
+    _freeze_stance_sources(monkeypatch)
+    _add_snapshot(session, _SOFI_POSITIONS)
+    _add_stance(session, symbol="SOFI", stance="TRIM", source="review",
+                conviction="MED")
+    block = build_position_context(session, user_id="ariel", ticker="SOFI")
+    assert "STANDING PLAN STANCE (one-voice, authoritative): TRIM" in block
+    assert "standing TRIM" in block
+
+
+def test_standing_hold_stance_has_no_reconcile_mandate(session, monkeypatch):
+    _freeze_stance_sources(monkeypatch)
+    _add_snapshot(session, _SOFI_POSITIONS)
+    _add_stance(session, symbol="SOFI", stance="HOLD", source="plan")
+    block = build_position_context(session, user_id="ariel", ticker="SOFI")
+    assert "STANDING PLAN STANCE (one-voice, authoritative): HOLD" in block
+    # A HOLD stance imposes no mirror-or-propose mandate.
+    assert "active plan trim/deconcentration pace" not in block
+    assert "PROPOSED STANCE REVISION:" not in block
+
+
+def test_divergence_flag_rendered(session, monkeypatch):
+    _freeze_stance_sources(monkeypatch)
+    _add_snapshot(session, _SOFI_POSITIONS)
+    _add_stance(session, symbol="NVDA", stance="SELL", divergence=True)
+    block = build_position_context(session, user_id="ariel", ticker="NVDA")
+    assert "DIVERGENCE FLAGGED" in block
+
+
+def test_no_stance_row_omits_block(session, monkeypatch):
+    _freeze_stance_sources(monkeypatch)
+    _add_snapshot(session, _SOFI_POSITIONS)
+    block = build_position_context(session, user_id="ariel", ticker="SOFI")
+    assert "STANDING PLAN STANCE" not in block
+
+
+def test_stance_read_failure_never_raises(session, monkeypatch):
+    import argosy.services.position_stance as ps_mod
+
+    def _boom(db, user_id, *a, **k):
+        raise RuntimeError("stance registry unavailable")
+
+    monkeypatch.setattr(ps_mod, "get_stances", _boom)
+    _add_snapshot(session, _SOFI_POSITIONS)
+    # Best-effort: the block still builds (position lines) with no stance section.
+    block = build_position_context(session, user_id="ariel", ticker="SOFI")
+    assert "CURRENT POSITION — SOFI" in block
+    assert "STANDING PLAN STANCE" not in block
 
 
 # ---------------------------------------------------------------------------
