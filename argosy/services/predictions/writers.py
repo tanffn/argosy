@@ -68,7 +68,7 @@ from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.state.models import Prediction
 
@@ -980,8 +980,286 @@ def write_alpha_report_prediction(
     )
 
 
+# ---------------------------------------------------------------------------
+# Deep-decision verdict bridge (SEAM 2) — grade what the FLEET decided
+# ---------------------------------------------------------------------------
+#
+# The per-ticker decision fleet settles a verdict (BUY/SELL/TRIM/HOLD) into the
+# verdict registry. This bridge emits ONE prediction per settled verdict so the
+# LIVE outcome evaluator scores the fleet's actual deep-decision calls — not just
+# the plan-thesis cards ``emit_thesis_predictions`` already covers.
+#
+# Source label: we reuse the whitelisted ``signal_stream:%`` CHECK escape-hatch
+# (migration 0082) so a distinct, isolated source string works on the migrated
+# prod DB with NO schema change. It gets its own row in the source_reliability
+# view and never collides with the real early-signal streams A-E (their consumers
+# match exact stream names, not a ``signal_stream:%`` wildcard — verified). A
+# first-class ``deep_decision_verdict`` source would need a one-line CHECK
+# relaxation migration (mirroring 0058/0082); flagged as the clean alternative.
+DEEP_DECISION_VERDICT_SOURCE: str = "signal_stream:deep_decision_verdict"
+
+#: Settled-verdict → prediction direction. SELL/TRIM → ``short``: the fleet
+#: expected the price it AVOIDED to fall (a down-or-flat move vindicates the
+#: exit; the evaluator's ``short`` sign-flip scores it that way). HOLD/WAIT →
+#: ``neutral`` (anti-hide-behind-HOLD, mirroring the thesis writer): a HOLD is a
+#: no-change call scored against subsequent price drift (expired_neutral when the
+#: price barely moves, expired_positive/negative otherwise).
+_VERDICT_TO_DIRECTION: dict[str, Literal["long", "short", "neutral"]] = {
+    "BUY": "long",
+    "ADD": "long",
+    "SELL": "short",
+    "TRIM": "short",
+    "HOLD": "neutral",
+    "WAIT": "neutral",
+}
+
+
+def deep_decision_verdict_message_id(*, verdict_id: int | str) -> str:
+    """``v1|predictions|deep_decision_verdict|<verdict_id>`` — the dedup key.
+
+    Keyed on the registry ``verdicts.id`` so a re-emit for the same settled
+    verdict dedup-hits (no duplicate row) and outcomes join back to the verdict
+    via ``source_ref.verdict_id``.
+    """
+    if verdict_id is None or verdict_id == "":
+        raise ValueError("deep_decision_verdict prediction needs a verdict_id")
+    return f"{DEDUP_KEY_VERSION}|predictions|deep_decision_verdict|{verdict_id}"
+
+
+def _trigger_prices(
+    revisit_triggers: list[dict[str, Any]] | None, kind: str
+) -> list[float]:
+    """Numeric prices from typed ``price_below`` / ``price_above`` triggers."""
+    out: list[float] = []
+    for t in revisit_triggers or []:
+        if not isinstance(t, dict) or str(t.get("kind")) != kind:
+            continue
+        px = t.get("price")
+        if px is None:
+            continue
+        try:
+            out.append(float(px))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _derive_target_stop(
+    *,
+    direction: str,
+    entry: float,
+    revisit_triggers: list[dict[str, Any]] | None,
+    verdict_stop: float | None,
+) -> tuple[float | None, float | None]:
+    """Map the verdict's typed price triggers to (target_price, stop_price).
+
+    Geometry matches the evaluator's ``target_stop`` scorer:
+      * long  → target ABOVE entry (nearest ``price_above``), stop BELOW entry
+        (nearest ``price_below`` or the authored stop).
+      * short → target BELOW entry (nearest ``price_below``), stop ABOVE entry
+        (nearest ``price_above`` or the authored stop).
+    Returns ``(None, None)`` unless BOTH a target and a stop resolve with the
+    correct side — a partial set falls back to a direction-only (fixed_lookahead)
+    prediction the evaluator can still grade by expiry sign.
+    """
+    aboves = _trigger_prices(revisit_triggers, "price_above")
+    belows = _trigger_prices(revisit_triggers, "price_below")
+    vstop = None
+    if verdict_stop is not None:
+        try:
+            vstop = float(verdict_stop)
+        except (TypeError, ValueError):
+            vstop = None
+
+    if direction == "long":
+        up = [p for p in aboves if p > entry]
+        down = [p for p in belows if p < entry]
+        if vstop is not None and vstop < entry:
+            down.append(vstop)
+        target = min(up) if up else None            # nearest resistance
+        stop = max(down) if down else None          # nearest support / tightest stop
+    elif direction == "short":
+        down = [p for p in belows if p < entry]
+        up = [p for p in aboves if p > entry]
+        if vstop is not None and vstop > entry:
+            up.append(vstop)
+        target = max(down) if down else None        # nearest downside target
+        stop = min(up) if up else None              # nearest upside stop
+    else:
+        return (None, None)
+
+    if target is None or stop is None:
+        return (None, None)
+    return (target, stop)
+
+
+def write_deep_decision_verdict_prediction(
+    session: Session,
+    user_id: str,
+    *,
+    verdict_id: int | str,
+    subject: str,
+    verdict: str,
+    event_at: datetime,
+    entry_price: Decimal | float | None = None,
+    stop_price: Decimal | float | None = None,
+    revisit_triggers: list[dict[str, Any]] | None = None,
+    timeframe_days: int | None = None,
+) -> Prediction | None:
+    """Emit one graded prediction for a settled deep-decision verdict (SEAM 2).
+
+    Returns the persisted (or already-existing) row, or ``None`` when the
+    verdict is not gradeable-as-a-prediction (unrecognised verdict string, or
+    an empty subject).
+
+    Shape:
+      * direction from :data:`_VERDICT_TO_DIRECTION`.
+      * ``target_price`` / ``stop_price`` derived from the verdict's typed
+        price triggers via :func:`_derive_target_stop` — ONLY when a real
+        ``entry_price`` anchors the geometry and the direction is long/short.
+        Both present → the writer selects ``target_stop`` (numeric grade).
+      * No numeric target (HOLD, or a verdict with only fundamental
+        falsifiers) → direction-only ``fixed_lookahead_*`` — graded by the
+        evaluator's ±10%/±1% expiry classification (expired_positive/negative/
+        neutral), NOT a null-target unparseable row.
+      * ``entry_price=None`` (common for market/long-hold BUYs + HOLDs, which
+        carry no limit price) → still emitted as ``fixed_lookahead_*`` with a
+        NULL entry; the daily entry-backfill re-evaluation (already wired into
+        ``PredictionsEvaluatorLoop``) backfills entry from the close at
+        ``event_at`` and grades it under the ``*_entry_backfilled`` method.
+      * ``source_ref.verdict_id`` is the verdict↔outcome join key; dedup on
+        ``verdict_id`` makes re-emit idempotent (no duplicate row).
+    """
+    v = (verdict or "").strip().upper()
+    direction = _VERDICT_TO_DIRECTION.get(v)
+    if direction is None:
+        return None
+    ticker = (subject or "").strip().upper()
+    if not ticker:
+        return None
+
+    target_price: float | None = None
+    stop_out: float | None = None
+    if entry_price is not None and direction in ("long", "short"):
+        try:
+            entry_f = float(entry_price)
+        except (TypeError, ValueError):
+            entry_f = None  # type: ignore[assignment]
+        if entry_f is not None and entry_f > 0:
+            target_price, stop_out = _derive_target_stop(
+                direction=direction,
+                entry=entry_f,
+                revisit_triggers=revisit_triggers,
+                verdict_stop=(
+                    float(stop_price) if stop_price is not None else None
+                ),
+            )
+
+    return _insert_prediction(
+        session,
+        user_id,
+        source=DEEP_DECISION_VERDICT_SOURCE,
+        source_ref={
+            "verdict_id": verdict_id,
+            "subject": ticker,
+            "verdict": v,
+            "kind": "deep_decision_verdict",
+        },
+        message_id=deep_decision_verdict_message_id(verdict_id=verdict_id),
+        ticker=ticker,
+        direction=direction,
+        event_at=event_at,
+        entry_price=entry_price,
+        target_price=target_price,
+        stop_price=stop_out,
+        timeframe_days=(
+            timeframe_days
+            if timeframe_days is not None
+            else DEFAULT_TIMEFRAME_DAYS_THESIS
+        ),
+    )
+
+
+def emit_verdict_prediction_best_effort(
+    *,
+    user_id: str,
+    verdict_id: int | str,
+    subject: str,
+    verdict: str,
+    event_at: datetime,
+    entry_price: Decimal | float | None = None,
+    stop_price: Decimal | float | None = None,
+    revisit_triggers: list[dict[str, Any]] | None = None,
+    timeframe_days: int | None = None,
+    session_factory: Any = None,
+) -> Prediction | None:
+    """Fire-on-settle bridge wrapper (SEAM 2). Opens its OWN isolated session,
+    emits one prediction deduped on ``verdict_id``, commits, swallows ALL
+    failures. Never raises — a bridge error must not break the settle path.
+
+    ``session_factory`` is injectable for tests; production derives a sync
+    sessionmaker from the live engine (mirrors
+    ``spine.fleet_recording.record_fleet_decision_best_effort``).
+    """
+    session = None
+    engine = None
+    try:
+        if session_factory is None:
+            import sqlalchemy as sa
+
+            from argosy.state import db as db_mod
+
+            url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
+            engine = sa.create_engine(
+                url, connect_args={"check_same_thread": False}
+            )
+            session_factory = sessionmaker(
+                bind=engine, expire_on_commit=False
+            )
+        session = session_factory()
+        row = write_deep_decision_verdict_prediction(
+            session,
+            user_id,
+            verdict_id=verdict_id,
+            subject=subject,
+            verdict=verdict,
+            event_at=event_at,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            revisit_triggers=revisit_triggers,
+            timeframe_days=timeframe_days,
+        )
+        session.commit()
+        return row
+    except Exception as exc:  # noqa: BLE001 — bridge must NEVER break the flow
+        logger.warning(
+            "predictions.verdict_bridge.emit_failed: %s", str(exc)[:200]
+        )
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if engine is not None:
+            try:
+                engine.dispose()  # per-call engine — dispose to avoid a leak
+            except Exception:  # noqa: BLE001
+                pass
+
+
 __all__ = [
     "DEDUP_KEY_VERSION",
+    "DEEP_DECISION_VERDICT_SOURCE",
+    "deep_decision_verdict_message_id",
+    "emit_verdict_prediction_best_effort",
+    "write_deep_decision_verdict_prediction",
     "DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT",
     "DEFAULT_TIMEFRAME_DAYS_DISCORD",
     "DEFAULT_TIMEFRAME_DAYS_MONITOR",

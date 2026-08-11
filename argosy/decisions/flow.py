@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Literal
 
 from argosy.agent_settings import AgentSettings, load_agent_settings
@@ -309,6 +309,69 @@ def _concentration_misgrounded(
         if anchor is not None and abs(thr - float(anchor)) <= _CONCENTRATION_TOL_PP:
             return None  # matches an authoritative concentration figure → grounded
     return thr
+
+
+# SEAM 1 — default recheck horizon for a settled verdict that carries no dated
+# revisit trigger. 45 days is deliberately aligned with
+# ``verdict_registry._STALE_VERDICT_MAX_AGE_DAYS`` (the verdict-AUTHORITY staleness
+# floor): a settled verdict stops silencing a re-run once it is >45d old, so the
+# recheck date should land no later than that boundary. A tighter per-conviction
+# horizon was considered and rejected — the staleness floor is conviction-agnostic,
+# so the recheck should be too (conviction already governs debate depth upstream).
+_DEFAULT_VERDICT_RECHECK_DAYS = 45
+
+
+def _derive_next_validation(
+    revisit_triggers: list[dict] | None,
+    *,
+    explicit: Any = None,
+    now: date | None = None,
+) -> date | None:
+    """Recheck date for a settled verdict (SEAM 1). Best-effort; never raises.
+
+    Precedence:
+      1. an explicit trader-authored ``next_validation`` (str ISO or ``date``);
+      2. the SOONEST **future** ``dated_event`` revisit-trigger date;
+      3. the default horizon ``today + _DEFAULT_VERDICT_RECHECK_DAYS``.
+
+    A past-dated event is skipped (it is already due — not a useful recheck
+    date); if every dated event is in the past we fall through to the default
+    horizon. Returns ``None`` only on an unexpected error (caller then simply
+    omits next_validation, preserving today's behaviour for that one verdict).
+    """
+    try:
+        today = now or datetime.now(timezone.utc).date()
+        # 1. Honor an explicit authored value (str or date).
+        if explicit is not None:
+            if isinstance(explicit, date):
+                return explicit
+            try:
+                return date.fromisoformat(str(explicit)[:10])
+            except ValueError:
+                pass  # malformed explicit → fall through to triggers/default
+        # 2. Soonest FUTURE dated_event trigger.
+        dated: list[date] = []
+        for t in revisit_triggers or []:
+            if not isinstance(t, dict) or str(t.get("kind")) != "dated_event":
+                continue
+            raw = t.get("date")
+            if not raw:
+                continue
+            try:
+                d = date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                continue
+            # Strictly future — a same-day / already-due event is NOT a useful
+            # recheck date (Sol re-review FIX 2); fall through to the next
+            # future trigger, else the +45d default.
+            if d > today:
+                dated.append(d)
+        if dated:
+            return min(dated)
+        # 3. Default horizon.
+        return today + timedelta(days=_DEFAULT_VERDICT_RECHECK_DAYS)
+    except Exception:  # noqa: BLE001 — derivation must never break settle
+        return None
 
 
 def _coerce_verdict_falsifiers(
@@ -747,6 +810,8 @@ class DecisionFlow:
                 falsifiers=_hold_fals,
                 revisit_triggers=_hold_trigs,
                 stop=trader_proposal.stop_price,
+                entry_price=trader_proposal.limit_price,
+                next_validation=getattr(trader_proposal, "next_validation", None),
             )
             return BlockedProposal(
                 reason=f"Trader returned HOLD: {trader_proposal.rationale_summary}",
@@ -1077,6 +1142,8 @@ class DecisionFlow:
             falsifiers=_appr_fals,
             revisit_triggers=_appr_trigs,
             stop=trader_proposal.stop_price,
+            entry_price=trader_proposal.limit_price,
+            next_validation=getattr(trader_proposal, "next_validation", None),
         )
 
         try:
@@ -1156,6 +1223,8 @@ class DecisionFlow:
         falsifiers: list[str] | None = None,
         revisit_triggers: list[dict] | None = None,
         stop: float | None = None,
+        entry_price: float | None = None,
+        next_validation: Any = None,
     ) -> None:
         """Write settled verdict + retract contradictory open proposals atomically.
 
@@ -1165,6 +1234,7 @@ class DecisionFlow:
         """
         if self.config.skip_persistence:
             return
+        settled_verdict_id: int | None = None
         try:
             import sqlalchemy as sa
             from sqlalchemy.orm import sessionmaker
@@ -1184,7 +1254,13 @@ class DecisionFlow:
                 note = reasoning_md
                 if named_sleeve:
                     note = f"{note}\n\nplan_sleeve={named_sleeve}".strip()
-                write_verdict(
+                # SEAM 1 — every settled verdict carries a dated recheck: soonest
+                # future dated_event trigger, else the +45d authority-staleness
+                # horizon (explicit trader value honored when present).
+                recheck = _derive_next_validation(
+                    revisit_triggers or [], explicit=next_validation
+                )
+                v_row = write_verdict(
                     sess,
                     user_id=self.user_id,
                     subject=ticker,
@@ -1192,6 +1268,7 @@ class DecisionFlow:
                     conviction=conviction or "MED",
                     falsifiers=falsifiers or [],
                     revisit_triggers=revisit_triggers or [],
+                    next_validation=recheck,
                     source_decision_run_id=decision_run_id or None,
                     reasoning_md=note,
                     settled=True,
@@ -1210,6 +1287,12 @@ class DecisionFlow:
                         detail=detail,
                     )
                 sess.commit()
+                # Only carry the verdict id AFTER the commit SUCCEEDS. If the
+                # retraction or commit rolled the verdict row back, settled_
+                # verdict_id stays None and the fire-on-settle bridge below is
+                # skipped — never an orphan prediction pointing at a rolled-back
+                # verdict (Sol re-review FIX 1).
+                settled_verdict_id = v_row.id
             finally:
                 sess.close()
         except Exception as exc:  # noqa: BLE001 — registry write must not fail the flow
@@ -1247,6 +1330,34 @@ class DecisionFlow:
                 "decision_flow.spine_decision_record_failed",
                 ticker=ticker, error=str(exc)[:200],
             )
+
+        # SEAM 2 — bridge the settled verdict into the LIVE predictions grader:
+        # emit one prediction keyed/deduped on the verdict_id so the daily
+        # evaluator scores what the FLEET actually decided (not just plan-thesis
+        # cards). Own isolated session + best-effort — never touches the registry
+        # write above nor the decision flow. Skipped if the verdict row id is
+        # unknown (registry write failed) — nothing to key the prediction on.
+        if settled_verdict_id is not None:
+            try:
+                from argosy.services.predictions.writers import (
+                    emit_verdict_prediction_best_effort,
+                )
+
+                emit_verdict_prediction_best_effort(
+                    user_id=self.user_id,
+                    verdict_id=settled_verdict_id,
+                    subject=ticker,
+                    verdict=verdict,
+                    event_at=datetime.now(timezone.utc),
+                    entry_price=entry_price,
+                    stop_price=stop,
+                    revisit_triggers=revisit_triggers or [],
+                )
+            except Exception as exc:  # noqa: BLE001 — wrapper already swallows
+                _log.warning(
+                    "decision_flow.verdict_prediction_bridge_failed",
+                    ticker=ticker, error=str(exc)[:200],
+                )
 
     def _rounds_for(self, tier: Tier) -> int:
         return {
