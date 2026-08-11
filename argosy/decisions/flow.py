@@ -193,21 +193,175 @@ def _is_degenerate_falsifier(text: str) -> bool:
     return len(specific) < 2
 
 
-def _coerce_verdict_falsifiers(tp: Any) -> tuple[list[str], list[dict]]:
+# HOLE #32 — concentration-context grounding. A falsifier/trigger that arms a
+# CONCENTRATION tripwire ("stop trimming below N% of book") whose cited threshold
+# does not match the plan's real NVDA concentration target/cap is MIS-GROUNDED —
+# the run-was-poisoned case where 40% (the ESTATE-TAX rate) was conflated with a
+# deconcentration cap. This is CONTEXT-AWARE: presence of "40" somewhere in the
+# plan is not grounding; the number must be right FOR A CONCENTRATION CLAIM.
+# CONCENTRATION-SPECIFIC markers (DEFECT 3 — tightened). The cited % must sit in
+# a genuine concentration phrase; broad words that also mean other things ("trim",
+# substring "cap" inside capital/capacity/market-cap) were REMOVED as sole
+# triggers. "weight"/"cap"/"hard cap" are matched WHOLE-WORD only.
+_CONCENTRATION_MARKER_SUBSTR = (
+    "% of book", "% of the book", "of book", "concentration", "deconcentration",
+    "single-name", "single name", "position weight", "portfolio weight",
+    "overweight",
+)
+_CONCENTRATION_MARKER_WORD = (r"\bweight\b", r"\bcap\b", r"\bhard cap\b")
+# A number in an ESTATE / SITUS / TAX context is NOT a concentration threshold —
+# the estate-tax 40% falsifier must be left untouched.
+_NON_CONCENTRATION_CONTEXT = (
+    "estate", "situs", "us-situs", "u.s. situs", "tax", "withholding",
+    "inheritance", "step-up", "step up", "gift",
+)
+# FUNDAMENTAL-metric keywords (DEFECT 3): if any is present the % is a business
+# metric (margin/revenue/growth/…), NOT a concentration threshold → leave it.
+_FUNDAMENTAL_METRIC_KEYWORDS = (
+    "margin", "revenue", "gross", "fcf", "cash flow", "growth", "earnings",
+    "eps", "debt", "p/e", "pe ratio", "price", "roe", "roic", "ebitda",
+)
+# Uppercase tokens that are common finance/generic acronyms, NOT tickers — so a
+# concentration statement carrying one of these is not treated as "about another
+# ticker" (DEFECT 2 cross-ticker guard).
+_TICKER_ACRONYM_ALLOWLIST = frozenset({
+    "US", "USA", "USD", "EU", "UK", "AI", "GPU", "CPU", "IPO", "ETF", "GAAP",
+    "FCF", "EPS", "PE", "ROE", "ROIC", "TTM", "NRR", "YOY", "QOQ", "CEO", "CFO",
+    "DCF", "EBITDA", "GDP", "FX", "IP", "RD", "ATH", "YTD", "NW", "FI",
+})
+# Keep a cited threshold if it is within this many percentage points of the
+# authoritative target (8) or cap (13). 40 is far outside both bands; ~13 and ~8
+# stay grounded. Generous by design — over-dropping a real tripwire is worse than
+# leaving an ambiguous one (fail-safe).
+_CONCENTRATION_TOL_PP = 5.0
+
+
+def _extract_single_percent(text: str) -> float | None:
+    """Return the sole percentage cited in ``text`` (e.g. '~40% of book' → 40.0),
+    or None if zero or MORE THAN ONE distinct value is present (ambiguous →
+    conservatively decline to judge)."""
+    vals: set[float] = set()
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|percent\b|pct\b)", text.lower()):
+        try:
+            vals.add(round(float(m.group(1)), 4))
+        except (TypeError, ValueError):
+            continue
+    if len(vals) != 1:
+        return None
+    return next(iter(vals))
+
+
+def _has_concentration_marker(low: str) -> bool:
+    if any(m in low for m in _CONCENTRATION_MARKER_SUBSTR):
+        return True
+    return any(re.search(p, low) for p in _CONCENTRATION_MARKER_WORD)
+
+
+def _names_other_ticker(text: str, subject: str | None) -> bool:
+    """True if ``text`` names an uppercase ticker token OTHER than ``subject``
+    (DEFECT 2). A concentration statement about MSFT inside an NVDA verdict must
+    NOT be grounded against NVDA's 8/13."""
+    subj = (subject or "").strip().upper()
+    for tok in re.findall(r"\b[A-Z]{1,5}\b", text or ""):
+        if tok == subj or tok in _TICKER_ACRONYM_ALLOWLIST:
+            continue
+        if len(tok) < 2:  # a lone capital letter is not a ticker reference
+            continue
+        return True
+    return False
+
+
+def _concentration_misgrounded(
+    text: str,
+    target_pct: float | None,
+    cap_pct: float | None,
+    *,
+    subject: str | None = None,
+    explicit_value: float | None = None,
+) -> float | None:
+    """If ``text`` arms a CONCENTRATION tripwire ABOUT THE SUBJECT whose cited
+    threshold contradicts the plan's real target/cap, return that mis-grounded
+    threshold (caller neutralizes + logs). Otherwise None (leave it armed).
+
+    Fail-safe — returns None (KEEP) when: targets unknown; estate/tax context; a
+    FUNDAMENTAL-metric keyword is present (the % is a business metric, DEFECT 3);
+    no concentration-specific marker; the statement names ANOTHER ticker
+    (DEFECT 2); or the threshold can't be parsed confidently."""
+    if target_pct is None and cap_pct is None:
+        return None
+    low = (text or "").lower()
+    if any(k in low for k in _NON_CONCENTRATION_CONTEXT):
+        return None
+    if any(k in low for k in _FUNDAMENTAL_METRIC_KEYWORDS):
+        return None
+    if not _has_concentration_marker(low):
+        return None
+    if _names_other_ticker(text, subject):
+        return None
+    thr = explicit_value if explicit_value is not None else _extract_single_percent(low)
+    if thr is None:
+        return None
+    try:
+        thr = float(thr)
+    except (TypeError, ValueError):
+        return None
+    for anchor in (target_pct, cap_pct):
+        if anchor is not None and abs(thr - float(anchor)) <= _CONCENTRATION_TOL_PP:
+            return None  # matches an authoritative concentration figure → grounded
+    return thr
+
+
+def _coerce_verdict_falsifiers(
+    tp: Any,
+    *,
+    plan_targets: tuple[float | None, float | None] | None = None,
+    subject: str | None = None,
+) -> tuple[list[str], list[dict]]:
     """Extract fleet-authored falsifiers + typed revisit-triggers from a
     TraderProposal, dropping any malformed / non-fireable / degenerate item
     BEFORE ``write_verdict`` (which raises on an unknown kind — that would
     discard the whole verdict + retract transaction — and whose downstream
     ``evaluate_triggers`` sweep does ``float(price)`` / ISO date-parse
     unguarded). Best-effort; never raises.
+
+    HOLE #32: when ``plan_targets`` (``(target_pct, cap_pct)`` as percentages) is
+    supplied, a CONCENTRATION-context falsifier/trigger whose cited threshold
+    contradicts the plan's real NVDA target/cap is NEUTRALIZED (dropped from the
+    armed set so it can't misfire) AND SURFACED (warning log) — never silently
+    hidden. Only concentration-context items with a confidently-parsed numeric
+    threshold are touched; estate/situs/fundamental items are left intact.
     """
     from datetime import date as _date_cls
 
-    falsifiers = [
-        str(x).strip()
-        for x in (getattr(tp, "falsifiers", None) or [])
-        if str(x).strip() and not _is_degenerate_falsifier(str(x))
-    ]
+    target_pct, cap_pct = plan_targets or (None, None)
+    # The plan targets are NVDA's single-name target/cap, so scope the grounding
+    # check to an NVDA verdict — never over-drop another name's concentration
+    # falsifier (e.g. a 2%-of-book moonshot cap) against NVDA's 8/13 anchors.
+    # Cross-ticker references WITHIN an NVDA verdict are excluded by
+    # ``_names_other_ticker`` (DEFECT 2).
+    _subj_nvda = (subject or "").strip().upper() == "NVDA"
+
+    falsifiers: list[str] = []
+    for x in getattr(tp, "falsifiers", None) or []:
+        s = str(x).strip()
+        if not s or _is_degenerate_falsifier(s):
+            continue
+        misgrounded = (
+            _concentration_misgrounded(s, target_pct, cap_pct, subject=subject)
+            if _subj_nvda
+            else None
+        )
+        if misgrounded is not None:
+            _log.warning(
+                "decision_flow.falsifier_misgrounded_concentration",
+                subject=subject,
+                text=s[:200],
+                cited_threshold_pct=misgrounded,
+                plan_target_pct=target_pct,
+                plan_cap_pct=cap_pct,
+            )
+            continue  # neutralize the mis-grounded concentration tripwire
+        falsifiers.append(s)
     triggers: list[dict] = []
     for t in getattr(tp, "revisit_triggers", None) or []:
         try:
@@ -238,6 +392,28 @@ def _coerce_verdict_falsifiers(tp: Any) -> tuple[list[str], list[dict]]:
                 continue
             if not math.isfinite(d["value"]):
                 continue
+            # HOLE #32 — a concentration-context metric tripwire whose value
+            # contradicts the plan target/cap is mis-grounded → neutralize+log.
+            ctx = f"{d.get('metric') or ''} {d.get('label') or ''}"
+            misgrounded = (
+                _concentration_misgrounded(
+                    ctx, target_pct, cap_pct, subject=subject,
+                    explicit_value=d["value"],
+                )
+                if _subj_nvda
+                else None
+            )
+            if misgrounded is not None:
+                _log.warning(
+                    "decision_flow.trigger_misgrounded_concentration",
+                    subject=subject,
+                    metric=d.get("metric"),
+                    label=d.get("label"),
+                    cited_threshold=misgrounded,
+                    plan_target_pct=target_pct,
+                    plan_cap_pct=cap_pct,
+                )
+                continue
         elif kind == "dated_event":
             try:
                 _date_cls.fromisoformat(str(d.get("date")))  # must be ISO or never fires
@@ -245,6 +421,59 @@ def _coerce_verdict_falsifiers(tp: Any) -> tuple[list[str], list[dict]]:
                 continue
         triggers.append(d)
     return falsifiers, triggers
+
+
+def _load_plan_concentration_targets(user_id: str) -> tuple[float | None, float | None]:
+    """Authoritative NVDA concentration ``(target_pct, cap_pct)`` as PERCENTAGES
+    for grounding falsifiers (HOLE #32). Loads the CONSTANTS (not the LLM prose
+    distillate): ``allocation_plan.NVDA_TARGET_PCT`` (8.0) +
+    ``scenario_mc.DEFAULT_NVDA_CAP_PCT`` (0.13→13.0), overlaid by the current plan
+    version's canonical target-allocation doc cap when present. Best-effort: any
+    failure → that side stays None → the grounding check no-ops (fail-safe)."""
+    target_pct: float | None = None
+    cap_pct: float | None = None
+    try:
+        from argosy.services.allocation_plan import NVDA_TARGET_PCT
+
+        target_pct = float(NVDA_TARGET_PCT)
+    except Exception:  # noqa: BLE001
+        target_pct = None
+    try:
+        from argosy.services.retirement.scenario_mc import DEFAULT_NVDA_CAP_PCT
+
+        cap_pct = float(DEFAULT_NVDA_CAP_PCT) * 100.0
+    except Exception:  # noqa: BLE001
+        cap_pct = None
+    try:
+        import sqlalchemy as sa
+        from sqlalchemy import desc as _desc, select as _select
+        from sqlalchemy.orm import sessionmaker
+
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+        from argosy.state.models import PlanVersion as _PV
+
+        url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
+        eng = sa.create_engine(url, connect_args={"check_same_thread": False})
+        sf = sessionmaker(bind=eng, expire_on_commit=False)
+        sess = sf()
+        try:
+            pv = sess.execute(
+                _select(_PV)
+                .where(_PV.user_id == user_id, _PV.role == "current")
+                .order_by(_desc(_PV.id))
+                .limit(1)
+            ).scalar_one_or_none()
+            if pv is not None:
+                doc = load_plan_target_allocation(pv)
+                doc_cap = getattr(doc, "nvda_cap_pct", None) if doc is not None else None
+                if doc_cap is not None:
+                    cap_pct = float(doc_cap)
+        finally:
+            sess.close()
+            eng.dispose()
+    except Exception as exc:  # noqa: BLE001 — best-effort overlay
+        _log.warning("decision_flow.plan_targets_load_failed", error=str(exc)[:200])
+    return target_pct, cap_pct
 
 
 @dataclass
@@ -498,7 +727,17 @@ class DecisionFlow:
             )
             # Item B — record DEFENDED HOLD in the verdict registry, armed
             # with the trader's fleet-authored falsifiers + typed triggers.
-            _hold_fals, _hold_trigs = _coerce_verdict_falsifiers(trader_proposal)
+            # HOLE #32 — thread plan concentration targets so a mis-grounded
+            # concentration tripwire (e.g. 40% = the estate-tax rate) is
+            # neutralized + surfaced before it can arm.
+            _hold_targets = (
+                None
+                if self.config.skip_persistence
+                else _load_plan_concentration_targets(self.user_id)
+            )
+            _hold_fals, _hold_trigs = _coerce_verdict_falsifiers(
+                trader_proposal, plan_targets=_hold_targets, subject=ticker,
+            )
             await self._record_settled_verdict(
                 ticker=ticker,
                 verdict="HOLD",
@@ -814,8 +1053,16 @@ class DecisionFlow:
         )
 
         # Item B — settle the actionable verdict in the registry, armed with
-        # the trader's fleet-authored falsifiers + typed triggers.
-        _appr_fals, _appr_trigs = _coerce_verdict_falsifiers(trader_proposal)
+        # the trader's fleet-authored falsifiers + typed triggers. HOLE #32 —
+        # neutralize + surface any mis-grounded concentration tripwire.
+        _appr_targets = (
+            None
+            if self.config.skip_persistence
+            else _load_plan_concentration_targets(self.user_id)
+        )
+        _appr_fals, _appr_trigs = _coerce_verdict_falsifiers(
+            trader_proposal, plan_targets=_appr_targets, subject=ticker,
+        )
         await self._record_settled_verdict(
             ticker=ticker,
             verdict=str(trader_proposal.action).upper(),

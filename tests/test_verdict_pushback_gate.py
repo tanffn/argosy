@@ -29,7 +29,19 @@ async def test_run_decision_flow_defends_without_agent_spawn(session, monkeypatc
     write_verdict(
         session, user_id="ariel", subject="NOW",
         verdict="SELL", conviction="HIGH",
-        falsifiers=["GAAP profitability"],
+        # Substantive (not thin) so the HOLE#33 floor keeps it DEFENDED: >=2
+        # non-degenerate falsifiers + a long rationale.
+        falsifiers=[
+            "GAAP profitability turns sustainably positive for two quarters",
+            "net revenue retention recovers above 115% with margins stable",
+        ],
+        reasoning_md=(
+            "NOW is priced for flawless execution; the deep-decision fleet held "
+            "SELL on a valuation-vs-growth basis after a two-round debate and a "
+            "three-perspective risk pass. The thesis is documented at length and "
+            "the falsifiers below are the specific, dated conditions that would "
+            "reopen it."
+        ),
         source_decision_run_id=164,
     )
     session.commit()
@@ -185,12 +197,37 @@ async def test_verdict_trigger_loop_default_quotes_path(session):
 # Phase 3 — stale-verdict-contradicts-stance forced re-derivation (SEAM 1).
 # --------------------------------------------------------------------------- #
 
-_T0 = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+# Anchored RELATIVE to now so these stance-focused cases stay well inside the
+# HOLE#33 staleness horizon (45d) regardless of the calendar — they isolate the
+# stale-stance logic, not the freshness floor.
+_NOW = datetime.now(timezone.utc)
+_T0 = _NOW - timedelta(days=6)
 _T1 = _T0 + timedelta(days=1)
 _T2 = _T0 + timedelta(days=2)
 
+# A rationale long enough to clear the HOLE#33 substance floor (>=200 chars).
+_SUBSTANTIVE_REASONING = (
+    "Deep-decision fleet verdict after a full two-round bull/bear debate and a "
+    "three-perspective risk pass. The thesis, the position sizing, and the exit "
+    "conditions are all documented here at length so this verdict carries real "
+    "authority and is not a one-line seed."
+)
+# Two distinct, non-degenerate falsifiers → clears the >=2 substance floor.
+_SUBSTANTIVE_FALSIFIERS = [
+    "TTM free cash flow turns sustainably negative for a full year",
+    "net revenue retention falls below 110% for two consecutive quarters",
+]
 
-def _seed_verdict(session, *, subject, verdict, updated_at, falsifiers=None):
+
+def _seed_verdict(
+    session, *, subject, verdict, updated_at, falsifiers=None, reasoning_md=None
+):
+    # Default to a SUBSTANTIVE verdict so stance-focused tests are not swept up
+    # by the HOLE#33 thin/stale floor; thin cases pass explicit short values.
+    if falsifiers is None:
+        falsifiers = list(_SUBSTANTIVE_FALSIFIERS)
+    if reasoning_md is None:
+        reasoning_md = _SUBSTANTIVE_REASONING
     v = Verdict(
         user_id="ariel",
         subject=subject,
@@ -198,6 +235,7 @@ def _seed_verdict(session, *, subject, verdict, updated_at, falsifiers=None):
         conviction="HIGH",
         settled=True,
         falsifiers_json=json.dumps(falsifiers) if falsifiers else None,
+        reasoning_md=reasoning_md,
         created_at=updated_at,
         updated_at=updated_at,  # explicit → onupdate does not override on INSERT
     )
@@ -330,3 +368,113 @@ def test_phase3_reason_not_a_positive_gate_reason():
     from argosy.decisions.stance_revision import _POSITIVE_GATE_REASONS
 
     assert "stale_verdict_contradicts_stance" not in _POSITIVE_GATE_REASONS
+
+
+# --------------------------------------------------------------------------- #
+# HOLE #33 — freshness / substance authority floor on the DEFENDED path.
+# --------------------------------------------------------------------------- #
+
+
+def test_thin_but_just_written_verdict_defends(session):
+    """DEFECT 1 loop bound: a THIN verdict written just now (age < _THIN_MIN_AGE)
+    must DEFEND — a freshly force-rewritten still-thin row is not re-forced."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(
+        session,
+        subject="BMY",
+        verdict="HOLD",
+        updated_at=datetime.now(timezone.utc),  # minutes old → within settle window
+        falsifiers=["thesis changes"],
+        reasoning_md="BMY HOLD (run 187) — settled deep-decision",  # thin
+    )
+    gate = check_pushback_gate(session, user_id="ariel", subject="BMY")
+    assert gate.allowed is False
+    assert gate.reason.startswith("DEFENDED")
+
+
+def test_thin_and_old_verdict_forces_once_then_defends(session):
+    """A THIN seed older than _THIN_MIN_AGE (30 days) → forced ONCE; after the
+    forced re-run writes a SUBSTANTIVE fresh verdict, the gate DEFENDS."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    v = _seed_verdict(
+        session,
+        subject="BMY",
+        verdict="HOLD",
+        updated_at=datetime.now(timezone.utc) - timedelta(days=30),  # stale-thin seed
+        falsifiers=["thesis changes"],  # 1 vague/degenerate falsifier
+        reasoning_md="BMY HOLD (run 187) — settled deep-decision",  # 43-ish chars
+    )
+    gate = check_pushback_gate(session, user_id="ariel", subject="BMY")
+    assert gate.allowed is True
+    assert gate.reason == "thin_or_stale_verdict"
+    assert gate.standing is not None and gate.standing.verdict == "HOLD"
+
+    # Simulate the forced re-run persisting a substantive, fresh verdict.
+    v.updated_at = datetime.now(timezone.utc)
+    v.reasoning_md = _SUBSTANTIVE_REASONING
+    v.falsifiers_json = json.dumps(_SUBSTANTIVE_FALSIFIERS)
+    session.commit()
+    gate2 = check_pushback_gate(session, user_id="ariel", subject="BMY")
+    assert gate2.allowed is False
+    assert gate2.reason.startswith("DEFENDED")
+
+
+def test_fresh_substantive_verdict_defends(session):
+    """A FRESH, substantive verdict (long reasoning, >=2 real falsifiers, recent
+    updated_at) → still DEFENDED (the floor must not churn real winners)."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    _seed_verdict(
+        session,
+        subject="AMD",
+        verdict="HOLD",
+        updated_at=datetime.now(timezone.utc) - timedelta(days=4),  # AMD/NOW at 4d
+    )
+    gate = check_pushback_gate(session, user_id="ariel", subject="AMD")
+    assert gate.allowed is False
+    assert gate.reason.startswith("DEFENDED")
+
+
+def test_stale_substantive_verdict_forces_once_then_defends(session):
+    """A substantive but STALE verdict (updated_at 60d ago) → forced ONCE; after
+    a re-run bumps updated_at to now, the fresh verdict DEFENDS (loop-bound)."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    v = _seed_verdict(
+        session,
+        subject="MDT",
+        verdict="HOLD",
+        updated_at=datetime.now(timezone.utc) - timedelta(days=60),
+    )
+    gate = check_pushback_gate(session, user_id="ariel", subject="MDT")
+    assert gate.allowed is True
+    assert gate.reason == "thin_or_stale_verdict"
+
+    # Loop bound: a forced re-run calls write_verdict → updated_at bumps to now.
+    v.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    gate2 = check_pushback_gate(session, user_id="ariel", subject="MDT")
+    assert gate2.allowed is False
+    assert gate2.reason.startswith("DEFENDED")
+
+
+def test_thin_or_stale_tz_naive_updated_at_is_safe(session):
+    """A tz-NAIVE updated_at (SQLite round-trip) must not crash the age compare —
+    a 60d-old naive timestamp still trips STALE."""
+    from argosy.services.verdict_registry import check_pushback_gate
+
+    naive_old = (datetime.now(timezone.utc) - timedelta(days=60)).replace(tzinfo=None)
+    _seed_verdict(session, subject="LLY", verdict="HOLD", updated_at=naive_old)
+    gate = check_pushback_gate(session, user_id="ariel", subject="LLY")
+    assert gate.allowed is True
+    assert gate.reason == "thin_or_stale_verdict"
+
+
+def test_thin_or_stale_reason_not_a_positive_gate_reason():
+    """The forced-re-run reason must NOT count as a committed-tripwire hit, so
+    Phase 2 stance-revision keeps REJECTING on it (not surface a revision)."""
+    from argosy.decisions.stance_revision import _POSITIVE_GATE_REASONS
+
+    assert "thin_or_stale_verdict" not in _POSITIVE_GATE_REASONS

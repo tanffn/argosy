@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy import func as sa_func
@@ -369,6 +369,114 @@ def _stale_verdict_contradicts_stance(
         return False
 
 
+# ---------------------------------------------------------------------------
+# HOLE #33 — freshness / substance authority floor on the DEFENDED path.
+# A settled verdict earns DEFENDED authority (silence a re-run) ONLY if it is
+# SUBSTANTIVE and not STALE. A 43-char one-line seed or a month-plus-old verdict
+# is forced through EXACTLY ONE re-derivation instead of standing unchallenged —
+# this is a deterministic grounding/freshness floor, NOT a judgement of whether
+# the verdict is "good" (that stays the fleet's job).
+# ---------------------------------------------------------------------------
+
+# A real deep-decision rationale (trader ``rationale_summary``) clears this with
+# room to spare; a one-line seed does not.
+_THIN_REASONING_MIN_CHARS = 200
+# A defensible verdict names at least two distinct, non-degenerate falsifiers.
+_MIN_SUBSTANTIVE_FALSIFIERS = 2
+# 45 days — deliberately TIGHTER than the 90d holdings-coverage sweep horizon.
+# Coverage asks "has anyone looked at this name lately"; THIS floor asks the
+# stricter "does this specific verdict still carry the AUTHORITY to silence a
+# re-run". Kept conservative (well past AMD/NOW at ~4 days) so fresh winners are
+# never churned on noise — the PLTR-scar caution (flow.py:_is_degenerate...).
+_STALE_VERDICT_MAX_AGE_DAYS = 45
+# THIN self-bound (Sol re-review DEFECT 1): write_verdict does NOT enforce the
+# substance floor, so a forced re-run can persist ANOTHER thin verdict — without
+# an age gate THIN would re-trip immediately and loop (user-driven consults have
+# no cooldown). Requiring a thin verdict to be older than a small settle window
+# means a freshly force-rewritten thin row (minutes old) DEFENDS (no tight loop),
+# while a genuinely stale-thin seed (BMY/SOFI/OKLO, weeks old) still forces once
+# per window. 12h is comfortably longer than a consult round-trip yet short
+# enough that a weeks-old seed always trips; the automated coverage sweep's own
+# 2-day retry cooldown bounds re-forcing on a persistently-thin name.
+_THIN_MIN_AGE = timedelta(hours=12)
+
+
+def _all_falsifiers_degenerate(falsifiers: list[str]) -> bool:
+    """True IFF every falsifier is degenerate (reuses the flow-layer floor).
+
+    Best-effort: if the flow helper can't be imported, return False (fail SAFE —
+    do NOT force a re-derivation on a branch we can't confidently judge)."""
+    if not falsifiers:
+        return True
+    try:
+        from argosy.decisions.flow import _is_degenerate_falsifier
+    except Exception:  # noqa: BLE001
+        return False
+    return all(_is_degenerate_falsifier(f) for f in falsifiers)
+
+
+def _verdict_thin_or_stale(standing: Verdict, *, now: datetime | None = None) -> bool:
+    """True IFF the settled verdict is too THIN or too STALE to hold DEFENDED
+    authority — the gate then forces EXACTLY ONE re-derivation. Best-effort: any
+    error → False (fall through to normal DEFENDED; the gate must never crash
+    stage 3 — deep_decision.py:112).
+
+    THIN (substance floor, AGE-GATED by ``_THIN_MIN_AGE`` — DEFECT 1 loop bound):
+    the verdict is substance-poor AND older than the settle window:
+      * ``reasoning_md`` shorter than ``_THIN_REASONING_MIN_CHARS``, OR
+      * fewer than ``_MIN_SUBSTANTIVE_FALSIFIERS`` recorded falsifiers, OR
+      * ALL recorded falsifiers degenerate (reuses ``_is_degenerate_falsifier``).
+
+    STALE (age floor): ``now - updated_at`` exceeds ``_STALE_VERDICT_MAX_AGE_DAYS``.
+
+    LOOP BOUND (model of ``_stale_verdict_contradicts_stance``): a forced re-run
+    calls ``write_verdict`` → bumps ``updated_at`` to now. STALE then self-heals
+    on the age reset; THIN self-heals because the fresh row is younger than
+    ``_THIN_MIN_AGE`` (so even a re-run that persists ANOTHER thin verdict is not
+    re-forced in a tight loop — write_verdict does not enforce substance). Unknown
+    age → never force (DEFEND). tz-naive/aware SQLite mismatch handled
+    defensively."""
+    try:
+        now = now or _utcnow()
+        # Age of the settled row (tz-safe). None → treat as unknown → do NOT
+        # force on age-gated conditions (fail SAFE — DEFEND).
+        updated = getattr(standing, "updated_at", None)
+        age: timedelta | None = None
+        if updated is not None:
+            try:
+                age = now - updated
+            except TypeError:
+                age = now.replace(tzinfo=None) - updated.replace(tzinfo=None)
+
+        # STALE — pure age floor (self-heals via the updated_at bump on re-run).
+        if age is not None and age > timedelta(days=_STALE_VERDICT_MAX_AGE_DAYS):
+            return True
+
+        # THIN — substance floor, AGE-GATED (DEFECT 1 loop bound): only force a
+        # thin verdict older than _THIN_MIN_AGE, so a freshly force-rewritten
+        # (still-thin) row is not re-forced in a tight loop. Unknown age → no
+        # thin force (DEFEND).
+        if age is None or age <= _THIN_MIN_AGE:
+            return False
+        reasoning = (getattr(standing, "reasoning_md", "") or "").strip()
+        if len(reasoning) < _THIN_REASONING_MIN_CHARS:
+            return True
+        falsifiers = [
+            str(x) for x in _loads_list(standing.falsifiers_json) if str(x).strip()
+        ]
+        if len(falsifiers) < _MIN_SUBSTANTIVE_FALSIFIERS:
+            return True
+        if _all_falsifiers_degenerate(falsifiers):
+            return True
+        return False
+    except Exception:  # noqa: BLE001 — never break the gate
+        _log.warning(
+            "verdict_registry.thin_or_stale_check_failed",
+            subject=getattr(standing, "subject", None),
+        )
+        return False
+
+
 def check_pushback_gate(
     session: Session,
     *,
@@ -402,6 +510,14 @@ def check_pushback_gate(
                 allowed=True,
                 standing=standing,
                 reason="stale_verdict_contradicts_stance",
+            )
+        # HOLE #33 — a THIN or STALE settled verdict does not earn DEFENDED
+        # authority; force ONE re-derivation (loop-bounded — see helper).
+        if _verdict_thin_or_stale(standing):
+            return PushbackGateResult(
+                allowed=True,
+                standing=standing,
+                reason="thin_or_stale_verdict",
             )
         return PushbackGateResult(
             allowed=False,
@@ -443,6 +559,14 @@ def check_pushback_gate(
             allowed=True,
             standing=standing,
             reason="stale_verdict_contradicts_stance",
+        )
+
+    # HOLE #33 — freshness/substance floor (same force-once semantics).
+    if _verdict_thin_or_stale(standing):
+        return PushbackGateResult(
+            allowed=True,
+            standing=standing,
+            reason="thin_or_stale_verdict",
         )
 
     return PushbackGateResult(
