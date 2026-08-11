@@ -7,9 +7,15 @@
 4. `docs/design/SDD.md` §"Quickstart for new agents" only if you need the task→file router.
 
 ## Git state (authoritative)
-- **master = `ccfa2f2`**, **ahead of origin/master by 1 (UNPUSHED).** Push only when Ariel asks.
-- **Migrations head = 0100.** No new migration this session after 0100.
-- Backend healthy; live book unchanged (no live-DB writes this session — all work on isolated tmp SQLite).
+- **master = `6eba133`**, **ahead of origin/master by 5 (UNPUSHED).** Push only when Ariel asks. (Commits: 3d `ccfa2f2`, handover `b4c0670`, one-voice Phase 1 `185ceee` / Phase 2 `ec0d43d` / Phase 3 `6eba133`.)
+- **Migrations head = 0100.** No new migration this session.
+- Backend healthy; live book unchanged (no live-DB writes — all work on isolated tmp SQLite / a hash-guarded DB copy).
+
+## UPDATE 2026-08-11 — ONE-VOICE FIX COMPLETE (all 3 phases committed, Sol-passed) + empirically validated
+- **Phase 1 `185ceee`** (inject stance + trader reconcile rule), **Phase 2 `ec0d43d`** (surface stance-revisions for approval, never auto-flip — 4 Sol rounds, a gameable auto-flip was caught & redesigned), **Phase 3 `6eba133`** (gate forces ONE re-derivation of a stale stance-contradicting verdict, loop-bounded; + divergence flag). All Sol PASS.
+- **Empirical validation** (ran the fixed fleet on 5 positions against a hash-guarded DB copy; real DB untouched): **NVDA HOLD→SELL reconciliation PROVEN** — the gate forced the re-run, the fleet mirrored the standing SELL with the correct frame (concentration + US-estate tail, not thesis break) + 4 falsifiers + Aug-26 trigger. AMD/NOW correctly DEFENDED (fresh consistent verdicts, loop-bound held). IWDP honest quorum-abstain (ETF, no analyst data). BMY stale seed persisted (no contradiction → not forced).
+- **Dual independent review (Sol + Claude) = MIXED, materially improved from the prior POOR/MIXED.** Both converged: NVDA reconciliation core is sound BUT its flagship falsifier hallucinated a "stop trimming at ~40% concentration" target — the plan's real NVDA targets are **8% steering / 13% hard cap** (40% is the estate-tax RATE, conflated); at 40% NVDA is still 27pp over the cap. Both also flagged: the DEFENDED path has no freshness/substance floor (BMY's 43-char month-old seed gets the same authority as AMD's 3,094-char analysis); IWDP coverage gap (pending HIGH SELL uncovered). **Both named the same highest-leverage next fix:** a verdict-authority gate that validates every plan-attributed numeric threshold against the plan distillate + requires freshness/substance.
+- **Follow-ups filed (NOT the one-voice goal — discovered by the review):** (32) validate plan-referencing falsifiers against the plan distillate; (33) freshness/substance floor on the DEFENDED path.
 
 ## What SHIPPED this session (all Sol-reviewed, committed)
 The **spine** closed-loop system, on top of the 08-08/08-09 repair-fallout work:
