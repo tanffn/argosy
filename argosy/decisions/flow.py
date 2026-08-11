@@ -482,6 +482,20 @@ class DecisionFlow:
             await self._close_decision_run(
                 decision_run_id, finished_at=clock(), status="hold", fm="hold"
             )
+            # Phase 2 (one voice per position) — if the trader wrote a PROPOSED
+            # STANCE REVISION over a standing SELL/TRIM, route it through the
+            # blind-review machinery to SURFACE it for Ariel's approval when it
+            # clears the filter (revision_proposed, divergence flagged), else
+            # reject it. This NEVER moves the stance: reversing a standing SELL
+            # on the core is Ariel's PATH decision — the stance moves only when
+            # he approves the open-proposal overlay. Either way the plan
+            # SELL/TRIM stands here. Best-effort + fail-closed: never raises into
+            # the settle path, and must run BEFORE the HOLD verdict is settled
+            # (the pushback gate tests the STANDING verdict, not the
+            # about-to-be-written HOLD).
+            self._route_stance_revision(
+                ticker=ticker, trader_proposal=trader_proposal
+            )
             # Item B — record DEFENDED HOLD in the verdict registry, armed
             # with the trader's fleet-authored falsifiers + typed triggers.
             _hold_fals, _hold_trigs = _coerce_verdict_falsifiers(trader_proposal)
@@ -843,6 +857,45 @@ class DecisionFlow:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _route_stance_revision(
+        self, *, ticker: str, trader_proposal: TraderProposal
+    ) -> None:
+        """Phase 2 — route a trader-authored PROPOSED STANCE REVISION through the
+        blind-review machinery (detect → pushback gate → independent blind
+        re-derivation → surface-for-approval-or-reject). This SURFACES a worthy
+        revision for Ariel (revision_proposed, divergence flagged) or rejects it;
+        it NEVER moves the stance (the stance moves only when Ariel approves the
+        open-proposal overlay). Fully best-effort + fail-closed: any error → the
+        standing SELL is preserved and nothing escapes into the settle path.
+        Owns its own sync session (the settle path is async)."""
+        if self.config.skip_persistence:
+            return
+        try:
+            import sqlalchemy as sa
+            from sqlalchemy.orm import sessionmaker
+
+            from argosy.decisions.stance_revision import route_stance_revision
+
+            url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
+            engine = sa.create_engine(url, connect_args={"check_same_thread": False})
+            sf = sessionmaker(bind=engine, expire_on_commit=False)
+            sess = sf()
+            try:
+                route_stance_revision(
+                    sess,
+                    user_id=self.user_id,
+                    ticker=ticker,
+                    rationale_summary=trader_proposal.rationale_summary or "",
+                )
+            finally:
+                sess.close()
+                engine.dispose()  # per-call engine — dispose to avoid a leak
+        except Exception as exc:  # noqa: BLE001 — must not fail the decision flow
+            _log.warning(
+                "decision_flow.stance_revision_route_failed",
+                ticker=ticker, error=str(exc)[:200],
+            )
 
     async def _record_settled_verdict(
         self,

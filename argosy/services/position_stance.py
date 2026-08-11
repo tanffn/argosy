@@ -325,6 +325,39 @@ def rebuild_stances(
                     stance_source = "review"
                     if hr.confidence:
                         conviction = _norm_conviction(hr.confidence)
+            elif review_outcome == "revision_proposed":
+                # Phase 2 (argosy/decisions/stance_revision.py): a fleet-proposed
+                # stance revision that CLEARED the blind filter (positive
+                # committed-tripwire hit + non-trivial facts + an independent
+                # blind re-derivation concurred with a keep verdict). Reversing a
+                # standing SELL/TRIM is a "sell-vs-hold the core" PATH decision
+                # that is ARIEL'S to make — it is NEVER auto-applied. So this
+                # only SURFACES the divergence for approval; the stance STAYS the
+                # plan SELL/TRIM. It moves off the reduction only when Ariel
+                # approves, via the open-proposal overlay below (proposal > plan).
+                # NO override of the plan stance here — SPMV is fully preserved by
+                # the untouched ('proposed','hold') predicate above.
+                divergence = True
+                notes.append(
+                    f"**Fleet stance revision proposed ({str(hr.reviewed_at)[:10]}):** "
+                    f"the fleet PROPOSES stopping the standing {plan_verdict} on new "
+                    f"facts, and a blind independent re-review concurred "
+                    f"({(hr.verdict or '').upper() or 'keep'}). The stance shown "
+                    f"remains the plan's {plan_verdict} — approve this revision to "
+                    f"move it.\n\n"
+                )
+            elif review_outcome == "revision_rejected":
+                # Fleet proposed a stance revision but the blind re-review did
+                # NOT confirm the new facts — fail-closed, mirroring
+                # ``held_unverified``: stance unchanged (the plan SELL/TRIM
+                # stands), divergence flagged, nothing hidden.
+                divergence = True
+                notes.append(
+                    f"**Fleet stance revision ({str(hr.reviewed_at)[:10]}):** the "
+                    f"fleet proposed a stance revision on the standing "
+                    f"{plan_verdict}; the blind re-review did not confirm the new "
+                    f"facts, so the standing {plan_verdict} stands (fail-closed).\n\n"
+                )
             elif review_outcome == "held_unverified":
                 # Fleet said act but the blind gate failed — fail-closed:
                 # stance unchanged, divergence flagged, nothing hidden.
