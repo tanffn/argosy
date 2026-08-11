@@ -629,13 +629,14 @@ def test_trader_never_recommend_refresh_in_both_modes() -> None:
         )
 
 
-def test_trader_long_hold_prompt_requires_markdown_rationale_sections() -> None:
-    """The long-hold trader (the decision-funnel / portfolio-review deep
-    writer) must be told to emit ``rationale_summary`` as MARKDOWN sections
-    (**Verdict:** / **Quality read:** / … / **Recommendation:**) with the
-    citations collapsed into a final **Sources:** line — never one run-on
-    paragraph with inline bracket citations (Ariel, 2026-07-09: proposals
-    2-9 rendered as a single ~2k-char blob)."""
+def test_trader_long_hold_prompt_requires_tight_advisor_rationale() -> None:
+    """SUPERSEDED 2026-08-11 (Ariel, looking at live /positions cards): the
+    long-hold ``rationale_summary`` was a ~3000-char multi-section TEXT WALL
+    (**Verdict:** / **Quality read:** / … / **Sources:**). He wants it to read
+    like an ADVISOR SPEAKING TO A CLIENT — UNDER 100 WORDS, plain language, the
+    CALL + the single most important reason (and the one key risk if material).
+    The section scaffold is now explicitly FORBIDDEN; the specifics live in the
+    (evidence-contract) falsifiers and the analyst reports, not in the prose."""
     from argosy.agents.trader import TraderAgent
 
     agent = TraderAgent(user_id="ariel", tier="T2")
@@ -647,19 +648,14 @@ def test_trader_long_hold_prompt_requires_markdown_rationale_sections() -> None:
         ticker="NOW",
         mode="long_hold",
     )
-    assert "AS MARKDOWN" in sys_prompt
-    for heading in (
-        "**Verdict:**",
-        "**Quality read:**",
-        "**Price read:**",
-        "**Recommendation:**",
-        "**Sources:**",
-    ):
-        assert heading in sys_prompt, f"missing {heading!r} in long-hold prompt"
+    assert "UNDER 100 WORDS" in sys_prompt
+    assert "ADVISOR SPEAKING TO" in sys_prompt
+    # The section scaffold is now forbidden, not required.
+    assert "NO multi-section scaffold" in sys_prompt
     lower = sys_prompt.lower()
-    assert "never one run-on paragraph" in lower
-    # Citations belong in the Sources line, not mid-sentence.
-    assert "mid-sentence" in lower
+    assert "do not emit" in lower  # forbids the '**Quality read:**' headers
+    # Citations move OUT of the prose into cited_sources.
+    assert "cited_sources" in sys_prompt
 
 
 def test_trader_proposal_accepts_insufficient_data_action() -> None:
