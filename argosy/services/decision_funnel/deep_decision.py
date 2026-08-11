@@ -55,6 +55,7 @@ async def run_deep_decision(
     consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold",
     funnel_meta: dict | None = None,
     subject_type: str = "holding",
+    force: bool = False,
 ) -> DeepDecisionOutcome:
     """Run the full deep-decision fleet for one ticker. Never raises — returns
     a structured outcome the orchestrator records (incl. quorum / error).
@@ -95,7 +96,7 @@ async def run_deep_decision(
             )
         finally:
             _sess.close()
-        if _gate.defended and _gate.standing is not None:
+        if not force and _gate.defended and _gate.standing is not None:
             _log.info(
                 "decision_funnel.verdict_defended",
                 ticker=ticker,
