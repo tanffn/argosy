@@ -1,19 +1,19 @@
 ---
 topic: tipranks_analyst_aggregator
 jurisdiction: us
-last_verified: 2026-08-07
+last_verified: 2026-08-12
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.tipranks.com
-    retrieved: 2026-07-12
+    retrieved: 2026-08-09
     tier: 2
   - url: https://www.tipranks.com/about
-    retrieved: 2026-05-02
+    retrieved: 2026-08-10
     tier: 2
   # TipRanks's hedge-fund signal is downstream of SEC 13F filings;
   # the SEC FAQ is the upstream regulator-canonical reference.
   - url: https://www.sec.gov/divisions/investment/13ffaq.htm
-    retrieved: 2026-07-12
+    retrieved: 2026-08-10
     tier: 1
 ---
 

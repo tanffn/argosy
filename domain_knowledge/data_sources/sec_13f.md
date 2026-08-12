@@ -1,11 +1,11 @@
 ---
 topic: sec_form_13f_hr
 jurisdiction: us
-last_verified: 2026-08-07
+last_verified: 2026-08-12
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.sec.gov/divisions/investment/13ffaq.htm
-    retrieved: 2026-07-12
+    retrieved: 2026-08-10
     tier: 1
   - url: https://efts.sec.gov/LATEST/search-index?q=&forms=13F-HR
     retrieved: 2026-05-02

@@ -1,7 +1,7 @@
 ---
 topic: sec_form_4_insider_transactions
 jurisdiction: us
-last_verified: 2026-08-07
+last_verified: 2026-08-12
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.sec.gov/about/forms/form4data.pdf
@@ -11,7 +11,7 @@ sources:
     retrieved: 2026-05-02
     tier: 1
   - url: https://www.investor.gov/introduction-investing/investing-basics/glossary/forms-3-4-and-5
-    retrieved: 2026-07-12
+    retrieved: 2026-08-10
     tier: 1
 ---
 

@@ -4,7 +4,7 @@ topic: us_israel_income_tax_treaty
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual_with_us_source_income
-last_verified: 2026-08-07
+last_verified: 2026-08-12
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
@@ -15,19 +15,19 @@ source_urls:
   - https://www.nbn.org.il/life-in-israel/finances/taxes/us-tax-compliance/
 sources:
   - url: https://www.irs.gov/pub/irs-trty/israel.pdf
-    retrieved: 2026-08-07
+    retrieved: 2026-08-12
     tier: 1
   - url: https://www.irs.gov/businesses/international-businesses/israel-tax-treaty-documents
-    retrieved: 2026-07-12
+    retrieved: 2026-08-10
     tier: 1
   - url: https://taxsummaries.pwc.com/israel/corporate/withholding-taxes
-    retrieved: 2026-08-07
+    retrieved: 2026-08-12
     tier: 1
   - url: https://www.irs.gov/instructions/iw8ben
-    retrieved: 2026-08-07
+    retrieved: 2026-08-12
     tier: 1
   - url: https://www.nbn.org.il/life-in-israel/finances/taxes/us-tax-compliance/
-    retrieved: 2026-06-02
+    retrieved: 2026-08-08
     tier: 2
 ---
 

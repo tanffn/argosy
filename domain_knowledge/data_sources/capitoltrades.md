@@ -1,14 +1,14 @@
 ---
 topic: us_congressional_stock_act_filings
 jurisdiction: us
-last_verified: 2026-08-07
+last_verified: 2026-08-12
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.capitoltrades.com/trades
-    retrieved: 2026-05-02
+    retrieved: 2026-08-11
     tier: 2
   - url: https://disclosures-clerk.house.gov/PublicDisclosure/FinancialDisclosure
-    retrieved: 2026-05-02
+    retrieved: 2026-08-10
     tier: 1
   - url: https://efdsearch.senate.gov/search/
     retrieved: 2026-05-02
