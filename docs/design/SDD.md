@@ -10,6 +10,16 @@ This document describes Argosy as it stands today. History (per-wave changes, pr
 
 ---
 
+## North star
+
+**Argosy is a trustworthy, always-on financial brain for one family.** It holds the whole picture (holdings, RSUs, pensions, cashflow, Israeli tax, FX, life events), forms its own opinions, and is right, current, and self-consistent across `/plan`, `/portfolio`, and `/retirement`. **The user should not have to be the investing expert — Argosy is, out loud.**
+
+Operationally: **maximize finances + earliest safe retirement**, with Argosy as the back office — the user is in the loop only when something genuinely needs them.
+
+Everything below serves this. When a design question has no clean answer, resolve it toward the north star: *is Argosy more trustworthy, more current, more self-consistent, and asking less of the user?*
+
+---
+
 ## Why Argosy exists — and why you'd use it
 
 **The problem.** A family with a real portfolio — a concentrated equity position, RSUs vesting on a schedule, pensions and real estate, Israeli tax and currency exposure, and a retirement to fund — needs a top-tier advisor *and* an analyst team *and* a tax/FX specialist, watching continuously and reasoning over the whole picture at once. Hiring that is expensive, periodic, and opaque. Doing it yourself means becoming the expert.
