@@ -18,8 +18,8 @@ Canonical copy: `docs/design/SDD.md` → `## North star`. Auto-memory: `project_
 
 | Thing | Value |
 |---|---|
-| master | `87ca7f3` + this commit, **ahead of origin — UNPUSHED** |
-| Push | blocked by the harness classifier → **Ariel runs `! git push origin master`** |
+| master | `eccade9` = **origin/master — pushed, in sync** |
+| Push | blocked by the harness classifier → Ariel runs `! git push origin master` himself |
 | Migrations | `0101_fill_verdict_link` (DB confirmed at 0101) |
 | Working tree | clean; **no worktrees** |
 | Backend | up on :8000, healthy (`/api/health`, `/api/portfolio/snapshot`, `/api/positions/thesis` all 200) |
@@ -34,10 +34,7 @@ Canonical copy: `docs/design/SDD.md` → `## North star`. Auto-memory: `project_
 
 ## OPEN QUEUE (priority)
 
-### 1. Push
-master is ahead of origin. `! git push origin master`.
-
-### 2. ⚠️ Regenerate the plan — the highest-value open item
+### 1. ⚠️ Regenerate the plan — the highest-value open item
 The current plan predates the restore and the newest draft was computed on a book showing NVDA @ 0%. Two hard preconditions, then a codex-free regen:
 
 **Precondition A — fix the analyst-input plumbing. STILL UNFIXED on master (verified 2026-08-12).**
@@ -49,13 +46,13 @@ The current plan predates the restore and the newest draft was computed on a boo
 
 **Regen sequence:** fix A → restart backend on the new SHA → fire `POST /api/advisor/check-in` → run the math audit (B) → present the draft to Ariel, **do NOT auto-accept**. Also re-run the sequence-aware retirement MC (`canonical_feasible_dual_track`) on the true book.
 
-### 3. #24 Phase 3c enforcement — deferred, needs a decision
+### 2. #24 Phase 3c enforcement — deferred, needs a decision
 The spine gate shipped **warn-first and DORMANT** (`f45acf1`). Flipping money surfaces to route through `read_validated_snapshot` and refuse a non-validated book is behavior-changing; it needs a deliberate call, not a drive-by.
 
-### 4. Re-run the lean Sol confirms
+### 3. Re-run the lean Sol confirms
 Self-verified during the codex outage: 3d round-4 delta, verdict-authority round-2. Codex is stable again (`gpt-5.5`).
 
-### 5. Triage 10 unmerged branches (no worktree)
+### 4. Triage 10 unmerged branches (no worktree)
 | Branch | Unmerged | Tip subject |
 |---|---|---|
 | `feat/stream-a-data-integrity` | 3 | restore provenance liveness path; keep vintage enforce off |
@@ -67,9 +64,9 @@ Self-verified during the codex outage: 3d round-4 delta, verdict-authority round
 | `worktree-agent-a7ad1ac05ea0314da` | 1 | make silent-success / fail-open job failures visible |
 | `worktree-agent-a8c47c9e4b388501d` | 1 | label opaque symbol-less rows; stop live-DB test |
 | `worktree-agent-aab67d6154b20533a` | 1 | stall alert must alert-not-throw + `busy_timeout` on sync engines |
-| `worktree-agent-afb7cdd941018a1fc` | 1 | count present-but-unmanaged NVDA toward concentration % ← **see item 2** |
+| `worktree-agent-afb7cdd941018a1fc` | 1 | count present-but-unmanaged NVDA toward concentration % ← **see item 1** |
 
-### 6. Smaller open items
+### 5. Smaller open items
 - **6 decision-funnel tests red on master** (`test_decision_funnel_position_context`, `_sleeve_mandate`) — they hit the live DB and short-circuit because SOFI has a settled verdict. Live-DB test-isolation defect (same class as `9b98085` fixed), **not a source bug**. Isolate with a fixture DB.
 - **~40 sync `create_engine(` sites** lack `busy_timeout` — migrate to `create_sync_engine()`. Mechanical; `8963406` did the two hot ones.
 - **Owner action:** a fresh Schwab statement would close the restore's carry-forward assertion (it assumes nothing traded in Schwab / Schwab 876 / Aborad since 2026-07-13 — Ariel confirmed, but it's unverifiable from inside the system).
