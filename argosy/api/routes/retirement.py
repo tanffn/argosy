@@ -34,6 +34,9 @@ from argosy.services.retirement.retirement_plan import (
     build_retirement_plan,
     canonical_feasible_dual_track,
 )
+from argosy.services.retirement.deconcentration_optimizer import (
+    optimize_deconcentration,
+)
 from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.healthcare import (
     build_healthcare_curve,
@@ -486,6 +489,76 @@ def get_dual_track_plan(
         version = version + ("dual-track-plan", n_paths, seed)
     try:
         return derived_cache.get_or_compute("retirement.dual-track-plan", version, _compute)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/projection/deconcentration-optimizer")
+def get_deconcentration_optimizer(
+    user_id: str,
+    n_paths: int = 1200,
+    seed: int = 42,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Per-horizon NVDA sell-down table: CGT, σ-glidepath, and earliest retire age.
+
+    Sweeps the sell-down horizon H ∈ {1..5} years. For each H:
+      (a) total CGT = Σ equal annual tranches of the surtax-inclusive effective
+          rate (25% + 3% mas-yesef + 2% capital-source levy above ₪721k),
+          PV-discounted at 2% real — shorter horizons bunch the gain and pay
+          more total tax;
+      (b) portfolio σ glides from the calibrated concentrated level (~34%) down
+          to the diversified floor (~18%) over H years;
+      (c) deployable = full_portfolio − reserve_PV − CGT(H);
+      (d) drawdown_age = earliest retire age whose typical-regime Monte-Carlo
+          clears 90% solvency to 95 on the H-specific deployable + σ-glide.
+
+    Returns the per-horizon table plus the recommended H (lowest drawdown age;
+    tie-break: lower total CGT). 404 when the FI spend basis cannot be sourced.
+
+    Implementation note (SDD §19.4): the plan headline and canonical haircut
+    use a FIXED 3-year taper (``scenario_mc.DECONCENTRATION_TAPER_YEARS``),
+    not this optimizer's chosen horizon. This endpoint exposes the optimizer's
+    full per-horizon table so the headline assumption can be compared against
+    the optimizer's recommendation.
+    """
+    def _compute() -> dict:
+        a = RetirementAssumptions(n_paths=n_paths, seed=seed)
+        plan = optimize_deconcentration(
+            session=db, user_id=user_id, assumptions=a,
+        )
+        return {
+            "chosen_horizon_years": plan.chosen_horizon_years,
+            "full_portfolio_nis": plan.full_portfolio_nis,
+            "reserve_pv_nis": plan.reserve_pv_nis,
+            "total_taxable_gain_nis": plan.total_taxable_gain_nis,
+            "nvda_current_pct": plan.nvda_current_pct,
+            "nvda_cap_pct": plan.nvda_cap_pct,
+            "sell_nis": plan.sell_nis,
+            "sigma_current": plan.sigma_current,
+            "per_horizon": [
+                {
+                    "horizon": r.horizon,
+                    "total_cgt_nis": r.total_cgt_nis,
+                    "eff_cgt_rate": r.eff_cgt_rate,
+                    "drawdown_age": r.drawdown_age,
+                    "deployable_nis": r.deployable_nis,
+                    "sigma_path_desc": r.sigma_path_desc,
+                }
+                for r in plan.per_horizon
+            ],
+            "assumptions": plan.assumptions,
+        }
+
+    from argosy.services import derived_cache
+
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        version = version + ("deconcentration-optimizer", n_paths, seed)
+    try:
+        return derived_cache.get_or_compute(
+            "retirement.deconcentration-optimizer", version, _compute
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
