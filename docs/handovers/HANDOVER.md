@@ -40,9 +40,16 @@ Earlier handovers said the draft was "computed with NVDA @ 0%" — **that phrasi
 ### 1. ⚠️ Regenerate the plan — the highest-value open item
 The current plan predates the restore, and the draft was produced by a fleet whose concentration input excludes the unmanaged NVDA. Two hard preconditions, then a codex-free regen:
 
-**Precondition A — fix the analyst-input plumbing. STILL UNFIXED on master (verified 2026-08-12).**
+**Precondition A — ✅ ALREADY FIXED. Empirically disproved 2026-08-13.**
+Running `_summarize_positions` against the live snapshot yields `NVDA qty=10940 value=$2,379.4k USD @ $217.50 acct=schwab` — i.e. **57.7% of the $4,121.4k book, present in the ConcentrationAnalyst's input.** The resolver half (`plan_numeric_resolver._apply_nvda_current_weight`) also already counts present-but-unmanaged NVDA on master; cherry-picking branch `70008d4` produced a **no-op** (3 comment lines).
+The claim below was inherited through four handovers and repeated without ever being run. The docstring phrase "stays focused on tradeable holdings" refers to skipping **symbol-less** rows (cash sentinels, real-estate, pension) — *not* to excluding unmanaged positions. **Do not re-fix this.** Retained for the record:
+
+<details><summary>superseded claim</summary>
 `1f6ca68` fixed the *resolver* (the final rendered number) but not the analyst's input. `argosy/orchestrator/flows/plan_synthesis/inputs.py::_summarize_positions` (defined :1287, comment at :1310) still keeps the summary "focused on tradeable holdings", so the **unmanaged Schwab NVDA is excluded from the ConcentrationAnalyst's input**. (The often-quoted "run 284 logged *no NVDA position … weight 0.0 UNKNOWN*" could not be reproduced from current logs — the code-level exclusion is the verified part; treat the log quote as hearsay.) Until this surfaces unmanaged-but-present NVDA, a fresh synthesis reasons on a book missing its largest position. **Fix before firing any regen.**
-→ Branch `worktree-agent-afb7cdd941018a1fc` ("count present-but-unmanaged NVDA toward concentration %") looks like exactly this fix, sitting unmerged. Check it first.
+→ Branch `worktree-agent-afb7cdd941018a1fc` is **already effectively on master** — safe to delete in branch triage.
+</details>
+
+**So the only remaining blocker to the regen is Precondition B** (below): the math gate must fail CLOSED.
 
 **Precondition B — replace the codex math-gate with an in-harness blind re-derivation.**
 `plan_synthesis/codex_second_opinion.py` is the blind headline-number audit that BLOCKs a plan whose NVDA weight / estate / net worth don't independently re-derive. When codex was 401-dead it returned `(None,None)` fail-soft — which is exactly how the bad v94 draft got green-lit. Codex is alive again (model `gpt-5.5`), but plan for it dying: substitute a read-only in-harness agent that re-derives NVDA weight, US-situs estate and net worth from raw snapshot rows and BLOCKs on divergence from the known-true numbers above.
