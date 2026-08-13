@@ -266,10 +266,13 @@ def check_sector_concentration_cap(
 
     ticker = (getattr(proposal, "ticker", "") or "").upper()
     if not ticker:
+        # Cannot evaluate => cannot pass. A tickerless proposal reaching a
+        # sector cap check is a malformed input, not a clean trade.
         return PreflightResult(
             check="sector_concentration_cap",
-            status=PreflightStatus.PASS,
-            message="No ticker on proposal",
+            status=PreflightStatus.HARD_FAIL,
+            message="No ticker on proposal; sector cap cannot be evaluated",
+            detail={"missing_ticker": True},
         )
 
     # Resolve the proposed ticker's sector — unknown sector is a hard block.
@@ -298,7 +301,13 @@ def check_sector_concentration_cap(
     # (an incomplete book classification means we cannot trust the sector total).
     sector_total: dict[str, float] = {}
     unclassified: list[str] = []
-    for held_ticker, pct in snapshot_pct.items():
+    for held_ticker, pct in (snapshot_pct or {}).items():
+        # A None weight is missing data, not a zero weight — treating it as 0
+        # would understate the sector total and let a breach through. Route it
+        # to the unclassified fail-loud path.
+        if pct is None:
+            unclassified.append(held_ticker)
+            continue
         if pct <= 0.0:
             continue
         sector = classification_map.get((held_ticker or "").upper())
@@ -320,6 +329,19 @@ def check_sector_concentration_cap(
             detail={"unclassified_tickers": sorted(unclassified)},
         )
 
+    # KNOWN LIMITATION (Sol review, 2026-08-13) — this compares the CURRENT
+    # sector weight to the cap, not the POST-TRADE weight. A buy that takes
+    # Tech from 34% to 39% against a 35% cap is NOT caught here, because 34%
+    # is still under the cap at evaluation time.
+    #
+    # This is the same coarse approximation the sibling single-name
+    # check_concentration_cap makes ("snapshot pct + a coarse delta", see its
+    # docstring) and it is deliberate rather than an oversight: PreflightInputs
+    # carries no book total and no trade notional, so a true post-trade weight
+    # is not computable here. Inventing an estimate would be worse than a
+    # documented gap — it would read as enforcement while still missing
+    # breaches. Closing this needs the size inputs threaded in, and should
+    # close BOTH checks at once.
     current_sector_pct = sector_total.get(proposed_sector, 0.0)
     action = (getattr(proposal, "action", "") or "").lower()
 

@@ -350,3 +350,41 @@ def test_run_preflight_blocks_on_cash() -> None:
     report = run_preflight(inputs)
     assert not report.passed
     assert any(r.check == "cash_availability" for r in report.hard_failures)
+
+
+def test_sector_cap_tickerless_proposal_cannot_pass():
+    """Cannot evaluate => cannot pass (Sol review 2026-08-13, blocker 1)."""
+    from argosy.decisions.risk_preflight import (
+        PreflightStatus,
+        check_sector_concentration_cap,
+    )
+
+    class _P:
+        ticker = ""
+        action = "buy"
+
+    r = check_sector_concentration_cap(
+        _P(), {"NVDA": 58.0}, {"Tech": 35.0}, {"NVDA": "Tech"}
+    )
+    assert r.status is PreflightStatus.HARD_FAIL
+
+
+def test_sector_cap_none_weight_is_missing_data_not_zero():
+    """A None weight must not be silently treated as 0% (Sol blocker 2)."""
+    from argosy.decisions.risk_preflight import (
+        PreflightStatus,
+        check_sector_concentration_cap,
+    )
+
+    class _P:
+        ticker = "AMD"
+        action = "buy"
+
+    r = check_sector_concentration_cap(
+        _P(),
+        {"NVDA": None, "AMD": 2.0},
+        {"Tech": 35.0},
+        {"NVDA": "Tech", "AMD": "Tech"},
+    )
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert "classification" in r.message.lower() or "cannot be computed" in r.message.lower()
