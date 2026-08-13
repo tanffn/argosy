@@ -226,6 +226,139 @@ def check_concentration_cap(
     )
 
 
+def check_sector_concentration_cap(
+    proposal: Any,
+    snapshot_pct: dict[str, float],
+    sector_caps: dict[str, float],
+    classification_map: dict[str, str],
+) -> PreflightResult:
+    """Hard fail if a buy would push the ticker's sector over a stated cap.
+
+    ``sector_caps`` maps sector code → max allowed portfolio percentage (e.g.
+    ``{"Tech": 35.0}``). ``classification_map`` maps ticker → sector code (e.g.
+    ``{"NVDA": "Tech"}``).  Both dicts are supplied by the caller — the cap
+    values come from the plan policy and the classification from the curated
+    ``instrument_reference`` table; nothing is hardcoded here.
+
+    Fail-loud contract:
+    - If ``sector_caps`` is empty → PASS (no sector caps configured; skip).
+    - If the proposed ticker is not in ``classification_map`` → HARD_FAIL
+      ("unknown sector — cannot verify sector cap").
+    - If any ticker in ``snapshot_pct`` with a non-zero weight is absent from
+      ``classification_map`` → HARD_FAIL (sector total would be understated;
+      cannot assert the cap holds without a complete book classification).
+    - If the sector total from ``snapshot_pct`` already exceeds the cap and
+      the action is a buy → HARD_FAIL.
+    - Sells and holds PASS (they reduce or hold the sector weight).
+
+    Phase 3 coarse approximation: the post-trade sector weight is not
+    recomputed exactly (no pricing data at preflight time). We block on the
+    *pre-trade* sector weight already breaching the cap on a buy — the same
+    conservative stance as ``check_concentration_cap``.  Phase 4 can swap in
+    an exact recompute.
+    """
+    if not sector_caps:
+        return PreflightResult(
+            check="sector_concentration_cap",
+            status=PreflightStatus.PASS,
+            message="No sector caps configured",
+        )
+
+    ticker = (getattr(proposal, "ticker", "") or "").upper()
+    if not ticker:
+        return PreflightResult(
+            check="sector_concentration_cap",
+            status=PreflightStatus.PASS,
+            message="No ticker on proposal",
+        )
+
+    # Resolve the proposed ticker's sector — unknown sector is a hard block.
+    proposed_sector = classification_map.get(ticker)
+    if proposed_sector is None:
+        return PreflightResult(
+            check="sector_concentration_cap",
+            status=PreflightStatus.HARD_FAIL,
+            message=(
+                f"{ticker} has no sector classification; cannot verify sector cap. "
+                "Add it to instrument_reference and re-seed instrument_classification."
+            ),
+            detail={"ticker": ticker, "missing_classification": True},
+        )
+
+    # Check sector cap exists for this ticker's sector (others are uncapped).
+    cap = sector_caps.get(proposed_sector)
+    if cap is None:
+        return PreflightResult(
+            check="sector_concentration_cap",
+            status=PreflightStatus.PASS,
+            message=f"{ticker} sector '{proposed_sector}' has no cap configured",
+        )
+
+    # Aggregate snapshot pct by sector; abort if any held position is unclassified
+    # (an incomplete book classification means we cannot trust the sector total).
+    sector_total: dict[str, float] = {}
+    unclassified: list[str] = []
+    for held_ticker, pct in snapshot_pct.items():
+        if pct <= 0.0:
+            continue
+        sector = classification_map.get((held_ticker or "").upper())
+        if sector is None:
+            unclassified.append(held_ticker)
+        else:
+            sector_total[sector] = sector_total.get(sector, 0.0) + pct
+
+    if unclassified:
+        return PreflightResult(
+            check="sector_concentration_cap",
+            status=PreflightStatus.HARD_FAIL,
+            message=(
+                f"Sector total for '{proposed_sector}' cannot be computed: "
+                f"{len(unclassified)} held ticker(s) lack classification: "
+                f"{', '.join(sorted(unclassified)[:5])}. "
+                "Add them to instrument_reference and re-seed."
+            ),
+            detail={"unclassified_tickers": sorted(unclassified)},
+        )
+
+    current_sector_pct = sector_total.get(proposed_sector, 0.0)
+    action = (getattr(proposal, "action", "") or "").lower()
+
+    if current_sector_pct > cap:
+        if action == "buy":
+            return PreflightResult(
+                check="sector_concentration_cap",
+                status=PreflightStatus.HARD_FAIL,
+                message=(
+                    f"Sector '{proposed_sector}' is already {current_sector_pct:.1f}% "
+                    f"of portfolio (cap {cap:.1f}%); buying {ticker} would push it "
+                    "further over cap"
+                ),
+                detail={
+                    "sector": proposed_sector,
+                    "current_pct": current_sector_pct,
+                    "cap_pct": cap,
+                    "ticker": ticker,
+                },
+            )
+        return PreflightResult(
+            check="sector_concentration_cap",
+            status=PreflightStatus.WARN,
+            message=(
+                f"Sector '{proposed_sector}' is {current_sector_pct:.1f}% "
+                f"(cap {cap:.1f}%); sell reduces exposure"
+            ),
+        )
+
+    return PreflightResult(
+        check="sector_concentration_cap",
+        status=PreflightStatus.PASS,
+        message=(
+            f"Sector '{proposed_sector}' at {current_sector_pct:.1f}% "
+            f"is within cap {cap:.1f}%"
+        ),
+    )
+
+
 def check_wash_sale(
     proposal: Any,
     lots: Iterable[Any] | None = None,
@@ -377,6 +510,15 @@ class PreflightInputs:
     lots: list[Any] | None = None
     tier: str = "T2"
     account_class: Literal["main", "limited"] = "main"
+    # Sector-cap fields (Phase 3 — FM-OBJ-7):
+    # ``sector_caps`` maps sector_code → max portfolio % (e.g. {"Tech": 35.0}).
+    # ``classification_map`` maps ticker → sector_code (e.g. {"NVDA": "Tech"}).
+    # Both default to empty dict — if empty the sector cap check is skipped
+    # (same behaviour as plan_targets={} for the single-name check).
+    # Callers build these from the plan policy and instrument_classification;
+    # the check itself is pure and does no DB access.
+    sector_caps: dict[str, float] = field(default_factory=dict)
+    classification_map: dict[str, str] = field(default_factory=dict)
 
 
 def run_preflight(inputs: PreflightInputs) -> PreflightReport:
@@ -386,6 +528,12 @@ def run_preflight(inputs: PreflightInputs) -> PreflightReport:
         check_position_size_cap(inputs.proposal, inputs.max_position_usd),
         check_concentration_cap(
             inputs.proposal, inputs.snapshot_pct, inputs.plan_targets
+        ),
+        check_sector_concentration_cap(
+            inputs.proposal,
+            inputs.snapshot_pct,
+            inputs.sector_caps,
+            inputs.classification_map,
         ),
         check_wash_sale(inputs.proposal, inputs.lots),
         check_daily_loss_limit(
@@ -417,6 +565,7 @@ __all__ = [
     "check_concentration_cap",
     "check_daily_loss_limit",
     "check_position_size_cap",
+    "check_sector_concentration_cap",
     "check_tier_mode_match",
     "check_trading_hours",
     "check_wash_sale",

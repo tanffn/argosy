@@ -5227,6 +5227,44 @@ class ValidatedDecisionOutcomeHead(Base):
 
 
 # ---------------------------------------------------------------------------
+# Migration 0103 — instrument_classification table.
+#
+# Canonical ticker → sector_code mapping for the sector-cap preflight check.
+# Seeded from argosy.services.instrument_reference._REFERENCE at migration
+# time; updated by the instrument_classification_sync job (future) or manual
+# override. The preflight check reads from this table indirectly — callers
+# build a classification_map dict from it and pass it into
+# check_sector_concentration_cap; the check itself never does a DB lookup.
+# ---------------------------------------------------------------------------
+
+
+class InstrumentClassification(Base):
+    """Per-ticker sector classification for the concentration-cap preflight.
+
+    ``sector_code`` matches the vocabulary in
+    ``argosy.services.instrument_reference`` (``SECTOR_TECH = "Tech"``, etc.).
+    ``source`` is ``"instrument_reference"`` for rows seeded from the curated
+    in-code table; ``"manual"`` for human overrides; ``"finnhub"`` for future
+    sync-job rows.  ``confidence`` is ``"high"`` or ``"low"``.
+
+    The table is write-through from the seed/sync path and read-only at
+    preflight time — callers build a ``dict[str, str]`` snapshot before the
+    check runs so the check itself is pure and testable.
+    """
+
+    __tablename__ = "instrument_classification"
+
+    ticker: Mapped[str] = mapped_column(String(32), primary_key=True)
+    sector_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="instrument_reference")
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(8), nullable=True, default="high")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
 # DB-level immutability triggers for the three append-only decision records
 # (Sol Phase-2 defect 3). Attached as DDL so BOTH ``create_all`` (tests) AND the
 # alembic 0099 migration (prod) install identical BEFORE UPDATE / BEFORE DELETE
