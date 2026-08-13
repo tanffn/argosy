@@ -2,7 +2,9 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-12**.
+Last updated: **2026-08-13**.
+
+> **ACTIVE WORK — branch `feat/trust-restoration`, NOT merged.** Execution tracker with per-task checkboxes: `docs/superpowers/plans/2026-08-13-trust-restoration-execution.md`. Design: `docs/superpowers/specs/2026-08-12-trust-restoration-design.md`. Audit evidence: `docs/superpowers/INDEX.md`. Read the tracker before picking anything up — it records what landed, what was disproved, and what awaits Ariel.
 
 ---
 
@@ -18,7 +20,8 @@ Canonical copy: `docs/design/SDD.md` → `## North star`. Auto-memory: `project_
 
 | Thing | Value |
 |---|---|
-| master | `eccade9` = **origin/master — pushed, in sync** |
+| **Working branch** | **`feat/trust-restoration`** — HEAD `80d226d`, 7 commits ahead of master, UNMERGED, UNPUSHED |
+| master | `eccade9` = origin/master (branch is cut from it) |
 | Push | blocked by the harness classifier → Ariel runs `! git push origin master` himself |
 | Migrations | `0101_fill_verdict_link` (DB confirmed at 0101) |
 | Working tree | clean; **no worktrees** |
@@ -32,6 +35,35 @@ Canonical copy: `docs/design/SDD.md` → `## North star`. Auto-memory: `project_
 
 **⚠️ NVDA — three live numbers, verified 2026-08-12.** `/api/portfolio/snapshot` returns `Strategic single-stock (NVDA): pct 58.02, target_pct 8.0`, while the **IPS prose says 12%** (a RED cross-surface finding logged 2026-07-07 and still open). Book **58.02%** / plan target **8.0%** / IPS **12%**.
 Earlier handovers said the draft was "computed with NVDA @ 0%" — **that phrasing was wrong and is retired.** Nobody set a target of 0%. What exists: ConcentrationAnalyst report 2915 *recommends* `"force cap to 0% and liquidate to target"` under a zero-FI-delay-tolerance branch, and the analyst's input excludes the unmanaged Schwab NVDA (precondition A below). The claimed log line "current NVDA weight 0.0 UNKNOWN" could **not** be found in current logs — treat it as unverified.
+
+---
+
+## Trust-restoration pass — state as of 2026-08-13
+
+**Landed on `feat/trust-restoration`** (tests green at each step; Sol reviewed the money paths):
+- `9dba3cf` `GateOutcome` contract — tri-state PASS / BLOCK / **DID_NOT_RUN**, where DID_NOT_RUN blocks promotion. A non-PASS must carry a reason; an override must name who and why. Silent overrides are unrepresentable.
+- `bcd9179` `/overview` shipped — was fully built and had no page route. 200, consistency guard 5/5 (first live exercise).
+- `a10edc1` **fail-closed everywhere**: reader `None` blocks; codex math gate reports an outcome on every path; `/accept` graph-build exception no longer falls through to an open-flag-free promotion; `/refine` refuses to stage a draft whose invariants never ran (422); digest fails when it sends nothing. Plus **1B**: plan burn now derived from real transactions.
+- `1fc2b75` SDD:1354 corrected — it had claimed the reader was fail-closed while the code did the opposite.
+- `80d226d` deconcentration-optimizer route + VAPID generator.
+
+**Ariel's rulings (2026-08-13):** thin-month threshold **50**; planning burn **rounds UP to the nearest ₪1,000** → **₪25,000** from a derived ₪24,032 (11 months, 1,082 txns). Implemented as a *labelled buffer on a derived number* (`monthly_burn_raw_nis` + `monthly_burn_buffer` travel alongside), never a typed figure.
+
+**⚠️ Two claims this pass DISPROVED — do not re-fix:**
+1. **Precondition A was never broken.** Executing `_summarize_positions` on the live snapshot yields `NVDA qty=10940 value=$2,379.4k acct=schwab` — the true 57.7%, already in the analyst's input. Four handovers propagated a misread docstring; nobody ran it. Cherry-picking `70008d4` was a no-op.
+2. **Discord was not a silent failure.** `config.py:209` records a deliberate shutdown on 2026-07-07 (reconnect bug ~150 supervisor restarts/day, Discord blocked the API, **0 signals since 2026-05-29**). Auth-4004 errors date from 2026-06-15. Re-enabling was gated on a *value review that never happened*. **Ariel said "we need to fix the feed" — that decision is open**, and should start from whether a source with 0 signals in its final 5 weeks and a 21% hit-rate earns the work.
+
+**Open money-math decisions (deliberately NOT applied):**
+- **CGT taper binding.** `scenario_mc.py:552` pins `DECONCENTRATION_TAPER_YEARS = 3`; the plan headline never consults the optimizer's chosen horizon. SDD §19.4 is partially false (shared formula, unshared horizon). Worth ~₪100–170k and up to a year of retirement age.
+- **The optimizer currently sees no NVDA at all** — `nvda_current_pct=None`, `sell_nis=0.0` for every horizon, because plan v92 has `decision_run_id=None` (refinement-path draft) so a `if drun is not None` guard skips resolution and a bare `except: return 0.0, None, None` hides it. **Expected to resolve itself once the regen creates a decision run — verify, don't assume.**
+- **A FOURTH NVDA number:** `DEFAULT_NVDA_CAP_PCT = 0.13` (`scenario_mc.py:553`), alongside book 58% / plan target 8% / IPS prose 12%.
+
+**Needs Ariel (blocked on a human):**
+- SMTP creds. Set then restart: `ARGOSY_SMTP_HOST` (e.g. `smtp.gmail.com`), `ARGOSY_SMTP_PORT=587`, `ARGOSY_SMTP_FROM`, `ARGOSY_SMTP_USERNAME`, `ARGOSY_SMTP_PASSWORD` (Gmail app password). Send path already verified end-to-end against a local `aiosmtpd` sink.
+- **Web push final step:** open `http://localhost:1337/settings/notifications`, click enable, grant the Chrome prompt. `notification_subscriptions` is 0 until then; VAPID keys now exist and the endpoint returns 200.
+- **73 open action proposals** (not 59 — the queue grew), **40 stale >30d**: 45 `note_only`, 14 `set_watchlist`, 6 `update_plan_assumption`, 4 `rebalance` (all stale, likely superseded by the regen), 1 `replan_full` (2026-07-26, actionable — it is a regen trigger), 1 each `stock_decision` / `deploy_team_flag` / `allocate`. Nothing deleted.
+
+**Still to do on the branch:** 0.2/0.10 gate receipt (in flight), Phase 2 single-sourcing of the NVDA cap (in flight), Phase 3 sector caps (`risk_preflight.py:180` has no sector logic; `PlanPolicy` / `instrument_classification` NOT_BUILT — needs migration 0103), then **Phase 5 regen**.
 
 ---
 
