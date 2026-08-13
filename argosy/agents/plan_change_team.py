@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field
 
 from argosy.agents._plan_authority import PRIME_DIRECTIVE
 from argosy.agents.base import BaseAgent
+from argosy.services.allocation_plan import NVDA_TARGET_PCT as _NVDA_TARGET_PCT
+from argosy.services.retirement.scenario_mc import DEFAULT_NVDA_CAP_PCT as _DEFAULT_NVDA_CAP_PCT
 
 
 # --------------------------------------------------------------------------
@@ -74,7 +76,9 @@ def _book_block(book: dict[str, Any]) -> str:
     return (
         f"  - tradeable book: ${book.get('book_usd', 0):,.0f}\n"
         f"  - NVDA look-through TODAY: {book.get('nvda_lookthrough_pct', 0):.1f}% "
-        f"(transition; plan glide sells it down toward the 12% direct target / 13% cap)\n"
+        f"(transition; plan glide sells it down toward the "
+        f"{_NVDA_TARGET_PCT:.0f}% direct target / "
+        f"{_DEFAULT_NVDA_CAP_PCT * 100:.0f}% cap)\n"
         f"  - US-facing look-through TODAY: {book.get('us_facing_pct', 0):.1f}%\n"
         f"  - household income: NVIDIA salary (same complex as the equity concentration)\n"
         f"  - HOLDINGS (USD):\n{hl}"

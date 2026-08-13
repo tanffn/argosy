@@ -11,6 +11,8 @@ from argosy.quality.live_surfaces import (
     NET_WORTH_INVESTABLE_NODE,
     NET_WORTH_LIQUID_NODE,
     NET_WORTH_TOTAL_NODE,
+    NVDA_CAP_PCT_NODE,
+    NVDA_TARGET_PCT_NODE,
     RETENTION_AT_VEST_NODE,
     RETENTION_CAPITAL_TRACK_NODE,
     register_canonical_surfaces,
@@ -205,3 +207,145 @@ def test_retention_pending_seed_does_not_render_a_false_zero_rate() -> None:
     cap = g.get("surface:retention_capital_track_statement").value
     assert "0%" not in at_vest and "pending" in at_vest.lower()
     assert "pending" in cap.lower()
+
+
+# ---------------------------------------------------------------------------
+# NVDA cap and target canonical node tests
+# Root cause of the 12%/8%/13% three-value contradiction (plan critique RED
+# finding 2026-07-07): the IPS prose said "12% sleeve" (stale from when
+# NVDA_TARGET_PCT was 12%) while the canonical TargetAllocationDoc had the
+# NVDA class at 8% and the look-through cap at 13%.  Binding both to canonical
+# nodes means every surface reads one source and a stale hardcode can never
+# diverge again.
+# ---------------------------------------------------------------------------
+
+def test_nvda_cap_and_target_render_from_single_node_each() -> None:
+    """NVDA cap (13%) and target (8%) each render from their OWN canonical node.
+    The statement and dashboard tile for EACH are byte-identical because they
+    share the node — a stale hardcode cannot cause one surface to say 12% while
+    another says 8%."""
+    g = _build_graph_with_canonical_inputs()
+    g.set_input(NVDA_CAP_PCT_NODE, 0.13)    # 13 % as a fraction
+    g.set_input(NVDA_TARGET_PCT_NODE, 0.08)  # 8 % as a fraction
+    g.recompute()
+
+    cap_stmt = g.get("surface:nvda_cap_statement").value
+    cap_tile = g.get("surface:dashboard.nvda_cap_tile").value
+    tgt_stmt = g.get("surface:nvda_target_statement").value
+    tgt_tile = g.get("surface:dashboard.nvda_target_tile").value
+
+    # Both cap surfaces render "13.0%" (×100 from 0.13)
+    assert "13.0%" in cap_stmt, f"cap_stmt={cap_stmt!r}"
+    assert "13.0" in cap_tile, f"cap_tile={cap_tile!r}"
+    # The cap is labelled as a look-through hard cap
+    assert "cap" in cap_stmt.lower()
+
+    # Both target surfaces render "8.0%" (×100 from 0.08)
+    assert "8.0%" in tgt_stmt, f"tgt_stmt={tgt_stmt!r}"
+    assert "8.0" in tgt_tile, f"tgt_tile={tgt_tile!r}"
+    # The target is labelled as the direct sleeve target (distinct from cap)
+    assert "target" in tgt_stmt.lower()
+
+    # The two nodes are DISTINCT — cap ≠ target
+    assert NVDA_CAP_PCT_NODE != NVDA_TARGET_PCT_NODE
+
+
+def test_nvda_cap_change_propagates_to_all_cap_surfaces_simultaneously() -> None:
+    """Changing the cap node from 13% to 15% updates BOTH the statement AND the
+    tile atomically (they share the node).  No surface can lag — the scenario
+    that produced 'prose says 12%, table says 8%' is structurally impossible."""
+    g = _build_graph_with_canonical_inputs()
+    g.set_input(NVDA_CAP_PCT_NODE, 0.13)
+    g.recompute()
+    assert "13.0%" in g.get("surface:nvda_cap_statement").value
+    assert "13.0" in g.get("surface:dashboard.nvda_cap_tile").value
+
+    # Update to 15% and recompute — BOTH surfaces move.
+    g.set_input(NVDA_CAP_PCT_NODE, 0.15)
+    g.recompute()
+    assert "15.0%" in g.get("surface:nvda_cap_statement").value
+    assert "15.0" in g.get("surface:dashboard.nvda_cap_tile").value
+    # The OLD value must not survive on either surface.
+    assert "13.0" not in g.get("surface:nvda_cap_statement").value
+    assert "13.0" not in g.get("surface:dashboard.nvda_cap_tile").value
+
+
+def test_nvda_target_node_bound_to_allocation_plan_constant() -> None:
+    """The NVDA_TARGET_PCT_NODE value in the resolver always equals
+    NVDA_TARGET_PCT / 100 from allocation_plan.py — proves the surface and the
+    TargetAllocationDoc cannot show different values as long as both read the
+    same constant (the core of the cross-surface binding)."""
+    from argosy.services.allocation_plan import NVDA_TARGET_PCT
+    from argosy.services.retirement.scenario_mc import DEFAULT_NVDA_CAP_PCT
+
+    # The target (8%) must be strictly below the cap (13%).
+    assert NVDA_TARGET_PCT < DEFAULT_NVDA_CAP_PCT * 100.0
+
+    g = _build_graph_with_canonical_inputs()
+    # Seed the target with the SAME value the resolver uses.
+    canonical_target_frac = NVDA_TARGET_PCT / 100.0
+    g.set_input(NVDA_TARGET_PCT_NODE, canonical_target_frac)
+    g.recompute()
+
+    stmt = g.get("surface:nvda_target_statement").value
+    # The surface renders the constant's %-point value.
+    assert f"{NVDA_TARGET_PCT:.1f}%" in stmt, f"stmt={stmt!r}"
+    # And the cap constant's %-point value is NOT what the target statement shows
+    assert f"{DEFAULT_NVDA_CAP_PCT * 100:.1f}%" not in stmt
+
+
+def test_nvda_cap_and_target_in_canonical_subject_node() -> None:
+    """Both NVDA subjects are registered in CANONICAL_SUBJECT_NODE so they
+    participate in the one-source-per-subject unification and will be included
+    in any coverage assertion that iterates CANONICAL_SUBJECT_NODE."""
+    assert "nvda_cap" in CANONICAL_SUBJECT_NODE
+    assert "nvda_target" in CANONICAL_SUBJECT_NODE
+    assert CANONICAL_SUBJECT_NODE["nvda_cap"] == NVDA_CAP_PCT_NODE
+    assert CANONICAL_SUBJECT_NODE["nvda_target"] == NVDA_TARGET_PCT_NODE
+
+
+def test_nvda_cap_and_target_cross_surface_coherence_catches_divergence() -> None:
+    """The assembled-artifact cross-surface gate (check_cross_surface_coherence)
+    BLOCKS when the alloc_doc surface reports a different cap or target than the
+    body resolver — this is the structural guard against the 12%/8% contradiction
+    recurring.
+
+    Scenario: body resolver says cap=13%, target=8%; alloc_doc somehow says
+    cap=13%, target=12% (the old stale value).  The gate must raise a violation
+    on the target concept."""
+    from types import SimpleNamespace
+    from argosy.quality.coherence_gate import check_cross_surface_coherence
+    from argosy.services.assembled_artifact import CONCEPT_NVDA_CAP, CONCEPT_NVDA_TARGET
+
+    # Simulate what _add_body_values and _add_alloc_doc_values would produce.
+    surface_values: dict = {
+        CONCEPT_NVDA_CAP: [("body", 13.0), ("alloc_doc", 13.0)],  # cap agrees ✓
+        CONCEPT_NVDA_TARGET: [("body", 8.0), ("alloc_doc", 12.0)],  # target disagrees ✗
+    }
+    art = SimpleNamespace(surface_values=surface_values)
+    violations = check_cross_surface_coherence(art)
+    assert len(violations) >= 1
+    assert any(CONCEPT_NVDA_TARGET in v.detail for v in violations), (
+        f"Expected a {CONCEPT_NVDA_TARGET} violation; got: {violations}"
+    )
+    # Cap is consistent — no violation expected for it.
+    assert all(CONCEPT_NVDA_CAP not in v.detail for v in violations), (
+        f"Unexpected cap violation: {violations}"
+    )
+
+
+def test_nvda_cap_and_target_agree_across_body_and_alloc_doc_when_consistent() -> None:
+    """When body and alloc_doc both report the same cap and target, the coherence
+    gate passes with zero violations — the canonical binding does not create
+    false positives."""
+    from types import SimpleNamespace
+    from argosy.quality.coherence_gate import check_cross_surface_coherence
+    from argosy.services.assembled_artifact import CONCEPT_NVDA_CAP, CONCEPT_NVDA_TARGET
+
+    surface_values: dict = {
+        CONCEPT_NVDA_CAP: [("body", 13.0), ("alloc_doc", 13.0)],
+        CONCEPT_NVDA_TARGET: [("body", 8.0), ("alloc_doc", 8.0)],
+    }
+    art = SimpleNamespace(surface_values=surface_values)
+    violations = check_cross_surface_coherence(art)
+    assert violations == [], f"Unexpected violations: {violations}"

@@ -54,6 +54,22 @@ CONCEPT_NET_WORTH_TOTAL = "net_worth_total_nis"
 CONCEPT_NVDA_WEIGHT = "nvda_weight_pct"
 CONCEPT_US_SITUS_ESTATE = "us_situs_estate_nis"
 CONCEPT_FI_MARGIN = "fi_margin_signed_nis"
+# Two DISTINCT NVDA policy numbers — NOT the same concept:
+#   * nvda_cap_pct    : the LOOK-THROUGH hard ceiling (~13 pp). Argosy-derived as
+#                       MIN over four constraint caps; the user does NOT set this.
+#                       Stored as fraction (0–1) in the resolver; extracted here
+#                       as %-points (× 100) so the coherence gate compares like
+#                       for like with the alloc-doc surface (already in %-points).
+#   * nvda_target_pct : the DIRECT sleeve target (~8 pp). Lower than the cap to
+#                       keep total plan look-through < cap given embedded NVDA
+#                       inside index sleeves. Derives from NVDA_TARGET_PCT in
+#                       allocation_plan.py → plan_numeric_resolver, so it is
+#                       always consistent with the canonical doc's class target_pct.
+# Both surfaces carry exactly one value — the resolver's constant-derived figure —
+# making a stale-hardcode divergence (the 12%/8%/13% three-value contradiction)
+# impossible: if the constant changes, all surfaces update together.
+CONCEPT_NVDA_CAP = "nvda_cap_pct"
+CONCEPT_NVDA_TARGET = "nvda_target_pct"
 
 
 @dataclass
@@ -209,6 +225,22 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
             except Exception as exc:  # noqa: BLE001 — never crash assembly on a render pass
                 log.warning("assembled_artifact.final_render_pass_failed err=%s", exc)
 
+    # ----- Canonical allocation doc: NVDA cap + target from structured plan ----
+    # The TargetAllocationDoc is the ONE authoritative source for NVDA cap and
+    # sleeve target.  Extracting these as a separate "alloc_doc" surface means
+    # the cross-surface coherence gate sees them alongside the resolver body
+    # values, and any divergence (e.g. a stale hardcode in a prompt injecting
+    # "12%" while the doc says "8%") is caught deterministically.
+    try:
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+
+        alloc_doc = load_plan_target_allocation(plan) if plan is not None else None
+        if alloc_doc is not None:
+            _add_alloc_doc_values(alloc_doc, surface_values)
+    except Exception as exc:  # noqa: BLE001 — never crash assembly on the doc
+        log.warning("assembled_artifact.alloc_doc_failed err=%s", exc)
+        extraction_errors["alloc_doc"] = repr(exc)
+
     # ----- Dashboard surface: the typed WealthDashboard dataclass -----------
     try:
         dash = compute_wealth_dashboard(session, user_id=user_id)
@@ -244,6 +276,15 @@ def _add_body_values(resolved, bag: dict[str, list[tuple[str, float]]]) -> None:
         return float(rv.value)
 
     _append(bag, CONCEPT_NET_WORTH, "body", _val("portfolio.net_worth_nis"))
+
+    # NVDA cap and target — resolver stores as fractions (0–1); convert to %-points
+    # so the gate compares like-for-like with the alloc-doc surface (%-points).
+    nvda_cap_frac = _val("concentration.nvda_cap_pct")
+    if nvda_cap_frac is not None:
+        _append(bag, CONCEPT_NVDA_CAP, "body", nvda_cap_frac * 100.0)
+    nvda_target_frac = _val("concentration.nvda_target_pct")
+    if nvda_target_frac is not None:
+        _append(bag, CONCEPT_NVDA_TARGET, "body", nvda_target_frac * 100.0)
 
     nvda_frac = _val("concentration.nvda_current_pct")
     if nvda_frac is not None:
@@ -292,6 +333,41 @@ def _add_dashboard_values(dash, bag: dict[str, list[tuple[str, float]]]) -> None
         )
 
 
+def _add_alloc_doc_values(doc, bag: dict[str, list[tuple[str, float]]]) -> None:
+    """Extract NVDA cap and sleeve target from the canonical TargetAllocationDoc.
+
+    The doc is the SINGLE authoritative source for allocation numbers (it is
+    engine-authored, not prose-parsed).  Extracting these here makes the coherence
+    gate compare the resolver body against the doc — if a stale hardcode ever
+    injects a different number into LLM prose, the two "alloc_doc" entries in
+    surface_values will diverge from the "body" entries and raise a BLOCK.
+
+    ``doc.nvda_cap_pct`` is already in %-points (not a fraction) — consistent with
+    how the body surface is stored (we convert resolver fractions × 100 above).
+    The NVDA class's ``target_pct`` is also in %-points, matching the body.
+    """
+    cap = getattr(doc, "nvda_cap_pct", None)
+    if cap is not None:
+        try:
+            _append(bag, CONCEPT_NVDA_CAP, "alloc_doc", float(cap))
+        except (TypeError, ValueError):
+            pass
+
+    # The NVDA class target_pct — search for the "Strategic single-stock (NVDA)"
+    # class by the canonical label used across the codebase.
+    _NVDA_CLASS_LABEL = "Strategic single-stock (NVDA)"
+    for cls in getattr(doc, "classes", []):
+        label = getattr(cls, "label", "")
+        if label == _NVDA_CLASS_LABEL:
+            tgt = getattr(cls, "target_pct", None)
+            if tgt is not None:
+                try:
+                    _append(bag, CONCEPT_NVDA_TARGET, "alloc_doc", float(tgt))
+                except (TypeError, ValueError):
+                    pass
+            break
+
+
 __all__ = [
     "AssembledArtifact",
     "assemble_plan_artifact",
@@ -300,4 +376,6 @@ __all__ = [
     "CONCEPT_NVDA_WEIGHT",
     "CONCEPT_US_SITUS_ESTATE",
     "CONCEPT_FI_MARGIN",
+    "CONCEPT_NVDA_CAP",
+    "CONCEPT_NVDA_TARGET",
 ]

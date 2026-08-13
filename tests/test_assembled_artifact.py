@@ -299,3 +299,59 @@ def test_extraction_failure_is_recorded_not_swallowed(session, monkeypatch):
     assert art.extraction_errors["dashboard"]  # non-empty
     # The export render path is independent and must still produce full_text.
     assert "## Wealth Dashboard" in art.full_text
+
+
+def test_nvda_cap_and_target_extracted_from_alloc_doc_surface() -> None:
+    """The ``_add_alloc_doc_values`` helper extracts NVDA cap and target from a
+    TargetAllocationDoc and records them under the canonical concept keys so the
+    coherence gate can compare them against the resolver body.
+
+    This is the structural guard against the 12%/8%/13% three-value contradiction:
+    if the alloc_doc says 8% and the body resolver also says 8%, no violation.
+    If they diverge (stale doc or stale constant), the gate fires."""
+    from types import SimpleNamespace
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        CONCEPT_NVDA_TARGET,
+        _add_alloc_doc_values,
+    )
+    from argosy.quality.coherence_gate import check_cross_surface_coherence
+
+    # Build a minimal TargetAllocationDoc-shaped object.
+    nvda_class = SimpleNamespace(
+        label="Strategic single-stock (NVDA)",
+        target_pct=8.0,
+    )
+    other_class = SimpleNamespace(
+        label="US broad-market core",
+        target_pct=28.5,
+    )
+    doc = SimpleNamespace(
+        nvda_cap_pct=13.0,
+        classes=[nvda_class, other_class],
+    )
+
+    bag: dict = {}
+    _add_alloc_doc_values(doc, bag)
+
+    # Cap extracted: 13.0 pp (already in %-points in the doc).
+    assert CONCEPT_NVDA_CAP in bag
+    assert dict(bag[CONCEPT_NVDA_CAP]) == {"alloc_doc": 13.0}
+
+    # Target extracted from the NVDA class row: 8.0 pp.
+    assert CONCEPT_NVDA_TARGET in bag
+    assert dict(bag[CONCEPT_NVDA_TARGET]) == {"alloc_doc": 8.0}
+
+    # When body matches alloc_doc, coherence gate is silent.
+    bag[CONCEPT_NVDA_CAP].append(("body", 13.0))
+    bag[CONCEPT_NVDA_TARGET].append(("body", 8.0))
+    art = SimpleNamespace(surface_values=bag)
+    assert check_cross_surface_coherence(art) == []
+
+    # When body diverges (stale 12%), the coherence gate fires a violation.
+    bag[CONCEPT_NVDA_TARGET] = [("alloc_doc", 8.0), ("body", 12.0)]
+    art2 = SimpleNamespace(surface_values=bag)
+    violations = check_cross_surface_coherence(art2)
+    assert any(CONCEPT_NVDA_TARGET in v.detail for v in violations), (
+        f"Expected a {CONCEPT_NVDA_TARGET} violation, got: {violations}"
+    )

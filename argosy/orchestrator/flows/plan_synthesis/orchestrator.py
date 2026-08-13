@@ -2734,6 +2734,25 @@ def run_synthesis(
                     user_id=user_id, decision_run_id=decision_run_id,
                     gate_summary=_gate_summarize(_promotion_gates),
                 )
+                # Persist gate outcomes best-effort so the UI can render the
+                # verification receipt.  A failure here MUST NOT block the
+                # promotion path — persist_gate_outcomes logs at ERROR and
+                # rolls back internally; we never propagate.
+                try:
+                    from argosy.services.gate_outcome_store import (
+                        persist_gate_outcomes as _persist_gate_outcomes,
+                    )
+                    _persist_gate_outcomes(
+                        session,
+                        decision_run_id=decision_run_id,
+                        outcomes=_promotion_gates,
+                    )
+                except Exception as _pgo_exc:  # noqa: BLE001
+                    log.error(
+                        "gate_outcomes.persist_gate_outcomes_raised "
+                        "decision_run_id=%s err=%s",
+                        decision_run_id, _pgo_exc,
+                    )
                 if _conv.all_agreed and not _blocks_promotion(_promotion_gates):
                     decision_run.fund_manager_decision = "approved"
                     session.commit()

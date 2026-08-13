@@ -613,6 +613,43 @@ class DraftResponse(BaseModel):
     # READ-time fact-token render meta (item I). ``None`` when the plan
     # surfaces carry no ``{{fact:}}`` tokens (legacy literal bodies).
     fact_render: FactRenderMeta | None = None
+    # Promotion gate receipt (task 0.2 / 0.10 — trust-restoration).
+    # Populated from ``gate_outcomes`` rows written by the synthesis
+    # orchestrator when it evaluates _promotion_gates. ``None`` for legacy
+    # drafts pre-dating migration 0102 or when the orchestrator never reached
+    # the gate evaluation point.
+    #
+    # ``gate_receipt.summary`` is a one-line human-readable summary
+    # (e.g. "2/2 gates passed" or "1/2 gates passed; whole_artifact_reader
+    # DID_NOT_RUN (codex hung)"). The UI renders it in the plan page header.
+    # ``gate_receipt.gates`` carries the per-gate detail rows so the UI can
+    # render a drill-in list.
+    gate_receipt: "GateReceiptDTO | None" = None
+
+
+class GateReceiptDTO(BaseModel):
+    """Verification receipt for the promotion gates of one synthesis run.
+
+    Mirrors the ``GateOutcome`` dataclass contract — see
+    ``argosy.quality.verification`` for the tri-state semantics.
+    """
+
+    summary: str
+    gates: list["GateOutcomeDTO"] = []
+
+
+class GateOutcomeDTO(BaseModel):
+    """One gate's outcome in the verification receipt."""
+
+    gate: str
+    status: str  # "pass" | "block" | "did_not_run"
+    detail: str = ""
+    override_by: str | None = None
+    override_reason: str | None = None
+
+
+# Rebuild DraftResponse so the forward references above resolve.
+DraftResponse.model_rebuild()
 
 
 class AcceptResponse(BaseModel):
@@ -903,6 +940,47 @@ def _build_nvda_pace(
         return _fallback_nvda_pace(db, user_id)
 
 
+def _build_gate_receipt(
+    db: Session, decision_run_id: int | None
+) -> "GateReceiptDTO | None":
+    """Build the gate receipt DTO from persisted gate_outcomes rows.
+
+    Returns ``None`` when ``decision_run_id`` is absent (legacy / manually
+    ingested drafts) or when no rows exist for the run (orchestrator never
+    reached gate evaluation). Never raises — losing the receipt chip is
+    acceptable; a 500 on the draft endpoint is not.
+    """
+    if decision_run_id is None:
+        return None
+    try:
+        from argosy.services.gate_outcome_store import get_gate_receipt
+
+        result = get_gate_receipt(db, decision_run_id)
+        if result is None:
+            return None
+        outcomes, summary = result
+        return GateReceiptDTO(
+            summary=summary,
+            gates=[
+                GateOutcomeDTO(
+                    gate=o.gate,
+                    status=str(o.status),
+                    detail=o.detail,
+                    override_by=o.override_by,
+                    override_reason=o.override_reason,
+                )
+                for o in outcomes
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the draft surface
+        logger.warning(
+            "plan.gate_receipt_failed decision_run_id=%s err=%s",
+            decision_run_id,
+            str(exc)[:200],
+        )
+        return None
+
+
 def _build_synthesis_health(
     db: Session, decision_run_id: int | None
 ) -> SynthesisHealth | None:
@@ -1088,6 +1166,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         effective_role=effective_role,
         corrective=_read_corrective_provenance(pv),
         fact_render=fact_meta,
+        gate_receipt=_build_gate_receipt(db, pv.decision_run_id),
     )
 
 

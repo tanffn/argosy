@@ -1045,7 +1045,8 @@ def build_redistribution_schedule(
     quarters: int = 8,
 ) -> RedistributionSchedule:
     """Linearly transform today's full-book composition into the target over
-    ``quarters`` quarters. NVDA tapers from today toward its 12% cap; every
+    ``quarters`` quarters. NVDA tapers from today toward its NVDA_TARGET_PCT direct
+    sleeve target (currently 8%); every
     other class glides from today toward its target. Each intermediate quarter's
     composition sums to 100 by construction (a convex blend of two mixes that
     each sum to 100), so the chart's stacked bands stay coherent.

@@ -1,7 +1,7 @@
 ---
 topic: tipranks_analyst_aggregator
 jurisdiction: us
-last_verified: 2026-08-12
+last_verified: 2026-08-13
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.tipranks.com
