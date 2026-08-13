@@ -26,10 +26,12 @@ from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
     CodexAgreement,
     CodexFinding,
     CodexSecondOpinion,
+    GateOutcome,
     _build_prompt,
     _parse_codex_verdict,
     run_codex_second_opinion,
 )
+from argosy.quality.verification import GateStatus
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +120,13 @@ def test_codex_skipped_under_pytest(monkeypatch):
             user_id="ariel",
         )
 
-    parsed, row = asyncio.run(_run())
+    parsed, row, gate = asyncio.run(_run())
     assert parsed is None
     assert row is None
+    # Gate is DID_NOT_RUN, not a pass — deliberate test short-circuit still
+    # signals the math check did not execute (fail-closed semantics).
+    assert gate.status == GateStatus.DID_NOT_RUN
+    assert gate.gate == "codex_math"
 
 
 def test_codex_skipped_when_env_off(monkeypatch):
@@ -142,9 +148,11 @@ def test_codex_skipped_when_env_off(monkeypatch):
             user_id="ariel",
         )
 
-    parsed, row = asyncio.run(_run())
+    parsed, row, gate = asyncio.run(_run())
     assert parsed is None
     assert row is None
+    assert gate.status == GateStatus.DID_NOT_RUN
+    assert gate.gate == "codex_math"
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +266,16 @@ def test_codex_fails_soft_when_unreachable(monkeypatch, tmp_path):
         )
 
     try:
-        parsed, row = asyncio.run(_run())
+        parsed, row, gate = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
     assert parsed is None
     assert row is None
+    # Gate must be DID_NOT_RUN, not a pass — an unavailable codex is NOT a green light.
+    assert gate.status == GateStatus.DID_NOT_RUN
+    assert gate.gate == "codex_math"
+    assert "dispatch raised" in gate.detail
 
 
 def test_codex_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
@@ -321,16 +333,82 @@ def test_codex_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
         return result, time.monotonic() - t0
 
     try:
-        (parsed, row), elapsed = asyncio.run(_run())
+        (parsed, row, gate), elapsed = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
-    # Fail-soft: a hung dispatch returns (None, None), not a crash.
+    # Fail-soft (synthesis doesn't abort): a hung dispatch returns None opinion/row.
     assert parsed is None
     assert row is None
-    # And the await returns promptly (well under the 5s stub sleep) — the
+    # Fail-CLOSED (gate): a hung dispatch is DID_NOT_RUN, NOT a pass.
+    assert gate.status == GateStatus.DID_NOT_RUN
+    assert gate.gate == "codex_math"
+    assert "hard ceiling" in gate.detail
+    # The await returns promptly (well under the 5s stub sleep) — the
     # ceiling tripped rather than the orchestrator blocking on the stuck thread.
     assert elapsed < 2.0, f"await blocked for {elapsed:.2f}s — ceiling did not trip"
+
+
+def test_kit_unavailable_yields_did_not_run_not_pass(monkeypatch, tmp_path):
+    """THE CORE REGRESSION TEST: an unavailable codex kit must produce a
+    DID_NOT_RUN gate, NOT a pass.
+
+    This is the scenario that allowed a bad plan to be green-lit: when the
+    codex-tandem kit was 401-dead (ImportError at runtime), the function
+    returned (None, None) and callers treated the absence as "no objection".
+    After the fix the gate explicitly reports DID_NOT_RUN, and
+    ``blocks_promotion([gate])`` returns a non-empty list — so any caller
+    that correctly checks it will refuse promotion.
+
+    Strategy: set ``sys.modules["engine_codex"] = None``.  Python interprets
+    a ``None`` sentinel as "this module was previously found to be absent"
+    and raises ``ImportError`` on any subsequent ``import engine_codex`` or
+    ``from engine_codex import ...`` — exactly replicating a missing/dead kit.
+    """
+    from argosy.quality.verification import blocks_promotion
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    import sys
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+
+    # sys.modules[name] = None is the standard Python sentinel for
+    # "this module is known-absent" — any import of it raises ImportError.
+    # monkeypatch.setitem restores the original after the test.
+    monkeypatch.setitem(sys.modules, "engine_codex", None)  # type: ignore[arg-type]
+
+    async def _run():
+        return await cso.run_codex_second_opinion(
+            synth_draft_json='{}',
+            analyst_reports_text="reports",
+            debate_outcomes_text="debates",
+            risk_verdict_text="risk",
+            user_directive="",
+            decision_run_id=998,
+            user_id="ariel",
+        )
+
+    parsed, row, gate = asyncio.run(_run())
+
+    # The opinion and row are None (synthesis didn't abort) …
+    assert parsed is None
+    assert row is None
+    # … but the gate is DID_NOT_RUN, NOT a pass.
+    assert gate.gate == "codex_math"
+    assert gate.status == GateStatus.DID_NOT_RUN, (
+        f"expected DID_NOT_RUN but got {gate.status!r} — "
+        "an unavailable codex must not silently green-light a plan"
+    )
+    # And blocks_promotion correctly treats DID_NOT_RUN as a blocker.
+    blocking = blocks_promotion([gate])
+    assert blocking, (
+        "blocks_promotion returned empty for a DID_NOT_RUN gate — "
+        "an unverified plan would be promoted without the math check"
+    )
 
 
 def test_codex_returns_unparseable_opinion_on_garbage_output(
@@ -370,7 +448,7 @@ def test_codex_returns_unparseable_opinion_on_garbage_output(
         )
 
     try:
-        parsed, row = asyncio.run(_run())
+        parsed, row, gate = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
@@ -386,6 +464,9 @@ def test_codex_returns_unparseable_opinion_on_garbage_output(
     # old hardcoded-0 path.
     assert row.cost_usd >= 0.0
     assert row.tokens_out == 10
+    # Gate matches the parsed verdict: unparseable output → BLOCK gate.
+    assert gate.status == GateStatus.BLOCK
+    assert gate.gate == "codex_math"
 
 
 def test_codex_full_path_with_valid_output(monkeypatch, tmp_path):
@@ -429,7 +510,7 @@ def test_codex_full_path_with_valid_output(monkeypatch, tmp_path):
         )
 
     try:
-        parsed, row = asyncio.run(_run())
+        parsed, row, gate = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
@@ -449,6 +530,9 @@ def test_codex_full_path_with_valid_output(monkeypatch, tmp_path):
     assert "concentration" in row.response_text
     # user_prompt holds the full codex prompt (debug / audit).
     assert "=== SYNTHESIZER DRAFT" in row.user_prompt
+    # Gate: APPROVE_WITH_CONDITIONS is a PASS at the gate level (ran, no hard block).
+    assert gate.status == GateStatus.PASS
+    assert gate.gate == "codex_math"
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +740,7 @@ def test_codex_agent_report_carries_real_cost(monkeypatch, tmp_path):
         )
 
     try:
-        parsed, row = asyncio.run(_run())
+        parsed, row, gate = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
@@ -665,6 +749,7 @@ def test_codex_agent_report_carries_real_cost(monkeypatch, tmp_path):
     assert row.cost_usd == 0.42
     assert row.tokens_in == 8000
     assert row.tokens_out == 1200
+    assert gate.status == GateStatus.PASS
 
 
 def test_codex_agent_report_cost_capped_when_out_of_range(monkeypatch, tmp_path):
@@ -704,7 +789,7 @@ def test_codex_agent_report_cost_capped_when_out_of_range(monkeypatch, tmp_path)
         )
 
     try:
-        _, row = asyncio.run(_run())
+        _, row, gate = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
@@ -713,6 +798,7 @@ def test_codex_agent_report_cost_capped_when_out_of_range(monkeypatch, tmp_path)
     # an implementation detail -- the load-bearing property is that we
     # don't surface $9999.
     assert 0.0 < row.cost_usd <= 10.0
+    assert gate.status == GateStatus.PASS
 
 
 def test_codex_agent_report_cost_estimated_when_attr_missing(
@@ -752,7 +838,7 @@ def test_codex_agent_report_cost_estimated_when_attr_missing(
         )
 
     try:
-        _, row = asyncio.run(_run())
+        _, row, gate = asyncio.run(_run())
     finally:
         sys.modules.pop("engine_codex", None)
 
@@ -763,6 +849,7 @@ def test_codex_agent_report_cost_estimated_when_attr_missing(
     # Legacy convention: total parks under tokens_out when no split.
     assert row.tokens_out == 50_000
     assert row.tokens_in == 0
+    assert gate.status == GateStatus.PASS
 
 
 # ---------------------------------------------------------------------------

@@ -356,3 +356,58 @@ def test_whole_artifact_reader_block_marks_not_auto_promotable(synth_db, monkeyp
         "the verdict row's reasons must cite the whole-artifact reader BLOCK; "
         f"got {verdict_payload.get('reasons')!r}"
     )
+
+
+def test_none_reader_verdict_blocks_fm_converge_approval(synth_db, monkeypatch):
+    """A None reader verdict (reader did not run) must NOT allow the FM
+    dialogue-converge path to grant approval.
+
+    Regression guard for the fail-closed fix: the old code evaluated
+    ``_reader_ok = (_reader_verdict is None or ...)`` as True when the reader
+    returned (None, None), so a reader that NEVER RAN was read as approval.
+    The fix builds a GateOutcome; a None verdict outside pytest is
+    DID_NOT_RUN, which blocks_promotion — approval must not be granted even
+    when converge_fm_objections reports all_agreed=True.
+    """
+    from types import SimpleNamespace
+
+    session = synth_db
+    user_id = "test_ariel"
+
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    _wire_phase_stubs(monkeypatch, flow, user_id)
+
+    # FM rejects so the ARGOSY_FM_DIALOGUE_CONVERGE path is entered.
+    monkeypatch.setattr(flow, "_run_phase_5_fund_manager", lambda **kw: (False, []))
+
+    # Reader never ran — simulates kit-missing / dispatch-timeout failure.
+    async def _reader_did_not_run(**kw):
+        return None, None
+
+    monkeypatch.setattr(flow, "run_whole_artifact_review", _reader_did_not_run)
+
+    # Enable the FM converge path so the bug would have fired.
+    monkeypatch.setenv("ARGOSY_FM_DIALOGUE_CONVERGE", "1")
+
+    # Stub converge_fm_objections: FM says all objections resolved.
+    _all_agreed = SimpleNamespace(all_agreed=True, dispatched=1, unresolved=[])
+    monkeypatch.setattr(
+        "argosy.orchestrator.flows.fm_objection_dialogue.converge_fm_objections",
+        lambda *a, **kw: _all_agreed,
+    )
+
+    # Remove PYTEST_CURRENT_TEST so the production fail-closed path fires
+    # (not the explicit pytest-PASS branch in the gate logic).  The reader
+    # and codex helpers are already stubbed above, so removing the env var
+    # does not trigger any real subprocess work.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    result = flow.run_synthesis(session, user_id=user_id, trigger="scheduled")
+
+    dr = session.get(DecisionRun, result.decision_run_id)
+    assert dr.fund_manager_decision != "approved", (
+        "a None reader verdict (reader did not run) must NOT allow the FM "
+        "converge path to grant approval — DID_NOT_RUN blocks_promotion and "
+        "approval must be withheld; "
+        f"got fund_manager_decision={dr.fund_manager_decision!r}"
+    )

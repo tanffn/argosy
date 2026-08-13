@@ -61,6 +61,7 @@ from pydantic import BaseModel, Field
 
 from argosy.agents.base import AgentReport
 from argosy.logging import get_logger
+from argosy.quality.verification import GateOutcome, GateStatus  # noqa: F401
 
 log = get_logger(__name__)
 
@@ -557,19 +558,22 @@ async def run_codex_second_opinion(
     user_id: str,
     derived_numbers_block: str = "",
     raw_holdings_block: str = "",
-) -> tuple[CodexSecondOpinion | None, AgentReport | None]:
-    """Dispatch codex as an independent second opinion. Fail-soft.
+) -> tuple[CodexSecondOpinion | None, AgentReport | None, GateOutcome]:
+    """Dispatch codex as an independent second opinion. Fail-CLOSED.
 
-    Returns ``(parsed_opinion, agent_report_row)``. Both ``None`` when:
-      * the ``ARGOSY_CODEX_REVIEW_ENABLED`` env var is anything other than ``"1"``
-      * running under pytest (``PYTEST_CURRENT_TEST`` is set)
-      * the codex-tandem kit isn't importable (e.g. fresh checkout
-        without the kit)
-      * codex's subprocess raises / times out
+    Returns ``(parsed_opinion, agent_report_row, gate_outcome)``. The third
+    element is ALWAYS a ``GateOutcome`` with gate name ``"codex_math"``:
 
-    On a successful dispatch with unparseable output, a synthetic
-    ``CodexSecondOpinion`` (YELLOW finding flagging the parse failure)
-    is returned so the FM still sees a codex row.
+    * ``PASS``        — codex ran and returned APPROVE or APPROVE_WITH_CONDITIONS.
+    * ``BLOCK``       — codex ran and returned BLOCK (math diverged or BLOCKER finding).
+    * ``DID_NOT_RUN`` — codex could not run (env var disabled, kit missing, timeout,
+                        exception). The ``detail`` names the specific cause.
+
+    ``opinion`` and ``row`` are ``None`` when the gate ``DID_NOT_RUN`` due to a
+    dispatch failure (env var, kit missing, timeout, exception). The gate status
+    must drive promotion decisions — callers MUST call ``blocks_promotion([gate])``
+    and refuse promotion when the result is non-empty. ``DID_NOT_RUN`` is NOT a
+    pass; a plan whose independent math check never ran is unverified.
 
     Idempotency: when an existing ``codex_second_opinion`` agent_report
     row exists for ``decision_run_id``, its persisted verdict is
@@ -585,13 +589,24 @@ async def run_codex_second_opinion(
             "codex_second_opinion.skipped_by_env_var",
             decision_run_id=decision_run_id,
         )
-        return None, None
+        return None, None, GateOutcome.did_not_run(
+            "codex_math",
+            detail="codex math gate disabled via ARGOSY_CODEX_REVIEW_ENABLED != '1'",
+        )
+    # DELIBERATE TEST SHORT-CIRCUIT: when running under pytest we skip the
+    # live codex dispatch so tests don't require the codex-tandem kit.
+    # The gate still reports DID_NOT_RUN (not a pass) so any caller that
+    # checks blocks_promotion() will see the gate did not execute — this is
+    # the correct fail-closed semantics even in tests.
     if os.environ.get("PYTEST_CURRENT_TEST"):
         log.info(
             "codex_second_opinion.skipped_under_pytest",
             decision_run_id=decision_run_id,
         )
-        return None, None
+        return None, None, GateOutcome.did_not_run(
+            "codex_math",
+            detail="codex math gate skipped under pytest (PYTEST_CURRENT_TEST set)",
+        )
 
     # ------------------------------------------------------------------
     # Idempotency — if a row already exists, return it without dispatch.
@@ -605,7 +620,22 @@ async def run_codex_second_opinion(
             decision_run_id=decision_run_id,
         )
         # No fresh row — the existing DB row is the source of truth.
-        return existing, None
+        # Derive the gate from the persisted opinion's assessment.
+        if existing.overall_assessment == "BLOCK":
+            _blocker_topics = [
+                f.topic for f in existing.findings if f.severity == "BLOCKER"
+            ]
+            _gate_detail = (
+                f"codex blocked on prior run: "
+                f"{', '.join(_blocker_topics[:2]) or 'see findings'}"
+            )
+            _existing_gate = GateOutcome.blocked("codex_math", detail=_gate_detail)
+        else:
+            _existing_gate = GateOutcome.passed(
+                "codex_math",
+                detail=f"codex ran on prior run: {existing.overall_assessment}",
+            )
+        return existing, None, _existing_gate
 
     # ------------------------------------------------------------------
     # Resolve the kit. The codex-tandem scripts dir is on
@@ -624,7 +654,10 @@ async def run_codex_second_opinion(
             scripts_dir=str(scripts_dir),
             error=str(exc),
         )
-        return None, None
+        return None, None, GateOutcome.did_not_run(
+            "codex_math",
+            detail=f"codex-tandem kit not importable from {scripts_dir}: {exc}",
+        )
 
     prompt = _build_prompt(
         synth_draft_json=synth_draft_json,
@@ -675,22 +708,26 @@ async def run_codex_second_opinion(
         )
     except asyncio.TimeoutError:
         # Hard ceiling tripped — a stuck codex subprocess. The orphaned
-        # executor thread may linger but no longer blocks synthesis. Fail
-        # soft (synthesis proceeds without codex; FM tolerates codex=None).
+        # executor thread may linger but no longer blocks synthesis. The gate
+        # reports DID_NOT_RUN so callers know the math check never completed.
+        _timeout_detail = (
+            f"codex hard ceiling exceeded ({_HARD_CEILING_S}s) — dispatch hung"
+        )
         log.warning(
             "codex_second_opinion.dispatch_failed",
             decision_run_id=decision_run_id,
-            error=f"hard ceiling exceeded ({_HARD_CEILING_S}s) — codex hung",
+            error=_timeout_detail,
             timed_out=True,
         )
-        return None, None
-    except Exception as exc:  # noqa: BLE001 — fail-soft on any dispatch error
+        return None, None, GateOutcome.did_not_run("codex_math", detail=_timeout_detail)
+    except Exception as exc:  # noqa: BLE001 — synthesis continues; gate is DID_NOT_RUN
+        _exc_detail = f"codex dispatch raised: {exc}"
         log.warning(
             "codex_second_opinion.dispatch_failed",
             decision_run_id=decision_run_id,
-            error=str(exc),
+            error=_exc_detail,
         )
-        return None, None
+        return None, None, GateOutcome.did_not_run("codex_math", detail=_exc_detail)
 
     log.info(
         "codex_second_opinion.dispatched",
@@ -812,13 +849,31 @@ async def run_codex_second_opinion(
         user_prompt=prompt,
     )
 
-    return parsed, row
+    # Derive the GateOutcome from the parsed assessment so callers can call
+    # blocks_promotion([gate]) to refuse promotion on any BLOCK or DID_NOT_RUN.
+    if parsed.overall_assessment == "BLOCK":
+        _blocker_topics = [
+            f.topic for f in parsed.findings if f.severity == "BLOCKER"
+        ]
+        _gate_block_detail = (
+            f"codex blocked: {', '.join(_blocker_topics[:2]) or 'see findings'}"
+        )
+        gate = GateOutcome.blocked("codex_math", detail=_gate_block_detail)
+    else:
+        gate = GateOutcome.passed(
+            "codex_math",
+            detail=f"codex ran: {parsed.overall_assessment}",
+        )
+
+    return parsed, row, gate
 
 
 __all__ = [
     "CodexAgreement",
     "CodexFinding",
     "CodexSecondOpinion",
+    "GateOutcome",
+    "GateStatus",
     "_build_prompt",
     "_parse_codex_verdict",
     "run_codex_second_opinion",

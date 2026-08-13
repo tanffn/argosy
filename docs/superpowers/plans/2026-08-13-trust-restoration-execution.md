@@ -29,7 +29,7 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done (commit sha) · `[-]` drop
 - [x] 1A Unmanaged NVDA → analyst input — **NO CODE NEEDED: already fixed on master.** Disproved empirically 2026-08-13: `_summarize_positions` yields `NVDA qty=10940 value=$2,379.4k acct=schwab` (57.7%). Cherry-pick of `70008d4` was a no-op. Four handovers propagated a misread docstring.
 - [ ] 1B Real spend → plan burn (`inputs.py:1006`), `identity_yaml` as explicit fallback **with provenance** **[Sol]**
 - [ ] 1B.1 Fix `SDD.md` §6:544 — it claims this analyst already reads expense tables
-- [ ] 1C `/overview` page route + nav; exercise `find_unauthorized_numbers` e2e
+- [x] 1C `/overview` page route + nav — 200, consistency 5/5 (first live exercise), typecheck clean
 - [ ] 1D Deconcentration optimizer → API; confirm canonical CGT haircut binds to it **[Sol]**
 - [ ] 1E Cal/Amex/Diners parsers — **ASK ARIEL FIRST** (only if those cards are held)
 
@@ -64,7 +64,7 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done (commit sha) · `[-]` drop
 - [ ] T1 Kill codex → plan **refuses to promote**, receipt names the gate
 - [ ] T2 Break SMTP → digest job goes **red**
 - [ ] T3 NVDA cap queried from every surface → **one** number
-- [ ] T4 `/overview` opens; numbers reconcile to `/plan`
+- [x] T4 `/overview` opens (200); consistency guard passes — but source is plan v92 until the regen
 - [ ] T5 Regenerated plan's burn traces to `ExpenseTransaction`, not `identity_yaml`
 - [ ] T6 A buy breaching the 35% tech cap is **refused** at preflight
 

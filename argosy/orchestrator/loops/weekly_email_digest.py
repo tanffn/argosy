@@ -239,10 +239,29 @@ class WeeklyEmailDigestLoop(CadenceLoop):
             session.close()
 
         digest = result.digest
+        send = result.send
+        # Map the send outcome to the generic ``status`` key that
+        # :func:`argosy.services.jobs.summary_status.derive_run_status`
+        # inspects to close the job correctly.
+        #
+        # Rules:
+        #  * 'sent'                                 → ok   (delivered)
+        #  * 'skipped', error='no_activity'         → ok   (deliberate
+        #    opt-out: no content to send this week — not a delivery
+        #    failure). Currently unused; reserved for future "skip when
+        #    empty" logic so callers don't need to remember to update
+        #    this mapping.
+        #  * 'skipped', any other error             → failed (SMTP
+        #    unconfigured / no recipient — ATTEMPTED but undelivered)
+        #  * 'failed'                               → failed (SMTP error)
+        _send_is_ok = send.status == "sent" or (
+            send.status == "skipped" and send.error == "no_activity"
+        )
         return {
             "user_id": result.user_id,
-            "send_status": result.send.status,
-            "send_error": result.send.error,
+            "status": "ok" if _send_is_ok else "failed",
+            "send_status": send.status,
+            "send_error": send.error,
             "ledger_row_id": result.ledger_row_id,
             "window_days": digest.window_days if digest else None,
             "flag_count": (

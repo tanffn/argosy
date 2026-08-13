@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import case, desc, extract, func, select
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
@@ -1003,10 +1003,159 @@ def _find_latest_tsv():
         return None
 
 
+def _compute_real_burn_nis(
+    session: Session,
+    user_id: str,
+    *,
+    min_complete_months: int = 3,
+    trailing_months: int = 12,
+) -> dict[str, Any] | None:
+    """Aggregate real monthly burn from ingested expense transactions.
+
+    Mirrors the dashboard-overview spending rollup exactly:
+      - direction = 'debit'
+      - is_card_payment = False  (no double-counting card settlements)
+      - amount_nis IS NOT NULL   (NIS-only; foreign rows without conversion skipped)
+      - category.is_inflow = False  (no salary / RSU / refund credits)
+      - category.is_excluded_from_spend = False  (no investment buys, transfers)
+      - uncategorised debits are included via outer-join (real outflow, just unlabelled)
+
+    Window: trailing ``trailing_months`` calendar months anchored to the
+    LATEST month in the data — same convention as /dashboard-overview.
+    The most-recent calendar month is excluded from the average when it
+    has fewer than 30 transactions, because it is almost certainly a
+    partial-month ingest (statements arrive mid-month or lag); it is
+    still reported in the window label for transparency.
+
+    Returns None when fewer than ``min_complete_months`` complete months
+    are available — the caller must fall back to identity_yaml in that case.
+
+    When data is sufficient, returns::
+
+        {
+            "monthly_burn_nis": float,   # average NIS/month over complete months
+            "monthly_burn_source": "expense_transactions",
+            "monthly_burn_window": "YYYY-MM to YYYY-MM",
+            "monthly_burn_txn_count": int,  # total transactions behind the average
+            "monthly_burn_months_used": int,  # count of complete months averaged
+        }
+    """
+    from argosy.state.models import ExpenseCategory, ExpenseTransaction  # noqa: PLC0415
+
+    # Per-month NIS spending totals (same filter as dashboard-overview chart).
+    rows = session.execute(
+        select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.sum(
+                case(
+                    (ExpenseTransaction.amount_nis.is_not(None),
+                     ExpenseTransaction.amount_nis),
+                    else_=None,   # foreign-only rows without NIS conversion: skip
+                )
+            ).label("total_nis"),
+            func.count().label("n"),
+        )
+        .outerjoin(
+            ExpenseCategory,
+            ExpenseCategory.id == ExpenseTransaction.category_id,
+        )
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.direction == "debit")
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(
+            (ExpenseCategory.id.is_(None))
+            | (
+                ExpenseCategory.is_inflow.is_(False)
+                & ExpenseCategory.is_excluded_from_spend.is_(False)
+            )
+        )
+        .group_by("y", "m")
+        .order_by("y", "m")
+    ).all()
+
+    if not rows:
+        return None
+
+    # Build a list of (month_key, total_nis, n) sorted chronologically.
+    month_data: list[tuple[str, float, int]] = []
+    for y, m, total_nis, n in rows:
+        if y is None or m is None or total_nis is None:
+            continue
+        key = f"{int(y):04d}-{int(m):02d}"
+        month_data.append((key, float(total_nis), int(n)))
+
+    if not month_data:
+        return None
+
+    # Apply trailing-month window anchored to the latest month in the data.
+    month_data = month_data[-trailing_months:]
+
+    # Exclude the final month if it looks like a partial ingest.
+    # Threshold: a month with far fewer transactions than the ~93/month norm
+    # has not fully landed yet. Set to 50 on Ariel's ruling (2026-08-13): at
+    # 30, July 2026 (35 txns, a partial statement load) survived and dragged
+    # the average from ₪24,396 down to ₪22,410 — i.e. the thin month flipped
+    # the plan from UNDER-estimating burn to over-estimating it. Understating
+    # burn is the dangerous direction: it is what retires you too early.
+    _PARTIAL_MONTH_THRESHOLD = 50
+    complete_months = [
+        (key, total, n) for key, total, n in month_data
+        if n >= _PARTIAL_MONTH_THRESHOLD
+    ]
+    # If the last complete-looking month is the same as the overall last,
+    # we may still exclude it if it's the CURRENT calendar month and looks thin.
+    # The heuristic above already handles that via transaction count.
+
+    if len(complete_months) < min_complete_months:
+        return None
+
+    avg_burn = sum(total for _, total, _ in complete_months) / len(complete_months)
+    total_txns = sum(n for _, _, n in complete_months)
+    window_start = complete_months[0][0]
+    window_end = complete_months[-1][0]
+
+    # Planning conservatism (Ariel, 2026-08-13: "round up to 25k"). The derived
+    # average is rounded UP to the next ₪1,000 and used as the planning figure.
+    # This is a BUFFER ON A DERIVED NUMBER, never a substitute for one: the raw
+    # measured value travels alongside it so the analyst — and any audit — can
+    # see both the measurement and the deliberate padding. Rounding only ever
+    # increases burn, so it cannot make retirement look cheaper than it is.
+    import math as _math
+
+    raw_avg = round(avg_burn, 0)
+    planning_burn = float(_math.ceil(avg_burn / 1000.0) * 1000)
+
+    return {
+        "monthly_burn_nis": planning_burn,
+        "monthly_burn_raw_nis": raw_avg,
+        "monthly_burn_source": "expense_transactions",
+        "monthly_burn_buffer": (
+            f"derived ₪{raw_avg:,.0f} rounded up to ₪{planning_burn:,.0f} "
+            "(planning conservatism, nearest ₪1,000)"
+        ),
+        "monthly_burn_window": f"{window_start} to {window_end}",
+        "monthly_burn_txn_count": total_txns,
+        "monthly_burn_months_used": len(complete_months),
+    }
+
+
 def _assemble_household_budget_payload(
     session: Session, user_id: str, *, positions_summary: str = "",
 ) -> dict[str, Any]:
-    """Read household-budget context from identity_yaml + the TSV total.
+    """Read household-budget context from expense transactions + identity_yaml fallback.
+
+    Primary source: real spend aggregated from ingested ``ExpenseTransaction``
+    rows (same filter logic as /dashboard-overview) — trailing 12 months,
+    NIS-only, real outflow, uncategorised debits included.  Requires at least
+    3 complete months of data (≥30 txns/month) to engage; falls back to the
+    identity_yaml hand-typed value otherwise.
+
+    Provenance is ALWAYS reported in three fields:
+      ``monthly_burn_source``     — "expense_transactions" | "identity_yaml_fallback"
+      ``monthly_burn_window``     — date range string (or the YAML's stated window)
+      ``monthly_burn_txn_count``  — transaction count (0 for YAML fallback)
 
     Returns the dict shape HouseholdBudgetAnalystAgent.build_prompt
     expects. Best-effort: any parse failure yields partial dict; the
@@ -1045,8 +1194,41 @@ def _assemble_household_budget_payload(
         if key in data:
             payload[key] = data[key]
 
-    payload["monthly_burn_nis"] = data.get("monthly_expenses_total_nis")
-    payload["monthly_burn_window"] = data.get("monthly_expenses_window")
+    # --- Monthly burn: prefer real transaction data; fall back to identity_yaml ---
+    # Try to aggregate from ingested expense rows (same filter as /dashboard-overview).
+    try:
+        real_burn = _compute_real_burn_nis(session, user_id)
+    except Exception:  # noqa: BLE001
+        real_burn = None
+
+    if real_burn is not None:
+        payload["monthly_burn_nis"] = real_burn["monthly_burn_nis"]
+        payload["monthly_burn_source"] = real_burn["monthly_burn_source"]
+        payload["monthly_burn_window"] = real_burn["monthly_burn_window"]
+        payload["monthly_burn_txn_count"] = real_burn["monthly_burn_txn_count"]
+        payload["monthly_burn_months_used"] = real_burn["monthly_burn_months_used"]
+        log.info(
+            "plan_synthesis.inputs.household_budget_burn_from_transactions",
+            monthly_burn_nis=real_burn["monthly_burn_nis"],
+            window=real_burn["monthly_burn_window"],
+            txn_count=real_burn["monthly_burn_txn_count"],
+            months_used=real_burn["monthly_burn_months_used"],
+        )
+    else:
+        # Fallback: the hand-typed value from identity_yaml — label it explicitly
+        # so the agent knows it is NOT derived from real spending data.
+        yaml_burn = data.get("monthly_expenses_total_nis")
+        yaml_window = data.get("monthly_expenses_window")
+        payload["monthly_burn_nis"] = yaml_burn
+        payload["monthly_burn_source"] = "identity_yaml_fallback"
+        payload["monthly_burn_window"] = yaml_window or "(window not stated)"
+        payload["monthly_burn_txn_count"] = 0
+        payload["monthly_burn_months_used"] = 0
+        log.warning(
+            "plan_synthesis.inputs.household_budget_burn_fallback_to_yaml",
+            reason="insufficient expense transaction data (< 3 complete months)",
+            yaml_value=yaml_burn,
+        )
 
     # Build a normalized income_streams list from the various per-stream
     # fields the intake captured (employment user, spouse, ESPP, RSU).

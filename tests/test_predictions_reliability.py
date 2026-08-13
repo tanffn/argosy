@@ -43,13 +43,16 @@ from argosy.services.predictions.reliability import (
     CACHE_TTL_SECONDS,
     FULL_SAMPLE_SIZE,
     MIN_SAMPLE_SIZE,
+    STALE_SOURCE_THRESHOLD_DAYS,
     WEIGHT_CEIL,
     WEIGHT_FLOOR,
     SourceReliability,
     _cache_key,
+    _is_source_stale,
     get_source_reliability,
     get_weight_for_source,
     invalidate_reliability_cache,
+    reliability_annotation,
 )
 from argosy.services.predictions import reliability as reliability_mod
 from argosy.state.models import Prediction, PredictionOutcome
@@ -757,3 +760,127 @@ def test_returns_sourcereliability_instances(sync_session) -> None:
     # Frozen dataclass — direct mutation should raise.
     with pytest.raises((AttributeError, TypeError)):
         rows[0].hit_rate = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Task 4.3 — source staleness (STALE_SOURCE_THRESHOLD_DAYS)
+# ---------------------------------------------------------------------------
+
+
+def test_stale_threshold_constant_pinned() -> None:
+    """14 days is the agreed threshold (FLAG FOR ARIEL — see reliability.py).
+    Pin so any future change surfaces as a failing test that prompts
+    deliberate review."""
+    assert STALE_SOURCE_THRESHOLD_DAYS == 14
+
+
+class TestIsSourceStale:
+    """Unit tests for the _is_source_stale helper."""
+
+    def test_none_last_evaluated_is_stale(self) -> None:
+        """A source that has never been evaluated is stale."""
+        assert _is_source_stale(None) is True
+
+    def test_recent_evaluation_is_not_stale(self) -> None:
+        """Evaluated 5 days ago → not stale (threshold = 14 d)."""
+        now = datetime(2026, 8, 12, 12, 0, 0)
+        last = now - timedelta(days=5)
+        assert _is_source_stale(last, now=now) is False
+
+    def test_exactly_at_threshold_is_stale(self) -> None:
+        """Evaluated exactly threshold days ago → stale (>= threshold)."""
+        now = datetime(2026, 8, 12, 12, 0, 0)
+        last = now - timedelta(days=STALE_SOURCE_THRESHOLD_DAYS)
+        assert _is_source_stale(last, now=now) is True
+
+    def test_one_day_before_threshold_is_not_stale(self) -> None:
+        """Evaluated (threshold - 1) days ago → not stale."""
+        now = datetime(2026, 8, 12, 12, 0, 0)
+        last = now - timedelta(days=STALE_SOURCE_THRESHOLD_DAYS - 1)
+        assert _is_source_stale(last, now=now) is False
+
+    def test_long_dead_source_is_stale(self) -> None:
+        """Discord has been auth-failing since 2026-07-08; on 2026-08-12
+        that is 35 days — well past the threshold."""
+        now = datetime(2026, 8, 12, 12, 0, 0)
+        last = datetime(2026, 7, 8, 10, 0, 0)
+        assert _is_source_stale(last, now=now) is True
+
+    def test_tz_aware_now_strips_tzinfo(self) -> None:
+        """_is_source_stale accepts a tz-aware now without raising."""
+        now_aware = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        last = datetime(2026, 7, 8, 10, 0, 0)  # naive, as SQLite returns
+        # Should not raise TypeError from aware - naive subtraction.
+        result = _is_source_stale(last, now=now_aware)
+        assert result is True  # 35 days old
+
+
+class TestSourceReliabilityStaleness:
+    """Integration: is_stale field is correctly set on SourceReliability rows
+    returned by get_source_reliability."""
+
+    def test_recent_source_is_not_stale(self, sync_session) -> None:
+        """Source evaluated today → is_stale=False."""
+        session, _ = sync_session
+        p = _insert_prediction(session)
+        # evaluated_at = now (default in _insert_outcome)
+        _insert_outcome(session, p, outcome_kind="hit_target", pnl_pct=0.12)
+        session.flush()
+
+        rows = get_source_reliability(session, "ariel", source="discord")
+        assert len(rows) == 1
+        assert rows[0].is_stale is False
+
+    def test_old_source_is_stale(self, sync_session) -> None:
+        """Source evaluated 35 days ago → is_stale=True.
+
+        Uses _is_source_stale directly with a controlled now so this
+        test doesn't rely on wall-clock or need to monkeypatch datetime.
+        """
+        now = datetime(2026, 8, 12, 12, 0, 0)
+        last_evaluated = datetime(2026, 7, 8, 10, 0, 0)  # 35 days ago
+        assert _is_source_stale(last_evaluated, now=now) is True
+
+        # Integration: seed a fresh source and verify is_stale=False
+        # (the default now=datetime.utcnow() path picks up "just evaluated").
+        session, _ = sync_session
+        p = _insert_prediction(session)
+        _insert_outcome(
+            session,
+            p,
+            outcome_kind="hit_target",
+            pnl_pct=0.12,
+        )
+        session.flush()
+        invalidate_reliability_cache()
+        rows = get_source_reliability(session, "ariel", source="discord")
+        # evaluated today → fresh → is_stale=False
+        assert len(rows) == 1
+        assert rows[0].is_stale is False
+
+    def test_reliability_annotation_includes_is_stale_false(
+        self, sync_session
+    ) -> None:
+        """reliability_annotation carries is_stale=False for a live source."""
+        session, _ = sync_session
+        p = _insert_prediction(session)
+        _insert_outcome(session, p, outcome_kind="hit_target", pnl_pct=0.12)
+        session.flush()
+
+        ann = reliability_annotation(
+            session, "ariel", "discord", method_family="fixed_lookahead"
+        )
+        assert "is_stale" in ann
+        assert ann["is_stale"] is False
+
+    def test_reliability_annotation_unknown_source_is_stale(
+        self, sync_session
+    ) -> None:
+        """reliability_annotation for an unknown source (no rows) reports
+        is_stale=True — no data means we cannot trust the feed."""
+        session, _ = sync_session
+        # No predictions seeded for this source.
+        ann = reliability_annotation(
+            session, "ariel", "nonexistent_source", method_family="fixed_lookahead"
+        )
+        assert ann["is_stale"] is True
