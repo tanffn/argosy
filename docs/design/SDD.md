@@ -1352,7 +1352,15 @@ the assembled document blind to the synthesis logic. It is fed the artifact, a
 fresh-external-context packet (today's date plus any market / event context),
 and the prior plan to diff, and it reports contradictions, headline claims that
 its own other sections undercut, staleness, and regressions. It is fail-closed:
-an unparseable or timed-out reader yields BLOCK, never a soft pass. Its job is
+a reader that returns no verdict — unparseable output, dispatch timeout, a
+missing codex-tandem kit, or the `ARGOSY_CODEX_REVIEW_ENABLED` kill-switch —
+yields `GateStatus.DID_NOT_RUN`, which blocks promotion exactly as a `BLOCK`
+does (`argosy/quality/verification.py`). Absence of a verdict is never a soft
+pass. (Until 2026-08-13 this paragraph described an intent the code did not
+implement: the orchestrator computed `_reader_ok = (_reader_verdict is None or
+...)`, so a reader that never ran read as approval. The one deliberate
+exception is a short-circuit under pytest, recorded as an explicit override so
+the receipt still shows the gate did not run.) Its job is
 the coherence of the whole; the math re-derivation belongs to the codex gate. A
 reader BLOCK marks the draft not auto-promotable through the same
 `decision_run.fund_manager_decision` field the fund-manager verdict uses — the
