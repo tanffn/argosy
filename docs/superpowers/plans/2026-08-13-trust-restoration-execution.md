@@ -14,11 +14,11 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done (commit sha) · `[-]` drop
 
 - [x] 0.1 `argosy/quality/verification.py` — `GateStatus` / `GateOutcome` contract + unit tests
 - [ ] 0.2 Persist gate outcomes per decision run (migration + write path)
-- [ ] 0.3 `orchestrator.py:2657` — reader `None` ⇒ DID_NOT_RUN ⇒ not approvable **[Sol]**
-- [ ] 0.4 `codex_second_opinion.py` — return `GateOutcome`, no silent `(None,None)` **[Sol]**
-- [ ] 0.5 `plan.py:3839-3847` — publish-gate exception ⇒ DID_NOT_RUN, not bare `evaluate_promotion` **[Sol]**
-- [ ] 0.6 `plan.py:5688` `/refine` — compute `post_doc`; absent ⇒ DID_NOT_RUN **[Sol]**
-- [ ] 0.7 `email_digest` — unsent ⇒ job status `error`
+- [x] 0.3 `orchestrator.py:2657` — reader `None` ⇒ DID_NOT_RUN ⇒ not approvable **[Sol]**
+- [x] 0.4 `codex_second_opinion.py` — return `GateOutcome`, no silent `(None,None)` **[Sol]**
+- [x] 0.5 `plan.py:3839-3847` — publish-gate exception ⇒ DID_NOT_RUN, not bare `evaluate_promotion` **[Sol]**
+- [x] 0.6 `plan.py:5688` `/refine` — compute `post_doc`; absent ⇒ DID_NOT_RUN **[Sol]**
+- [x] 0.7 `email_digest` — unsent ⇒ job status `error`
 - [ ] 0.8 `period_directive.py:205` — stale FX ⇒ DID_NOT_RUN on FX-dependent legs **[Sol]**
 - [ ] 0.9 Operator override path — explicit `override_by` + reason, persisted; never implicit
 - [ ] 0.10 Verification receipt surfaced (plan draft header + `/admin/jobs`)
@@ -27,8 +27,8 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done (commit sha) · `[-]` drop
 ## Phase 1 — reconnect the pipes
 
 - [x] 1A Unmanaged NVDA → analyst input — **NO CODE NEEDED: already fixed on master.** Disproved empirically 2026-08-13: `_summarize_positions` yields `NVDA qty=10940 value=$2,379.4k acct=schwab` (57.7%). Cherry-pick of `70008d4` was a no-op. Four handovers propagated a misread docstring.
-- [ ] 1B Real spend → plan burn (`inputs.py:1006`), `identity_yaml` as explicit fallback **with provenance** **[Sol]**
-- [ ] 1B.1 Fix `SDD.md` §6:544 — it claims this analyst already reads expense tables
+- [x] 1B Real spend → plan burn (`inputs.py:1006`), `identity_yaml` as explicit fallback **with provenance** **[Sol]**
+- [x] 1B.1 Fix `SDD.md` §6:544 — it claims this analyst already reads expense tables
 - [x] 1C `/overview` page route + nav — 200, consistency 5/5 (first live exercise), typecheck clean
 - [ ] 1D Deconcentration optimizer → API; confirm canonical CGT haircut binds to it **[Sol]**
 - [ ] 1E Cal/Amex/Diners parsers — **ASK ARIEL FIRST** (only if those cards are held)
@@ -48,7 +48,7 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done (commit sha) · `[-]` drop
 
 - [ ] 4.1 Configure `ARGOSY_SMTP_*`; verify a real send
 - [ ] 4.2 Register one real web-push subscription end-to-end
-- [ ] 4.3 Mark Discord dead in `source_reliability` (stop presenting 434 stale predictions as live)
+- [~] 4.3 Mark Discord dead in `source_reliability` (stop presenting 434 stale predictions as live)
 - [ ] 4.4 Triage the 59 open proposals
 
 ## Phase 5 — regenerate the plan (Ariel in the loop)
@@ -75,3 +75,12 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done (commit sha) · `[-]` drop
 - 2026-08-13 — tracker created; branch `feat/trust-restoration` cut; codex 0.147.0 confirmed (reviewer role → codex).
 - 2026-08-13 — 0.1 GateOutcome contract landed, 11 tests green.
 - 2026-08-13 — **1A closed as already-done.** The blocker to the plan regen is now Precondition B (0.4) alone.
+- 2026-08-13 — `bcd9179` /overview shipped (200, consistency 5/5 first live exercise).
+- 2026-08-13 — `a10edc1` Phase 0 fail-closed (0.3–0.7) + 1B real burn. 116 tests green.
+  Sol found 1 real blocker (GateOutcome NameError in post_plan_refine -> 500 not 422); fixed pre-commit.
+  Ariel rulings: thin-month threshold 50; planning burn rounds UP to nearest 1,000 (derived 24,032 -> 25,000).
+- 2026-08-13 — **4.3 REOPENED.** Ariel: "we need to fix the feed". Diagnosis corrected: the Discord
+  listener was DELIBERATELY disabled 2026-07-07 (`config.py:209`, reconnect bug ~150 supervisor
+  restarts/day + Discord blocked the API + 0 signals since 2026-05-29). Auth-4004 errors date from
+  2026-06-15, not 2026-07-08. This was a recorded decision, not a silent failure. The prior note says
+  "re-enable after value review + fix" — the value review has never happened. AWAITING ARIEL.
