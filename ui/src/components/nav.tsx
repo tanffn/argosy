@@ -12,6 +12,7 @@ import {
   Gavel,
   Home,
   Inbox,
+  LayoutDashboard,
   MessageCircle,
   PieChart,
   ScrollText,
@@ -43,6 +44,7 @@ interface NavTab {
 // ordering invariant is unit-testable.
 export const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
+  { href: "/overview", label: "Overview", Icon: LayoutDashboard },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
   { href: "/portfolio", label: "Portfolio", Icon: PieChart },
   { href: "/inbox", label: "Inbox", Icon: Inbox },
