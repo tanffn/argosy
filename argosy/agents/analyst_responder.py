@@ -42,10 +42,20 @@ ANALYST_AGENT_NAME_TO_ROLE: dict[str, str] = {
     "NewsAnalystAgent": "news",
     "SentimentAnalystAgent": "sentiment",
     "MacroAnalystAgent": "macro",
+    # FX analyst: both the alias used in synthesis imports (FxAnalystAgent)
+    # and the actual class name (FXAnalystAgent, all-caps FX in fx_analyst.py)
+    # must be present so FM citations of either form resolve.
     "FxAnalystAgent": "fx",
+    "FXAnalystAgent": "fx",
     "TaxAnalystAgent": "tax",
     "HouseholdBudgetAnalystAgent": "household_budget",
     "PlanCritiqueAgent": "plan_critique",
+    # Phase 5 topic-owner agents — gated behind ARGOSY_PHASE5_AGENTS but the FM
+    # can cite them once they appear in the synthesis run.  Absent here, every
+    # objection that mentions them was silently dropped (run 359 root cause #1).
+    "WithdrawalSequencerAgent": "withdrawal_sequencer",
+    "EquityCompAnalystAgent": "equity_comp_analyst",
+    "PlanCoverageAnalyst": "plan_coverage",   # note: no "Agent" suffix by design
 }
 
 # Reverse map for surfacing the "agent class name" back to the UI / FM
