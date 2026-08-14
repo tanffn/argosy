@@ -596,6 +596,235 @@ def start_fm_objection_dialogue(
     return StartResult(decision_run_id=decision_run_id, inflight=False)
 
 
+def _classify_objection_owner_llm(
+    user_id: str,
+    objection_topic: str,
+    objection_detail: str,
+    objection_severity: str,
+) -> tuple[str | None, bool, str]:
+    """Call ObjectionOwnerClassifierAgent to find the owner of an un-cited objection.
+
+    Returns ``(owner_role | None, needs_user_input, user_question)``.
+    ``owner_role`` is constrained to the canonical role list; a hallucinated
+    role is treated as None. Fail-soft on any exception → (None, False, "").
+    """
+    # Sol final pass: these imports sat OUTSIDE the try. An ImportError here
+    # would abort scheduling for an un-cited objection, so it reached neither
+    # an analyst nor the inbox and was never counted as lost. Owner resolution
+    # is best-effort by design — it must never be able to take the loop down.
+    try:
+        from argosy.agents.analyst_responder import ANALYST_AGENT_NAME_TO_ROLE
+        from argosy.agents.objection_owner_classifier import (
+            ObjectionOwnerClassifierAgent,
+        )
+
+        candidate_roles = sorted(set(ANALYST_AGENT_NAME_TO_ROLE.values()))
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "auto_dialogue.classifier_unavailable",
+            user_id=user_id, error=str(exc),
+            note="objection will fall through to the user-surfacing path",
+        )
+        return None, False, ""
+    try:
+        agent = ObjectionOwnerClassifierAgent(user_id=user_id)
+        report = agent.run_sync(
+            objection_topic=objection_topic,
+            objection_detail=objection_detail,
+            objection_severity=objection_severity,
+            candidate_roles=candidate_roles,
+        )
+        out = getattr(report, "output", report)
+        owner_role = getattr(out, "owner_role", None) or None
+        needs_user_input = bool(getattr(out, "needs_user_input", False))
+        user_question = (getattr(out, "user_question", "") or "").strip()
+
+        # Constrain to known roles — never accept a hallucinated string.
+        known_roles = set(ANALYST_AGENT_NAME_TO_ROLE.values())
+        if owner_role and owner_role not in known_roles:
+            log.warning(
+                "objection_owner_classifier.unknown_role_returned",
+                user_id=user_id, owner_role=owner_role,
+                known_roles=sorted(known_roles),
+            )
+            owner_role = None
+
+        return owner_role, needs_user_input, user_question
+    except Exception as exc:  # noqa: BLE001 — fail-soft; caller logs + surfaces
+        log.warning(
+            "objection_owner_classifier.call_failed",
+            user_id=user_id,
+            objection_topic=objection_topic,
+            error=str(exc),
+        )
+        return None, False, ""
+
+
+def _surface_unroutable_as_proposal(**kwargs: object) -> bool:
+    """Total wrapper: surfacing an objection must NEVER raise.
+
+    Sol final pass: the implementation can raise before its own try block
+    (``same_path_signature``, a local import), and callers only record a loss
+    when they see ``False``. A raise there meant the objection reached neither
+    an analyst nor the inbox AND was not counted — the exact silent-loss this
+    flow exists to make impossible. This wrapper converts any escape into a
+    counted ``False``.
+    """
+    try:
+        return bool(_surface_unroutable_as_proposal_impl(**kwargs))  # type: ignore[arg-type]
+    except Exception as exc:  # noqa: BLE001 — surfacing must not raise
+        log.error(
+            "fm_objection_dialogue.surface_raised_objection_lost",
+            error=str(exc),
+            objection_index=kwargs.get("objection_index"),
+            topic=str(kwargs.get("objection_topic"))[:200],
+        )
+        return False
+
+
+def _surface_unroutable_as_proposal_impl(
+    *,
+    user_id: str,
+    plan_version_id: int,
+    decision_run_id: int,
+    objection_index: int,
+    objection_topic: str,
+    objection_detail: str,
+    objection_severity: str,
+    user_question: str,
+) -> bool:
+    """Create an open ActionProposal so an unroutable objection reaches the user's inbox.
+
+    Follows the ``critique_reconcile.needs_user_input`` pattern exactly:
+    kind="note_only", dedup_key scoped to (user, plan_version, objection_index).
+
+    The ``user_question`` must be a concrete, specific question (not generic
+    "synthesis failed" text). The caller is responsible for providing it.
+    Applies the escalation-bar transport guard (same_path_signature) as a
+    warning-only log — never blocks.
+    """
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from argosy.services.escalation_guard import same_path_signature
+    from argosy.state import db as db_mod
+    from argosy.state.models import ActionProposal
+
+    question = user_question or (
+        f"The Fund Manager raised an objection ({objection_severity}) that "
+        f"could not be routed to any analyst: {objection_topic}. "
+        f"Detail: {objection_detail[:400]}"
+    )
+
+    # Transport guard. Ariel's escalation bar (CLAUDE.md): only structurally
+    # different PATHS reach him; two agents disagreeing on a derived VALUE is a
+    # derivation question the fleet must zigzag out itself.
+    #
+    # Sol flagged that this only warned and escalated anyway. The fix is NOT to
+    # drop it — of the two failure modes, spamming Ariel is recoverable and
+    # silently binning a fund-manager BLOCKER is not, which is the whole reason
+    # this function exists. Instead it is surfaced but LABELLED as an internal
+    # resolution failure rather than a genuine decision, and logged at ERROR so
+    # it reads as a fleet defect in ops. If these show up in the inbox, the fix
+    # is to improve owner routing, not to start dropping them.
+    _looks_like_value_dispute = bool(same_path_signature(question))
+    if _looks_like_value_dispute:
+        log.error(
+            "escalation_guard.value_dispute_reached_user",
+            user_id=user_id,
+            source="fm_objection_dialogue.unroutable_proposal",
+            objection_index=objection_index,
+            topic=objection_topic,
+            question=question[:300],
+            note="fleet failed to resolve a derivation question internally",
+        )
+        question = (
+            "[Argosy could not settle this internally — it is a derivation "
+            "question the fleet should have resolved, not a decision for you. "
+            "Answer only if you want to; otherwise it is a bug to fix.] "
+        ) + question
+
+    async def _do() -> None:
+        import json as _json
+
+        now = datetime.now(timezone.utc)
+        # Sol review: keying on (user, plan_version, index) alone means a
+        # DIFFERENT objection landing at the same index silently overwrites the
+        # open proposal for the previous one — losing it. The content hash makes
+        # the key identify the objection itself, so re-runs still dedup but a
+        # genuinely different question gets its own row.
+        import hashlib as _hashlib
+
+        _content_sig = _hashlib.sha256(
+            f"{objection_topic}\n{objection_detail}".encode("utf-8", "replace")
+        ).hexdigest()[:12]
+        dedup_key = (
+            f"fm_objection_unroutable:{user_id}:{plan_version_id}:"
+            f"{objection_index}:{_content_sig}"
+        )
+        payload = {
+            "objection_index": objection_index,
+            "objection_topic": objection_topic,
+            "plan_version_id": plan_version_id,
+            "decision_run_id": decision_run_id,
+        }
+        severity_label = (
+            "warning" if objection_severity in ("RED", "BLOCKER", "CRITICAL") else "info"
+        )
+        async with db_mod.get_session() as s:
+            from sqlalchemy import select as _select
+            existing = (
+                await s.execute(
+                    _select(ActionProposal).where(
+                        ActionProposal.dedup_key == dedup_key,
+                        ActionProposal.status == "open",
+                    )
+                )
+            ).scalars().first()
+            if existing is not None:
+                existing.summary = f"FM objection needs your input — {objection_topic}"
+                existing.rationale_md = question
+                existing.suggested_payload = _json.dumps(payload)
+                existing.severity = severity_label
+                existing.surfaced_at = now
+                existing.expires_at = now + timedelta(days=30)
+            else:
+                s.add(
+                    ActionProposal(
+                        user_id=user_id,
+                        summary=f"FM objection needs your input — {objection_topic}",
+                        rationale_md=question,
+                        suggested_payload=_json.dumps(payload),
+                        severity=severity_label,
+                        surfaced_at=now,
+                        expires_at=now + timedelta(days=30),
+                        status="open",
+                        kind="note_only",
+                        dedup_key=dedup_key,
+                        execution_state="proposed",
+                    )
+                )
+            await s.commit()
+
+    try:
+        asyncio.run(_do())
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # Sol review: this is the LAST RESORT for an objection nobody could
+        # route. Swallowing a failure here means a blocking objection from the
+        # fund manager exists only in a log line — the precise failure this
+        # whole change removes. Log at ERROR and tell the caller, so the batch
+        # summary can report objections that reached NOBODY.
+        log.error(
+            "fm_objection_dialogue.proposal_create_failed_objection_lost",
+            user_id=user_id,
+            objection_index=objection_index,
+            topic=objection_topic,
+            error=str(exc),
+        )
+        return False
+
+
 def schedule_auto_dialogues_for_draft(
     session: Session,
     *,
@@ -603,8 +832,7 @@ def schedule_auto_dialogues_for_draft(
     plan_version_id: int,
     decision_run_id: int,
 ) -> int:
-    """Fire FM<->analyst dialogues for every objection on this draft
-    that has a parseable analyst owner.
+    """Fire FM<->analyst dialogues for every objection on this draft.
 
     Called by plan_synthesis/orchestrator.py post-FM-verdict to
     pre-resolve concerns the fleet can settle internally, BEFORE the
@@ -612,14 +840,27 @@ def schedule_auto_dialogues_for_draft(
     dispatcher short-circuits on duplicate in-flight runs). Background-
     threaded per objection, so this returns quickly.
 
-    Surfacing decision lives downstream: the objections route reads the
-    dialogue outcomes and hides objections that resolved to
-    FM_ACCEPTS_ANALYST; FM_MAINTAINS_OBJECTION / ESCALATE_TO_USER /
-    FM_REVISES_OBJECTION + no-analyst-owner cases surface as Blocker /
-    Decision rows. See ``/api/plan/draft/objections``.
+    Owner resolution (two-stage):
+      1. Regex — ``_parse_analyst_refs_any_form`` scans for explicit
+         ``agent_report:XAgent`` citations. This handles the common case
+         where the FM names the specialist it's questioning.
+      2. LLM classifier — when the regex finds nothing, we call
+         ``ObjectionOwnerClassifierAgent`` constrained to the canonical
+         role list. It either returns an ``owner_role`` (derivation
+         question → zigzag with that analyst) or ``needs_user_input=True``
+         (structural fork → surface to the user's inbox as an
+         ActionProposal with a concrete question).
 
-    Returns the count of dialogues actually dispatched (those without
-    an analyst owner are skipped; cost-cap-refused calls don't count).
+    No silent drops:
+      - A regex hit routes immediately.
+      - A classifier hit (owner_role) routes after the LLM call.
+      - A classifier hit (needs_user_input) creates an ActionProposal.
+      - A classifier miss (None + False) logs at WARNING and creates a
+        fallback ActionProposal so nothing vanishes.
+      - Contrast with the old code: all three no-owner cases were a
+        silent log.info + continue.
+
+    Returns the count of dialogues actually dispatched.
     """
     from argosy.api.routes.plan import (
         _classify_severity,
@@ -648,6 +889,9 @@ def schedule_auto_dialogues_for_draft(
     reasons = parsed.get("reasons") or []
 
     dispatched = 0
+    # Objections that reached NEITHER an analyst NOR the user's inbox.
+    # Non-empty here is a hard defect: a fund-manager BLOCKER went nowhere.
+    lost_objections: list[int] = []
     for idx, raw in enumerate(reasons):
         if not isinstance(raw, str) or not raw.strip():
             continue
@@ -657,13 +901,63 @@ def schedule_auto_dialogues_for_draft(
         # the backend splitter occasionally puts citation text in
         # the topic half for long FM reasons.
         analyst_roles = _parse_analyst_refs_any_form(topic + " " + detail)
+
         if not analyst_roles:
-            log.info(
-                "auto_dialogue.skipped_no_analyst_owner",
-                user_id=user_id, plan_version_id=plan_version_id,
-                decision_run_id=decision_run_id, objection_index=idx,
+            # Stage 2: no explicit citation → ask the LLM classifier.
+            owner_role, needs_user_input, user_question = _classify_objection_owner_llm(
+                user_id, topic, detail, severity,
             )
-            continue
+            if owner_role:
+                analyst_roles = [owner_role]
+                log.info(
+                    "auto_dialogue.classifier_resolved_owner",
+                    user_id=user_id, plan_version_id=plan_version_id,
+                    decision_run_id=decision_run_id, objection_index=idx,
+                    owner_role=owner_role,
+                )
+            elif needs_user_input:
+                # Genuine structural fork — surface to the user's inbox.
+                log.warning(
+                    "auto_dialogue.unroutable_needs_user_input",
+                    user_id=user_id, plan_version_id=plan_version_id,
+                    decision_run_id=decision_run_id, objection_index=idx,
+                    severity=severity, topic=topic,
+                )
+                if not _surface_unroutable_as_proposal(
+                    user_id=user_id,
+                    plan_version_id=plan_version_id,
+                    decision_run_id=decision_run_id,
+                    objection_index=idx,
+                    objection_topic=topic,
+                    objection_detail=detail,
+                    objection_severity=severity,
+                    user_question=user_question,
+                ):
+                    lost_objections.append(idx)
+                continue
+            else:
+                # Classifier could not determine ownership at all.
+                # Must not vanish — log at WARNING and create a fallback
+                # proposal so the objection surfaces somewhere.
+                log.warning(
+                    "auto_dialogue.unroutable_no_owner",
+                    user_id=user_id, plan_version_id=plan_version_id,
+                    decision_run_id=decision_run_id, objection_index=idx,
+                    severity=severity, topic=topic,
+                )
+                if not _surface_unroutable_as_proposal(
+                    user_id=user_id,
+                    plan_version_id=plan_version_id,
+                    decision_run_id=decision_run_id,
+                    objection_index=idx,
+                    objection_topic=topic,
+                    objection_detail=detail,
+                    objection_severity=severity,
+                    user_question=user_question,  # may be empty; helper fills fallback
+                ):
+                    lost_objections.append(idx)
+                continue
+
         # Use the first analyst ref (most-cited / canonical owner).
         # Multi-analyst objections are rare; when the user wants a
         # different analyst they can still fire the manual dialogue.
@@ -690,34 +984,94 @@ def schedule_auto_dialogues_for_draft(
                 inflight=result.inflight,
             )
         except CostCapExceededError as exc:
+            # Sol final pass: breaking here dropped THIS objection and every
+            # remaining one. Hitting a spend cap is a reason to stop paying for
+            # LLM dialogues — it is not a reason to lose the fund manager's
+            # blocking objections. Surfacing is a plain DB write with no model
+            # call, so surface the rest and then stop dispatching.
             log.warning(
-                "auto_dialogue.cost_cap_stopped",
+                "auto_dialogue.cost_cap_stopped_surfacing_remainder",
                 user_id=user_id, plan_version_id=plan_version_id,
                 objection_index=idx, dispatched_before_stop=dispatched,
-                error=str(exc),
+                remaining=len(reasons) - idx, error=str(exc),
             )
-            # Stop here — subsequent dialogues would also breach.
+            for _rem_idx in range(idx, len(reasons)):
+                _rem_topic, _rem_detail = _split_reason(reasons[_rem_idx])
+                if not _surface_unroutable_as_proposal(
+                    user_id=user_id, plan_version_id=plan_version_id,
+                    decision_run_id=decision_run_id, objection_index=_rem_idx,
+                    objection_topic=_rem_topic, objection_detail=_rem_detail,
+                    objection_severity=_classify_severity(_rem_topic, _rem_detail),
+                    user_question=(
+                        "Argosy stopped its internal review at the spend cap "
+                        f"before resolving this objection: {_rem_topic}"
+                    ),
+                ):
+                    lost_objections.append(_rem_idx)
             break
         except InvalidAnalystRoleError as exc:
+            # Sol review: a routed objection whose dispatch fails was neither
+            # zigzagged NOR surfaced -- it just vanished. Fall through to the
+            # user-surfacing path so a blocking objection always lands
+            # somewhere.
             log.warning(
-                "auto_dialogue.invalid_role",
+                "auto_dialogue.invalid_role_surfacing",
                 user_id=user_id, objection_index=idx,
                 analyst_role=analyst_role, error=str(exc),
             )
+            if not _surface_unroutable_as_proposal(
+                user_id=user_id, plan_version_id=plan_version_id,
+                decision_run_id=decision_run_id, objection_index=idx,
+                objection_topic=topic, objection_detail=detail,
+                objection_severity=severity,
+                user_question=(
+                    f"Argosy could not route this blocking objection to "
+                    f"{analyst_role} (dispatch rejected: {exc}). It needs a "
+                    f"human look: {topic}"
+                ),
+            ):
+                lost_objections.append(idx)
             continue
-        except Exception as exc:  # noqa: BLE001 — best-effort
+        except Exception as exc:  # noqa: BLE001
+            # Sol re-review: only InvalidAnalystRoleError got the fallback; a
+            # generic dispatch failure still vanished. EVERY failure to reach an
+            # owner must end up somewhere a human can see.
             log.warning(
-                "auto_dialogue.dispatch_failed",
+                "auto_dialogue.dispatch_failed_surfacing",
                 user_id=user_id, objection_index=idx,
                 analyst_role=analyst_role, error=str(exc),
             )
+            if not _surface_unroutable_as_proposal(
+                user_id=user_id, plan_version_id=plan_version_id,
+                decision_run_id=decision_run_id, objection_index=idx,
+                objection_topic=topic, objection_detail=detail,
+                objection_severity=severity,
+                user_question=(
+                    f"Argosy could not deliver this blocking objection to "
+                    f"{analyst_role} (dispatch failed: {exc}). It needs a human "
+                    f"look: {topic}"
+                ),
+            ):
+                lost_objections.append(idx)
             continue
     log.info(
         "auto_dialogue.batch_complete",
         user_id=user_id, plan_version_id=plan_version_id,
         decision_run_id=decision_run_id, dispatched=dispatched,
         total_objections=len(reasons),
+        lost_objections=len(lost_objections),
     )
+    if lost_objections:
+        # Sol re-review: the surfacing helper can fail to write its proposal.
+        # If that happens the objection exists only in a log line -- exactly the
+        # failure this whole flow removes -- so say so at ERROR with the indices.
+        log.error(
+            "auto_dialogue.objections_lost",
+            user_id=user_id, plan_version_id=plan_version_id,
+            decision_run_id=decision_run_id,
+            lost_indices=lost_objections,
+            note="blocking objections reached neither an analyst nor the inbox",
+        )
     return dispatched
 
 
@@ -1115,12 +1469,15 @@ __all__ = [
     "Resolution",
     "StartResult",
     "_claim_inflight_or_get",
+    "_classify_objection_owner_llm",
     "_in_flight",
     "_in_flight_lock",
     "_peek_inflight",
     "_release_inflight",
     "_run_dialogue",
+    "_surface_unroutable_as_proposal",
     "list_dialogues_for_plan_version",
     "parse_agent_refs_from_objection",
+    "schedule_auto_dialogues_for_draft",
     "start_fm_objection_dialogue",
 ]

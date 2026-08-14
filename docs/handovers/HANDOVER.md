@@ -2,9 +2,9 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-13**.
+Last updated: **2026-08-14**.
 
-> **ACTIVE WORK — branch `feat/trust-restoration`, NOT merged.** Execution tracker with per-task checkboxes: `docs/superpowers/plans/2026-08-13-trust-restoration-execution.md`. Design: `docs/superpowers/specs/2026-08-12-trust-restoration-design.md`. Audit evidence: `docs/superpowers/INDEX.md`. Read the tracker before picking anything up — it records what landed, what was disproved, and what awaits Ariel.
+> **`feat/trust-restoration` is MERGED, PUSHED and DEPLOYED** (master `94f02d5`, backend live on it, migrations 0102+0103 applied). Active work is now **`feat/objection-loop`**. Execution tracker with per-task checkboxes: `docs/superpowers/plans/2026-08-13-trust-restoration-execution.md`. Design: `docs/superpowers/specs/2026-08-12-trust-restoration-design.md`. Audit evidence: `docs/superpowers/INDEX.md`. Read the tracker before picking anything up — it records what landed, what was disproved, and what awaits Ariel.
 
 ---
 
@@ -20,10 +20,10 @@ Canonical copy: `docs/design/SDD.md` → `## North star`. Auto-memory: `project_
 
 | Thing | Value |
 |---|---|
-| **Working branch** | **`feat/trust-restoration`** — HEAD `80d226d`, 7 commits ahead of master, UNMERGED, UNPUSHED |
-| master | `eccade9` = origin/master (branch is cut from it) |
+| master | **`94f02d5`** = origin/master — trust-restoration merged, pushed, deployed |
+| Working branch | `feat/objection-loop` — closing the FM objection dead-end |
+| Migrations | `0103_instrument_classification` (0102 gate_outcomes, 0103 sector caps, both applied) |
 | Push | blocked by the harness classifier → Ariel runs `! git push origin master` himself |
-| Migrations | `0101_fill_verdict_link` (DB confirmed at 0101) |
 | Working tree | clean; **no worktrees** |
 | Backend | up on :8000, healthy (`/api/health`, `/api/portfolio/snapshot`, `/api/positions/thesis` all 200) |
 | UI | up on :1337 (Next.js 16.2.4 / Turbopack) |
@@ -63,7 +63,13 @@ Earlier handovers said the draft was "computed with NVDA @ 0%" — **that phrasi
 - **Web push final step:** open `http://localhost:1337/settings/notifications`, click enable, grant the Chrome prompt. `notification_subscriptions` is 0 until then; VAPID keys now exist and the endpoint returns 200.
 - **73 open action proposals** (not 59 — the queue grew), **40 stale >30d**: 45 `note_only`, 14 `set_watchlist`, 6 `update_plan_assumption`, 4 `rebalance` (all stale, likely superseded by the regen), 1 `replan_full` (2026-07-26, actionable — it is a regen trigger), 1 each `stock_decision` / `deploy_team_flag` / `allocate`. Nothing deleted.
 
-**Still to do on the branch:** 0.2/0.10 gate receipt (in flight), Phase 2 single-sourcing of the NVDA cap (in flight), Phase 3 sector caps (`risk_preflight.py:180` has no sector logic; `PlanPolicy` / `instrument_classification` NOT_BUILT — needs migration 0103), then **Phase 5 regen**.
+**Trust-restoration is DONE and deployed.** Sol reviewed every money path across three passes: 11 blockers found and fixed, final verdict COMMIT AS-IS. Two of those blockers were introduced BY the fix work and were the exact pattern the branch removes — a swallowed burn exception relabelled "insufficient data", and a non-finite guard that raised into a handler which wrote the bad value through anyway.
+
+**Burn corrected again:** refunds were never netted (the query filtered `direction=="debit"`). Real burn is **₪22,519 raw → ₪23,000 planning**, not the ₪25,000 fed to regen run 359. `/dashboard-overview` does NOT share the bug.
+
+**⚠️ The 12-vs-13 NVDA cap is now DETECTED, not silent.** The coherence gate fires on the live artifact: `nvda_cap_pct disagrees across surfaces (body=12.0; alloc_doc=13.0; prose=13.0)`. The RESOLVER carries 12; the allocation doc and prose carry 13. Per CLAUDE.md this is the derivation-question class — **zigzag it before the next regen, or synthesis will block on it.**
+
+**OPEN — the FM objection loop (workstream 2, in progress on `feat/objection-loop`).** Run 359: 7 FM objections, **0 dispatched**, all skipped at log level INFO, user told nothing. Causes: owner routing is a regex over prose (`fm_objection_dialogue._parse_analyst_refs_any_form`); `WithdrawalSequencerAgent` and `FXAnalystAgent` are absent from `ANALYST_AGENT_NAME_TO_ROLE`; `ARGOSY_FM_DIALOGUE_CONVERGE` defaults `"0"`. The machinery to fix it already exists and is simply unwired — `negotiation_ladder.run_ladder` (peer rounds → arbiter → `ESCALATED_TO_USER` with a question) and `critique_reconcile`'s `needs_user_input` → open ActionProposal.
 
 ---
 
