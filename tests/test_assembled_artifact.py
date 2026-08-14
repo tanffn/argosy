@@ -331,7 +331,7 @@ def test_prose_extraction_fires_on_stale_hardcoded_cap():
 
     # Prose has the stale hardcode.
     prose = (
-        "The 8% steering target sits inside the 12% hard cap and governs "
+        "NVDA policy: the 8% steering target sits inside the 12% hard cap and governs "
         "deconcentration pacing."
     )
     _extract_prose_nvda_values(prose, bag)
@@ -457,7 +457,7 @@ def test_prose_extraction_no_false_positive_cap_inside_steering_target_phrase():
     )
 
     prose = (
-        "Keeping/accelerating the glide toward the 8% steering target inside "
+        "NVDA: keeping/accelerating the glide toward the 8% steering target inside "
         "the 13% cap, executed only from the capital-track-eligible pool."
     )
     bag: dict = {}
@@ -495,7 +495,7 @@ def test_prose_extraction_catches_steering_target_variant():
     )
 
     bag: dict = {}
-    prose = "Accelerate deconcentration toward the 8% steering target inside the 13% hard cap."
+    prose = "NVDA: accelerate deconcentration toward the 8% steering target inside the 13% hard cap."
     _extract_prose_nvda_values(prose, bag)
 
     tgt_vals = [(s, v) for s, v in bag.get(CONCEPT_NVDA_TARGET, []) if s == "prose"]
@@ -513,7 +513,7 @@ def test_prose_extraction_deduplicates_repeated_values():
     bag: dict = {}
     # Repeat the phrase three times.
     prose = (
-        "The 13% hard cap governs. "
+        "NVDA policy. The 13% hard cap governs. "
         "Reiteration: the 13% hard cap is the ceiling. "
         "And again, the 13% hard cap."
     )
@@ -579,3 +579,46 @@ def test_nvda_cap_and_target_extracted_from_alloc_doc_surface() -> None:
     assert any(CONCEPT_NVDA_TARGET in v.detail for v in violations), (
         f"Expected a {CONCEPT_NVDA_TARGET} violation, got: {violations}"
     )
+
+
+def test_prose_extraction_ignores_non_nvda_hard_cap():
+    """Sol re-review: another asset's 'hard cap' must not be filed as NVDA's.
+
+    The phrase patterns anchor on domain terms, not on NVDA, so extraction is
+    scoped to NVDA-mentioning sentences first. Without that scoping this text
+    would register 25.0 as the NVDA cap and the gate would fire on a
+    contradiction that does not exist.
+    """
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        _extract_prose_nvda_values,
+    )
+
+    bag: dict = {}
+    _extract_prose_nvda_values(
+        "The alternatives sleeve carries a 25% hard cap. "
+        "Gold is held to a 4% binding ceiling.",
+        bag,
+    )
+    assert not bag.get(CONCEPT_NVDA_CAP), bag
+
+
+def test_prose_extraction_still_catches_nvda_scoped_cap():
+    """The scoping must not break the real detection."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        _extract_prose_nvda_values,
+    )
+
+    bag: dict = {}
+    _extract_prose_nvda_values("NVDA sits under a 12% hard cap this year.", bag)
+    assert (12.0 in [v for _, v in bag.get(CONCEPT_NVDA_CAP, [])]), bag
+
+
+def test_prose_extraction_tolerates_none_text():
+    """Sol re-review: the helper must not rely on the caller's try/except."""
+    from argosy.services.assembled_artifact import _extract_prose_nvda_values
+
+    bag: dict = {}
+    _extract_prose_nvda_values(None, bag)  # type: ignore[arg-type]
+    assert bag == {}

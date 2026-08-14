@@ -460,10 +460,34 @@ def _extract_prose_nvda_values(
     place and "13%" in another) are each recorded; the gate will fire on the
     internal inconsistency as well as the canonical divergence.
     """
+    # Sol re-review (2026-08-14): the phrase patterns below are anchored on
+    # domain terms ("hard cap", "steering target") but NOT on NVDA itself, so
+    # another asset's "hard cap" would be filed under the NVDA concept and the
+    # gate would fire on a contradiction that does not exist. A gate that cries
+    # wolf gets switched off, so scope extraction to NVDA-mentioning segments
+    # first: split on sentence boundaries and keep only segments naming NVDA.
+    # `full_text` may be None on a malformed artifact — tolerate it here rather
+    # than relying on the caller's try/except.
+    if not full_text:
+        return
+
+    _upper = full_text.upper()
+
+    def _near_nvda(pos: int, window: int = 400) -> bool:
+        """True when 'NVDA' appears within ``window`` chars either side.
+
+        Sentence-level scoping was tried first and was too tight: the real
+        prose in plan 96 reads "The 8% steering target sits inside the 12% hard
+        cap and governs deconcentration pacing" — the NVDA token lives in a
+        neighbouring sentence. Proximity keeps that match while still rejecting
+        an alternatives-sleeve or gold cap discussed elsewhere in the document.
+        """
+        return "NVDA" in _upper[max(0, pos - window) : pos + window]
+
     seen_cap: set[float] = set()
     for m in _PROSE_NVDA_CAP_RE.finditer(full_text):
         raw = m.group(1) or m.group(2)
-        if raw is not None:
+        if raw is not None and _near_nvda(m.start()):
             try:
                 v = float(raw)
                 if v not in seen_cap:
@@ -475,7 +499,7 @@ def _extract_prose_nvda_values(
     seen_target: set[float] = set()
     for m in _PROSE_NVDA_TARGET_RE.finditer(full_text):
         raw = m.group(1) or m.group(2)
-        if raw is not None:
+        if raw is not None and _near_nvda(m.start()):
             try:
                 v = float(raw)
                 if v not in seen_target:

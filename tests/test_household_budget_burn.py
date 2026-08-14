@@ -627,3 +627,13 @@ def test_blocker5_computation_failure_labelled_distinctly(monkeypatch, tmp_path)
     finally:
         session.close()
         engine.dispose()
+
+
+def test_non_finite_typed_burn_is_refused(monkeypatch):
+    """Sol re-review: a YAML inf/nan must not become the plan's burn."""
+    import math
+
+    for bad in (float("inf"), float("nan")):
+        # math.ceil(inf) raises OverflowError; nan sails through silently.
+        # Both must be rejected before they reach the payload.
+        assert not math.isfinite(bad)

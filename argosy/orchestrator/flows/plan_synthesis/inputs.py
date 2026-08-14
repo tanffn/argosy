@@ -1292,6 +1292,14 @@ def _assemble_household_budget_payload(
         if yaml_burn is not None:
             try:
                 _yaml_burn_f = float(yaml_burn)
+                # Sol re-review (2026-08-14): a YAML `.inf` raises OverflowError
+                # out of math.ceil, and `.nan` sails through into the plan as a
+                # NaN burn. A typed value that is not a finite number is not a
+                # burn — refuse it rather than propagating a poisoned figure.
+                if not _math.isfinite(_yaml_burn_f):
+                    raise ValueError(
+                        f"non-finite typed burn {yaml_burn!r} — refusing to plan on it"
+                    )
                 _planning_burn = float(_math.ceil(_yaml_burn_f / 1000.0) * 1000)
                 payload["monthly_burn_nis"] = _planning_burn
                 payload["monthly_burn_raw_nis"] = round(_yaml_burn_f, 0)
