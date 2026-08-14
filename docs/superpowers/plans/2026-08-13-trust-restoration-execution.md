@@ -103,3 +103,56 @@ Produced **plan 96 `synth-2026-08-13-1915-fm-rejected` (role=draft, decision_run
 **Gap found in 0.2/0.10:** `gate_outcomes` is EMPTY for run 359. The persist call sits inside the FM-converge branch, so a run where FM rejects outright never writes a receipt. The receipt only covers the converge path. Needs moving to cover all terminal paths.
 
 **Orphan warning:** plan 95 (run 358) was produced by pre-fix code and orphaned when the backend was restarted mid-synthesis. Superseded now, but **restarting the backend silently kills an in-flight synthesis** — add a pre-restart check for running decision_runs to the recipe.
+
+---
+
+## Sol review of the previously-unreviewed money paths (2026-08-14)
+
+Ariel authorised merge **conditional on Sol review**. Running it on the three pieces Sol had
+NOT seen (burn, NVDA single-sourcing, migrations) returned **6 blockers**, so the condition
+was not met and the merge is held.
+
+- [ ] S1 `inputs.py:1065` — **refunds never netted.** Query filters `direction=="debit"`, so a
+      charge later refunded still counts as spend. Derived burn (₪24,032) is OVERSTATED.
+- [ ] S2 `inputs.py:1057` — partial-month test counts post-filter spend debits, not all
+      transactions; a complete but low-spend month can be wrongly excluded.
+- [ ] S3 `household_budget_analyst.py:42` — fallback provenance is prompt text only, not on the
+      report object; downstream math reading `monthly_burn_nis` cannot tell derived from typed.
+- [ ] S4 `inputs.py:1222` — YAML fallback bypasses the round-up rule (typed 24,001 → 24,001).
+- [ ] S5 `inputs.py:1199` — any burn exception is swallowed and mislabelled "insufficient
+      transaction data" when the truth is "computation failed". The exact pattern this branch
+      exists to remove, reintroduced by this branch.
+- [ ] S6 `assembled_artifact.py:282` — **NVDA coherence never compares the rendered PROSE.** It
+      compares canonical values to other canonical values, so a stale prose "12%" passes clean.
+      Live proof: plan 96 says *"the 8% steering target sits inside the 12% hard cap"* while code
+      says `DEFAULT_NVDA_CAP_PCT = 0.13`, and the gate did not fire.
+
+## WORKSTREAM 2 (next) — close the FM objection loop
+
+Ariel's framing, which is correct and matches the CLAUDE.md doctrine: *"if I go to an agency and
+ask for a plan, all agents work together to reach a plan they agree with; they don't come back
+with 'failed'. They CAN and SHOULD come back with questions — if input was lacking, or if there
+are several VALID options and it's a matter of user preference, ASK the client."*
+
+**Diagnosed root cause of run 359's dead end** — `dispatched=0, total_objections=7`:
+1. **Owner routing is a regex on prose.** `fm_objection_dialogue._parse_analyst_refs_any_form`
+   scans objection text for a literal `agent_report:Name` token. Two LLM agents hand off through
+   a string format neither is obliged to honour.
+2. **Two named agents are absent from the owner map**: `WithdrawalSequencerAgent → None`,
+   `FXAnalystAgent → None`. A correctly-formatted citation to either routes nowhere.
+3. **The convergence loop is default-OFF** — `ARGOSY_FM_DIALOGUE_CONVERGE` defaults `"0"`
+   (`orchestrator.py:2660`).
+4. **Unroutable objections die at log level INFO.** Seven BLOCKERs from the fund manager
+   evaporated without a warning.
+
+**Planned fix (team-shaped, not gate-shaped):**
+- [ ] W2.1 Owner resolution by JUDGMENT — when no owner parses, ask an agent "who owns this?"
+      rather than dropping it. Doctrine-correct: a routing failure caught by another agent.
+- [ ] W2.2 Add the missing roles to `ANALYST_AGENT_NAME_TO_ROLE`.
+- [ ] W2.3 An unroutable BLOCKER is a loud failure, never an INFO line.
+- [ ] W2.4 Real `needs_user_input` path: converge (peer rounds → arbiter), and if the dispute is
+      a genuine fork or the input was missing, **ask Ariel a concrete question**. For run 359 the
+      right question was: *"Your directive locks honest-liquid margin at +579,730 (FI MET); the
+      retirement model derives -186,670. Which basis governs — and if yours, what does the model
+      have wrong?"*
+- [ ] W2.5 Decide whether `ARGOSY_FM_DIALOGUE_CONVERGE` should default ON.
