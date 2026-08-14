@@ -977,11 +977,17 @@ class VerdictProvenance:
     last_fleet_check_at: str | None = None
     verdict_id: int | None = None
     reasoning_md: str = ""
+    # The SETTLED verdict's conviction. Surfaces must prefer this over a
+    # position_stances value: 31 of 39 stances carry a blanket LOW written by a
+    # `stance_source='review'` backfill, which was overwriting genuine MED
+    # verdicts on the way to the user (2026-08-14).
+    conviction: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "falsifier_state": self.falsifier_state,
             "falsifiers": list(self.falsifiers),
+            "conviction": self.conviction,
             "next_validation": self.next_validation,
             "last_fleet_check_at": self.last_fleet_check_at,
             "verdict_id": self.verdict_id,
@@ -1169,6 +1175,7 @@ def provenance_for_subjects(
             state = "armed"
 
         verdict_reasoning = (row.reasoning_md or "") if row is not None else ""
+        verdict_conviction = (getattr(row, "conviction", "") or "") if row is not None else ""
 
         out[subj] = VerdictProvenance(
             falsifier_state=state,
@@ -1177,6 +1184,7 @@ def provenance_for_subjects(
             last_fleet_check_at=last_check,
             verdict_id=verdict_id,
             reasoning_md=verdict_reasoning,
+            conviction=verdict_conviction,
         )
     return out
 

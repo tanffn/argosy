@@ -627,6 +627,16 @@ def project_thesis_dtos(
 
     out: list[dict[str, Any]] = []
     for card in theses:
+        # Projection-layer sentinel gate: reuse the same convention as
+        # plan_synthesis/inputs.py::_summarize_positions (and
+        # per_position_thesis._ticker_to_position) so every advisable-
+        # position surface agrees on which tickers are real.
+        # The "-" row is the cash-placeholder sentinel (no actual ticker);
+        # it must not appear as an advisable position.
+        sym_raw = (card.ticker or "").strip()
+        if not sym_raw or sym_raw == "-":
+            continue
+
         d = card.to_dict()
         d.pop("reliability_annotations", None)  # not part of the wire DTO
         s = stances.get((card.ticker or "").upper())
@@ -641,6 +651,16 @@ def project_thesis_dtos(
             d["falsifiers"] = list(prov.falsifiers)
             d["next_validation"] = prov.next_validation
             d["last_fleet_check_at"] = prov.last_fleet_check_at
+            # The SETTLED verdict's conviction WINS over the stance's.
+            # Measured 2026-08-14: the registry held 30 MED / 7 LOW / 2 HIGH
+            # across 39 settled verdicts, every one with reasoning — but the
+            # surface reported 31 LOW, because 31 stances carry a blanket LOW
+            # from a `stance_source='review'` backfill and the stance was
+            # applied last. SCHD, EXUS, BRK/B and GOOG all read LOW on screen
+            # while their settled verdict said MED. The fleet's real confidence
+            # was being thrown away between the registry and the card.
+            if prov.conviction:
+                d["conviction"] = prov.conviction
             # Prefer the settled verdict's rich reasoning_md over the plan-thesis
             # fallback (which is empty when the draft plan has zero agent_reports).
             # Stance-level notes (pending proposal, divergence, underweight) are
@@ -657,6 +677,32 @@ def project_thesis_dtos(
             d["falsifiers"] = []
             d["next_validation"] = None
             d["last_fleet_check_at"] = None
+
+        # Derive analysis_state so the UI can distinguish "we looked" from
+        # "we have no opinion" without overloading conviction.
+        #
+        # Rule (three independent signals):
+        #   "unreviewed" — reasoning_md blank AND no falsifiers:
+        #       the fleet recorded no evidence at all; verdict is a
+        #       placeholder, not an opinion.
+        #   "thin"       — some evidence present but not fully evidenced:
+        #       conviction LOW, OR no falsifiers, OR empty reasoning.
+        #   "analysed"   — conviction MED or HIGH, non-empty reasoning,
+        #       AND at least one falsifier: a real position was taken.
+        #
+        # Note: conviction is intentionally NOT the sole signal.
+        # A MED-conviction card with zero falsifiers is "thin", not
+        # "analysed" — falsifiers are the minimum honesty bar.
+        _conviction = (d.get("conviction") or "LOW").upper()
+        _reasoning = (d.get("reasoning_md") or "").strip()
+        _falsifiers = d.get("falsifiers") or []
+        if not _reasoning and not _falsifiers:
+            d["analysis_state"] = "unreviewed"
+        elif _conviction in ("MED", "HIGH") and _reasoning and _falsifiers:
+            d["analysis_state"] = "analysed"
+        else:
+            d["analysis_state"] = "thin"
+
         out.append(d)
     return out
 

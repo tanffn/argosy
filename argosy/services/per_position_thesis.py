@@ -537,7 +537,10 @@ def _ticker_to_position(positions: list[dict[str, Any]]) -> dict[str, dict[str, 
     out: dict[str, dict[str, Any]] = {}
     for p in positions:
         sym = (p.get("symbol") or "").strip().upper()
-        if not sym:
+        # Reuse the same sentinel convention as plan_synthesis/inputs.py
+        # _summarize_positions: drop the cash sentinel and any symbol-less row
+        # so the two surfaces never disagree on which tickers are advisable.
+        if not sym or sym == "-":
             continue
         shares = p.get("shares")
         usd_value_k = p.get("usd_value_k")

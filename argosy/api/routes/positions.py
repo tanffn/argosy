@@ -59,6 +59,12 @@ class PositionThesisDTO(BaseModel):
     falsifiers: list[str] = []
     next_validation: str | None = None  # ISO date
     last_fleet_check_at: str | None = None  # ISO datetime
+    # Analysis quality signal (additive).
+    # "analysed"  — MED/HIGH conviction + non-empty reasoning + ≥1 falsifier.
+    # "thin"      — some evidence present but not fully evidenced.
+    # "unreviewed"— no reasoning AND no falsifiers; verdict is a placeholder.
+    # Derived in position_stance.project_thesis_dtos; never stored.
+    analysis_state: str = "unreviewed"  # analysed | thin | unreviewed
 
 
 @router.get("/thesis", response_model=list[PositionThesisDTO])

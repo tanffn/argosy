@@ -328,3 +328,303 @@ def test_revision_proposed_still_sets_divergence(monkeypatch, tmp_path):
     assert nvda.divergence is True
     assert "stance revision proposed" in nvda.reasoning_md.lower()
     s.close()
+
+
+# --------------------------------------------------------------------------- #
+# FIX 1 — cash-sentinel "-" filter                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_ticker_to_position_drops_dash_sentinel():
+    """_ticker_to_position must skip the '-' cash-sentinel symbol."""
+    from argosy.services.per_position_thesis import _ticker_to_position
+
+    positions = [
+        {"symbol": "-", "shares": 5896.0, "usd_value_k": 74.9},
+        {"symbol": "NVDA", "shares": 100.0, "usd_value_k": 500.0},
+        {"symbol": "", "shares": 10.0, "usd_value_k": 1.0},
+    ]
+    result = _ticker_to_position(positions)
+    assert "-" not in result, "'-' sentinel must be filtered"
+    assert "" not in result, "empty symbol must be filtered"
+    assert "NVDA" in result
+
+
+def test_project_thesis_dtos_drops_dash_sentinel(monkeypatch):
+    """project_thesis_dtos must drop any card whose ticker is '-'."""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.per_position_thesis import PositionThesis
+    from argosy.services.position_stance import project_thesis_dtos
+    from argosy.state.models import Base, User
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+
+    # Simulate a "-" card slipping through (historical data / old snapshot)
+    dash_card = PositionThesis(
+        ticker="-",
+        current_shares=5896.0,
+        current_weight_pct=1.79,
+        current_usd_value=74893.0,
+        verdict="HOLD",
+        conviction="MED",
+        reasoning_md="",
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+    nvda_card = PositionThesis(
+        ticker="NVDA",
+        current_shares=100.0,
+        current_weight_pct=90.0,
+        current_usd_value=90000.0,
+        verdict="HOLD",
+        conviction="HIGH",
+        reasoning_md="Strong thesis.",
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+
+    pv = SimpleNamespace(id=42, decision_run_id=None)
+    snap = SimpleNamespace(
+        snapshot_date="2026-08-01",
+        positions=[{"symbol": "NVDA", "shares": 100, "usd_value_k": 90}],
+        total_usd_value_k=90.0,
+        as_of=None,
+    )
+
+    monkeypatch.setattr(
+        "argosy.services.position_stance._plan_theses",
+        lambda *a, **k: [dash_card, nvda_card],
+    )
+    monkeypatch.setattr(
+        "argosy.services.verdict_registry.provenance_for_subjects",
+        lambda *a, **k: {},
+    )
+
+    dtos = project_thesis_dtos(s, "ariel", plan_version=pv, snapshot=snap)
+    tickers = [d["ticker"] for d in dtos]
+    assert "-" not in tickers, "'-' sentinel must not appear in the DTO projection"
+    assert "NVDA" in tickers
+    s.close()
+
+
+# --------------------------------------------------------------------------- #
+# FIX 2 — analysis_state derivation                                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_analysis_state_unreviewed(monkeypatch):
+    """Empty reasoning AND no falsifiers → 'unreviewed'."""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.per_position_thesis import PositionThesis
+    from argosy.services.position_stance import project_thesis_dtos
+    from argosy.state.models import Base, User
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+
+    card = PositionThesis(
+        ticker="AMZN",
+        current_shares=10.0,
+        current_weight_pct=5.0,
+        current_usd_value=20000.0,
+        verdict="HOLD",
+        conviction="LOW",
+        reasoning_md="",      # blank
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+    pv = SimpleNamespace(id=99, decision_run_id=None)
+    snap = SimpleNamespace(
+        snapshot_date="2026-08-01",
+        positions=[{"symbol": "AMZN", "shares": 10, "usd_value_k": 20}],
+        total_usd_value_k=20.0,
+        as_of=None,
+    )
+    monkeypatch.setattr(
+        "argosy.services.position_stance._plan_theses", lambda *a, **k: [card]
+    )
+    # No falsifiers from provenance
+    monkeypatch.setattr(
+        "argosy.services.verdict_registry.provenance_for_subjects",
+        lambda *a, **k: {},
+    )
+    dtos = project_thesis_dtos(s, "ariel", plan_version=pv, snapshot=snap)
+    assert len(dtos) == 1
+    assert dtos[0]["analysis_state"] == "unreviewed"
+    s.close()
+
+
+def test_analysis_state_thin_low_conviction(monkeypatch):
+    """Non-empty reasoning + falsifiers but LOW conviction → 'thin'."""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.per_position_thesis import PositionThesis
+    from argosy.services.position_stance import project_thesis_dtos
+    from argosy.state.models import Base, User
+    from argosy.services.verdict_registry import VerdictProvenance
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+
+    card = PositionThesis(
+        ticker="GOOG",
+        current_shares=5.0,
+        current_weight_pct=2.0,
+        current_usd_value=8000.0,
+        verdict="HOLD",
+        conviction="LOW",       # LOW conviction → thin
+        reasoning_md="Some rationale.",
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+    pv = SimpleNamespace(id=100, decision_run_id=None)
+    snap = SimpleNamespace(
+        snapshot_date="2026-08-01",
+        positions=[{"symbol": "GOOG", "shares": 5, "usd_value_k": 8}],
+        total_usd_value_k=8.0,
+        as_of=None,
+    )
+    monkeypatch.setattr(
+        "argosy.services.position_stance._plan_theses", lambda *a, **k: [card]
+    )
+    monkeypatch.setattr(
+        "argosy.services.verdict_registry.provenance_for_subjects",
+        lambda *a, **k: {
+            "GOOG": VerdictProvenance(
+                falsifier_state="armed",
+                falsifiers=("GOOG drops cloud market share below 20%",),
+                next_validation=None,
+                last_fleet_check_at=None,
+                reasoning_md="Some rationale.",
+            )
+        },
+    )
+    dtos = project_thesis_dtos(s, "ariel", plan_version=pv, snapshot=snap)
+    assert len(dtos) == 1
+    assert dtos[0]["analysis_state"] == "thin"
+    s.close()
+
+
+def test_analysis_state_analysed(monkeypatch):
+    """MED/HIGH conviction + non-empty reasoning + falsifiers → 'analysed'."""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.per_position_thesis import PositionThesis
+    from argosy.services.position_stance import project_thesis_dtos
+    from argosy.state.models import Base, User
+    from argosy.services.verdict_registry import VerdictProvenance
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+
+    card = PositionThesis(
+        ticker="NVDA",
+        current_shares=100.0,
+        current_weight_pct=45.0,
+        current_usd_value=500000.0,
+        verdict="HOLD",
+        conviction="HIGH",
+        reasoning_md="Dominant AI accelerator.",
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+    pv = SimpleNamespace(id=101, decision_run_id=None)
+    snap = SimpleNamespace(
+        snapshot_date="2026-08-01",
+        positions=[{"symbol": "NVDA", "shares": 100, "usd_value_k": 500}],
+        total_usd_value_k=500.0,
+        as_of=None,
+    )
+    monkeypatch.setattr(
+        "argosy.services.position_stance._plan_theses", lambda *a, **k: [card]
+    )
+    monkeypatch.setattr(
+        "argosy.services.verdict_registry.provenance_for_subjects",
+        lambda *a, **k: {
+            "NVDA": VerdictProvenance(
+                falsifier_state="armed",
+                falsifiers=("AMD closes H100 performance gap",),
+                next_validation="2026-09-01",
+                last_fleet_check_at="2026-08-01T00:00:00Z",
+                reasoning_md="Dominant AI accelerator.",
+            )
+        },
+    )
+    dtos = project_thesis_dtos(s, "ariel", plan_version=pv, snapshot=snap)
+    assert len(dtos) == 1
+    assert dtos[0]["analysis_state"] == "analysed"
+    s.close()
+
+
+def test_analysis_state_thin_no_falsifiers_despite_med_conviction(monkeypatch):
+    """MED conviction + non-empty reasoning but NO falsifiers → still 'thin'.
+    Falsifiers are the minimum honesty bar for 'analysed'."""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.per_position_thesis import PositionThesis
+    from argosy.services.position_stance import project_thesis_dtos
+    from argosy.state.models import Base, User
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(User(id="ariel", plan="free"))
+    s.commit()
+
+    card = PositionThesis(
+        ticker="META",
+        current_shares=20.0,
+        current_weight_pct=10.0,
+        current_usd_value=15000.0,
+        verdict="HOLD",
+        conviction="MED",      # MED conviction, but...
+        reasoning_md="Solid ad revenue.",
+        cited_sources=[],
+        target_weight_pct=None,
+        target_shares=None,
+    )
+    pv = SimpleNamespace(id=102, decision_run_id=None)
+    snap = SimpleNamespace(
+        snapshot_date="2026-08-01",
+        positions=[{"symbol": "META", "shares": 20, "usd_value_k": 15}],
+        total_usd_value_k=15.0,
+        as_of=None,
+    )
+    monkeypatch.setattr(
+        "argosy.services.position_stance._plan_theses", lambda *a, **k: [card]
+    )
+    # No falsifiers from provenance at all
+    monkeypatch.setattr(
+        "argosy.services.verdict_registry.provenance_for_subjects",
+        lambda *a, **k: {},
+    )
+    dtos = project_thesis_dtos(s, "ariel", plan_version=pv, snapshot=snap)
+    assert len(dtos) == 1
+    assert dtos[0]["analysis_state"] == "thin", (
+        "MED conviction without falsifiers must be 'thin', not 'analysed'"
+    )

@@ -98,14 +98,53 @@ function formatShares(shares: number | null): string {
   return shares.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+/**
+ * Returns a muted label and optional ring class for cards that haven't been
+ * fully analysed. "unreviewed" gets an italic label so the user knows the
+ * verdict is a placeholder; "thin" gets a secondary label.
+ */
+function analysisStateMeta(state: string | undefined): {
+  label: string | null;
+  ringClass: string;
+} {
+  switch (state) {
+    case "unreviewed":
+      return {
+        label: "not yet reviewed",
+        ringClass: "opacity-60",
+      };
+    case "thin":
+      return {
+        label: "thin evidence",
+        ringClass: "",
+      };
+    default:
+      return { label: null, ringClass: "" };
+  }
+}
+
 export function PositionCard({ thesis }: PositionCardProps) {
   const isAdd = thesis.verdict === "ADD";
+  const { label: analysisLabel, ringClass } = analysisStateMeta(
+    thesis.analysis_state,
+  );
   return (
-    <Card className={cn("flex flex-col gap-3", verdictBorderClass(thesis.verdict))}>
+    <Card
+      className={cn(
+        "flex flex-col gap-3",
+        verdictBorderClass(thesis.verdict),
+        ringClass,
+      )}
+    >
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="font-mono text-lg">{thesis.ticker}</CardTitle>
           <div className="flex items-center gap-1.5">
+            {analysisLabel && (
+              <Badge variant="secondary" className="text-xs italic font-normal">
+                {analysisLabel}
+              </Badge>
+            )}
             <Badge variant={verdictBadgeVariant(thesis.verdict)}>
               {thesis.verdict}
             </Badge>
@@ -151,9 +190,13 @@ export function PositionCard({ thesis }: PositionCardProps) {
             )}
           </div>
         )}
-        {thesis.reasoning_md && (
+        {thesis.reasoning_md ? (
           <p className="text-sm whitespace-pre-wrap leading-relaxed">
             {thesis.reasoning_md}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground italic">
+            No analysis recorded — the fleet has not reviewed this position.
           </p>
         )}
         {thesis.cited_sources.length > 0 && (
