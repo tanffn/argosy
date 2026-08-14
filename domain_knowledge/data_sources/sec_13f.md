@@ -1,7 +1,7 @@
 ---
 topic: sec_form_13f_hr
 jurisdiction: us
-last_verified: 2026-08-13
+last_verified: 2026-08-14
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.sec.gov/divisions/investment/13ffaq.htm

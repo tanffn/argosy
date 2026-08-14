@@ -4,7 +4,7 @@ topic: us_israel_income_tax_treaty
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual_with_us_source_income
-last_verified: 2026-08-13
+last_verified: 2026-08-14
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
@@ -24,10 +24,10 @@ sources:
     retrieved: 2026-08-13
     tier: 1
   - url: https://www.irs.gov/instructions/iw8ben
-    retrieved: 2026-08-13
+    retrieved: 2026-08-14
     tier: 1
   - url: https://www.nbn.org.il/life-in-israel/finances/taxes/us-tax-compliance/
-    retrieved: 2026-08-08
+    retrieved: 2026-08-13
     tier: 2
 ---
 

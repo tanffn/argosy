@@ -1,7 +1,7 @@
 ---
 topic: gemelnet_mof_pension_data
 jurisdiction: israel
-last_verified: 2026-08-13
+last_verified: 2026-08-14
 next_refresh_due: 2027-05-02
 sources:
   - url: http://gemelnet.mof.gov.il/Tsuot/UI/DafMakdim.aspx

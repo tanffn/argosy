@@ -1,7 +1,7 @@
 ---
 topic: sec_form_4_insider_transactions
 jurisdiction: us
-last_verified: 2026-08-13
+last_verified: 2026-08-14
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.sec.gov/about/forms/form4data.pdf
