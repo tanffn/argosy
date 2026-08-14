@@ -44,6 +44,7 @@ from argosy.orchestrator.loops.base import LoopSchedule
 from argosy.orchestrator.loops.weekly_email_digest import (
     WeeklyEmailDigestLoop,
 )
+from argosy.services.jobs.summary_status import derive_run_status
 from argosy.services.email_digest import (
     DEFAULT_SUBJECT,
     SendResult,
@@ -1033,3 +1034,138 @@ class TestSmtpTlsFlagsPassedToSender:
         )
         assert result.status == "sent"
         assert captured[0]["smtp_config"].tls_mode == "tls"
+
+
+# ---------------------------------------------------------------------------
+# Task 0.7 — digest that sent nothing must not report success
+# ---------------------------------------------------------------------------
+
+
+class TestDigestJobStatus:
+    """The tick output_summary must carry ``status='failed'`` when the
+    email was not delivered, so :func:`derive_run_status` (and therefore
+    the JobRegistry) closes the run as ``'error'`` rather than ``'ok'``.
+
+    Contract:
+      * SMTP unconfigured → send_status='skipped', status='failed'.
+      * SMTP error/failed → send_status='failed', status='failed'.
+      * Sent successfully → send_status='sent', status='ok'.
+      * Genuine no-activity skip (error='no_activity') → status='ok'.
+    """
+
+    def test_smtp_not_configured_summary_status_is_failed(
+        self, sync_session, monkeypatch
+    ):
+        """Missing SMTP env → send_status='skipped' + status='failed';
+        derive_run_status maps the summary to error."""
+        engine = sync_session.bind
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+        for var in (
+            "ARGOSY_SMTP_HOST",
+            "ARGOSY_SMTP_PORT",
+            "ARGOSY_SMTP_FROM",
+            "ARGOSY_SMTP_TLS_MODE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        loop = WeeklyEmailDigestLoop(
+            schedule=LoopSchedule(cron="0 8 * * FRI", timezone="Asia/Jerusalem"),
+            user_id=USER,
+            session_factory=SessionLocal,
+        )
+        summary = _run(loop.tick())
+
+        assert summary is not None
+        # The summary must carry the generic status key that derive_run_status
+        # inspects — the very key that was MISSING, causing job_runs.status='ok'
+        # while 59 proposals went undelivered.
+        assert summary["status"] == "failed", (
+            f"expected status='failed' but got {summary.get('status')!r}; "
+            f"full summary: {summary}"
+        )
+        assert summary["send_status"] == "skipped"
+        assert summary["send_error"] == "smtp_not_configured"
+
+        # End-to-end: derive_run_status sees the summary and returns error.
+        status, reason = derive_run_status(summary)
+        assert status == "error", (
+            f"derive_run_status should return 'error' for this summary; "
+            f"got {status!r} reason={reason!r}"
+        )
+        assert reason is not None
+
+    def test_sent_summary_status_is_ok(self, sync_session, monkeypatch):
+        """Successful send → summary['status'] == 'ok'."""
+        engine = sync_session.bind
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setenv("ARGOSY_SMTP_HOST", "smtp.test")
+        monkeypatch.setenv("ARGOSY_SMTP_PORT", "587")
+        monkeypatch.setenv("ARGOSY_SMTP_FROM", "argosy@test")
+
+        async def _stub(**_):
+            return None
+
+        _seed_proposal(sync_session)
+        sync_session.commit()
+
+        loop = WeeklyEmailDigestLoop(
+            schedule=LoopSchedule(cron="0 8 * * FRI", timezone="Asia/Jerusalem"),
+            user_id=USER,
+            session_factory=SessionLocal,
+            smtp_sender=_stub,
+        )
+        summary = _run(loop.tick())
+
+        assert summary is not None
+        assert summary["status"] == "ok"
+        assert summary["send_status"] == "sent"
+
+        status, reason = derive_run_status(summary)
+        assert status == "ok"
+        assert reason is None
+
+    def test_no_activity_smtp_not_configured_is_still_failed(
+        self, sync_session, monkeypatch
+    ):
+        """Even with no activity this week, an undelivered digest is a
+        failure — the operator needs to know SMTP is not configured.
+        The 'no activity' path produces send_status='skipped' for the
+        SMTP reason, not for content-absence, so it is still a failure.
+        """
+        engine = sync_session.bind
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+        for var in (
+            "ARGOSY_SMTP_HOST",
+            "ARGOSY_SMTP_PORT",
+            "ARGOSY_SMTP_FROM",
+            "ARGOSY_SMTP_TLS_MODE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        # No flags/proposals seeded → empty digest.
+        loop = WeeklyEmailDigestLoop(
+            schedule=LoopSchedule(cron="0 8 * * FRI", timezone="Asia/Jerusalem"),
+            user_id=USER,
+            session_factory=SessionLocal,
+        )
+        summary = _run(loop.tick())
+        assert summary["status"] == "failed"
+        assert summary["has_any_activity"] is False
+
+    def test_no_activity_genuine_opt_out_is_ok(self):
+        """Deliberate 'no_activity' skip (error='no_activity') is a
+        legitimate no-op — not a delivery failure.
+
+        This path is currently UNUSED (dispatch always sends); it is
+        tested here so a future 'skip when empty' feature doesn't
+        accidentally mark quiet weeks as errors.
+        """
+        # Simulate what a future "skip when nothing to send" flow would return.
+        fake_summary = {
+            "status": "ok",  # ← what the loop would set for no_activity skip
+            "send_status": "skipped",
+            "send_error": "no_activity",
+            "has_any_activity": False,
+        }
+        status, reason = derive_run_status(fake_summary)
+        assert status == "ok"
+        assert reason is None

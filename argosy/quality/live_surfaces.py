@@ -44,6 +44,24 @@ NET_WORTH_TOTAL_NODE = "net_worth.total_incl_residence_nis"  # total basis, incl
 US_SITUS_ESTATE_NODE = "estate.us_situs_exposure_nis"      # US-situs estate exposure
 RETENTION_AT_VEST_NODE = "tax.retention_at_vest_pct"            # at-vest ordinary income
 RETENTION_CAPITAL_TRACK_NODE = "tax.retention_capital_track_pct"  # Section-102 capital track
+# NVDA concentration nodes — bind the hard cap and the direct sleeve target to one
+# source so that prose, the portfolio snapshot, and the plan allocation table can
+# never show three different values (the 12%-vs-8%-vs-13% contradiction that the
+# plan critique flagged as a RED cross-surface finding on 2026-07-07).
+#
+# Two DISTINCT concepts, NOT the same number, each its own node:
+#   * nvda_cap_pct   — the LOOK-THROUGH hard ceiling (13 %).  A direct NVDA sleeve
+#                      larger than this makes the total plan look-through (direct +
+#                      embedded inside index funds) breach the cap. Argosy-derived,
+#                      NOT user-set.
+#   * nvda_target_pct — the DIRECT sleeve target (8 %).  Lower than the cap to keep
+#                       total plan look-through < cap given embedded NVDA in indices.
+#                       Derived from NVDA_TARGET_PCT in allocation_plan.py.
+#
+# Both are stored as fractions (0–1) in the resolver; the surface builders multiply
+# by 100 for %-point display so every rendered surface says exactly the same number.
+NVDA_CAP_PCT_NODE = "concentration.nvda_cap_pct"           # hard look-through ceiling (0.13)
+NVDA_TARGET_PCT_NODE = "concentration.nvda_target_pct"     # direct sleeve target (0.08)
 
 
 # --- The unification: coherence subject_type -> its ONE canonical derived node -
@@ -62,6 +80,8 @@ CANONICAL_SUBJECT_NODE: dict[str, str] = {
     "fi_crossing": FI_CROSSING_YEAR_NODE,
     "retention_at_vest": RETENTION_AT_VEST_NODE,
     "retention_capital_track": RETENTION_CAPITAL_TRACK_NODE,
+    "nvda_cap": NVDA_CAP_PCT_NODE,
+    "nvda_target": NVDA_TARGET_PCT_NODE,
 }
 
 
@@ -287,6 +307,81 @@ def _retention_capital_track_surfaces(node_key: str) -> list[Node]:
     ]
 
 
+def _pct_or_pending(value, label: str) -> str:
+    """Render a fraction (0–1) as a %-point string when valid; pending otherwise.
+    The fail-closed 0.0 seed is not a legitimate percentage here, so 0.0 → pending."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and 0.0 < value <= 1.0:
+        return f"{label}: {value * 100:.1f}%"
+    return f"{label}: [derivation pending]"
+
+
+def _nvda_cap_surfaces(node_key: str) -> list[Node]:
+    """NVDA hard look-through cap surfaces — headline + IPS table, ALL from the one
+    cap node. Value stored as a fraction (0–1); rendered as %-point.
+
+    The cap is ARGOSY-DERIVED (min over four constraint caps), never user-set.
+    Labelling it 'hard cap (look-through)' distinguishes it from the direct sleeve
+    target, preventing the recurring 12%/13% conflation: the IPS prose, the
+    portfolio allocation table, and any other surface all render the same number
+    because they all render from this one node."""
+    return [
+        make_surface_node(
+            key="surface:nvda_cap_statement",
+            inputs=(node_key,),
+            recipe=lambda i: _pct_or_pending(
+                i[node_key],
+                "NVDA concentration cap (hard look-through ceiling, Argosy-derived)"),
+            compute_version="nvda-cap-v1",
+        ),
+        make_surface_node(
+            key="surface:dashboard.nvda_cap_tile",
+            inputs=(node_key,),
+            recipe=lambda i: (
+                f"NVDA cap (look-through): {i[node_key] * 100:.1f}%"
+                if isinstance(i[node_key], (int, float)) and not isinstance(i[node_key], bool)
+                   and 0.0 < i[node_key] <= 1.0
+                else "NVDA cap: [pending]"
+            ),
+            compute_version="nvda-cap-tile-v1",
+        ),
+    ]
+
+
+def _nvda_target_surfaces(node_key: str) -> list[Node]:
+    """NVDA direct sleeve target surfaces — headline + IPS table, ALL from the one
+    target node. Value stored as a fraction (0–1); rendered as %-point.
+
+    The direct target is LOWER than the look-through cap because the index sleeves
+    already carry NVDA weight. Labelling it 'direct sleeve target' distinguishes it
+    from the cap, preventing the prose from conflating the two concepts (the
+    12%-sleeve/13%-cap confusion that the plan critique flagged on 2026-07-07).
+    Every surface that cites "the NVDA target" renders this node — including the
+    IPS prose, the portfolio allocation table (via TargetAllocationDoc.classes), and
+    the plan-change-team context — so a stale hardcode cannot produce a divergent
+    value again."""
+    return [
+        make_surface_node(
+            key="surface:nvda_target_statement",
+            inputs=(node_key,),
+            recipe=lambda i: _pct_or_pending(
+                i[node_key],
+                "NVDA direct sleeve target (cap-derived; keeps plan look-through < cap)"),
+            compute_version="nvda-target-v1",
+        ),
+        make_surface_node(
+            key="surface:dashboard.nvda_target_tile",
+            inputs=(node_key,),
+            recipe=lambda i: (
+                f"NVDA target: {i[node_key] * 100:.1f}%"
+                if isinstance(i[node_key], (int, float)) and not isinstance(i[node_key], bool)
+                   and 0.0 < i[node_key] <= 1.0
+                else "NVDA target: [pending]"
+            ),
+            compute_version="nvda-target-tile-v1",
+        ),
+    ]
+
+
 # subject_type -> (canonical derived node key default, surfaces builder). The
 # default node key is overridable via the subject->node_key map argument.
 _SUBJECT_BUILDERS: dict[str, SubjectSurfaceBuilder] = {
@@ -299,6 +394,8 @@ _SUBJECT_BUILDERS: dict[str, SubjectSurfaceBuilder] = {
     "fi_crossing": _fi_crossing_surfaces,
     "retention_at_vest": _retention_at_vest_surfaces,
     "retention_capital_track": _retention_capital_track_surfaces,
+    "nvda_cap": _nvda_cap_surfaces,
+    "nvda_target": _nvda_target_surfaces,
 }
 
 
@@ -383,6 +480,8 @@ __all__ = [
     "US_SITUS_ESTATE_NODE",
     "RETENTION_AT_VEST_NODE",
     "RETENTION_CAPITAL_TRACK_NODE",
+    "NVDA_CAP_PCT_NODE",
+    "NVDA_TARGET_PCT_NODE",
     "CANONICAL_SUBJECT_NODE",
     "CanonicalRegistration",
     "register_canonical_surfaces",

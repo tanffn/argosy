@@ -19,8 +19,12 @@ Two outputs:
   * ``surface_values`` — ``dict[concept] -> list[(surface_name, value)]`` keyed
     by SHORT shared concept names. Body/plan values come from the deterministic
     ``resolve_plan_numbers`` resolver; dashboard values come from the typed
-    ``WealthDashboard`` dataclass fields. Concept extraction is wired to NAMED
-    fields, never regex over prose.
+    ``WealthDashboard`` dataclass fields; and for the NVDA policy numbers (cap
+    and steering target) a third ``prose`` surface is extracted from the rendered
+    plan text using phrase-anchored regex so that an LLM-hardcoded stale value
+    (e.g. "12% hard cap" when canonical is 13%) is caught even when the resolver
+    and alloc-doc agree. See ``_extract_prose_nvda_values`` for the extraction
+    rationale and false-positive defence.
 
 One responsibility: assemble + extract. Pure/deterministic over its inputs.
 """
@@ -54,6 +58,81 @@ CONCEPT_NET_WORTH_TOTAL = "net_worth_total_nis"
 CONCEPT_NVDA_WEIGHT = "nvda_weight_pct"
 CONCEPT_US_SITUS_ESTATE = "us_situs_estate_nis"
 CONCEPT_FI_MARGIN = "fi_margin_signed_nis"
+# Two DISTINCT NVDA policy numbers — NOT the same concept:
+#   * nvda_cap_pct    : the LOOK-THROUGH hard ceiling (~13 pp). Argosy-derived as
+#                       MIN over four constraint caps; the user does NOT set this.
+#                       Stored as fraction (0–1) in the resolver; extracted here
+#                       as %-points (× 100) so the coherence gate compares like
+#                       for like with the alloc-doc surface (already in %-points).
+#   * nvda_target_pct : the DIRECT sleeve target (~8 pp). Lower than the cap to
+#                       keep total plan look-through < cap given embedded NVDA
+#                       inside index sleeves. Derives from NVDA_TARGET_PCT in
+#                       allocation_plan.py → plan_numeric_resolver, so it is
+#                       always consistent with the canonical doc's class target_pct.
+# Both surfaces carry exactly one value — the resolver's constant-derived figure —
+# making a stale-hardcode divergence (the 12%/8%/13% three-value contradiction)
+# impossible: if the constant changes, all surfaces update together.
+CONCEPT_NVDA_CAP = "nvda_cap_pct"
+CONCEPT_NVDA_TARGET = "nvda_target_pct"
+
+# ── Prose extraction: phrase-anchored regex for NVDA policy numbers ───────────
+# The plan body is LLM-generated prose.  Although the resolver uses
+# ``{{fact:...}}`` placeholders (rendered to canonical values), an LLM can
+# also write a literal percentage — e.g. "The 8% steering target sits inside
+# the 12% hard cap" — and that literal can be stale.  If the resolver and
+# alloc_doc both say 13% but the prose says "12% hard cap", the existing
+# canonical-vs-canonical comparison passes silently.
+#
+# Defence against false positives:
+#   The patterns anchor on domain-specific NVDA terminology ("hard cap",
+#   "binding ceiling", "steering target", "IPS sleeve") that does NOT appear
+#   near tax rates (12% NI/health, 25% CGT, 50% ordinary income), equity
+#   returns, or other-sleeve allocations (28.5% US broad-market).  A greedy
+#   "any N% near NVDA" pattern would false-positive on NVDA's current weight
+#   (59.9%), implied σ (35%), and other legitimate percentages, so we require
+#   the specific NVDA policy phrase within ~30–50 chars on the same line.
+#
+# De-duplication: each unique float value is recorded once per concept so the
+# gate entry list stays compact; if two parts of the prose disagree (one says
+# 12%, another says 13%), both are recorded and the gate fires on the internal
+# inconsistency as well.
+
+# Cap: "N% hard cap" | "hard cap … N%" | "N% binding ceiling" | "binding ceiling … N%"
+# "hard cap" and "binding ceiling" are the domain-specific NVDA concentration
+# ceiling terms; neither appears in tax rates, returns, or other caps.
+_PROSE_NVDA_CAP_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*%[^.!?\n]{0,30}?(?:hard\s+cap|binding\s+ceiling)"
+    r"|(?:hard\s+cap|binding\s+ceiling)[^.!?\n]{0,40}?(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+
+# Target: "N% steering target" | "steering target … N%" |
+#         "N% IPS sleeve" | "IPS sleeve … N%" | "N% policy target/steering"
+# "steering target" and "IPS sleeve" are the domain-specific NVDA sleeve-target
+# terms; neither collides with tax rates, safe-withdrawal rates, or other targets.
+#
+# The "phrase then number" branch uses TWO guards to avoid false positives:
+#   1. Short gap (≤ 20 chars) so that "steering target inside the 13% cap"
+#      doesn't spuriously capture the 13% (the cap number that follows "inside
+#      the", not the target number).
+#   2. Negative lookahead (?!\s*(?:hard\s*cap|cap\b|ceiling)) on the matched
+#      number: if the number is immediately trailed by cap/ceiling language it
+#      is a CAP reference, not a target reference, and must not be picked up
+#      here.  This specifically suppresses "steering target inside the 13% cap"
+#      (prose=13 false positive on the target concept observed in plan 96).
+_PROSE_NVDA_TARGET_RE = re.compile(
+    # "N% steering target" | "N% IPS sleeve" | "N% policy target/steering".
+    # The gap excludes '%' to prevent "13.0% and 8% IPS steering target" from
+    # greedily matching 13.0% as the target — requiring no other '%' in the
+    # gap ensures we capture the number DIRECTLY before the phrase, not one
+    # separated by another percentage (the cap value in the same clause).
+    r"(\d+(?:\.\d+)?)\s*%[^.!?\n%]{0,30}?(?:steering\s+target|ips\s+sleeve|policy\s+target|policy\s+steering)"
+    # "steering target … N%" | "IPS sleeve … N%" | "policy target … N%".
+    # Short gap (≤ 20 chars) + negative lookahead prevents capturing the CAP
+    # number that follows "steering target inside the 13% cap".
+    r"|(?:steering\s+target|ips\s+sleeve|policy\s+target)[^.!?\n]{0,20}?(\d+(?:\.\d+)?)\s*%(?!\s*(?:hard\s*cap|cap\b|ceiling))",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -209,6 +288,22 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
             except Exception as exc:  # noqa: BLE001 — never crash assembly on a render pass
                 log.warning("assembled_artifact.final_render_pass_failed err=%s", exc)
 
+    # ----- Canonical allocation doc: NVDA cap + target from structured plan ----
+    # The TargetAllocationDoc is the ONE authoritative source for NVDA cap and
+    # sleeve target.  Extracting these as a separate "alloc_doc" surface means
+    # the cross-surface coherence gate sees them alongside the resolver body
+    # values, and any divergence (e.g. a stale hardcode in a prompt injecting
+    # "12%" while the doc says "8%") is caught deterministically.
+    try:
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+
+        alloc_doc = load_plan_target_allocation(plan) if plan is not None else None
+        if alloc_doc is not None:
+            _add_alloc_doc_values(alloc_doc, surface_values)
+    except Exception as exc:  # noqa: BLE001 — never crash assembly on the doc
+        log.warning("assembled_artifact.alloc_doc_failed err=%s", exc)
+        extraction_errors["alloc_doc"] = repr(exc)
+
     # ----- Dashboard surface: the typed WealthDashboard dataclass -----------
     try:
         dash = compute_wealth_dashboard(session, user_id=user_id)
@@ -222,6 +317,16 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
 
     if dash is not None:
         _add_dashboard_values(dash, surface_values)
+
+    # ----- Prose-level NVDA cap/target extraction ----------------------------
+    # Placed last so that render_placeholders (called above inside the body
+    # block) has already substituted {{fact:...}} tokens before we scan the
+    # text.  A failure here must not crash assembly — record it and continue.
+    try:
+        _extract_prose_nvda_values(full_text, surface_values)
+    except Exception as exc:  # noqa: BLE001 — never crash assembly on prose scan
+        log.warning("assembled_artifact.prose_nvda_extraction_failed err=%s", exc)
+        extraction_errors["prose"] = repr(exc)
 
     return AssembledArtifact(
         full_text=full_text,
@@ -244,6 +349,15 @@ def _add_body_values(resolved, bag: dict[str, list[tuple[str, float]]]) -> None:
         return float(rv.value)
 
     _append(bag, CONCEPT_NET_WORTH, "body", _val("portfolio.net_worth_nis"))
+
+    # NVDA cap and target — resolver stores as fractions (0–1); convert to %-points
+    # so the gate compares like-for-like with the alloc-doc surface (%-points).
+    nvda_cap_frac = _val("concentration.nvda_cap_pct")
+    if nvda_cap_frac is not None:
+        _append(bag, CONCEPT_NVDA_CAP, "body", nvda_cap_frac * 100.0)
+    nvda_target_frac = _val("concentration.nvda_target_pct")
+    if nvda_target_frac is not None:
+        _append(bag, CONCEPT_NVDA_TARGET, "body", nvda_target_frac * 100.0)
 
     nvda_frac = _val("concentration.nvda_current_pct")
     if nvda_frac is not None:
@@ -292,6 +406,109 @@ def _add_dashboard_values(dash, bag: dict[str, list[tuple[str, float]]]) -> None
         )
 
 
+def _add_alloc_doc_values(doc, bag: dict[str, list[tuple[str, float]]]) -> None:
+    """Extract NVDA cap and sleeve target from the canonical TargetAllocationDoc.
+
+    The doc is the SINGLE authoritative source for allocation numbers (it is
+    engine-authored, not prose-parsed).  Extracting these here makes the coherence
+    gate compare the resolver body against the doc — if a stale hardcode ever
+    injects a different number into LLM prose, the two "alloc_doc" entries in
+    surface_values will diverge from the "body" entries and raise a BLOCK.
+
+    ``doc.nvda_cap_pct`` is already in %-points (not a fraction) — consistent with
+    how the body surface is stored (we convert resolver fractions × 100 above).
+    The NVDA class's ``target_pct`` is also in %-points, matching the body.
+    """
+    cap = getattr(doc, "nvda_cap_pct", None)
+    if cap is not None:
+        try:
+            _append(bag, CONCEPT_NVDA_CAP, "alloc_doc", float(cap))
+        except (TypeError, ValueError):
+            pass
+
+    # The NVDA class target_pct — search for the "Strategic single-stock (NVDA)"
+    # class by the canonical label used across the codebase.
+    _NVDA_CLASS_LABEL = "Strategic single-stock (NVDA)"
+    for cls in getattr(doc, "classes", []):
+        label = getattr(cls, "label", "")
+        if label == _NVDA_CLASS_LABEL:
+            tgt = getattr(cls, "target_pct", None)
+            if tgt is not None:
+                try:
+                    _append(bag, CONCEPT_NVDA_TARGET, "alloc_doc", float(tgt))
+                except (TypeError, ValueError):
+                    pass
+            break
+
+
+def _extract_prose_nvda_values(
+    full_text: str, bag: dict[str, list[tuple[str, float]]]
+) -> None:
+    """Extract NVDA cap and steering-target figures from the rendered plan prose.
+
+    Registers each UNIQUE value found as a ``prose`` surface entry under
+    CONCEPT_NVDA_CAP and CONCEPT_NVDA_TARGET so that the coherence gate can
+    compare prose claims against the canonical resolver/alloc_doc values.
+
+    Called AFTER render_placeholders so ``{{fact:...}}`` tokens are resolved
+    to their numeric values before extraction.  Only phrases that are
+    semantically specific to the NVDA concentration cap or sleeve target are
+    matched (see module-level ``_PROSE_NVDA_CAP_RE`` / ``_PROSE_NVDA_TARGET_RE``
+    and the false-positive rationale above those patterns).
+
+    Multiple distinct values for the same concept (e.g. prose says "12%" in one
+    place and "13%" in another) are each recorded; the gate will fire on the
+    internal inconsistency as well as the canonical divergence.
+    """
+    # Sol re-review (2026-08-14): the phrase patterns below are anchored on
+    # domain terms ("hard cap", "steering target") but NOT on NVDA itself, so
+    # another asset's "hard cap" would be filed under the NVDA concept and the
+    # gate would fire on a contradiction that does not exist. A gate that cries
+    # wolf gets switched off, so scope extraction to NVDA-mentioning segments
+    # first: split on sentence boundaries and keep only segments naming NVDA.
+    # `full_text` may be None on a malformed artifact — tolerate it here rather
+    # than relying on the caller's try/except.
+    if not full_text:
+        return
+
+    _upper = full_text.upper()
+
+    def _near_nvda(pos: int, window: int = 400) -> bool:
+        """True when 'NVDA' appears within ``window`` chars either side.
+
+        Sentence-level scoping was tried first and was too tight: the real
+        prose in plan 96 reads "The 8% steering target sits inside the 12% hard
+        cap and governs deconcentration pacing" — the NVDA token lives in a
+        neighbouring sentence. Proximity keeps that match while still rejecting
+        an alternatives-sleeve or gold cap discussed elsewhere in the document.
+        """
+        return "NVDA" in _upper[max(0, pos - window) : pos + window]
+
+    seen_cap: set[float] = set()
+    for m in _PROSE_NVDA_CAP_RE.finditer(full_text):
+        raw = m.group(1) or m.group(2)
+        if raw is not None and _near_nvda(m.start()):
+            try:
+                v = float(raw)
+                if v not in seen_cap:
+                    seen_cap.add(v)
+                    _append(bag, CONCEPT_NVDA_CAP, "prose", v)
+            except (TypeError, ValueError):
+                pass
+
+    seen_target: set[float] = set()
+    for m in _PROSE_NVDA_TARGET_RE.finditer(full_text):
+        raw = m.group(1) or m.group(2)
+        if raw is not None and _near_nvda(m.start()):
+            try:
+                v = float(raw)
+                if v not in seen_target:
+                    seen_target.add(v)
+                    _append(bag, CONCEPT_NVDA_TARGET, "prose", v)
+            except (TypeError, ValueError):
+                pass
+
+
 __all__ = [
     "AssembledArtifact",
     "assemble_plan_artifact",
@@ -300,4 +517,7 @@ __all__ = [
     "CONCEPT_NVDA_WEIGHT",
     "CONCEPT_US_SITUS_ESTATE",
     "CONCEPT_FI_MARGIN",
+    "CONCEPT_NVDA_CAP",
+    "CONCEPT_NVDA_TARGET",
+    "_extract_prose_nvda_values",  # exposed for unit tests
 ]

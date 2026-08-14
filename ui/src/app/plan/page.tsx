@@ -22,6 +22,7 @@ import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { CashflowProjectionChart } from "@/components/plan/cashflow-projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
 import { SynthesisHealthBanner } from "@/components/plan/synthesis-health-banner";
+import { GateReceiptBanner } from "@/components/plan/gate-receipt-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -769,6 +770,16 @@ export default function PlanPage() {
           health={draft.synthesis_health}
           decisionRunId={draft.decision_run_id}
         />
+      )}
+
+      {/* Promotion gate receipt (task 0.2 / 0.10 — trust-restoration).
+          Renders below the synthesis-health chip so the user sees:
+          1. fleet health  ("18 agents OK / 8 adapters OK")
+          2. gate receipt  ("2/2 gates passed" or "gate X DID_NOT_RUN")
+          Hidden when gate_receipt is null (legacy drafts / run predates
+          migration 0102 / orchestrator never reached gate evaluation). */}
+      {renderDraftSurfaces && draft && (
+        <GateReceiptBanner receipt={draft.gate_receipt} />
       )}
 
       {/* Section 1 — Executive summary (draft-driven surface). */}

@@ -140,6 +140,25 @@ WEIGHT_CEIL: float = 1.50
 #: worst-case staleness when the invalidation hook isn't wired.
 CACHE_TTL_SECONDS: float = 300.0
 
+#: A source whose most-recent evaluated outcome is older than this many days
+#: is marked ``is_stale=True`` in :class:`SourceReliability`.  The intent:
+#: a listener that auth-failed months ago (e.g. Discord 4004 since 2026-07-08)
+#: must not present itself as a live, active signal source just because it has
+#: historical scored predictions.  Staleness does NOT delete history; it is a
+#: visibility flag so consumers and the UI can label it "dead / inactive."
+#:
+#: 14 days was chosen as the threshold because:
+#:  * Weekly scoring runs fire every Friday — a source that missed 2 weekly
+#:    runs (14 d) has clearly stopped producing new predictions.
+#:  * Short enough to catch a one-week auth failure before it misleads
+#:    a planning run; long enough not to fire on a holiday or an infra hiccup.
+#:
+#: FLAG FOR ARIEL: this threshold is a judgment call.  If the evaluator cadence
+#: changes (e.g. daily), or if a source legitimately produces predictions only
+#: monthly, this value should be revisited.  It is defined here as a named
+#: constant so the change is a one-liner.
+STALE_SOURCE_THRESHOLD_DAYS: int = 14
+
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -181,6 +200,12 @@ class SourceReliability:
     rolling_30d_hit_rate: Optional[float]
     rolling_30d_mean_pnl: Optional[float]
     sample_size_warning: int  # 0 or 1
+    #: True when the source has not produced a scored outcome in the last
+    #: :data:`STALE_SOURCE_THRESHOLD_DAYS` days (or has never been evaluated).
+    #: A stale source's historical hit-rate is still accurate, but its signal
+    #: may no longer be live.  Consumers and the UI should surface this flag
+    #: rather than silently presenting a dead feed as active.
+    is_stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +250,90 @@ def signal_funnel_context_policy(
         calibrated=True,
         kill_reason=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Staleness helper
+# ---------------------------------------------------------------------------
+
+
+def _parse_datetime_tolerant(value: object) -> Optional[datetime]:
+    """Parse a datetime value that may arrive as a string from SQLite.
+
+    SQLite stores DATETIME columns as text and raw ``session.execute(text(...))``
+    rows return them as plain strings.  This helper converts those strings to
+    naive ``datetime`` objects so callers can do arithmetic without worrying
+    about the SQLite round-trip behaviour.
+
+    Supported formats (SQLite's two most common):
+      * ISO 8601 with space separator: ``"2026-07-08 10:00:00"``
+      * ISO 8601 with T separator:    ``"2026-07-08T10:00:00"``
+      * With trailing UTC offset:     ``"2026-07-08 10:00:00+00:00"``
+
+    Returns ``None`` for ``None`` input or on parse failure (caller treats
+    as stale).
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        # Already a datetime (ORM-mapped queries return proper objects).
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if not isinstance(value, str):
+        return None
+    # Normalise the separator and strip trailing timezone info before parsing.
+    s = value.strip().replace("T", " ")
+    # Strip "+HH:MM" / "-HH:MM" / "Z" suffixes so strptime doesn't need to
+    # handle them (they're always UTC for our stored data).
+    for suffix_start in ("+", "-"):
+        # Walk backwards to find a timezone offset, but avoid stripping the
+        # date's leading "-" sign.  The offset is always in the time portion,
+        # so skip the first 10 chars (date part).
+        idx = s.find(suffix_start, 10)
+        if idx != -1:
+            s = s[:idx]
+            break
+    s = s.rstrip("Z ")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _is_source_stale(
+    last_evaluated_at: object,
+    *,
+    now: Optional[datetime] = None,
+    threshold_days: int = STALE_SOURCE_THRESHOLD_DAYS,
+) -> bool:
+    """Return True when the source has not produced a graded outcome recently.
+
+    Args:
+      last_evaluated_at: UTC-naive datetime (or raw SQLite string) of the
+        most recent scored outcome for this (source, method_family) tuple,
+        as returned by the ``source_reliability`` view.  ``None`` means the
+        source has never had a scored outcome — treated as stale.
+      now: wall-clock injection for tests.  Defaults to
+        ``datetime.utcnow()`` (naive UTC to match SQLite round-trip).
+      threshold_days: staleness horizon; defaults to
+        :data:`STALE_SOURCE_THRESHOLD_DAYS`.
+
+    Returns:
+      ``True`` when the source should be labelled dead/inactive.
+    """
+    parsed = _parse_datetime_tolerant(last_evaluated_at)
+    if parsed is None:
+        return True
+    _now = now if now is not None else datetime.utcnow()
+    # Both datetimes are naive UTC (SQLite drops the tzinfo on round-trip;
+    # we write tz-aware but read back naive — this is documented in the
+    # SourceReliability docstring).  Strip tzinfo from ``_now`` defensively
+    # so the subtraction never raises a TypeError on a tz-aware injection.
+    if _now.tzinfo is not None:
+        _now = _now.replace(tzinfo=None)
+    delta = _now - parsed
+    return delta.days >= threshold_days
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +528,10 @@ def get_source_reliability(
     ).all()
     medians = _compute_medians(session, user_id)
 
+    # Compute staleness against a single "now" so all rows in the same
+    # cache-fill share a consistent reference point.
+    _now_for_staleness = datetime.utcnow()
+
     out: list[SourceReliability] = []
     for r in rows:
         if source is not None and r.source != source:
@@ -470,6 +583,9 @@ def get_source_reliability(
                     else None
                 ),
                 sample_size_warning=int(r.sample_size_warning or 0),
+                is_stale=_is_source_stale(
+                    r.last_evaluated_at, now=_now_for_staleness
+                ),
             )
         )
 
@@ -638,6 +754,7 @@ def reliability_annotation(
             "hit_rate": None,
             "scored_predictions": 0,
             "sample_size_warning": True,
+            "is_stale": True,
             "effective_weight": 1.0,
         }
     rel = rows[0]
@@ -647,6 +764,7 @@ def reliability_annotation(
         "hit_rate": rel.hit_rate,
         "scored_predictions": rel.scored_predictions,
         "sample_size_warning": bool(rel.sample_size_warning),
+        "is_stale": rel.is_stale,
         "effective_weight": get_weight_for_source(
             session,
             user_id,
@@ -998,6 +1116,7 @@ __all__ = [
     "CACHE_TTL_SECONDS",
     "FULL_SAMPLE_SIZE",
     "MIN_SAMPLE_SIZE",
+    "STALE_SOURCE_THRESHOLD_DAYS",
     "SourceReliability",
     "SignalFunnelContextPolicy",
     "VerdictCallOutcome",

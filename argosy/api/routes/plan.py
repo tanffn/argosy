@@ -613,6 +613,43 @@ class DraftResponse(BaseModel):
     # READ-time fact-token render meta (item I). ``None`` when the plan
     # surfaces carry no ``{{fact:}}`` tokens (legacy literal bodies).
     fact_render: FactRenderMeta | None = None
+    # Promotion gate receipt (task 0.2 / 0.10 — trust-restoration).
+    # Populated from ``gate_outcomes`` rows written by the synthesis
+    # orchestrator when it evaluates _promotion_gates. ``None`` for legacy
+    # drafts pre-dating migration 0102 or when the orchestrator never reached
+    # the gate evaluation point.
+    #
+    # ``gate_receipt.summary`` is a one-line human-readable summary
+    # (e.g. "2/2 gates passed" or "1/2 gates passed; whole_artifact_reader
+    # DID_NOT_RUN (codex hung)"). The UI renders it in the plan page header.
+    # ``gate_receipt.gates`` carries the per-gate detail rows so the UI can
+    # render a drill-in list.
+    gate_receipt: "GateReceiptDTO | None" = None
+
+
+class GateReceiptDTO(BaseModel):
+    """Verification receipt for the promotion gates of one synthesis run.
+
+    Mirrors the ``GateOutcome`` dataclass contract — see
+    ``argosy.quality.verification`` for the tri-state semantics.
+    """
+
+    summary: str
+    gates: list["GateOutcomeDTO"] = []
+
+
+class GateOutcomeDTO(BaseModel):
+    """One gate's outcome in the verification receipt."""
+
+    gate: str
+    status: str  # "pass" | "block" | "did_not_run"
+    detail: str = ""
+    override_by: str | None = None
+    override_reason: str | None = None
+
+
+# Rebuild DraftResponse so the forward references above resolve.
+DraftResponse.model_rebuild()
 
 
 class AcceptResponse(BaseModel):
@@ -903,6 +940,47 @@ def _build_nvda_pace(
         return _fallback_nvda_pace(db, user_id)
 
 
+def _build_gate_receipt(
+    db: Session, decision_run_id: int | None
+) -> "GateReceiptDTO | None":
+    """Build the gate receipt DTO from persisted gate_outcomes rows.
+
+    Returns ``None`` when ``decision_run_id`` is absent (legacy / manually
+    ingested drafts) or when no rows exist for the run (orchestrator never
+    reached gate evaluation). Never raises — losing the receipt chip is
+    acceptable; a 500 on the draft endpoint is not.
+    """
+    if decision_run_id is None:
+        return None
+    try:
+        from argosy.services.gate_outcome_store import get_gate_receipt
+
+        result = get_gate_receipt(db, decision_run_id)
+        if result is None:
+            return None
+        outcomes, summary = result
+        return GateReceiptDTO(
+            summary=summary,
+            gates=[
+                GateOutcomeDTO(
+                    gate=o.gate,
+                    status=str(o.status),
+                    detail=o.detail,
+                    override_by=o.override_by,
+                    override_reason=o.override_reason,
+                )
+                for o in outcomes
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the draft surface
+        logger.warning(
+            "plan.gate_receipt_failed decision_run_id=%s err=%s",
+            decision_run_id,
+            str(exc)[:200],
+        )
+        return None
+
+
 def _build_synthesis_health(
     db: Session, decision_run_id: int | None
 ) -> SynthesisHealth | None:
@@ -1088,6 +1166,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         effective_role=effective_role,
         corrective=_read_corrective_provenance(pv),
         fact_render=fact_meta,
+        gate_receipt=_build_gate_receipt(db, pv.decision_run_id),
     )
 
 
@@ -3819,9 +3898,11 @@ def post_draft_accept(
         # promoted plan's canonical surfaces (FI verdict/tile, retirement age,
         # net-worth bases, US-situs) are mutually consistent by construction.
         # The cycle reuses the SAME can_publish_plan the route reads, so they
-        # agree. Degrades to the authority-only path if the graph can't be built
-        # (no snapshot / resolver pending) — synthesis stays the fallback.
+        # agree. If the graph CANNOT be built the gate did not run, which is
+        # not the same as the gate passing — see _publish_gate_outcome below.
         decision = None
+        _publish_gate_outcome = None
+        from argosy.quality.verification import GateOutcome
         from argosy.orchestrator.flows import incremental_plan as _inc
         if _inc._flag_on():
             try:
@@ -3836,15 +3917,32 @@ def post_draft_accept(
                         "plan.accept.incremental_open_flags draft=%s flags=%s",
                         draft_id, _cycle.open_flags,
                     )
-            except Exception as exc:  # noqa: BLE001 — degrade to authority-only
+            except Exception as exc:  # noqa: BLE001 — gate could not run
+                # DID_NOT_RUN is not a pass. This used to fall through to a
+                # bare evaluate_promotion(), which has NO open-flag check — so
+                # any infra hiccup at graph-build time silently downgraded the
+                # publish gate and an open coherence flag could promote. The
+                # gate now becomes a blocking authority; ?override_promote_gate
+                # remains the deliberate (and audited) way through.
+                _publish_gate_outcome = GateOutcome.did_not_run(
+                    "publish_gate", f"incremental cycle raised: {exc}"
+                )
                 logger.warning(
                     "plan.accept.incremental_gate_unavailable draft=%s err=%s; "
-                    "falling back to authority-only evaluate_promotion",
+                    "refusing promotion (was: silent authority-only fallback)",
                     draft_id, exc,
                 )
                 decision = None
         if decision is None:
             decision = evaluate_promotion(authorities)
+        if _publish_gate_outcome is not None and _publish_gate_outcome.blocks():
+            decision.can_promote = False
+            if "publish_gate" not in decision.blocking_authorities:
+                decision.blocking_authorities.append("publish_gate")
+            decision.reasons.append(
+                f"publish_gate: {_publish_gate_outcome.status} — "
+                f"{_publish_gate_outcome.detail}"
+            )
         # Enforce the look-through cap gate only when opted in — otherwise it's a
         # surfaced-but-non-blocking authority (logged above). Fail-closed on breach.
         if (
@@ -5720,6 +5818,38 @@ def post_plan_refine(
         return base_dto
 
     # ---- dry_run=False: APPLY path -----------------------------------------
+
+    # Gate 0: the money-safety net must actually have run.
+    #
+    # run_refinement only evaluates plan invariants when it is handed a
+    # post_doc; without one it returns invariant_report=None and the net is
+    # INERT (see refinement.py "when absent, the net is inert"). This route
+    # has only ever passed pre_doc, so every apply so far has staged a draft
+    # with sleeve-sum and single-name-cap checks silently skipped. Computing a
+    # true post_doc is real work (the change requests target graph INPUT nodes,
+    # not the allocation doc) and is tracked separately; until it exists, an
+    # apply whose net did not run is refused rather than waved through.
+    if decision.invariant_report is None:
+        from argosy.quality.verification import GateOutcome
+
+        _gate = GateOutcome.did_not_run(
+            "plan_invariants",
+            "money-safety net inert: run_refinement received no post_doc, so "
+            "sleeve-sum and single-name-cap invariants were never evaluated",
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "money_safety_net_did_not_run",
+                "gate": _gate.gate,
+                "status": str(_gate.status),
+                "reason": _gate.detail,
+                "hint": (
+                    "Refusing to stage a draft whose allocation invariants were "
+                    "not checked. Use dry_run=true to preview the classification."
+                ),
+            },
+        )
 
     # Gate 1: non-allocation-sleeve-target nodes are not yet supported.
     non_sleeve = [

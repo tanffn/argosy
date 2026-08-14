@@ -10,8 +10,11 @@ monthly expenses).
 Inputs (assembled by ``argosy.orchestrator.flows.plan_synthesis.inputs``
 into a new ``household_budget_payload`` field):
 
-* ``monthly_burn_nis``         — `identity.monthly_expenses_total_nis`
-* ``monthly_burn_window``      — e.g. "12-month rolling" / "Apr 2026"
+* ``monthly_burn_nis``         — average monthly spending NIS (real txns or fallback)
+* ``monthly_burn_source``      — "expense_transactions" | "identity_yaml_fallback"
+* ``monthly_burn_window``      — e.g. "2025-08 to 2026-07" (real) or "2025-06 to 2026-05" (YAML)
+* ``monthly_burn_txn_count``   — number of transactions behind the average (0 = fallback)
+* ``monthly_burn_months_used`` — complete months averaged (0 = fallback)
 * ``income_streams``           — list[{source, monthly_nis, note}]
 * ``liquid_assets_usd_k``      — sum of liquid positions (excl. NVDA RSU pool)
 * ``safe_withdrawal_monthly``  — 4% rule × liquid / 12
@@ -40,6 +43,26 @@ class HouseholdBudgetReport(BaseModel):
     monthly_income_nis: float = 0.0
     monthly_net_nis: float = 0.0
     safe_withdrawal_monthly_usd: float = 0.0
+    # FIX 3 — machine-readable burn provenance on the report object.
+    # Downstream consumers (withdrawal_sequencer, target_progress, plan audit)
+    # previously could not tell "derived from real transactions" from
+    # "hand-typed onboarding estimate" without parsing free-text prose in
+    # key_concerns.  This field carries the same value that was in the input
+    # payload so any consumer can branch on it deterministically.
+    # Valid values: "expense_transactions" | "identity_yaml_fallback" |
+    #               "identity_yaml_fallback_on_error" | "unknown"
+    monthly_burn_source: str = Field(
+        default="unknown",
+        description=(
+            "Provenance of monthly_burn_nis: "
+            "'expense_transactions' when derived from real transaction data; "
+            "'identity_yaml_fallback' when falling back to the hand-typed "
+            "onboarding estimate (insufficient data); "
+            "'identity_yaml_fallback_on_error' when the computation failed. "
+            "Copy the value from the input payload EXACTLY — this is "
+            "deterministic metadata, not a judgment call."
+        ),
+    )
     headroom_summary: str = Field(
         default="",
         description=(
@@ -95,7 +118,8 @@ class HouseholdBudgetAnalystAgent(BaseAgent[HouseholdBudgetReport]):
 
         Required keys (any can be missing — surface in concerns):
 
-        * monthly_burn_nis, monthly_burn_window
+        * monthly_burn_nis, monthly_burn_source, monthly_burn_window
+        * monthly_burn_txn_count, monthly_burn_months_used
         * income_streams (list of {source, monthly_nis, note})
         * liquid_assets_usd_k, safe_withdrawal_monthly_usd
         * rsu_annual_usd, emergency_fund_months
@@ -103,16 +127,25 @@ class HouseholdBudgetAnalystAgent(BaseAgent[HouseholdBudgetReport]):
         """
         payload = household_budget_payload or {}
 
+        burn_source = payload.get("monthly_burn_source", "unknown")
+        # Derive the source_id used for citations — callers reference this in
+        # cited_sources so the synthesizer can audit the provenance trail.
+        if burn_source == "expense_transactions":
+            burn_source_id = "household_budget/expense_transactions"
+        else:
+            burn_source_id = "household_budget/identity_yaml"
+
         system = (
             "You are the household-budget analyst on the Argosy fleet. "
             "Your job: assess the household's monthly cash-flow position "
             "and surface any liquidity / runway concerns the synthesizer "
             "should weigh when proposing actions.\n\n"
             "Rules:\n"
-            "  - Cite source ids for every numeric claim. The household "
-            "snapshot is attached as a single document block titled "
-            "`household_budget/identity_yaml`; use that source_id (plus "
-            "any per-stream ones you see) in `cited_sources`.\n"
+            f"  - Cite source ids for every numeric claim. The burn figure "
+            f"comes from `{burn_source_id}`; use that source_id in "
+            "`cited_sources`. If the source is `identity_yaml_fallback`, "
+            "you MUST call this out in `key_concerns`: the burn figure is a "
+            "hand-typed onboarding estimate, not derived from real spending data.\n"
             "  - Do NOT predict the future or recommend trades. Your job "
             "is to describe the cash-flow STATE so the synthesizer can "
             "react.\n"
@@ -127,19 +160,40 @@ class HouseholdBudgetAnalystAgent(BaseAgent[HouseholdBudgetReport]):
             "      comfortable — net positive AND emergency_fund_months "
             ">= 6 AND safe_withdrawal_monthly >= monthly_burn\n"
             "      abundant — net positive AND emergency_fund_months >= "
-            "12 AND safe_withdrawal_monthly >= 2x monthly_burn\n\n"
+            "12 AND safe_withdrawal_monthly >= 2x monthly_burn\n"
+            # FIX 3 — stamp provenance deterministically: the LLM is told
+            # the exact value to echo, so the field is machine-readable by
+            # downstream consumers without parsing prose in key_concerns.
+            f"  - IMPORTANT: set `monthly_burn_source` in the output JSON to "
+            f"exactly `\"{burn_source}\"`. This is deterministic metadata "
+            "copied from the input — do not invent or modify it.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{HouseholdBudgetReport.model_json_schema()}\n"
         )
 
         sources: list[tuple[str, str]] = [
-            ("household_budget/identity_yaml", str(payload))
+            (burn_source_id, str(payload))
         ]
+
+        txn_count = payload.get("monthly_burn_txn_count", 0)
+        months_used = payload.get("monthly_burn_months_used", 0)
+        if burn_source == "expense_transactions":
+            burn_provenance = (
+                f"REAL DATA — {months_used} complete months averaged, "
+                f"{txn_count} transactions, window: "
+                f"{payload.get('monthly_burn_window', '?')}"
+            )
+        else:
+            burn_provenance = (
+                f"FALLBACK (identity_yaml hand-typed estimate) — "
+                f"window: {payload.get('monthly_burn_window', '?')}; "
+                f"insufficient transaction data to compute from real spend"
+            )
 
         user_lines = [
             "HOUSEHOLD BUDGET SNAPSHOT:",
             f"  monthly_burn_nis: {payload.get('monthly_burn_nis', '?')}",
-            f"  monthly_burn_window: {payload.get('monthly_burn_window', '?')}",
+            f"  monthly_burn_provenance: {burn_provenance}",
             f"  rsu_annual_usd: {payload.get('rsu_annual_usd', '?')}",
             f"  liquid_assets_usd_k: {payload.get('liquid_assets_usd_k', '?')}",
             f"  safe_withdrawal_monthly_usd: {payload.get('safe_withdrawal_monthly_usd', '?')}",
@@ -163,9 +217,9 @@ class HouseholdBudgetAnalystAgent(BaseAgent[HouseholdBudgetReport]):
             user_lines.append("  income_streams: (none catalogued)")
 
         user_lines.append(
-            "\nProduce a HouseholdBudgetReport JSON now. Cite "
-            "`household_budget/identity_yaml` (and any per-stream "
-            "source_ids you derive) in cited_sources."
+            f"\nProduce a HouseholdBudgetReport JSON now. Cite "
+            f"`{burn_source_id}` (and any per-stream source_ids you derive) "
+            f"in cited_sources."
         )
         user = "\n".join(user_lines)
         return system, user, sources

@@ -1312,6 +1312,59 @@ class InvestorEvent(Base):
     )
 
 
+# ----------------------------------------------------------------------
+# Gate outcomes (migration 0102 — trust-restoration workstream)
+# ----------------------------------------------------------------------
+
+
+class GateOutcomeRow(Base):
+    """One gate outcome per (decision_run_id, gate) pair.
+
+    Persisted best-effort by the plan-synthesis orchestrator at the point
+    promotion gates are evaluated. The UI reads these via GET /api/plan/draft
+    and renders a "N/M gates passed" receipt so Ariel can always see whether
+    each check actually ran.
+
+    A DID_NOT_RUN row is NOT the same as PASS. See
+    ``argosy.quality.verification`` for the full tri-state contract and for
+    the ``override_by`` / ``override_reason`` semantics (explicit operator
+    wave-throughs remain cheap; silent overrides become impossible).
+
+    ``gate`` is the stable gate identifier used by ``GateOutcome.gate``
+    (e.g. ``"whole_artifact_reader"``, ``"codex_math"``).
+
+    ``meta_json`` holds the ``GateOutcome.meta`` dict serialized as JSON
+    (free-form string→string labels; kept as Text for SQLite portability).
+    """
+
+    __tablename__ = "gate_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Plain nullable ref (not a DB-enforced FK) — mirrors the pattern used
+    # for fills.verdict_id. Keeps the migration simple + survives row
+    # deletion without constraint noise.
+    decision_run_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    gate: Mapped[str] = mapped_column(String(64), nullable=False)
+    # GateStatus string value: "pass" | "block" | "did_not_run"
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    override_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # GateOutcome.meta serialized as JSON object; "{}" when empty.
+    meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        # One row per gate per run. ON CONFLICT the persist helper deletes
+        # the old row and inserts a fresh one so re-runs overwrite cleanly.
+        UniqueConstraint(
+            "decision_run_id", "gate", name="uq_gate_outcomes_run_gate"
+        ),
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -1347,6 +1400,8 @@ __all__ = [
     "PensionFundSnapshot",
     # Phase 4 (investor events)
     "InvestorEvent",
+    # Gate outcomes (trust-restoration, migration 0102)
+    "GateOutcomeRow",
     # Household expenses subsystem
     "ExpenseSource",
     "ExpenseStatement",
@@ -5168,6 +5223,44 @@ class ValidatedDecisionOutcomeHead(Base):
             ],
             name="fk_validated_decision_outcome_head_same_decision",
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Migration 0103 — instrument_classification table.
+#
+# Canonical ticker → sector_code mapping for the sector-cap preflight check.
+# Seeded from argosy.services.instrument_reference._REFERENCE at migration
+# time; updated by the instrument_classification_sync job (future) or manual
+# override. The preflight check reads from this table indirectly — callers
+# build a classification_map dict from it and pass it into
+# check_sector_concentration_cap; the check itself never does a DB lookup.
+# ---------------------------------------------------------------------------
+
+
+class InstrumentClassification(Base):
+    """Per-ticker sector classification for the concentration-cap preflight.
+
+    ``sector_code`` matches the vocabulary in
+    ``argosy.services.instrument_reference`` (``SECTOR_TECH = "Tech"``, etc.).
+    ``source`` is ``"instrument_reference"`` for rows seeded from the curated
+    in-code table; ``"manual"`` for human overrides; ``"finnhub"`` for future
+    sync-job rows.  ``confidence`` is ``"high"`` or ``"low"``.
+
+    The table is write-through from the seed/sync path and read-only at
+    preflight time — callers build a ``dict[str, str]`` snapshot before the
+    check runs so the check itself is pure and testable.
+    """
+
+    __tablename__ = "instrument_classification"
+
+    ticker: Mapped[str] = mapped_column(String(32), primary_key=True)
+    sector_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="instrument_reference")
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(8), nullable=True, default="high")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
 

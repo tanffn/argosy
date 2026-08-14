@@ -401,6 +401,24 @@ def fallback_label(
     return " ".join(part for part in (loc, atype) if part)
 
 
+def build_classification_map() -> dict[str, str]:
+    """Return a ``{TICKER: sector_code}`` snapshot from the curated reference.
+
+    Used by callers that need to pass a classification map into
+    :func:`argosy.decisions.risk_preflight.check_sector_concentration_cap`
+    without doing a DB round-trip at preflight time.  The map is built from
+    the same ``_REFERENCE`` dict that backs every other reference lookup so
+    the classification is always in sync with the authoritative source.
+
+    Only tickers with a proper sector (i.e. every row in the reference — no
+    None checks needed) are included.  Unknown tickers not in the reference
+    will simply be absent from the returned dict; the preflight check treats
+    their absence as a classification gap and blocks rather than silently
+    passing.
+    """
+    return {ticker: ref.sector for ticker, ref in _REFERENCE.items()}
+
+
 def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
     """The canonical per-account "Type" label: ``"<structure> · <sector>"``
     (e.g. ``"Stock · Tech"``, ``"ETF · Broad Index"``, ``"REIT · Real Estate"``).
@@ -421,6 +439,6 @@ def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
 
 
 __all__ = ["InstrumentRef", "lookup", "known_symbols", "estate_safe_for",
-           "type_label", "name_for", "fallback_label", "REGION_US",
-           "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL",
-           "REGION_OTHER"]
+           "build_classification_map", "type_label", "name_for", "fallback_label",
+           "REGION_US", "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM",
+           "REGION_GLOBAL", "REGION_OTHER"]

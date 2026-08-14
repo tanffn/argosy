@@ -1861,6 +1861,9 @@ def _apply_nvda_current_weight(
             status="resolved",
             source_locator=loc_note + _wt_note,
             agent_report_id=None,
+            # Keep master's staleness-aware confidence (MEDIUM when marks are
+            # stale) rather than the branch's hardcoded HIGH: an unmanaged
+            # NVDA weight is only as trustworthy as the marks behind it.
             confidence=_wt_conf,
             formula=formula,
         )

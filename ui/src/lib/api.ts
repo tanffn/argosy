@@ -5393,6 +5393,35 @@ export interface DraftResponse {
   // synthesis to refresh" banner when this is anything other than
   // "draft".
   effective_role?: string;
+  // Promotion gate receipt (task 0.2 / 0.10 — trust-restoration).
+  // Null for legacy drafts pre-dating migration 0102 or when the
+  // orchestrator never reached gate evaluation. When present, renders
+  // as a one-line "N/M gates passed" chip in the plan header.
+  gate_receipt?: GateReceiptDTO | null;
+}
+
+/**
+ * Promotion gate receipt for one synthesis run.
+ *
+ * Mirrors ``argosy.api.routes.plan.GateReceiptDTO``.
+ * ``summary`` is the one-line human-readable string from
+ * ``argosy.quality.verification.summarize``:
+ *   "2/2 gates passed"
+ *   "1/2 gates passed; whole_artifact_reader DID_NOT_RUN (codex hung)"
+ */
+export interface GateReceiptDTO {
+  summary: string;
+  gates: GateOutcomeDTO[];
+}
+
+/** One gate's tri-state outcome in the verification receipt. */
+export interface GateOutcomeDTO {
+  gate: string;
+  /** "pass" | "block" | "did_not_run" */
+  status: "pass" | "block" | "did_not_run";
+  detail: string;
+  override_by: string | null;
+  override_reason: string | null;
 }
 
 // ----------------------------------------------------------------------

@@ -67,6 +67,7 @@ from argosy.quality.graph_collections import (
 )
 from argosy.quality.live_surfaces import (
     EARLIEST_SAFE_AGE_NODE, FI_CROSSING_YEAR_NODE, FI_MARGIN_NODE,
+    NVDA_CAP_PCT_NODE, NVDA_TARGET_PCT_NODE,
     RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
     canonical_surface_concepts, register_canonical_surfaces, valid_crossing_year,
 )
@@ -100,10 +101,15 @@ SUBJECT_NODE_MAP: dict[str, str] = {
 }
 
 # Canonical scalar nodes seeded from the authoritative resolver manifest.
+# NVDA_CAP_PCT_NODE and NVDA_TARGET_PCT_NODE are seeded here so the derivation
+# graph always carries the resolver's single authoritative value for both —
+# preventing stale hardcodes in LLM prompts (e.g. plan_change_team's old "12%")
+# from diverging from the canonical node's value.
 _RESOLVER_SCALAR_KEYS = (
     FI_MARGIN_NODE, EARLIEST_SAFE_AGE_NODE, LIQUID_NW_KEY, INVESTABLE_NW_KEY,
     TOTAL_NW_KEY, FI_CROSSING_YEAR_NODE,
     RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
+    NVDA_CAP_PCT_NODE, NVDA_TARGET_PCT_NODE,
 )
 
 

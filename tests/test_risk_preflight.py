@@ -13,6 +13,7 @@ from argosy.decisions.risk_preflight import (
     check_concentration_cap,
     check_daily_loss_limit,
     check_position_size_cap,
+    check_sector_concentration_cap,
     check_tier_mode_match,
     check_trading_hours,
     check_wash_sale,
@@ -128,6 +129,109 @@ def test_concentration_within_target_passes() -> None:
         p, snapshot_pct={"AAPL": 5.0}, plan_targets={"AAPL": 5.0}
     )
     assert r.status is PreflightStatus.PASS
+
+
+# ----------------- sector concentration cap -----------------
+
+# Classification map used throughout — mirrors instrument_reference for these
+# tickers so tests are self-contained and don't depend on the live reference.
+_TECH_CLASS_MAP: dict[str, str] = {
+    "NVDA": "Tech",
+    "AMD": "Tech",
+    "CRM": "Tech",
+    "CRWD": "Tech",
+    "CSPX": "Broad Index",
+    "SGOV": "T-Bill",
+    "AMZN": "Consumer Discretionary",
+}
+
+_TECH_CAPS: dict[str, float] = {"Tech": 35.0}
+
+
+def test_sector_cap_buy_over_cap_hard_fails() -> None:
+    """A buy into a tech ticker when tech is already at 40% must HARD_FAIL."""
+    p = _proposal(ticker="NVDA", action="buy")
+    snapshot = {"NVDA": 25.0, "AMD": 10.0, "CRM": 5.0, "CSPX": 30.0, "SGOV": 10.0}
+    # Tech total = 25 + 10 + 5 = 40% > 35% cap
+    r = check_sector_concentration_cap(p, snapshot, _TECH_CAPS, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert "Tech" in r.message
+    assert r.detail.get("sector") == "Tech"
+    assert r.detail.get("current_pct", 0) > 35.0
+
+
+def test_sector_cap_buy_within_cap_passes() -> None:
+    """A buy into a tech ticker when tech is only 20% must PASS."""
+    p = _proposal(ticker="CRWD", action="buy")
+    snapshot = {"NVDA": 10.0, "AMD": 10.0, "CSPX": 40.0, "SGOV": 20.0, "AMZN": 20.0}
+    # Tech total = 10 + 10 = 20% < 35% cap
+    r = check_sector_concentration_cap(p, snapshot, _TECH_CAPS, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.PASS
+
+
+def test_sector_cap_unknown_sector_does_not_silently_pass() -> None:
+    """Proposed ticker absent from classification_map must HARD_FAIL, not pass."""
+    p = _proposal(ticker="UNKNOWN_TKR", action="buy")
+    snapshot = {"NVDA": 10.0, "CSPX": 40.0}
+    r = check_sector_concentration_cap(p, snapshot, _TECH_CAPS, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert r.detail.get("missing_classification") is True
+    assert "UNKNOWN_TKR" in r.message
+
+
+def test_sector_cap_no_caps_configured_passes() -> None:
+    """Empty sector_caps dict → check skipped (PASS), not a block."""
+    p = _proposal(ticker="NVDA", action="buy")
+    snapshot = {"NVDA": 80.0}  # absurdly concentrated — but no cap configured
+    r = check_sector_concentration_cap(p, snapshot, {}, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.PASS
+
+
+def test_sector_cap_sell_over_cap_warns_not_blocks() -> None:
+    """A sell while already over cap should WARN, not block — it reduces exposure."""
+    p = _proposal(ticker="NVDA", action="sell")
+    snapshot = {"NVDA": 30.0, "AMD": 15.0, "CSPX": 30.0, "SGOV": 10.0, "AMZN": 15.0}
+    # Tech = 30 + 15 = 45% — over cap, but action is sell
+    r = check_sector_concentration_cap(p, snapshot, _TECH_CAPS, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.WARN
+
+
+def test_sector_cap_unclassified_held_ticker_hard_fails() -> None:
+    """If a held ticker in snapshot_pct has no sector, the check must block."""
+    p = _proposal(ticker="NVDA", action="buy")
+    snapshot = {"NVDA": 10.0, "MYSTERY_CO": 20.0, "CSPX": 30.0}
+    # MYSTERY_CO is not in _TECH_CLASS_MAP — sector total is incomplete
+    r = check_sector_concentration_cap(p, snapshot, _TECH_CAPS, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert "MYSTERY_CO" in r.message or "unclassified" in r.message.lower()
+
+
+def test_sector_cap_buy_non_capped_sector_passes() -> None:
+    """Buying a non-Tech ticker (e.g. AMZN = Consumer Discretionary) always passes
+    when only a Tech cap is configured."""
+    p = _proposal(ticker="AMZN", action="buy")
+    snapshot = {"AMZN": 25.0, "CSPX": 40.0, "SGOV": 10.0, "NVDA": 5.0, "AMD": 5.0}
+    # Tech = 10%, Consumer Disc = 25% — only Tech has a cap; AMZN is Cons Disc
+    r = check_sector_concentration_cap(p, snapshot, _TECH_CAPS, _TECH_CLASS_MAP)
+    assert r.status is PreflightStatus.PASS
+
+
+def test_sector_cap_via_run_preflight_blocks_buy() -> None:
+    """run_preflight surfaces a sector cap breach as a hard_failure."""
+    p = _proposal(ticker="NVDA", action="buy")
+    settings = AgentSettings(execution=ExecutionBlock(default_mode="paper"))
+    inputs = PreflightInputs(
+        proposal=p,
+        settings=settings,
+        now=datetime(2026, 5, 4, 14, 30, tzinfo=timezone.utc),
+        cash_available_usd=10_000,
+        snapshot_pct={"NVDA": 25.0, "AMD": 15.0, "CSPX": 30.0, "SGOV": 10.0},
+        sector_caps={"Tech": 35.0},
+        classification_map=_TECH_CLASS_MAP,
+    )
+    report = run_preflight(inputs)
+    assert not report.passed
+    assert any(r.check == "sector_concentration_cap" for r in report.hard_failures)
 
 
 # ----------------- wash sale -----------------
@@ -246,3 +350,41 @@ def test_run_preflight_blocks_on_cash() -> None:
     report = run_preflight(inputs)
     assert not report.passed
     assert any(r.check == "cash_availability" for r in report.hard_failures)
+
+
+def test_sector_cap_tickerless_proposal_cannot_pass():
+    """Cannot evaluate => cannot pass (Sol review 2026-08-13, blocker 1)."""
+    from argosy.decisions.risk_preflight import (
+        PreflightStatus,
+        check_sector_concentration_cap,
+    )
+
+    class _P:
+        ticker = ""
+        action = "buy"
+
+    r = check_sector_concentration_cap(
+        _P(), {"NVDA": 58.0}, {"Tech": 35.0}, {"NVDA": "Tech"}
+    )
+    assert r.status is PreflightStatus.HARD_FAIL
+
+
+def test_sector_cap_none_weight_is_missing_data_not_zero():
+    """A None weight must not be silently treated as 0% (Sol blocker 2)."""
+    from argosy.decisions.risk_preflight import (
+        PreflightStatus,
+        check_sector_concentration_cap,
+    )
+
+    class _P:
+        ticker = "AMD"
+        action = "buy"
+
+    r = check_sector_concentration_cap(
+        _P(),
+        {"NVDA": None, "AMD": 2.0},
+        {"Tech": 35.0},
+        {"NVDA": "Tech", "AMD": "Tech"},
+    )
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert "classification" in r.message.lower() or "cannot be computed" in r.message.lower()

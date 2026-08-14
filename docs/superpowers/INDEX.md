@@ -167,7 +167,7 @@ Three independent mechanisms **report success when they did not run**:
 
 | Claim | Verdict |
 |---|---|
-| **right** | ⚠️ The plan predates the restore; the analyst's concentration input excludes unmanaged NVDA; burn comes from a typed onboarding number, not real spend. |
+| **right** | ⚠️ The plan predates the restore; burn comes from a typed onboarding number, not real spend. (**Correction 2026-08-13:** the widely-repeated "analyst input excludes unmanaged NVDA" claim is FALSE — executing `_summarize_positions` on the live snapshot yields `NVDA qty=10940 value=$2,379.4k acct=schwab`, the true 57.7%. Four handovers propagated it from a misread docstring; nobody ran it.) |
 | **current** | ⚠️ Current plan is `refinement-2026-07-13-165608`. |
 | **self-consistent** | ❌ NVDA: book **58.02%**, plan target **8.0%**, IPS prose **12%**. Flagged 2026-07-07, still open. |
 | **always-on** | ❌ Watches well; cannot speak. Email skipped, 0 push subscribers, 59 proposals undelivered. |

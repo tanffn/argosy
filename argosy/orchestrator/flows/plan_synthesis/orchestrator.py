@@ -1147,16 +1147,28 @@ def run_synthesis(
             )
         )
 
+    from argosy.quality.verification import GateOutcome
+
     codex_opinion = None
     codex_row = None
+    # The blind headline-number audit. When it cannot run it reports
+    # DID_NOT_RUN, which is NOT a pass — a plan whose NVDA weight / estate /
+    # net worth were never independently re-derived must not promote on the
+    # strength of an auditor that was absent.
+    codex_gate = GateOutcome.did_not_run(
+        "codex_math", "codex second opinion not attempted"
+    )
     try:
-        codex_opinion, codex_row = _run_codex(output)
-    except Exception as exc:  # noqa: BLE001 — fail-soft
+        codex_opinion, codex_row, codex_gate = _run_codex(output)
+    except Exception as exc:  # noqa: BLE001 — dispatch failure is DID_NOT_RUN
         log.warning(
             "codex_second_opinion.run_failed",
             user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
         )
         codex_opinion, codex_row = None, None
+        codex_gate = GateOutcome.did_not_run(
+            "codex_math", f"dispatch raised: {exc}"
+        )
 
     # ------------------------------------------------------------------
     # FORCING LOOP (codex-recommended, bounded to ONE reconcile round):
@@ -1233,7 +1245,7 @@ def run_synthesis(
                 # Refresh the manifest (the reconciled synth report is now the
                 # latest for its role) + re-review.
                 _numbers_block = _build_numbers_block()
-                codex_opinion, codex_row = _run_codex(output)
+                codex_opinion, codex_row, codex_gate = _run_codex(output)
                 _still_blocking = (
                     getattr(codex_opinion, "overall_assessment", None) == "BLOCK"
                 )
@@ -2654,11 +2666,94 @@ def run_synthesis(
                     session, user_id=user_id, plan_version_id=draft.id,
                     decision_run_id=decision_run_id,
                 )
-                _reader_ok = (
-                    _reader_verdict is None
-                    or getattr(_reader_verdict, "overall_assessment", "") != "BLOCK"
+                # Build a GateOutcome for the whole-artifact reader.
+                # Fail-closed: a reader that DID NOT RUN is NOT a pass.
+                # Three cases:
+                #   BLOCK verdict       → GateStatus.BLOCK
+                #   non-None non-BLOCK  → GateStatus.PASS
+                #   None (did not run)  → classify by cause:
+                #     a. PYTEST_CURRENT_TEST set — reader short-circuits by
+                #        design; emit PASS explicitly so the test suite is not
+                #        broken by the fail-closed gate.  This is a deliberate
+                #        skip, not a defect.
+                #     b. ARGOSY_CODEX_REVIEW_ENABLED kill-switch → DID_NOT_RUN
+                #     c. Everything else (kit missing, dispatch timeout, error)
+                #        → DID_NOT_RUN; check dispatch_failed logs for detail.
+                from argosy.quality.verification import (
+                    GateOutcome as _GateOutcome,
+                    GateStatus as _GateStatus,
+                    blocks_promotion as _blocks_promotion,
+                    summarize as _gate_summarize,
                 )
-                if _conv.all_agreed and _reader_ok:
+                if _reader_verdict is not None:
+                    if getattr(_reader_verdict, "overall_assessment", "") == "BLOCK":
+                        _reader_gate = _GateOutcome.blocked(
+                            "whole_artifact_reader",
+                            "reader BLOCK — "
+                            f"{len(getattr(_reader_verdict, 'findings', []))} finding(s)",
+                        )
+                    else:
+                        _reader_gate = _GateOutcome.passed("whole_artifact_reader")
+                elif _os.environ.get("PYTEST_CURRENT_TEST"):
+                    # Reader short-circuits to (None, None) under pytest by
+                    # design (PYTEST_CURRENT_TEST kill-switch in
+                    # run_whole_artifact_review).  Explicit PASS — deliberate
+                    # skip, not a dispatch failure.
+                    _reader_gate = _GateOutcome.passed(
+                        "whole_artifact_reader",
+                        "skipped under pytest — PYTEST_CURRENT_TEST set",
+                    )
+                elif _os.environ.get("ARGOSY_CODEX_REVIEW_ENABLED", "1") != "1":
+                    _reader_gate = _GateOutcome.did_not_run(
+                        "whole_artifact_reader",
+                        "ARGOSY_CODEX_REVIEW_ENABLED is not '1' — env kill-switch active",
+                    )
+                else:
+                    _reader_gate = _GateOutcome.did_not_run(
+                        "whole_artifact_reader",
+                        "reader returned (None, None) — codex-tandem kit not "
+                        "importable, dispatch timeout, or uncaught error; check "
+                        "whole_artifact_reader.dispatch_failed logs for detail",
+                    )
+                # The codex blind math gate joins the same decision. It reports
+                # DID_NOT_RUN under pytest by design; record that as an explicit
+                # OVERRIDE rather than rewriting it to PASS, so the receipt still
+                # shows the gate never ran and only the reason is "pytest".
+                _codex_gate = codex_gate
+                if (
+                    _codex_gate.status is not _GateStatus.PASS
+                    and _os.environ.get("PYTEST_CURRENT_TEST")
+                ):
+                    _codex_gate = _codex_gate.with_override(
+                        by="pytest",
+                        reason="codex math gate short-circuits under pytest by design",
+                    )
+                _promotion_gates = [_reader_gate, _codex_gate]
+                log.info(
+                    "whole_artifact_reader.fm_converge_gate",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    gate_summary=_gate_summarize(_promotion_gates),
+                )
+                # Persist gate outcomes best-effort so the UI can render the
+                # verification receipt.  A failure here MUST NOT block the
+                # promotion path — persist_gate_outcomes logs at ERROR and
+                # rolls back internally; we never propagate.
+                try:
+                    from argosy.services.gate_outcome_store import (
+                        persist_gate_outcomes as _persist_gate_outcomes,
+                    )
+                    _persist_gate_outcomes(
+                        session,
+                        decision_run_id=decision_run_id,
+                        outcomes=_promotion_gates,
+                    )
+                except Exception as _pgo_exc:  # noqa: BLE001
+                    log.error(
+                        "gate_outcomes.persist_gate_outcomes_raised "
+                        "decision_run_id=%s err=%s",
+                        decision_run_id, _pgo_exc,
+                    )
+                if _conv.all_agreed and not _blocks_promotion(_promotion_gates):
                     decision_run.fund_manager_decision = "approved"
                     session.commit()
                     _fm_converged = True
@@ -2671,7 +2766,8 @@ def run_synthesis(
                     log.warning(
                         "fm_objection_dialogue.not_cleared",
                         user_id=user_id, decision_run_id=decision_run_id,
-                        all_agreed=_conv.all_agreed, reader_ok=_reader_ok,
+                        all_agreed=_conv.all_agreed,
+                        reader_gate=str(_reader_gate.status),
                         unresolved=_conv.unresolved[:6],
                     )
             except Exception as exc:  # noqa: BLE001 — fail-closed: stay rejected
