@@ -1307,9 +1307,22 @@ def _assemble_household_budget_payload(
                     f"typed ₪{_yaml_burn_f:,.0f} rounded up to ₪{_planning_burn:,.0f} "
                     "(planning conservatism, nearest ₪1,000)"
                 )
-            except (TypeError, ValueError):
-                payload["monthly_burn_nis"] = yaml_burn   # leave as-is if not numeric
-                payload["monthly_burn_raw_nis"] = yaml_burn
+            except (TypeError, ValueError) as _burn_exc:
+                # Sol pass 3: the previous version wrote `yaml_burn` straight
+                # through here, so the non-finite guard above raised, landed in
+                # this handler, and the inf/NaN reached the plan anyway — the
+                # guard looked like protection while protecting nothing.
+                # A burn we cannot express as a finite number is ABSENT, not
+                # zero and not inf: emit None and say so, loudly.
+                log.error(
+                    "plan_synthesis.inputs.typed_burn_unusable",
+                    user_id=user_id, value=repr(yaml_burn), error=str(_burn_exc),
+                )
+                payload["monthly_burn_nis"] = None
+                payload["monthly_burn_raw_nis"] = None
+                payload["monthly_burn_buffer"] = (
+                    f"typed burn {yaml_burn!r} is not a usable number — refused"
+                )
         else:
             payload["monthly_burn_nis"] = yaml_burn
             payload["monthly_burn_raw_nis"] = None
