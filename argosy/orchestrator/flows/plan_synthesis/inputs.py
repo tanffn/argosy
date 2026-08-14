@@ -1042,15 +1042,30 @@ def _compute_real_burn_nis(
     """
     from argosy.state.models import ExpenseCategory, ExpenseTransaction  # noqa: PLC0415
 
-    # Per-month NIS spending totals (same filter as dashboard-overview chart).
+    # FIX 1 — net refunds correctly, mirroring /dashboard-overview yearly_spending.
+    # The original query filtered direction='debit' only, so a charge later refunded
+    # by a credit/refund row still counted as spend.  The dashboard nets credits by
+    # applying a sign: debits add, credits subtract.  We mirror that here:
+    #
+    #   - Debits: outer-join includes uncategorized debits (real outflow, just
+    #     unlabelled) OR rows with spending categories.
+    #   - Credits with spending categories: netted as NEGATIVE spend so a charge +
+    #     matching refund pair contributes ₪0, not double the charge amount.
+    #   - Credits without a spending category (salary, dividends, transfers):
+    #     excluded — they are not refunds of spend.
+    #
+    # This matches the signed_nis convention in expenses.py dashboard_overview.
+    signed_nis = case(
+        (ExpenseTransaction.direction == "credit", -ExpenseTransaction.amount_nis),
+        else_=ExpenseTransaction.amount_nis,
+    )
     rows = session.execute(
         select(
             extract("year", ExpenseTransaction.occurred_on).label("y"),
             extract("month", ExpenseTransaction.occurred_on).label("m"),
             func.sum(
                 case(
-                    (ExpenseTransaction.amount_nis.is_not(None),
-                     ExpenseTransaction.amount_nis),
+                    (ExpenseTransaction.amount_nis.is_not(None), signed_nis),
                     else_=None,   # foreign-only rows without NIS conversion: skip
                 )
             ).label("total_nis"),
@@ -1062,12 +1077,25 @@ def _compute_real_burn_nis(
         )
         .where(ExpenseTransaction.user_id == user_id)
         .where(ExpenseTransaction.is_card_payment.is_(False))
-        .where(ExpenseTransaction.direction == "debit")
         .where(ExpenseTransaction.amount_nis.is_not(None))
         .where(
-            (ExpenseCategory.id.is_(None))
+            # Debits: uncategorized (real outflow) OR spending category.
+            (
+                (ExpenseTransaction.direction == "debit")
+                & (
+                    ExpenseCategory.id.is_(None)
+                    | (
+                        ExpenseCategory.is_inflow.is_(False)
+                        & ExpenseCategory.is_excluded_from_spend.is_(False)
+                    )
+                )
+            )
+            # Credits: only spending categories — these are refunds that net against
+            # their matching debit.  Inflow credits (salary/dividends) are excluded.
             | (
-                ExpenseCategory.is_inflow.is_(False)
+                (ExpenseTransaction.direction == "credit")
+                & ExpenseCategory.id.is_not(None)
+                & ExpenseCategory.is_inflow.is_(False)
                 & ExpenseCategory.is_excluded_from_spend.is_(False)
             )
         )
@@ -1077,6 +1105,28 @@ def _compute_real_burn_nis(
 
     if not rows:
         return None
+
+    # FIX 2 — count ALL non-card-payment transactions per month (not just filtered
+    # spend debits) for the partial-month completeness check.  The old approach
+    # counted only post-filter debit rows: a genuinely complete but low-spend month
+    # could be wrongly excluded if it had < 50 SPEND transactions (while having a
+    # normal total of e.g. 80 rows across income, transfers, and a quiet December).
+    all_count_rows = session.execute(
+        select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.count().label("all_n"),
+        )
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .group_by("y", "m")
+    ).all()
+    all_count_by_month: dict[str, int] = {
+        f"{int(y):04d}-{int(m):02d}": int(n)
+        for y, m, n in all_count_rows
+        if y is not None and m is not None
+    }
 
     # Build a list of (month_key, total_nis, n) sorted chronologically.
     month_data: list[tuple[str, float, int]] = []
@@ -1093,20 +1143,15 @@ def _compute_real_burn_nis(
     month_data = month_data[-trailing_months:]
 
     # Exclude the final month if it looks like a partial ingest.
-    # Threshold: a month with far fewer transactions than the ~93/month norm
-    # has not fully landed yet. Set to 50 on Ariel's ruling (2026-08-13): at
-    # 30, July 2026 (35 txns, a partial statement load) survived and dragged
-    # the average from ₪24,396 down to ₪22,410 — i.e. the thin month flipped
-    # the plan from UNDER-estimating burn to over-estimating it. Understating
-    # burn is the dangerous direction: it is what retires you too early.
+    # Threshold: a month with far fewer ALL transactions than the ~93/month norm
+    # has not fully landed yet.  Set to 50 on Ariel's ruling (2026-08-13).
+    # FIX 2: threshold applied to ALL-transaction count (all_count_by_month), not
+    # just the filtered spend-debit subset counted by the main query.
     _PARTIAL_MONTH_THRESHOLD = 50
     complete_months = [
         (key, total, n) for key, total, n in month_data
-        if n >= _PARTIAL_MONTH_THRESHOLD
+        if all_count_by_month.get(key, 0) >= _PARTIAL_MONTH_THRESHOLD
     ]
-    # If the last complete-looking month is the same as the overall last,
-    # we may still exclude it if it's the CURRENT calendar month and looks thin.
-    # The heuristic above already handles that via transaction count.
 
     if len(complete_months) < min_complete_months:
         return None
@@ -1196,13 +1241,29 @@ def _assemble_household_budget_payload(
 
     # --- Monthly burn: prefer real transaction data; fall back to identity_yaml ---
     # Try to aggregate from ingested expense rows (same filter as /dashboard-overview).
+    #
+    # FIX 5 — distinguish a genuine computation FAILURE from "data is insufficient".
+    # The old code caught all exceptions and set real_burn=None, then fell back to
+    # identity_yaml labelled "insufficient transaction data" — a lie when the truth
+    # is "the computation crashed."  Failures are now logged at ERROR with the
+    # full exception and the fallback source is labelled distinctly so downstream
+    # consumers can tell the two apart without parsing free-text prose.
+    _computation_failed = False
     try:
         real_burn = _compute_real_burn_nis(session, user_id)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         real_burn = None
+        _computation_failed = True
+        log.error(
+            "plan_synthesis.inputs.household_budget_burn_computation_failed",
+            error=str(exc),
+            user_id=user_id,
+        )
 
     if real_burn is not None:
         payload["monthly_burn_nis"] = real_burn["monthly_burn_nis"]
+        payload["monthly_burn_raw_nis"] = real_burn.get("monthly_burn_raw_nis")
+        payload["monthly_burn_buffer"] = real_burn.get("monthly_burn_buffer")
         payload["monthly_burn_source"] = real_burn["monthly_burn_source"]
         payload["monthly_burn_window"] = real_burn["monthly_burn_window"]
         payload["monthly_burn_txn_count"] = real_burn["monthly_burn_txn_count"]
@@ -1219,16 +1280,53 @@ def _assemble_household_budget_payload(
         # so the agent knows it is NOT derived from real spending data.
         yaml_burn = data.get("monthly_expenses_total_nis")
         yaml_window = data.get("monthly_expenses_window")
-        payload["monthly_burn_nis"] = yaml_burn
-        payload["monthly_burn_source"] = "identity_yaml_fallback"
-        payload["monthly_burn_window"] = yaml_window or "(window not stated)"
-        payload["monthly_burn_txn_count"] = 0
-        payload["monthly_burn_months_used"] = 0
-        log.warning(
-            "plan_synthesis.inputs.household_budget_burn_fallback_to_yaml",
-            reason="insufficient expense transaction data (< 3 complete months)",
-            yaml_value=yaml_burn,
-        )
+
+        # FIX 4 — apply the same round-up rule to the YAML fallback path.
+        # A typed 24,001 must feed the plan as 25,000, not 24,001.  Planning
+        # conservatism (nearest ₪1,000, always upward) must be consistent
+        # regardless of whether the figure came from real transactions or from the
+        # onboarding intake.  The raw typed value travels alongside as
+        # monthly_burn_raw_nis so the analyst can see both.
+        import math as _math
+
+        if yaml_burn is not None:
+            try:
+                _yaml_burn_f = float(yaml_burn)
+                _planning_burn = float(_math.ceil(_yaml_burn_f / 1000.0) * 1000)
+                payload["monthly_burn_nis"] = _planning_burn
+                payload["monthly_burn_raw_nis"] = round(_yaml_burn_f, 0)
+                payload["monthly_burn_buffer"] = (
+                    f"typed ₪{_yaml_burn_f:,.0f} rounded up to ₪{_planning_burn:,.0f} "
+                    "(planning conservatism, nearest ₪1,000)"
+                )
+            except (TypeError, ValueError):
+                payload["monthly_burn_nis"] = yaml_burn   # leave as-is if not numeric
+                payload["monthly_burn_raw_nis"] = yaml_burn
+        else:
+            payload["monthly_burn_nis"] = yaml_burn
+            payload["monthly_burn_raw_nis"] = None
+
+        if _computation_failed:
+            # FIX 5 — computation error: label it differently from genuine data gap.
+            payload["monthly_burn_source"] = "identity_yaml_fallback_on_error"
+            payload["monthly_burn_window"] = yaml_window or "(window not stated)"
+            payload["monthly_burn_txn_count"] = 0
+            payload["monthly_burn_months_used"] = 0
+            log.error(
+                "plan_synthesis.inputs.household_budget_burn_fallback_to_yaml",
+                reason="computation_failed",
+                yaml_value=yaml_burn,
+            )
+        else:
+            payload["monthly_burn_source"] = "identity_yaml_fallback"
+            payload["monthly_burn_window"] = yaml_window or "(window not stated)"
+            payload["monthly_burn_txn_count"] = 0
+            payload["monthly_burn_months_used"] = 0
+            log.warning(
+                "plan_synthesis.inputs.household_budget_burn_fallback_to_yaml",
+                reason="insufficient_transaction_data_less_than_3_complete_months",
+                yaml_value=yaml_burn,
+            )
 
     # Build a normalized income_streams list from the various per-stream
     # fields the intake captured (employment user, spouse, ESPP, RSU).

@@ -43,6 +43,26 @@ class HouseholdBudgetReport(BaseModel):
     monthly_income_nis: float = 0.0
     monthly_net_nis: float = 0.0
     safe_withdrawal_monthly_usd: float = 0.0
+    # FIX 3 — machine-readable burn provenance on the report object.
+    # Downstream consumers (withdrawal_sequencer, target_progress, plan audit)
+    # previously could not tell "derived from real transactions" from
+    # "hand-typed onboarding estimate" without parsing free-text prose in
+    # key_concerns.  This field carries the same value that was in the input
+    # payload so any consumer can branch on it deterministically.
+    # Valid values: "expense_transactions" | "identity_yaml_fallback" |
+    #               "identity_yaml_fallback_on_error" | "unknown"
+    monthly_burn_source: str = Field(
+        default="unknown",
+        description=(
+            "Provenance of monthly_burn_nis: "
+            "'expense_transactions' when derived from real transaction data; "
+            "'identity_yaml_fallback' when falling back to the hand-typed "
+            "onboarding estimate (insufficient data); "
+            "'identity_yaml_fallback_on_error' when the computation failed. "
+            "Copy the value from the input payload EXACTLY — this is "
+            "deterministic metadata, not a judgment call."
+        ),
+    )
     headroom_summary: str = Field(
         default="",
         description=(
@@ -140,7 +160,13 @@ class HouseholdBudgetAnalystAgent(BaseAgent[HouseholdBudgetReport]):
             "      comfortable — net positive AND emergency_fund_months "
             ">= 6 AND safe_withdrawal_monthly >= monthly_burn\n"
             "      abundant — net positive AND emergency_fund_months >= "
-            "12 AND safe_withdrawal_monthly >= 2x monthly_burn\n\n"
+            "12 AND safe_withdrawal_monthly >= 2x monthly_burn\n"
+            # FIX 3 — stamp provenance deterministically: the LLM is told
+            # the exact value to echo, so the field is machine-readable by
+            # downstream consumers without parsing prose in key_concerns.
+            f"  - IMPORTANT: set `monthly_burn_source` in the output JSON to "
+            f"exactly `\"{burn_source}\"`. This is deterministic metadata "
+            "copied from the input — do not invent or modify it.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{HouseholdBudgetReport.model_json_schema()}\n"
         )
