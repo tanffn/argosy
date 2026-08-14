@@ -305,6 +305,11 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # "accuracy over LLM cost"; high bar, RECORDS only (escalations flow through
     # the monitor-flag → action_proposer pipeline). No Haiku fallback.
     "thesis_monitor": "claude-opus-4-8",
+    # Fund/ETF vehicle analyst — one Opus call per collective instrument to settle
+    # a fund-specific verdict (domicile, TER, mandate fit, overlap, NVDA
+    # look-through). Opus per binding preference "accuracy over LLM cost":
+    # estate-domicile and sleeve-fit reasoning is a high-consequence money path.
+    "fund_vehicle_analyst": "claude-opus-4-8",
     # Long-form Discord alpha-report analyst — replaces the regex
     # extract_alpha_call_from_text for posts > 500 chars / > 5 newlines.
     # Opus per binding preference "accuracy over LLM cost" — the agent
@@ -419,6 +424,13 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # related_history + plan context before emitting.
     "action_proposer":         "high",
     "thesis_monitor":          "high",
+    # Fund/ETF vehicle analyst — high effort: must weigh domicile, mandate
+    # fit, NVDA look-through, overlap, and TER gaps in one structured pass.
+    "fund_vehicle_analyst":    "high",
+    # Sleeve-level arbitration — high effort: must evaluate a SET of redundant
+    # fund verdicts holistically (domicile, cost, look-through, size, tax cost,
+    # index fit) and produce a single consolidated keep/exit ruling.
+    "sleeve_arbitration":      "high",
     # Deployment author (fleet-authors pivot) — high effort: one pass must
     # weigh concentration look-through, tax reserve, domicile, and plan-fit
     # holistically (the reasoning that beat the deterministic engine).
@@ -579,6 +591,9 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # own internal budget under this cap.
     "action_proposer": 8000,
     "thesis_monitor": 16000,
+    # Fund/ETF vehicle analyst — 16K cap; output is a compact FundVehicleReport
+    # (verdict + reasoning_md + falsifiers + triggers ≈ 1-2 KB).
+    "fund_vehicle_analyst": 16000,
     # Deployment author (fleet-authors pivot) — output is one compact
     # AllocationProposal (a handful of buys/sells + reserves + rationale).
     # 16K is generous headroom and keeps adaptive thinking under the cap.

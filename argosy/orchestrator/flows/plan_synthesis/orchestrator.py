@@ -293,7 +293,10 @@ def run_synthesis(
     # were already going to charge).
     import os as _os
 
-    cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "20.0"))
+    # 100 (Ariel, 2026-08-14). NOTE: this env var had THREE different defaults
+    # across three call sites (10 / 10 / 20), so the effective cap depended on
+    # which path ran first. Unified here.
+    cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "100.0"))
 
     # DERIVATION-FIRST: prepend LOCKED DERIVED FACTS to the synthesizer guidance so the
     # synthesizer USES the team-derived numbers (NVDA deconcentration target/sell + FI
