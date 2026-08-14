@@ -301,6 +301,230 @@ def test_extraction_failure_is_recorded_not_swallowed(session, monkeypatch):
     assert "## Wealth Dashboard" in art.full_text
 
 
+# ── Prose extraction tests ────────────────────────────────────────────────────
+
+
+def test_prose_extraction_fires_on_stale_hardcoded_cap():
+    """Core defect: resolver/alloc_doc both say 13% cap, but the LLM hardcoded
+    '12% hard cap' in plan prose.  The existing body/alloc_doc comparison
+    passes silently (both canonical surfaces agree).  The prose surface catches
+    the divergence.
+
+    This is the EXACT defect that motivated prose extraction: a stale literal
+    percentage written by the LLM into the plan body goes undetected until the
+    prose is itself a compared surface."""
+    from types import SimpleNamespace
+
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        _extract_prose_nvda_values,
+    )
+    from argosy.quality.coherence_gate import check_cross_surface_coherence
+
+    # Canonical surfaces agree on 13%.
+    bag: dict = {
+        CONCEPT_NVDA_CAP: [("body", 13.0), ("alloc_doc", 13.0)],
+    }
+    art_before = SimpleNamespace(surface_values=bag)
+    # Before prose extraction: gate is silent (13 == 13).
+    assert check_cross_surface_coherence(art_before) == []
+
+    # Prose has the stale hardcode.
+    prose = (
+        "The 8% steering target sits inside the 12% hard cap and governs "
+        "deconcentration pacing."
+    )
+    _extract_prose_nvda_values(prose, bag)
+
+    # Prose surface now records 12.0 pp.
+    prose_vals = dict(bag[CONCEPT_NVDA_CAP])
+    # prose key may appear multiple times if multiple values; check 12.0 is present.
+    prose_entries = [(s, v) for s, v in bag[CONCEPT_NVDA_CAP] if s == "prose"]
+    assert any(v == 12.0 for _, v in prose_entries), (
+        f"Expected prose=12.0 in {bag[CONCEPT_NVDA_CAP]}"
+    )
+
+    # Gate now fires: prose(12) diverges from body(13) / alloc_doc(13).
+    art_after = SimpleNamespace(surface_values=bag)
+    violations = check_cross_surface_coherence(art_after)
+    assert any(CONCEPT_NVDA_CAP in v.detail for v in violations), (
+        f"Expected nvda_cap_pct violation, got: {violations}"
+    )
+
+
+def test_prose_extraction_passes_when_prose_consistent_with_canonical():
+    """Prose that correctly states the canonical cap ('13% hard cap') must not
+    fire — the prose surface matches the canonical surfaces."""
+    from types import SimpleNamespace
+
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        _extract_prose_nvda_values,
+    )
+    from argosy.quality.coherence_gate import check_cross_surface_coherence
+
+    bag: dict = {
+        CONCEPT_NVDA_CAP: [("body", 13.0), ("alloc_doc", 13.0)],
+    }
+    prose = (
+        "NVDA concentration cap is 13.0% (canonical binding ceiling) — "
+        "deconcentrate toward the 8% IPS sleeve over three years."
+    )
+    _extract_prose_nvda_values(prose, bag)
+
+    # Prose finds 13.0 — consistent with canonical.
+    prose_entries = [(s, v) for s, v in bag[CONCEPT_NVDA_CAP] if s == "prose"]
+    assert any(v == 13.0 for _, v in prose_entries)
+
+    art = SimpleNamespace(surface_values=bag)
+    assert check_cross_surface_coherence(art) == [], (
+        "Consistent prose must not fire the gate"
+    )
+
+
+def test_prose_extraction_no_false_positive_on_unrelated_percentages():
+    """Percentages in the plan prose that are NOT about the NVDA cap or steering
+    target must not be picked up.
+
+    Tested false-positive candidates:
+      - 28.5% US broad-market allocation
+      - 25% CGT / 30% effective rate
+      - 12% NI/health tax ceiling
+      - 50% ordinary-income retention
+      - 3.5% SWR
+      - 59.9% NVDA current weight (how large it is, not what the cap is)
+    None of these mention 'hard cap', 'binding ceiling', 'steering target',
+    or 'IPS sleeve', so none should register a prose surface entry."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        CONCEPT_NVDA_TARGET,
+        _extract_prose_nvda_values,
+    )
+
+    prose = (
+        "US broad-market core: 28.5% of portfolio. "
+        "Section 102 capital-track sales realize 25% CGT plus surtax (~30% effective). "
+        "Sell-to-cover at income-tax only (~50%) — no 12% NI/health ceiling applies. "
+        "Perpetual SWR: 3.5%. "
+        "NVDA is 59.9% of the tradeable book and supplies ~98% of variance."
+    )
+    bag: dict = {}
+    _extract_prose_nvda_values(prose, bag)
+
+    # No prose surface must be registered for either NVDA policy concept.
+    assert CONCEPT_NVDA_CAP not in bag or all(
+        s != "prose" for s, _ in bag.get(CONCEPT_NVDA_CAP, [])
+    ), f"False positive on cap: {bag.get(CONCEPT_NVDA_CAP)}"
+    assert CONCEPT_NVDA_TARGET not in bag or all(
+        s != "prose" for s, _ in bag.get(CONCEPT_NVDA_TARGET, [])
+    ), f"False positive on target: {bag.get(CONCEPT_NVDA_TARGET)}"
+
+
+def test_prose_extraction_no_false_positive_cap_value_before_steering_target():
+    """Regression: 'NVDA cap 13.0% and 8% IPS steering target' must NOT register
+    13.0 as a target value — 13.0% is the cap and 8% is the target.  The '%' in
+    the gap between '13.0%' and 'IPS steering target' gates this out via the
+    no-intervening-percent rule in _PROSE_NVDA_TARGET_RE."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_TARGET,
+        _extract_prose_nvda_values,
+    )
+
+    prose = (
+        "NVDA cap 13.0% and 8% IPS steering target are canonical binding values; "
+        "sell/target counts derive from them on current marks."
+    )
+    bag: dict = {}
+    _extract_prose_nvda_values(prose, bag)
+
+    target_prose = [v for s, v in bag.get(CONCEPT_NVDA_TARGET, []) if s == "prose"]
+    assert 13.0 not in target_prose, (
+        f"13.0 must not be registered as a prose target; got {target_prose}"
+    )
+    # 8.0 IS a legitimate target extraction from '8% IPS steering target'.
+    assert 8.0 in target_prose, (
+        f"Expected 8.0 as prose target; got {target_prose}"
+    )
+
+
+def test_prose_extraction_no_false_positive_cap_inside_steering_target_phrase():
+    """Regression: 'the 8% steering target inside the 13% cap' must NOT register
+    13.0 as a target value — 13% follows 'inside the' and is the cap, caught by
+    the negative lookahead in _PROSE_NVDA_TARGET_RE's phrase-before-number branch."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_TARGET,
+        _extract_prose_nvda_values,
+    )
+
+    prose = (
+        "Keeping/accelerating the glide toward the 8% steering target inside "
+        "the 13% cap, executed only from the capital-track-eligible pool."
+    )
+    bag: dict = {}
+    _extract_prose_nvda_values(prose, bag)
+
+    target_prose = [v for s, v in bag.get(CONCEPT_NVDA_TARGET, []) if s == "prose"]
+    assert 13.0 not in target_prose, (
+        f"13.0 must not be registered as a prose target; got {target_prose}"
+    )
+    assert 8.0 in target_prose, (
+        f"Expected 8.0 as prose target; got {target_prose}"
+    )
+
+
+def test_prose_extraction_catches_binding_ceiling_variant():
+    """'12% binding ceiling' (a second common phrasing for the cap) is caught."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        _extract_prose_nvda_values,
+    )
+
+    bag: dict = {}
+    prose = "The NVDA endpoint is coherent: 12% binding ceiling, 8% policy steering target."
+    _extract_prose_nvda_values(prose, bag)
+
+    cap_vals = [(s, v) for s, v in bag.get(CONCEPT_NVDA_CAP, []) if s == "prose"]
+    assert any(v == 12.0 for _, v in cap_vals), f"Expected prose cap 12.0 in {cap_vals}"
+
+
+def test_prose_extraction_catches_steering_target_variant():
+    """'8% steering target' (target phrasing) is caught for CONCEPT_NVDA_TARGET."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_TARGET,
+        _extract_prose_nvda_values,
+    )
+
+    bag: dict = {}
+    prose = "Accelerate deconcentration toward the 8% steering target inside the 13% hard cap."
+    _extract_prose_nvda_values(prose, bag)
+
+    tgt_vals = [(s, v) for s, v in bag.get(CONCEPT_NVDA_TARGET, []) if s == "prose"]
+    assert any(v == 8.0 for _, v in tgt_vals), f"Expected prose target 8.0 in {tgt_vals}"
+
+
+def test_prose_extraction_deduplicates_repeated_values():
+    """Repeated identical mentions of '13% hard cap' must register prose=13.0
+    only once, not as multiple entries."""
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NVDA_CAP,
+        _extract_prose_nvda_values,
+    )
+
+    bag: dict = {}
+    # Repeat the phrase three times.
+    prose = (
+        "The 13% hard cap governs. "
+        "Reiteration: the 13% hard cap is the ceiling. "
+        "And again, the 13% hard cap."
+    )
+    _extract_prose_nvda_values(prose, bag)
+
+    prose_entries = [(s, v) for s, v in bag.get(CONCEPT_NVDA_CAP, []) if s == "prose"]
+    assert prose_entries.count(("prose", 13.0)) == 1, (
+        f"Expected exactly one prose=13.0, got {prose_entries}"
+    )
+
+
 def test_nvda_cap_and_target_extracted_from_alloc_doc_surface() -> None:
     """The ``_add_alloc_doc_values`` helper extracts NVDA cap and target from a
     TargetAllocationDoc and records them under the canonical concept keys so the
