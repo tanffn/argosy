@@ -60,15 +60,38 @@ def make_surface_node(
     )
 
 
-def render_fi_verdict_text(margin_signed_nis: float) -> str:
-    """The canonical FI-sufficiency VERDICT text, derived from the ONE signed
-    margin. Mirrors plan_numeric_resolver.render_numbers_for_synth: >=0 => the
-    liquid basis covers the total capital target (REACHED) with that margin;
-    <0 => liquid is short of the target (NOT reached) by that amount. The verdict
-    word is a pure function of the sign, so every surface that renders from this
-    node states the SAME conclusion."""
+def render_fi_verdict_text(
+    margin_signed_nis: float,
+    net_margin_nis: float | None = None,
+) -> str:
+    """The canonical FI-sufficiency VERDICT text.
+
+    Four cases (mirrors plan_numeric_resolver synth-verdict doctrine):
+    1. Gross negative: NOT reached — liquid net worth is short of the target.
+    2. Gross positive, net positive (or net unknown): REACHED — both bases clear.
+    3. Gross positive, net negative: QUALIFIED REACHED — gross milestone hit but
+       embedded NVDA realization tax creates an after-tax shortfall.  The helper
+       states BOTH bases; callers must NOT write "FI reached" without this context.
+    4. Net negative alone: same as case 3 (net drives the final verdict).
+
+    This is the ONE shared helper — every surface that renders the FI verdict
+    routes through here, so adding a new basis cannot produce a one-sided verdict
+    by omission."""
     m = float(margin_signed_nis)
+    net_m = float(net_margin_nis) if net_margin_nis is not None else None
+
     if m >= 0:
+        if net_m is not None and net_m < 0:
+            # Gross cleared the line but embedded NVDA realization tax means
+            # after-tax FI is NOT reached. State both bases — callers must present
+            # the qualified verdict, never a plain "REACHED".
+            return (
+                f"FI sufficiency VERDICT: REACHED ON A GROSS PRE-TAX BASIS ONLY — "
+                f"liquid net worth exceeds the total capital target by ₪{m:,.0f} "
+                f"BEFORE accounting for the embedded NVDA realization tax. "
+                f"Net of realization tax, the margin is ₪{net_m:,.0f} (a SHORTFALL). "
+                f"FI is NOT reached on an after-tax basis."
+            )
         return (
             f"FI sufficiency VERDICT: REACHED — liquid net worth covers the total "
             f"capital target with a ₪{m:,.0f} margin."
@@ -82,11 +105,16 @@ def render_fi_verdict_text(margin_signed_nis: float) -> str:
 def build_fi_margin_surfaces() -> list[Node]:
     """Three deterministic surfaces that ALL render from the ONE
     ``retirement.fi_margin_signed_nis`` derived node: the dashboard FI tile, the
-    appendix FI table row, and the FI verdict. Because they share one inbound
-    node, a change to the margin re-renders all three identically — a
-    cross-surface basis-flip ('reached' on one, 'short' on another) is
-    impossible by construction (spec Layer-3 step 4)."""
+    appendix FI table row, and the FI verdict.
+
+    The FI verdict surface also declares ``retirement.fi_margin_net_of_realization_nis``
+    as a second input so the shared helper ``render_fi_verdict_text`` can qualify the
+    verdict when gross >= 0 but net < 0 (embedded NVDA tax creates an after-tax
+    shortfall). The net margin node must be present in the graph (as an INPUT with
+    value=None when the tax simulation is unavailable) — whoever builds the graph
+    must add it before calling ``recompute()``."""
     margin_key = "retirement.fi_margin_signed_nis"
+    net_margin_key = "retirement.fi_margin_net_of_realization_nis"
     return [
         make_surface_node(
             key="surface:dashboard.fi_tile",
@@ -106,9 +134,11 @@ def build_fi_margin_surfaces() -> list[Node]:
         ),
         make_surface_node(
             key="surface:fi_verdict",
-            inputs=(margin_key,),
-            recipe=lambda i: render_fi_verdict_text(i[margin_key]),
-            compute_version="fi-verdict-v1",
+            inputs=(margin_key, net_margin_key),
+            recipe=lambda i: render_fi_verdict_text(
+                i[margin_key], i[net_margin_key]
+            ),
+            compute_version="fi-verdict-v2",
         ),
     ]
 

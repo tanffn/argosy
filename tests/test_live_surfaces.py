@@ -8,6 +8,7 @@ from argosy.quality.live_surfaces import (
     EARLIEST_SAFE_AGE_NODE,
     FI_CROSSING_YEAR_NODE,
     FI_MARGIN_NODE,
+    FI_NET_MARGIN_NODE,
     NET_WORTH_INVESTABLE_NODE,
     NET_WORTH_LIQUID_NODE,
     NET_WORTH_TOTAL_NODE,
@@ -26,10 +27,17 @@ def _input_node(key: str, value):
 
 def _build_graph_with_canonical_inputs() -> DerivationGraph:
     """A hermetic graph: the canonical derived nodes are seeded as INPUT nodes
-    (so the test can set their value directly) + all canonical surfaces."""
+    (so the test can set their value directly) + all canonical surfaces.
+
+    FI_NET_MARGIN_NODE is added as a separate INPUT (not a canonical subject node)
+    because the FI-sufficiency surfaces declare it as a second inbound edge so that
+    render_fi_verdict_text can qualify the verdict when gross >= 0 but net < 0.
+    Default value is None (tax simulation not ingested)."""
     g = DerivationGraph()
     for node_key in set(CANONICAL_SUBJECT_NODE.values()):
         g.add_node(_input_node(node_key, 0.0))
+    # Required by the surface:fi_verdict and surface:dashboard.fi_tile nodes.
+    g.add_node(_input_node(FI_NET_MARGIN_NODE, None))
     register_canonical_surfaces(g)
     g.recompute()
     return g

@@ -36,6 +36,7 @@ from argosy.quality.surface_rendering import (
 # Each is the SINGLE NodeKind.DERIVED node that every surface for that subject
 # renders from. Surfaces never carry their own copy of the number.
 FI_MARGIN_NODE = "retirement.fi_margin_signed_nis"          # liquid − total capital target
+FI_NET_MARGIN_NODE = "retirement.fi_margin_net_of_realization_nis"  # gross margin − embedded NVDA CGT
 FI_CROSSING_YEAR_NODE = "retirement.fi_crossing_year"      # reconciled trajectory crossing
 EARLIEST_SAFE_AGE_NODE = "retirement.earliest_safe_age"     # the one honest age
 NET_WORTH_LIQUID_NODE = "net_worth.liquid_nis"              # liquid basis, distinct
@@ -92,21 +93,26 @@ SubjectSurfaceBuilder = Callable[[str], list[Node]]
 
 def _fi_sufficiency_surfaces(node_key: str) -> list[Node]:
     """FI-sufficiency surfaces — verdict + dashboard tile + appendix row, ALL
-    from the one signed-margin node. The verdict word is a pure function of the
-    margin's sign (render_fi_verdict_text), so the tile and the verdict cannot
-    disagree about reached-vs-short (kills the FI basis-flip)."""
+    from the one signed-margin node.
+
+    The verdict surfaces also declare FI_NET_MARGIN_NODE as a second input so
+    ``render_fi_verdict_text`` can qualify the verdict when gross >= 0 but net < 0
+    (embedded NVDA realization tax creates an after-tax shortfall). The net margin
+    node is always present in the resolver graph (resolved or pending); the shared
+    helper returns the gross-only verdict when net_margin is None."""
+    net_key = FI_NET_MARGIN_NODE
     return [
         make_surface_node(
             key="surface:fi_verdict",
-            inputs=(node_key,),
-            recipe=lambda i: render_fi_verdict_text(i[node_key]),
-            compute_version="fi-verdict-v1",
+            inputs=(node_key, net_key),
+            recipe=lambda i: render_fi_verdict_text(i[node_key], i[net_key]),
+            compute_version="fi-verdict-v2",
         ),
         make_surface_node(
             key="surface:dashboard.fi_tile",
-            inputs=(node_key,),
-            recipe=lambda i: render_fi_verdict_text(i[node_key]),
-            compute_version="fi-tile-v1",
+            inputs=(node_key, net_key),
+            recipe=lambda i: render_fi_verdict_text(i[node_key], i[net_key]),
+            compute_version="fi-tile-v2",
         ),
         make_surface_node(
             key="surface:appendix.fi_table",
@@ -472,6 +478,7 @@ def canonical_surface_concepts(
 
 __all__ = [
     "FI_MARGIN_NODE",
+    "FI_NET_MARGIN_NODE",
     "EARLIEST_SAFE_AGE_NODE",
     "FI_CROSSING_YEAR_NODE",
     "NET_WORTH_LIQUID_NODE",

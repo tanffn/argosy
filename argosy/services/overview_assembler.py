@@ -200,6 +200,14 @@ _T_FI_REACHED = (
     "can actually live on versus the {{fact:retirement.fi_total_capital_nis}} "
     "you need to never work again — you're past the line."
 )
+_T_FI_REACHED_GROSS_ONLY = (
+    "You've crossed the gross FI threshold — your "
+    "{{fact:portfolio.liquid_net_worth_nis}} liquid portfolio covers the "
+    "{{fact:retirement.fi_total_capital_nis}} capital target before tax. "
+    "But the embedded NVDA realization tax means you're still {NET_SHORTFALL} "
+    "short on an after-tax basis. The gross milestone matters; net of taxes, "
+    "FI is not yet reached."
+)
 _T_FI_SHORT = (
     "Almost. You need {{fact:retirement.fi_total_capital_nis}} to live off "
     "forever without working; you have {{fact:portfolio.liquid_net_worth_nis}} "
@@ -263,12 +271,13 @@ def _assert_clean_templates() -> None:
         v = find_unauthorized_numbers(t)
         assert not v, f"template carries hand-typed magnitude {v!r}: {t!r}"
     # For the marker templates, blank the markers then assert clean.
-    for t in (_T_FI_SHORT, _T_RSU):
+    for t in (_T_FI_SHORT, _T_RSU, _T_FI_REACHED_GROSS_ONLY):
         bare = (
             t.replace("{SHORT_AMOUNT}", "")
             .replace("{FIRST_YEAR_NET}", "")
             .replace("{LAST_YEAR_NET}", "")
             .replace("{LAST_YEAR}", "")
+            .replace("{NET_SHORTFALL}", "")
         )
         v = find_unauthorized_numbers(bare)
         assert not v, f"marker template carries hand-typed magnitude {v!r}: {t!r}"
@@ -290,11 +299,28 @@ def _chapter_fi(resolved, *, base_year: int | None = None) -> OverviewChapterDat
     facts = [_fact_ref(resolved, k) for k in keys]
 
     margin = _value(resolved, "retirement.fi_margin_signed_nis")
+    net_margin = _value(resolved, "retirement.fi_margin_net_of_realization_nis")
     degraded = False
 
     if margin is not None and margin >= 0:
-        headline, ok = _render_headline(_T_FI_REACHED, resolved)
-        degraded = not ok
+        if net_margin is not None and net_margin < 0:
+            # Gross cleared the FI line but embedded NVDA realization tax means
+            # after-tax FI is NOT reached. Render the qualified template — never
+            # a plain "you've reached it" headline when net is negative.
+            try:
+                net_shortfall = render_signed_abs(
+                    "retirement.fi_margin_net_of_realization_nis", resolved
+                )
+            except Exception:
+                net_shortfall = "{{fact:retirement.fi_margin_net_of_realization_nis}}"
+                degraded = True
+            template = _T_FI_REACHED_GROSS_ONLY.replace("{NET_SHORTFALL}", net_shortfall)
+            leak_tmpl = _T_FI_REACHED_GROSS_ONLY.replace("{NET_SHORTFALL}", "")
+            headline, ok = _render_headline(template, resolved, leak_check_template=leak_tmpl)
+            degraded = degraded or not ok
+        else:
+            headline, ok = _render_headline(_T_FI_REACHED, resolved)
+            degraded = not ok
     else:
         # "short" variant — render the absolute magnitude via fact_registry.
         try:

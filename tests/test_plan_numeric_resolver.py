@@ -1342,6 +1342,310 @@ def test_fi_crossing_year_is_future_when_margin_negative(session):
             "FI not reached -> crossing must be a future year, never the current year")
 
 
+# ---------------------------------------------------------------------------
+# Sol blockers 1, 4, 5 — verdict qualification and confidence integrity
+# ---------------------------------------------------------------------------
+
+
+def _make_resolved(**kv) -> ResolvedPlanNumbers:
+    """Build a ResolvedPlanNumbers from key→value pairs (all NIS, status=resolved)."""
+    values = {}
+    for k, v in kv.items():
+        values[k] = ResolvedValue(
+            key=k, value=v, unit="nis", status="resolved",
+            source_locator="test", agent_report_id=None, confidence="HIGH",
+        )
+    return ResolvedPlanNumbers(values=values)
+
+
+class TestBlocker1VerdictQualification:
+    """Blocker 1: the FI-sufficiency verdict must be qualified when gross>=0 but net<0.
+
+    An unqualified 'REACHED' when the net-of-realization margin is deeply negative is
+    the whole point of the feature defeated at the last inch."""
+
+    def test_gross_positive_net_negative_verdict_is_qualified(self):
+        """Gross reached, net short → verdict must NOT say bare 'REACHED'."""
+        rp = _make_resolved(**{
+            "retirement.fi_margin_signed_nis": 616_678.0,
+            "retirement.fi_margin_net_of_realization_nis": -1_884_626.0,
+        })
+        out = render_numbers_for_synth(rp)
+        # Must NOT contain an unqualified REACHED assertion.
+        assert "VERDICT: REACHED\n" not in out
+        assert "VERDICT: REACHED — liquid net worth" not in out
+        # Must carry 'GROSS PRE-TAX BASIS' qualification.
+        assert "GROSS PRE-TAX BASIS" in out
+        # Must state the net shortfall.
+        assert "1,884,626" in out
+        assert "SHORTFALL" in out or "shortfall" in out.lower()
+        # Must forbid stating 'FI reached' without qualifier.
+        assert "do NOT write 'FI reached' without the" in out or "MUST state both" in out
+
+    def test_both_positive_verdict_is_unqualified_reached(self):
+        """Gross and net both positive → full REACHED with both figures."""
+        rp = _make_resolved(**{
+            "retirement.fi_margin_signed_nis": 1_000_000.0,
+            "retirement.fi_margin_net_of_realization_nis": 200_000.0,
+        })
+        out = render_numbers_for_synth(rp)
+        assert "VERDICT: REACHED" in out
+        assert "200,000" in out
+        assert "1,000,000" in out
+        assert "GROSS PRE-TAX BASIS ONLY" not in out
+
+    def test_gross_negative_verdict_is_not_reached(self):
+        """Gross negative → flat NOT reached regardless of net."""
+        rp = _make_resolved(**{
+            "retirement.fi_margin_signed_nis": -148_208.0,
+            "retirement.fi_margin_net_of_realization_nis": -1_000_000.0,
+        })
+        out = render_numbers_for_synth(rp)
+        assert "VERDICT: NOT reached" in out
+        assert "148,208" in out
+
+    def test_gross_positive_net_pending_verdict_is_qualified(self):
+        """Gross reached but net pending → still qualify, don't claim fully funded."""
+        rp = _make_resolved(**{
+            "retirement.fi_margin_signed_nis": 500_000.0,
+        })
+        # No net-of-realization key → it will be absent from values
+        out = render_numbers_for_synth(rp)
+        # Should note net is pending and warn not to claim fully funded.
+        assert "derivation pending" in out or "[derivation pending]" in out
+
+
+def _seed_tax_sim_lots(session, *, shares=100, sale_price=200.0,
+                        cost_basis=50.0, cap_income=15_000.0,
+                        ord_income=5_000.0, net_proceeds=13_000.0):
+    """Seed one eligible lot into tax_simulation_lots for user 'ariel'."""
+    from argosy.services.tax_simulation_ingest import ingest_report
+    from argosy.services.tax_simulation_parser import TaxSimLot, TaxSimReport
+    from argosy.state.models import TaxSimulationLot
+    TaxSimulationLot.__table__.create(session.get_bind(), checkfirst=True)
+    rpt = TaxSimReport(simulation_date="18/06/2026", lots=[
+        TaxSimLot(
+            plan_type="RSU", shares=shares, holding_period="OK", eligible=True,
+            grant_id="X1",
+            sale_price_usd=sale_price, cost_basis_usd=cost_basis,
+            capital_income_usd=cap_income,
+            ordinary_income_usd=ord_income,
+            net_proceeds_usd=net_proceeds,
+        ),
+    ])
+    ingest_report(session, user_id="ariel", report=rpt)
+
+
+def _make_fake_snap():
+    """Return a minimal fake snapshot object (no DB row needed)."""
+    class _FakeSnap:
+        positions_json = "[]"
+        snapshot_date = None
+        fx_usd_nis = 3.0
+    return _FakeSnap()
+
+
+class TestBlocker5StaleMarksDowngradeConfidence:
+    """Blocker 5: soft-stale book marks must downgrade tax confidence from HIGH to MEDIUM.
+
+    A stale NVDA price UNDERSTATES the current capital gain and therefore the embedded
+    tax — the dangerous flattering direction."""
+
+    def test_stale_book_mark_degrades_tax_confidence(self, session, monkeypatch):
+        """When the book carries soft-stale marks, tax.nvda_embedded_cgt_nis must
+        NOT publish as HIGH confidence."""
+        from argosy.services import plan_numeric_resolver as rp_mod
+        from argosy.services.holding_books import TotalBookResult
+        from argosy.state.models import FxRate
+        from decimal import Decimal
+        from datetime import date
+
+        _seed_tax_sim_lots(session)
+        session.add(FxRate(date=date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+        session.commit()
+
+        stale_book = TotalBookResult(
+            total=[{"symbol": "NVDA", "current_price": 200.0, "shares": 100.0}],
+            managed=[], load=None, degraded=False, degrade_reason=None,
+            stale_marks=("NVDA@schwab",),
+        )
+        # Patch _head_snapshot_row so we have a snap, then load_total_book returns stale.
+        monkeypatch.setattr(rp_mod, "_head_snapshot_row", lambda *a, **kw: _make_fake_snap())
+        import argosy.services.holding_books as hb_mod
+        monkeypatch.setattr(hb_mod, "load_total_book", lambda *a, **kw: stale_book)
+
+        values: dict = {}
+        values["fx.usd_nis"] = ResolvedValue(
+            key="fx.usd_nis", value=3.0, unit="nis_per_usd", status="resolved",
+            source_locator="test", agent_report_id=None, confidence="HIGH",
+        )
+        rp_mod._apply_nvda_realization_tax(session, "ariel", values)
+
+        rv = values.get("tax.nvda_embedded_cgt_nis")
+        assert rv is not None and rv.status == "resolved"
+        assert rv.confidence == "MEDIUM", (
+            f"stale book must downgrade confidence to MEDIUM, got {rv.confidence!r}"
+        )
+        assert "STALE MARK" in (rv.source_locator or ""), (
+            f"source_locator must document stale marks; got: {rv.source_locator!r}"
+        )
+
+
+class TestBlocker4SimShareMismatch:
+    """Blocker 4: when simulation share count != held shares, confidence degrades
+    and the scope note appears in source_locator.
+
+    Round 3 addition: when actual_nvda_shares is None (book unavailable or NVDA
+    absent from snapshot), _shares_match must be None (unknown) — not True.
+    Unknown held-share count must NOT be treated as a confirmed match, so
+    confidence must be MEDIUM regardless."""
+
+    def test_share_count_unknown_when_book_unavailable_degrades_confidence(
+        self, session, monkeypatch
+    ):
+        """R3 B4: if _head_snapshot_row returns None (no snapshot), we never read
+        actual_nvda_shares. The old code left _shares_match=True and published HIGH
+        confidence — wrong. The fix: _shares_match=None → MEDIUM confidence."""
+        from argosy.services import plan_numeric_resolver as rp_mod
+        from argosy.state.models import FxRate
+        from decimal import Decimal
+        from datetime import date
+
+        _seed_tax_sim_lots(session)
+        session.add(FxRate(date=date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+        session.commit()
+
+        # No snapshot seeded → _head_snapshot_row returns None → actual_nvda_shares never set.
+        monkeypatch.setattr(rp_mod, "_head_snapshot_row", lambda *a, **kw: None)
+
+        values: dict = {}
+        values["fx.usd_nis"] = ResolvedValue(
+            key="fx.usd_nis", value=3.0, unit="nis_per_usd", status="resolved",
+            source_locator="test", agent_report_id=None, confidence="HIGH",
+        )
+        rp_mod._apply_nvda_realization_tax(session, "ariel", values)
+
+        rv = values.get("tax.nvda_embedded_cgt_nis")
+        assert rv is not None and rv.status == "resolved"
+        assert rv.confidence == "MEDIUM", (
+            f"unknown share count must downgrade confidence to MEDIUM, got {rv.confidence!r}"
+        )
+        src = rv.source_locator or ""
+        assert "cannot confirm" in src.lower() or "not found" in src.lower(), (
+            f"source_locator must note unknown shares: {src!r}"
+        )
+
+    def test_share_count_mismatch_degrades_confidence(self, session, monkeypatch):
+        """If the snapshot shows 9,000 sh held but sim covers 10,940 sh, the figure
+        must publish as MEDIUM and document the divergence."""
+        from argosy.services import plan_numeric_resolver as rp_mod
+        from argosy.services.holding_books import TotalBookResult
+        from argosy.state.models import FxRate
+        from decimal import Decimal
+        from datetime import date
+
+        _seed_tax_sim_lots(session, shares=10_940, cap_income=1_641_000.0,
+                           ord_income=0.0, net_proceeds=1_149_000.0)
+        session.add(FxRate(date=date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+        session.commit()
+
+        # Book shows 9,000 shares (mismatch vs sim's 10,940).
+        mismatch_book = TotalBookResult(
+            total=[{"symbol": "NVDA", "current_price": 200.0, "shares": 9_000.0}],
+            managed=[], load=None, degraded=False, degrade_reason=None,
+            stale_marks=(),
+        )
+        monkeypatch.setattr(rp_mod, "_head_snapshot_row", lambda *a, **kw: _make_fake_snap())
+        import argosy.services.holding_books as hb_mod
+        monkeypatch.setattr(hb_mod, "load_total_book", lambda *a, **kw: mismatch_book)
+
+        values: dict = {}
+        values["fx.usd_nis"] = ResolvedValue(
+            key="fx.usd_nis", value=3.0, unit="nis_per_usd", status="resolved",
+            source_locator="test", agent_report_id=None, confidence="HIGH",
+        )
+        rp_mod._apply_nvda_realization_tax(session, "ariel", values)
+
+        rv = values.get("tax.nvda_embedded_cgt_nis")
+        assert rv is not None and rv.status == "resolved"
+        assert rv.confidence == "MEDIUM", (
+            f"share-count divergence must downgrade confidence to MEDIUM, got {rv.confidence!r}"
+        )
+        src = rv.source_locator or ""
+        assert "SCOPE" in src or "divergence" in src, f"scope note missing from: {src!r}"
+        assert "9,000" in src, f"held share count missing from source_locator: {src!r}"
+        assert "10,940" in src, f"sim share count missing from source_locator: {src!r}"
+
+
+class TestR3IncompleteLotConfidenceDegrades:
+    """Round 3 Blocker 2+3 integration: when the LotTaxAggregate has
+    incomplete_lot_shares > 0 (missing net_proceeds or refused breaking lot),
+    the resolver must publish MEDIUM confidence and note it in source_locator."""
+
+    def test_incomplete_lot_shares_downgrade_confidence(self, session, monkeypatch):
+        """If some lots couldn't be processed, confidence must be MEDIUM regardless
+        of whether the price is current and the book is fresh."""
+        from argosy.services import plan_numeric_resolver as rp_mod
+        from argosy.services.holding_books import TotalBookResult
+        from argosy.state.models import FxRate
+        from argosy.services.tax_simulation_parser import TaxSimLot, TaxSimReport
+        from argosy.services.tax_simulation_ingest import ingest_report
+        from decimal import Decimal
+        from datetime import date
+
+        # Seed: one complete eligible lot, one breaking lot with ordinary_income=0
+        # (refused for revaluation → incomplete_lot_shares > 0 at revalue price).
+        rep = TaxSimReport(simulation_date="18/06/2026", lots=[
+            TaxSimLot(
+                plan_type="RSU", shares=100, holding_period="OK", eligible=True,
+                grant_id="A1",
+                sale_price_usd=200.0, cost_basis_usd=50.0,
+                capital_income_usd=15_000.0,
+                ordinary_income_usd=5_000.0,
+                net_proceeds_usd=13_000.0,
+            ),
+            TaxSimLot(
+                plan_type="RSU", shares=50, holding_period="Breaking", eligible=False,
+                grant_id="B1",
+                sale_price_usd=200.0, cost_basis_usd=200.0,
+                capital_income_usd=0.0,
+                ordinary_income_usd=0.0,  # ← will be refused at revalue
+                net_proceeds_usd=4_600.0,
+            ),
+        ])
+        ingest_report(session, user_id="ariel", report=rep)
+        session.add(FxRate(date=date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+        session.commit()
+
+        # Fresh book with current price → all other confidence conditions would be HIGH.
+        fresh_book = TotalBookResult(
+            total=[{"symbol": "NVDA", "current_price": 225.0, "shares": 150.0}],
+            managed=[], load=None, degraded=False, degrade_reason=None,
+            stale_marks=(),
+        )
+        monkeypatch.setattr(rp_mod, "_head_snapshot_row", lambda *a, **kw: _make_fake_snap())
+        import argosy.services.holding_books as hb_mod
+        monkeypatch.setattr(hb_mod, "load_total_book", lambda *a, **kw: fresh_book)
+
+        values: dict = {}
+        values["fx.usd_nis"] = ResolvedValue(
+            key="fx.usd_nis", value=3.0, unit="nis_per_usd", status="resolved",
+            source_locator="test", agent_report_id=None, confidence="HIGH",
+        )
+        rp_mod._apply_nvda_realization_tax(session, "ariel", values)
+
+        rv = values.get("tax.nvda_embedded_cgt_nis")
+        assert rv is not None and rv.status == "resolved"
+        assert rv.confidence == "MEDIUM", (
+            f"incomplete lots must downgrade confidence to MEDIUM, got {rv.confidence!r}"
+        )
+        src = rv.source_locator or ""
+        assert "INCOMPLETE" in src or "incomplete" in src.lower(), (
+            f"source_locator must note incomplete lots: {src!r}"
+        )
+        assert "50" in src, f"refused share count should appear in source_locator: {src!r}"
+
+
 def test_apply_fi_crossing_requires_margin_input():
     """codex impl review: a missing/pending FI margin -> fi_crossing pending
     (never an un-reconciled year)."""

@@ -46,8 +46,12 @@ def test_make_surface_node_rejects_a_non_callable_recipe():
         make_surface_node(key="surface:x", inputs=("a",), recipe=None, compute_version="v1")
 
 
-def _fi_graph(margin_value: float) -> DerivationGraph:
-    """A graph where ONE fi_margin DERIVED node feeds three surfaces."""
+def _fi_graph(margin_value: float, net_margin_value: float | None = None) -> DerivationGraph:
+    """A graph where ONE fi_margin DERIVED node feeds three surfaces.
+
+    ``net_margin_value`` seeds the net-of-realization INPUT node; pass None (the
+    default) to model the case where the tax simulation is unavailable — the
+    surface:fi_verdict recipe receives None and renders the gross-only verdict."""
     g = DerivationGraph()
     # Inputs the margin derives from.
     g.add_node(Node(key="portfolio.liquid_net_worth_nis", kind=NodeKind.INPUT, value=11_687_926.0))
@@ -60,6 +64,14 @@ def _fi_graph(margin_value: float) -> DerivationGraph:
         inputs=("portfolio.liquid_net_worth_nis", "retirement.fi_total_capital_nis"),
         recipe=lambda i: i["portfolio.liquid_net_worth_nis"] - i["retirement.fi_total_capital_nis"],
         compute_version="fi-margin-v1",
+    ))
+    # Net-of-realization margin INPUT node — must be present in the graph for
+    # build_fi_margin_surfaces() surface:fi_verdict to compute. Value is None when
+    # the tax simulation has not been ingested.
+    g.add_node(Node(
+        key="retirement.fi_margin_net_of_realization_nis",
+        kind=NodeKind.INPUT,
+        value=net_margin_value,
     ))
     for node in build_fi_margin_surfaces():
         g.add_node(node)
@@ -103,8 +115,46 @@ def test_changing_the_input_updates_all_surfaces_with_no_basis_flip():
 def test_render_fi_verdict_text_matches_resolver_doctrine():
     # Negative margin -> NOT reached, states the shortfall amount.
     assert "short" in render_fi_verdict_text(-148_208.0).lower()
-    # Positive margin -> REACHED, states the margin amount.
-    assert "reached" in render_fi_verdict_text(687_926.0).lower()
+    # Positive margin, no net margin -> REACHED (gross-only, no qualification needed).
+    assert "REACHED" in render_fi_verdict_text(687_926.0)
+    assert "PRE-TAX" not in render_fi_verdict_text(687_926.0)
+    # Positive margin, net margin also positive -> plain REACHED.
+    assert "REACHED" in render_fi_verdict_text(687_926.0, 200_000.0)
+    assert "PRE-TAX" not in render_fi_verdict_text(687_926.0, 200_000.0)
+
+
+def test_render_fi_verdict_text_qualified_when_gross_positive_net_negative():
+    """Round 3 Blocker 1: gross >= 0 but net < 0 → qualified REACHED, not plain REACHED."""
+    verdict = render_fi_verdict_text(616_678.0, -2_145_000.0)
+    # Must contain the qualified signal — NOT a plain "REACHED" without context.
+    assert "PRE-TAX" in verdict
+    assert "SHORTFALL" in verdict or "shortfall" in verdict.lower()
+    assert "NOT reached on an after-tax basis" in verdict or "NOT" in verdict
+    # Must state both margins.
+    assert "616,678" in verdict
+    assert "2,145,000" in verdict
+
+
+def test_fi_verdict_surface_qualifies_when_net_negative():
+    """Round 3 Blocker 1: the surface:fi_verdict graph node renders the qualified
+    verdict when the net-of-realization INPUT is negative."""
+    g = _fi_graph(margin_value=616_678.0, net_margin_value=-2_145_000.0)
+    verdict = g.get("surface:fi_verdict").value
+    assert "PRE-TAX" in verdict
+    assert "SHORTFALL" in verdict or "shortfall" in verdict.lower()
+    # dashboard tile in build_fi_margin_surfaces() shows the numeric margin, not verdict text
+    # (production uses live_surfaces._fi_sufficiency_surfaces which wires both to render_fi_verdict_text)
+    tile = g.get("surface:dashboard.fi_tile").value
+    assert "616,678" in tile or "616678" in tile
+
+
+def test_fi_verdict_surface_plain_reached_when_net_none():
+    """Round 3 Blocker 1: net_margin_value=None (simulation unavailable) → plain REACHED."""
+    g = _fi_graph(margin_value=616_678.0, net_margin_value=None)
+    verdict = g.get("surface:fi_verdict").value
+    # Plain REACHED (no qualification needed — sim unavailable, cannot overstate)
+    assert "REACHED" in verdict
+    assert "PRE-TAX" not in verdict
 
 
 def test_extract_surface_values_groups_by_concept():

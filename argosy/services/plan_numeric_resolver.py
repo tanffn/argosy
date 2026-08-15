@@ -194,6 +194,10 @@ _KEY_UNITS: dict[str, str] = {
     "retirement.mc_horizon_age": "age",
     "tax.retention_at_vest_pct": "pct",
     "tax.retention_capital_track_pct": "pct",
+    # Net-of-realization keys — derived from the tax-simulation report
+    "tax.nvda_embedded_cgt_nis": "nis",
+    "tax.nvda_net_proceeds_nis": "nis",
+    "retirement.fi_margin_net_of_realization_nis": "nis",
 }
 
 # Fixed STRUCTURAL ages — not derived, not MC-dependent. The pension unlock age
@@ -1229,6 +1233,15 @@ def resolve_plan_numbers(
     # Determinism STATES the settled policy; it never authors one.
     _apply_adjudicated_glide(session, user_id, values)
 
+    # Embedded NVDA realization tax — derived deterministically from the tax-simulation
+    # table.  Called AFTER _apply_nvda_deconcentration (so the NVDA price is already
+    # loaded into the book) and after _apply_fx_boi (FX is resolved).
+    _apply_nvda_realization_tax(session, user_id, values)
+
+    # FI margin net of the embedded NVDA realization tax.  Adds the honest after-tax
+    # FI sufficiency figure alongside the gross margin — never replaces it.
+    _apply_fi_margin_net_of_realization(values)
+
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
     # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
     # hop and the non-display callers never trigger the heavy canonical MC.
@@ -1918,6 +1931,273 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
     )
 
 
+def _apply_nvda_realization_tax(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Derive the embedded Israeli tax liability on Ariel's entire NVDA position.
+
+    Uses the latest ingested tax-simulation report (tax_simulation_lots table).  Publishes:
+
+    - ``tax.nvda_embedded_cgt_nis`` — total Israeli tax the user would owe if realizing
+      ALL NVDA shares TODAY, in NIS at the current BOI USD/NIS rate.
+    - ``tax.nvda_net_proceeds_nis`` — what actually arrives after all Israeli taxes
+      (§102 Capital track 30% effective on eligible lots; implied effective rate on
+      breaking lots from the simulation itself).
+
+    Revaluation at current price (not stale at $204.65):
+    Eligible lots: ordinary income is fixed at grant-date FMV.  Only the capital slice
+    shifts; ΔEmbedded_tax = 30% × (current_price − sim_price) × shares.
+    Breaking lots: per-lot implied effective rate from the simulation is applied to the
+    new gross — avoids re-deriving the NI ceiling stack the trustee already computed.
+
+    If the current NVDA price is unavailable from the snapshot, falls back to the
+    simulation price; the source_locator documents which price was used.
+
+    Both keys are ``status="pending"`` (never fabricated) when the simulation table is
+    empty or FX is unavailable.
+    """
+    key_tax = "tax.nvda_embedded_cgt_nis"
+    key_net = "tax.nvda_net_proceeds_nis"
+    pending_loc = "tax_simulation_lots + BOI FX + NVDA snapshot price"
+
+    # FX — MUST be the same rate the gross margin used, or gross and net are
+    # not comparable and their difference is partly an FX artefact. Sol found
+    # (and a live check confirmed) that liquid net worth converts via
+    # _current_boi_usd_nis(snapshot_fx) while this path was using the resolved
+    # fx.usd_nis key, whose fallback differs — 2.998 vs 2.9566 on the live book,
+    # a 1.4% gap silently embedded in a headline the user reads as a subtraction.
+    fx = 0.0
+    try:
+        _snap_for_fx = _head_snapshot_row(session, user_id)
+        if _snap_for_fx is not None:
+            _snap_fx = _to_float(_snap_for_fx.fx_usd_nis) or 0.0
+            fx, _ = _current_boi_usd_nis(session, _snap_fx)
+    except Exception:  # noqa: BLE001 — fall through to the resolved key below
+        fx = 0.0
+    if not fx or fx <= 0:
+        fx_rv = values.get("fx.usd_nis")
+        if fx_rv is None or fx_rv.status != "resolved" or not fx_rv.value:
+            for k in (key_tax, key_net):
+                values[k] = ResolvedValue.pending(k, "nis", "fx.usd_nis not resolved")
+            return
+        fx = float(fx_rv.value)
+
+    # Try to read the current NVDA price AND share count from the snapshot book.
+    # Both are needed: price for revaluation; shares to detect sim/held divergence (blocker 4).
+    current_nvda_px: float | None = None
+    actual_nvda_shares: float | None = None
+    _book_stale = False  # blocker 5: stale marks downgrade confidence
+    try:
+        from argosy.services.holding_books import (
+            TotalBookDegraded,
+            load_total_book,
+            parse_positions_json,
+        )
+
+        snap = _head_snapshot_row(session, user_id)
+        if snap is not None:
+            raw = parse_positions_json(snap.positions_json)
+            book = load_total_book(
+                session, user_id, raw,
+                snapshot_date=getattr(snap, "snapshot_date", None),
+            )
+            if not book.degraded:
+                # Blocker 5: soft-stale marks mean the NVDA price may be stale.
+                # A stale price understates the current capital gain and therefore
+                # the embedded tax — always the dangerous direction for Ariel.
+                _book_stale = bool(book.stale_marks)
+                for p in book.total:
+                    if str(p.get("symbol", "")).upper() == "NVDA":
+                        px = _to_float(p.get("current_price"))
+                        if px and px > 0:
+                            current_nvda_px = px
+                        # Blocker 4: capture actual held shares for scope check
+                        sh = _to_float(p.get("shares"))
+                        if sh and sh > 0:
+                            actual_nvda_shares = sh
+                        break
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully
+        log.warning("plan_numeric_resolver.realization_tax_nvda_price_failed err=%s", exc)
+
+    # Aggregate from the tax-simulation table.
+    try:
+        from argosy.services.tax_simulation_ingest import realization_tax_summary
+
+        agg = realization_tax_summary(
+            session, user_id, current_nvda_price_usd=current_nvda_px
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.realization_tax_summary_failed err=%s", exc)
+        agg = None
+
+    if agg is None:
+        for k in (key_tax, key_net):
+            values[k] = ResolvedValue.pending(k, "nis", "no tax-sim report ingested")
+        return
+
+    # Blocker 4: compare simulation share count with actual held shares.
+    # If they diverge (tranche sold, new vest landed), the figure is scoped to
+    # the simulation shares only — confidence degrades and the scope is stated.
+    # _shares_match starts as None (unknown) — only True when actual shares are
+    # found AND match within 1 share. Unknown counts as not-confirmed → MEDIUM.
+    _share_scope_note = ""
+    _shares_match: bool | None = None
+    if actual_nvda_shares is not None:
+        divergence = abs(actual_nvda_shares - agg.total_shares)
+        if divergence > 1.0:
+            _share_scope_note = (
+                f" [SCOPE: sim covers {agg.total_shares:,.0f} sh; "
+                f"snapshot shows {actual_nvda_shares:,.0f} sh held — "
+                f"{divergence:,.0f}-sh divergence; tax figure scoped to sim shares only]"
+            )
+            _shares_match = False
+        else:
+            _shares_match = True
+    else:
+        # Could not read actual NVDA share count from the book (book unavailable
+        # or NVDA not present in the snapshot) — we cannot confirm the sim covers
+        # all held shares. Treat as unknown (not confirmed), not as a match.
+        _share_scope_note = (
+            " [SCOPE: actual NVDA share count not found in book — "
+            "cannot confirm sim shares match held shares; confidence degraded]"
+        )
+
+    # Convert to NIS using the resolver's canonical FX rate.
+    embedded_tax_nis = agg.embedded_tax_at_revalue_usd * fx
+    net_proceeds_nis = agg.net_at_revalue_usd * fx
+
+    price_label = (
+        f"REVALUED at current NVDA ${agg.revalue_price_usd:,.2f}"
+        if agg.uses_current_price
+        else f"AS-OF sim date {agg.simulation_date} @ ${agg.sim_sale_price_usd:,.2f} "
+             f"(current NVDA price unavailable — tax UNDERSTATED at higher current price)"
+    )
+    stale_note = (
+        f" [STALE MARK — book carries soft-stale marks; current NVDA price may be "
+        f"stale, understating the capital gain → tax understated]"
+        if _book_stale else ""
+    )
+    # Incomplete lots: some shares could not be fully accounted for in the tax
+    # computation (missing net_proceeds_usd OR breaking lots without ordinary_income
+    # for revaluation). Non-zero means the embedded tax figure covers fewer shares
+    # than total_shares, so it is understated — always the dangerous direction.
+    _incomplete_note = (
+        f" [INCOMPLETE: {agg.incomplete_lot_shares:,.0f} sh excluded from tax "
+        f"computation (missing net_proceeds or ordinary_income for revaluation) — "
+        f"embedded tax understated]"
+        if agg.incomplete_lot_shares > 0 else ""
+    )
+    source_loc = (
+        f"tax_simulation_lots {agg.simulation_date} @ ${agg.sim_sale_price_usd:,.2f} | "
+        f"{price_label} | "
+        f"{agg.total_shares:,.0f} sh × BOI FX {fx:.4f} NIS/USD"
+        f"{_share_scope_note}{stale_note}{_incomplete_note}"
+    )
+
+    # Confidence: HIGH only when ALL four conditions hold:
+    #   - price was revalued to current mark (not left at stale sim date)
+    #   - book carries no soft-stale marks (blocker 5)
+    #   - simulation share count confirmed to match held shares (blocker 4)
+    #     — _shares_match=True requires actual count found AND within 1 share;
+    #       _shares_match=None (unknown, book unavailable) → MEDIUM, not HIGH
+    #   - no incomplete lots (all shares fully accounted for in tax computation)
+    # Every condition that fails errs toward a SMALLER embedded tax (flatters Ariel).
+    confidence = (
+        "HIGH"
+        if (
+            agg.uses_current_price
+            and not _book_stale
+            and _shares_match is True
+            and agg.incomplete_lot_shares == 0
+        )
+        else "MEDIUM"
+    )
+
+    values[key_tax] = ResolvedValue(
+        key=key_tax,
+        value=embedded_tax_nis,
+        unit="nis",
+        status="resolved",
+        source_locator=source_loc,
+        agent_report_id=None,
+        confidence=confidence,
+        formula=(
+            f"sum(gross − net_proceeds per lot) at {price_label} × BOI USD/NIS; "
+            "eligible lots revalued at §102 Capital 30% effective rate on Δcapital; "
+            "breaking lots at per-lot implied effective rate from trustee sim"
+        ),
+    )
+    values[key_net] = ResolvedValue(
+        key=key_net,
+        value=net_proceeds_nis,
+        unit="nis",
+        status="resolved",
+        source_locator=source_loc,
+        agent_report_id=None,
+        confidence=confidence,
+        formula=(
+            f"sum(net_proceeds_usd per lot) at {price_label} × BOI USD/NIS; "
+            "what survives after all Israeli §102 + surtax on the full NVDA position"
+        ),
+    )
+
+
+def _apply_fi_margin_net_of_realization(values: dict[str, ResolvedValue]) -> None:
+    """FI sufficiency margin NET of the embedded NVDA realization tax.
+
+    The gross margin (``retirement.fi_margin_signed_nis``) reports FI as reached when
+    liquid net worth exceeds the FI total capital target — but liquid NW includes the
+    ENTIRE NVDA position at market value, before the Israeli tax due on realization.
+    To actually *spend* those proceeds the user must first pay the tax.
+
+    Net-of-realization margin = fi_margin_signed_nis − tax.nvda_embedded_cgt_nis
+
+    Equivalently: (liquid_NW − embedded_tax) − fi_total_capital.
+
+    A positive value means FI is reached even after paying full realization taxes.
+    A negative value means the FI claim is GROSS-ONLY and overstates true sufficiency.
+    Both the gross and net margins are published; neither replaces the other (requirement
+    R1: add, never replace).
+    """
+    key = "retirement.fi_margin_net_of_realization_nis"
+    gross_margin_rv = values.get("retirement.fi_margin_signed_nis")
+    embedded_tax_rv = values.get("tax.nvda_embedded_cgt_nis")
+
+    if (
+        gross_margin_rv is None
+        or embedded_tax_rv is None
+        or gross_margin_rv.status != "resolved"
+        or embedded_tax_rv.status != "resolved"
+        or gross_margin_rv.value is None
+        or embedded_tax_rv.value is None
+    ):
+        values[key] = ResolvedValue.pending(
+            key, "nis",
+            "retirement.fi_margin_signed_nis or tax.nvda_embedded_cgt_nis not resolved",
+        )
+        return
+
+    net_margin = float(gross_margin_rv.value) - float(embedded_tax_rv.value)
+    tax_src = embedded_tax_rv.source_locator or "tax_simulation_lots"
+    values[key] = ResolvedValue(
+        key=key,
+        value=net_margin,
+        unit="nis",
+        status="resolved",
+        source_locator=(
+            f"retirement.fi_margin_signed_nis − tax.nvda_embedded_cgt_nis | {tax_src}"
+        ),
+        agent_report_id=None,
+        confidence=embedded_tax_rv.confidence or "HIGH",
+        formula=(
+            "fi_margin_signed_nis − nvda_embedded_cgt_nis "
+            "(gross margin less the full Israeli tax liability on the NVDA position; "
+            ">0 => FI reached even after realization tax; "
+            "<0 => gross-only FI claim overstates true sufficiency)"
+        ),
+    )
+
+
 def _apply_fi_shock_net_worths(values: dict[str, ResolvedValue]) -> None:
     """Publish the gate's primary shocked net-worth figures as resolvable keys.
 
@@ -2398,7 +2678,10 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("portfolio.net_worth_nis", "Investable net worth (incl. foreign real-estate row; NOT the FI basis — reconciliation only)"),
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
-    ("retirement.fi_margin_signed_nis", "FI sufficiency margin (LIQUID net worth − total target; >0 => reached; if <0, FI is NOT reached — do not claim funded)"),
+    ("retirement.fi_margin_signed_nis", "FI sufficiency margin GROSS (LIQUID net worth − total target; >0 => reached on a gross basis; if <0, FI is NOT reached even gross — do not claim funded)"),
+    ("retirement.fi_margin_net_of_realization_nis", "FI sufficiency margin NET OF REALIZATION TAX (gross margin − NVDA embedded tax; >0 => FI reached after paying all Israeli §102 tax on full NVDA position; <0 => FI is NOT reached on an after-tax basis — the honest number Ariel needs to see)"),
+    ("tax.nvda_embedded_cgt_nis", "NVDA embedded Israeli tax liability (full position; §102 Capital 30% on eligible lots + per-lot implied rate on breaking lots; REVALUED to current NVDA price where available — cite the price and sim date from source_locator)"),
+    ("tax.nvda_net_proceeds_nis", "NVDA net after-tax proceeds (full position; what survives all Israeli §102 + surtax; REVALUED to current price where available)"),
     ("retirement.fi_shock_net_worth_nis", "Net worth after −30% NVDA shock (gate shock_0.30; cite this — never invent a shocked NW)"),
     ("retirement.fi_fx_shock_net_worth_nis", "Net worth after −10% adverse FX move on USD exposure (gate fx_shock_-0.10; cite this — never invent)"),
     # The sleeve pct is interpolated from the engine constant so these labels
@@ -2519,16 +2802,63 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
     # from net worth − target itself (getting +118,020 off the investable basis) while the
     # canonical margin is −148,208 on the liquid basis. Render the conclusion, don't let it
     # be generated.
+    #
+    # QUALIFICATION RULE (blocker 1 fix): when the gross margin is positive but the
+    # net-of-realization margin is negative, an unqualified "REACHED" verdict is wrong in
+    # the direction that flatters Ariel.  The verdict MUST carry the net basis explicitly
+    # so no surface can state reached-ness without stating on which basis.
     margin = resolved.get("retirement.fi_margin_signed_nis")
+    net_margin_rv = resolved.get("retirement.fi_margin_net_of_realization_nis")
     if margin is not None and margin.status == "resolved" and margin.value is not None:
         m = float(margin.value)
+        net_m: float | None = (
+            float(net_margin_rv.value)
+            if (
+                net_margin_rv is not None
+                and net_margin_rv.status == "resolved"
+                and net_margin_rv.value is not None
+            )
+            else None
+        )
         if m >= 0:
-            verdict = (f"FI sufficiency VERDICT: REACHED — liquid net worth covers the "
-                       f"total capital target with a ₪{m:,.0f} margin.")
+            if net_m is not None and net_m < 0:
+                # Gross positive, net negative — the most important case to qualify.
+                # Do NOT say "REACHED" without the gross-only qualifier.
+                verdict = (
+                    f"FI sufficiency VERDICT: REACHED ON A GROSS PRE-TAX BASIS ONLY — "
+                    f"liquid net worth exceeds the total capital target by ₪{m:,.0f} BEFORE "
+                    f"accounting for the embedded NVDA realization tax. "
+                    f"Net of realization tax, the margin is ₪{net_m:,.0f} (a SHORTFALL). "
+                    f"FI is NOT reached on an after-tax basis. "
+                    f"You MUST state both bases; do NOT write 'FI reached' without the "
+                    f"gross-only qualifier."
+                )
+            elif net_m is not None and net_m >= 0:
+                # Both gross and net positive — full statement.
+                verdict = (
+                    f"FI sufficiency VERDICT: REACHED — liquid net worth covers the "
+                    f"total capital target with a ₪{m:,.0f} gross margin and a "
+                    f"₪{net_m:,.0f} net-of-realization-tax margin (both positive)."
+                )
+            else:
+                # Net margin pending — report gross only, note net is pending.
+                verdict = (
+                    f"FI sufficiency VERDICT: REACHED on a gross basis — liquid net worth "
+                    f"covers the total capital target with a ₪{m:,.0f} margin. "
+                    f"Net-of-realization-tax margin: [derivation pending] — do NOT claim "
+                    f"FI is fully funded until the after-tax figure is resolved."
+                )
         else:
-            verdict = (f"FI sufficiency VERDICT: NOT reached — liquid net worth is short "
-                       f"₪{abs(m):,.0f} of the total capital target. Do NOT state FI is "
-                       f"funded/reached anywhere.")
+            verdict = (
+                f"FI sufficiency VERDICT: NOT reached — liquid net worth is short "
+                f"₪{abs(m):,.0f} of the total capital target on a gross basis."
+            )
+            if net_m is not None:
+                verdict += (
+                    f" Net-of-realization-tax margin: ₪{net_m:,.0f} "
+                    f"({'also a shortfall' if net_m < 0 else 'positive post-tax — unusual'})."
+                )
+            verdict += " Do NOT state FI is funded/reached anywhere."
         lines += [
             "",
             verdict,
