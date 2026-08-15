@@ -49,6 +49,14 @@ FACT_DISPLAY: dict[str, str] = {
     "retirement.liquidity_reserve_nis": "nis_millions",
     # Signed margins / flows — shown in full so the sign + exact gap are legible.
     "retirement.fi_margin_signed_nis": "nis",
+    # After-tax counterpart of the signed margin. Registered so prose can cite
+    # it: without an entry here the {{fact:...}} token renders LITERALLY, which
+    # is exactly what /overview did after the net-of-realization work landed --
+    # the headline read "you're still {{fact:retirement.fi_margin..." to the
+    # user. A fact the plan is required to state must be renderable.
+    "retirement.fi_margin_net_of_realization_nis": "nis",
+    "tax.nvda_embedded_cgt_nis": "nis",
+    "tax.nvda_net_proceeds_nis": "nis",
     # Magnitude (abs) form of the SAME signed margin, for shortfall phrasing
     # ("short by ₪X" — the canonical FI verdict itself renders `short ₪{abs(m)}`,
     # see plan_numeric_resolver / surface_rendering.render_fi_verdict_text). A
