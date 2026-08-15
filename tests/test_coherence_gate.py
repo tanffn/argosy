@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from argosy.quality.coherence_gate import (
+    check_cap_target_coherence,
     check_cross_surface_coherence,
     check_fi_sufficiency_under_shock,
 )
@@ -131,3 +132,49 @@ def test_shock_gate_does_not_flag_same_sentence_qualifier():
         "drawdown breaks the perpetuity base."
     )
     assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text) == []
+
+
+# --- Run-369 fix: NVDA cap-vs-target coherence (assert + auto-correct, --------
+#     do NOT block) ---------------------------------------------------------
+
+
+def test_cap_target_coherence_detects_target_above_cap():
+    """The run-369 fleet defect: cap 7.0%, target 8.0% (8 > 7 — incoherent by
+    construction). Must be DETECTED as a violation."""
+    viol = check_cap_target_coherence(cap_pct=7.0, target_pct=8.0)
+    assert len(viol) == 1
+    assert viol[0].check is GateCheck.CAP_TARGET_COHERENCE
+    assert "7" in viol[0].detail and "8" in viol[0].detail
+
+
+def test_cap_target_coherence_passes_when_target_within_cap():
+    assert check_cap_target_coherence(cap_pct=13.0, target_pct=8.0) == []
+
+
+def test_cap_target_coherence_passes_on_hairline_equal():
+    """Cap == target (within float rounding) must not spuriously fire."""
+    assert check_cap_target_coherence(cap_pct=8.0, target_pct=8.0 + 1e-12) == []
+
+
+def test_cap_target_coherence_skips_when_either_value_absent():
+    assert check_cap_target_coherence(cap_pct=None, target_pct=8.0) == []
+    assert check_cap_target_coherence(cap_pct=7.0, target_pct=None) == []
+
+
+def test_cap_target_coherence_violation_never_promote_blocks():
+    """Ariel's ruling on run 369: this class of finding must NEVER block
+    promotion, however many other checks are clean. Proves the GateVerdict
+    built from a cap/target violation alone still classifies as a WARN-only
+    check per the /accept blocking-set policy (plan.py::_gate_blocking_checks
+    keeps GateCheck.CAP_TARGET_COHERENCE permanently in the warn set)."""
+    from argosy.quality.gate_types import GateVerdict
+
+    verdict = GateVerdict()
+    verdict.extend(check_cap_target_coherence(cap_pct=7.0, target_pct=8.0))
+    assert not verdict.passes  # the defect IS detected...
+    assert verdict.total_violations == 1
+    # ...but it is the ONLY violation present, and it must never be treated as
+    # a blocking check — this is the promise `_gate_blocking_checks` enforces
+    # by keeping GateCheck.CAP_TARGET_COHERENCE in its permanent warn set.
+    assert GateCheck.CAP_TARGET_COHERENCE in verdict.violations
+    assert len(verdict.for_check(GateCheck.CAP_TARGET_COHERENCE)) == 1

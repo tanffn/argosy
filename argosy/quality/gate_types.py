@@ -134,6 +134,13 @@ class GateCheck(str, Enum):
     # target now says 5,600 sh/yr) is STALE: the client sees an unresolved
     # rejection for a value that has since changed. Flag the contradiction.
     STALE_REVIEWER_TEXT = "stale_reviewer_text"
+    # Run-369 fix — the NVDA steering TARGET must never sit ABOVE this run's
+    # binding cap: a target above its own ceiling is incoherent by
+    # construction (inviolable arithmetic, not judgment). WARNING-ONLY by
+    # policy (see plan.py::_gate_blocking_checks) — Ariel's ruling: two
+    # Argosy-derived numbers disagreeing must be asserted + auto-corrected via
+    # surgical correction, never a plan-blocking gate.
+    CAP_TARGET_COHERENCE = "cap_target_coherence"
 
 
 @dataclass(frozen=True)

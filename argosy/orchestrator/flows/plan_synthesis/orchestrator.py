@@ -1616,6 +1616,66 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id,
                 summary=_instage_verdict.summary(),
             )
+        # Run-369 fix — auto-correct a detected NVDA cap-vs-target
+        # incoherence RIGHT HERE, before the FM / whole-artifact reader see
+        # the draft, so the FM never has grounds to raise it as a blocker.
+        # WARNING-only per GateCheck.CAP_TARGET_COHERENCE (never blocks); this
+        # is the "auto-correct" half of Ariel's ruling — best-effort, never
+        # aborts synthesis on failure.
+        from argosy.quality.gate_types import GateCheck as _GateCheck
+
+        _cap_target_violations = _instage_verdict.for_check(
+            _GateCheck.CAP_TARGET_COHERENCE
+        )
+        if _cap_target_violations:
+            try:
+                from argosy.quality.cap_target_autocorrect import (
+                    auto_correct_cap_target,
+                )
+                from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+                _ct_drun = _decision_run_int(decision_run_id)
+                _ct_resolved = (
+                    resolve_plan_numbers(session, user_id=user_id, decision_run_id=_ct_drun)
+                    if _ct_drun is not None else None
+                )
+                _ct_cap = _ct_target = None
+                if _ct_resolved is not None:
+                    _cap_rv = _ct_resolved.get("concentration.nvda_cap_pct")
+                    _tgt_rv = _ct_resolved.get("concentration.nvda_target_pct")
+                    if _cap_rv is not None and _cap_rv.status == "resolved" and _cap_rv.value is not None:
+                        _ct_cap = float(_cap_rv.value)
+                    if _tgt_rv is not None and _tgt_rv.status == "resolved" and _tgt_rv.value is not None:
+                        _ct_target = float(_tgt_rv.value)
+                if _ct_cap is not None and _ct_target is not None:
+                    _ct_started = datetime.now(timezone.utc)
+                    _ct_result = auto_correct_cap_target(
+                        bodies={
+                            "long": draft.horizon_long_md or "",
+                            "medium": draft.horizon_medium_md or "",
+                            "short": draft.horizon_short_md or "",
+                        },
+                        cap_pct=_ct_cap * 100.0, target_pct=_ct_target * 100.0,
+                    )
+                    _pkg._record_phase_completion(
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        phase_n=59, started_at=_ct_started,
+                        phase_output=(
+                            f"cap_target_autocorrect: cap={_ct_cap * 100.0:.1f}% "
+                            f"target={_ct_target * 100.0:.1f}% edits={len(_ct_result.edits)}"
+                        ),
+                        agent_report_rows=[],
+                    )
+                    if _ct_result.edits:
+                        draft.horizon_long_md = _ct_result.corrected_bodies["long"]
+                        draft.horizon_medium_md = _ct_result.corrected_bodies["medium"]
+                        draft.horizon_short_md = _ct_result.corrected_bodies["short"]
+                        session.commit()
+            except Exception as exc:  # noqa: BLE001 — best-effort, never abort
+                log.warning(
+                    "plan_synthesis.cap_target_autocorrect_failed",
+                    user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+                )
     except Exception as exc:  # noqa: BLE001 — surfacing only; never abort
         log.warning(
             "plan_synthesis.instage_gate_failed",

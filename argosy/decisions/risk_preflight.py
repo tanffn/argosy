@@ -381,6 +381,95 @@ def check_sector_concentration_cap(
     )
 
 
+def check_section102_ledger_before_sell(
+    proposal: Any,
+    section102_tickers: frozenset[str] | set[str] | None,
+    section102_eligible_shares: dict[str, float] | None,
+) -> PreflightResult:
+    """Hard fail a SELL of a Section-102 ticker unless the per-lot eligibility
+    ledger is loaded and covers the shares being sold.
+
+    Israeli Section-102 capital-track shares carry ~30% effective tax on
+    realization; the rest (ordinary/"breaking" track) carry ~50%. The per-lot
+    ledger (``argosy.services.tax_simulation_ingest``) is the ONLY source that
+    verifies which specific shares are capital-track eligible. Selling the
+    wrong shares is irreversible, so:
+
+      - No ledger loaded for this ticker (``section102_eligible_shares`` has no
+        entry) -> HARD_FAIL. Missing data is NOT the same as "no eligible
+        shares" — never coerce absence to a pass (the proposal-15 discipline
+        applied here to tax lots instead of cash).
+      - Ledger loaded but the eligible count is LESS than the requested share
+        size -> HARD_FAIL (the sell would necessarily reach into
+        unverified/breaking lots).
+      - A non-share size unit (currency) cannot be checked against a share
+        ledger -> HARD_FAIL (cannot verify).
+
+    Scope: this check is a no-op (PASS) for BUY/HOLD proposals and for any
+    ticker not in ``section102_tickers`` (the caller supplies the tickers that
+    actually carry Section-102 lots — nothing is hardcoded here, mirroring
+    ``check_sector_concentration_cap``'s convention of caller-supplied caps).
+    """
+    # .strip() matters: persisted tickers are copied through unchanged, so
+    # "NVDA " would miss the membership test and BYPASS the block entirely --
+    # a silent fail-open on the one check protecting an irreversible tax bound.
+    action = (getattr(proposal, "action", "") or "").strip().lower()
+    ticker = (getattr(proposal, "ticker", "") or "").strip().upper()
+    _s102 = {(t or "").strip().upper() for t in (section102_tickers or frozenset())}
+    if action != "sell" or not ticker or ticker not in _s102:
+        return PreflightResult(
+            check="section102_ledger_before_sell",
+            status=PreflightStatus.PASS,
+            message="N/A (not a sell of a Section-102-tracked ticker)",
+        )
+
+    eligible = ({(k or "").strip().upper(): v for k, v in (section102_eligible_shares or {}).items()}).get(ticker)
+    if eligible is None:
+        return PreflightResult(
+            check="section102_ledger_before_sell",
+            status=PreflightStatus.HARD_FAIL,
+            message=(
+                f"No Section-102 per-lot eligibility ledger loaded for {ticker}; "
+                "refusing to sell without verifying which shares are "
+                "capital-track eligible (selling the wrong lots is an "
+                "irreversible ~20pp tax mistake)."
+            ),
+            detail={"ticker": ticker, "ledger_loaded": False},
+        )
+
+    size = float(getattr(proposal, "size_shares_or_currency", 0) or 0)
+    units = (getattr(proposal, "size_units", "shares") or "shares").lower()
+    if units != "shares":
+        return PreflightResult(
+            check="section102_ledger_before_sell",
+            status=PreflightStatus.HARD_FAIL,
+            message=(
+                f"{ticker} sell sized in {units!r}, not shares; cannot verify "
+                "it against the Section-102 per-lot eligibility ledger"
+            ),
+            detail={"ticker": ticker, "units": units},
+        )
+
+    if size > eligible:
+        return PreflightResult(
+            check="section102_ledger_before_sell",
+            status=PreflightStatus.HARD_FAIL,
+            message=(
+                f"{ticker} sell of {size:g} shares exceeds the ledger's "
+                f"{eligible:g} capital-track-eligible shares; refusing rather "
+                "than risk realizing breaking/ordinary-track lots at ~50% "
+                "instead of ~30% effective tax."
+            ),
+            detail={"ticker": ticker, "requested": size, "eligible": eligible},
+        )
+
+    return PreflightResult(
+        check="section102_ledger_before_sell",
+        status=PreflightStatus.PASS,
+        message=f"OK: {size:g} <= {eligible:g} capital-track-eligible {ticker} shares",
+    )
+
+
 def check_wash_sale(
     proposal: Any,
     lots: Iterable[Any] | None = None,
@@ -541,6 +630,16 @@ class PreflightInputs:
     # the check itself is pure and does no DB access.
     sector_caps: dict[str, float] = field(default_factory=dict)
     classification_map: dict[str, str] = field(default_factory=dict)
+    # Section-102 ledger-before-sell (FM run-369 fix — enforced at TRADE
+    # PREFLIGHT, not plan approval). ``section102_tickers`` is the set of
+    # tickers that carry Section-102 lots (caller-supplied, e.g. {"NVDA"});
+    # ``section102_eligible_shares`` maps ticker -> capital-track-eligible
+    # share count FROM THE LATEST INGESTED LEDGER (absent key = ledger not
+    # loaded for that ticker). Both default empty, which makes the check a
+    # no-op — callers that care about Section-102 enforcement must populate
+    # them (see argosy.execution.router for the live-trade wiring).
+    section102_tickers: frozenset[str] = field(default_factory=frozenset)
+    section102_eligible_shares: dict[str, float] = field(default_factory=dict)
 
 
 def run_preflight(inputs: PreflightInputs) -> PreflightReport:
@@ -558,6 +657,9 @@ def run_preflight(inputs: PreflightInputs) -> PreflightReport:
             inputs.classification_map,
         ),
         check_wash_sale(inputs.proposal, inputs.lots),
+        check_section102_ledger_before_sell(
+            inputs.proposal, inputs.section102_tickers, inputs.section102_eligible_shares
+        ),
         check_daily_loss_limit(
             inputs.proposal, inputs.day_pnl_usd, inputs.daily_loss_limit_usd
         ),
@@ -588,6 +690,7 @@ __all__ = [
     "check_daily_loss_limit",
     "check_position_size_cap",
     "check_sector_concentration_cap",
+    "check_section102_ledger_before_sell",
     "check_tier_mode_match",
     "check_trading_hours",
     "check_wash_sale",

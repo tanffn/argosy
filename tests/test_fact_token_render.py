@@ -306,6 +306,37 @@ def test_fact_literal_blocks_when_enforce_on(monkeypatch):
         get_settings.cache_clear()
 
 
+def test_cap_target_coherence_never_blocks_even_with_enforce_on(monkeypatch):
+    """Run-369 fix / Ariel's ruling: a CAP_TARGET_COHERENCE violation (the
+    7%-cap-vs-8%-target class) must NEVER promote-block, regardless of the
+    fact-literal enforce flag — unlike FACT_PLACEHOLDER_PROTOCOL, it is not
+    conditionally warn-only, it is PERMANENTLY warn-only."""
+    from argosy.api.routes.plan import _gate_blocking_checks
+    from argosy.quality.gate_types import GateVerdict, GateViolation
+
+    monkeypatch.setenv("ARGOSY_FACT_LITERAL_GATE_ENFORCE", "1")
+    from argosy.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        v = GateViolation(
+            check=GateCheck.CAP_TARGET_COHERENCE,
+            detail="NVDA steering target 8 exceeds this run's binding cap 7",
+            locator="nvda_cap_target",
+        )
+        viol_map = {c: [] for c in GateCheck}
+        viol_map[GateCheck.CAP_TARGET_COHERENCE] = [v]
+        gv = GateVerdict(violations=viol_map)
+        blocking, warned = _gate_blocking_checks(
+            gv, SimpleNamespace(sections_json="[]"),
+        )
+        assert GateCheck.CAP_TARGET_COHERENCE not in blocking
+        assert GateCheck.CAP_TARGET_COHERENCE in warned
+    finally:
+        monkeypatch.delenv("ARGOSY_FACT_LITERAL_GATE_ENFORCE", raising=False)
+        get_settings.cache_clear()
+
+
 def test_matching_literal_keeps_headline_numeric_clean_for_rederivation():
     """Regression 96dff85: grounded matching literals must NOT dirty HNS.
 
