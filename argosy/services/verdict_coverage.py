@@ -677,23 +677,78 @@ def _write_cooldown_marker(
         )
 
 
+def _is_collective_instrument(symbol: str, structure: str) -> bool:
+    """True when the instrument is a collective vehicle (ETF / fund / REIT /
+    bond) that should be routed to the fund-vehicle verdict path instead of
+    the per-stock analyst fleet.
+
+    The fund-vehicle path asks the RIGHT questions: domicile, TER, mandate
+    fit, NVDA look-through, sleeve overlap.  The equity fleet (fundamentals /
+    news / sentiment) asks equity questions (PE, moat, earnings) that are
+    undefined for a passive index fund.
+
+    Uses the structure from ``instrument_reference`` (supplied by the
+    CoverageItem that identified this as a vehicle structure in
+    ``_a2_note_for``). Falls back to the ``_VEHICLE_STRUCTURES`` set so
+    the unknown-structure path is safe (unknown → equity fleet, not the
+    fund path).
+    """
+    return str(structure or "").strip().lower() in _VEHICLE_STRUCTURES
+
+
 def _default_decide_fn(
     *, user_id: str, subject: str, cited_new_facts: list[str], reason: str
 ) -> Any:
-    """Default escalation seam — the SAME full per-ticker fleet the thesis
-    monitor / verdict-trigger sweep use, threading the coverage reason as the
-    cited new fact. Async → driven with ``asyncio.run`` inside the (already
-    off-thread) sweep worker. Never changes what the fleet decides."""
+    """Default escalation seam — dispatches to the CORRECT fleet for the
+    instrument's structure:
+
+    * COLLECTIVE (ETF / fund / REIT / bond per ``instrument_reference``) →
+      ``run_fund_vehicle_decision`` which runs ONE Opus fund-vehicle analyst
+      and writes a structured verdict addressing domicile, TER, mandate fit,
+      NVDA look-through, and overlap.
+
+    * INDIVIDUAL (Stock, or unknown-structure fallback) → the full per-stock
+      analyst fleet (``run_deep_decision``) exactly as before, threading the
+      coverage reason as the cited new fact.
+
+    Async → driven with ``asyncio.run`` inside the (already off-thread) sweep
+    worker. Never changes what the fleet decides.
+
+    The structure is resolved from ``instrument_reference`` at dispatch time
+    so the callable signature stays compatible with all existing ``decide_fn``
+    injection sites (tests, thesis_monitor, verdict_trigger sweep).
+    """
     import asyncio
 
-    from argosy.decisions.tiers import Tier
-    from argosy.services.decision_funnel.deep_decision import run_deep_decision
+    # Resolve structure for routing — best-effort; unknown falls through to
+    # the equity fleet (safe default, same as before this dispatch was added).
+    structure = _structure_for(subject, "")
 
     funnel_meta = {
         "source": "holdings_coverage_sweep",
         "cited_new_facts": cited_new_facts,
         "revisit_reason": reason,
     }
+
+    if _is_collective_instrument(subject, structure):
+        from argosy.services.decision_funnel.fund_vehicle_decision import (
+            run_fund_vehicle_decision,
+        )
+        log.info(
+            "verdict_coverage.dispatching_fund_vehicle",
+            symbol=subject, structure=structure,
+        )
+        return asyncio.run(
+            run_fund_vehicle_decision(
+                user_id=user_id,
+                ticker=subject,
+                funnel_meta=funnel_meta,
+            )
+        )
+
+    from argosy.decisions.tiers import Tier
+    from argosy.services.decision_funnel.deep_decision import run_deep_decision
+
     return asyncio.run(
         run_deep_decision(
             user_id=user_id,

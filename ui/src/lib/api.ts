@@ -1809,6 +1809,13 @@ export interface PositionThesisDTO {
   falsifiers?: string[];
   next_validation?: string | null;
   last_fleet_check_at?: string | null;
+  /**
+   * Analysis quality: "analysed" | "thin" | "unreviewed".
+   * Derived server-side from conviction + reasoning_md + falsifiers.
+   * "unreviewed" means no reasoning AND no falsifiers — verdict is a
+   * placeholder, not an opinion. Defaults to "unreviewed" when absent.
+   */
+  analysis_state?: "analysed" | "thin" | "unreviewed" | string;
 }
 
 // ----------------------------------------------------------------------

@@ -170,6 +170,11 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "STOXX EUROPE 600": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EUROPE),
     # Emerging markets.
     "EIMI": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EM),
+    # TASE TA-200 broad index (Israeli-domiciled, estate-safe). Hebrew ticker
+    # stored in the DB as ת"א-200; explicit entry so the fund-vehicle verdict
+    # path routes it correctly rather than falling through to the equity fleet
+    # via the Hebrew-ticker heuristic (which defaults to STRUCT_STOCK).
+    'ת"א-200': InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_ISRAEL, STRUCT_ETF),
     # Sector ETFs.
     "IUHC": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US),
     # Real estate (genuine REIT single name + listed-property ETFs). DPYA is
@@ -338,6 +343,7 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "MSCI WORLD": "MSCI World tracker",
     "STOXX EUROPE 600": "IBI STOXX Europe 600 tracker",
     "EIMI": "iShares Core MSCI EM IMI (UCITS)",
+    'ת"א-200': "TASE TA-200 Broad Index (Israeli ETF)",
     "IUHC": "iShares S&P 500 Health Care (UCITS)",
     "O": "Realty Income",
     "IWDP": "iShares Dev Markets Property Yield (UCITS)",

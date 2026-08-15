@@ -91,6 +91,17 @@ export function PerPositionThesisSection({
     return out;
   }, [theses]);
 
+  /** Count how many positions are "analysed" vs thin/unreviewed. */
+  const analysisStats = useMemo(() => {
+    const all = theses ?? [];
+    const analysed = all.filter((t) => t.analysis_state === "analysed").length;
+    const thin = all.filter((t) => t.analysis_state === "thin").length;
+    const unreviewed = all.filter(
+      (t) => !t.analysis_state || t.analysis_state === "unreviewed",
+    ).length;
+    return { total: all.length, analysed, thin, unreviewed };
+  }, [theses]);
+
   const filtered = useMemo(() => {
     if (filter === "ALL") return theses ?? [];
     return (theses ?? []).filter((t) => t.verdict === filter);
@@ -136,6 +147,15 @@ export function PerPositionThesisSection({
 
       {theses !== null && theses.length > 0 && (
         <>
+          {/* Coverage aggregate — makes the analysis gap visible at a glance */}
+          <p className="text-xs text-muted-foreground">
+            {analysisStats.analysed} of {analysisStats.total} position
+            {analysisStats.total === 1 ? "" : "s"} analysed
+            {analysisStats.thin > 0 && ` · ${analysisStats.thin} thin`}
+            {analysisStats.unreviewed > 0 &&
+              ` · ${analysisStats.unreviewed} not yet reviewed`}
+          </p>
+
           <div className="flex flex-wrap items-center gap-2">
             {VERDICT_ORDER.map((v) => {
               const isActive = filter === v;

@@ -615,7 +615,12 @@ def start_per_delta_pushback(
     # as the spend reference and refuse if (spent + estimated_run_cost)
     # would exceed the cap. This gives the user a hard floor of
     # ~$0.50 headroom for the slim run.
-    cost_cap_usd = float(os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "10.0"))
+    # Default raised 10 -> 100 (Ariel, 2026-08-14). At $10/24h a single plan
+    # synthesis exhausted the budget before its FM objection dialogues could
+    # run: in run 359 five of seven blocking objections were never attempted
+    # because the cap tripped at objection 2. A cap that silently suppresses
+    # the fleet's own error-correction is worse than the spend it saves.
+    cost_cap_usd = float(os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "100.0"))
     spent_so_far = _total_recent_cost_usd(session, user_id=user_id)
     headroom = cost_cap_usd - spent_so_far
     if headroom < ESTIMATED_RUN_COST_USD:
