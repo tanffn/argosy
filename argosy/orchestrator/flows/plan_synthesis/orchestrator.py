@@ -1775,7 +1775,7 @@ def run_synthesis(
             if (
                 _os.environ.get("ARGOSY_OWNER_ROUTED_RECONCILE", "1") == "1"
                 and _os.environ.get("ARGOSY_COHERENCE_DELIBERATION", "0") != "1"
-                and _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "0") != "1"
+                and _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "1") != "1"
             ):
                 try:
                     from argosy.quality.owner_routed_reconcile import (
@@ -2011,14 +2011,14 @@ def run_synthesis(
                         error=str(exc),
                     )
                     break
-            # Surgical pre-pass (default OFF — set ARGOSY_SURGICAL_CORRECTION=1 to
-            # enable). Fix RENDERABLE reader findings at their cited segment via a
+            # Surgical pre-pass (default ON since 2026-08-15 — set
+            # ARGOSY_SURGICAL_CORRECTION=0 to disable). Fix RENDERABLE reader findings at their cited segment via a
             # cheap prose edit (seconds), persist in place, and re-read. If that
             # clears the BLOCK (or only structural/infra findings remain), SKIP
             # the ~45-min full re-synth this round. Only genuinely structural
             # findings fall through to full re-synth below — which is NOT demoted,
             # it remains the fallback + the whole-artifact reader stays the net.
-            if _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "0") == "1":
+            if _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "1") == "1":
                 try:
                     from argosy.orchestrator.flows.plan_synthesis.surgical_reconcile import (
                         surgically_correct_draft,

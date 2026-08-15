@@ -1642,11 +1642,35 @@ def _summarize_positions(snapshot) -> str:
         acct_str = f"acct={location}" if location else ""
         type_str = f"({asset_type})" if asset_type else ""
 
+        # STRUCTURAL TAX FACTS. These live in instrument_reference and were
+        # never handed to the synthesis fleet -- `grep estate_safe` across
+        # plan_synthesis/ returned nothing before this change. The cost was
+        # real: plan 97 proposed parking NVDA sale proceeds in SGOV as a
+        # "non-US-situs parking vehicle" while SGOV is US-domiciled with
+        # estate_safe=False in our own reference data, which would ADD to the
+        # ~$1.28M US-situs estate exposure the plan is trying to reduce. The
+        # fund manager caught it; the fleet should never have written it.
+        # An NRA household's domicile facts are not optional context.
+        situs_str = ""
+        try:
+            from argosy.services import instrument_reference as _iref
+
+            _ref = _iref.lookup(symbol)
+            if _ref is not None and _ref.estate_safe is not None:
+                situs_str = (
+                    "US-SITUS(estate-exposed)" if _ref.estate_safe is False
+                    else "not-US-situs"
+                )
+        except Exception:  # noqa: BLE001 — never break the summary on a lookup
+            situs_str = ""
+
         parts = [f"  {symbol:<10}", qty_str, value_str]
         if price_str:
             parts.append(price_str)
         if acct_str:
             parts.append(acct_str)
+        if situs_str:
+            parts.append(situs_str)
         if type_str:
             parts.append(type_str)
         lines.append("  ".join(parts))

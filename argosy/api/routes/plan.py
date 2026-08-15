@@ -5783,7 +5783,38 @@ def post_plan_refine(
     ]
 
     try:
-        decision = run_refinement(graph, crs, pre_doc=pre_doc)
+        # Build the POST-change allocation doc so the money-safety net can
+        # actually evaluate. run_refinement only runs evaluate_plan_invariants
+        # when handed a post_doc; without one it returns invariant_report=None
+        # and the net is inert. Previously this route passed only pre_doc, so
+        # every apply staged a draft with sleeve-sum and single-name-cap
+        # invariants unevaluated -- and the 422 guard added for that (below)
+        # then blocked EVERY apply, killing the amendment path outright. The
+        # fix is to compute the post-state, not to refuse the request.
+        post_doc = None
+        try:
+            if pre_doc is not None:
+                from argosy.services.plan_refinement import (
+                    normalize_override_labels as _norm_labels,
+                )
+                _ovr = _norm_labels({
+                    ch.node_key[len(_SLEEVE_TARGET_PREFIX):]: float(ch.new_value)
+                    for ch in req.changes
+                    if ch.node_key.startswith(_SLEEVE_TARGET_PREFIX)
+                    and ch.new_value is not None
+                })
+                if _ovr:
+                    post_doc = pre_doc.model_copy(deep=True)
+                    for _cls in post_doc.classes or []:
+                        if _cls.label in _ovr:
+                            _cls.target_pct = float(_ovr[_cls.label])
+        except Exception as _pd_exc:  # noqa: BLE001 — never break the preview
+            logger.warning(
+                "plan.refine.post_doc_build_failed err=%s", _pd_exc,
+            )
+            post_doc = None
+
+        decision = run_refinement(graph, crs, pre_doc=pre_doc, post_doc=post_doc)
     except UnknownNodeError as exc:
         # A node_key that isn't in the hydrated graph is valid client input (the
         # key might be real but absent from this graph snapshot) — return 400 not 500.
@@ -5829,6 +5860,11 @@ def post_plan_refine(
     # true post_doc is real work (the change requests target graph INPUT nodes,
     # not the allocation doc) and is tracked separately; until it exists, an
     # apply whose net did not run is refused rather than waved through.
+    # The net now RUNS (post_doc is computed above), so this fires only when the
+    # post-state genuinely could not be built -- i.e. we truly cannot verify.
+    # It must never be the normal path: a guard that refuses every legitimate
+    # amendment is worse than the gap it was closing, because it pushes the user
+    # to a 90-minute full re-synthesis to change one number.
     if decision.invariant_report is None:
         from argosy.quality.verification import GateOutcome
 
