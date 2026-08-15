@@ -749,6 +749,19 @@ def _surface_unroutable_as_proposal_impl(
             "Answer only if you want to; otherwise it is a bug to fix.] "
         ) + question
 
+    # The inbox row must carry the OBJECTION, not just its label. The first
+    # live batch surfaced seven items whose entire body was 95 characters --
+    # "Argosy stopped its internal review at the spend cap before resolving
+    # this objection: BLOCKER #2" -- with the actual SGOV estate analysis
+    # dropped. An item that names a problem without stating it is the same
+    # defect as a HOLD with no reasoning: it looks like information and is not.
+    _detail = (objection_detail or "").strip()
+    body_md = question if not _detail else (
+        question
+        + "\n\n---\n\n**The fund manager's objection, in full:**\n\n"
+        + _detail
+    )
+
     async def _do() -> None:
         import json as _json
 
@@ -788,7 +801,7 @@ def _surface_unroutable_as_proposal_impl(
             ).scalars().first()
             if existing is not None:
                 existing.summary = f"FM objection needs your input — {objection_topic}"
-                existing.rationale_md = question
+                existing.rationale_md = body_md
                 existing.suggested_payload = _json.dumps(payload)
                 existing.severity = severity_label
                 existing.surfaced_at = now
@@ -798,7 +811,7 @@ def _surface_unroutable_as_proposal_impl(
                     ActionProposal(
                         user_id=user_id,
                         summary=f"FM objection needs your input — {objection_topic}",
-                        rationale_md=question,
+                        rationale_md=body_md,
                         suggested_payload=_json.dumps(payload),
                         severity=severity_label,
                         surfaced_at=now,
