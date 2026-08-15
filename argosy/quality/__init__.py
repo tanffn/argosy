@@ -22,6 +22,7 @@ from argosy.quality.gate_types import (
 )
 from argosy.quality.coherence_gate import (
     check_cap_cite_derivation,
+    check_cap_target_coherence,
     check_cross_surface_coherence,
 )
 from argosy.quality.freshness_gate import (
@@ -58,6 +59,7 @@ __all__ = [
     "GateVerdict",
     "GateViolation",
     "check_cap_cite_derivation",
+    "check_cap_target_coherence",
     "check_cross_surface_coherence",
     "check_distillate_section_binding",
     "check_evidence_per_section",

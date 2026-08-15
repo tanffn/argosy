@@ -4253,6 +4253,11 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
     ``fact_literal_gate_enforce`` is on — calibration for ``{{fact:key}}``.
     It is intentionally NOT folded into ``HEADLINE_NUMERIC_SOURCE`` so the
     rederivation authority still clears on grounded matching literals.
+
+    ``CAP_TARGET_COHERENCE`` is PERMANENTLY warn-only (never gated behind a
+    settings flag, unlike the two above) — Ariel's ruling on run 369: an
+    NVDA cap-vs-target incoherence is asserted + auto-corrected via surgical
+    correction, it must never block the whole plan/document.
     """
     from argosy.config import get_settings
     from argosy.quality.gate_types import GateCheck
@@ -4262,6 +4267,7 @@ def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
     _EVIDENCE_WARN = {
         GateCheck.EVIDENCE_PER_SECTION,
         GateCheck.DISTILLATE_SECTION_BINDING,
+        GateCheck.CAP_TARGET_COHERENCE,
     }
     if not get_settings().fact_literal_gate_enforce:
         _EVIDENCE_WARN = _EVIDENCE_WARN | {GateCheck.FACT_PLACEHOLDER_PROTOCOL}

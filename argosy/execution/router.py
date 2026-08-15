@@ -140,6 +140,8 @@ class ExecutionRouter:
         day_pnl_usd: float = 0.0,
         daily_loss_limit_usd: float | None = None,
         now: datetime | None = None,
+        section102_tickers: frozenset[str] | None = None,
+        section102_eligible_shares: dict[str, float] | None = None,
     ) -> PreflightInputs:
         return PreflightInputs(
             proposal=proposal,
@@ -153,7 +155,58 @@ class ExecutionRouter:
             daily_loss_limit_usd=daily_loss_limit_usd,
             tier=proposal.tier,
             account_class=proposal.account_class,  # type: ignore[arg-type]
+            section102_tickers=section102_tickers or frozenset(),
+            section102_eligible_shares=section102_eligible_shares or {},
         )
+
+    # Tickers whose position carries Section-102 lots (Ariel's NVDA RSU/ESPP
+    # grants — the only employer-equity ledger `tax_simulation_ingest` covers
+    # today). Not derived from the DB: `TaxSimulationLot` has no ticker column
+    # because the simulation is single-employer; this is the same kind of
+    # domain constant `allocation_plan.py` already hardcodes for NVDA.
+    _SECTION102_TICKERS: frozenset[str] = frozenset({"NVDA"})
+
+    def _resolve_section102_eligible_shares(
+        self, session: Any, proposal: ProposalRow,
+    ) -> dict[str, float]:
+        """Best-effort lookup of the latest Section-102 capital-track-eligible
+        share count for a SELL of a Section-102-tracked ticker.
+
+        Fail-CLOSED by construction: any lookup failure (missing table, DB
+        error, no ledger ingested) leaves the ticker OUT of the returned dict,
+        which `check_section102_ledger_before_sell` treats as "ledger not
+        loaded" -> HARD_FAIL. Never coerce a lookup failure into a pass.
+        """
+        ticker = (getattr(proposal, "ticker", "") or "").upper()
+        action = (getattr(proposal, "action", "") or "").lower()
+        if action != "sell" or ticker not in self._SECTION102_TICKERS:
+            return {}
+        try:
+            # Sol: the caller's session is an AsyncSession (db_mod.get_session()),
+            # but eligible_shares() is sync and calls session.execute(...).scalar().
+            # Passing the async one threw, the exception was swallowed below, and
+            # EVERY live NVDA sell hard-failed even with a loaded ledger — a
+            # fail-closed so total it would have blocked the deconcentration
+            # itself. Use a short-lived sync session for this read.
+            import sqlalchemy as _sa
+            from sqlalchemy.orm import Session as _SyncSession
+
+            from argosy.services.tax_simulation_ingest import eligible_shares
+            from argosy.state import db as _db_mod
+
+            _url = str(_db_mod.get_engine().url).replace("+aiosqlite", "")
+            with _SyncSession(
+                _sa.create_engine(_url, connect_args={"check_same_thread": False})
+            ) as _sync_sess:
+                elig = eligible_shares(_sync_sess, self.user_id)
+            if elig is not None:
+                return {ticker: elig}
+        except Exception:  # noqa: BLE001 — fail-closed: ledger stays "not loaded"
+            _log.warning(
+                "router.section102_ledger_lookup_failed user=%s ticker=%s",
+                self.user_id, ticker,
+            )
+        return {}
 
     async def resolve_cash_available_usd(
         self,
@@ -300,6 +353,9 @@ class ExecutionRouter:
             resolved_cash, cash_source = await self.resolve_cash_available_usd(
                 session, cash_available_usd
             )
+            _section102_eligible = self._resolve_section102_eligible_shares(
+                session, proposal
+            )
             inputs = self.build_preflight_inputs(
                 proposal,
                 cash_available_usd=resolved_cash,
@@ -308,6 +364,8 @@ class ExecutionRouter:
                 plan_targets=plan_targets,
                 day_pnl_usd=day_pnl_usd,
                 daily_loss_limit_usd=daily_loss_limit_usd,
+                section102_tickers=self._SECTION102_TICKERS,
+                section102_eligible_shares=_section102_eligible,
             )
             report = run_preflight(inputs)
             await record_audit_event(

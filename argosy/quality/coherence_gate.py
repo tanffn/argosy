@@ -136,6 +136,52 @@ def check_cap_cite_derivation(
     return violations
 
 
+def check_cap_target_coherence(
+    *, cap_pct: float | None, target_pct: float | None
+) -> list[GateViolation]:
+    """Fail when the NVDA steering TARGET sits above this run's binding CAP.
+
+    Run-369: ConcentrationAnalyst derives the cap per-run as a MIN over four
+    constraint caps (sequence/tail-loss/risk-contribution/tax-liquidity — see
+    ``concentration_analyst_types.py``); it came out 7.0% while the steering
+    sleeve target (``allocation_plan.NVDA_TARGET_PCT`` = 8.0) was described as
+    sitting "inside"/"~1pp below" it. 8 > 7 — two Argosy-derived numbers
+    disagreeing, which is incoherent by construction (a target cannot be
+    inside a ceiling smaller than itself). This is the inviolable-arithmetic
+    floor (conservation-style: cap >= target), NOT a judgment call.
+
+    Per Ariel's ruling (2026-08-15): this must be a WARNING routed to
+    surgical correction, never a plan-blocking gate — the caller
+    (``plan.py::_gate_blocking_checks``) keeps ``GateCheck.CAP_TARGET_COHERENCE``
+    permanently in the warn-only set. This function only detects; it does not
+    decide block-vs-warn.
+
+    ``cap_pct`` / ``target_pct`` must be in the SAME unit (both fractions or
+    both percent-points) — the caller is responsible for that; None on either
+    side means nothing to compare (``[]``). A small epsilon absorbs float
+    rounding so a hairline-equal cap/target does not spuriously fire.
+    """
+    if cap_pct is None or target_pct is None:
+        return []
+    _EPS = 1e-9
+    if target_pct <= cap_pct + _EPS:
+        return []
+    return [
+        GateViolation(
+            check=GateCheck.CAP_TARGET_COHERENCE,
+            detail=(
+                f"NVDA steering target {target_pct:g} exceeds this run's "
+                f"binding cap {cap_pct:g} — two Argosy-derived numbers "
+                "disagree (a steering target cannot sit 'inside' a ceiling "
+                "smaller than itself). Auto-correct the rendered prose to the "
+                f"tighter {min(cap_pct, target_pct):g} via surgical "
+                "correction; do not block promotion on this."
+            ),
+            locator="nvda_cap_target",
+        )
+    ]
+
+
 def check_fi_sufficiency_under_shock(*, shock_result: dict, plan_text: str) -> list[GateViolation]:
     """Fail an unqualified "FI reached" claim that the plan's own NVDA tail breaks.
 

@@ -14,6 +14,7 @@ from argosy.decisions.risk_preflight import (
     check_daily_loss_limit,
     check_position_size_cap,
     check_sector_concentration_cap,
+    check_section102_ledger_before_sell,
     check_tier_mode_match,
     check_trading_hours,
     check_wash_sale,
@@ -242,6 +243,89 @@ def test_wash_sale_stub_pass() -> None:
     r = check_wash_sale(p, lots=None)
     assert r.status is PreflightStatus.PASS
     assert "Phase 4" in r.message
+
+
+# ----------------- Section-102 ledger-before-sell (run-369 fix) -----------------
+# Enforced at TRADE PREFLIGHT (not plan approval) per Ariel's ruling: the plan is
+# allowed to STATE the deconcentration goal, but a SELL order for a Section-102
+# ticker must not place until the per-lot eligibility ledger is loaded and covers
+# the shares being sold — selling the wrong lots is an irreversible tax mistake.
+
+
+def test_section102_sell_blocked_with_no_ledger() -> None:
+    """No ledger loaded at all for NVDA -> HARD_FAIL, not a silent pass."""
+    p = _proposal(ticker="NVDA", action="sell", size_shares_or_currency=1_000)
+    r = check_section102_ledger_before_sell(p, frozenset({"NVDA"}), {})
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert r.detail.get("ledger_loaded") is False
+
+
+def test_section102_sell_allowed_when_ledger_covers_shares() -> None:
+    p = _proposal(ticker="NVDA", action="sell", size_shares_or_currency=1_000)
+    r = check_section102_ledger_before_sell(
+        p, frozenset({"NVDA"}), {"NVDA": 9_230.0}
+    )
+    assert r.status is PreflightStatus.PASS
+
+
+def test_section102_sell_blocked_when_ledger_covers_fewer_shares_than_requested() -> None:
+    """3,924 requested vs only 1,710 verified eligible -> HARD_FAIL (would reach
+    into unverified/breaking lots taxed at ~50% instead of ~30%)."""
+    p = _proposal(ticker="NVDA", action="sell", size_shares_or_currency=3_924)
+    r = check_section102_ledger_before_sell(
+        p, frozenset({"NVDA"}), {"NVDA": 1_710.0}
+    )
+    assert r.status is PreflightStatus.HARD_FAIL
+    assert r.detail.get("requested") == 3_924
+    assert r.detail.get("eligible") == 1_710.0
+
+
+def test_section102_buy_unaffected() -> None:
+    """A BUY of the Section-102 ticker is untouched by the ledger check even
+    with no ledger loaded."""
+    p = _proposal(ticker="NVDA", action="buy", size_shares_or_currency=100)
+    r = check_section102_ledger_before_sell(p, frozenset({"NVDA"}), {})
+    assert r.status is PreflightStatus.PASS
+
+
+def test_section102_unrelated_ticker_unaffected() -> None:
+    """A SELL of a ticker with no Section-102 lots is not gated at all."""
+    p = _proposal(ticker="AAPL", action="sell", size_shares_or_currency=1_000)
+    r = check_section102_ledger_before_sell(p, frozenset({"NVDA"}), {})
+    assert r.status is PreflightStatus.PASS
+
+
+def test_section102_via_run_preflight_blocks_sell_with_no_ledger() -> None:
+    """run_preflight surfaces the missing-ledger Section-102 gap as a hard failure."""
+    p = _proposal(ticker="NVDA", action="sell", size_shares_or_currency=1_000)
+    settings = AgentSettings(execution=ExecutionBlock(default_mode="paper"))
+    inputs = PreflightInputs(
+        proposal=p,
+        settings=settings,
+        now=datetime(2026, 5, 4, 14, 30, tzinfo=timezone.utc),
+        cash_available_usd=10_000,
+        section102_tickers=frozenset({"NVDA"}),
+    )
+    report = run_preflight(inputs)
+    assert not report.passed
+    assert any(r.check == "section102_ledger_before_sell" for r in report.hard_failures)
+
+
+def test_section102_via_run_preflight_passes_when_ledger_covers() -> None:
+    p = _proposal(ticker="NVDA", action="sell", size_shares_or_currency=1_000)
+    settings = AgentSettings(execution=ExecutionBlock(default_mode="paper"))
+    inputs = PreflightInputs(
+        proposal=p,
+        settings=settings,
+        now=datetime(2026, 5, 4, 14, 30, tzinfo=timezone.utc),
+        cash_available_usd=10_000,
+        section102_tickers=frozenset({"NVDA"}),
+        section102_eligible_shares={"NVDA": 9_230.0},
+    )
+    report = run_preflight(inputs)
+    assert not any(
+        r.check == "section102_ledger_before_sell" for r in report.hard_failures
+    )
 
 
 # ----------------- daily loss -----------------

@@ -29,6 +29,7 @@ from argosy.quality.canonical_sections import (
 )
 from argosy.quality.coherence_gate import (
     check_cap_cite_derivation,
+    check_cap_target_coherence,
     check_cross_surface_coherence,
     check_fi_sufficiency_under_shock,
 )
@@ -666,6 +667,19 @@ def gate_plan_output(
         )
         verdict.extend(
             check_fact_literal_should_be_token(horizon_text, resolved)
+        )
+        # Run-369 fix — NVDA cap-vs-target coherence (inviolable arithmetic:
+        # cap >= target). Reads the SAME resolver keys the body/dashboard
+        # surfaces bind to (concentration.nvda_cap_pct /
+        # concentration.nvda_target_pct — see live_surfaces.NVDA_CAP_PCT_NODE
+        # / NVDA_TARGET_PCT_NODE), so a future run cannot invent a third
+        # number: this check and every rendered surface trace to one source.
+        # WARNING-ONLY (see plan.py::_gate_blocking_checks) — never blocks.
+        verdict.extend(
+            check_cap_target_coherence(
+                cap_pct=_resolved_value(resolved, "concentration.nvda_cap_pct"),
+                target_pct=_resolved_value(resolved, "concentration.nvda_target_pct"),
+            )
         )
 
     # S22 — cross-surface coherence + extraction-error fail-loud. Runs only
