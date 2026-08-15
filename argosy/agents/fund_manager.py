@@ -244,9 +244,15 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         # prompt. System prompt gets a short pointer instead.
         if user_directive:
             system = system + (
-                "\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears in the "
-                "user message below capturing the human's per-objection stances "
-                "from the prior round. Respect the user's resolved positions:\n"
+                "\nDIRECTIVE BLOCK PRESENT in the user message below. It may contain "
+                "TWO different things and you MUST NOT conflate them: (a) the human's "
+                "per-objection stances from the prior round, and (b) an "
+                "ARGOSY-DERIVED CANONICAL FACTS block, which is the fleet's OWN "
+                "resolver output, NOT an instruction from Ariel. A later derivation "
+                "that refines an Argosy-derived number is an IMPROVEMENT to be checked, "
+                "NOT a user-directive violation to block on — say so explicitly rather "
+                "than citing a user lock that does not exist. "
+                "Respect the user's resolved positions:\n"
                 "  - For AGREED objections: do NOT re-raise these. The user accepted them.\n"
                 "  - For DISAGREED objections: evaluate the synthesizer's response to the user's counter-position\n"
                 "    on its merits. If the synthesizer correctly honored the user's counter-position, do not\n"

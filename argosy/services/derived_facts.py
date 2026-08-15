@@ -131,10 +131,15 @@ def render_derived_facts_guidance(facts: dict | None) -> str:
     if not facts:
         return ""
     lines = [
-        "LOCKED DERIVED FACTS — use these EXACT numbers as canonical. Do NOT inherit or "
-        "restate any NVDA sale cadence/target from the baseline plan doc or prior drafts "
-        "(a '3,000 sh/yr' figure is FORBIDDEN — it is past behavior, not a derived "
-        "target). Derive all forward guidance from these:",
+        "ARGOSY-DERIVED CANONICAL FACTS (resolver output — NOT a user directive). "
+        "These are the fleet's own derived numbers, not instructions from Ariel. Use "
+        "them as the canonical starting point. Do NOT inherit or restate any NVDA sale "
+        "cadence/target from the baseline plan doc or prior drafts (a '3,000 sh/yr' "
+        "figure is FORBIDDEN — it is past behavior, not a derived target). "
+        "IF YOUR OWN DERIVATION REFINES ONE OF THESE, that is an IMPROVEMENT, not a "
+        "violation: state the old value, the new value, the mechanism that changed it, "
+        "and cite the source. Do NOT silently adopt a different number, and do NOT "
+        "treat a refinement as breaching a user instruction — Ariel did not set these.",
     ]
     if "nvda_target_sh" in facts:
         line = (

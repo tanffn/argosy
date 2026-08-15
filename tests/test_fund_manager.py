@@ -170,7 +170,11 @@ def test_build_prompt_includes_user_directive_when_provided() -> None:
     # user prompt to dodge the bundled claude.exe SDK's empty-output
     # path observed on plan_synthesizer with large variable content
     # in system prompts (synthesis #27 + #28 both reproduced).
-    assert "USER DIRECTIVE PRESENT" in sys
+    assert "DIRECTIVE BLOCK PRESENT" in sys
+    # The block must tell the FM that Argosy-derived facts are NOT a user lock —
+    # four synthesis runs blocked on "user directive violation" against a number
+    # the fleet had derived itself (2026-08-15).
+    assert "NOT an instruction from Ariel" in sys
     assert "AGREED: max NVDA concentration is 12%." in usr
     assert "DISAGREED: tax-loss harvest urgency" in usr
     assert "DEFERRED: FX hedge sizing." in usr
