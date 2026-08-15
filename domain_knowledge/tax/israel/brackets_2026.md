@@ -4,7 +4,7 @@ topic: israel_personal_income_tax_brackets
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual
-last_verified: 2026-08-14
+last_verified: 2026-08-15
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
@@ -14,13 +14,13 @@ source_urls:
   - https://www.gov.il/en/pages/sa120426-1
 sources:
   - url: https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
-    retrieved: 2026-08-14
+    retrieved: 2026-08-15
     tier: 1
   - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
     retrieved: 2026-08-13
     tier: 2
   - url: https://mysachar.co.il/articles/en/tax-brackets.html
-    retrieved: 2026-08-14
+    retrieved: 2026-08-15
     tier: 2
   - url: https://www.gov.il/en/pages/sa120426-1
     retrieved: 2026-07-12

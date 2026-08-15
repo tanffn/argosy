@@ -1,7 +1,7 @@
 ---
 topic: us_congressional_stock_act_filings
 jurisdiction: us
-last_verified: 2026-08-14
+last_verified: 2026-08-15
 next_refresh_due: 2027-05-02
 sources:
   - url: https://www.capitoltrades.com/trades
