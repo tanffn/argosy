@@ -57,6 +57,12 @@ FACT_DISPLAY: dict[str, str] = {
     "retirement.fi_margin_net_of_realization_nis": "nis",
     "tax.nvda_embedded_cgt_nis": "nis",
     "tax.nvda_net_proceeds_nis": "nis",
+    # Glide-consistent counterparts — tax on the PLANNED sale only (not full
+    # liquidation). Added alongside the pair above, never replacing it (FM run
+    # 379: "present BOTH a glide-consistent after-tax margin AND the
+    # full-liquidation [bound]"). See plan_numeric_resolver._apply_nvda_realization_tax_glide.
+    "tax.nvda_embedded_cgt_glide_nis": "nis",
+    "retirement.fi_margin_net_of_realization_glide_nis": "nis",
     # Magnitude (abs) form of the SAME signed margin, for shortfall phrasing
     # ("short by ₪X" — the canonical FI verdict itself renders `short ₪{abs(m)}`,
     # see plan_numeric_resolver / surface_rendering.render_fi_verdict_text). A

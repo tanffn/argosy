@@ -198,6 +198,11 @@ _KEY_UNITS: dict[str, str] = {
     "tax.nvda_embedded_cgt_nis": "nis",
     "tax.nvda_net_proceeds_nis": "nis",
     "retirement.fi_margin_net_of_realization_nis": "nis",
+    # Glide-consistent counterparts (tax on the PLANNED sale only, not full
+    # liquidation) — added alongside the full-liquidation pair above, never
+    # replacing it. See _apply_nvda_realization_tax_glide.
+    "tax.nvda_embedded_cgt_glide_nis": "nis",
+    "retirement.fi_margin_net_of_realization_glide_nis": "nis",
 }
 
 # Fixed STRUCTURAL ages — not derived, not MC-dependent. The pension unlock age
@@ -1238,9 +1243,20 @@ def resolve_plan_numbers(
     # loaded into the book) and after _apply_fx_boi (FX is resolved).
     _apply_nvda_realization_tax(session, user_id, values)
 
+    # Glide-consistent counterpart: tax on the PLANNED sale only (nvda_sell_sh,
+    # eligible/breaking split respected) — never blurs the two rates, never
+    # invents a per-year sale schedule (single-year, stated as such). Called
+    # after _apply_nvda_deconcentration (sell/eligible counts) and the full
+    # realization-tax pass (shares FX/price sourcing).
+    _apply_nvda_realization_tax_glide(session, user_id, values)
+
     # FI margin net of the embedded NVDA realization tax.  Adds the honest after-tax
     # FI sufficiency figure alongside the gross margin — never replaces it.
     _apply_fi_margin_net_of_realization(values)
+
+    # Glide-consistent net margin (plan-as-written), alongside the full-liquidation
+    # bound above — FM run 379 required BOTH visible, neither replacing the other.
+    _apply_fi_margin_net_of_realization_glide(values)
 
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
     # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
@@ -1919,6 +1935,30 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
     ):
         values[key] = ResolvedValue.pending(key, "nis", loc)
         return
+    # Codex AMBER (run 379): "the margin silently changed" — a margin that moves
+    # between runs without stating why. Fix: state the two live input VALUES (not
+    # just their key names) and what makes each one move, so a run-to-run delta is
+    # traceable to a cause instead of reading as drift. This margin has exactly two
+    # inputs, both already resolved+sourced elsewhere: it moves ONLY when (a) the
+    # portfolio mark-to-market changes (new snapshot import, NVDA/other price moves,
+    # FX) — that's portfolio.liquid_net_worth_nis, see its own source_locator — or
+    # (b) the FI methodology's inputs change (identity_yaml tracked spend edited,
+    # goals_yaml education/liability figures edited, or the SWR/life-event planning
+    # constants in fi_methodology.py are edited) — that's retirement.fi_total_capital_nis.
+    # It is NEVER an LLM-authored number and never moves for any other reason.
+    formula = (
+        "liquid_net_worth_nis − fi_total_capital_nis (signed; >0 => total target reached; "
+        "LIQUID basis, excl. real estate) | "
+        f"as-of this run: liquid_net_worth_nis=₪{float(nw.value):,.0f} "
+        f"(moves with portfolio mark-to-market: new snapshot import / price / FX — "
+        f"see portfolio.liquid_net_worth_nis.source_locator), "
+        f"fi_total_capital_nis=₪{float(tot.value):,.0f} "
+        f"(moves only if the FI methodology inputs change — tracked spend, education/"
+        f"liability figures, or the SWR/life-event constants in fi_methodology.py — "
+        f"see retirement.fi_total_capital_nis.source_locator); "
+        "a margin delta vs. a prior run is caused by one or both of these moving, "
+        "never by an independent re-derivation"
+    )
     values[key] = ResolvedValue(
         key=key,
         value=float(nw.value) - float(tot.value),
@@ -1927,7 +1967,7 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
         source_locator=loc,
         agent_report_id=None,
         confidence="HIGH",
-        formula="liquid_net_worth_nis − fi_total_capital_nis (signed; >0 => total target reached; LIQUID basis, excl. real estate)",
+        formula=formula,
     )
 
 
@@ -2142,6 +2182,142 @@ def _apply_nvda_realization_tax(
     )
 
 
+def _apply_nvda_realization_tax_glide(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Glide-consistent counterpart to ``_apply_nvda_realization_tax``.
+
+    The full-liquidation figure (``tax.nvda_embedded_cgt_nis``) taxes ALL 10,940 NVDA
+    shares — a useful UPPER BOUND, but not what the plan actually does: the
+    deconcentration glide sells ``concentration.nvda_sell_sh`` shares (retaining
+    ``concentration.nvda_target_sh`` at the 8%-class target), and only
+    ``concentration.nvda_eligible_now_sh`` of those are Section-102 capital-track
+    TODAY — the rest of the planned sale is Breaking (ordinary-income) treatment.
+    The FM's rejection (run 379) is that subtracting the full-liquidation tax from
+    the gross margin overstates the drag and can wrongly read as "FI not close."
+
+    Publishes ``tax.nvda_embedded_cgt_glide_nis`` = tax on ONLY the planned sale
+    (``nvda_sell_sh`` shares), computed by capping ``realization_tax_summary`` at
+    ``nvda_eligible_now_sh`` capital-track shares + the remaining
+    (``nvda_sell_sh`` − ``nvda_eligible_now_sh``) shares at Breaking/ordinary
+    treatment — the two rates are NEVER blended (per-group caps, summed).
+
+    Tax-year spacing: the glide sells shares "spaced across tax years" per the plan,
+    which would let some tranches clear the surtax threshold in a later year at a
+    lower marginal rate. That per-year schedule is NOT sourced anywhere in this
+    codebase (no dated sale-lot plan exists), so this function does NOT invent one —
+    it computes the SINGLE-YEAR case (as if the whole planned sale realizes in one tax
+    year, the same convention the full-liquidation figure already uses) and says so
+    explicitly in the source_locator. That makes this a conservative (upper) bound on
+    the glide-consistent tax, not a promise that multi-year spacing wouldn't do better.
+    """
+    key = "tax.nvda_embedded_cgt_glide_nis"
+
+    sell_rv = values.get("concentration.nvda_sell_sh")
+    elig_rv = values.get("concentration.nvda_eligible_now_sh")
+    if (
+        sell_rv is None or elig_rv is None
+        or sell_rv.status != "resolved" or elig_rv.status != "resolved"
+        or sell_rv.value is None or elig_rv.value is None
+    ):
+        values[key] = ResolvedValue.pending(
+            key, "nis", "concentration.nvda_sell_sh or nvda_eligible_now_sh not resolved",
+        )
+        return
+
+    sell_sh = float(sell_rv.value)
+    eligible_cap = min(float(elig_rv.value), sell_sh)
+    breaking_cap = max(0.0, sell_sh - eligible_cap)
+
+    # Same FX + current-price sourcing as the full-liquidation path, so the two
+    # figures are comparable (only the share scope differs).
+    fx = 0.0
+    try:
+        _snap_for_fx = _head_snapshot_row(session, user_id)
+        if _snap_for_fx is not None:
+            _snap_fx = _to_float(_snap_for_fx.fx_usd_nis) or 0.0
+            fx, _ = _current_boi_usd_nis(session, _snap_fx)
+    except Exception:  # noqa: BLE001
+        fx = 0.0
+    if not fx or fx <= 0:
+        fx_rv = values.get("fx.usd_nis")
+        if fx_rv is None or fx_rv.status != "resolved" or not fx_rv.value:
+            values[key] = ResolvedValue.pending(key, "nis", "fx.usd_nis not resolved")
+            return
+        fx = float(fx_rv.value)
+
+    current_nvda_px: float | None = None
+    try:
+        from argosy.services.holding_books import load_total_book, parse_positions_json
+
+        snap = _head_snapshot_row(session, user_id)
+        if snap is not None:
+            raw = parse_positions_json(snap.positions_json)
+            book = load_total_book(
+                session, user_id, raw,
+                snapshot_date=getattr(snap, "snapshot_date", None),
+            )
+            if not book.degraded:
+                for p in book.total:
+                    if str(p.get("symbol", "")).upper() == "NVDA":
+                        px = _to_float(p.get("current_price"))
+                        if px and px > 0:
+                            current_nvda_px = px
+                        break
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.realization_tax_glide_price_failed err=%s", exc)
+
+    try:
+        from argosy.services.tax_simulation_ingest import realization_tax_summary
+
+        agg = realization_tax_summary(
+            session, user_id, current_nvda_price_usd=current_nvda_px,
+            max_eligible_shares=eligible_cap, max_breaking_shares=breaking_cap,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.realization_tax_glide_summary_failed err=%s", exc)
+        agg = None
+
+    if agg is None:
+        values[key] = ResolvedValue.pending(key, "nis", "no tax-sim report ingested")
+        return
+
+    embedded_tax_nis = agg.embedded_tax_at_revalue_usd * fx
+    price_label = (
+        f"REVALUED at current NVDA ${agg.revalue_price_usd:,.2f}"
+        if agg.uses_current_price
+        else f"AS-OF sim date {agg.simulation_date} @ ${agg.sim_sale_price_usd:,.2f}"
+    )
+    source_loc = (
+        f"PLANNED SALE ONLY (glide-consistent, NOT full liquidation): "
+        f"{eligible_cap:,.0f} sh capital-track (Section 102, 30% effective) + "
+        f"{breaking_cap:,.0f} sh Breaking/ordinary (~{agg.total_shares - eligible_cap:,.0f} sh "
+        f"priced at the per-lot implied Breaking rate) = {agg.total_shares:,.0f} sh of "
+        f"concentration.nvda_sell_sh={sell_sh:,.0f} | tax_simulation_lots {agg.simulation_date} "
+        f"@ ${agg.sim_sale_price_usd:,.2f} | {price_label} | BOI FX {fx:.4f} NIS/USD | "
+        f"SINGLE-YEAR ASSUMPTION: the plan spaces sales across tax years, but no dated "
+        f"per-year sale schedule is sourced in this codebase — this figure taxes the "
+        f"entire planned sale as if realized in ONE tax year (a conservative upper bound "
+        f"on the glide-consistent tax; multi-year spacing that clears the surtax "
+        f"threshold in a later year would tax less)."
+    )
+    values[key] = ResolvedValue(
+        key=key,
+        value=embedded_tax_nis,
+        unit="nis",
+        status="resolved",
+        source_locator=source_loc,
+        agent_report_id=None,
+        confidence="MEDIUM",  # never HIGH: single-year assumption + eligibility-group cap are documented estimates
+        formula=(
+            f"realization_tax_summary(max_eligible_shares={eligible_cap:,.0f}, "
+            f"max_breaking_shares={breaking_cap:,.0f}) at {price_label} × BOI USD/NIS "
+            "— tax on the PLANNED sale only, eligible and breaking shares taxed at "
+            "their own rates (never blended)"
+        ),
+    )
+
+
 def _apply_fi_margin_net_of_realization(values: dict[str, ResolvedValue]) -> None:
     """FI sufficiency margin NET of the embedded NVDA realization tax.
 
@@ -2194,6 +2370,63 @@ def _apply_fi_margin_net_of_realization(values: dict[str, ResolvedValue]) -> Non
             "(gross margin less the full Israeli tax liability on the NVDA position; "
             ">0 => FI reached even after realization tax; "
             "<0 => gross-only FI claim overstates true sufficiency)"
+        ),
+    )
+
+
+def _apply_fi_margin_net_of_realization_glide(values: dict[str, ResolvedValue]) -> None:
+    """Glide-consistent counterpart to ``_apply_fi_margin_net_of_realization``.
+
+    Same construction (gross margin − embedded tax) but using
+    ``tax.nvda_embedded_cgt_glide_nis`` (tax on the PLANNED sale only —
+    ``concentration.nvda_sell_sh`` shares, eligible/breaking split respected) instead
+    of ``tax.nvda_embedded_cgt_nis`` (full 10,940-share liquidation). This is the
+    figure the FM asked for (run 379): "present BOTH a glide-consistent after-tax
+    margin AND the full-liquidation bound" — this is the former; the latter is
+    ``retirement.fi_margin_net_of_realization_nis``. Neither replaces the other.
+
+    NOTE: this margin nets the tax on the PLANNED SALE, but the gross margin's net
+    worth still includes the RETAINED shares (``concentration.nvda_target_sh``) at
+    full mark, untaxed — those are held, not realized, so that is intentional and
+    matches how the retained sleeve is treated everywhere else in the plan.
+    """
+    key = "retirement.fi_margin_net_of_realization_glide_nis"
+    gross_margin_rv = values.get("retirement.fi_margin_signed_nis")
+    glide_tax_rv = values.get("tax.nvda_embedded_cgt_glide_nis")
+
+    if (
+        gross_margin_rv is None
+        or glide_tax_rv is None
+        or gross_margin_rv.status != "resolved"
+        or glide_tax_rv.status != "resolved"
+        or gross_margin_rv.value is None
+        or glide_tax_rv.value is None
+    ):
+        values[key] = ResolvedValue.pending(
+            key, "nis",
+            "retirement.fi_margin_signed_nis or tax.nvda_embedded_cgt_glide_nis not resolved",
+        )
+        return
+
+    net_margin = float(gross_margin_rv.value) - float(glide_tax_rv.value)
+    tax_src = glide_tax_rv.source_locator or "tax_simulation_lots (planned sale)"
+    values[key] = ResolvedValue(
+        key=key,
+        value=net_margin,
+        unit="nis",
+        status="resolved",
+        source_locator=(
+            f"retirement.fi_margin_signed_nis − tax.nvda_embedded_cgt_glide_nis | {tax_src}"
+        ),
+        agent_report_id=None,
+        confidence=glide_tax_rv.confidence or "MEDIUM",
+        formula=(
+            "fi_margin_signed_nis − nvda_embedded_cgt_glide_nis "
+            "(gross margin less the tax on the PLANNED sale only — nvda_sell_sh shares, "
+            "eligible/breaking split respected, retained shares untaxed; "
+            "THE PLAN-AS-WRITTEN after-tax margin, as opposed to the full-liquidation bound; "
+            ">0 => FI reached under the plan as written; "
+            "<0 => the plan as written does not yet clear FI after tax)"
         ),
     )
 
@@ -2571,6 +2804,11 @@ def _apply_fi_methodology(
         return
 
     conf = m.confidence
+    # BLOCKER 2 (FM run 379): "the permanent-equivalent FI spend basis is
+    # unaudited — needs an itemised derivation (what sums to it) with a cited
+    # source." Every line of the sum + its source now lives in the formula
+    # string so the synthesizer (and Ariel) can audit it without re-deriving.
+    itemized = m.itemized_spend_derivation()
     values["retirement.fi_target_nis"] = ResolvedValue(
         key="retirement.fi_target_nis",
         value=float(m.fi_perpetuity_nis),
@@ -2579,7 +2817,7 @@ def _apply_fi_methodology(
         source_locator="fi_methodology.fi_perpetuity_nis (permanent_spend / SWR)",
         agent_report_id=None,
         confidence=conf,
-        formula=m.method,
+        formula=f"{m.method} | spend basis derivation: {itemized}",
     )
     values["spend.fi_basis_nis"] = ResolvedValue(
         key="spend.fi_basis_nis",
@@ -2589,17 +2827,48 @@ def _apply_fi_methodology(
         source_locator="fi_methodology.permanent_annual_spend_nis",
         agent_report_id=None,
         confidence=conf,
-        formula="tracked baseline (ex-mortgage) + amortized life-event spend",
+        formula=(
+            "tracked baseline (ex-mortgage) + amortized life-event spend; "
+            f"itemized: {itemized}"
+        ),
     )
+    # BLOCKER 3 (FM run 379): "SWR of 3.0% is not reconciled with the 2.4% real
+    # yield the user's resolution used — two different rates in one model."
+    # Investigation: there is only ONE rate parameter here — SWR_REAL_CENTRAL_PCT
+    # = 3.0% (argosy/services/fi_methodology.py) — sized for the household's
+    # explicit no-principal-drawdown mandate over a 90+ year perpetuity (see
+    # module docstring). 2.4% is NOT a second, competing rate: it is the LOW
+    # (conservative) end of THIS SAME central rate's documented sensitivity band
+    # (SWR_REAL_BAND = 2.4%-3.5%), used for stress-testing the SAME perpetuity,
+    # not a different governing rate. 3.0% governs the published FI target
+    # (fi_perpetuity_nis = permanent_spend / 3.0%) everywhere in this plan; 2.4%
+    # only ever appears as the pessimistic edge of that band's sensitivity
+    # check. This is DECOUPLED from retirement.return_assumption_pct (5.0%,
+    # the trajectory's expected real portfolio RETURN) — that is a third,
+    # genuinely different rate used for a different purpose (growing the
+    # portfolio forward in time), not for sizing the perpetuity, and is not
+    # the "2.4%" the objection refers to.
     values["retirement.required_real_yield_pct"] = ResolvedValue(
         key="retirement.required_real_yield_pct",
         value=float(m.swr_real_pct),
         unit="pct",
         status="resolved",
-        source_locator="fi_methodology.swr_real_pct (perpetual real after-tax SWR)",
+        source_locator=(
+            "fi_methodology.SWR_REAL_CENTRAL_PCT (perpetual real after-tax SWR; "
+            "the ONLY SWR used to size fi_target_nis / fi_perpetuity_nis)"
+        ),
         agent_report_id=None,
         confidence=conf,
-        formula=f"defensible perpetual SWR; band {m.swr_band[0]*100:.1f}-{m.swr_band[1]*100:.1f}%",
+        formula=(
+            f"central defensible perpetual real SWR = {m.swr_real_pct*100:.1f}%, "
+            f"sized for capital_preservation_returns_only (no-principal-drawdown) "
+            f"over a 90+yr horizon, decoupled from the 5.0% expected real RETURN "
+            f"(retirement.return_assumption_pct — trajectory growth, NOT perpetuity "
+            f"sizing); sensitivity band {m.swr_band[0]*100:.1f}%-{m.swr_band[1]*100:.1f}% "
+            f"is the SAME rate's conservative-to-optimistic range, NOT a second rate — "
+            f"the {m.swr_band[0]*100:.1f}% low end is what a stress-test of THIS "
+            f"perpetuity looks like, never the rate the published target uses"
+        ),
     )
     values["retirement.return_assumption_pct"] = ResolvedValue(
         key="retirement.return_assumption_pct",
@@ -2679,8 +2948,10 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.fi_margin_signed_nis", "FI sufficiency margin GROSS (LIQUID net worth − total target; >0 => reached on a gross basis; if <0, FI is NOT reached even gross — do not claim funded)"),
-    ("retirement.fi_margin_net_of_realization_nis", "FI sufficiency margin NET OF REALIZATION TAX (gross margin − NVDA embedded tax; >0 => FI reached after paying all Israeli §102 tax on full NVDA position; <0 => FI is NOT reached on an after-tax basis — the honest number Ariel needs to see)"),
-    ("tax.nvda_embedded_cgt_nis", "NVDA embedded Israeli tax liability (full position; §102 Capital 30% on eligible lots + per-lot implied rate on breaking lots; REVALUED to current NVDA price where available — cite the price and sim date from source_locator)"),
+    ("retirement.fi_margin_net_of_realization_nis", "FI sufficiency margin NET OF REALIZATION TAX — FULL-LIQUIDATION BOUND (gross margin − tax on ALL 10,940 NVDA shares; >0 => FI reached even if the entire position were sold today; <0 => FI is NOT reached under that bound; this is a conservative BOUND, not the plan — see the glide-consistent figure below for the plan as written)"),
+    ("retirement.fi_margin_net_of_realization_glide_nis", "FI sufficiency margin NET OF REALIZATION TAX — PLAN AS WRITTEN (gross margin − tax on ONLY the planned sale, concentration.nvda_sell_sh shares, eligible/breaking split respected; retained shares untaxed; >0 => the plan as written clears FI after tax; <0 => it does not — cite THIS one, not the full-liquidation bound, when describing what the plan actually does)"),
+    ("tax.nvda_embedded_cgt_nis", "NVDA embedded Israeli tax liability — FULL LIQUIDATION (ALL 10,940 shares; §102 Capital 30% on eligible lots + per-lot implied rate on breaking lots; REVALUED to current NVDA price where available — cite the price and sim date from source_locator). This is an upper BOUND, not the plan — the deconcentration glide retains concentration.nvda_target_sh shares."),
+    ("tax.nvda_embedded_cgt_glide_nis", "NVDA embedded Israeli tax liability — PLANNED SALE ONLY (concentration.nvda_sell_sh shares; capital-track eligible shares at §102 30%, the remainder at Breaking/ordinary rate, never blended; single-tax-year assumption — see source_locator)"),
     ("tax.nvda_net_proceeds_nis", "NVDA net after-tax proceeds (full position; what survives all Israeli §102 + surtax; REVALUED to current price where available)"),
     ("retirement.fi_shock_net_worth_nis", "Net worth after −30% NVDA shock (gate shock_0.30; cite this — never invent a shocked NW)"),
     ("retirement.fi_fx_shock_net_worth_nis", "Net worth after −10% adverse FX move on USD exposure (gate fx_shock_-0.10; cite this — never invent)"),

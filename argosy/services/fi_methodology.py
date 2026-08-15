@@ -138,6 +138,23 @@ class FiMethodology:
             return float("inf")
         return self.permanent_annual_spend_nis / swr
 
+    def itemized_spend_derivation(self) -> str:
+        """Render the permanent-equivalent spend basis as an auditable line-item
+        sum, each line carrying its cited source — the itemization the FM (run
+        379, BLOCKER 2) asked for: "what sums to {basis}, with a cited source."
+        Only ``kind == "permanent"`` lines are included (they are what sums to
+        ``permanent_annual_spend_nis``; finite lines go to the separate reserve
+        and are NOT part of this sum — see ``finite_liability_reserve_nis``)."""
+        lines = [
+            f"[{c.label}: ₪{c.annual_nis:+,.0f}/yr, {c.source}, confidence={c.confidence}]"
+            for c in self.components
+            if c.kind == "permanent"
+        ]
+        return (
+            " ".join(lines)
+            + f" -> sum = ₪{self.permanent_annual_spend_nis:,.0f}/yr permanent-equivalent spend"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
