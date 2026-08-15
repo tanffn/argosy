@@ -1173,6 +1173,28 @@ def run_synthesis(
             "codex_math", f"dispatch raised: {exc}"
         )
 
+    # ---- verification receipt, written HERE because this point provably runs.
+    # Two earlier attempts placed it further down (inside the default-off
+    # FM_DIALOGUE_CONVERGE branch, then at function level before the second
+    # `if not approved:`) and neither produced a row on live runs 359, 363 or
+    # 364 — the later region is evidently not reached on the FM-rejected path.
+    # The codex math gate IS known here, so persist what we can now rather than
+    # ship a receipt that never materialises. The reader gate is added later
+    # when it exists; persist_gate_outcomes upserts on (run, gate).
+    try:
+        from argosy.services.gate_outcome_store import (
+            persist_gate_outcomes as _persist_early_gates,
+        )
+        _persist_early_gates(
+            session, decision_run_id=decision_run_id, outcomes=[codex_gate],
+        )
+    except Exception as _eg_exc:  # noqa: BLE001 — never block synthesis
+        log.error(
+            "gate_outcomes.early_persist_failed decision_run_id=%s err=%s",
+            decision_run_id, _eg_exc,
+        )
+
+
     # ------------------------------------------------------------------
     # FORCING LOOP (codex-recommended, bounded to ONE reconcile round):
     # when codex BLOCKS on a numeric/methodology finding (a fabricated /
