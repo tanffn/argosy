@@ -159,17 +159,86 @@ def eligible_shares(session, user_id: str, *, plan_type: str | None = None,
     return float(session.execute(q).scalar() or 0.0)
 
 
+@dataclass
+class _ScaledLot:
+    """Lightweight stand-in for a ``TaxSimulationLot`` row, scaled down (shares +
+    the linear-in-shares totals) to represent a PARTIAL sale out of a lot. Used
+    by ``realization_tax_summary`` when ``max_eligible_shares``/``max_breaking_shares``
+    cap the group below its full total — per-share economics (sale price, the
+    implied effective rate) are unchanged; only the totals scale with the fraction
+    of the lot included."""
+
+    shares: float
+    sale_price_usd: float | None
+    net_proceeds_usd: float | None
+    ordinary_income_usd: float | None
+    eligible: bool
+
+
+def _cap_group_shares(lots: list, *, eligible: bool, max_shares: float | None) -> list:
+    """Return the subset of ``lots`` (all with ``.eligible == eligible``) that sums to
+    at most ``max_shares``, scaling the LAST included lot pro-rata if the cap falls
+    inside it. ``max_shares is None`` => return the group unchanged (no cap).
+
+    Lot order is the query order (grant/purchase date is not always populated for
+    ESPP breaking lots), so a partial cap effectively takes a proportional slice of
+    each lot in turn rather than asserting a specific broker lot-selection method
+    (FIFO/HIFO) that is not sourced from the tax-sim report. This is a documented
+    assumption, not an invented number — see ``realization_tax_summary`` docstring
+    and the ``planned_sale`` scope note in ``source_locator``.
+    """
+    group = [l for l in lots if bool(l.eligible) == eligible]
+    if max_shares is None:
+        return group
+    remaining = max(0.0, float(max_shares))
+    out: list = []
+    for lot in group:
+        if remaining <= 0:
+            break
+        lot_shares = lot.shares or 0.0
+        if lot_shares <= remaining + 1e-9:
+            out.append(lot)
+            remaining -= lot_shares
+        else:
+            frac = remaining / lot_shares if lot_shares else 0.0
+            out.append(_ScaledLot(
+                shares=remaining,
+                sale_price_usd=lot.sale_price_usd,
+                net_proceeds_usd=(
+                    lot.net_proceeds_usd * frac if lot.net_proceeds_usd is not None else None
+                ),
+                ordinary_income_usd=(
+                    lot.ordinary_income_usd * frac if lot.ordinary_income_usd is not None else None
+                ),
+                eligible=eligible,
+            ))
+            remaining = 0.0
+    return out
+
+
 def realization_tax_summary(
     session,
     user_id: str,
     *,
     current_nvda_price_usd: float | None = None,
+    max_eligible_shares: float | None = None,
+    max_breaking_shares: float | None = None,
 ) -> "LotTaxAggregate | None":
-    """Aggregate tax figures for the ENTIRE NVDA position from the latest simulation.
+    """Aggregate tax figures for the NVDA position from the latest simulation.
 
     If ``current_nvda_price_usd`` is provided and differs from the simulation price, the
     result is revalued to the current mark; otherwise ``uses_current_price=False`` and the
     revalued fields mirror the at-simulation values.
+
+    By default (``max_eligible_shares=None``, ``max_breaking_shares=None``) this covers the
+    ENTIRE NVDA position — the "sell everything today" bound. Pass caps to scope the
+    aggregate to a PLANNED partial sale instead (e.g. the deconcentration glide's
+    ``concentration.nvda_sell_sh``, split by ``concentration.nvda_eligible_now_sh``):
+    each cap independently limits how many shares of that eligibility group are
+    included, scaling down the boundary lot pro-rata rather than re-deriving a second
+    tax engine (see ``_cap_group_shares``). Eligible and breaking shares are NEVER
+    blended into one blended rate — they are capped and aggregated separately, then
+    summed, so the higher breaking-lot rate on the non-eligible slice is preserved.
 
     Returns ``None`` if no simulation report is ingested for this user.
 
@@ -186,14 +255,28 @@ def realization_tax_summary(
     if sim_date is None:
         return None
 
+    # DETERMINISTIC ORDER (Sol): when a share cap is applied, WHICH lots the cap
+    # consumes changes the tax — the boundary lot sets the implied rate. Without
+    # an ORDER BY the glide figure varied run to run on the same data. Oldest
+    # grant first: it is the order Section-102 holding-period eligibility
+    # actually matures in, so the capped set matches what would really be sold
+    # first. `id` breaks ties so the sequence is total.
     lots = session.execute(
         sa.select(TaxSimulationLot).where(
             TaxSimulationLot.user_id == user_id,
             TaxSimulationLot.simulation_date == sim_date,
-        )
+        ).order_by(TaxSimulationLot.grant_date.asc(), TaxSimulationLot.id.asc())
     ).scalars().all()
     if not lots:
         return None
+
+    if max_eligible_shares is not None or max_breaking_shares is not None:
+        lots = (
+            _cap_group_shares(lots, eligible=True, max_shares=max_eligible_shares)
+            + _cap_group_shares(lots, eligible=False, max_shares=max_breaking_shares)
+        )
+        if not lots:
+            return None
 
     # All lots share the same simulation sale price; pick from any non-null row.
     sim_price = next(
