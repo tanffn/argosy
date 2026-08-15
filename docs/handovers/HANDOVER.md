@@ -2,9 +2,19 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-14**.
+Last updated: **2026-08-15**.
 
-> **`feat/trust-restoration` is MERGED, PUSHED and DEPLOYED** (master `94f02d5`, backend live on it, migrations 0102+0103 applied). Active work is now **`feat/objection-loop`**. Execution tracker with per-task checkboxes: `docs/superpowers/plans/2026-08-13-trust-restoration-execution.md`. Design: `docs/superpowers/specs/2026-08-12-trust-restoration-design.md`. Audit evidence: `docs/superpowers/INDEX.md`. Read the tracker before picking anything up — it records what landed, what was disproved, and what awaits Ariel.
+> **All 2026-08-14/15 work is MERGED, PUSHED and DEPLOYED** — master `86a50df`, backend live on it, migrations 0102+0103 applied. No branch in flight.
+
+> **⚠️ THE HEADLINE FINDING (2026-08-15).** The plan reported FI "REACHED" with a +616,678 NIS cushion. That was GROSS of realization tax. Ariel's own per-lot RSU simulation (`tax_simulation_lots`, 57 rows, all 10,940 NVDA shares) was being read for ONE key (`concentration.nvda_eligible_now_sh` = 9,230) and never for the tax. Derived and now published:
+>
+> | | NIS |
+> |---|---|
+> | FI margin GROSS | **+616,678** |
+> | NVDA embedded realization tax (revalued @ $225.16) | **2,510,030** |
+> | **FI margin NET OF REALIZATION** | **−1,893,351** |
+>
+> The tax is **4.1× the entire gross cushion**. Six render sites now route through one shared helper so no surface can print "FI reached" without stating the basis. The FM had reported "no Schwab tax lots loaded" because it checks the `lots` table (0 rows) while the data is in `tax_simulation_lots`. Execution tracker with per-task checkboxes: `docs/superpowers/plans/2026-08-13-trust-restoration-execution.md`. Design: `docs/superpowers/specs/2026-08-12-trust-restoration-design.md`. Audit evidence: `docs/superpowers/INDEX.md`. Read the tracker before picking anything up — it records what landed, what was disproved, and what awaits Ariel.
 
 ---
 
