@@ -12,6 +12,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
+from argosy.agents._review_criteria import (
+    ACCEPTANCE_CRITERIA,
+    CriterionVerdict,
+    render_criteria_block,
+)
 
 
 class PriorResolvedConcern(BaseModel):
@@ -65,12 +70,31 @@ class FundManagerPlanRevisionDecision(BaseModel):
 
     approved: bool = Field(
         description="True if the synthesized plan honours all hard "
-        "constraints and the three horizons cohere."
+        "constraints and the three horizons cohere. Must be False if AND "
+        "ONLY IF at least one entry in criteria_verdicts has verdict=FAIL "
+        "— approval is never withheld for an advisory_notes item alone."
     )
     reasons: list[str] = Field(
         default_factory=list,
         description="Bullet-point justification for the verdict. Must be "
-        "non-empty when approved=False.",
+        "non-empty when approved=False, and each bullet MUST correspond "
+        "to a FAIL entry in criteria_verdicts (prefix with the criterion "
+        "id, e.g. '[C4_SECTION_102] ...'). Do not put advisory-only "
+        "observations here — they belong in advisory_notes.",
+    )
+    criteria_verdicts: list[CriterionVerdict] = Field(
+        default_factory=list,
+        description=f"One entry for EVERY one of the {len(ACCEPTANCE_CRITERIA)} "
+        "finite acceptance criteria (see system prompt) — pass/fail with "
+        "evidence. This is the ONLY thing that may drive approved=False.",
+    )
+    advisory_notes: list[str] = Field(
+        default_factory=list,
+        description="Observations that fail NONE of the finite criteria — "
+        "wording, cosmetic inconsistency, an additive worksheet that "
+        "changes no action, a labelling dispute. Reported for the "
+        "record; MUST NOT influence 'approved' or be phrased as if "
+        "blocking.",
     )
     cited_sources: list[str] = Field(
         default_factory=list,
@@ -230,10 +254,24 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             "plan-revision integrity check, not a trade approval.\n\n"
             f"{AUTHORITY_DISCLAIMER}\n\n"
             f"{PRIME_DIRECTIVE}\n\n"
-            "Validate (in service of the prime directive): (a) distillate "
-            "hard-constraints honored; (b) three horizons cohere; (c) every "
-            "target has rationale + cited source; (d) 'no_change' is "
-            "justified by evidence if claimed.\n\n"
+            "Your mandate is BOUNDED, not open-ended. Seven drafts in a "
+            "row were rejected under an unbounded 'find problems in the "
+            "prose' mandate — each round raised a DIFFERENT objection set "
+            "(5, then 4, then 4, then an independent reviewer's own "
+            "different 4) because that search never terminates. You are "
+            "REQUIRED to evaluate against the finite list below and "
+            "NOTHING ELSE for blocking purposes.\n\n"
+            f"{render_criteria_block()}\n\n"
+            "You MUST populate criteria_verdicts with all "
+            f"{len(ACCEPTANCE_CRITERIA)} entries (one per criterion id "
+            "above), each PASS or FAIL with evidence. approved=False "
+            "if and only if at least one entry is FAIL. Any other "
+            "observation — wording, an additive worksheet that changes "
+            "no action, a cosmetic inconsistency, a labelling dispute — "
+            "goes in advisory_notes and MUST NOT drive approved=False or "
+            "appear in reasons. Stay adversarial WITHIN the six "
+            "criteria: this is a bounded search, not a lenient one — a "
+            "criterion failure is still a genuine block.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{FundManagerPlanRevisionDecision.model_json_schema()}\n"
         )
