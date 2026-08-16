@@ -2,9 +2,23 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-15**.
+Last updated: **2026-08-16**.
 
 > **All 2026-08-14/15 work is MERGED, PUSHED and DEPLOYED** — master `86a50df`, backend live on it, migrations 0102+0103 applied. No branch in flight.
+
+> **⚠️ WHY THE PLAN WOULD NOT CLOSE (2026-08-16) — read this before running anything.**
+> Seven drafts were rejected in a row while quality measurably improved. Two mechanisms, both now fixed:
+>
+> 1. **Figures written as digits are RE-SAMPLED on every regeneration.** The NVDA glide sell count went 9,479 → 9,417 during an amendment told to change one unrelated sentence; an invented ₪209,389 margin appeared; the cap read 13/12/7/13. Meanwhile five figures bound to `{{fact:}}` tokens were byte-identical across four consecutive amendments. **Rendering works; writing does not.**
+> 2. **Verification kept checking a proxy of the real path.** The ETF verdict path shipped with 31 green tests that all patched the LLM seam and failed on its first live call. A gate receipt was reported working twice with no live run having written a row. A tokenizer's headline numbers came from a hand-patched path.
+>
+> **AMEND, NEVER FULL-REGENERATE.** Use `plan_amendment.workers._medium_worker` (Phase 3 only, ~8 min) targeting named sections; the full 15-phase run (~80 min, ~$20) is for genuine strategy changes only. Measured: amendments took Sol blockers 4 → 3 → 1 by freezing untouched sections; full regens re-rolled everything and stayed flat. See memory `feedback_amend_never_regenerate`.
+>
+> **The 12-vs-13 cap was never drift.** `resolve_plan_numbers()` returns 13% with `include_canonical_ages=True` (doc-anchored settled cap, what every `{{fact:}}` renderer uses) and 12% without (the analyst's MIN-over-constraints floor). Two callers, two canonical answers, decided by a keyword argument.
+>
+> **Landed `8166286`:** fact tokenizer (drift surfaced, never silently corrected) · generation-time numeric guard (the synthesizer cannot type a keyed digit) · `@pytest.mark.real_seam` + `scripts/check_real_seam.py` + `scripts/smoke_real_paths.py` · six finite reviewer criteria with a deterministic backstop (`_enforce_finite_criteria`) so blocking-only-on-the-list is code, not prompt.
+>
+> **Open:** `fact_tokenizer` `exclude_any` fires on ANY "eligible"/"quota" in the clause window, so *"sells 9,417 shares from Section-102 capital-track-eligible inventory at the quota pace"* is missed — gate the exclusion on proximity to a DIFFERENT digit group. 198 of 661 risk modules have zero real-seam coverage (`--all`). Plan 106 is the live draft; v92 still `current`.
 
 > **⚠️ THE HEADLINE FINDING (2026-08-15).** The plan reported FI "REACHED" with a +616,678 NIS cushion. That was GROSS of realization tax. Ariel's own per-lot RSU simulation (`tax_simulation_lots`, 57 rows, all 10,940 NVDA shares) was being read for ONE key (`concentration.nvda_eligible_now_sh` = 9,230) and never for the tax. Derived and now published:
 >
@@ -173,6 +187,9 @@ Prior handovers listed these as open **after** they had already shipped — chec
 - **Escalation bar: fatal FORKS only.** Two judges disagreeing on a value/wording is a DERIVATION question — zigzag it (each side argues from raw sources, a blind third re-derives, converge, record the rationale). Ariel gets only structurally different PATHS (sell-vs-hold the core, adopt-vs-exit a class, goal changes).
 - **Money/decision units:** build → Sol → fix → commit. Skip Sol for UI / read-projections.
 - **Manual UI smokes are skipped** — backend tests + live-LLM e2e are the verification surface.
+- **A claim of success must cite a command that exercised the real path and its output — not a summary, and never a mocked-seam test alone.** (2026-08-16, `fix/real-path-proof`.) Three incidents in one day were all the same shape: work verified against a PROXY of the real path (every test patched the LLM seam; a persist call sat in a code region the real path never reached; a derivation helper was called directly, routing around a resolver that turned out not to be buggy) — reported as success, wrong on first live run. Concretely:
+  - **Real-seam test convention.** `@pytest.mark.real_seam` (registered in `pyproject.toml`) marks a test that exercises a real DB engine/session and/or a real agent object (only the innermost LLM call stubbed, never the whole dispatch function replaced by a `MagicMock`). `scripts/check_real_seam.py` flags agent-dispatch / DB-write modules with zero `real_seam` coverage — reporting tool, not a blocking gate (198/661 modules are gaps today; it's new). Default scope is changed/untracked files vs `HEAD` (exits 1 on a gap in that scope); `--all` gives the full-repo inventory (report-only). Genuine exceptions go in `scripts/real_seam_allowlist.txt` with a reason — reviewed, not silently skipped.
+  - **Smoke entry point.** `scripts/smoke_real_paths.py` hits the four paths that burned us — gate-outcome persistence, fact-tokenizer (via the real `resolve_plan_numbers`, not a hand-built stand-in), plan-amendment (`dispatcher.run_small`), fund-vehicle verdict (`run_fund_vehicle_decision`, a REAL live `agent.run()` call) — against a throwaway copy of `db/argosy.db` (never the real one) and prints what actually happened. Run: `PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe scripts/smoke_real_paths.py [gate-outcome fact-tokenize plan-amendment fund-vehicle]`.
 
 ## Traps
 
