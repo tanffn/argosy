@@ -141,6 +141,13 @@ class GateCheck(str, Enum):
     # Argosy-derived numbers disagreeing must be asserted + auto-corrected via
     # surgical correction, never a plan-blocking gate.
     CAP_TARGET_COHERENCE = "cap_target_coherence"
+    # Tokenize-canonical-figures pass (argosy.quality.fact_tokenizer) — a
+    # literal anchored to a registered fact concept (NVDA share counts, NVDA
+    # cap/target/current weight, FI margins) that DIFFERS from the canonical
+    # resolved value. Never auto-corrected (that would hide fabrication);
+    # surfaced so the drift is visible. A matching literal is silently
+    # rewritten to {{fact:key}} instead and never reaches this check.
+    FACT_LITERAL_DRIFT = "fact_literal_drift"
 
 
 @dataclass(frozen=True)

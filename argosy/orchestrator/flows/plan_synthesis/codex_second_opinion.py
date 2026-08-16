@@ -60,6 +60,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import AgentReport
+from argosy.agents._review_criteria import (
+    ACCEPTANCE_CRITERIA,
+    ACCEPTANCE_CRITERIA_BY_ID,
+    CriterionVerdict,
+    render_criteria_block,
+)
 from argosy.logging import get_logger
 from argosy.quality.verification import GateOutcome, GateStatus  # noqa: F401
 
@@ -141,11 +147,29 @@ class CodexSecondOpinion(BaseModel):
     """The full structured codex second-opinion verdict."""
 
     overall_assessment: Literal["APPROVE", "APPROVE_WITH_CONDITIONS", "BLOCK"]
-    findings: list[CodexFinding] = Field(default_factory=list)
+    findings: list[CodexFinding] = Field(
+        default_factory=list,
+        description="ALL observations, blocking or not. A finding with "
+        "severity=BLOCKER is only a real blocker if its topic is prefixed "
+        "with a recognized finite-criterion id (e.g. "
+        "'[C3_US_SITUS_ESTATE] ...') — see criteria_verdicts, which is the "
+        "authoritative source for overall_assessment. A BLOCKER finding "
+        "with no criterion id is automatically downgraded to AMBER "
+        "(advisory) and does not block promotion.",
+    )
+    criteria_verdicts: list[CriterionVerdict] = Field(
+        default_factory=list,
+        description=f"One entry for EVERY one of the {len(ACCEPTANCE_CRITERIA)} "
+        "finite acceptance criteria — pass/fail with evidence. The ONLY "
+        "thing that may drive overall_assessment=BLOCK (together with a "
+        "headline_number_audit divergence, which IS a C1_HEADLINE_TRACE "
+        "failure and must be reflected as one).",
+    )
     headline_number_audit: list[HeadlineNumberAudit] = Field(
         default_factory=list,
         description="Independent re-derivation of each recomputable headline "
-        "number. Any DIVERGES/UNVERIFIABLE row forces overall_assessment=BLOCK.",
+        "number. Any DIVERGES/UNVERIFIABLE row forces overall_assessment=BLOCK "
+        "and is a C1_HEADLINE_TRACE failure.",
     )
     agreement_with_argosy: CodexAgreement = Field(default_factory=CodexAgreement)
     user_directive_respected: bool | None = None
@@ -168,6 +192,20 @@ may agree with their framing or disagree. Cite the EVIDENCE for your \
 verdict (which paragraph of the synthesizer draft, which analyst quote, \
 which risk concern).
 
+YOUR MANDATE IS BOUNDED, NOT OPEN-ENDED. Seven drafts in a row were \
+rejected under an unbounded "find problems in the prose" mandate — each \
+round raised a DIFFERENT objection set (5, then 4, then 4, then an \
+independent reviewer's own different 4 on the SAME draft) because an \
+open-ended search never terminates. ``overall_assessment`` may be BLOCK \
+ONLY on the finite list below (plus the headline-number-audit rule, \
+which IS criterion C1). Stay adversarial WITHIN that list — this bounds \
+the search, it does not relax it — but do not roam outside it for \
+blocking purposes. Anything outside the list still gets reported (as a \
+``findings`` entry with severity AMBER or YELLOW) but MUST NOT be the \
+reason for a BLOCK.
+
+{criteria_block}
+
 Required structured output (return as JSON — and ONLY JSON, no prose \
 before or after the JSON block):
 
@@ -176,11 +214,20 @@ before or after the JSON block):
   "findings": [
     {{
       "severity": "BLOCKER" | "AMBER" | "YELLOW",
-      "topic": "<short>",
+      "topic": "<short — prefix with '[C#_ID] ' if this IS a finite-criterion failure, e.g. '[C4_SECTION_102] ...'>",
       "detail": "<long>",
       "suggested_fix": "<what should change if any>",
       "cited_synthesizer_paragraphs": ["<excerpt 1>", "<excerpt 2>"]
     }}
+  ],
+  "criteria_verdicts": [
+    {{
+      "criterion_id": "C1_HEADLINE_TRACE" | "C2_NO_CONTRADICTION" | "C3_US_SITUS_ESTATE" | "C4_SECTION_102" | "C5_FI_BOTH_BASES" | "C6_NO_FALSE_CERTAINTY",
+      "verdict": "PASS" | "FAIL",
+      "impact": "CRITICAL" | "MAJOR" | "N/A",
+      "evidence": "<specific evidence — a cited figure, section, or raw-data row>"
+    }}
+    // one entry per criterion, six total, always
   ],
   "headline_number_audit": [
     {{
@@ -206,10 +253,19 @@ max(₪5,000, 0.25% of the figure). ``DIVERGES`` when it is outside tolerance. \
 ``UNVERIFIABLE`` when the raw holdings do not contain enough to re-derive it \
 (e.g. pensions, real-estate equity, or spend not present in the holdings). \
 ANY row with ``DIVERGES`` or ``UNVERIFIABLE`` for a load-bearing figure forces \
-``overall_assessment="BLOCK"`` and a matching BLOCKER finding. This \
+``overall_assessment="BLOCK"`` and a matching BLOCKER finding — record it ALSO \
+as a ``criteria_verdicts`` entry with ``criterion_id="C1_HEADLINE_TRACE"``, \
+``verdict="FAIL"``. This \
 headline-number audit OVERRIDES ``agreement_with_argosy`` and the user \
 directive: a mathematical divergence is a BLOCKER even if the analysts, risk \
 officers, synthesizer, or user directive appear to accept the number.
+
+``overall_assessment="BLOCK"`` if and only if AT LEAST ONE ``criteria_verdicts`` \
+entry is ``verdict="FAIL"`` (which includes the C1_HEADLINE_TRACE case above). \
+A finding you consider serious but that fails none of the six criteria goes in \
+``findings`` with severity AMBER or YELLOW, contributes to \
+``overall_assessment="APPROVE_WITH_CONDITIONS"`` at most, and must NEVER by \
+itself produce ``overall_assessment="BLOCK"``.
 
 Respect the user_directive in the same way the fund manager is told to: \
 the user's AGREED stances are NOT to be re-raised; their DISAGREED \
@@ -345,6 +401,7 @@ def _build_prompt(
         user_directive_block=user_directive_block,
         derived_numbers_block=numbers_block,
         raw_holdings_block=holdings_block,
+        criteria_block=render_criteria_block(),
     )
 
 
@@ -376,7 +433,7 @@ def _enforce_headline_audit(opinion: CodexSecondOpinion) -> CodexSecondOpinion:
         )
         opinion.findings.insert(0, CodexFinding(
             severity="BLOCKER",
-            topic="headline_number_divergence",
+            topic="[C1_HEADLINE_TRACE] headline_number_divergence",
             detail=(
                 "Independent re-derivation from the raw holdings diverged from "
                 f"the pipeline's claimed headline number(s): {metrics}. A "
@@ -386,6 +443,41 @@ def _enforce_headline_audit(opinion: CodexSecondOpinion) -> CodexSecondOpinion:
             suggested_fix="Re-derive the diverging figure from raw holdings and "
                           "fix the upstream computation before promotion.",
         ))
+    return opinion
+
+
+def _enforce_finite_criteria(opinion: CodexSecondOpinion) -> CodexSecondOpinion:
+    """Bound ``overall_assessment=BLOCK`` to the finite criteria list.
+
+    Two structural guarantees, not a prompt wish:
+
+    1. A ``findings`` entry with ``severity="BLOCKER"`` whose ``topic`` does
+       not reference a recognized ``ACCEPTANCE_CRITERIA`` id is downgraded to
+       ``"AMBER"`` — an out-of-list objection cannot masquerade as a blocker.
+    2. If, after that downgrade, NO ``criteria_verdicts`` entry is
+       ``verdict="FAIL"`` and the headline-number audit did not already force
+       a block, ``overall_assessment`` cannot remain ``"BLOCK"`` — it is
+       relaxed to ``"APPROVE_WITH_CONDITIONS"`` so leftover advisory findings
+       still surface without silently stalling promotion.
+
+    This mirrors ``_enforce_headline_audit``'s existing pattern (a prior
+    round already treats the math re-derivation as a real gate, not a
+    prompt wish) and extends the same discipline to the rest of the finite
+    criteria list.
+    """
+    known_ids = tuple(ACCEPTANCE_CRITERIA_BY_ID)
+    for f in opinion.findings:
+        if f.severity != "BLOCKER":
+            continue
+        if not any(cid in f.topic for cid in known_ids):
+            f.severity = "AMBER"
+
+    any_fail = any(v.verdict == "FAIL" for v in opinion.criteria_verdicts)
+    headline_diverged = any(
+        a.status == "DIVERGES" for a in opinion.headline_number_audit
+    )
+    if opinion.overall_assessment == "BLOCK" and not any_fail and not headline_diverged:
+        opinion.overall_assessment = "APPROVE_WITH_CONDITIONS"
     return opinion
 
 
@@ -414,9 +506,9 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
             cleaned = "\n".join(lines).strip()
 
         try:
-            return _enforce_headline_audit(
+            return _enforce_finite_criteria(_enforce_headline_audit(
                 CodexSecondOpinion.model_validate_json(cleaned)
-            )
+            ))
         except Exception:
             pass
 
@@ -426,9 +518,9 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
             try:
                 decoder = json.JSONDecoder(strict=False)
                 obj, _ = decoder.raw_decode(cleaned[first_brace:])
-                return _enforce_headline_audit(
+                return _enforce_finite_criteria(_enforce_headline_audit(
                     CodexSecondOpinion.model_validate(obj)
-                )
+                ))
             except Exception:
                 pass
 
@@ -875,6 +967,7 @@ __all__ = [
     "GateOutcome",
     "GateStatus",
     "_build_prompt",
+    "_enforce_finite_criteria",
     "_parse_codex_verdict",
     "run_codex_second_opinion",
 ]

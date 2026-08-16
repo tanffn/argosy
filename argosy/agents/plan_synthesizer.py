@@ -57,6 +57,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         prior_items_index: list[dict] | None = None,
         user_directive: str = "",
         resolved_numbers_block: str = "",
+        numeric_literal_feedback: str = "",
     ) -> tuple[str, str]:
         system = (
             "You are the plan synthesizer on the Argosy fleet — Phase 3 of the "
@@ -131,6 +132,24 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "number. A post-synthesis gate replaces any headline number that "
             "does not match these derived values with `[derivation pending]`, "
             "so inventing one only deletes your own figure.\n"
+            "  TOKEN EMISSION (HARD RULE — every re-roll re-samples hand-typed "
+            "digits, which is how the NVDA glide sell count and the NVDA cap "
+            "have drifted across drafts): the `DERIVED HEADLINE NUMBERS` block "
+            "below lists each fact under a `{{fact:<key>}}` token, e.g. "
+            "`NVDA shares to sell: 9,479   [write the token "
+            "{{fact:concentration.nvda_sell_sh}} verbatim · ...]`. For EVERY "
+            "concept that appears in that list — share counts, NVDA cap/target/"
+            "current weight, FI margins, net worth, FI target, spend, ages, FX — "
+            "you MUST emit the literal token `{{fact:<key>}}` in the prose "
+            "(body_md, rationale, posture, action detail, delta summary) and "
+            "MUST NOT type the resolved digits yourself, even when you believe "
+            "you are copying them correctly. A number with no matching key in "
+            "that list (a sleeve allocation, a tax rate, an age, a year with no "
+            "registered key) is typed normally — do not invent a token for an "
+            "unregistered concept. A deterministic scan rejects any draft that "
+            "still contains a bare digit for a keyed concept and asks you to "
+            "resubmit naming the exact offending literal — get it right the "
+            "first time.\n"
             "  HARD FACTS vs SOFT REFERENCE (HARD RULE): the user message is split "
             "into a HARD FACTS section (current holdings, analyst outputs, and the "
             "DERIVED HEADLINE NUMBERS — derive every target/rate from THESE + the "
@@ -395,6 +414,17 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             directive_section.append(
                 "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
                 + user_directive
+            )
+
+        # Numeric-literal-guard corrective retry (deterministic, no-LLM
+        # validator run by the caller AFTER a prior attempt). Placed near
+        # the top — right after the user directive — so the model sees the
+        # concrete violation before re-reading the rest of the context.
+        # Empty (default / first attempt) omits the block entirely.
+        if numeric_literal_feedback:
+            directive_section.append(
+                "=== NUMERIC LITERAL VIOLATION — FIX BEFORE RESPONDING ===\n"
+                + numeric_literal_feedback
             )
 
         # Derived headline numbers (the deterministic resolver manifest) lead

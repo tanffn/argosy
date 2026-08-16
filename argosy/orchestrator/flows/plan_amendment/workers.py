@@ -220,6 +220,51 @@ def _medium_worker(*, session: Session, user_id: str,
         )
         if _appendices:
             _long_md = _long_md.rstrip() + "\n\n" + _appendices
+        _medium_md = _horizon_md_user(output.medium)
+        _short_md = _horizon_md_user(output.short)
+
+        # Tokenize-canonical-figures pass (fix/tokenize-canonical-figures):
+        # the medium amendment path re-synthesizes from a narrow guidance
+        # prompt and does NOT go through run_synthesis's in-stage gate, so
+        # it needs its OWN call here — otherwise a medium amendment is the
+        # exact "narrowly-scoped amendment re-rolls the whole section"
+        # scenario the pass exists for. Best-effort: never fails the
+        # amendment on a tokenize error.
+        try:
+            from argosy.quality.fact_tokenizer import tokenize_bodies
+            from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+            # include_canonical_ages=True: matches the ONE production
+            # convention every user-facing {{fact:}} renderer uses
+            # (fact_token_render.render_fact_tokens, instage_gate's resolve
+            # wrapper) — without it concentration.nvda_cap_pct resolves to the
+            # concentration analyst's separate MIN-over-constraints floor
+            # instead of the doc-anchored settled binding cap the prose
+            # actually cites, and the tokenizer cries wolf on legitimate
+            # cap/target literals.
+            _tok_resolved = resolve_plan_numbers(
+                session, user_id=user_id, decision_run_id=decision_run.id,
+                include_canonical_ages=True,
+            )
+            _tok_bodies, _tok_violations, _tok_subs = tokenize_bodies(
+                {"long": _long_md, "medium": _medium_md, "short": _short_md},
+                _tok_resolved,
+            )
+            if _tok_violations:
+                log.warning(
+                    "plan_amendment.medium.fact_literal_drift",
+                    decision_run_id=decision_run.id,
+                    violations=[v.detail for v in _tok_violations],
+                )
+            if _tok_subs:
+                _long_md = _tok_bodies["long"]
+                _medium_md = _tok_bodies["medium"]
+                _short_md = _tok_bodies["short"]
+        except Exception as exc:  # noqa: BLE001 — best-effort, never abort
+            log.warning(
+                "plan_amendment.medium.fact_tokenizer_failed",
+                decision_run_id=decision_run.id, error=str(exc),
+            )
 
         # T1.5 — persist the canonical TargetAllocationDoc. Best-effort + never
         # fatal, but NOT silently-NULL: a transient build failure carries forward
@@ -253,8 +298,8 @@ def _medium_worker(*, session: Session, user_id: str,
             # Phase 1 — user-facing vs audit split. See render.py docstring.
             # v4 — long_md additionally carries the appendix block.
             horizon_long_md=_long_md,
-            horizon_medium_md=_horizon_md_user(output.medium),
-            horizon_short_md=_horizon_md_user(output.short),
+            horizon_medium_md=_medium_md,
+            horizon_short_md=_short_md,
             horizon_long_md_audit=_horizon_md_audit(output.long),
             horizon_medium_md_audit=_horizon_md_audit(output.medium),
             horizon_short_md_audit=_horizon_md_audit(output.short),

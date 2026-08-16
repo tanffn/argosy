@@ -78,6 +78,7 @@ pythonpath = ["."]
 markers = [
     "llm_eval: marks tests that call the live Anthropic API (deselect with -m 'not llm_eval')",
     "slow: corpus-replay integration test (touches real fixtures)",
+    "real_seam: marks a test that exercises a REAL agent-dispatch or DB-write seam (a real DB engine/session, and/or an agent object whose class is not a MagicMock standing in for the whole dispatch call) rather than mocking the entire boundary. See scripts/check_real_seam.py.",
 ]
 
 [tool.ruff]

@@ -1676,6 +1676,73 @@ def run_synthesis(
                     "plan_synthesis.cap_target_autocorrect_failed",
                     user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
                 )
+
+        # Tokenize-canonical-figures pass (fix/tokenize-canonical-figures):
+        # rewrite any headline literal that MATCHES a registered fact
+        # (fact_registry.FACT_DISPLAY) to {{fact:key}} in place — immune to
+        # future re-rolls — and surface (never silently correct) any
+        # anchored literal that DIFFERS from canonical as
+        # GateCheck.FACT_LITERAL_DRIFT. Runs AFTER cap_target_autocorrect so
+        # that pass's digit-literal sentence matching sees the raw prose
+        # first. Best-effort: never aborts synthesis on failure.
+        try:
+            from argosy.quality.fact_tokenizer import tokenize_bodies
+            from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+            _tok_drun = _decision_run_int(decision_run_id)
+            # include_canonical_ages=True: matches the ONE production
+            # convention every user-facing {{fact:}} renderer uses
+            # (fact_token_render.render_fact_tokens, instage_gate's own
+            # resolve wrapper) — it is what makes concentration.nvda_cap_pct
+            # resolve to the DOC-ANCHORED "settled binding cap" (the exact
+            # value plan_versions.target_allocation_json carries and the
+            # prose cites) instead of the concentration analyst's separate,
+            # more-conservative MIN-over-constraints floor. Without this flag
+            # the tokenizer compares prose against the WRONG canonical and
+            # cries wolf on legitimate cap/target literals (caught in review
+            # — see git history for this line).
+            _tok_resolved = (
+                resolve_plan_numbers(
+                    session, user_id=user_id, decision_run_id=_tok_drun,
+                    include_canonical_ages=True,
+                )
+                if _tok_drun is not None else None
+            )
+            if _tok_resolved is not None:
+                _tok_started = datetime.now(timezone.utc)
+                _tok_bodies, _tok_violations, _tok_subs = tokenize_bodies(
+                    {
+                        "long": draft.horizon_long_md or "",
+                        "medium": draft.horizon_medium_md or "",
+                        "short": draft.horizon_short_md or "",
+                    },
+                    _tok_resolved,
+                )
+                _pkg._record_phase_completion(
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    phase_n=60, started_at=_tok_started,
+                    phase_output=(
+                        f"fact_tokenizer: substitutions={len(_tok_subs)} "
+                        f"drift_violations={len(_tok_violations)}"
+                    ),
+                    agent_report_rows=[],
+                )
+                if _tok_violations:
+                    log.warning(
+                        "plan_synthesis.fact_literal_drift",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        violations=[v.detail for v in _tok_violations],
+                    )
+                if _tok_subs:
+                    draft.horizon_long_md = _tok_bodies["long"]
+                    draft.horizon_medium_md = _tok_bodies["medium"]
+                    draft.horizon_short_md = _tok_bodies["short"]
+                    session.commit()
+        except Exception as exc:  # noqa: BLE001 — best-effort, never abort
+            log.warning(
+                "plan_synthesis.fact_tokenizer_failed",
+                user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+            )
     except Exception as exc:  # noqa: BLE001 — surfacing only; never abort
         log.warning(
             "plan_synthesis.instage_gate_failed",

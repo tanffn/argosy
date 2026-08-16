@@ -1,0 +1,9 @@
+# Real-seam coverage allowlist.
+#
+# Modules listed here look like an agent-dispatch or DB-write path (per
+# scripts/check_real_seam.py's heuristic) but are deliberately exempt from
+# needing a @pytest.mark.real_seam test. One dotted module path per line,
+# "#" starts a reason comment. Every entry needs a reason — this list is
+# reviewed, not a dumping ground.
+#
+# Format: argosy.path.to.module   # reason

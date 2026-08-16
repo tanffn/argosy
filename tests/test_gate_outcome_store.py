@@ -71,7 +71,15 @@ def _outcomes() -> list[GateOutcome]:
 class TestPersistRoundTrip:
     """persist_gate_outcomes → get_gate_outcomes preserves all fields."""
 
+    @pytest.mark.real_seam
     def test_basic_round_trip(self, db_session):
+        """Real seam: persist_gate_outcomes / get_gate_outcomes run against a
+        real SQLAlchemy engine + real ORM model (GateOutcomeRow) — the DB-write
+        half of the module is exercised for real here, not through a mock. This
+        is the test that would have caught incident #2 (2026-08-16): a
+        verification receipt reported as persisted, twice, when in fact no live
+        run had written a row.
+        """
         outcomes = _outcomes()
         persist_gate_outcomes(db_session, decision_run_id=42, outcomes=outcomes)
 
