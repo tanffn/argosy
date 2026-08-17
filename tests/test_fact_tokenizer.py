@@ -285,6 +285,93 @@ def test_current_weight_percent_matches_within_rounding_tolerance():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 6. Rule 1 — exclusion is subordinate to the spec's own concept proximity.
+# ---------------------------------------------------------------------------
+
+
+def test_exclude_term_farther_than_own_concept_does_not_disqualify():
+    # "(retains 1,523 shares)": target's own concept `retains` sits 1 char
+    # from the literal; the excluding term `sell` sits ~10 chars away. Per
+    # Rule 1, target's own nearer concept wins — the exclusion must NOT
+    # fire, so target's anchor holds and the drift (literal 1,523 vs
+    # canonical 1,508) is attributed to TARGET_SH, not SELL.
+    resolved = _resolved(**{SELL: (9479, "shares"), TARGET_SH: (1508, "shares")})
+    text = (
+        "**NVDA settled execution glide — forward shares to sell "
+        "(retains 1,523 shares)**: 9417 sh"
+    )
+    result = tokenize_text(text, resolved)
+    matches_1523 = [v for v in result.violations if "1,523" in v.detail]
+    assert len(matches_1523) == 1
+    assert TARGET_SH in matches_1523[0].detail
+    assert SELL not in matches_1523[0].detail
+
+
+# ---------------------------------------------------------------------------
+# 7. Rule 2 — exclusive drift arbitration (at most one violation per literal).
+# ---------------------------------------------------------------------------
+
+
+def test_rule_2a_literal_matching_sibling_canonical_produces_no_drift():
+    # "9230 sh" equals ELIGIBLE's canonical exactly, but ELIGIBLE's concept
+    # ("eligible") sits outside SELL's clause window here while SELL's own
+    # concept ("sold") is close — SELL's anchor fires. Rule 2(a): since the
+    # literal equals a sibling's canonical, no drift is reported at all.
+    resolved = _resolved(
+        **{SELL: (9479, "shares"), ELIGIBLE: (9230, "shares")}
+    )
+    text = (
+        "NVDA shares eligible for the capital-gains rate (the most that can "
+        "be sold at that rate today): 9230 sh"
+    )
+    result = tokenize_text(text, resolved)
+    assert result.violations == []
+
+
+def test_rule_2b_value_nearest_canonical_owns_the_violation():
+    # "9417 sh" is close in VALUE to SELL's canonical (9,479) and far from
+    # TARGET_SH's canonical (1,461) — even if TARGET's concept text happens
+    # to sit nearby too, value-nearest must attribute the drift to SELL.
+    resolved = _resolved(
+        **{SELL: (9479, "shares"), TARGET_SH: (1461, "shares")}
+    )
+    text = (
+        "**NVDA settled execution glide — forward shares to sell "
+        "(retains 1,523 shares)**: 9417 sh"
+    )
+    result = tokenize_text(text, resolved)
+    matches_9417 = [v for v in result.violations if "9417" in v.detail]
+    assert len(matches_9417) == 1
+    assert SELL in matches_9417[0].detail
+    assert TARGET_SH not in matches_9417[0].detail
+
+
+def test_at_most_one_violation_per_literal_span():
+    resolved = _resolved(
+        **{SELL: (9479, "shares"), TARGET_SH: (1461, "shares")}
+    )
+    text = (
+        "**NVDA settled execution glide — forward shares to sell "
+        "(retains 1,523 shares)**: 9417 sh"
+    )
+    result = tokenize_text(text, resolved)
+    spans_seen = [v.detail.split("`")[1] for v in result.violations]
+    assert len(spans_seen) == len(set(spans_seen))
+
+
+def test_quota_remaining_literal_still_never_claimed_by_sell():
+    # Regression guard: the "3,924 sh ... quota remaining" exclusion (a
+    # DIFFERENT concept — the annual sale-allowance balance) must still hold
+    # under the new Rule 1 / Rule 2 arbitration.
+    resolved = _resolved(**{SELL: (9479, "shares"), TARGET_SH: (1508, "shares")})
+    text = "3,924 sh of tax-year 2026 quota remaining, well under the annual allowance."
+    result = tokenize_text(text, resolved)
+    assert result.text == text
+    assert result.violations == []
+    assert result.substitutions == []
+
+
 def test_tokenize_bodies_aggregates_across_horizons():
     resolved = _resolved(**{SELL: (9479, "shares")})
     bodies = {

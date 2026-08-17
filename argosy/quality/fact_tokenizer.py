@@ -393,6 +393,40 @@ def _exclude_term_binds_a_number(
     return False
 
 
+def _span_distance(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    """Gap between two spans, shared convention used throughout this module:
+    a span ending at or before the other -> the gap between them; a span
+    beginning at or after the other -> the gap the other way; overlapping
+    (including touching) -> 0."""
+    if a_end <= b_start:
+        return b_start - a_end
+    if a_start >= b_end:
+        return a_start - b_end
+    return 0
+
+
+def _nearest_concept_distance(
+    masked: str, start: int, end: int, spec: AnchorSpec,
+) -> int | None:
+    """Gap from the literal span ``[start, end)`` to the NEAREST
+    ``concept_any`` match for ``spec``, inside spec's own clause-bounded
+    window — or ``None`` if none is found there at all (e.g. the concept
+    phrase sits outside the window entirely, as with `eligible` in the
+    "9230 sh" case in the module docstring measurements). Used by Rule 1
+    (exclusion is subordinate to the spec's own concept proximity) — see
+    ``_anchor_ok``."""
+    ctx, ctx_abs_start = _clause_bounded_context(masked, start, end, spec.window)
+    best: int | None = None
+    for pat in spec.concept_any:
+        for m in pat.finditer(ctx):
+            m_start = ctx_abs_start + m.start()
+            m_end = ctx_abs_start + m.end()
+            gap = _span_distance(m_start, m_end, start, end)
+            if best is None or gap < best:
+                best = gap
+    return best
+
+
 def _anchor_ok(masked: str, start: int, end: int, spec: AnchorSpec) -> bool:
     ctx, ctx_abs_start = _clause_bounded_context(masked, start, end, spec.window)
     if not any(p.search(ctx) for p in spec.concept_any):
@@ -406,12 +440,30 @@ def _anchor_ok(masked: str, start: int, end: int, spec: AnchorSpec) -> bool:
     # to the very candidate under evaluation ("3,924 sh ... quota
     # remaining") is real evidence that THIS number belongs to the sibling
     # concept, at gap 0.
+    #
+    # Rule 1 (measured against real plan-106 prose): even an exclude term
+    # that IS attached to a number only disqualifies the candidate if it
+    # sits STRICTLY CLOSER to the literal than this spec's OWN nearest
+    # concept_any match. "...forward shares to sell (retains 1,523
+    # shares)": `1,523` is the RETAINED count — target's own concept
+    # `retains` sits 1 char away, while the excluding term `sell` sits 10
+    # chars away. Disqualifying target there (old behaviour) let `sell`
+    # wrongly claim a number that target's own anchor names far more
+    # tightly. If the spec has NO concept match in its window at all
+    # (``_nearest_concept_distance`` -> None), keep the prior behaviour:
+    # the exclusion still fires.
     for pat in spec.exclude_any:
         for m in pat.finditer(ctx):
             e_start = ctx_abs_start + m.start()
             e_end = ctx_abs_start + m.end()
-            if _exclude_term_binds_a_number(masked, e_start, e_end, spec.unit):
-                return False
+            if not _exclude_term_binds_a_number(masked, e_start, e_end, spec.unit):
+                continue
+            concept_distance = _nearest_concept_distance(masked, start, end, spec)
+            if concept_distance is not None:
+                exclude_distance = _span_distance(e_start, e_end, start, end)
+                if exclude_distance >= concept_distance:
+                    continue  # spec's own concept is at least as close — exclusion does not fire
+            return False
     if spec.global_term is not None:
         glo = max(0, start - spec.global_window)
         ghi = min(len(masked), end + spec.global_window)
@@ -517,34 +569,81 @@ def tokenize_text(
 
         # Phase 2 — drift-only, on whatever's left after every match in the
         # group has been tokenized away.
+        #
+        # Rule 2 (measured against real plan-106 prose): drift is EXCLUSIVE —
+        # at most one violation per literal span. Every spec in the group
+        # first gets a crack at flagging a given literal (as before); then,
+        # instead of each spec independently raising its own violation, all
+        # candidate-spec flags for the SAME span are collected and
+        # arbitrated:
+        #
+        #   (a) if the literal equals ANY active same-unit spec's canonical
+        #       (within that spec's own tolerance) — even a spec whose
+        #       anchor never matched here, e.g. `nvda_eligible_now_sh`'s
+        #       concept sitting outside its clause window for a "9230 sh"
+        #       literal — the arithmetic decides ownership: no drift at all.
+        #       This mirrors the Phase-1 arbitration comment above ("the
+        #       arithmetic itself decides, not a textual exclusion").
+        #   (b) otherwise exactly ONE spec reports it: the one whose
+        #       canonical is NEAREST IN VALUE to the literal. Measured: a
+        #       distance-to-CONCEPT tie-break correctly relabels the
+        #       "(retains 1,523 shares)" case to target, but then WRONGLY
+        #       relabels "9417 sh" to target too (target's concept can sit
+        #       nearer in TEXT while its canonical, 1,461, is far in VALUE
+        #       from 9417) — value-nearest gets both right, because a
+        #       drifted figure is a small perturbation of its OWN canonical,
+        #       not a wild divergence from an unrelated concept's text
+        #       proximity. Do not "simplify" this back to distance-to-
+        #       concept.
+        masked = _mask_protected_spans(working)
+        by_span: dict[
+            tuple[int, int], list[tuple[AnchorSpec, float, str, re.Match, _Rule, float]]
+        ] = {}
         for spec, canonical_value, resolver_unit in group:
             for rule in rules:
-                masked = _mask_protected_spans(working)
-                for m in reversed(list(rule.regex.finditer(masked))):
+                for m in rule.regex.finditer(masked):
                     if not _anchor_ok(masked, m.start(0), m.end(0), spec):
                         continue
                     candidate = rule.candidate(m)
                     if candidate is None:
                         continue
                     if _is_match(candidate, canonical_value, rule.tol(canonical_value)):
-                        continue  # matched a DIFFERENT spec's canonical — not this one's drift
-                    rendered = format_fact(
-                        canonical_value, resolver_unit, display=FACT_DISPLAY[spec.key]
+                        continue  # matches THIS spec's own canonical — not drift
+                    span = _span(m, rule.span)
+                    by_span.setdefault(span, []).append(
+                        (spec, canonical_value, resolver_unit, m, rule, candidate)
                     )
-                    violations.append(
-                        GateViolation(
-                            check=GateCheck.FACT_LITERAL_DRIFT,
-                            detail=(
-                                f"literal `{m.group(0).strip()}` near concept `{spec.key}` "
-                                f"diverges from canonical {rendered} — surfaced, NOT "
-                                "auto-corrected"
-                            ),
-                            locator=(
-                                f"horizon={horizon} pos={m.start(0)}" if horizon
-                                else f"pos={m.start(0)}"
-                            ),
-                        )
-                    )
+
+        for span in sorted(by_span):
+            candidates = by_span[span]
+            _, _, _, _m0, rule0, candidate0 = candidates[0]
+            # Rule 2(a): literal equals some sibling's canonical -> no drift.
+            if any(
+                _is_match(candidate0, cv, rule0.tol(cv)) for _, cv, _ in group
+            ):
+                continue
+            # Rule 2(b): value-nearest canonical owns the violation. Stable
+            # tie-break: first spec (DEFAULT_ANCHORS order) on exact ties.
+            spec, canonical_value, resolver_unit, m, _rule, candidate = min(
+                candidates, key=lambda c: abs(c[5] - c[1])
+            )
+            rendered = format_fact(
+                canonical_value, resolver_unit, display=FACT_DISPLAY[spec.key]
+            )
+            violations.append(
+                GateViolation(
+                    check=GateCheck.FACT_LITERAL_DRIFT,
+                    detail=(
+                        f"literal `{m.group(0).strip()}` near concept `{spec.key}` "
+                        f"diverges from canonical {rendered} — surfaced, NOT "
+                        "auto-corrected"
+                    ),
+                    locator=(
+                        f"horizon={horizon} pos={m.start(0)}" if horizon
+                        else f"pos={m.start(0)}"
+                    ),
+                )
+            )
 
     return TokenizeResult(text=working, violations=violations, substitutions=substitutions)
 
