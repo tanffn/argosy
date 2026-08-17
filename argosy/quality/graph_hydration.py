@@ -37,13 +37,16 @@ KNOWN_RECIPE_ARGMAP: dict[str, dict[str, str]] = {
         "portfolio.liquid_net_worth_nis": "liquid_nw_nis",
         "retirement.fi_total_capital_nis": "fi_total_capital_nis",
     },
+    # cap deliberately NOT mapped here: it is not an input to target/sell
+    # shares (verified by execution — target/sell are identical across cap
+    # 0.07/0.12/0.13/0.99; only the optional nvda_cap_breach_x diagnostic
+    # depends on cap). See plan_derivation.derive_nvda_deconcentration and
+    # plan_numeric_resolver._apply_nvda_deconcentration for the full note.
     "concentration.nvda_target_sh": {
         "concentration.nvda_current_pct": "nvda_weight",
-        "concentration.nvda_cap_pct": "cap",
     },
     "concentration.nvda_sell_sh": {
         "concentration.nvda_current_pct": "nvda_weight",
-        "concentration.nvda_cap_pct": "cap",
     },
 }
 
@@ -59,14 +62,17 @@ MANIFEST_EDGES: dict[str, tuple[str, ...]] = {
         "portfolio.liquid_net_worth_nis",
         "retirement.fi_total_capital_nis",
     ),
-    # _apply_nvda_deconcentration: derive_nvda_deconcentration(weight, cap, ...).
+    # _apply_nvda_deconcentration: derive_nvda_deconcentration(nvda_weight, ...).
+    # cap is NOT a real upstream input of target/sell shares (only of the
+    # optional nvda_cap_breach_x diagnostic, which this manifest does not
+    # track) — declaring it here would falsely invalidate target/sell on a
+    # cap-only change, and falsely block blind rederivation whenever cap is
+    # unresolved. See plan_derivation.derive_nvda_deconcentration.
     "concentration.nvda_target_sh": (
         "concentration.nvda_current_pct",
-        "concentration.nvda_cap_pct",
     ),
     "concentration.nvda_sell_sh": (
         "concentration.nvda_current_pct",
-        "concentration.nvda_cap_pct",
     ),
 }
 

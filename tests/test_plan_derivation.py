@@ -24,6 +24,35 @@ def test_nvda_deconcentration_matches_locked_values():
     assert d["nvda_target_sh"].value * NVDA_PX / book <= TARGET_W
 
 
+def test_nvda_deconcentration_cap_none_omits_breach_key_but_keeps_target_sell():
+    d = derive_nvda_deconcentration(
+        nvda_sh=NVDA_SH, nvda_px_usd=NVDA_PX, nvda_weight=NVDA_W,
+        target_w=TARGET_W, cap=None,
+    )
+    assert d["nvda_target_sh"].value == 2201
+    assert d["nvda_sell_sh"].value == 9270
+    assert "nvda_cap_breach_x" not in d
+
+
+def test_nvda_deconcentration_target_sell_invariant_to_cap():
+    # cap is NOT an input to target/sell — verified across the range of caps
+    # discussed (7%, 12%, 13%) plus an extreme 99%: target/sell never move.
+    results = {
+        cap: derive_nvda_deconcentration(
+            nvda_sh=NVDA_SH, nvda_px_usd=NVDA_PX, nvda_weight=NVDA_W,
+            target_w=TARGET_W, cap=cap,
+        )
+        for cap in (0.07, 0.12, 0.13, 0.99)
+    }
+    targets = {r["nvda_target_sh"].value for r in results.values()}
+    sells = {r["nvda_sell_sh"].value for r in results.values()}
+    assert targets == {2201}
+    assert sells == {9270}
+    # but the cap DOES change the diagnostic breach value
+    breaches = {r["nvda_cap_breach_x"].value for r in results.values()}
+    assert len(breaches) == 4
+
+
 def test_fi_margin_uses_liquid_basis_and_is_negative():
     d = derive_fi_margin_liquid(
         liquid_nw_nis=LIQUID_NW, fi_total_capital_nis=FI_TOTAL_CAP,

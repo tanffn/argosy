@@ -352,6 +352,61 @@ def test_decisive_no_half_state_across_all_book_derived_keys(sync_session, monke
     reload_settings()
 
 
+# --------------------------------------------------------------------------
+# Regression: cap is NOT a dependency of nvda_target_sh/nvda_sell_sh, and
+# nvda_eligible_now_sh is independent of weight/cap/book (see plan_derivation
+# .derive_nvda_deconcentration + plan_numeric_resolver._apply_nvda_deconcentration).
+# --------------------------------------------------------------------------
+def test_target_sell_resolve_with_unresolved_cap(sync_session):
+    """The false dependency this bug fixes: on a Phase-3-only plan-amendment run
+    there is no concentration ``agent_reports`` row, so ``concentration.nvda_cap_pct``
+    is simply ABSENT from ``values`` (never resolved). target/sell must still
+    resolve from weight + book alone."""
+    from argosy.services.plan_numeric_resolver import (
+        _apply_nvda_current_weight,
+        _apply_nvda_deconcentration,
+        _apply_total_net_worth,
+        _resolve_liquid_net_worth,
+        _resolve_net_worth,
+        _resolve_usd_exposure,
+    )
+
+    _seed_rich(sync_session)
+    values: dict = {}
+    for rv in (
+        _resolve_net_worth(sync_session, "ariel"),
+        _resolve_liquid_net_worth(sync_session, "ariel"),
+        _resolve_usd_exposure(sync_session, "ariel"),
+    ):
+        values[rv.key] = rv
+    _apply_total_net_worth(sync_session, "ariel", values)
+    _apply_nvda_current_weight(sync_session, "ariel", values)
+    assert "concentration.nvda_cap_pct" not in values  # never resolved this run
+
+    _apply_nvda_deconcentration(sync_session, "ariel", values)
+
+    assert values["concentration.nvda_target_sh"].status == "resolved"
+    assert values["concentration.nvda_sell_sh"].status == "resolved"
+
+
+def test_eligible_now_sh_resolves_when_weight_pending(sync_session):
+    """nvda_eligible_now_sh reads only tax-sim lots — it must not be blocked by
+    a pending nvda_weight (no snapshot / weight not resolved at all)."""
+    from argosy.services.plan_numeric_resolver import _apply_nvda_deconcentration
+
+    values: dict = {}  # no nvda_current_pct key at all -> nvda_weight is None
+    _apply_nvda_deconcentration(sync_session, "ariel", values)
+
+    assert values["concentration.nvda_target_sh"].status == "pending"
+    assert values["concentration.nvda_sell_sh"].status == "pending"
+    # No tax-sim report ingested in this fixture -> pending, but resolved via
+    # its OWN reason, not "nvda weight pending" (proves independence).
+    elig = values["concentration.nvda_eligible_now_sh"]
+    assert elig.status == "pending"
+    assert "tax-sim" in (elig.source_locator or "")
+    assert "weight" not in (elig.source_locator or "")
+
+
 def test_accessor_never_refuses_even_in_enforce(sync_session, enforce_on):
     # load_current_book (which every read-only display consumes) still returns the
     # full book in enforce mode — only the money-critical surfaces refuse, on top

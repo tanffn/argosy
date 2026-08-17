@@ -15,18 +15,24 @@ from argosy.quality.plan_model import Derived
 
 def derive_nvda_deconcentration(
     *, nvda_sh: int, nvda_px_usd: float, nvda_weight: float,
-    target_w: float, cap: float,
+    target_w: float, cap: float | None = None,
 ) -> dict[str, Derived]:
     """From the current NVDA position + book weight, derive the target share count and
     the shares to sell to reach ``target_w`` of the investable book. Strict ``<=target_w``
-    => RETAIN ``floor(target)`` shares (retaining the ceiling would exceed the target)."""
+    => RETAIN ``floor(target)`` shares (retaining the ceiling would exceed the target).
+
+    ``cap`` is NOT an input to ``nvda_target_sh`` / ``nvda_sell_sh`` — verified by
+    execution across cap=0.07/0.12/0.13/0.99, target/sell are identical in every case.
+    ``cap`` is used ONLY to compute the optional ``nvda_cap_breach_x`` diagnostic. When
+    ``cap`` is None (e.g. no resolved concentration cap yet, as on a Phase-3-only plan
+    amendment run), that key is omitted entirely — never emit a placeholder/0/fake
+    breach value. Callers must not gate target/sell derivation on ``cap`` availability."""
     nvda_usd = nvda_sh * nvda_px_usd
     book_usd = nvda_usd / nvda_weight
     target_sh = math.floor(target_w * book_usd / nvda_px_usd)
     sell_sh = nvda_sh - target_sh
-    cap_breach = nvda_weight / cap
-    used = ("nvda_sh", "nvda_px_usd", "nvda_weight", "target_w", "cap")
-    return {
+    used = ("nvda_sh", "nvda_px_usd", "nvda_weight", "target_w")
+    result: dict[str, Derived] = {
         "nvda_target_sh": Derived(
             key="nvda_target_sh", value=target_sh, unit="shares",
             formula="floor(target_w * (nvda_sh*nvda_px_usd/nvda_weight) / nvda_px_usd)",
@@ -36,11 +42,14 @@ def derive_nvda_deconcentration(
             key="nvda_sell_sh", value=sell_sh, unit="shares",
             formula="nvda_sh - nvda_target_sh", inputs_used=used,
         ),
-        "nvda_cap_breach_x": Derived(
+    }
+    if cap is not None:
+        cap_breach = nvda_weight / cap
+        result["nvda_cap_breach_x"] = Derived(
             key="nvda_cap_breach_x", value=round(cap_breach, 2), unit="x",
             formula="nvda_weight / cap", inputs_used=("nvda_weight", "cap"),
-        ),
-    }
+        )
+    return result
 
 
 def derive_fi_margin_liquid(
