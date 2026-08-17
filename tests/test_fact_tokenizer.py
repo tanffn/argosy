@@ -26,6 +26,7 @@ def _resolved(**kv) -> ResolvedPlanNumbers:
 SELL = "concentration.nvda_sell_sh"
 TARGET_SH = "concentration.nvda_target_sh"
 ELIGIBLE = "concentration.nvda_eligible_now_sh"
+QUOTA = "concentration.nvda_quota_tax_year_sh"
 CAP = "concentration.nvda_cap_pct"
 TARGET_PCT = "concentration.nvda_target_pct"
 CURRENT = "concentration.nvda_current_pct"
@@ -370,6 +371,124 @@ def test_quota_remaining_literal_still_never_claimed_by_sell():
     assert result.text == text
     assert result.violations == []
     assert result.substitutions == []
+
+
+# ---------------------------------------------------------------------------
+# 8. Defect A — a hyphenated document reference is not a share-count match.
+# ---------------------------------------------------------------------------
+
+
+def test_hyphenated_statute_reference_is_not_a_share_count_candidate():
+    # "Section-102" glues "102" to the preceding word via a bare hyphen —
+    # not a quantity. Must yield no candidate at all for that "102" (no
+    # substitution, no drift violation), even though canonical happens to be
+    # exactly 102 and "shares" immediately follows.
+    resolved = _resolved(**{SELL: (102, "shares")})
+    text = "NVDA: the Section-102 shares that qualify for the capital-gains track."
+    result = tokenize_text(text, resolved)
+    assert result.text == text
+    assert result.violations == []
+    assert result.substitutions == []
+
+
+def test_genuine_non_hyphenated_share_count_still_matches():
+    # Same digits, same "shares" suffix, but NOT hyphen-glued to a preceding
+    # word — must still match normally.
+    resolved = _resolved(**{SELL: (102, "shares")})
+    text = "NVDA: the glide sells 102 shares this tax year."
+    result = tokenize_text(text, resolved)
+    assert f"{{{{fact:{SELL}}}}}" in result.text
+    assert result.violations == []
+
+
+def test_dash_surrounded_by_spaces_still_matches_as_share_count():
+    # A dash used as a sentence-level separator (spaces on both sides), not
+    # glued to a preceding word — must not be treated as a hyphenated
+    # identifier and must still match normally.
+    resolved = _resolved(**{SELL: (102, "shares")})
+    text = "NVDA: the glide sells the remainder - 102 shares - this tax year."
+    result = tokenize_text(text, resolved)
+    assert f"{{{{fact:{SELL}}}}}" in result.text
+
+
+# ---------------------------------------------------------------------------
+# 9. Defect B — the tax-year quota concept now has its own anchor.
+# ---------------------------------------------------------------------------
+
+
+def test_tax_year_quota_literal_is_attributed_to_quota_not_eligible():
+    resolved = _resolved(
+        **{QUOTA: (3924, "shares"), ELIGIBLE: (9230, "shares")}
+    )
+    text = "**NVDA tax-year 2026 quota remaining**: 3924 sh"
+    result = tokenize_text(text, resolved)
+    # Bound to the quota concept (equals its canonical) -> tokenized, no
+    # drift, and specifically NOT attributed to ELIGIBLE (the old bug).
+    assert f"{{{{fact:{QUOTA}}}}}" in result.text
+    assert "3924" not in result.text
+    assert result.violations == []
+    assert result.substitutions == [(QUOTA, "3924 sh")]
+
+
+def test_tax_year_quota_drift_is_flagged_against_quota_not_eligible():
+    resolved = _resolved(
+        **{QUOTA: (3900, "shares"), ELIGIBLE: (9230, "shares")}
+    )
+    text = "**NVDA tax-year 2026 quota remaining**: 3924 sh"
+    result = tokenize_text(text, resolved)
+    assert "3924" in result.text  # untouched, never silently corrected
+    assert len(result.violations) == 1
+    v = result.violations[0]
+    assert v.check == GateCheck.FACT_LITERAL_DRIFT
+    assert QUOTA in v.detail
+    assert ELIGIBLE not in v.detail
+
+
+def test_quota_spec_never_claims_sell_eligible_or_target_counts():
+    # The quota concept's own anchor (quota + tax-year/year) must never fire
+    # on the sell/eligible/target sentences, and their own anchors must
+    # still correctly claim their own numbers.
+    resolved = _resolved(
+        **{
+            SELL: (9479, "shares"),
+            TARGET_SH: (1508, "shares"),
+            ELIGIBLE: (9230, "shares"),
+            QUOTA: (3924, "shares"),
+        }
+    )
+    text = (
+        "NVDA: the forward glide sells 9,479 shares (retains 1,508 shares); "
+        "NVDA shares eligible for the capital-gains rate today: 9230 sh."
+    )
+    result = tokenize_text(text, resolved)
+    assert f"{{{{fact:{SELL}}}}}" in result.text
+    assert f"{{{{fact:{TARGET_SH}}}}}" in result.text
+    assert f"{{{{fact:{ELIGIBLE}}}}}" in result.text
+    assert f"{{{{fact:{QUOTA}}}}}" not in result.text
+    assert result.violations == []
+
+
+# ---------------------------------------------------------------------------
+# 10. Guard — every anchored key must be registered for rendering.
+# ---------------------------------------------------------------------------
+
+
+def test_every_default_anchor_key_is_registered_in_fact_display():
+    # Regression guard for the concentration.nvda_quota_tax_year_sh incident:
+    # an AnchorSpec was added to DEFAULT_ANCHORS (making the key
+    # substitutable into {{fact:key}}) without a matching FACT_DISPLAY entry.
+    # tokenize_text's Phase-2 drift path used to paper over the gap with
+    # FACT_DISPLAY.get(spec.key, spec.unit) — the bug is that the ACTUAL
+    # renderer for the {{fact:...}} token it substitutes, fact_registry.
+    # render_fact / fact_token_render.render_fact, has no such fallback and
+    # raises PlaceholderError -> PENDING_LABEL ("[derivation pending]") in
+    # the user's live plan. An anchored key that can be substituted MUST be
+    # renderable, so every DEFAULT_ANCHORS key must appear in FACT_DISPLAY.
+    from argosy.quality.fact_registry import FACT_DISPLAY
+    from argosy.quality.fact_tokenizer import DEFAULT_ANCHORS
+
+    missing = [spec.key for spec in DEFAULT_ANCHORS if spec.key not in FACT_DISPLAY]
+    assert missing == [], f"anchored but not registered for rendering: {missing}"
 
 
 def test_tokenize_bodies_aggregates_across_horizons():

@@ -136,6 +136,51 @@ _ANCHOR_NVDA_ELIGIBLE_NOW_SH = AnchorSpec(
     exclude_any=(_p(r"\bsell(?:s|ing)?\b|\btarget\b|\bretain\b"),),
     global_term=_NVDA_TERM,
 )
+# Per-tax-year sale-ALLOWANCE balance (concentration.nvda_quota_tax_year_sh)
+# — a DISTINCT concept from sell/target/eligible: "how much of this tax
+# year's quota is left to sell", not the glide's total sell count, the
+# post-glide retained target, or the currently-vested-and-eligible count.
+# Registered by plan_numeric_resolver._apply_adjudicated_glide but, until
+# now, had NO AnchorSpec, so no spec could ever claim its own number and
+# value-nearest arbitration (Rule 2b) handed it to whichever OTHER concept's
+# canonical happened to be closest in value — see module docstring Defect B.
+#
+# Anchor: the distinctive phrasing is "quota" together with "tax-year" /
+# "tax year" / a bare 4-digit year, in either order, within a modest gap
+# (covers "tax-year 2026 quota remaining" and "quota remaining for the 2026
+# tax year" alike). Requiring BOTH words (not "quota" alone) keeps this
+# spec from firing on the glide-sell sentence's own "...at the quota PACE,
+# holding fresh vests..." (module docstring / SELL exclude_any comment) —
+# that sentence never mentions a tax year, so this spec's concept_any simply
+# never matches there; no exclude_any is needed to keep quota narrow against
+# THAT sentence shape. exclude_any below is still added as defence-in-depth
+# in case a sentence names both a tax-year AND a sell/retain/eligible verb
+# in the same clause as "quota" (e.g. "sell no more than this tax-year 2026
+# quota").
+#
+# Consistency with SELL's / TARGET_SH's existing ``\bquota\s+remaining\b``
+# exclude_any: those still guard the OPPOSITE direction — a clause where
+# SELL's/TARGET's OWN anchor verb (sell/retain/etc.) also fires alongside a
+# "quota remaining" phrase glued to the same number, e.g. "sell no more than
+# the tax-year 2026 quota remaining: 3,924 sh" — SELL's concept_any ("sell")
+# would otherwise fire on the whole clause and, without that exclusion,
+# wrongly compete for 3,924. That exclusion's reasoning is unchanged by this
+# spec's addition: it stops the SIBLING concepts from stealing quota's
+# number; this spec's exclude_any stops quota from stealing THEIRS. Both are
+# still needed and are mutually consistent.
+_ANCHOR_NVDA_QUOTA_TAX_YEAR_SH = AnchorSpec(
+    key="concentration.nvda_quota_tax_year_sh", unit="sh",
+    concept_any=(
+        _p(r"\bquota\b.{0,40}(?:tax[- ]year|\b(?:19|20)\d{2}\b)"),
+        _p(r"(?:tax[- ]year|\b(?:19|20)\d{2}\b).{0,40}\bquota\b"),
+    ),
+    exclude_any=(
+        _p(r"\bsell(?:s|ing)?\b|\bsold\b|\btrim(?:s|med|ming)?\b|\bglide\b"
+           r"|\bretain(?:s|ed|ing)?\b|\btarget\b|\bpost-sale\b|\bkeep\b"
+           r"|\beligible\b|\bvested\b"),
+    ),
+    global_term=_NVDA_TERM,
+)
 
 # NVDA policy percentages — same domain-specific phrases the whole-artifact
 # extractor already uses (assembled_artifact._PROSE_NVDA_CAP_RE /
@@ -199,6 +244,7 @@ DEFAULT_ANCHORS: tuple[AnchorSpec, ...] = (
     _ANCHOR_NVDA_SELL_SH,
     _ANCHOR_NVDA_TARGET_SH,
     _ANCHOR_NVDA_ELIGIBLE_NOW_SH,
+    _ANCHOR_NVDA_QUOTA_TAX_YEAR_SH,
     _ANCHOR_NVDA_CAP_PCT,
     _ANCHOR_NVDA_TARGET_PCT,
     _ANCHOR_NVDA_CURRENT_PCT,
@@ -214,7 +260,34 @@ DEFAULT_ANCHORS: tuple[AnchorSpec, ...] = (
 
 # Share count: digits immediately followed by "shares"/"sh" — never a bare
 # number (that would match any narrative integer of the same magnitude).
-_SH_VALUE_RE = re.compile(r"(?<![\d,.])(\d[\d,]*)(?!\.\d)\s*(?:shares?\b|sh\b)", re.IGNORECASE)
+#
+# The digit group must also not be part of a HYPHENATED IDENTIFIER — a
+# statute/rule/instrument reference like "Section-102 shares", "Rule-10b5-1",
+# "ETF-500 sh" glues a bare number to a preceding word via a hyphen with no
+# space; that digit group is a document/rule LABEL, not a quantity, even
+# though the text right after it happens to read "shares"/"sh". Guarded with
+# a fixed 2-char lookbehind (word-char immediately followed by hyphen)
+# anchored right before the digit group's start. Combined with the existing
+# ``(?<![\d,.])`` guard — which already blocks any match attempt from
+# restarting MID-digit-run (so the engine cannot dodge the hyphen guard by
+# starting one digit later, e.g. matching "02 shares" out of "Section-102
+# shares") — this fully excludes the hyphen-glued run without excluding a
+# genuine "- 102 shares" (space-separated dash, e.g. a minus sign or list
+# bullet) or a "some-thing - 102 shares" dash-surrounded-by-spaces case:
+# neither has a word character directly glued to the hyphen directly glued
+# to the digit, so the lookbehind does not fire for either.
+#
+# Do NOT hardcode "Section" — this is a general hyphen-glued-identifier
+# guard, not a statute-specific one (also catches "Rule-10b5-1", "ETF-500").
+#
+# The pct ("%") and nis ("₪") value regexes are NOT given the same guard:
+# their trigger characters never appear as the suffix of a hyphenated
+# document identifier in this domain ("Section-102%" / "₪Section-102" do not
+# occur in plan prose), so there is no equivalent false-positive class to
+# guard against there — adding it would be unexercised defensive code.
+_SH_VALUE_RE = re.compile(
+    r"(?<!\w-)(?<![\d,.])(\d[\d,]*)(?!\.\d)\s*(?:shares?\b|sh\b)", re.IGNORECASE
+)
 _PCT_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 # Bare-fraction percent form ("0.12" for a 12% rate) — only 2-4 decimal
 # digits, not immediately followed by '%' (that is the percent-sign form
@@ -627,8 +700,23 @@ def tokenize_text(
             spec, canonical_value, resolver_unit, m, _rule, candidate = min(
                 candidates, key=lambda c: abs(c[5] - c[1])
             )
+            # Strict lookup, deliberately not FACT_DISPLAY.get(spec.key,
+            # spec.unit): every key in DEFAULT_ANCHORS is substitutable (it
+            # can be rewritten into a {{fact:key}} token by Phase 1 above),
+            # so it MUST be registered in FACT_DISPLAY — the same "anchored
+            # => substitutable => must render" rule as fact_registry.py's
+            # comment on retirement.fi_margin_net_of_realization_nis. A
+            # lenient .get() fallback here previously let an anchored-but-
+            # unregistered key (concentration.nvda_quota_tax_year_sh) go
+            # unnoticed until it silently degraded to "[derivation pending]"
+            # in a live plan. test_fact_tokenizer.py asserts every
+            # DEFAULT_ANCHORS key is in FACT_DISPLAY, so this KeyError can
+            # now only ever fire for a key added to DEFAULT_ANCHORS without
+            # updating FACT_DISPLAY in the SAME change — a loud CI failure,
+            # not a silent one in Ariel's plan.
             rendered = format_fact(
-                canonical_value, resolver_unit, display=FACT_DISPLAY[spec.key]
+                canonical_value, resolver_unit,
+                display=FACT_DISPLAY[spec.key],
             )
             violations.append(
                 GateViolation(

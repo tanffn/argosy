@@ -97,6 +97,15 @@ FACT_DISPLAY: dict[str, str] = {
     "concentration.nvda_target_sh": "sh",
     "concentration.nvda_sell_sh": "sh",
     "concentration.nvda_eligible_now_sh": "sh",
+    # Per-tax-year sale-allowance balance — anchored in fact_tokenizer.py's
+    # DEFAULT_ANCHORS (_ANCHOR_NVDA_QUOTA_TAX_YEAR_SH), which makes it
+    # substitutable into {{fact:concentration.nvda_quota_tax_year_sh}}. Same
+    # incident class as retirement.fi_margin_net_of_realization_nis above:
+    # an anchored key that is not registered here renders the token
+    # LITERALLY (PlaceholderError -> PENDING_LABEL), so the plan would show
+    # "[derivation pending]" the moment prose correctly states the quota. A
+    # fact a spec can substitute must be renderable.
+    "concentration.nvda_quota_tax_year_sh": "sh",
     # Estate exposure (₪) + MC central spend (₪).
     "concentration.us_situs_estate_exposure_nis": "nis_millions",
     "spend.mc_central_nis": "nis",
