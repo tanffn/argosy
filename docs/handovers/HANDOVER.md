@@ -2,7 +2,7 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-16**.
+Last updated: **2026-08-17**.
 
 > **All 2026-08-14/15 work is MERGED, PUSHED and DEPLOYED** — master `86a50df`, backend live on it, migrations 0102+0103 applied. No branch in flight.
 
@@ -18,7 +18,22 @@ Last updated: **2026-08-16**.
 >
 > **Landed `8166286`:** fact tokenizer (drift surfaced, never silently corrected) · generation-time numeric guard (the synthesizer cannot type a keyed digit) · `@pytest.mark.real_seam` + `scripts/check_real_seam.py` + `scripts/smoke_real_paths.py` · six finite reviewer criteria with a deterministic backstop (`_enforce_finite_criteria`) so blocking-only-on-the-list is code, not prompt.
 >
-> **Open:** `fact_tokenizer` `exclude_any` fires on ANY "eligible"/"quota" in the clause window, so *"sells 9,417 shares from Section-102 capital-track-eligible inventory at the quota pace"* is missed — gate the exclusion on proximity to a DIFFERENT digit group. 198 of 661 risk modules have zero real-seam coverage (`--all`). Plan 106 is the live draft; v92 still `current`.
+> **Open:** 198 of 661 risk modules have zero real-seam coverage (`--all`). Plan 106 is the live draft; v92 still `current`.
+
+> **⚠️ THE ABOVE "Open" ITEM WAS WRONG — corrected 2026-08-17 (uncommitted in the working tree).**
+> It read: *"`fact_tokenizer` `exclude_any` fires on ANY 'eligible'/'quota' in the clause window … gate the exclusion on proximity to a DIFFERENT digit group."* Both halves were wrong, and each was only found by executing the real path.
+>
+> 1. **That gate was not the blocker.** On ANY amendment run (Phase 3 only ⇒ no concentration `agent_reports` row), `concentration.nvda_cap_pct` is still `pending` when `_apply_nvda_deconcentration` consumes it, so `nvda_sell_sh` / `nvda_target_sh` / `nvda_eligible_now_sh` all resolve `pending` — the tokenizer's anchors for those concepts **were never activated at all**. The exclusion never ran. That is why 9,417 drifts.
+> 2. **The cap is a FALSE dependency.** Executed: `derive_nvda_deconcentration` returns target 1,461 / sell 9,479 identically at cap 0.07 / 0.12 / 0.13 / 0.99 — cap affects only `nvda_cap_breach_x`, which `_apply_nvda_deconcentration` discards. Fix = drop the cap from the gate, not hydrate the cap earlier.
+> 3. **Do NOT "fix" this by calling `_apply_canonical_allocation` sooner.** It is NOT idempotent — executed twice from an analyst cap of 12% it yields `cap=13%, floor=12%` then `cap=13%, floor=13%`, mistaking its own canonical assignment for the analyst floor. And in `plan_amendment/workers.py` tokenization runs at ~L245, BEFORE `resolve_target_allocation_json` (~L284) and the `PlanVersion` insert (~L289), so any fix that reads the persisted allocation doc finds nothing at tokenize time. (Both points came from the codex-tandem reviewer and were re-executed independently.)
+> 4. **The prescribed exclusion rule was itself wrong.** Real prose reads *"3,924 sh … quota remaining"* — the exclude phrase modifies **its own** number, so requiring a *different* nearby number stopped the exclusion firing and added two FALSE drift flags. Correct discriminator: the exclude term must be attached to **any** number, within `_EXCLUDE_PROXIMITY = 15` chars. Measured stable across 5..30; **40 was the one value that breaks the case it was added for.**
+> 5. **`graph_hydration` enforced the false cap edge**, not merely documented it: `MANIFEST_EDGES` + `KNOWN_RECIPE_ARGMAP` declared `nvda_cap_pct` upstream of target/sell, which would falsely invalidate them on a cap-only change. Removed.
+>
+> **Real-path proof** (`decision_run 400`, no monkeypatching): sell `pending→9,479`, target `pending→1,461`, eligible `pending→9,230`, `tax.nvda_embedded_cgt_glide_nis` `pending→₪1,949,354`, `fi_margin_net_of_realization_glide_nis` `pending→−₪1,547,769`. Plan 106 end-to-end: 16 substitutions, 9 drift violations surfaced (incl. `9,417` vs 9,479 and `1,508` vs 1,461), idempotent. Note `₪209,389` vs `₪401,585` was ALREADY being flagged before this fix — it comes from `fi_margin_signed_nis`, which was already resolved.
+>
+> **Residual, NOT regressions** (present in every rule variant tested): `1,523 shares` is flagged as `sell_sh` drift though the prose says *"(retains 1,523 shares)"* — right finding, wrong concept label (canonical target is 1,461); and `9230 sh` in the SHORT horizon is a true false positive, where *"the most that can be sold…"* lets the sell anchor claim the eligible count.
+>
+> **Amendment loop deliberately NOT re-run this session** (Ariel's call): with the anchors dead it would have re-baked the same drifted digits. Re-run it once these land.
 
 > **⚠️ THE HEADLINE FINDING (2026-08-15).** The plan reported FI "REACHED" with a +616,678 NIS cushion. That was GROSS of realization tax. Ariel's own per-lot RSU simulation (`tax_simulation_lots`, 57 rows, all 10,940 NVDA shares) was being read for ONE key (`concentration.nvda_eligible_now_sh` = 9,230) and never for the tax. Derived and now published:
 >
