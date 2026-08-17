@@ -101,8 +101,36 @@ def _render_prior_current_md(prior_current) -> str:
 
 
 def _medium_worker(*, session: Session, user_id: str,
-                   decision_run: DecisionRun, guidance: str) -> None:
-    """Run Phase 3 only with the user's amendment as guidance."""
+                   decision_run: DecisionRun, guidance: str,
+                   freeze_except: set[str] | tuple[str, ...] | None = None,
+                   freeze_baseline_plan_id: int | None = None,
+                   ) -> None:
+    """Run Phase 3 only with the user's amendment as guidance.
+
+    ``freeze_except`` (slugs / normalized-heading keys, see
+    ``section_freeze.py``): when provided, every horizon section NOT
+    named here is restored to the prior current plan's text verbatim
+    after re-synthesis, and any section the model dropped that WAS
+    named here is restored too (never lose a requested section). When
+    ``None`` (the default), behaviour is unchanged from before this
+    param existed — the synthesizer's full re-roll is persisted as-is.
+
+    ``freeze_baseline_plan_id``: which ``PlanVersion`` row to freeze
+    against. Freezing against ``get_current_plan`` (``role='current'``)
+    is WRONG whenever the plan actually being amended is a later draft
+    that has already superseded the current row's content (measured:
+    role='current' was plan 92 from 2026-07-13 while live drafts were
+    106/107 — freezing against 92 would silently revert everything
+    93->106 added, including the entire ``fi_bridge`` section). When
+    given, that plan id (scoped to ``user_id`` — never cross-tenant) is
+    loaded and used as the freeze baseline instead of ``prior_current``.
+    A missing or cross-tenant id is a data-integrity problem, not
+    something to paper over — it raises loudly rather than silently
+    falling back to ``prior_current``. When ``freeze_except`` is
+    provided but ``freeze_baseline_plan_id`` is None, behaviour falls
+    back to ``prior_current`` as before, but a warning is logged naming
+    the plan id actually used so a stale-baseline freeze is visible.
+    """
     # Cancellation pre-check.
     session.refresh(decision_run)
     if decision_run.status == "cancelled":
@@ -222,6 +250,68 @@ def _medium_worker(*, session: Session, user_id: str,
             _long_md = _long_md.rstrip() + "\n\n" + _appendices
         _medium_md = _horizon_md_user(output.medium)
         _short_md = _horizon_md_user(output.short)
+
+        # Section freeze — restore untouched sections to the prior
+        # current plan's verbatim text so a narrowly-scoped amendment
+        # cannot silently rewrite/rename/drop sections nobody asked to
+        # change (measured regression: plan 106 -> 107 lost
+        # cover_assumptions/fi_bridge/monte_carlo outright). Runs BEFORE
+        # the fact-tokenizer pass below so tokenization still sees the
+        # MERGED text — a frozen section may cite a figure the
+        # amendment changed elsewhere, and that drift must still be
+        # caught, not hidden by the restore.
+        if freeze_except is not None:
+            from argosy.orchestrator.flows.plan_amendment.section_freeze import (
+                merge_frozen_sections,
+            )
+
+            if freeze_baseline_plan_id is not None:
+                _freeze_baseline = session.get(PlanVersion, freeze_baseline_plan_id)
+                if _freeze_baseline is None or _freeze_baseline.user_id != user_id:
+                    raise RuntimeError(
+                        f"freeze_baseline_plan_id={freeze_baseline_plan_id!r} not found "
+                        f"for user {user_id!r} — refusing to freeze against a stale, "
+                        "missing, or cross-tenant plan"
+                    )
+                log.info(
+                    "plan_amendment.medium.freeze_baseline_explicit",
+                    decision_run_id=decision_run.id,
+                    freeze_baseline_plan_id=_freeze_baseline.id,
+                )
+            else:
+                _freeze_baseline = prior_current
+                if _freeze_baseline is not None:
+                    log.warning(
+                        "plan_amendment.medium.freeze_baseline_defaulted_to_prior_current",
+                        decision_run_id=decision_run.id,
+                        freeze_baseline_plan_id=_freeze_baseline.id,
+                    )
+
+            _freeze_allow = set(freeze_except)
+            if _freeze_baseline is not None:
+                _long_md, _freeze_notes_long = merge_frozen_sections(
+                    _freeze_baseline.horizon_long_md or "", _long_md, allow=_freeze_allow,
+                )
+                _medium_md, _freeze_notes_medium = merge_frozen_sections(
+                    _freeze_baseline.horizon_medium_md or "", _medium_md, allow=_freeze_allow,
+                )
+                _short_md, _freeze_notes_short = merge_frozen_sections(
+                    _freeze_baseline.horizon_short_md or "", _short_md, allow=_freeze_allow,
+                )
+            else:
+                _freeze_notes_long = _freeze_notes_medium = _freeze_notes_short = []
+            for _horizon_name, _notes in (
+                ("long", _freeze_notes_long),
+                ("medium", _freeze_notes_medium),
+                ("short", _freeze_notes_short),
+            ):
+                if _notes:
+                    log.info(
+                        "plan_amendment.medium.section_freeze",
+                        decision_run_id=decision_run.id,
+                        horizon=_horizon_name,
+                        notes=_notes,
+                    )
 
         # Tokenize-canonical-figures pass (fix/tokenize-canonical-figures):
         # the medium amendment path re-synthesizes from a narrow guidance

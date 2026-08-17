@@ -200,6 +200,8 @@ def dispatch_async(
     session: Session, *,
     user_id: str, message: str, tier: str, intent: AmendmentIntent,
     cancel_existing: bool = False,
+    freeze_except: set[str] | tuple[str, ...] | None = None,
+    freeze_baseline_plan_id: int | None = None,
 ) -> AmendmentResultDTO:
     """Spawn the medium or large worker; return 202-shaped DTO.
 
@@ -286,6 +288,7 @@ def dispatch_async(
 
     _spawn_worker(
         session=session, user_id=user_id, decision_run=run, tier=tier, guidance=message,
+        freeze_except=freeze_except, freeze_baseline_plan_id=freeze_baseline_plan_id,
     )
 
     eta = 30 if tier == "medium" else 900
@@ -300,10 +303,17 @@ def dispatch_async(
 def _spawn_worker(
     *, session: Session, user_id: str, decision_run: DecisionRun,
     tier: str, guidance: str,
+    freeze_except: set[str] | tuple[str, ...] | None = None,
+    freeze_baseline_plan_id: int | None = None,
 ) -> None:
     """Spawn the right worker on a background thread.
 
     Indirection point so tests can monkeypatch.
+
+    ``freeze_except`` / ``freeze_baseline_plan_id`` are only meaningful
+    for the medium worker (see ``workers._medium_worker`` /
+    ``section_freeze.py``); they are no-op kwargs for the large worker,
+    which does a full re-synthesis by design.
     """
     worker = _workers._medium_worker if tier == "medium" else _workers._large_worker
 
@@ -319,7 +329,14 @@ def _spawn_worker(
         worker_session = SessionLocal()
         try:
             run = worker_session.get(DecisionRun, decision_run_id)
-            worker(session=worker_session, user_id=user_id, decision_run=run, guidance=guidance)
+            if tier == "medium":
+                worker(
+                    session=worker_session, user_id=user_id, decision_run=run,
+                    guidance=guidance, freeze_except=freeze_except,
+                    freeze_baseline_plan_id=freeze_baseline_plan_id,
+                )
+            else:
+                worker(session=worker_session, user_id=user_id, decision_run=run, guidance=guidance)
         finally:
             worker_session.close()
 
