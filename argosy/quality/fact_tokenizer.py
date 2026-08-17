@@ -312,7 +312,12 @@ def _span(m: re.Match, kind: str) -> tuple[int, int]:
 _CLAUSE_BOUNDARY = re.compile(r"(?<!\d)[.;!?,](?!\d)|\n")
 
 
-def _clause_bounded_context(masked: str, start: int, end: int, window: int) -> str:
+def _clause_bounded_context(masked: str, start: int, end: int, window: int) -> tuple[str, int]:
+    """Return ``(context, abs_start)`` — the clause-bounded window text and
+    its absolute offset into ``masked``, so a match found inside ``context``
+    can be translated back to a real position (needed by the exclude-
+    proximity check below, which must compare against OTHER candidate spans
+    in the full text, not just this window's local coordinates)."""
     lo = max(0, start - window)
     hi = min(len(masked), end + window)
     left = masked[lo:start]
@@ -323,15 +328,90 @@ def _clause_bounded_context(masked: str, start: int, end: int, window: int) -> s
     right_bound = _CLAUSE_BOUNDARY.search(right)
     if right_bound is not None:
         right = right[: right_bound.start()]
-    return left + masked[start:end] + right
+    return left + masked[start:end] + right, start - len(left)
+
+
+# An exclude_any hit only means "this literal belongs to a SIBLING concept"
+# — or disqualifies the number it sits next to — when the exclude term is
+# actually ATTACHED TO A NUMBER (its own candidate's number, or a
+# neighbour's). A bare adjective modifying a noun, with no number anywhere
+# near it, is not concept evidence at all and must not disqualify anything.
+#
+# Two real calibration points (measured against plan 106 / decision_run 400):
+#
+#   * "...sells 9,417 shares from Section-102 capital-track-eligible
+#     inventory at the quota pace" — "eligible" modifies "inventory", not
+#     any number; the nearest unit-candidate is "9,417 shares" itself,
+#     ~32 chars away. This exclude term is NOT attached to a number at that
+#     distance, so it must NOT disqualify 9,417 — the sell anchor must fire
+#     (and then correctly report DRIFT, since canonical is 9,479, not 9,417).
+#   * "3,924 sh of tax-year 2026 quota remaining" — "quota remaining" sits
+#     directly against "3,924 sh" (its OWN candidate number, distance 0).
+#     This exclude term IS attached to a number, so it must disqualify
+#     3,924 as a sell-count candidate.
+#
+# The discriminator is proximity-to-A-number, not "different vs. same" —
+# self-overlap (an exclude phrase glued to the very candidate under
+# evaluation, e.g. "quota remaining" right after "3,924 sh") counts, with
+# gap 0. There is no "skip the candidate itself" branch: excluding a
+# candidate because the exclude term is attached to ITSELF is exactly the
+# 3,924 case above.
+#
+# Measured stable plateau: this rule's outcome (0 new drift regressions on
+# the live dev DB) is insensitive to _EXCLUDE_PROXIMITY anywhere in 5..30;
+# it breaks (the "eligible ... quota pace" case wrongly disqualifies again)
+# at 40, because "eligible" only reaches "inventory"/"pace", never a real
+# number, until the window is wide enough to spuriously bridge back to
+# "9,417" itself across the whole clause.
+_EXCLUDE_PROXIMITY = 15
+
+
+def _exclude_term_binds_a_number(
+    masked: str, e_start: int, e_end: int, unit: str,
+) -> bool:
+    """True if SOME unit-candidate digit group — i.e. a span the unit's own
+    value regex(es) would tokenize, e.g. ``_SH_VALUE_RE`` for "sh" — sits
+    within ``_EXCLUDE_PROXIMITY`` characters of the exclude term's span
+    ``[e_start, e_end)``. This includes the candidate under evaluation
+    itself: an exclude phrase glued to its OWN number ("3,924 sh ... quota
+    remaining") is real concept evidence, not merely a nearby unrelated
+    adjective. Deliberately reuses the value regexes (not a bare ``\\d+``
+    scan): a bare digit group that is not itself a unit-candidate — e.g. the
+    "102" in "Section-102", which is never followed by "shares" — must not
+    count as a bound number just because it is nearby digits."""
+    for rule in _UNIT_RULES.get(unit, ()):
+        for m in rule.regex.finditer(masked):
+            cand_start, cand_end = _span(m, rule.span)
+            if cand_end <= e_start:
+                gap = e_start - cand_end
+            elif cand_start >= e_end:
+                gap = cand_start - e_end
+            else:
+                gap = 0  # touches/overlaps the exclude term itself
+            if gap <= _EXCLUDE_PROXIMITY:
+                return True
+    return False
 
 
 def _anchor_ok(masked: str, start: int, end: int, spec: AnchorSpec) -> bool:
-    ctx = _clause_bounded_context(masked, start, end, spec.window)
+    ctx, ctx_abs_start = _clause_bounded_context(masked, start, end, spec.window)
     if not any(p.search(ctx) for p in spec.concept_any):
         return False
-    if any(p.search(ctx) for p in spec.exclude_any):
-        return False
+    # An exclude_any match only disqualifies this candidate if the exclude
+    # term is actually ATTACHED TO A NUMBER (see _exclude_term_binds_a_
+    # number) — its own candidate's number, or a neighbour's. A bare
+    # adjective modifying a noun, with no number anywhere near it
+    # ("capital-track-eligible inventory"), is not concept evidence and must
+    # not disqualify anything. Self-overlap counts: an exclude phrase glued
+    # to the very candidate under evaluation ("3,924 sh ... quota
+    # remaining") is real evidence that THIS number belongs to the sibling
+    # concept, at gap 0.
+    for pat in spec.exclude_any:
+        for m in pat.finditer(ctx):
+            e_start = ctx_abs_start + m.start()
+            e_end = ctx_abs_start + m.end()
+            if _exclude_term_binds_a_number(masked, e_start, e_end, spec.unit):
+                return False
     if spec.global_term is not None:
         glo = max(0, start - spec.global_window)
         ghi = min(len(masked), end + spec.global_window)

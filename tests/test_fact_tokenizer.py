@@ -65,6 +65,89 @@ def test_matching_nis_margin_is_tokenized():
 
 
 # ---------------------------------------------------------------------------
+# 1b. Exclude proximity — an exclude term only disqualifies a candidate when
+# it is actually ATTACHED TO A NUMBER (its own, or a neighbour's), not just
+# anywhere nearby. Regression for the "capital-track-eligible inventory"
+# over-exclusion bug that was silently suppressing a real drift.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_exclude_adjective_not_attached_to_a_number_lets_drift_surface():
+    # "eligible" here modifies "inventory", not any number — it is not
+    # attached to a number at all, so the SELL exclusion must NOT fire, the
+    # sell anchor must fire, and — because canonical is 9,479, not the
+    # drifted 9,417 literal in this sentence — the result must be a
+    # FACT_LITERAL_DRIFT violation naming concentration.nvda_sell_sh, not a
+    # silent suppression (the real bug measured against plan 106 /
+    # decision_run 400: the anchor used to be suppressed entirely, making
+    # this drift invisible).
+    resolved = _resolved(**{SELL: (9479, "shares")})
+    text = (
+        "NVDA: the forward glide sells 9,417 shares from Section-102 "
+        "capital-track-eligible inventory at the quota pace"
+    )
+    result = tokenize_text(text, resolved)
+    assert "9,417 shares" in result.text  # untouched, never silently corrected
+    assert f"{{{{fact:{SELL}}}}}" not in result.text
+    assert len(result.violations) == 1
+    v = result.violations[0]
+    assert v.check == GateCheck.FACT_LITERAL_DRIFT
+    assert "9,417" in v.detail
+    assert SELL in v.detail
+
+
+def test_bare_exclude_adjective_not_attached_to_a_number_still_substitutes_when_matching():
+    # Same sentence shape, but the literal now EQUALS canonical — the
+    # bare "eligible ... inventory ... quota pace" adjective still must not
+    # disqualify the candidate, so it substitutes normally.
+    resolved = _resolved(**{SELL: (9417, "shares")})
+    text = (
+        "NVDA: the forward glide sells 9,417 shares from Section-102 "
+        "capital-track-eligible inventory at the quota pace"
+    )
+    result = tokenize_text(text, resolved)
+    assert f"{{{{fact:{SELL}}}}}" in result.text
+    assert "9,417" not in result.text
+    assert result.violations == []
+
+
+def test_exclude_term_attached_to_its_own_number_still_excludes():
+    # "quota remaining" sits directly against ITS OWN number (3,924 sh) —
+    # self-overlap counts as "attached to a number" (gap 0) — so the SELL
+    # anchor must not fire at all: no substitution, no drift violation.
+    resolved = _resolved(**{SELL: (9479, "shares")})
+    text = "3,924 sh of tax-year 2026 quota remaining, well under the annual allowance."
+    result = tokenize_text(text, resolved)
+    assert result.text == text
+    assert result.violations == []
+    assert result.substitutions == []
+
+
+def test_bare_digit_group_like_section_102_does_not_count_as_a_bound_number():
+    # "Section-102" contains digits but is never followed by "shares"/"sh",
+    # so it must never count as a "number the exclude term is attached to"
+    # for proximity purposes — only true unit-candidates (matched by the
+    # unit's own value regex) do.
+    resolved = _resolved(**{SELL: (9417, "shares")})
+    text = "NVDA: the glide sells 9,417 shares from Section-102 eligible inventory at the quota pace"
+    result = tokenize_text(text, resolved)
+    assert f"{{{{fact:{SELL}}}}}" in result.text
+
+
+def test_tokenized_output_is_idempotent_after_exclude_proximity_fix():
+    resolved = _resolved(**{SELL: (9417, "shares")})
+    text = (
+        "NVDA: the forward glide sells 9,417 shares from Section-102 "
+        "capital-track-eligible inventory at the quota pace"
+    )
+    once = tokenize_text(text, resolved)
+    twice = tokenize_text(once.text, resolved)
+    assert twice.text == once.text
+    assert twice.violations == []
+    assert twice.substitutions == []
+
+
+# ---------------------------------------------------------------------------
 # 2. Drift surfaced as a violation and NOT rewritten.
 # ---------------------------------------------------------------------------
 
