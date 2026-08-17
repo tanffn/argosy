@@ -99,6 +99,8 @@ class PairResolution:
       * "pending_pair" -- no matching Osh; pending part row written.
       * "duplicate"    -- this XLS (by sha or by semantic key) was
                           already processed; returning the prior outcome.
+      * "ingest_rejected" -- TSV synthesized to disk but the DB snapshot
+                          write was refused by the integrity gate.
     """
     status: str
     pending_pair_id: int | None
@@ -120,12 +122,18 @@ def handle_xls_upload(
     user_id: str,
     contents: bytes,
     snapshot_root: Path,
+    allow_stale: bool = False,
+    allow_catastrophic_drop: bool = False,
+    override_reason: str | None = None,
+    actor: str | None = None,
 ) -> PairResolution:
     """Parse + pair an XLS upload, or queue it as pending.
 
     Caller (the upload route) is responsible for firing the windfall
     detector on the resolved_tsv_path. This function does the synthesis
-    + persistence only.
+    + persistence only. Privileged override flags are forwarded to the
+    snapshot write-through so the XLS path cannot silently bypass the
+    integrity gate that the TSV upload path enforces.
     """
     sha = hashlib.sha256(contents).hexdigest()
 
@@ -300,9 +308,35 @@ def handle_xls_upload(
     # is DB-first) reflects the paired month. commit=True: the part row was
     # already committed by _add_part_with_race_recovery, so this is a standalone
     # upload-time write.
-    closed_loop_lines = _write_through_resolved_snapshot(
-        db, user_id=user_id, tsv_path=target_path, commit=True,
-    )
+    from argosy.services.holding_books import SnapshotIngestRejected
+
+    try:
+        closed_loop_lines = _write_through_resolved_snapshot(
+            db,
+            user_id=user_id,
+            tsv_path=target_path,
+            commit=True,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            override_reason=override_reason,
+            actor=actor or "xls-upload",
+        )
+    except SnapshotIngestRejected as exc:
+        _log.warning(
+            "portfolio_snapshot.xls_write_through_rejected",
+            extra={"code": exc.code, "detail": exc.detail, "path": str(target_path)},
+        )
+        return PairResolution(
+            status="ingest_rejected",
+            pending_pair_id=part.id,
+            resolved_tsv_path=target_path,
+            snapshot_date=xls.snapshot_date,
+            sha256=sha,
+            detail=f"Snapshot DB write refused: {exc.code}: {exc.detail}",
+            parse_warnings=xls.parse_warnings + synth_warnings + [
+                f"SNAPSHOT_INGEST_REJECTED:{exc.code}:{exc.detail}",
+            ],
+        )
     if closed_loop_lines:
         synth_warnings = synth_warnings + closed_loop_lines
 
@@ -343,34 +377,56 @@ def handle_xls_upload(
 
 
 def _write_through_resolved_snapshot(
-    db: Session, *, user_id: str, tsv_path: Path, commit: bool,
+    db: Session,
+    *,
+    user_id: str,
+    tsv_path: Path,
+    commit: bool,
+    allow_stale: bool = False,
+    allow_catastrophic_drop: bool = False,
+    override_reason: str | None = None,
+    actor: str | None = None,
 ) -> list[str]:
     """Persist the freshly-synthesized merged TSV into the DB snapshot store so
     GET /snapshot (DB-first) reflects the paired month immediately — instead of
     silently leaving the prior snapshot live (the write-through gap).
 
-    Best-effort: the pair is already durable (file + part row), so a write-through
-    failure must NEVER break the resolution — it degrades to "the next snapshot
-    read picks it up on its own filesystem fallback." ``commit`` is False when the
-    caller owns an atomic batch (the Osh-arrival hook runs mid-ingest).
+    Best-effort for *infrastructure* failures: the pair is already durable
+    (file + part row), so a transient write-through error must NEVER break the
+    resolution. ``SnapshotIngestRejected`` is NOT swallowed — that is the
+    integrity gate (pre-existing defect: a broad ``except Exception`` used to
+    return ``[]`` and the upload reported success while the DB write refused).
+
+    ``commit`` is False when the caller owns an atomic batch (the Osh-arrival
+    hook runs mid-ingest). Privileged override flags are forwarded so an
+    admin-approved XLS upload can bypass the same gates as the TSV path.
 
     When a NEW snapshot row lands, the closed-loop expectation verifier runs
-    against it: armed ``fills-applied:*`` expectations from prior self-writes
-    are checked against this ingested truth (SDD §20.4 — "the next real
-    ingest verifies the armed expectations"). Returns the closed-loop
-    reconcile lines (empty on no-op / nothing armed) so the caller surfaces
-    them in the resolution's parse_warnings."""
+    against it. Returns the closed-loop reconcile lines (empty on no-op /
+    nothing armed) so the caller surfaces them in parse_warnings.
+    """
+    from argosy.services.holding_books import SnapshotIngestRejected
+    from argosy.ingest.tsv import parse_portfolio_tsv
+    from argosy.services.portfolio_snapshot_store import (
+        write_through_if_changed,
+    )
+
     row = None
     try:
-        from argosy.ingest.tsv import parse_portfolio_tsv
-        from argosy.services.portfolio_snapshot_store import (
-            write_through_if_changed,
-        )
-
         snap = parse_portfolio_tsv(tsv_path)
         row = write_through_if_changed(
-            db, user_id=user_id, snapshot=snap, commit=commit,
+            db,
+            user_id=user_id,
+            snapshot=snap,
+            commit=commit,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            override_reason=override_reason,
+            actor=actor,
         )
+    except SnapshotIngestRejected:
+        # Integrity gate — never pretend the write succeeded.
+        raise
     except Exception as exc:  # noqa: BLE001 — additive; never break the pair
         _log.warning(
             "portfolio_snapshot.pair_write_through_failed",
@@ -515,9 +571,32 @@ def try_resolve_pending_on_osh_arrival(
     # Write-through so /portfolio reflects the paired month. commit=False: this
     # hook runs mid-ingest and the caller (orchestrator/route) owns the commit,
     # so the snapshot row lands atomically with the part resolution.
-    closed_loop_lines = _write_through_resolved_snapshot(
-        db, user_id=osh.user_id, tsv_path=target_path, commit=False,
-    )
+    from argosy.services.holding_books import SnapshotIngestRejected
+
+    try:
+        closed_loop_lines = _write_through_resolved_snapshot(
+            db,
+            user_id=osh.user_id,
+            tsv_path=target_path,
+            commit=False,
+            actor="osh-arrival",
+        )
+    except SnapshotIngestRejected as exc:
+        _log.warning(
+            "portfolio_snapshot.osh_write_through_rejected",
+            extra={"code": exc.code, "detail": exc.detail, "path": str(target_path)},
+        )
+        return PairResolution(
+            status="ingest_rejected",
+            pending_pair_id=part.id,
+            resolved_tsv_path=target_path,
+            snapshot_date=part.snapshot_date,
+            sha256=part.sha256,
+            detail=f"Snapshot DB write refused: {exc.code}: {exc.detail}",
+            parse_warnings=synth_warnings + [
+                f"SNAPSHOT_INGEST_REJECTED:{exc.code}:{exc.detail}",
+            ],
+        )
     if closed_loop_lines:
         synth_warnings = synth_warnings + closed_loop_lines
 

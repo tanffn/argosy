@@ -107,6 +107,7 @@ def persist_snapshot(
         assess_snapshot_ingest,
         load_policy_symbols,
         merge_positions_per_account,
+        position_feed_fingerprint,
         resolve_prior_positions_by_account_coverage,
         stamp_management_flags,
         sync_unmanaged_from_positions,
@@ -272,6 +273,12 @@ def persist_snapshot(
             "accounts_carried": list(merge.accounts_carried),
             "feed_position_count": len(incoming_positions),
             "merged_position_count": len(stamped),
+            "feed_fingerprint": position_feed_fingerprint(
+                [
+                    (p.model_dump() if hasattr(p, "model_dump") else dict(p))
+                    for p in incoming_positions
+                ]
+            ),
         }),
         fx_usd_nis=snapshot.fx_usd_nis,
         fx_usd_eur=snapshot.fx_usd_eur,
@@ -531,10 +538,13 @@ def latest_matches_snapshot(
 
     Used by the write-through path so we don't bloat ``portfolio_snapshots``
     with duplicate rows when ``/api/portfolio/snapshot`` is hit repeatedly
-    against the same source TSV. The match criterion is ``source_path`` +
-    ``snapshot_date`` + position count + total USD value — strong enough
-    to detect "same parse output" but cheap (no JSON deep-compare).
+    against the same source TSV. Match criterion: ``source_path`` +
+    ``snapshot_date`` + **feed content fingerprint** (symbol, account,
+    shares, usd_value_k) — shape alone is not enough (a sale or symbol
+    swap with equal row count must write).
     """
+    from argosy.services.holding_books import position_feed_fingerprint
+
     row = get_latest_snapshot_row(session, user_id)
     if row is None:
         return False
@@ -542,25 +552,39 @@ def latest_matches_snapshot(
         return False
     if row.snapshot_date != snapshot.snapshot_date:
         return False
-    # Position-count + totals proxy for content equality. JSON deep-compare
-    # would be defensible but adds CPU cost for the hot path with no
-    # benefit — a TSV with the same source_path + date + position count +
-    # total value is the same parse output for our purposes.
+    incoming_fp = position_feed_fingerprint(
+        [
+            (p.model_dump() if hasattr(p, "model_dump") else dict(p))
+            for p in (snapshot.positions or [])
+        ]
+    )
     try:
-        positions = json.loads(row.positions_json or "[]")
-        # Compare against FEED size stored in totals when present; else merged.
         totals = json.loads(row.totals_json or "{}")
-        feed_n = totals.get("feed_position_count")
-        if feed_n is not None:
-            if int(feed_n) != len(snapshot.positions):
-                return False
-        elif len(positions) != len(snapshot.positions):
-            return False
-        # Don't compare total_usd_value_k against feed total — merged book
-        # totals diverge from the raw feed when accounts are carried.
+        stored_fp = totals.get("feed_fingerprint")
+        if stored_fp is not None:
+            return list(stored_fp) == incoming_fp
+        # Legacy rows without a fingerprint: reconstruct the feed slice
+        # from accounts_covered when present; else refuse the match so a
+        # same-shape content change cannot be silently dropped.
+        positions = json.loads(row.positions_json or "[]")
+        covered = {
+            str(a).strip().lower()
+            for a in (totals.get("accounts_covered") or [])
+            if a
+        }
+        if covered:
+            from argosy.services.holding_books import location_account_key
+
+            feed_slice = [
+                p for p in positions
+                if isinstance(p, dict)
+                and (location_account_key(p.get("location") or "") or "").lower()
+                in covered
+            ]
+            return position_feed_fingerprint(feed_slice) == incoming_fp
+        return False
     except (ValueError, TypeError):
         return False
-    return True
 
 
 def write_through_if_changed(

@@ -232,6 +232,9 @@ class Assumptions:
     nvda_target_source: str | None
     snapshot_date: str | None
     plan_version_id: int | None
+    # Live valuation clock (ISO date). Distinct from snapshot_date, which
+    # is the quantity/observation vintage of the holdings book.
+    as_of: str | None = None
 
 
 @dataclass
@@ -925,12 +928,9 @@ def _total_book_positions(
     plus a reason so callers can surface missing_reasons instead of a wrong
     HIGH-confidence number.
 
-    Valuation mode: dashboard math is **as-of the snapshot date**. Passing
-    ``today=snapshot_date`` keeps stored marks fresh relative to that as-of
-    (so seeded / historical valuations stay deterministic) while still
-    live-repricing durable restores that are absent from the snapshot.
-    Live "current money" publication (``/portfolio/snapshot``) uses real
-    ``date.today()`` via ``_apply_total_book_to_snap`` instead.
+    Valuation clock: **live** (``date.today()`` via ``load_total_book``).
+    Snapshot date stamps missing mark dates for staleness detection, but
+    never becomes the reprice clock — a live quote must wear today's date.
     """
     if snapshot is None:
         return [], "no portfolio snapshot"
@@ -948,7 +948,7 @@ def _total_book_positions(
         user_id,
         raw if isinstance(raw, list) else [],
         snapshot_date=snap_date,
-        today=snap_date,  # as-of snapshot; not live reprice of present marks
+        # Live valuation clock — do NOT pass today=snap_date.
     )
     if book.degraded:
         return [], book.degrade_reason or "total book degraded"
@@ -1543,6 +1543,7 @@ def compute_wealth_dashboard(
             else None
         ),
         plan_version_id=plan.id if plan is not None else None,
+        as_of=today.isoformat() if today is not None else date.today().isoformat(),
     )
 
     return WealthDashboard(

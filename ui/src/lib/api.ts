@@ -5525,6 +5525,8 @@ export interface WealthAssumptions {
   nvda_target_source: string | null;
   snapshot_date: string | null;
   plan_version_id: number | null;
+  /** Live valuation clock (ISO date) — distinct from snapshot_date. */
+  as_of?: string | null;
 }
 
 // GET /api/portfolio/net-worth-history — mirrors

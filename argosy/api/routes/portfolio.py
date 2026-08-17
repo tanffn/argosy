@@ -655,6 +655,9 @@ def upload_snapshot(
         return _handle_xls_branch(
             db=db, user_id=user_id, contents=contents,
             fire_detector=fire_detector, sha=sha,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            override_reason=override_reason,
         )
 
     import tempfile
@@ -954,18 +957,26 @@ def _handle_xls_branch(
     contents: bytes,
     fire_detector: bool,
     sha: str,
+    allow_stale: bool = False,
+    allow_catastrophic_drop: bool = False,
+    override_reason: str = "",
 ) -> UploadSnapshotResponse:
     """XLS-shaped upload: hand off to xls_osh_pair, then fire the detector
     if (and only if) the pair resolved to a synthesized TSV."""
     from argosy.services.portfolio_ingest.xls_osh_pair import handle_xls_upload
 
     snapshot_root = _resolve_snapshot_root()
+    actor = "admin-token" if (allow_stale or allow_catastrophic_drop) else "xls-upload"
     try:
         resolution = handle_xls_upload(
             db=db,
             user_id=user_id,
             contents=contents,
             snapshot_root=snapshot_root,
+            allow_stale=allow_stale,
+            allow_catastrophic_drop=allow_catastrophic_drop,
+            override_reason=override_reason or None,
+            actor=actor,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning(
@@ -992,6 +1003,27 @@ def _handle_xls_branch(
                 if resolution.snapshot_date else None
             ),
             detect_status="pending_pair",
+            event=None,
+            plan=None,
+            detail=resolution.detail,
+            sha256=sha,
+            pending_pair_id=resolution.pending_pair_id,
+        )
+
+    if resolution.status == "ingest_rejected":
+        # Pre-existing defect fix: integrity-gate refusal must not look like
+        # a successful upload. TSV may still be on disk; DB write was refused.
+        return UploadSnapshotResponse(
+            tsv_persisted=resolution.resolved_tsv_path is not None,
+            persisted_path=(
+                str(resolution.resolved_tsv_path)
+                if resolution.resolved_tsv_path else None
+            ),
+            snapshot_date=(
+                resolution.snapshot_date.isoformat()
+                if resolution.snapshot_date else None
+            ),
+            detect_status="failed",
             event=None,
             plan=None,
             detail=resolution.detail,

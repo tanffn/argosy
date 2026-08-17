@@ -97,6 +97,9 @@ async def provision_tenant(
                 user.email = email
             user.plan = plan
 
+        # Best-effort on the control-plane DB (may lack the table).
+        await _seed_default_unmanaged_policy_async(session, user_id)
+
         await session.commit()
         await session.refresh(tenant)
         return tenant
@@ -112,10 +115,33 @@ async def ensure_tenant_user_row(user_id: str, email: str | None = None) -> None
         existing = await session.get(User, user_id)
         if existing is None:
             session.add(User(id=user_id, email=email))
-            await session.commit()
+            await session.flush()
         elif email is not None and existing.email != email:
             existing.email = email
-            await session.commit()
+        # Per-tenant DB: always seed the integrity-gate policy.
+        await _seed_default_unmanaged_policy_async(session, user_id)
+        await session.commit()
+
+
+async def _seed_default_unmanaged_policy_async(session, user_id: str) -> None:
+    """Async twin of ``ensure_default_unmanaged_policy`` for onboarding."""
+    try:
+        from argosy.services.holding_books import DEFAULT_UNMANAGED_SYMBOLS
+        from argosy.state.models import UnmanagedSymbolPolicy
+
+        for sym in sorted(DEFAULT_UNMANAGED_SYMBOLS):
+            existing = (
+                await session.execute(
+                    select(UnmanagedSymbolPolicy).where(
+                        UnmanagedSymbolPolicy.user_id == user_id,
+                        UnmanagedSymbolPolicy.symbol == sym,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(UnmanagedSymbolPolicy(user_id=user_id, symbol=sym))
+    except Exception:  # noqa: BLE001 — table absent on some control-plane DBs
+        return
 
 
 # ----------------------------------------------------------------------

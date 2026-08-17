@@ -60,6 +60,17 @@ from argosy.state.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_quotes_no_network(monkeypatch):
+    """Finding 6 — wealth money math must not depend on live quotes."""
+    monkeypatch.setattr(
+        "argosy.services.snapshot_refresh.default_quote_fn",
+        lambda symbol, **kw: {
+            "NVDA": 200.0, "SGOV": 100.0, "VOO": 600.0, "CSPX": 400.0,
+        }.get(str(symbol).upper(), 100.0),
+    )
+
+
 # ===========================================================================
 # Pure-math primitives
 # ===========================================================================
@@ -186,7 +197,7 @@ class TestProjectWealthCurve:
 class TestComputeCurrentAge:
     def test_known_dob_pre_birthday(self):
         age, inferred = compute_current_age(
-            "1982-08-28", today=date(2026, 5, 27),
+            "1982-08-28",
         )
         assert (age, inferred) == (43, False)
 
@@ -230,9 +241,10 @@ def _seed_snapshot(
     user_id: str = "ariel",
     fx_usd_nis: float = 3.0,
     positions: list[dict] | None = None,
-    total_usd_value_k: float = 1000.0,
+    total_usd_value_k: float | None = None,
     snapshot_date: date | None = None,
 ) -> PortfolioSnapshotRow:
+    snap_date = snapshot_date or date.today()
     if positions is None:
         positions = [
             {
@@ -291,9 +303,17 @@ def _seed_snapshot(
                 "usd_value_k": 60.0,
             },
         ]
+    # Live valuation clock: stamp marks to the snapshot as-of so seeds stay
+    # fresh relative to the test's ``today`` without hitting the network.
+    for p in positions:
+        p.setdefault("valued_as_of", snap_date.isoformat())
+        p.setdefault("observed_as_of", snap_date.isoformat())
+    row_sum = sum(float(p.get("usd_value_k") or 0.0) for p in positions)
+    # Output-trust: totals_json must not invent money beyond the rows.
+    totals_k = float(total_usd_value_k) if total_usd_value_k is not None else row_sum
     row = PortfolioSnapshotRow(
         user_id=user_id,
-        snapshot_date=snapshot_date or date(2026, 5, 1),
+        snapshot_date=snap_date,
         imported_at=datetime.now(timezone.utc),
         source_path="/tmp/seed.tsv",
         positions_json=json.dumps(positions),
@@ -303,7 +323,7 @@ def _seed_snapshot(
         pensions_json="[]",
         totals_json=json.dumps(
             {
-                "total_usd_value_k": total_usd_value_k,
+                "total_usd_value_k": totals_k,
                 "cash_balances_usd_k": 50.0,
             }
         ),
@@ -422,14 +442,17 @@ class TestRetirementBlock:
         with SF() as s:
             _seed_user(s)
             _seed_user_context(s)
-            _seed_snapshot(s, fx_usd_nis=3.0, total_usd_value_k=1000.0)
+            _seed_snapshot(
+                s, fx_usd_nis=3.0,
+            )
             _seed_household_budget_report(s, monthly_burn_nis=20_000.0, monthly_income_nis=50_000.0)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 5, 27))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
 
         r = dash.retirement
-        # Net worth: 1000k USD * 3.0 = 3,000,000 NIS
-        assert r.net_worth_usd == pytest.approx(1_000_000.0)
-        assert r.net_worth_nis == pytest.approx(3_000_000.0)
+        # Net worth from auditable row sum: 530k USD * 3.0 = 1,590,000 NIS
+        # (NVDA 200 + cash 50 + SGOV 200 + NIS cash 20 + VOO 60).
+        assert r.net_worth_usd == pytest.approx(530_000.0)
+        assert r.net_worth_nis == pytest.approx(1_590_000.0)
         assert r.monthly_burn_nis == 20_000.0
         assert r.monthly_income_nis == 50_000.0
         assert r.monthly_surplus_nis == 30_000.0
@@ -470,7 +493,7 @@ class TestRetirementBlock:
             _seed_user(s)
             _seed_user_context(s)
             _seed_snapshot(s)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 5, 27))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
         r = dash.retirement
         assert r.monthly_burn_nis is None
         assert r.monthly_income_nis is None
@@ -485,7 +508,7 @@ class TestRetirementBlock:
             _seed_user(s)
             _seed_user_context(s)
             _seed_household_budget_report(s)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 5, 27))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
         r = dash.retirement
         assert r.net_worth_nis is None
         assert r.net_worth_usd is None
@@ -528,7 +551,7 @@ class TestConcentration:
         with SF() as s:
             _seed_user(s)
             _seed_user_context(s)
-            _seed_snapshot(s, total_usd_value_k=1000.0)
+            _seed_snapshot(s)
             _seed_plan_with_nvda_target(s, nvda_target_pct=45.0)
             dash = compute_wealth_dashboard(s, user_id="ariel")
         c = dash.concentration
@@ -562,7 +585,7 @@ class TestConcentration:
         with SF() as s:
             _seed_user(s)
             _seed_user_context(s)
-            _seed_snapshot(s, total_usd_value_k=1000.0)
+            _seed_snapshot(s)
             # ex-NVDA sleeve listed FIRST so a buggy first-substring-match
             # would wrongly grab 13.2.
             targets = {
@@ -638,7 +661,7 @@ class TestRsuIncome:
             _seed_user(s)
             _seed_user_context(s)
             _seed_snapshot(s, fx_usd_nis=3.0)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 5, 27))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
         rsu = dash.rsu_income
         assert rsu.nvda_price_usd == pytest.approx(200.0)
         assert rsu.fx_usd_nis == pytest.approx(3.0)
@@ -674,7 +697,7 @@ class TestRsuIncome:
                 ),
             )
             _seed_snapshot(s)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 5, 27))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
         assert dash.rsu_income.quarters == []
         assert dash.rsu_income.next_12_months_nis is None
 
@@ -796,7 +819,7 @@ class TestAssumptionsAndDefaults:
             )
             _seed_snapshot(s)
             _seed_household_budget_report(s)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 6, 17))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
         # Born 1982-06-17, today 2026-06-17 -> age 44 (birthday-same-day branch).
         assert dash.assumptions.current_age == 44
         assert "user_date_of_birth" in dash.assumptions.current_age_source
@@ -809,7 +832,7 @@ class TestAssumptionsAndDefaults:
             _seed_user(s)
             _seed_user_context(s, identity_yaml="user_age_current: 43\n")
             _seed_snapshot(s)
-            dash = compute_wealth_dashboard(s, user_id="ariel", today=date(2026, 5, 27))
+            dash = compute_wealth_dashboard(s, user_id="ariel")
         assert dash.assumptions.current_age == 43
         assert "user_age_current" in dash.assumptions.current_age_source
 
@@ -878,7 +901,7 @@ class TestCompositionBreakdowns:
         with SF() as s:
             _seed_user(s)
             _seed_user_context(s)
-            _seed_snapshot(s, fx_usd_nis=3.0, total_usd_value_k=1000.0)
+            _seed_snapshot(s, fx_usd_nis=3.0)
             dash = compute_wealth_dashboard(s, user_id="ariel")
         # Sum to ~100% across all asset-class slices.
         total_pct = sum(sl.pct for sl in dash.asset_class_composition)
@@ -1082,7 +1105,7 @@ class TestRouteSmoke:
         with SF() as s:
             _seed_user(s)
             _seed_user_context(s)
-            _seed_snapshot(s, fx_usd_nis=3.0, total_usd_value_k=1000.0)
+            _seed_snapshot(s, fx_usd_nis=3.0)
             _seed_household_budget_report(s, monthly_burn_nis=20_000.0, monthly_income_nis=50_000.0)
             _seed_plan_with_nvda_target(s, nvda_target_pct=45.0)
 
@@ -1102,7 +1125,7 @@ class TestRouteSmoke:
         assert isinstance(body["sector_composition"], list)
         for sl in body["asset_class_composition"]:
             assert set(sl.keys()) >= {"name", "value_nis", "pct", "holdings"}
-        assert body["retirement"]["net_worth_nis"] == pytest.approx(3_000_000.0)
+        assert body["retirement"]["net_worth_nis"] == pytest.approx(1_590_000.0)
         assert len(body["retirement"]["scenarios"]) == 3
         assert len(body["retirement"]["trajectory"]) == 26
         assert body["concentration"]["target_pct"] == 45.0

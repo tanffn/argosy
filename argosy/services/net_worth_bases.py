@@ -156,7 +156,7 @@ def total_net_worth_incl_residence(
             book = load_total_book(
                 session, user_id, raw,
                 snapshot_date=snap_date,
-                today=snap_date,  # as-of snapshot valuation
+                # Live valuation clock — shared with dashboard / snapshot.
             )
             if book.degraded:
                 log.warning(
@@ -165,15 +165,25 @@ def total_net_worth_incl_residence(
                 )
                 return None, None
             book_k = investable_usd_k(book.total)
-            snap_k = investable_usd_k(raw)
-            # Durable restores add value beyond the snapshot positions —
-            # use the book. Otherwise prefer totals_json (authoritative
-            # aggregate on a complete snapshot; may intentionally differ
-            # from a partial position sum in seeds / legacy rows).
-            if book_k > snap_k + 0.05:
-                base_k = book_k
-            else:
-                base_k = None  # fall through to totals_json
+            # Output-trust: publish the auditable row sum, never an inflated
+            # totals_json that invents money absent from the positions.
+            try:
+                totals = json.loads(snapshot.totals_json or "{}")
+                totals_k = totals.get("total_usd_value_k")
+                totals_k_f = float(totals_k) if totals_k is not None else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                totals_k_f = None
+            if (
+                totals_k_f is not None
+                and totals_k_f > book_k + max(1.0, 0.02 * max(book_k, totals_k_f))
+            ):
+                log.warning(
+                    "net_worth_bases.totals_exceed_rows user=%s "
+                    "book_k=%.1f totals_k=%.1f — refusing inflated total",
+                    user_id, book_k, totals_k_f,
+                )
+                return None, None
+            base_k = book_k
         except Exception as exc:  # noqa: BLE001
             log.warning("net_worth_bases.total_book_failed err=%s", exc)
             base_k = None

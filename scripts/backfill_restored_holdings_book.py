@@ -5,9 +5,10 @@ Rebuilds the current book from each account's last covering snapshot
 (same mechanism as ingest merge). Explicit, idempotent, self-verifying.
 
 NEVER point this at the live ``db/argosy.db`` casually — always work on a
-COPY. The script refuses paths named ``argosy.db`` unless
-``--i-really-mean-the-live-db`` is passed, and always writes a sibling
-``.bak_pre_restore`` backup before any write.
+COPY. The script refuses any path that resolves to the live DB (including
+aliases/hardlinks) unless ``--i-really-mean-the-live-db`` is passed, and
+always writes a timestamped sibling ``.bak_pre_restore.<utc>`` backup via the
+SQLite backup API (WAL-safe) before any write.
 
 Default action is DRY-RUN (resolve + verify only). Pass ``--apply`` to write.
 
@@ -25,8 +26,9 @@ Usage (PowerShell)::
 from __future__ import annotations
 
 import argparse
-import shutil
+import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Allow `python scripts/...` without installing the package editable in this
@@ -37,6 +39,80 @@ if str(_ROOT) not in sys.path:
 
 from sqlalchemy import create_engine, inspect as sa_inspect
 from sqlalchemy.orm import sessionmaker
+
+
+def _main_repo_root() -> Path:
+    """Resolve the main checkout even when invoked from a worktree."""
+    if _ROOT.parent.name == ".worktrees":
+        return _ROOT.parents[1]
+    return _ROOT
+
+
+def live_db_candidates() -> list[Path]:
+    """Known live DB locations (main checkout + this tree)."""
+    import os
+
+    out: list[Path] = []
+    home = os.environ.get("ARGOSY_HOME")
+    if home:
+        out.append(Path(home) / "db" / "argosy.db")
+    out.append(_main_repo_root() / "db" / "argosy.db")
+    out.append(_ROOT / "db" / "argosy.db")
+    # Dedup by resolved path string (may not exist yet).
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in out:
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    return uniq
+
+
+def paths_refer_to_same_file(a: Path, b: Path) -> bool:
+    """True when ``a`` and ``b`` are the same file (incl. hardlink/alias)."""
+    try:
+        ar = a.resolve()
+        br = b.resolve()
+    except OSError:
+        return False
+    if ar == br:
+        return True
+    try:
+        if ar.exists() and br.exists():
+            return ar.samefile(br)
+    except OSError:
+        return False
+    return False
+
+
+def is_live_db_path(db_path: Path) -> bool:
+    """True if ``db_path`` is (or hardlinks to) a known live argosy.db."""
+    for live in live_db_candidates():
+        if paths_refer_to_same_file(db_path, live):
+            return True
+    return False
+
+
+def sqlite_consistent_backup(src: Path, dst: Path) -> None:
+    """WAL-safe consistent copy via the SQLite backup API.
+
+    ``shutil.copy2`` can omit committed pages still only in the WAL; this
+    online backup is the production-safe path (same as BackupLoop).
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    with sqlite3.connect(str(src)) as src_conn:
+        with sqlite3.connect(str(dst)) as dst_conn:
+            src_conn.backup(dst_conn)
+
+
+def timestamped_backup_path(db_path: Path, *, now: datetime | None = None) -> Path:
+    """Distinct backup path so a later apply never overwrites an earlier one."""
+    moment = now or datetime.now(timezone.utc)
+    stamp = moment.strftime("%Y%m%dT%H%M%SZ")
+    return db_path.with_name(f"{db_path.name}.bak_pre_restore.{stamp}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--i-really-mean-the-live-db",
         action="store_true",
-        help="Required when --db basename is argosy.db",
+        help="Required when --db resolves to the live argosy.db (incl. hardlinks)",
     )
     parser.add_argument(
         "--apply",
@@ -73,10 +149,14 @@ def main(argv: list[str] | None = None) -> int:
     if not db_path.is_file():
         print(f"ERROR: DB not found: {db_path}", file=sys.stderr)
         return 2
-    if db_path.name == "argosy.db" and not args.i_really_mean_the_live_db:
+    if (
+        (is_live_db_path(db_path) or db_path.name == "argosy.db")
+        and not args.i_really_mean_the_live_db
+    ):
         print(
-            "REFUSING to touch a file named argosy.db without "
-            "--i-really-mean-the-live-db. Copy the DB first.",
+            "REFUSING to touch the live argosy.db (resolved path / samefile "
+            "match or basename argosy.db) without --i-really-mean-the-live-db. "
+            "Copy the DB first.",
             file=sys.stderr,
         )
         return 2
@@ -84,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     from argosy.services.holding_books import (
         EXPECTED_RESTORED_POSITION_COUNT,
         EXPECTED_RESTORED_USD_K,
+        accounts_carried_provenance,
         accounts_covered_from_positions,
         backfill_restored_holdings_book,
         resolve_prior_positions_by_account_coverage,
@@ -125,13 +206,23 @@ def main(argv: list[str] | None = None) -> int:
         accounts = sorted(accounts_covered_from_positions(positions))
         latest = get_latest_snapshot_row(session, args.user_id)
         latest_accounts: set[str] = set()
+        latest_positions: list = []
         if latest is not None:
             try:
                 cur = json.loads(latest.positions_json or "[]")
             except (TypeError, ValueError, json.JSONDecodeError):
                 cur = []
+            latest_positions = cur if isinstance(cur, list) else []
             latest_accounts = set(accounts_covered_from_positions(cur))
-        accounts_carried = sorted(a for a in accounts if a not in latest_accounts)
+        # Honest carry provenance: on a no-op (latest already matches the
+        # reconstruction) report the stored / derived carry, not "[]".
+        accounts_carried = accounts_carried_provenance(
+            reconstructed_accounts=accounts,
+            latest_accounts=latest_accounts,
+            latest_row=latest,
+            reconstructed_positions=positions,
+            latest_positions=latest_positions,
+        )
 
         mode = "APPLY" if args.apply and not args.dry_run else "DRY-RUN"
         print(
@@ -149,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             print("dry-run OK (pass --apply to write)")
             return 0
 
-        backup = db_path.with_suffix(db_path.suffix + ".bak_pre_restore")
-        shutil.copy2(db_path, backup)
+        backup = timestamped_backup_path(db_path)
+        sqlite_consistent_backup(db_path, backup)
         print(f"backup written: {backup}")
 
         result = backfill_restored_holdings_book(

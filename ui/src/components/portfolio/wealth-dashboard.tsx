@@ -92,7 +92,10 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
 
   return (
     <section className="flex flex-col gap-4" data-testid="wealth-dashboard">
-      <NetWorthSummaryCard retirement={data.retirement} />
+      <NetWorthSummaryCard
+        retirement={data.retirement}
+        assumptions={data.assumptions}
+      />
 
       {/* Row 2: 4-column stat grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -144,8 +147,10 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
 
 function NetWorthSummaryCard({
   retirement,
+  assumptions,
 }: {
   retirement: WealthDashboardDTO["retirement"];
+  assumptions: WealthDashboardDTO["assumptions"];
 }) {
   const surplus = retirement.monthly_surplus_nis;
   const surplusPct =
@@ -160,8 +165,14 @@ function NetWorthSummaryCard({
       <CardHeader>
         <CardTitle className="text-lg">Net worth</CardTitle>
         <CardDescription>
-          Where our money is today. Retirement projection + expected date live
-          on the Retirement tab.
+          {assumptions?.as_of
+            ? `Where our money is as of ${assumptions.as_of}`
+            : "Where our money is today"}
+          {assumptions?.snapshot_date &&
+          assumptions.snapshot_date !== assumptions.as_of
+            ? ` (holdings observed ${assumptions.snapshot_date}).`
+            : "."}{" "}
+          Retirement projection + expected date live on the Retirement tab.
         </CardDescription>
       </CardHeader>
       <CardContent>

@@ -148,6 +148,7 @@ class AssumptionsDTO(BaseModel):
     nvda_target_source: str | None
     snapshot_date: str | None
     plan_version_id: int | None
+    as_of: str | None = None
 
 
 class WealthDashboardDTO(BaseModel):

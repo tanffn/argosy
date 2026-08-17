@@ -53,10 +53,12 @@ def _seed_snapshot(
     compute_wealth_dashboard returns populated numbers."""
     _seed_user(client_with_db, user_id)
     sess = client_with_db.app.state.session_factory()
+    today = date.today()
+    voo_k = total_usd_k - nvda_value_k - 200.0
     try:
         snap = PortfolioSnapshotRow(
             user_id=user_id,
-            snapshot_date=date(2026, 5, 26),
+            snapshot_date=today,
             imported_at=datetime.now(timezone.utc),
             fx_usd_nis=fx_usd_nis,
             fx_usd_eur=0.92,
@@ -69,13 +71,19 @@ def _seed_snapshot(
                     "currency": "USD",
                     "current_price": 175.0,
                     "shares": 13140,
+                    "valued_as_of": today.isoformat(),
+                    "observed_as_of": today.isoformat(),
                 },
                 {
                     "symbol": "VOO",
                     "asset_type": "Core equity",
-                    "usd_value_k": total_usd_k - nvda_value_k - 200.0,
+                    "usd_value_k": voo_k,
                     "location": "Schwab US",
                     "currency": "USD",
+                    "current_price": 500.0,
+                    "shares": voo_k * 1000.0 / 500.0,
+                    "valued_as_of": today.isoformat(),
+                    "observed_as_of": today.isoformat(),
                 },
                 {
                     "symbol": "SGOV",
@@ -83,6 +91,10 @@ def _seed_snapshot(
                     "usd_value_k": 200.0,
                     "location": "Schwab US",
                     "currency": "USD",
+                    "current_price": 100.0,
+                    "shares": 2000.0,
+                    "valued_as_of": today.isoformat(),
+                    "observed_as_of": today.isoformat(),
                 },
             ]),
             totals_json=json.dumps({

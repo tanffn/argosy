@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -130,6 +131,16 @@ def fixture_db(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "argosy.services.snapshot_refresh.default_quote_fn",
         lambda symbol, **kw: 180.0 if str(symbol).upper() == "NVDA" else 100.0,
+    )
+    # Belt-and-braces: if anything bypasses default_quote_fn into the adapter,
+    # still refuse live network (finding #6 — money tests must not depend on it).
+    async def _no_network_quote(self, symbol):  # noqa: ANN001
+        raise RuntimeError(f"network quote blocked in unit test for {symbol}")
+
+    monkeypatch.setattr(
+        "argosy.adapters.data.yfinance_adapter.YFinanceAdapter.get_quote",
+        _no_network_quote,
+        raising=False,
     )
     yield session
     session.close()
@@ -1714,3 +1725,349 @@ def test_blocker6_mark_is_stale_treats_null_as_stale():
 
     assert mark_is_stale(None, today=date(2026, 8, 8)) is True
     assert mark_is_stale(date(2026, 8, 8), today=date(2026, 8, 8)) is False
+
+
+# ---------------------------------------------------------------------------
+# Round-6 adversarial findings — each test FAILS when its fix is reverted
+# ---------------------------------------------------------------------------
+
+
+def test_finding1_sqlite_backup_is_wal_safe_and_timestamped(tmp_path):
+    """Finding 1 — backup must use SQLite backup API + distinct paths."""
+    import sqlite3
+    import importlib.util
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "backfill_restored_holdings_book.py"
+    )
+    spec = importlib.util.spec_from_file_location("backfill_restore_script", script)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    src = tmp_path / "copy.db"
+    conn = sqlite3.connect(str(src))
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    conn.execute("INSERT INTO t(v) VALUES ('committed-in-wal')")
+    conn.commit()
+    # Leave a WAL-mode connection open with a further commit so copy2 would
+    # be unsafe; the backup API must still see the row.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("INSERT INTO t(v) VALUES ('second')")
+    conn.commit()
+
+    b1 = mod.timestamped_backup_path(
+        src, now=datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    b2 = mod.timestamped_backup_path(
+        src, now=datetime(2026, 8, 8, 12, 0, 1, tzinfo=timezone.utc),
+    )
+    assert b1 != b2
+    assert "bak_pre_restore.20260808T120000Z" in b1.name
+
+    mod.sqlite_consistent_backup(src, b1)
+    conn.close()
+
+    check = sqlite3.connect(str(b1))
+    rows = [r[0] for r in check.execute("SELECT v FROM t ORDER BY id").fetchall()]
+    check.close()
+    assert rows == ["committed-in-wal", "second"]
+
+
+def test_finding1_live_db_guard_uses_resolved_path(tmp_path, monkeypatch):
+    """Finding 1 — live-DB refusal must not be basename-only."""
+    import importlib.util
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "backfill_restored_holdings_book.py"
+    )
+    spec = importlib.util.spec_from_file_location("backfill_restore_script2", script)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    live = tmp_path / "argosy.db"
+    live.write_bytes(b"x")
+    monkeypatch.setattr(mod, "live_db_candidates", lambda: [live])
+
+    alias = tmp_path / "not_named_argosy.sqlite"
+    try:
+        alias.hardlink_to(live)
+        assert mod.is_live_db_path(alias) is True
+    except OSError:
+        # Platform without hardlinks: still refuse the resolved live path.
+        assert mod.is_live_db_path(live) is True
+        # And a samefile-equivalent alias via resolve identity.
+        assert mod.paths_refer_to_same_file(live, live.resolve()) is True
+
+    # Basename alone is ALSO refused by main(); here we prove samefile/alias
+    # detection beyond the basename check.
+    other = tmp_path / "other" / "portfolio.copy.db"
+    other.parent.mkdir()
+    other.write_bytes(b"y")
+    assert mod.is_live_db_path(other) is False
+
+
+def test_finding2_live_quote_never_wears_historical_stamp(fixture_db):
+    """Finding 2 — live reprice stamps valued_as_of=today, not snapshot_date."""
+    fixture_db.add(UnmanagedSymbolPolicy(user_id="ariel", symbol="NVDA"))
+    july = date(2026, 7, 13)
+    today = date.today()
+    fixture_db.add(UnmanagedHolding(
+        user_id="ariel", symbol="NVDA", location="schwab",
+        shares=100.0, current_price=200.0, usd_value_k=20.0,
+        currency="USD", asset_type="Stock", details="Stock",
+        reason="observed", status="active",
+        valued_as_of=july, observed_as_of=july,
+    ))
+    snap = _add_snap(
+        fixture_db,
+        positions=[_pos("CSPX", 40.0, shares=1, price=40, location="ibi")],
+        snap_date=july,
+        totals_k=40.0,
+    )
+    # Pin an explicit live quote within the 0.5–2.0 band of the stored mark.
+    live_px = 223.96
+    book = load_total_book(
+        fixture_db, "ariel",
+        json.loads(snap.positions_json),
+        snapshot_date=july,
+        today=today,
+        quote_fn=_nvda_quote(live_px),
+    )
+    nvda = next(p for p in book.total if p.get("symbol") == "NVDA")
+    assert float(nvda["current_price"]) == pytest.approx(live_px)
+    vas = nvda.get("valued_as_of")
+    assert str(vas)[:10] == today.isoformat()
+    assert str(vas)[:10] != july.isoformat()
+
+    # Dashboard helper must NOT pass today=snapshot_date (live clock).
+    import ast
+    import inspect
+    from argosy.services import wealth_dashboard as wd
+
+    tree = ast.parse(inspect.getsource(wd._total_book_positions))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Name) and n.func.id == "load_total_book")
+            or (isinstance(n.func, ast.Attribute) and n.func.attr == "load_total_book")
+        )
+    ]
+    assert calls, "expected load_total_book call"
+    for call in calls:
+        for kw in call.keywords:
+            assert kw.arg != "today", (
+                "_total_book_positions must not override the live valuation clock"
+            )
+
+
+def test_finding2_assumptions_expose_as_of(fixture_db):
+    """Finding 2 — wealth dashboard assumptions carry the live as_of."""
+    from argosy.services.wealth_dashboard import Assumptions, compute_wealth_dashboard
+
+    today = date(2026, 8, 8)
+    _add_snap(
+        fixture_db,
+        positions=[
+            _pos("CSPX", 400.0, shares=10, price=40, location="ibi"),
+        ],
+        snap_date=today,
+        totals_k=400.0,
+    )
+    # Seed policy so integrity gate is quiet for this CSPX-only book.
+    dash = compute_wealth_dashboard(fixture_db, user_id="ariel", today=today)
+    assert isinstance(dash.assumptions, Assumptions)
+    assert dash.assumptions.as_of == today.isoformat()
+    assert dash.assumptions.snapshot_date == today.isoformat()
+
+
+def test_finding3_same_shape_symbol_swap_is_not_a_match(fixture_db):
+    """Finding 3 — equal row count with different symbols must write."""
+    from argosy.services.portfolio_snapshot_store import (
+        latest_matches_snapshot,
+        write_through_if_changed,
+    )
+
+    first = [
+        _pos("CSPX", 400.0, shares=10, price=40, location="leumi"),
+        _pos("NKE", 6.7, shares=150, price=44, location="leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(first, date(2026, 8, 8)),
+    )
+    swapped = _pydantic_snap(
+        [
+            _pos("CSPX", 400.0, shares=10, price=40, location="leumi"),
+            _pos("NEW", 6.7, shares=150, price=44, location="leumi"),
+        ],
+        date(2026, 8, 8),
+    )
+    # Same source_path + date + count — old shape match would return True.
+    swapped.source_path = "fixture.tsv"
+    assert latest_matches_snapshot(
+        fixture_db, user_id="ariel", snapshot=swapped,
+    ) is False
+    row = write_through_if_changed(
+        fixture_db, user_id="ariel", snapshot=swapped,
+    )
+    assert row is not None
+    stored = json.loads(row.positions_json)
+    syms = {(p.get("symbol") or "").upper() for p in stored}
+    assert "NEW" in syms
+    assert "NKE" not in syms
+
+
+def test_finding4_onboarding_seeds_unmanaged_policy(fixture_db):
+    """Finding 4 — new tenants get explicit UnmanagedSymbolPolicy rows."""
+    from argosy.services.holding_books import (
+        ensure_default_unmanaged_policy,
+        load_explicit_policy_symbols,
+        load_total_book,
+    )
+
+    # Fresh user with no policy — gate would be silent without seeding.
+    fixture_db.add(User(id="newbie"))
+    fixture_db.commit()
+    assert load_explicit_policy_symbols(fixture_db, "newbie") == frozenset()
+
+    seeded = ensure_default_unmanaged_policy(fixture_db, "newbie")
+    fixture_db.commit()
+    assert "NVDA" in seeded
+    assert "NVDA" in load_explicit_policy_symbols(fixture_db, "newbie")
+
+    # With policy + no durable NVDA, a CSPX-only incomplete book degrades.
+    book = load_total_book(
+        fixture_db, "newbie",
+        [_pos("CSPX", 100.0, shares=1, price=100, location="ibi")],
+        today=date.today(),
+        snapshot_date=date.today(),
+        quote_fn=lambda *a, **k: 100.0,
+    )
+    assert book.degraded is True
+
+
+def test_finding5_inflated_totals_json_refuses_net_worth(fixture_db):
+    """Finding 5 — totals_json >> row sum must not publish the inflated total."""
+    from argosy.services.net_worth_bases import total_net_worth_incl_residence
+
+    positions = [_pos("CSPX", 100.0, shares=1, price=100, location="ibi")]
+    snap = _add_snap(
+        fixture_db, positions=positions, snap_date=date.today(), totals_k=1000.0,
+    )
+    nis, usd = total_net_worth_incl_residence(
+        snapshot=snap, fx_usd_nis=3.0, session=fixture_db, user_id="ariel",
+    )
+    assert nis is None and usd is None
+
+
+def test_finding6_money_path_never_calls_live_quote(fixture_db, monkeypatch):
+    """Finding 6 — arithmetic assertions must not depend on network quotes."""
+    hits: list[str] = []
+
+    def _boom(symbol, **kw):
+        hits.append(str(symbol))
+        raise RuntimeError("default_quote_fn must not be reached")
+
+    monkeypatch.setattr(
+        "argosy.services.snapshot_refresh.default_quote_fn", _boom,
+    )
+    july = date(2026, 7, 13)
+    positions = [
+        _pos("NVDA", 1800.0, shares=10, price=180.0, location="schwab"),
+    ]
+    for p in positions:
+        p["valued_as_of"] = july
+        p["observed_as_of"] = july
+    book = load_total_book(
+        fixture_db, "ariel", positions,
+        today=date(2026, 8, 8),
+        snapshot_date=july,
+        quote_fn=_nvda_quote(180.0),
+    )
+    assert book.degraded is False
+    assert hits == []
+    nvda = next(p for p in book.total if p["symbol"] == "NVDA")
+    assert float(nvda["current_price"]) == 180.0
+    assert str(nvda.get("valued_as_of"))[:10] == "2026-08-08"
+
+
+def test_finding7_xls_write_through_surfaces_ingest_rejection(fixture_db, monkeypatch):
+    """Finding 7 — SnapshotIngestRejected must not be swallowed as success.
+
+    Pre-existing defect in portfolio_ingest/xls_osh_pair.py (branch did not
+    originally touch this path).
+    """
+    from argosy.services.holding_books import SnapshotIngestRejected
+    from argosy.services.portfolio_ingest import xls_osh_pair as xls_mod
+
+    calls: list[str] = []
+
+    def _raise(*a, **k):
+        calls.append("write")
+        raise SnapshotIngestRejected("catastrophic_drop", "probe refusal")
+
+    monkeypatch.setattr(xls_mod, "write_through_if_changed", _raise, raising=False)
+    # Patch at the import site inside the helper.
+    monkeypatch.setattr(
+        "argosy.services.portfolio_snapshot_store.write_through_if_changed",
+        _raise,
+    )
+    monkeypatch.setattr(
+        "argosy.ingest.tsv.parse_portfolio_tsv",
+        lambda path: _pydantic_snap(
+            [_pos("CSPX", 1.0, shares=1, price=1, location="leumi")],
+            date(2026, 8, 8),
+        ),
+    )
+    tsv = Path(str(fixture_db.get_bind().url).replace("sqlite:///", ""))
+    # Use a real temp path string for the helper.
+    fake = tsv.parent / "fake_pair.tsv"
+    fake.write_text("x", encoding="utf-8")
+
+    with pytest.raises(SnapshotIngestRejected) as ei:
+        xls_mod._write_through_resolved_snapshot(
+            fixture_db, user_id="ariel", tsv_path=fake, commit=True,
+        )
+    assert ei.value.code == "catastrophic_drop"
+    assert calls == ["write"]
+
+
+def test_finding8_noop_backfill_reports_carry_provenance(fixture_db):
+    """Finding 8 — second apply must not report accounts_carried=[]."""
+    from argosy.services.holding_books import backfill_restored_holdings_book
+
+    full = [
+        _pos("NVDA", 2307.9, shares=10940, price=210, location="schwab"),
+        _pos("CSPX", 400.0, shares=100, price=400, location="Leumi"),
+    ]
+    persist_snapshot(
+        fixture_db, user_id="ariel",
+        snapshot=_pydantic_snap(full, date(2026, 7, 13)),
+    )
+    _add_snap(
+        fixture_db,
+        positions=[_pos("CSPX", 410.0, shares=100, price=410, location="Leumi")],
+        snap_date=date(2026, 8, 8),
+        totals_k=410.0,
+    )
+    first = backfill_restored_holdings_book(
+        fixture_db, user_id="ariel", expected_position_count=None,
+        expected_usd_k=None,
+    )
+    assert first["status"] == "restored"
+    assert "schwab" in (first.get("accounts_carried") or [])
+    second = backfill_restored_holdings_book(
+        fixture_db, user_id="ariel", expected_position_count=None,
+        expected_usd_k=None,
+    )
+    assert second["status"] == "noop"
+    assert "schwab" in (second.get("accounts_carried") or []), (
+        "noop must report carry provenance, not imply full fresh coverage"
+    )

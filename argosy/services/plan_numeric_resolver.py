@@ -589,7 +589,7 @@ def _resolve_net_worth(
     book = load_total_book(
         session, user_id, raw_positions,
         snapshot_date=getattr(snap, "snapshot_date", None),
-        today=getattr(snap, "snapshot_date", None),
+        # Live valuation clock — shared with dashboard / /portfolio/snapshot.
     )
     if book.degraded:
         return ResolvedValue.unavailable(

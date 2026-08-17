@@ -33,8 +33,31 @@ log = get_logger(__name__)
 # Production policy is data-driven via ``unmanaged_symbol_policy``.
 DEFAULT_UNMANAGED_SYMBOLS: frozenset[str] = frozenset({"NVDA"})
 
+# ---------------------------------------------------------------------------
+# Valuation-clock policy (Stream D — binding for every money surface)
+# ---------------------------------------------------------------------------
+# LIVE clock: every money-publishing surface values the book against
+# ``date.today()`` (or an explicit test ``today=``). Snapshot date is
+# quantity / observation metadata only (``observed_as_of``,
+# ``assumptions.snapshot_date``).
+#
+# Consequences:
+#   * Stored marks older than MARK_STALE_DAYS vs the live clock must
+#     live-reprice or degrade — never publish July dollars as "today".
+#   * Live quotes ALWAYS stamp ``valued_as_of`` to the valuation clock
+#     (today), never to ``snapshot_date``. A live price wearing a
+#     historical stamp is an output-trust violation.
+#   * Dashboard / net-worth / plan resolver / ``/portfolio/snapshot``
+#     share this clock; the UI must surface the as-of date.
+#   * Historical "as-of snapshot" math is NOT offered on money surfaces.
+VALUATION_CLOCK_POLICY = "live"
+
 STATUS_ACTIVE = "active"
 STATUS_RETIRED = "retired"
+
+# Material disagreement between totals_json and the auditable row sum (usd_k).
+_TOTALS_ROW_DISAGREE_ABS_K = 1.0
+_TOTALS_ROW_DISAGREE_FRAC = 0.02
 
 
 @dataclass(frozen=True)
@@ -230,6 +253,127 @@ def accounts_covered_from_positions(positions: Sequence[Any] | None) -> frozense
         location_account_key(_location_of(p))
         for p in (positions or [])
         if location_account_key(_location_of(p))
+    )
+
+
+def position_feed_fingerprint(positions: Sequence[Any] | None) -> list[list[Any]]:
+    """Content fingerprint of a feed: symbol, account, shares, usd_value_k.
+
+    Used by ``latest_matches_snapshot`` so same-shape symbol replacements
+    (CSPX,NKE → CSPX,NEW) are never treated as no-ops.
+    """
+    rows: list[list[Any]] = []
+    for p in positions or []:
+        m = _as_mapping(p)
+        if m is None:
+            continue
+        try:
+            shares = round(float(m.get("shares") or 0.0), 6)
+        except (TypeError, ValueError):
+            shares = 0.0
+        try:
+            usd = round(float(m.get("usd_value_k") or 0.0), 3)
+        except (TypeError, ValueError):
+            usd = 0.0
+        rows.append([
+            (m.get("symbol") or "").strip().upper(),
+            location_account_key(_location_of(m))
+            or _norm_location(str(m.get("location") or "")),
+            shares,
+            usd,
+        ])
+    rows.sort()
+    return rows
+
+
+def ensure_default_unmanaged_policy(session: Any, user_id: str) -> list[str]:
+    """Idempotent: seed ``DEFAULT_UNMANAGED_SYMBOLS`` for ``user_id``.
+
+    Migration 0097 only seeds users present at upgrade time. New tenants
+    must receive the same integrity gate via onboarding.
+    """
+    if session is None or not user_id:
+        return []
+    from sqlalchemy import select
+
+    from argosy.state.models import UnmanagedSymbolPolicy
+
+    seeded: list[str] = []
+    for sym in sorted(DEFAULT_UNMANAGED_SYMBOLS):
+        existing = session.execute(
+            select(UnmanagedSymbolPolicy).where(
+                UnmanagedSymbolPolicy.user_id == user_id,
+                UnmanagedSymbolPolicy.symbol == sym,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(UnmanagedSymbolPolicy(user_id=user_id, symbol=sym))
+            seeded.append(sym)
+    return seeded
+
+
+def derive_accounts_carried_from_dates(
+    positions: Sequence[Any] | None,
+    *,
+    snapshot_date: date | None,
+) -> list[str]:
+    """Accounts whose quantity vintage predates the book snapshot_date."""
+    snap = _as_date(snapshot_date)
+    if snap is None:
+        return []
+    carried: set[str] = set()
+    for p in positions or []:
+        acct = location_account_key(_location_of(p))
+        if not acct:
+            continue
+        obs = _as_date(
+            (_as_mapping(p) or {}).get("observed_as_of")
+            if _as_mapping(p) is not None
+            else None
+        )
+        if obs is not None and obs < snap:
+            carried.add(acct)
+    return sorted(carried)
+
+
+def accounts_carried_provenance(
+    *,
+    reconstructed_accounts: Sequence[str],
+    latest_accounts: Sequence[str] | set[str] | frozenset[str],
+    latest_row: Any | None = None,
+    reconstructed_positions: Sequence[Any] | None = None,
+    latest_positions: Sequence[Any] | None = None,
+) -> list[str]:
+    """Honest ``accounts_carried`` for dry-run / noop reporting.
+
+    When the latest row already matches the reconstruction, do NOT report
+    ``[]`` merely because those accounts are now present — prefer the
+    carry list recorded on the row, else derive from observed_as_of.
+    """
+    latest_set = set(latest_accounts or [])
+    fresh_carry = sorted(a for a in reconstructed_accounts if a not in latest_set)
+
+    if latest_row is None:
+        return fresh_carry
+
+    # Prefer comparing books when both sides are available.
+    if latest_positions is not None and reconstructed_positions is not None:
+        if not books_match_for_restore(latest_positions, reconstructed_positions):
+            return fresh_carry
+    elif fresh_carry:
+        return fresh_carry
+
+    # No-op / already-restored: report stored provenance.
+    try:
+        totals = json.loads(getattr(latest_row, "totals_json", None) or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        totals = {}
+    stored = [str(a) for a in (totals.get("accounts_carried") or []) if a]
+    if stored:
+        return stored
+    return derive_accounts_carried_from_dates(
+        latest_positions if latest_positions is not None else reconstructed_positions,
+        snapshot_date=getattr(latest_row, "snapshot_date", None),
     )
 
 
@@ -1605,7 +1749,15 @@ def backfill_restored_holdings_book(
             current = []
         latest_accounts = accounts_covered_from_positions(current)
         if books_match_for_restore(current, reconstructed):
-            carried = sorted(a for a in accounts if a not in latest_accounts)
+            # Honest carry provenance on no-op: the restored row still
+            # carries July-dated accounts even when they are now present.
+            carried = accounts_carried_provenance(
+                reconstructed_accounts=accounts,
+                latest_accounts=latest_accounts,
+                latest_row=latest,
+                reconstructed_positions=reconstructed,
+                latest_positions=current,
+            )
             return {
                 "status": "noop",
                 "position_count": n,
@@ -1974,11 +2126,13 @@ __all__ = [
     "STATUS_RETIRED",
     "QUANTITY_STALE_DAYS",
     "STALE_VALUATION_DAYS",
+    "VALUATION_CLOCK_POLICY",
     "AccountMergeResult",
     "SnapshotIngestRejected",
     "TotalBookDegraded",
     "TotalBookResult",
     "UnmanagedLoadResult",
+    "accounts_carried_provenance",
     "accounts_covered_from_positions",
     "assess_snapshot_ingest",
     "assess_total_book_integrity",
@@ -1988,6 +2142,8 @@ __all__ = [
     "books_consistency_check_positions",
     "books_match_for_restore",
     "dedupe_positions_by_symbol_location",
+    "derive_accounts_carried_from_dates",
+    "ensure_default_unmanaged_policy",
     "has_symbol",
     "implied_nvda_weight_frac",
     "investable_usd_k",
@@ -1997,6 +2153,7 @@ __all__ = [
     "load_total_and_managed_books",
     "load_total_book",
     "load_unmanaged_holding_rows",
+    "position_feed_fingerprint",
     "location_account_key",
     "managed_positions",
     "mark_is_stale",
