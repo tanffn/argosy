@@ -205,10 +205,13 @@ def _build_app_with_jobs(
                 if isinstance(job, CadenceLoop):
                     scheduler.register_loop(job)
                 registry.register(job=job, metadata=meta)
-            # Spin supervisors for any LongRunningJob we just added.
-            asyncio.get_event_loop().run_until_complete(
-                registry.start_supervisors()
-            )
+            # Spin supervisors for any LongRunningJob we just added — on
+            # the TestClient's own portal loop, not a separate
+            # asyncio.get_event_loop() loop, so the supervisor's DB pool
+            # usage lives on the same loop the app itself runs on. See
+            # test_reconnect_never_returns_stale_run_id for the full
+            # rationale.
+            tc.portal.call(registry.start_supervisors)
         yield app, tc
     finally:
         tc.__exit__(None, None, None)
@@ -393,16 +396,27 @@ def test_run_now_409_contention_shape(
 
         # Fire the first request asynchronously via fire_now directly —
         # this holds the lock for 2s and writes a job_runs row.
-        first_task = asyncio.get_event_loop().create_task(
-            registry.fire_now("api_slow_loop", triggered_by="user:first")
-        )
+        #
+        # MUST run on the TestClient's own portal event loop (tc.portal),
+        # not on a separate ad hoc loop obtained via
+        # asyncio.get_event_loop(). The registry's per-job asyncio.Lock,
+        # the DB async engine/session pool, and the HTTP request below all
+        # live on the portal's loop (started by TestClient.__enter__ in
+        # its own thread). Scheduling fire_now on an unrelated loop meant
+        # its DB session (aiosqlite futures bound to the portal loop) was
+        # never serviced by the loop actually executing it, so
+        # ``slow.started.wait()`` hung forever — the tick body never got
+        # far enough to call ``started.set()``. See test_api_jobs hang
+        # investigation, 2026-08-17.
+        async def _fire_first() -> int:
+            return await registry.fire_now("api_slow_loop", triggered_by="user:first")
+
+        first_future = tc.portal.start_task_soon(_fire_first)
 
         # Wait until the slow loop's tick body has actually started
-        # (lock held, job_runs row open).
-        async def _await_started():
-            await slow.started.wait()
-
-        asyncio.get_event_loop().run_until_complete(_await_started())
+        # (lock held, job_runs row open). Bounded so a future regression
+        # fails fast instead of hanging the whole suite.
+        tc.portal.call(lambda: asyncio.wait_for(slow.started.wait(), timeout=10))
 
         # Now hit the HTTP endpoint — it should 409 because the lock is held.
         response = tc.post(
@@ -423,8 +437,9 @@ def test_run_now_409_contention_shape(
         assert body["job_run_id"] is not None
         assert isinstance(body["job_run_id"], int)
 
-        # Drain the first task so the test teardown is clean.
-        asyncio.get_event_loop().run_until_complete(first_task)
+        # Drain the first task so the test teardown is clean. Bounded so a
+        # future regression fails fast instead of hanging the suite.
+        first_future.result(timeout=10)
     finally:
         tc.__exit__(None, None, None)
         reload_settings()
@@ -534,7 +549,18 @@ def test_reconnect_never_returns_stale_run_id(
                 )
                 await session.commit()
 
-        asyncio.get_event_loop().run_until_complete(_seed_old())
+        # MUST run on the TestClient's own portal event loop (tc.portal) —
+        # not on a separate ad hoc loop obtained via asyncio.get_event_loop().
+        # The DB async engine/session pool's connection-pool Queue binds
+        # (lazily, on first real contention) to whichever loop first has to
+        # wait for a pooled connection. The live supervisor spun up by
+        # ``registry.register`` above runs entirely on the portal loop, so
+        # any test-body DB access competing with it must also run on the
+        # portal loop or the pool's Queue raises "bound to a different
+        # event loop" once both loops have touched it. See
+        # test_run_now_409_contention_shape for the same fix, and the
+        # test_api_jobs event-loop investigation, 2026-08-17.
+        tc.portal.call(_seed_old)
 
         # Hit reconnect. The new supervisor's run() returns immediately
         # so it MAY commit a new row before the response builds — that's
@@ -548,8 +574,6 @@ def test_reconnect_never_returns_stale_run_id(
         new_id = body["new_job_run_id"]
 
         # The seeded OLD row id must not be returned as the "new" id.
-        loop = asyncio.get_event_loop()
-
         async def _get_seed_id():
             async with db_mod.get_session() as s:
                 return (
@@ -560,7 +584,7 @@ def test_reconnect_never_returns_stale_run_id(
                     )
                 ).scalar_one()
 
-        seed_id = loop.run_until_complete(_get_seed_id())
+        seed_id = tc.portal.call(_get_seed_id)
         # ``new_job_run_id`` MUST be either None (no new row yet) OR
         # STRICTLY GREATER than the seed id (a genuinely-new row).
         assert new_id is None or new_id > seed_id, (
@@ -568,13 +592,18 @@ def test_reconnect_never_returns_stale_run_id(
             f"row id is {seed_id} — that's a stale-id leak"
         )
     finally:
+        # tc.__exit__ drives the ASGI lifespan "shutdown" event, which
+        # already awaits ``registry.stop_supervisors()`` (see
+        # argosy/api/main.py::_stop_jobs_scheduler) on the portal loop
+        # BEFORE that loop is torn down. A second, manual
+        # stop_supervisors() call here — on a freshly-obtained
+        # ad hoc event loop, AFTER the portal loop that owns the
+        # aiosqlite connections has already closed — has no
+        # supervisors left to stop and only spawns background
+        # aiosqlite worker threads that then find their loop closed
+        # (RuntimeError: Event loop is closed, as pytest thread-exception
+        # warnings). Removed as redundant with the shutdown hook.
         tc.__exit__(None, None, None)
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                app.state.job_registry.stop_supervisors()
-            )
-        except Exception:
-            pass
         reload_settings()
 
 
@@ -630,7 +659,10 @@ def test_reconnect_ignores_non_supervisor_post_watermark_row(
         lr = _NoOpenJob()
         registry.register(job=lr, metadata=_meta("race_lr", long_running=True))
 
-        loop = asyncio.get_event_loop()
+        # Run all test-body DB access on the TestClient's portal loop —
+        # see test_reconnect_never_returns_stale_run_id for why a
+        # separate asyncio.get_event_loop() loop races the live
+        # supervisor's connection-pool usage.
 
         # Seed a baseline row (the OLD cycle's row).
         async def _seed_baseline():
@@ -654,7 +686,7 @@ def test_reconnect_ignores_non_supervisor_post_watermark_row(
                 )
                 await s.commit()
 
-        loop.run_until_complete(_seed_baseline())
+        tc.portal.call(_seed_baseline)
 
         # The reconnect call's flow:
         #  1. Snapshot prev_max_id = baseline id.
@@ -731,7 +763,7 @@ def test_reconnect_ignores_non_supervisor_post_watermark_row(
                 ).scalar_one_or_none()
                 return foreign, sup
 
-        foreign_id, sup_id = loop.run_until_complete(_ids())
+        foreign_id, sup_id = tc.portal.call(_ids)
 
         # The new_id is either None (no supervisor row yet) or the
         # supervisor's row — never the foreign run-now row.
@@ -745,13 +777,13 @@ def test_reconnect_ignores_non_supervisor_post_watermark_row(
                 f"row id {sup_id}"
             )
     finally:
+        # See test_reconnect_never_returns_stale_run_id: the ASGI
+        # lifespan shutdown (driven by tc.__exit__) already awaits
+        # registry.stop_supervisors() on the portal loop; a second,
+        # manual call here on an ad hoc loop after that loop closes is
+        # redundant and only produces "Event loop is closed" thread
+        # noise.
         tc.__exit__(None, None, None)
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                app.state.job_registry.stop_supervisors()
-            )
-        except Exception:
-            pass
         reload_settings()
 
 
@@ -775,8 +807,13 @@ def test_reconnect_long_running_returns_202(
             job=lr,
             metadata=_meta("api_longrunner", long_running=True),
         )
-        # Start the supervisor so there's a live cycle to reconnect against.
-        asyncio.get_event_loop().run_until_complete(registry.start_supervisors())
+        # Start the supervisor so there's a live cycle to reconnect
+        # against. Run on the TestClient's portal loop — not a separate
+        # asyncio.get_event_loop() loop — so the supervisor task and its
+        # DB pool usage live on the same loop as the HTTP request below.
+        # See test_reconnect_never_returns_stale_run_id for the full
+        # rationale.
+        tc.portal.call(registry.start_supervisors)
 
         # Give the supervisor a moment to open the first job_runs row.
         async def _let_supervisor_open():
@@ -793,7 +830,7 @@ def test_reconnect_long_running_returns_202(
                         return
                 await asyncio.sleep(0.02)
 
-        asyncio.get_event_loop().run_until_complete(_let_supervisor_open())
+        tc.portal.call(_let_supervisor_open)
 
         response = tc.post(
             "/api/jobs/api_longrunner/reconnect",
@@ -809,14 +846,13 @@ def test_reconnect_long_running_returns_202(
             body["new_job_run_id"], int
         )
     finally:
+        # See test_reconnect_never_returns_stale_run_id: the ASGI
+        # lifespan shutdown (driven by tc.__exit__) already awaits
+        # registry.stop_supervisors() on the portal loop; a second,
+        # manual call here on an ad hoc loop after that loop closes is
+        # redundant and only produces "Event loop is closed" thread
+        # noise.
         tc.__exit__(None, None, None)
-        # Allow async teardown.
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                app.state.job_registry.stop_supervisors()
-            )
-        except Exception:
-            pass
         reload_settings()
 
 
@@ -855,8 +891,20 @@ def test_mutating_routes_refuse_to_mount_without_env(
 # ---------------------------------------------------------------------------
 
 
-def _seed_run_rows(job_name: str, *, n_ok: int = 5, n_skipped: int = 2) -> None:
-    """Insert ``n_ok`` status='ok' rows + ``n_skipped`` status='skipped' rows."""
+def _seed_run_rows(
+    tc: TestClient, job_name: str, *, n_ok: int = 5, n_skipped: int = 2
+) -> None:
+    """Insert ``n_ok`` status='ok' rows + ``n_skipped`` status='skipped' rows.
+
+    Runs the insert on ``tc.portal`` (the TestClient's own event loop),
+    not a separate ``asyncio.get_event_loop()`` loop — the
+    ``app_with_admin_token`` fixture already spins the ``api_ok_loop``
+    supervisor path on the portal loop (see ``_build_app_with_jobs``),
+    so a test-body DB write from a different loop risks binding the
+    async engine's connection-pool Queue to the wrong loop under
+    contention. See test_reconnect_never_returns_stale_run_id for the
+    full rationale.
+    """
 
     async def _insert() -> None:
         async with db_mod.get_session() as session:
@@ -898,14 +946,14 @@ def _seed_run_rows(job_name: str, *, n_ok: int = 5, n_skipped: int = 2) -> None:
                 )
             await session.commit()
 
-    asyncio.get_event_loop().run_until_complete(_insert())
+    tc.portal.call(_insert)
 
 
 def test_get_runs_limit_caps_rows(
     engine: None, app_with_admin_token
 ) -> None:
     app, tc = app_with_admin_token
-    _seed_run_rows("api_ok_loop", n_ok=10, n_skipped=0)
+    _seed_run_rows(tc, "api_ok_loop", n_ok=10, n_skipped=0)
 
     response = tc.get("/api/jobs/api_ok_loop/runs?limit=5")
     assert response.status_code == 200, response.text
@@ -918,7 +966,7 @@ def test_get_runs_excludes_skipped_by_default(
     engine: None, app_with_admin_token
 ) -> None:
     app, tc = app_with_admin_token
-    _seed_run_rows("api_ok_loop", n_ok=3, n_skipped=2)
+    _seed_run_rows(tc, "api_ok_loop", n_ok=3, n_skipped=2)
 
     response = tc.get("/api/jobs/api_ok_loop/runs?limit=20")
     assert response.status_code == 200
@@ -931,7 +979,7 @@ def test_get_runs_include_skipped_true_includes_them(
     engine: None, app_with_admin_token
 ) -> None:
     app, tc = app_with_admin_token
-    _seed_run_rows("api_ok_loop", n_ok=3, n_skipped=2)
+    _seed_run_rows(tc, "api_ok_loop", n_ok=3, n_skipped=2)
 
     response = tc.get(
         "/api/jobs/api_ok_loop/runs?limit=20&include_skipped=true"
@@ -974,7 +1022,7 @@ def test_get_runs_include_skipped_surfaces_skip_reason(
     etc. instead of a bare ``status='skipped'``.
     """
     app, tc = app_with_admin_token
-    _seed_run_rows("api_ok_loop", n_ok=0, n_skipped=2)
+    _seed_run_rows(tc, "api_ok_loop", n_ok=0, n_skipped=2)
 
     response = tc.get(
         "/api/jobs/api_ok_loop/runs?limit=20&include_skipped=true"
