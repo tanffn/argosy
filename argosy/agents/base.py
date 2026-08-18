@@ -240,15 +240,22 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "intake": "claude-opus-4-8",
     "advisor": "claude-opus-4-8",
     "intake_extractor": "claude-opus-4-8",
-    # plan_critique — Claude Fable 5 (owner-approved 2026-07-07, binding
-    # "accuracy over LLM cost"). The critique is the adversarial READER
-    # class (re-derives blind against the whole artifact), which is exactly
-    # the workload Fable 5 is strongest at. Scope: reader/critique-class
-    # roles ONLY for now — authoring/closing roles stay on Opus 4.8.
-    # Served via the claude_code CLI session backend on this subscription;
-    # if the CLI ever rejects the id the run fails LOUDLY (AgentRunError),
-    # never silently falls back.
-    "plan_critique": "claude-fable-5",
+    # plan_critique — Claude Opus 5 (2026-08-18). The critique is the
+    # adversarial READER class (re-derives blind against the whole
+    # artifact) — per binding preference "accuracy over LLM cost" it
+    # stays on the strongest model this subscription can actually reach.
+    # Fable 5 was owner-approved for this role on 2026-07-07, but verified
+    # NOT accessible on this account: running the bundled claude.exe
+    # (claude_agent_sdk._bundled, v2.1.126) directly against each id shows
+    # claude-opus-4-8 / claude-opus-5 / claude-sonnet-5 all succeed while
+    # claude-fable-5 returns "There's an issue with the selected model...
+    # It may not exist or you may not have access to it." That made the
+    # ONLY reviewer in the fleet dead on arrival (the /plan "Re-critique
+    # now" button failed every time) — it failed LOUDLY, which is the
+    # correct behavior for a wrong id, but the id itself was wrong for
+    # this subscription. Re-verify claude-fable-5 against the bundled CLI
+    # before ever switching back to it.
+    "plan_critique": "claude-opus-5",
     "plan_distiller": "claude-opus-4-8",
     # Phase 2 analyst team:
     "news": "claude-opus-4-8",
@@ -352,7 +359,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # RED/notable-YELLOW finding to its closer path (prose edit vs
     # requires-re-synthesis vs data refresh vs needs-user vs dispute).
     # Opus 4.8 (closing/authoring class, not the reader class — the reader
-    # class runs Fable 5, see plan_critique above).
+    # class runs Opus 5, see plan_critique above).
     "critique_closer": "claude-opus-4-8",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
@@ -728,8 +735,12 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-opus-4-8": (5.00, 25.00),
-    # Fable 5 (plan_critique role, 2026-07-07). Rates per Anthropic's
-    # published pricing at the switch date.
+    # Opus 5 (plan_critique role, 2026-08-18) — same list price as Opus 4.8
+    # ($5/$25 per MTok; a drop-in-priced upgrade per Anthropic's docs).
+    "claude-opus-5": (5.00, 25.00),
+    # Fable 5 — kept in the price table in case a role is ever switched
+    # back to it (see plan_critique's DEFAULT_MODEL_BY_ROLE comment); NOT
+    # currently used by any role default on this subscription.
     "claude-fable-5": (10.00, 50.00),
 }
 # Back-compat alias for any external callers / docs referencing the prior name.
@@ -1203,6 +1214,36 @@ class BaseAgent(Generic[T]):
                         self.thinking_effort = None
                 if ov.citations_enabled is not None:
                     self.citations_enabled = ov.citations_enabled
+
+                # P0-b (2026-08-18) — wire up `models:` block model
+                # resolution. Only when the caller did NOT pass an explicit
+                # `model=` kwarg; an explicit constructor arg still wins
+                # outright over any config. Reuses the same YAML file
+                # already located above; parsed by the (unfortunately
+                # same-named) ``AgentSettings`` in ``argosy.agent_settings``
+                # — a different pydantic model than ``argosy.config``'s,
+                # which only reads the `agents:` block used for
+                # thinking_effort/budget/citations above. See
+                # ``AgentSettings.model_for_role`` there for the full
+                # precedence rationale (code default beats the legacy
+                # `models.defaults` table; only `models.override` beats
+                # the code default).
+                if model is None:
+                    import yaml as _yaml
+
+                    from argosy.agent_settings import (
+                        AgentSettings as _ModelAgentSettings,
+                    )
+
+                    raw = _yaml.safe_load(
+                        yaml_path.read_text(encoding="utf-8")
+                    ) or {}
+                    model_settings = _ModelAgentSettings.model_validate(raw)
+                    role_code_default = DEFAULT_MODEL_BY_ROLE.get(self.agent_role)
+                    resolved_model = model_settings.model_for_role(
+                        self.agent_role, code_default=role_code_default,
+                    )
+                    self.model = resolved_model or role_code_default or FALLBACK_MODEL
         except Exception as exc:  # noqa: BLE001
             # Override loading is best-effort; failure must not block agent creation.
             self._log.warning(

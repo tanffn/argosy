@@ -14,6 +14,7 @@ starting point.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -21,6 +22,47 @@ import yaml
 from pydantic import BaseModel, Field
 
 from argosy.config import get_settings
+
+_log = logging.getLogger(__name__)
+
+# Short model-name aliases accepted in ``models.defaults`` / ``models.override``
+# (YAML convenience — an operator writes ``opus`` instead of a full model id).
+# Mirrors the concrete ids the fleet actually uses today, per
+# ``argosy.agents.base._PRICE_BY_MODEL`` / ``DEFAULT_MODEL_BY_ROLE`` — keep the
+# two in sync by hand (this module cannot import ``argosy.agents.base`` without
+# creating an import cycle; see ``model_for_role`` below).
+_SHORT_MODEL_ALIASES: dict[str, str] = {
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5",
+}
+
+
+def _resolve_model_name(raw: str, *, role: str, source: str) -> str | None:
+    """Resolve one YAML-configured model value to a concrete model id.
+
+    Accepts a short alias (``opus`` / ``sonnet`` / ``haiku``, see
+    ``_SHORT_MODEL_ALIASES``) or an already-concrete id (anything starting
+    with ``"claude-"``, passed through unchanged so an operator can pin an
+    exact id — e.g. ``claude-opus-5`` — without waiting on this table to
+    catch up).
+
+    An unrecognized value is logged as a warning and **ignored** (returns
+    ``None``) rather than silently mapped to something arbitrary — a typo
+    in ``agent_settings.yaml`` must not quietly change which model a role
+    runs on. The caller (``model_for_role``) treats ``None`` as "this
+    entry doesn't apply" and falls through to the next precedence level.
+    """
+    if raw in _SHORT_MODEL_ALIASES:
+        return _SHORT_MODEL_ALIASES[raw]
+    if raw.startswith("claude-"):
+        return raw
+    _log.warning(
+        "agent_settings.yaml: unrecognized model name %r for role %r (%s) "
+        "— ignoring; falling through to the next precedence level",
+        raw, role, source,
+    )
+    return None
 
 
 # ----------------------------------------------------------------------
@@ -300,21 +342,63 @@ class AgentSettings(BaseModel):
     # once production callers populate funnel_meta.
     verdict_buy_gates_enforce: bool = False
 
-    def model_for_role(self, role: str) -> str | None:
-        """Resolve the configured model for an agent role.
+    def model_for_role(self, role: str, code_default: str | None = None) -> str | None:
+        """Resolve the configured model id for an agent role.
 
-        Override semantics:
-          - `override.all` wins for every role
-          - `override[role]` wins for that specific role
-          - else `defaults[role]`
-          - else None (caller picks its own fallback)
+        Precedence, highest first (2026-08-18 — this order is
+        deliberately NOT "YAML always wins"; see the trap below):
+
+          1. ``models.override["all"]`` — explicit, applies to every role
+          2. ``models.override[role]``  — explicit, this role only
+          3. ``code_default``           — the role's entry in
+             ``argosy.agents.base.DEFAULT_MODEL_BY_ROLE``, threaded in by
+             the caller. This module does not import that constant
+             directly: ``argosy.agents.base`` will need to import
+             ``AgentSettings``/``model_for_role`` from here, and importing
+             the reverse direction too would create
+             ``argosy.agent_settings`` <-> ``argosy.agents.base`` cycle.
+          4. ``models.defaults[role]``  — the legacy per-role table baked
+             into this file's own default YAML (see ``_DEFAULT_YAML``
+             above). **Deliberately LOWER precedence than the code
+             default.** That table is stale — as of Wave A it still
+             mixes Haiku/Sonnet by role, and CLAUDE.md's binding
+             preference ("accuracy over LLM cost") has since moved the
+             fleet to no-Haiku-anywhere, Opus-by-default. If
+             ``models.defaults`` won over the code default here, an
+             untouched ``configs/<user>/agent_settings.yaml`` would
+             silently downgrade `concentration`/`technical`/`sentiment`/
+             `fx` to Haiku and several other roles to Sonnet — a real
+             fleet regression dressed up as "config just works". Only
+             the explicit ``override`` dict is allowed to beat the code
+             default; the legacy ``defaults`` block is a fallback for
+             roles the code table doesn't mention at all.
+          5. ``None`` — caller applies its own final fallback
+             (``FALLBACK_MODEL`` in ``argosy.agents.base``).
+
+        Short names (``opus`` / ``sonnet`` / ``haiku``) in either
+        ``override`` or ``defaults`` are resolved via
+        ``_SHORT_MODEL_ALIASES``; an unrecognized short name is logged
+        and ignored (falls through to the next precedence level) rather
+        than picked arbitrarily — see ``_resolve_model_name``.
         """
         ov = self.models.override
         if "all" in ov:
-            return ov["all"]
+            resolved = _resolve_model_name(ov["all"], role=role, source="models.override.all")
+            if resolved is not None:
+                return resolved
         if role in ov:
-            return ov[role]
-        return self.models.defaults.get(role)
+            resolved = _resolve_model_name(ov[role], role=role, source=f"models.override.{role}")
+            if resolved is not None:
+                return resolved
+        if code_default is not None:
+            return code_default
+        if role in self.models.defaults:
+            resolved = _resolve_model_name(
+                self.models.defaults[role], role=role, source=f"models.defaults.{role}",
+            )
+            if resolved is not None:
+                return resolved
+        return None
 
 
 # ----------------------------------------------------------------------
