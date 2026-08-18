@@ -15,20 +15,20 @@ from argosy.services.portfolio_ingest.xls_osh_pair import (
 )
 
 
-def _pos(security_id, name_he, ticker, qty, value_usd):
+def _pos(security_id, name_he, ticker, qty, value_usd, holding_value_currency="USD"):
     return LeumiPortfolioPosition(
         security_id=security_id, name_he=name_he, ticker=ticker,
         avg_buy_price=None, quantity=qty, last_price=value_usd / max(qty, 1),
-        holding_value=value_usd, holding_value_currency="USD",
+        holding_value=value_usd, holding_value_currency=holding_value_currency,
         gain_pct=None, pct_of_portfolio=None,
     )
 
 
-def _xls(positions):
+def _xls(positions, total_value_currency="USD"):
     return LeumiPortfolioSnapshot(
         snapshot_date=None, portfolio_number="1", securities_count=len(positions),
         total_value=sum(p.holding_value for p in positions),
-        total_value_currency="USD", positions=positions,
+        total_value_currency=total_value_currency, positions=positions,
     )
 
 
@@ -92,3 +92,73 @@ class TestUsdCashRow:
                          usd_closing=None)
         stoxx = [r.split("\t") for r in rows if "STOXX Europe 600" in r and "Cash" not in r][0]
         assert stoxx[5] == "STOXX Europe 600"    # symbol cell — not "O", not a bare id
+
+
+class TestCurrencyReferenceOverride:
+    """Regression for the ת"א-200 mis-tag: a TASE-listed, NIS-priced
+    instrument was defaulting to currency='USD' in the position ledger
+    because the file-level default/carry-forward never consulted
+    instrument_reference. Per-instrument reference truth must win over the
+    file default/header when the two disagree; must stay silent (never
+    guess) where reference data doesn't apply."""
+
+    def test_tase_instrument_in_usd_header_file_classified_nis(self):
+        # A $-header Leumi file (holding_value_currency="USD" — the whole-
+        # file default) still must classify the TASE-listed, no-Latin-
+        # ticker ת"א-200 tracker as NIS, because instrument_reference knows
+        # it's Israel-listed.
+        xls = _xls(
+            [_pos("1234567", 'ATF מחקה ת"א-200', None, 80_000, 40_100.0,
+                  holding_value_currency="USD")],
+            total_value_currency="USD",
+        )
+        empty = PortfolioSnapshot(source_path="(none)")
+        _sym, curr, _typ = _build_prior_mappings(empty, xls)
+        assert curr["1234567"] == "NIS"
+
+    def test_genuine_usd_instrument_in_same_file_stays_usd(self):
+        # A real foreign-listed (Latin-ticker) instrument in the SAME file
+        # must NOT be flipped to NIS by the TASE override above.
+        xls = _xls(
+            [
+                _pos("1234567", 'ATF מחקה ת"א-200', None, 80_000, 40_100.0),
+                _pos("7654321", "(אדוונסד מיקרו דיווייסז) AMD", "AMD", 100, 20_000.0),
+            ],
+        )
+        empty = PortfolioSnapshot(source_path="(none)")
+        _sym, curr, _typ = _build_prior_mappings(empty, xls)
+        assert curr["1234567"] == "NIS"
+        assert curr["7654321"] == "USD"
+
+    def test_israel_incorporated_but_foreign_listed_stays_usd(self):
+        # INVZ (Innoviz): reference region is Israel (estate/sector
+        # classification) but it trades on Nasdaq with a real Latin ticker
+        # -- must NOT be flipped to NIS. This is the false-positive class
+        # the fix must avoid.
+        xls = _xls([_pos("9999999", "(אינוביז) INVZ", "INVZ", 500, 5_000.0)])
+        empty = PortfolioSnapshot(source_path="(none)")
+        _sym, curr, _typ = _build_prior_mappings(empty, xls)
+        assert curr["9999999"] == "USD"
+
+    def test_unknown_instrument_falls_back_to_default(self):
+        # No reference entry -> instrument_reference is silent -> the
+        # existing default/carry-forward behaviour is kept unchanged
+        # (never guess a currency).
+        xls = _xls([_pos("1111111", "(לא ידוע) ZZZZ", "ZZZZ", 10, 1_000.0)])
+        empty = PortfolioSnapshot(source_path="(none)")
+        _sym, curr, _typ = _build_prior_mappings(empty, xls)
+        assert curr["1111111"] == "USD"
+
+    def test_prior_currency_overridden_when_reference_disagrees(self):
+        # Even a position matched to a (wrongly) prior-tagged USD row must
+        # be corrected once instrument_reference is decisive -- fixing the
+        # classification path so a re-ingest self-heals rather than
+        # perpetuating the mis-tag via carry-forward.
+        from argosy.ingest.tsv import PortfolioPosition
+        prior = PortfolioSnapshot(source_path="x", positions=[
+            PortfolioPosition(location="Leumi", symbol='ת"א-200', currency="USD",
+                               asset_type="Equity", details='ATF מחקה ת"א-200'),
+        ])
+        xls = _xls([_pos("1234567", 'ATF מחקה ת"א-200', None, 80_000, 40_100.0)])
+        _sym, curr, _typ = _build_prior_mappings(prior, xls)
+        assert curr["1234567"] == "NIS"

@@ -61,6 +61,7 @@ from argosy.ingest.tsv import (
     PortfolioSnapshot,
     parse_portfolio_tsv,
 )
+from argosy.services import instrument_reference
 from argosy.services.portfolio_ingest.parsers.leumi_xls import (
     LeumiPortfolioPosition,
     LeumiPortfolioSnapshot,
@@ -1083,6 +1084,17 @@ def _build_prior_mappings(
     (Dividend/Treasuries/Growth/etc.) once the XLS-driven pipeline takes
     over from the hand-maintained TSV. Asset_type carry-forward fixes the
     Type-aggregation drift downstream of _recompute_allocation_block.
+
+    Currency: whichever of the two strategies above wins gives a BASE
+    currency (carried-forward-from-prior, or the "USD" default for a
+    never-before-seen row). ``instrument_reference.implied_currency`` then
+    gets a chance to OVERRIDE that base when the instrument's own reference
+    classification is decisive (e.g. a TASE-listed, no-Latin-ticker fund
+    like ת"א-200 whose region is Israel) — per-instrument truth wins over
+    the carry-forward/default when the two disagree. Where the reference is
+    silent (unknown instrument, or an ambiguous no-ticker/non-Israel row),
+    the base currency is kept unchanged — under-reach is the safe default;
+    this never guesses a currency. Every override is logged (not silent).
     """
     prior_leumi = [
         p for p in prior.positions
@@ -1110,19 +1122,43 @@ def _build_prior_mappings(
                 if len(ps) >= 2 and ps in (xp.name_he or ""):
                     matched = pp
                     break
+        resolved_symbol = (
+            xp.ticker or _display_symbol_from_name(xp.name_he) or xp.security_id
+        )
         if matched is not None:
             sym_map[xp.security_id] = matched.symbol
-            curr_map[xp.security_id] = matched.currency or "USD"
+            base_currency = matched.currency or "USD"
             type_map[xp.security_id] = matched.asset_type or "Equity"
         else:
             # No prior match: prefer the XLS Latin ticker, else a name-derived
             # label for TASE trackers (so STOXX Europe 600 doesn't fall back to
             # a bare security_id or inherit a wrong cell), else the security_id.
-            sym_map[xp.security_id] = (
-                xp.ticker or _display_symbol_from_name(xp.name_he) or xp.security_id
-            )
-            curr_map[xp.security_id] = "USD"  # default
+            sym_map[xp.security_id] = resolved_symbol
+            base_currency = "USD"  # default
             type_map[xp.security_id] = "Equity"  # default for new positions
+
+        # Per-instrument reference truth beats the carry-forward/default base
+        # when it's decisive. See implied_currency's docstring for why this
+        # is gated on Latin-ticker presence (avoids flipping an Israeli-
+        # incorporated but foreign-listed name like INVZ to NIS).
+        ref_currency = instrument_reference.implied_currency(
+            resolved_symbol, has_latin_ticker=xp.ticker is not None,
+            details=xp.name_he or "",
+        )
+        if ref_currency is not None and ref_currency != base_currency:
+            _log.info(
+                "portfolio_snapshot.currency_reference_override",
+                extra={
+                    "security_id": xp.security_id,
+                    "symbol": resolved_symbol,
+                    "name_he": xp.name_he,
+                    "from_currency": base_currency,
+                    "to_currency": ref_currency,
+                },
+            )
+            curr_map[xp.security_id] = ref_currency
+        else:
+            curr_map[xp.security_id] = base_currency
     return sym_map, curr_map, type_map
 
 

@@ -280,6 +280,35 @@ def lookup(symbol: str, details: str = "") -> InstrumentRef | None:
     return None
 
 
+def implied_currency(
+    symbol: str, *, has_latin_ticker: bool, details: str = "",
+) -> str | None:
+    """Currency implied by the instrument's OWN reference classification, or
+    ``None`` when reference data is silent (never guess — the caller falls
+    back to whatever file-derived/carried-forward currency it already had).
+
+    Only two currencies exist in this book: NIS (TASE-listed) and USD
+    (everything else). A genuinely TASE-listed instrument never carries a
+    Latin ticker in the Leumi export — see ``leumi_xls.py``'s documented
+    row invariant ("Israeli-listed: ... (no Latin ticker)"). So
+    ``region == Israel`` is only a currency signal when the row ALSO has no
+    Latin ticker: an Israeli-INCORPORATED but foreign-EXCHANGE-listed name
+    (e.g. INVZ, Nasdaq-listed) keeps its Latin ticker, and its region there
+    is an estate/sector classification, not a currency signal — flipping it
+    to NIS would be the exact false-positive this function is built to
+    avoid. Symmetrically, a no-ticker row whose reference region is NOT
+    Israel (e.g. a TASE-issued tracker of a foreign index, which is still
+    NIS-denominated despite its economic exposure) is ambiguous under this
+    signal alone, so this function stays silent rather than guess "USD".
+    """
+    ref = lookup(symbol, details)
+    if ref is None:
+        return None
+    if ref.region == REGION_ISRAEL:
+        return None if has_latin_ticker else "NIS"
+    return "USD" if has_latin_ticker else None
+
+
 def estate_safe_for(symbol: str, details: str = "") -> bool | None:
     """True = estate-safe (non-US-situs), False = US-situs exposed, None =
     unknown (instrument not in the reference). Travels with the resolved
@@ -445,6 +474,7 @@ def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
 
 
 __all__ = ["InstrumentRef", "lookup", "known_symbols", "estate_safe_for",
+           "implied_currency",
            "build_classification_map", "type_label", "name_for", "fallback_label",
            "REGION_US", "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM",
            "REGION_GLOBAL", "REGION_OTHER"]
