@@ -31,6 +31,7 @@ CAP = "concentration.nvda_cap_pct"
 TARGET_PCT = "concentration.nvda_target_pct"
 CURRENT = "concentration.nvda_current_pct"
 MARGIN_NOR = "retirement.fi_margin_net_of_realization_nis"
+MARGIN_SIGNED = "retirement.fi_margin_signed_nis"
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +466,75 @@ def test_quota_spec_never_claims_sell_eligible_or_target_counts():
     assert f"{{{{fact:{TARGET_SH}}}}}" in result.text
     assert f"{{{{fact:{ELIGIBLE}}}}}" in result.text
     assert f"{{{{fact:{QUOTA}}}}}" not in result.text
+    assert result.violations == []
+
+
+# ---------------------------------------------------------------------------
+# 11. RED-3 — "margin of safety" / "financial-independence margin" phrasing
+# now anchors the signed FI margin (real plan-109 bullet, headline was a
+# frozen digit while the description was a live token, same quantity).
+# ---------------------------------------------------------------------------
+
+
+def test_margin_of_safety_headline_binds_to_signed_margin():
+    # Exact real bullet from plan 109's medium horizon: the headline digit
+    # ("Financial-independence margin of safety ... : ₪401,585") previously
+    # matched neither "fi margin" nor "sufficiency margin" and was never
+    # bound at all, drifting silently from the live-token description one
+    # clause later. With canonical == the headline digit, it must now
+    # substitute and raise no drift violation.
+    resolved = _resolved(**{MARGIN_SIGNED: (401585, "nis")})
+    text = (
+        "**Financial-independence margin of safety (liquid-assets basis)**: "
+        "₪401,585 — The gross margin of safety on a liquid-assets basis is "
+        "{{fact:retirement.fi_margin_signed_nis}}; positive but thin against "
+        "a shock."
+    )
+    result = tokenize_text(text, resolved)
+    assert f"{{{{fact:{MARGIN_SIGNED}}}}}" in result.text
+    assert "₪401,585" not in result.text
+    assert result.violations == []
+    assert (MARGIN_SIGNED, "₪401,585") in result.substitutions
+
+
+def test_margin_of_safety_headline_flagged_as_drift_when_stale():
+    # Same bullet shape, but the headline digit is now STALE relative to
+    # canonical (the RED-3 failure mode: the market moved, the token
+    # re-rendered, the frozen digit did not) — must surface as drift, not be
+    # silently rewritten or silently ignored.
+    resolved = _resolved(**{MARGIN_SIGNED: (382177, "nis")})
+    text = (
+        "**Financial-independence margin of safety (liquid-assets basis)**: "
+        "₪401,585 — The gross margin of safety on a liquid-assets basis is "
+        "{{fact:retirement.fi_margin_signed_nis}}; positive but thin against "
+        "a shock."
+    )
+    result = tokenize_text(text, resolved)
+    assert "₪401,585" in result.text  # untouched, never silently corrected
+    assert len(result.violations) == 1
+    v = result.violations[0]
+    assert v.check == GateCheck.FACT_LITERAL_DRIFT
+    assert "401,585" in v.detail
+    assert MARGIN_SIGNED in v.detail
+
+
+def test_margin_of_safety_does_not_steal_net_of_realization_figure():
+    # "margin of safety" is a BROADER phrase than the old "fi margin" /
+    # "sufficiency margin" anchors — must still not claim a "net of
+    # realization" figure (guarded by exclude_any). Regression for the
+    # gross-margin-anchor-steals-the-net-of-realization-figure class.
+    resolved = _resolved(
+        **{MARGIN_SIGNED: (401585, "nis"), MARGIN_NOR: (-2071605.87, "nis")}
+    )
+    text = (
+        "The margin of safety net of realization tax is -₪2,071,606 this run."
+    )
+    result = tokenize_text(text, resolved)
+    # The signed-margin anchor must not claim this literal at all.
+    assert f"{{{{fact:{MARGIN_SIGNED}}}}}" not in result.text
+    assert all(MARGIN_SIGNED not in v.detail for v in result.violations)
+    # It correctly binds to the net-of-realization concept instead.
+    assert f"{{{{fact:{MARGIN_NOR}}}}}" in result.text
     assert result.violations == []
 
 

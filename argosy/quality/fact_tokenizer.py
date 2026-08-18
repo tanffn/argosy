@@ -235,7 +235,25 @@ _ANCHOR_FI_MARGIN_NET_OF_REALIZATION_GLIDE = AnchorSpec(
 )
 _ANCHOR_FI_MARGIN_SIGNED = AnchorSpec(
     key="retirement.fi_margin_signed_nis", unit="nis",
-    concept_any=(_p(r"\bfi\s+margin\b|\bsufficiency\s+margin\b"),),
+    # Real plan-109 prose (RED-3): the headline label is "Financial-
+    # independence margin of safety (liquid-assets basis)", which matched
+    # NEITHER "fi margin" nor "sufficiency margin" — so the headline digit
+    # never bound and drifted from the live-token description one clause
+    # later ("The gross margin of safety on a liquid-assets basis is
+    # {{fact:retirement.fi_margin_signed_nis}}"). Added: "margin of safety"
+    # (the phrase actually used) and "financial-independence margin" /
+    # "financial independence margin" (hyphen-or-space variant of the
+    # headline label itself), so both the label and the loose descriptive
+    # phrasing anchor. "margin of safety" is broader than the old phrases,
+    # so re-verified against plan 109's OTHER "margin"-adjacent prose (see
+    # module sweep notes) that none of it reads "margin of safety" itself —
+    # e.g. the long-horizon "a thin, FX-fragile margin of ₪401,585" and
+    # "FI gap ₪401,585" phrasings do not contain "of safety" and still do
+    # not match, so this widening does not newly capture them.
+    concept_any=(_p(
+        r"\bfi\s+margin\b|\bsufficiency\s+margin\b|\bmargin\s+of\s+safety\b"
+        r"|\bfinancial[- ]independence\s+margin\b"
+    ),),
     exclude_any=(_p(r"net\s+of\s+realization"),),
     window=60,
 )
