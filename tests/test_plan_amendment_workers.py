@@ -113,6 +113,41 @@ def test_medium_worker_writes_role_draft(session_with_baseline_and_run, monkeypa
     assert drafts[0].decision_run_id == run.id
 
 
+def test_medium_worker_records_unreviewed_draft_marker(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """RED-16: a medium amendment runs Phase 3 only — no critique/reviewer/
+    fund-manager pass ever touches the draft it produces. The worker must
+    record that on the DecisionRun's notes_json (reusing the existing
+    freeform blob, no schema migration) so consumers can tell the draft
+    was never reviewed instead of silently inheriting a stale critique."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+
+    sess, run = session_with_baseline_and_run
+
+    def _fake_run_phase_3(**kw):
+        from argosy.agents.plan_synthesizer_types import (
+            HorizonSection, PlanSynthesisOutput, SynthesisInputs,
+        )
+        return PlanSynthesisOutput(
+            long=HorizonSection(horizon="long", freshness_expected="annual", status="no_change", posture="x"),
+            medium=HorizonSection(horizon="medium", freshness_expected="quarterly", status="minor_revision", posture="x"),
+            short=HorizonSection(horizon="short", freshness_expected="monthly", status="no_change", posture="x"),
+            inputs=SynthesisInputs(),
+        )
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", _fake_run_phase_3)
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+    )
+
+    sess.refresh(run)
+    notes = json.loads(run.notes_json or "{}")
+    assert notes["draft_review_state"] == "unreviewed"
+    assert "draft_review_state_reason" in notes
+
+
 def test_medium_worker_emits_completed_event(session_with_baseline_and_run, monkeypatch):
     from argosy.orchestrator.flows.plan_amendment import workers
 

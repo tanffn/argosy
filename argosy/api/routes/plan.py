@@ -124,6 +124,20 @@ class PlanCurrentDTO(BaseModel):
     imported_at: str | None
     latest_critique_json: dict | None
     latest_critique_created_at: str | None
+    # Explicit review-state (fix for the "unreviewed draft looks reviewed"
+    # defect): the PlanCritique row backing ``latest_critique_json`` carries
+    # its own ``plan_version_id``. This endpoint's query already scopes the
+    # critique lookup to `plan_version_id == plan.id` (see below), so today
+    # these two fields are redundant for THIS route in isolation — but they
+    # are surfaced explicitly so no consumer has to trust that invariant
+    # blindly, and so the same shape can be reused anywhere a critique is
+    # attached to a plan that ISN'T guaranteed to be the one it reviewed
+    # (see ``DraftResponse.critique_is_for_this_version`` in this module,
+    # which compares against the user's globally-latest critique — the
+    # actual place the stale-critique defect lives, because a pending
+    # amendment draft is never critiqued by the medium-tier worker).
+    critique_plan_version_id: int | None = None
+    critique_is_for_this_version: bool = False
 
 
 @router.get("/current", response_model=PlanCurrentDTO)
@@ -164,6 +178,8 @@ async def get_plan_current(user_id: str = Query("ariel")) -> PlanCurrentDTO:
                 imported_at=None,
                 latest_critique_json=None,
                 latest_critique_created_at=None,
+                critique_plan_version_id=None,
+                critique_is_for_this_version=False,
             )
         critique = (
             await session.execute(
@@ -175,12 +191,14 @@ async def get_plan_current(user_id: str = Query("ariel")) -> PlanCurrentDTO:
         ).scalar_one_or_none()
         critique_json: dict | None = None
         critique_created_at: str | None = None
+        critique_plan_version_id: int | None = None
         if critique is not None:
             try:
                 critique_json = json.loads(critique.critique_json or "{}")
             except json.JSONDecodeError:  # pragma: no cover - defensive
                 critique_json = None
             critique_created_at = _iso_utc(critique.created_at)
+            critique_plan_version_id = critique.plan_version_id
         return PlanCurrentDTO(
             plan_version_id=plan.id,
             version_label=plan.version_label or None,
@@ -188,6 +206,11 @@ async def get_plan_current(user_id: str = Query("ariel")) -> PlanCurrentDTO:
             imported_at=_iso_utc(plan.imported_at),
             latest_critique_json=critique_json,
             latest_critique_created_at=critique_created_at,
+            critique_plan_version_id=critique_plan_version_id,
+            critique_is_for_this_version=(
+                critique_plan_version_id is not None
+                and critique_plan_version_id == plan.id
+            ),
         )
 
 
@@ -625,6 +648,23 @@ class DraftResponse(BaseModel):
     # ``gate_receipt.gates`` carries the per-gate detail rows so the UI can
     # render a drill-in list.
     gate_receipt: "GateReceiptDTO | None" = None
+    # Review-state (RED-16 — "unreviewed draft looks reviewed" defect).
+    # A medium-tier amendment runs Phase 3 ONLY: no reviewer, no critique,
+    # no fund manager. Confirmed on the live DB — decision runs 400-403
+    # produced drafts 106-109 with ZERO agent_reports and no PlanCritique
+    # row of their own. Meanwhile the /plan page pulls
+    # ``PlanCurrentDTO.latest_critique_json`` (the newest PlanCritique for
+    # the accepted/"current" plan, e.g. id 92) and renders it in the same
+    # view as this draft, with nothing distinguishing "this reviewed the
+    # accepted plan weeks ago" from "this reviewed what you're looking at
+    # now". These two fields make that explicit: ``critique_plan_version_id``
+    # is the plan_version_id the user's most recent PlanCritique (ANY plan,
+    # not scoped to this draft) actually belongs to; ``critique_is_for_this_version``
+    # is True only when that critique's plan_version_id equals THIS draft's
+    # plan_version_id. Both default False/None for legacy rows/no critique
+    # — no crash, no silent "reviewed" claim.
+    critique_plan_version_id: int | None = None
+    critique_is_for_this_version: bool = False
 
 
 class GateReceiptDTO(BaseModel):
@@ -1149,6 +1189,20 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_medium_md=pv.horizon_medium_md,
         horizon_short_md=pv.horizon_short_md,
     )
+    # RED-16 — user-scoped (NOT plan-scoped) lookup: find whatever the
+    # user's most recent PlanCritique actually reviewed, then compare it to
+    # THIS draft/plan rather than assume they match. A medium-tier amendment
+    # never critiques its own draft (Phase 3 only — see workers.py), so the
+    # most recent critique routinely belongs to an older accepted plan.
+    _latest_critique = db.execute(
+        select(PlanCritique)
+        .where(PlanCritique.user_id == user_id)
+        .order_by(desc(PlanCritique.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+    _critique_plan_version_id = (
+        _latest_critique.plan_version_id if _latest_critique is not None else None
+    )
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
@@ -1167,6 +1221,11 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         corrective=_read_corrective_provenance(pv),
         fact_render=fact_meta,
         gate_receipt=_build_gate_receipt(db, pv.decision_run_id),
+        critique_plan_version_id=_critique_plan_version_id,
+        critique_is_for_this_version=(
+            _critique_plan_version_id is not None
+            and _critique_plan_version_id == pv.id
+        ),
     )
 
 

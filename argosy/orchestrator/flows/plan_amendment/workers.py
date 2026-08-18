@@ -457,6 +457,34 @@ def _medium_worker(*, session: Session, user_id: str,
         session.commit()
         session.refresh(draft)
 
+        # RED-16 — a medium amendment runs Phase 3 ONLY: no reviewer, no
+        # critique, no fund manager re-run. Record that fact on the run so
+        # any consumer of this DecisionRun (dev panes, audits, the plan
+        # route's stale-critique comparison) can see the draft it produced
+        # has never been reviewed, instead of silently inheriting whatever
+        # the last PlanCritique for the user happened to say (which usually
+        # reviewed a different, older plan_version). Reuses notes_json
+        # (see ``phase_reuse_from_run_id`` above) rather than a schema
+        # migration — one more freeform key on the same JSON blob this
+        # function already writes to, no new column needed. Best-effort:
+        # never fail an otherwise-good amendment over a bookkeeping write.
+        try:
+            _notes = json.loads(decision_run.notes_json or "{}")
+        except (ValueError, TypeError):
+            _notes = {}
+        _notes["draft_review_state"] = "unreviewed"
+        _notes["draft_review_state_reason"] = (
+            "medium-tier amendment runs Phase 3 only; no critique/reviewer/"
+            "fund-manager pass ran against this draft"
+        )
+        decision_run.notes_json = json.dumps(_notes)
+        session.commit()
+        log.warning(
+            "plan_amendment.medium.draft_unreviewed",
+            decision_run_id=decision_run.id,
+            draft_id=draft.id,
+        )
+
         # Provenance Wave C — record medium-amendment synthesis phase.
         # Best-effort: must never fail the underlying flow.
         try:

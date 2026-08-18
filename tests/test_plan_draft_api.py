@@ -7,7 +7,7 @@ import json
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from argosy.state.models import PlanVersion, User
+from argosy.state.models import PlanCritique, PlanVersion, User
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +65,81 @@ def test_get_draft_returns_pending(app_with_draft):
 def test_get_draft_404_when_absent(client_with_db):
     r = client_with_db.get("/api/plan/draft?user_id=newcomer")
     assert r.status_code == 404
+
+
+def test_get_draft_critique_not_for_this_version_when_stale(app_with_draft):
+    """RED-16 — reproduces the measured live-DB defect: a medium-tier
+    amendment (Phase 3 only) produces a draft with no critique of its own,
+    while an older PlanCritique row (reviewing a DIFFERENT plan_version,
+    e.g. the accepted 'current' plan) is the user's most recent. The
+    response must say this explicitly rather than let a consumer assume
+    the critique reviewed the draft on screen."""
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        baseline = (
+            sess.query(PlanVersion)
+            .filter_by(user_id="ariel", role="baseline")
+            .one()
+        )
+        draft = (
+            sess.query(PlanVersion)
+            .filter_by(user_id="ariel", role="draft")
+            .one()
+        )
+        assert baseline.id != draft.id
+        sess.add(PlanCritique(
+            user_id="ariel",
+            plan_version_id=baseline.id,
+            critique_json=json.dumps({"overall_summary": "stale", "findings": []}),
+            model="claude-sonnet-4-6",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["plan_version_id"] == draft.id
+    assert body["critique_plan_version_id"] == baseline.id
+    assert body["critique_is_for_this_version"] is False
+
+
+def test_get_draft_critique_is_for_this_version_when_matching(app_with_draft):
+    """A critique whose plan_version_id matches the returned draft is
+    reported as this version's review."""
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = (
+            sess.query(PlanVersion)
+            .filter_by(user_id="ariel", role="draft")
+            .one()
+        )
+        sess.add(PlanCritique(
+            user_id="ariel",
+            plan_version_id=draft.id,
+            critique_json=json.dumps({"overall_summary": "fresh", "findings": []}),
+            model="claude-sonnet-4-6",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["critique_plan_version_id"] == draft.id
+    assert body["critique_is_for_this_version"] is True
+
+
+def test_get_draft_critique_flag_false_when_no_critique_at_all(app_with_draft):
+    """No PlanCritique rows for the user at all → the flag is False and
+    the endpoint does not crash."""
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["critique_plan_version_id"] is None
+    assert body["critique_is_for_this_version"] is False
 
 
 def test_get_draft_synthesis_health_present_when_decision_run_id(app_with_draft):

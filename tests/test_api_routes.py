@@ -109,13 +109,17 @@ async def test_health_still_works(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_plan_current_returns_latest(client: AsyncClient) -> None:
-    await _seed_full_user()
+    plan_id = await _seed_full_user()
     res = await client.get("/api/plan/current?user_id=ariel")
     assert res.status_code == 200
     body = res.json()
     assert body["version_label"] == "v2.0"
     assert "NVDA target" in body["raw_markdown"]
     assert body["latest_critique_json"]["overall_summary"] == "NVDA over cap."
+    # RED-16 — matching critique: the critique's own plan_version_id equals
+    # the returned plan's id, so the review-state flag is True.
+    assert body["critique_plan_version_id"] == plan_id
+    assert body["critique_is_for_this_version"] is True
 
 
 @pytest.mark.asyncio
@@ -125,6 +129,36 @@ async def test_plan_current_empty_when_no_plan(client: AsyncClient) -> None:
     body = res.json()
     assert body["plan_version_id"] is None
     assert body["raw_markdown"] == ""
+    # RED-16 — no plan at all: the review-state flag must not crash and
+    # must default to "not reviewed".
+    assert body["critique_plan_version_id"] is None
+    assert body["critique_is_for_this_version"] is False
+
+
+@pytest.mark.asyncio
+async def test_plan_current_no_critique_flag_false(client: AsyncClient) -> None:
+    """RED-16 — a plan with zero PlanCritique rows must report the
+    review-state flag as False, not crash, and not fabricate a plan_version_id."""
+    async with db_mod.get_session() as session:
+        session.add(User(id="nocrit"))
+        await session.flush()
+        session.add(
+            PlanVersion(
+                user_id="nocrit",
+                version_label="v1.0",
+                source_path="/tmp/p2.md",
+                raw_markdown="# Plan\n",
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/plan/current?user_id=nocrit")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["plan_version_id"] is not None
+    assert body["latest_critique_json"] is None
+    assert body["critique_plan_version_id"] is None
+    assert body["critique_is_for_this_version"] is False
 
 
 @pytest.mark.asyncio
