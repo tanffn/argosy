@@ -4,6 +4,45 @@
 
 Last updated: **2026-08-18**.
 
+> **DERIVED FIGURES FOR THE CLOSING AMENDMENT (verified 2026-08-18 on the live DB — cite these,
+> do NOT let a synthesizer re-derive them).**
+>
+> **RED-4 SWR band** — `compute_fi_target`, baseline ₪277,008 / permanent spend ₪311,584 /
+> reserve ₪1,450,000. Liquid NW ₪12,218,310 (BOI FX 2.954):
+> | SWR | total target | margin |
+> |---|---|---|
+> | 2.4% | ₪14,432,667 | **−₪2,214,357** |
+> | 3.0% (selected) | ₪11,836,133 | **+₪382,177** |
+> | 3.5% | ₪10,352,400 | **+₪1,865,910** |
+> Wording: "Gross sufficiency is reached at the selected 3.0% assumption, but NOT at the
+> conservative 2.4% sensitivity." Note the live 3.0% margin (₪382,177) equals the plan's
+> DESCRIPTION figure, not its stale ₪401,585 headline — independent corroboration of RED-3.
+>
+> **RED-10 tax rationale is FICTITIOUS** (settled against domain_knowledge, full derivation in
+> scratchpad `red10_derivation.md`): Israel has **no annual CGT allowance**
+> (`capital_gains.md`) and **no §102 tax-year deadline** — eligibility is 24 months from GRANT
+> date, per-lot (`section_102.md`, Amendment 147). The only real year-end effect is **surtax
+> bunching**: 3% + 2% above **₪721,560/yr**, ~30% effective vs 25% (`surtax.md`). So the plan's
+> "sell the remaining 2026 quota" deadline rationale would RAISE the effective rate on a ~₪1.95M
+> realization. The NUMBER is right — the adjudicated verdict already splits 3,924 (2026) +
+> 5,493 (2027), which is the surtax-optimal shape. Strike the rationale, keep the schedule.
+>
+> **RED-14 "100% USD" is false, but barely** — 99.57% as tagged, **98.60%** corrected; per-0.10
+> FX sensitivity ₪407,821 (not ₪411,827); break-even FX to reach the 3.0% target = **2.860**.
+> Root cause is a CODE bug, not prose: `ת"א-200` (TASE-listed, NIS-priced) is tagged USD because
+> `leumi_xls.py` derives currency from a whole-file $ vs ₪ header while
+> `instrument_reference.py` independently calls it `REGION_ISRAEL`. Fix in flight.
+>
+> **RED-17 Keren Hishtalmut ₪384,000 IS liquid** — `keren_hishtalmut.md`: tax-free withdrawal of
+> principal and gains after a 6-year per-plan vesting clock; the household ledger already records
+> `keren_hishtalmut_accessible: likely_now` on 6+ years NVIDIA tenure. Confidence MEDIUM (no
+> explicit plan-open date recorded). Reconciles exactly: Ariel ₪2,015,054 + Noga ₪75,000 =
+> **₪2,090,054**; less the liquid ₪384,000 leaves **₪1,631,054** genuinely age-locked
+> (executive insurance + kupat_gemel age 60, kupat_pensia age 67). Add ₪384,000 to the liquid FI
+> basis, carry ₪1,631,054 as a separate age-60/67 tranche, open an intake gap for Noga's
+> hishtalmut (her value is `?`).
+
+
 > **⚠️ STATE AS OF 2026-08-18 — master `42bd75a`, pushed through `61b3c1b`; later commits local.**
 > Plan **109** is the live draft (v92 still `current`, unpromoted, 18 RED open at review time).
 >
