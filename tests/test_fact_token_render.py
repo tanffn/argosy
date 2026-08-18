@@ -180,6 +180,69 @@ def test_sections_json_and_narrative_render(monkeypatch):
     assert bundle.provenance["fx.usd_nis"]["status"] == "resolved"
 
 
+def test_render_passes_plan_decision_run_id_to_resolver(monkeypatch):
+    """The plan version's OWN decision_run_id must reach resolve_plan_numbers
+    so `_apply_canonical_allocation` can read the target_allocation_json this
+    plan's draft was rendered from — otherwise the settled binding NVDA cap
+    (and per-class allocation targets) stay pending forever
+    (`[derivation pending]`, live plan 109 defect)."""
+    resolved = _resolved(**{"concentration.nvda_cap_pct": 0.13})
+    captured: dict = {}
+
+    def fake_resolve(*a, **k):
+        captured.update(k)
+        return resolved
+
+    monkeypatch.setattr(
+        "argosy.services.plan_numeric_resolver.resolve_plan_numbers",
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        "argosy.services.fact_token_render._latest_snapshot_id",
+        lambda *a, **k: 3,
+    )
+    plan = _plan(
+        id=109,
+        decision_run_id=403,
+        horizon_long_md="Cap {{fact:concentration.nvda_cap_pct}}.",
+    )
+    bundle = render_plan_facts(
+        MagicMock(), user_id="ariel", plan_version=plan, write_staleness_flag=False,
+    )
+    assert captured.get("decision_run_id") == 403
+    assert bundle.pending_keys == []
+    assert bundle.provenance["concentration.nvda_cap_pct"]["status"] == "resolved"
+    assert "[derivation pending]" not in (bundle.horizon_long_md or "")
+
+
+def test_render_falls_back_to_none_decision_run_id_when_absent(monkeypatch):
+    """Older/imported plans with no decision_run_id keep today's behaviour —
+    resolve_plan_numbers still called with decision_run_id=None."""
+    resolved = _resolved(**{"portfolio.liquid_net_worth_nis": 1_000_000.0})
+    captured: dict = {}
+
+    def fake_resolve(*a, **k):
+        captured.update(k)
+        return resolved
+
+    monkeypatch.setattr(
+        "argosy.services.plan_numeric_resolver.resolve_plan_numbers",
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        "argosy.services.fact_token_render._latest_snapshot_id",
+        lambda *a, **k: 4,
+    )
+    plan = _plan(
+        id=17,
+        horizon_long_md="NW {{fact:portfolio.liquid_net_worth_nis}}.",
+    )
+    render_plan_facts(
+        MagicMock(), user_id="ariel", plan_version=plan, write_staleness_flag=False,
+    )
+    assert captured.get("decision_run_id") is None
+
+
 def test_cache_keyed_by_plan_and_snapshot(monkeypatch):
     calls: list[int] = []
 

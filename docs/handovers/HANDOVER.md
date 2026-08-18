@@ -2,7 +2,64 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-17**.
+Last updated: **2026-08-18**.
+
+> **⚠️ PLAN 109 WAS REVIEWED (2026-08-18) — 18 RED. Do NOT promote it.**
+> First review of any plan since run 397. Plan 109 is the best-BUILT draft
+> (no sections lost, 25 numeric facts, 27 `{{fact:}}` tokens, erosion reversed)
+> but its SUBSTANCE has serious problems that stayed invisible while nothing
+> reviewed a draft for six runs. 32 findings: 18 RED / 8 YELLOW / 6 GREEN,
+> confidence MEDIUM, $2.17, against the real 91,588-char assembled artifact.
+>
+> Reviewer's summary: *"The plan's arithmetic backbone does not hold."*
+>
+> 1. **Spend Basis Arithmetic** — The category table anchoring the entire FI spend basis sums to ₪261,588, not the ₪277,008 total it asserts — a ₪15,420/yr unexplained residual.
+> 2. **Net Worth Reconciliation** — Three mutually inconsistent net-worth figures, and the figure that INCLUDES real estate is smaller than the one that EXCLUDES it.
+> 3. **Internal Contradiction** — A single target bullet states two different margin figures — ₪401,585 in the headline and ₪382,177 in its own description.
+> 4. **Capital Sufficiency** — The 'capital sufficiency reached' verdict holds only at the midpoint of the plan's own declared SWR band; at the band's low end the plan is ₪2.19M short.
+> 5. **Tax Treatment** — The single claim that flips the plan's headline verdict from 'sufficient' to 'not sufficient' carries no figure and is admitted by the plan to be a placeholder.
+> 6. **Allocation Target Conflict** — The dashboard steers NVDA to 11.0% while the plan's self-declared governing table steers it to 8.0% — and 11.0% is the weight of a different sleeve entirely.
+> 7. **Allocation Drift** — Two authored sleeve targets in the medium-horizon Targets list contradict the governing allocation table by 1.6pp and 0.8pp.
+> 8. **Estate Exposure** — The mandated SGOV parking floor adds US-situs estate exposure, directly contradicting the plan's own 'hard domicile mandate' to contain the US-situs tail.
+> 9. **Tax Treatment** — The wind-down requires selling 9,479 shares 'only from Section-102 capital-track-eligible lots', but only 9,230 shares are eligible — a 249-share shortfall the plan never acknowledges.
+> 10. **Tax Treatment** — There is no Israeli CGT 'tax-year allowance' and no Section-102 tax-year deadline; the only real year-end effect is surtax bunching, which argues for the opposite of what the plan directs.
+> 11. **Data Integrity** — The plan orders 3,924 more shares sold in 2026 while the supplied user_context sale ledger contradicts itself and both of its readings contradict the plan.
+> 12. **Retirement Math** — The bridge is exactly 13 years of spend, implying retirement at 47 — one year later than the plan's own headline age of 46, leaving the bridge ₪311,584 short.
+> 13. **Retirement Math** — 'Unreachable' is arithmetically false on the plan's own inputs — at 0% real return the coverage test is met at roughly age 48.
+> 14. **FX** — The claim that the book is 100% USD is false on the plan's own evidence and overstates FX fragility.
+> 15. **Model Completeness** — Every forward-looking figure the appendix promises to own is '[derivation pending]' — including two inputs the plan states confidently elsewhere.
+> 16. **Mandate Conflict** — The headline retirement age is produced by a principal-drawdown model the user has explicitly ruled out.
+> 17. **Asset Coverage** — The FI sufficiency basis omits ₪384,000 of fully liquid, zero-tax Keren Hishtalmut and ₪2.09M of Israeli retirement capital.
+> 18. **Estate Exposure** — A ~₪3.79M quantified estate tail plus two minor children and tri-jurisdictional assets sits behind an action with no target date and no evidence of progress.
+>
+> **THREE INDEPENDENT DEFECTS BROKE THE REVIEW PATH — each hid the next:**
+> 1. `plan_critique` is pinned to `claude-fable-5` (`agents/base.py:251`), which
+>    this account CANNOT ACCESS. Tested against the bundled CLI: `claude-opus-4-8`,
+>    `claude-opus-5`, `claude-sonnet-5` all work; only `claude-fable-5` fails. It
+>    fails LOUDLY (by design), so the agent simply never ran.
+> 2. The documented fix knob is DEAD CONFIG. `configs/ariel/agent_settings.yaml`
+>    already sets `plan_critique: sonnet` and it has no effect —
+>    `agent_settings.model_for_role()` has **zero callers**. The `models:` block
+>    looks like a control surface and is wired to nothing; `base.py`'s override
+>    loader reads only `thinking_effort` / `thinking_budget` / `citations_enabled`.
+> 3. `argosy critique` reads `PlanVersion.raw_markdown`, which is **0 bytes** for
+>    every amendment-produced plan (104-109) — the body lives in `horizon_*_md`.
+>    Even with a working model it would have reviewed an EMPTY document.
+>
+> This review was obtained by routing around (1) and (3): explicit
+> `model="claude-opus-5"` plus `assemble_plan_artifact()` (which resolves to the
+> pending draft = 109 and builds the real markdown). The owner-approved model
+> default was NOT changed.
+>
+> **RENDER DEFECT (user-visible):** `render_plan_facts` passes
+> `decision_run_id=None`, but `_apply_canonical_allocation` — the only thing that
+> sets the canonical 13% cap — is guarded by `if decision_run_id is not None`. So
+> `concentration.nvda_cap_pct` is ALWAYS pending at render time and any plan
+> binding it prints `[derivation pending]`. Plan 109 binds it in 8 places. The
+> plan version carries its own `target_allocation_json` (24,727 bytes,
+> `nvda_cap_pct: 13.0`), so the fix is to resolve with the plan's OWN
+> decision_run_id.
+
 
 > **All 2026-08-14/15 work is MERGED, PUSHED and DEPLOYED** — master `86a50df`, backend live on it, migrations 0102+0103 applied. No branch in flight.
 

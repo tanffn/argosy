@@ -400,6 +400,14 @@ def render_plan_facts(
     (not the synthesis-time decision run), so a trade updates rendered
     figures without mutating the plan text. Cache key =
     ``(plan_version.id, latest_snapshot_id)``.
+
+    This plan version's own ``decision_run_id`` (may be ``None``) IS passed
+    through to ``resolve_plan_numbers`` so it can read the canonical
+    ``target_allocation_json`` doc this plan's own draft was rendered from
+    (the settled binding NVDA cap + per-class allocation targets) — the only
+    keys that additionally resolves. All snapshot/live-book resolution stays
+    unconditional and untouched by this. If ``decision_run_id`` is ``None``
+    (older/imported plans), behaviour is unchanged from before.
     """
     from argosy.services.plan_numeric_resolver import resolve_plan_numbers
 
@@ -411,11 +419,25 @@ def render_plan_facts(
         if hit is not None:
             return hit
 
-    # Live book — omit decision_run_id so holdings/FX come from the latest
-    # snapshot (a trade must not require a re-synthesis to update numbers).
+    # Live book for holdings/FX/etc (a trade must not require a
+    # re-synthesis to update numbers) — those resolvers run unconditionally
+    # against the current snapshot regardless of decision_run_id. We DO pass
+    # this plan version's own decision_run_id (None for older/imported plans,
+    # unchanged behaviour) so `_apply_canonical_allocation` can read the
+    # target_allocation_json this plan's own draft was rendered from — the
+    # ONLY thing that publishes the settled binding NVDA cap and per-class
+    # allocation targets; without it those keys stay pending forever
+    # (`[derivation pending]`) for every plan that has one. Confirmed by
+    # reading resolve_plan_numbers: role-sourced AgentReport keys (savings,
+    # spend, withdrawal, etc.) are looked up under decision_id=f"plan-synth-
+    # {decision_run_id}" plus a phase-reuse donor chain; for amendment runs
+    # (e.g. 400-403) there are zero agent_reports rows and no donor lineage
+    # stamped, so those keys stay pending exactly as before — only the
+    # canonical-allocation-doc keys newly resolve.
+    decision_run_id = getattr(plan_version, "decision_run_id", None)
     try:
         resolved = resolve_plan_numbers(
-            session, user_id=user_id, decision_run_id=None,
+            session, user_id=user_id, decision_run_id=decision_run_id,
             include_canonical_ages=True,
         )
     except Exception as exc:  # noqa: BLE001 — fail to pending, never wrong digits
