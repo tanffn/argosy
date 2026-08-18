@@ -208,6 +208,37 @@ def _latest_concentration_payload(
         return {}
 
 
+def _tracked_monthly_burn_nis(session: Session, user_id: str) -> float | None:
+    """The TRACKED, itemized monthly burn from identity_yaml
+    (``monthly_expenses_total_nis`` — the ₪23,084/mo == ₪277,008/yr class of
+    figure), NOT the household_budget agent's ``monthly_burn_nis`` (which can
+    be a stale donor-inherited estimate; observed ₪23,000/mo on plan-112 —
+    RED-1/RED-12). ``months`` targets use this so the runway figure this
+    surface publishes matches the wealth dashboard and the plan (never
+    silently averaged; the agent figure is what the caller falls back to
+    when this is unavailable).
+    """
+    row = session.execute(
+        select(UserContext).where(UserContext.user_id == user_id)
+    ).scalar_one_or_none()
+    if row is None or not row.identity_yaml:
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(row.identity_yaml) or {}
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    v = data.get("monthly_expenses_total_nis")
+    try:
+        f = float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+    return f if f and f > 0 else None
+
+
 def _user_context_fx(session: Session, user_id: str) -> float | None:
     """Return the manual fx_rate.usd_nis the user set, if any."""
     row = session.execute(
@@ -701,6 +732,21 @@ def compute_target_progress_for_plan(
         session, user_id, snapshot, fallback_fx=fallback_fx
     )
     household = _latest_household_budget_payload(session, user_id)
+    # RED-1/RED-12 canonical-T12 fix: prefer the tracked identity_yaml burn
+    # over the household_budget agent's own figure — never average, log a
+    # material disagreement. Keeps this surface's "months" runway target
+    # consistent with the wealth dashboard and the plan.
+    tracked_burn = _tracked_monthly_burn_nis(session, user_id)
+    if tracked_burn is not None:
+        agent_burn = household.get("monthly_burn_nis") if household else None
+        if isinstance(agent_burn, (int, float)) and abs(float(agent_burn) - tracked_burn) > 1.0:
+            logger.warning(
+                "target_progress.t12_sources_disagree tracked_nis=%.2f "
+                "household_budget_agent_nis=%.2f user_id=%s",
+                tracked_burn, float(agent_burn), user_id,
+            )
+        household = dict(household or {})
+        household["monthly_burn_nis"] = tracked_burn
     concentration = _latest_concentration_payload(
         session, user_id, plan.decision_run_id
     )

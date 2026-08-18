@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from sqlalchemy import select
 
-from argosy.state.models import AgentReport, PlanVersion, PortfolioSnapshotRow
+from argosy.state.models import AgentReport, PlanVersion, PortfolioSnapshotRow, UserContext
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker hint only
     from sqlalchemy.orm import Session
@@ -180,6 +180,11 @@ _KEY_UNITS: dict[str, str] = {
     "spend.fi_basis_nis": "nis",
     "savings.annual_net_nis": "nis",
     "spend.annual_t12_nis": "nis",
+    # Non-authoritative cross-check ONLY — the household_budget agent's own
+    # monthly_burn_nis*12 reading, kept visible (never silently discarded)
+    # after spend.annual_t12_nis is overridden to the tracked identity_yaml
+    # figure. See _apply_canonical_t12_burn (RED-1, plan-112 review).
+    "spend.annual_t12_donor_check_nis": "nis",
     "concentration.nvda_cap_pct": "pct",
     "concentration.nvda_target_pct": "pct",
     "concentration.nvda_current_pct": "pct",
@@ -1362,6 +1367,7 @@ def resolve_plan_numbers(
     # only ``retirement.fi_age`` (the trajectory-feasibility number it
     # genuinely derives). See argosy.services.fi_methodology.
     # ------------------------------------------------------------------
+    _apply_canonical_t12_burn(session, user_id, values)
     _apply_fi_methodology(session, user_id, values)
     _apply_us_situs_estate(session, user_id, values)
     _apply_nvda_current_weight(session, user_id, values)
@@ -3291,15 +3297,120 @@ def _apply_adjudicated_glide(
     )
 
 
+def _apply_canonical_t12_burn(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Make identity_yaml's TRACKED, itemized T12 the ONE canonical
+    ``spend.annual_t12_nis`` — RED-1 (plan-112 review): the plan carried two
+    different T12 burns simultaneously (the household_budget agent's
+    ``monthly_burn_nis * 12``, which can be a stale DONOR-INHERITED estimate
+    — ₪276,000/yr on plan-112, inherited from run 379 — vs the tracked,
+    itemized identity_yaml figure — ₪277,008/yr) and both forked into
+    different downstream figures (FI target, permanent-equivalent spend, MC
+    basis, margins).
+
+    The tracked identity_yaml figure
+    (``monthly_expenses_total_nis * 12`` / ``monthly_expenses_annual_nis``)
+    is authoritative: it is documented and itemized (reconciles line-by-line
+    via ``fi_methodology.itemized_spend_derivation``), while the
+    household_budget agent's figure is an LLM-produced estimate — the same
+    class of thing already demoted for ``retirement.fi_age``. This function
+    runs AFTER the ``household_budget`` role resolver (which may have set
+    ``spend.annual_t12_nis`` from the agent report) and BEFORE
+    ``_apply_fi_methodology`` (which consumes ``spend.annual_t12_nis`` as its
+    spend-basis override), so every downstream figure — FI perpetuity, total
+    capital, margins — derives from the ONE canonical number.
+
+    The two sources are NEVER averaged: the tracked figure always wins when
+    present. The agent's figure is not silently discarded — it is preserved
+    under ``spend.annual_t12_donor_check_nis`` as an explicit,
+    non-authoritative cross-check, and a material disagreement (>₪1) is
+    logged loudly rather than swallowed.
+    """
+    try:
+        from argosy.services.fi_methodology import _f as _fi_f
+        from argosy.services.fi_methodology import _load_yaml as _fi_load_yaml
+
+        ctx = session.execute(
+            select(UserContext).where(UserContext.user_id == user_id)
+        ).scalar_one_or_none()
+        identity = _fi_load_yaml(getattr(ctx, "identity_yaml", None) if ctx else None)
+    except Exception as exc:  # noqa: BLE001 — never break the resolver
+        log.warning("plan_numeric_resolver.canonical_t12_identity_read_failed err=%s", exc)
+        return
+
+    tracked: float | None = None
+    tracked_src = ""
+    monthly = _fi_f(identity.get("monthly_expenses_total_nis"))
+    if monthly is not None and monthly > 0:
+        tracked = monthly * 12.0
+        tracked_src = "identity_yaml.monthly_expenses_total_nis * 12 (tracked, itemized T12 — canonical)"
+    else:
+        annual = _fi_f(identity.get("monthly_expenses_annual_nis"))
+        if annual is not None and annual > 0:
+            tracked = annual
+            tracked_src = "identity_yaml.monthly_expenses_annual_nis (tracked T12 — canonical)"
+
+    donor_rv = values.get("spend.annual_t12_nis")
+    donor_val = (
+        float(donor_rv.value)
+        if donor_rv is not None and donor_rv.status == "resolved" and donor_rv.value
+        else None
+    )
+
+    # Preserve the agent's figure as an explicit, clearly-labeled
+    # non-authoritative cross-check — never silently dropped.
+    if donor_rv is not None and donor_rv.status == "resolved":
+        values["spend.annual_t12_donor_check_nis"] = replace(
+            donor_rv,
+            key="spend.annual_t12_donor_check_nis",
+            confidence="LOW",
+            source_locator=(
+                donor_rv.source_locator
+                + " [NON-AUTHORITATIVE cross-check only — canonical T12 is "
+                "spend.annual_t12_nis, sourced from tracked identity_yaml]"
+            ),
+        )
+
+    if tracked is None:
+        # No tracked figure available — leave whatever the household_budget
+        # agent (or an earlier pending sentinel) already produced.
+        return
+
+    if donor_val is not None and abs(donor_val - tracked) > 1.0:
+        pct = abs(donor_val - tracked) / tracked * 100.0
+        log.warning(
+            "plan_numeric_resolver.t12_sources_disagree tracked_nis=%.2f "
+            "household_budget_agent_nis=%.2f diff_pct=%.2f user=%s",
+            tracked, donor_val, pct, user_id,
+        )
+
+    values["spend.annual_t12_nis"] = ResolvedValue(
+        key="spend.annual_t12_nis",
+        value=tracked,
+        unit="nis",
+        status="resolved",
+        source_locator=tracked_src,
+        agent_report_id=None,
+        confidence="HIGH",
+        formula=(
+            "tracked, itemized T12 household burn (identity_yaml) — the "
+            "SINGLE canonical T12; the household_budget agent's "
+            "monthly_burn_nis*12 is kept ONLY as a non-authoritative "
+            "cross-check (spend.annual_t12_donor_check_nis), never averaged in"
+        ),
+    )
+
+
 def _apply_fi_methodology(
     session: "Session", user_id: str, values: dict[str, ResolvedValue]
 ) -> None:
     """Override the FI capital/spend/yield keys with the deterministic
-    methodology. The tracked T12 (already resolved from household_budget) is
-    fed in as the spend basis when available; otherwise the service reads it
-    from identity_yaml. A failure leaves whatever the agent produced (the
-    agent values are still derived, just not methodology-corrected) — never
-    raises.
+    methodology. The tracked T12 (already canonicalized by
+    ``_apply_canonical_t12_burn``) is fed in as the spend basis when
+    available; otherwise the service reads it from identity_yaml directly. A
+    failure leaves whatever the agent produced (the agent values are still
+    derived, just not methodology-corrected) — never raises.
     """
     try:
         from argosy.services.fi_methodology import compute_fi_target

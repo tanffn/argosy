@@ -31,6 +31,7 @@ string the UI surfaces as a tooltip.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
@@ -41,6 +42,8 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from argosy.services import instrument_reference
+
+log = logging.getLogger(__name__)
 
 from argosy.state.models import (
     AgentReport,
@@ -703,6 +706,7 @@ def _retirement(
     user_id: str,
     snapshot: PortfolioSnapshotRow | None,
     budget_report: dict[str, Any] | None,
+    user_ctx: dict[str, Any] | None = None,
     fx_usd_nis: float,
     current_age: int,
     current_age_inferred: bool,
@@ -716,10 +720,41 @@ def _retirement(
     if budget_report is not None:
         burn = budget_report.get("monthly_burn_nis")
         income = budget_report.get("monthly_income_nis")
-    if burn is None:
-        missing.append("monthly_burn_nis: no household_budget agent_report")
     if income is None:
         missing.append("monthly_income_nis: no household_budget agent_report")
+
+    # Canonical burn: prefer the TRACKED, itemized identity_yaml figure
+    # (identity_yaml.monthly_expenses_total_nis, e.g. the ₪23,084/mo ==
+    # ₪277,008/yr documented T12) over the household_budget agent's
+    # monthly_burn_nis — that agent output can be a donor-inherited/estimated
+    # round figure (plan-112 review RED-1/RED-12: the household_budget agent
+    # carried ₪23,000/mo while the tracked baseline is ₪23,084/mo, and this
+    # dashboard's cash-runway divisor was silently the agent figure). The two
+    # sources are never averaged: tracked wins when present, the agent value
+    # is kept only as an implicit cross-check via the logged disagreement —
+    # never silently substituted for the canonical one.
+    tracked_burn: float | None = None
+    if user_ctx:
+        raw_tracked = user_ctx.get("monthly_expenses_total_nis")
+        if isinstance(raw_tracked, (int, float)) and not isinstance(raw_tracked, bool):
+            tracked_burn = float(raw_tracked)
+        if tracked_burn is not None and tracked_burn <= 0:
+            tracked_burn = None
+    if tracked_burn is not None:
+        if burn is not None:
+            try:
+                agent_burn = float(burn)
+            except (TypeError, ValueError):
+                agent_burn = None
+            if agent_burn is not None and abs(agent_burn - tracked_burn) > 1.0:
+                log.warning(
+                    "wealth_dashboard.t12_sources_disagree tracked_nis=%.2f "
+                    "household_budget_agent_nis=%.2f user_id=%s",
+                    tracked_burn, agent_burn, user_id,
+                )
+        burn = tracked_burn
+    elif burn is None:
+        missing.append("monthly_burn_nis: no household_budget agent_report")
 
     burn_f = float(burn) if burn is not None else None
     income_f = float(income) if income is not None else None
@@ -1582,6 +1617,7 @@ def compute_wealth_dashboard(
         user_id=user_id,
         snapshot=snapshot,
         budget_report=budget_report,
+        user_ctx=user_ctx,
         fx_usd_nis=fx_usd_nis,
         current_age=current_age,
         current_age_inferred=age_inferred,

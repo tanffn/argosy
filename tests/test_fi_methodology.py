@@ -187,11 +187,25 @@ def test_derivations_appendix_renders_auditable_breakdown(session):
     ) == pytest.approx(m.finite_liability_reserve_nis)
 
 
-def test_derivations_appendix_bridge_keeps_half_year_fi_age(session):
-    """A half-year fi_age (46.5) must render at full precision in the FIRE-bridge
-    block. The drun-156 reader BLOCK: the sentence read '(60 − 46) = 14 yrs ×
+def test_derivations_appendix_bridge_keeps_half_year_preservation_age(session):
+    """A half-year age must render at full precision in the FIRE-bridge block.
+    The drun-156 reader BLOCK: the sentence read '(60 − 46) = 14 yrs ×
     ₪311,584 = ₪4,206,384' — the amount was sized over 13.5 yrs but the display
-    floored both the age and the span, so the stated arithmetic didn't cohere."""
+    floored both the age and the span, so the stated arithmetic didn't cohere.
+
+    SUBJECT MOVED (2026-08-18): per Ariel's ruling (commit b7927bd),
+    `retirement.fi_age` — an LLM-authored, donor-inherited estimate — must
+    NEVER size the FIRE bridge or drive a published age. Published ages now
+    come only from the deterministic Monte Carlo engine, as a pair:
+    `retirement.preservation_age` (mandate case) sizes
+    `retirement.fire_bridge_nis`, and `retirement.drawdown_scenario_age`
+    (off-mandate case) sizes `retirement.fire_bridge_offmandate_nis`. This
+    test now exercises the MANDATE-case bridge, which is sized from
+    `preservation_age` — the age that actually drives the rendered bridge
+    arithmetic today. The flooring hazard the test guards against is
+    unchanged: a half-year age must not silently round to an integer while
+    the span/amount stay computed on the true fractional value.
+    """
     from argosy.orchestrator.flows.plan_synthesis.render import (
         render_number_derivations_appendix,
     )
@@ -211,7 +225,16 @@ def test_derivations_appendix_bridge_keeps_half_year_fi_age(session):
         def get(self, key):
             return self._d.get(key)
 
-    resolved = _Resolved({"retirement.fi_age": _RV(46.5)})
+    # 60 − 46.5 = 13.5 yrs × permanent-equivalent spend 311,584 = 4,206,384 —
+    # the same figures as the original drun-156 incident, now sized from
+    # preservation_age (the deterministic mandate-case age) instead of the
+    # superseded fi_age.
+    resolved = _Resolved(
+        {
+            "retirement.preservation_age": _RV(46.5),
+            "retirement.fire_bridge_nis": _RV(4_206_384),
+        }
+    )
     md = render_number_derivations_appendix(
         session=session, user_id="ariel", resolved=resolved
     )

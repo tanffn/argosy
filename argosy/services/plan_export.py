@@ -664,7 +664,12 @@ def build_plan_export_markdown(
         # runway. Labeling the basis prevents a spurious cross-surface
         # contradiction (dashboard ~53mo vs body cash-only ~9mo are different,
         # both-valid baskets, not a conflict).
-        push(f"- Liquid runway (cash + SGOV): {runway_str}")
+        push(
+            f"- Liquid runway (cash + SGOV): {runway_str} — measured on ACTUAL "
+            "current balances (not the ₪200,000 emergency-fund floor policy "
+            "figure); divisor is the canonical tracked monthly burn (see "
+            "Monthly burn line above), never gross income."
+        )
 
         gap = None
         if conc.current_pct is not None and conc.target_pct is not None:
