@@ -313,6 +313,55 @@ def _medium_worker(*, session: Session, user_id: str,
                         notes=_notes,
                     )
 
+        # RED-15 donor lineage: a medium amendment runs Phase 3 ONLY — the
+        # analysts never re-run, so this decision_run has zero agent_reports
+        # of its own. Without recording a donor, resolve_plan_numbers (called
+        # right below for tokenization, and again by every later /plan read)
+        # finds no reports for plan-synth-<this_run_id> and marks every
+        # analyst-sourced headline (fi_age, savings.annual_net_nis,
+        # spend.annual_t12_nis, nvda caps, ...) pending — even though a
+        # perfectly good donor run's reports exist and this amendment is
+        # exactly the kind of narrow edit that should inherit them. Persist
+        # the donor BEFORE resolving so this same call already benefits.
+        # Best-effort + never fatal: an amendment must still complete on a
+        # lineage-lookup failure, just with keys pending as before.
+        try:
+            from argosy.services.plan_numeric_resolver import (
+                find_report_donor_run_id,
+            )
+
+            _donor_chain_root = prior_current or baseline
+            _donor_run_id = (
+                find_report_donor_run_id(
+                    session, user_id=user_id, plan_version=_donor_chain_root,
+                )
+                if _donor_chain_root is not None
+                else None
+            )
+            if _donor_run_id is not None:
+                try:
+                    _notes = json.loads(decision_run.notes_json or "{}")
+                except (ValueError, TypeError):
+                    _notes = {}
+                _notes["phase_reuse_from_run_id"] = _donor_run_id
+                decision_run.notes_json = json.dumps(_notes)
+                session.flush()
+                log.info(
+                    "plan_amendment.medium.donor_lineage_persisted",
+                    decision_run_id=decision_run.id,
+                    donor_run_id=_donor_run_id,
+                )
+            else:
+                log.info(
+                    "plan_amendment.medium.no_donor_found",
+                    decision_run_id=decision_run.id,
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort, never abort
+            log.warning(
+                "plan_amendment.medium.donor_lineage_failed",
+                decision_run_id=decision_run.id, error=str(exc),
+            )
+
         # Tokenize-canonical-figures pass (fix/tokenize-canonical-figures):
         # the medium amendment path re-synthesizes from a narrow guidance
         # prompt and does NOT go through run_synthesis's in-stage gate, so

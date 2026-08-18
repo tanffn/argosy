@@ -31,12 +31,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable
 
 from sqlalchemy import select
 
-from argosy.state.models import AgentReport, PortfolioSnapshotRow
+from argosy.state.models import AgentReport, PlanVersion, PortfolioSnapshotRow
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker hint only
     from sqlalchemy.orm import Session
@@ -1043,6 +1043,70 @@ def _phase_reuse_donor_chain(
     return chain
 
 
+def find_report_donor_run_id(
+    session: "Session", *, user_id: str, plan_version: Any, max_hops: int = 10,
+) -> int | None:
+    """Find the nearest decision run — starting at ``plan_version`` itself,
+    then walking ``derived_from_id`` ancestry — that actually persisted
+    phase-1 ``agent_reports`` (a real full-synthesis product), and return
+    its id, or ``None`` if none in range has any.
+
+    Written for the RED-15 pending-donor gap: a medium AMENDMENT worker
+    (``plan_amendment.workers._medium_worker``) stamps its OWN new
+    ``decision_run_id`` on the draft it persists (Phase 3 only — analysts
+    never re-run), so ``state.queries.nearest_ancestor_decision_run_id``
+    (which trusts ANY non-null ``decision_run_id`` as "a real synthesis
+    product") walks straight past the amendment run without noticing it
+    has zero ``agent_reports``. This verifies presence via an actual query
+    instead of trusting the column being set. Tenant-scoped: stops if the
+    walk crosses into a plan_version owned by a different user (should
+    never happen for a same-user derived_from_id chain, but is not
+    something to silently paper over).
+    """
+    from argosy.state.models import PlanVersion as _PV
+
+    def _has_reports(run_id: int) -> bool:
+        return session.execute(
+            select(AgentReport.id)
+            .where(AgentReport.decision_id == f"plan-synth-{run_id}")
+            .limit(1)
+        ).scalar_one_or_none() is not None
+
+    seen_plan_ids: set[int] = set()
+    seen_run_ids: set[int] = set()
+    current = plan_version
+    for _ in range(max_hops + 1):
+        if current is None:
+            return None
+        if getattr(current, "user_id", user_id) != user_id:
+            log.warning(
+                "plan_numeric_resolver.donor_walk_cross_tenant plan_id=%s",
+                getattr(current, "id", None),
+            )
+            return None
+        pid = getattr(current, "id", None)
+        if pid is not None:
+            if pid in seen_plan_ids:
+                return None
+            seen_plan_ids.add(pid)
+        run_id = getattr(current, "decision_run_id", None)
+        if run_id is not None and run_id not in seen_run_ids:
+            seen_run_ids.add(run_id)
+            try:
+                if _has_reports(run_id):
+                    return run_id
+            except Exception as exc:  # noqa: BLE001 — best-effort lookup
+                log.warning(
+                    "plan_numeric_resolver.donor_walk_query_failed run=%s err=%s",
+                    run_id, exc,
+                )
+        parent_id = getattr(current, "derived_from_id", None)
+        if not parent_id:
+            return None
+        current = session.get(_PV, parent_id)
+    return None
+
+
 def resolve_plan_numbers(
     session: "Session", *, user_id: str, decision_run_id: int,
     include_canonical_ages: bool = False,
@@ -1105,6 +1169,80 @@ def resolve_plan_numbers(
         f"plan-synth-{d}"
         for d in _phase_reuse_donor_chain(session, decision_run_id)
     ]
+
+    # RED-15 runtime fallback: a run whose notes_json/synthesis_inputs_json
+    # was never stamped with a donor (either it predates the worker's donor
+    # write, or the write only happens going forward) still needs a chance
+    # to inherit — the amendment's OWN plan_versions row (draft/current with
+    # this decision_run_id) is right here in the DB with a real
+    # derived_from_id ancestry, so compute the donor on the fly rather than
+    # resolving pending merely because nobody pre-recorded the lineage. This
+    # is what makes existing amendment runs (already completed before this
+    # fix shipped) resolve too, not just new ones.
+    if not donor_decision_ids:
+        _fallback_donor: int | None = None
+        try:
+            _amend_plan = session.execute(
+                select(PlanVersion)
+                .where(PlanVersion.decision_run_id == decision_run_id)
+                .order_by(PlanVersion.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if _amend_plan is not None:
+                _chain_donor = find_report_donor_run_id(
+                    session, user_id=user_id, plan_version=_amend_plan,
+                )
+                # find_report_donor_run_id also matches the run's OWN id
+                # when it itself has reports — only a genuinely DIFFERENT
+                # run counts as a donor.
+                if _chain_donor is not None and _chain_donor != decision_run_id:
+                    _fallback_donor = _chain_donor
+        except Exception as exc:  # noqa: BLE001 — best-effort, never break
+            log.warning(
+                "plan_numeric_resolver.runtime_donor_fallback_failed run=%s err=%s",
+                decision_run_id, exc,
+            )
+
+        # A medium AMENDMENT worker sets ``derived_from_id`` to the ACTIVE
+        # BASELINE (the originally-imported plan, which has no
+        # decision_run_id at all — see plan_amendment.workers._medium_worker),
+        # not to the immediately-preceding draft. So for amendment-produced
+        # plans the plan-lineage walk above almost always dead-ends at the
+        # baseline with nothing found, even though a perfectly good recent
+        # full-synthesis run exists. Last resort: the most recent run (this
+        # user, any plan-lineage) that actually persisted phase-1
+        # ``agent_reports`` — never fabricated, always the REAL latest
+        # analyst output on file, and logged explicitly so this is never a
+        # silent inheritance.
+        if _fallback_donor is None:
+            try:
+                _latest_report = session.execute(
+                    select(AgentReport.decision_id)
+                    .where(AgentReport.user_id == user_id)
+                    .where(AgentReport.decision_id.like("plan-synth-%"))
+                    .where(AgentReport.decision_id != decision_id)
+                    .order_by(AgentReport.id.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if _latest_report:
+                    try:
+                        _fallback_donor = int(_latest_report.rsplit("-", 1)[-1])
+                    except (ValueError, IndexError):
+                        _fallback_donor = None
+                    if _fallback_donor == decision_run_id:
+                        _fallback_donor = None
+            except Exception as exc:  # noqa: BLE001 — best-effort, never break
+                log.warning(
+                    "plan_numeric_resolver.latest_report_donor_failed run=%s err=%s",
+                    decision_run_id, exc,
+                )
+
+        if _fallback_donor is not None:
+            log.info(
+                "plan_numeric_resolver.runtime_donor_fallback run=%s donor=%s",
+                decision_run_id, _fallback_donor,
+            )
+            donor_decision_ids = [f"plan-synth-{_fallback_donor}"]
 
     for role, (keys, fn) in _RESOLVERS.items():
         # Latest report for this role within the run (highest id wins);
@@ -1185,6 +1323,22 @@ def resolve_plan_numbers(
                     agent_report_id=report.id,
                 )
                 for k in keys
+            ]
+        # Non-negotiable provenance rule: a value pulled from a donor run's
+        # agent_reports (this run had none of its own for this role) must
+        # NEVER be indistinguishable from a value this run actually derived.
+        # Stamp the donor run id into source_locator so no surface can claim
+        # the amendment itself computed it.
+        if cand_decision_id != decision_id:
+            _donor_run_id = cand_decision_id.rsplit("-", 1)[-1]
+            resolved = [
+                replace(
+                    rv,
+                    source_locator=f"{rv.source_locator} (inherited from donor run {_donor_run_id})",
+                )
+                if rv.status == "resolved"
+                else rv
+                for rv in resolved
             ]
         for rv in resolved:
             values[rv.key] = rv
