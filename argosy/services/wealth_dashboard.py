@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -143,7 +142,11 @@ class ConcentrationBlock:
     symbol: str
     current_pct: float | None
     target_pct: float | None
-    target_source: str | None  # e.g. "draft #11 horizon_medium" / null
+    target_source: str | None  # e.g. "plan #109 target_allocation.classes" / null
+    # Hard cap (nvda_cap_pct) from the same canonical target_allocation_json
+    # document, when the block carries one. None when unavailable — kept
+    # optional (with a default) so existing callers stay source-compatible.
+    hard_cap_pct: float | None = None
     missing_reasons: list[str] = field(default_factory=list)
 
 
@@ -569,14 +572,20 @@ def _latest_household_budget_report(session: Session, user_id: str) -> dict[str,
 def _latest_draft_with_targets(
     session: Session, user_id: str
 ) -> PlanVersion | None:
-    """Return the freshest plan_version with non-null horizon_medium_json
+    """Return the freshest plan_version with non-null ``target_allocation_json``
     for this user, scanning across draft / superseded / current / accepted.
+
+    ``target_allocation_json`` is the CANONICAL allocation document (per-class
+    ``target_pct`` + explicit instrument symbols + ``nvda_cap_pct``) — the
+    single source ``_concentration`` reads from. It replaced scanning prose
+    labels in ``horizon_medium_json``, which mismatched a target whose label
+    merely CONTAINED the symbol as a substring (see RED-6).
     """
     return session.execute(
         select(PlanVersion)
         .where(
             PlanVersion.user_id == user_id,
-            PlanVersion.horizon_medium_json.isnot(None),
+            PlanVersion.target_allocation_json.isnot(None),
         )
         .order_by(desc(PlanVersion.id))
         .limit(1)
@@ -792,10 +801,37 @@ def _retirement(
             )
     else:
         if snapshot is not None:
-            missing.append(
-                "trajectory: total book unavailable "
-                "(degraded or load failure) — not an empty portfolio"
+            # Distinguish the RED-2 case (residence-inclusive basis refused
+            # because real-estate equity can't be resolved) from a generic
+            # total-book load failure, so the UI tooltip doesn't blame "the
+            # book" for what is actually an unresolved property source.
+            from argosy.services.net_worth_bases import (
+                real_estate_equity_for_snapshot,
+                real_estate_stub_usd_k,
             )
+            re_stub_k = real_estate_stub_usd_k(snapshot)
+            eq = None
+            try:
+                eq = real_estate_equity_for_snapshot(
+                    snapshot=snapshot, fx_usd_nis=fx_usd_nis,
+                    session=session, user_id=user_id,
+                )
+            except (TypeError, ValueError):
+                eq = None
+            if re_stub_k != 0.0 and eq is None:
+                missing.append(
+                    "net worth (residence-inclusive): unavailable — "
+                    "real-estate equity unresolved (owner property sheet "
+                    "empty/unparseable) while a legacy real-estate stub "
+                    f"(${re_stub_k:.1f}K) would otherwise be silently "
+                    "dropped from the base total; refusing to publish an "
+                    "under-stated figure under the residence-inclusive label"
+                )
+            else:
+                missing.append(
+                    "trajectory: total book unavailable "
+                    "(degraded or load failure) — not an empty portfolio"
+                )
         else:
             missing.append("trajectory: no portfolio snapshot")
 
@@ -1008,6 +1044,19 @@ def _concentration(
 ) -> tuple[ConcentrationBlock, float | None, str | None]:
     """Return the concentration block plus the (target_pct, target_source)
     pair so the caller can echo it in the top-level Assumptions block.
+
+    The steering target (and hard cap) are read from the CANONICAL
+    ``target_allocation_json`` document (``PlanVersion.target_allocation_json``)
+    — NOT by pattern-matching prose labels in ``horizon_medium_json``. A prior
+    version of this function scanned horizon-target labels for the symbol as
+    a substring; a growth sleeve labelled "Global quality growth (screened to
+    avoid NVDA-heavy names)" contains "NVDA" as a whole token (not inside an
+    "ex-NVDA" pattern) and slipped past the guard, so its 11.0% was reported
+    as NVDA's target instead of the true 8.0% (RED-6). ``target_allocation_json``
+    has no such ambiguity: each class carries an explicit ``instruments[].symbol``
+    field, so the match is exact-field, not label text-scanning. When the
+    canonical document is absent, this degrades to a clearly-marked missing
+    reason — it does NOT fall back to label scanning.
     """
     missing: list[str] = []
     current_pct: float | None = None
@@ -1030,39 +1079,47 @@ def _concentration(
                 missing.append("snapshot has no tradeable securities to weigh against")
 
     target_pct: float | None = None
+    hard_cap_pct: float | None = None
     target_source: str | None = None
-    if plan is not None and plan.horizon_medium_json:
+    sym = symbol.upper()
+    if plan is not None and plan.target_allocation_json:
         try:
-            horizon = json.loads(plan.horizon_medium_json)
+            alloc = json.loads(plan.target_allocation_json)
         except json.JSONDecodeError:
-            horizon = {}
-        sym = symbol.upper()
-        for t in horizon.get("targets", []) if isinstance(horizon, dict) else []:
-            if not isinstance(t, dict):
+            alloc = {}
+        classes = alloc.get("classes") if isinstance(alloc, dict) else None
+        for c in classes or []:
+            if not isinstance(c, dict):
                 continue
-            label = (t.get("label") or "").upper()
-            unit = (t.get("unit") or "").lower()
-            if unit not in ("pct_of_portfolio", "pct_of_net_worth"):
-                continue
-            # PRECISE match: a bare ``sym in label`` substring test also matches
-            # an "ex-<sym>" sleeve (e.g. "US growth tilt (ex-NVDA)" contains the
-            # substring "NVDA" inside "EX-NVDA"), and the first-match break would
-            # then leak the ex-NVDA sleeve's weight as NVDA's target. Exclude any
-            # ex-<sym> label, and require ``sym`` to appear as a whole token
-            # (word-boundary) so only the pure NVDA sleeve can be selected.
-            normalized = label.replace("-", " ").replace("(", " ").replace(")", " ")
-            if f"EX {sym}" in normalized or f"EX {sym.replace('NVDA', 'NVIDIA')}" in normalized:
-                continue
-            if not re.search(rf"\b{re.escape(sym)}\b", label):
+            instruments = c.get("instruments") or []
+            hit = any(
+                isinstance(i, dict) and (i.get("symbol") or "").upper() == sym
+                for i in instruments
+            )
+            if not hit:
                 continue
             try:
-                target_pct = float(t.get("value"))
-                target_source = f"plan #{plan.id} horizon_medium"
-                break
+                target_pct = float(c.get("target_pct"))
             except (TypeError, ValueError):
                 continue
-    if target_pct is None:
-        missing.append(f"{symbol} target_pct: no matching horizon_medium target")
+            label = c.get("label") or c.get("snapshot_category") or "class"
+            target_source = f"plan #{plan.id} target_allocation.classes[{label!r}]"
+            try:
+                cap = alloc.get("nvda_cap_pct")
+                hard_cap_pct = float(cap) if cap is not None else None
+            except (TypeError, ValueError):
+                hard_cap_pct = None
+            break
+        if target_pct is None:
+            missing.append(
+                f"{symbol} target_pct: no target_allocation.classes instrument "
+                "matches symbol"
+            )
+    else:
+        missing.append(
+            f"{symbol} target_pct: no target_allocation_json on the latest "
+            "plan — refusing to fall back to horizon_medium label scanning"
+        )
 
     return (
         ConcentrationBlock(
@@ -1070,6 +1127,7 @@ def _concentration(
             current_pct=current_pct,
             target_pct=target_pct,
             target_source=target_source,
+            hard_cap_pct=hard_cap_pct,
             missing_reasons=missing,
         ),
         target_pct,

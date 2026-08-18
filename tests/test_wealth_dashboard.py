@@ -396,7 +396,13 @@ def _seed_plan_with_nvda_target(
     *,
     user_id: str = "ariel",
     nvda_target_pct: float = 45.0,
+    nvda_cap_pct: float | None = None,
 ) -> PlanVersion:
+    # The canonical source (RED-6) is target_allocation_json.classes — the
+    # steering target is read off the class whose instruments[] carries the
+    # exact symbol "NVDA", not off horizon_medium_json prose labels. Keep a
+    # horizon_medium_json entry too so tests that only care about legacy
+    # fields still see a populated plan.
     targets = {
         "targets": [
             {
@@ -406,6 +412,18 @@ def _seed_plan_with_nvda_target(
             }
         ]
     }
+    alloc: dict = {
+        "schema_version": 1,
+        "classes": [
+            {
+                "label": "Strategic single-stock (NVDA)",
+                "target_pct": nvda_target_pct,
+                "instruments": [{"symbol": "NVDA", "role": "primary"}],
+            },
+        ],
+    }
+    if nvda_cap_pct is not None:
+        alloc["nvda_cap_pct"] = nvda_cap_pct
     pv = PlanVersion(
         user_id=user_id,
         version_label="seed-draft",
@@ -413,6 +431,7 @@ def _seed_plan_with_nvda_target(
         raw_markdown="",
         role="draft",
         horizon_medium_json=json.dumps(targets),
+        target_allocation_json=json.dumps(alloc),
     )
     session.add(pv)
     session.commit()
@@ -541,7 +560,9 @@ class TestConcentration:
         # divergent dashboard-only denominator.)
         assert c.current_pct == pytest.approx(200.0 / 460.0 * 100.0)
         assert c.target_pct == 45.0
-        assert c.target_source is not None and "horizon_medium" in c.target_source
+        # Canonical source is target_allocation_json.classes (RED-6), not the
+        # horizon_medium prose-label scan.
+        assert c.target_source is not None and "target_allocation" in c.target_source
 
     def test_missing_plan_target(self, client_with_db):
         SF = client_with_db.app.state.session_factory
@@ -556,31 +577,38 @@ class TestConcentration:
         assert c.missing_reasons
 
     def test_target_picks_pure_nvda_sleeve_not_ex_nvda(self, client_with_db):
-        """Regression (live run 102): the target lookup did a substring
-        ``"NVDA" in label`` match, so a "US growth tilt (ex-NVDA)" sleeve —
-        which CONTAINS the substring "NVDA" inside "EX-NVDA" — was matched
-        FIRST and its 13.2% leaked into the dashboard instead of the pure
-        NVDA sleeve's 12%. The match must select the pure NVDA sleeve."""
+        """Regression (live run 102, RED-6): the target lookup used to do a
+        substring ``"NVDA" in label`` match against horizon_medium_json prose
+        labels, so a "Global quality growth (screened to avoid NVDA-heavy
+        names)" sleeve — which contains "NVDA" as a whole token, not inside
+        an "ex-NVDA" pattern, and so slipped past the ex-NVDA guard — leaked
+        its 11.0% into the dashboard instead of the true NVDA sleeve's 8.0%
+        (plan 109, live). The canonical fix reads target_allocation_json.classes
+        by exact instrument SYMBOL match, not label text-scanning, so this
+        ambiguity cannot occur: a class's instruments[] carries "IWQU", not
+        "NVDA", even though its human-readable label mentions NVDA."""
         SF = client_with_db.app.state.session_factory
         with SF() as s:
             _seed_user(s)
             _seed_user_context(s)
             _seed_snapshot(s, total_usd_value_k=1000.0)
-            # ex-NVDA sleeve listed FIRST so a buggy first-substring-match
-            # would wrongly grab 13.2.
-            targets = {
-                "targets": [
+            alloc = {
+                "schema_version": 1,
+                "nvda_cap_pct": 13.0,
+                "classes": [
                     {
-                        "label": "US growth tilt (ex-NVDA)",
-                        "value": 13.2,
-                        "unit": "pct_of_portfolio",
+                        # Label CONTAINS "NVDA" as a whole token but the
+                        # instrument is IWQU, not NVDA — must not match.
+                        "label": "Global quality growth (screened to avoid NVDA-heavy names)",
+                        "target_pct": 11.0,
+                        "instruments": [{"symbol": "IWQU", "role": "primary"}],
                     },
                     {
                         "label": "Strategic single-stock (NVDA)",
-                        "value": 12.0,
-                        "unit": "pct_of_portfolio",
+                        "target_pct": 8.0,
+                        "instruments": [{"symbol": "NVDA", "role": "primary"}],
                     },
-                ]
+                ],
             }
             pv = PlanVersion(
                 user_id="ariel",
@@ -588,13 +616,14 @@ class TestConcentration:
                 source_path="",
                 raw_markdown="",
                 role="draft",
-                horizon_medium_json=json.dumps(targets),
+                target_allocation_json=json.dumps(alloc),
             )
             s.add(pv)
             s.commit()
             dash = compute_wealth_dashboard(s, user_id="ariel")
         c = dash.concentration
-        assert c.target_pct == pytest.approx(12.0)
+        assert c.target_pct == pytest.approx(8.0)
+        assert c.hard_cap_pct == pytest.approx(13.0)
 
 
 class TestSavingsRate:

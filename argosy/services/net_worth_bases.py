@@ -204,16 +204,32 @@ def total_net_worth_incl_residence(
     # block) for the full per-property net equity — so net worth includes real
     # estate properly and matches the Real-estate panel.
     re_stub_k = real_estate_stub_usd_k(snapshot)
-    re_net_k = 0.0
+    eq = None
     try:
         eq = real_estate_equity_for_snapshot(
             snapshot=snapshot, fx_usd_nis=fx_usd_nis,
             session=session, user_id=user_id,
         )
-        if eq is not None:
-            re_net_k = eq.total_net_usd_k
     except (TypeError, ValueError):
-        pass
+        eq = None
+
+    # RED-2: when the owner-estimate source (``real_estate_json``) is empty
+    # or unparseable, ``real_estate_equity_for_snapshot`` returns None and the
+    # stub-swap becomes a subtract-WITHOUT-add — this basis would then print a
+    # figure that is falsely labelled "includes residence" (it silently drops
+    # the stub instead of replacing it with the resolved equity). A stub of
+    # 0 means there is nothing to swap (no real-estate rows at all), so that
+    # case is fine; a NONZERO stub with unresolved equity means we cannot
+    # honor the "residence-inclusive" label and must refuse the number rather
+    # than publish an under-stated one.
+    if eq is None and re_stub_k != 0.0:
+        log.warning(
+            "net_worth_bases.residence_inclusive_unavailable "
+            "reason=real_estate_equity_unresolved re_stub_k=%s", re_stub_k,
+        )
+        return None, None
+
+    re_net_k = eq.total_net_usd_k if eq is not None else 0.0
 
     usd = (base_k - re_stub_k + re_net_k) * 1000.0
     if usd <= 0:
