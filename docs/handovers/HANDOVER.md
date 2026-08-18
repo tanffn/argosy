@@ -4,6 +4,42 @@
 
 Last updated: **2026-08-18**.
 
+> **⚠️ CLOSURE STATE 2026-08-18 — plan 116 is the live draft, 12 RED, 5 are ARIEL BLOCKERS.**
+> RED trend across reviews: 18 (p109) → 19 (p111) → 14 (p112) → 13 (p115) → **12 (p116)**.
+> Plans 113-116 were HAND-EDITED (no LLM): 21 verified substitutions, scripts in scratchpad
+> `manual_edit_11*.py`. Each asserts its target string exists before substituting, so a silent
+> no-op is impossible. DB backed up to scratchpad before the first edit.
+>
+> **THE FIVE BLOCKERS — none fixable in code:**
+> 1. **How many NVDA sold YTD 2026?** Ledger says both `1,560` and `3,380`; a third surface says
+>    `1,440 remaining` and a fourth `0 remaining`. Needs the Schwab transactions CSV.
+> 2. **How many to sell in 2026?** Verdict `3,924`, resolver quota `7,304`, schedule total
+>    `9,417`, canonical sell count `9,480`. Needs a ruling on which is authoritative.
+> 3. **Sell the 2026 tranche or defer?** 2026's surtax thresholds are spent, so that leg prices
+>    ~28-30% vs possibly 25% in 2027. Real trade: ~2-5pp of tax against a year less concentration.
+> 4. **Is NVDA managed?** `DEFAULT_UNMANAGED_SYMBOLS = {"NVDA"}` and the snapshot says
+>    `managed: False`, so Argosy will NEVER emit an NVDA order — while the plan's largest action
+>    is an NVDA sale. Today that means manual execution at Schwab.
+> 5. **Estate dates + a missing liability.** Proposed dates are in the plan marked PROPOSED
+>    (counsel 2026-09-15; will+guardianship 2026-10-31; POA/directive/trust 2026-12-31).
+>    Separately **€147,452** of documented foreign property obligations is absent from the
+>    finite-liability reserve — larger than the entire published sufficiency margin.
+>
+> **STOP HAND-EDITING THE TAX SECTION.** Three passes, three partially-wrong results. The surtax
+> interaction is genuinely subtle: TWO layers with different tests (3% on TOTAL income — already
+> breached at ₪868,285 vs ₪721,560; 2% on CAPITAL income alone — ₪549,467, headroom ₪172,093),
+> and TWO distinct comparisons that must not be conflated (splitting beats a single 2026 sale;
+> deferring the 2026 leg further is cheaper still). The 2026 leg realizes ≈₪172,830 of gain
+> against ₪172,093 of headroom — it sits ON the boundary. This needs a derivation against real
+> per-lot gains, not another prose patch.
+>
+> **NEW SUBSTANTIVE FINDINGS worth acting on (not blockers, not noise):**
+> - The glide never nets against the VEST STREAM: holding every fresh vest adds **4,107 shares
+>   through March 2030**, so concentration does not fall as modelled.
+> - The trajectory holds RSU savings flat to 2031 while assumption A8 scopes it to 2026-2029.
+> - At full plan completion ~$1.21M of US-situs NVDA remains — ~20x the $60,000 NRA exemption.
+
+
 > **⚠️ PLAN 111 IS THE LIVE DRAFT (2026-08-18). 18/18 RED findings addressed. UNREVIEWED.**
 > Runs 404 + 405 (section-frozen amendments off 109 → 110 → 111). v92 still `current`.
 >
