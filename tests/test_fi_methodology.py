@@ -227,6 +227,101 @@ def test_derivations_appendix_bridge_keeps_half_year_fi_age(session):
     assert "= 14 yrs" not in md
 
 
+def test_baseline_breakdown_rows_always_reconcile_to_total_with_residual(session):
+    """RED-1 (adversarial review): the displayed category rows must ALWAYS sum
+    to the printed tracked-T12 total. The `session` fixture's identity_yaml
+    only itemizes the mortgage line under `monthly_expenses_breakdown`, so the
+    rolled-up categories (mortgage -> Housing only) sum far short of the
+    authoritative `monthly_expenses_total_nis * 12` total — exactly the
+    unitemized-residual shape the reviewer found. An explicit residual row
+    must close the gap, and the tracked-baseline component confidence must be
+    downgraded to MEDIUM while it exists."""
+    m = compute_fi_target(session, user_id="ariel")
+    assert m is not None
+    rows_sum = sum(amt for _, amt in m.baseline_breakdown)
+    assert rows_sum == pytest.approx(m.baseline_annual_nis), (
+        "displayed category rows must reconcile exactly to the asserted total"
+    )
+    # A real, non-zero residual exists for this fixture (277,008 tracked total
+    # vs. 35,424 itemized mortgage-only breakdown).
+    assert m.baseline_residual_nis == pytest.approx(277_008 - 35_424)
+    labels = [label for label, _ in m.baseline_breakdown]
+    assert "Unitemized tracked-spend residual" in labels
+    # The residual row's own value equals the computed residual (never
+    # hardcoded, always derived from total - itemized rows).
+    residual_rows = [amt for label, amt in m.baseline_breakdown if label == "Unitemized tracked-spend residual"]
+    assert residual_rows == [pytest.approx(m.baseline_residual_nis)]
+    # Confidence on the tracked-baseline component is downgraded while a
+    # residual exists.
+    tracked = [c for c in m.components if c.label == "Tracked baseline living (full T12)"][0]
+    assert tracked.confidence == "MEDIUM"
+
+
+def test_baseline_breakdown_reconciles_exactly_with_no_residual(tmp_path):
+    """Counterpart to the residual case: when the itemized category rows
+    already sum to the tracked total, no residual row is injected and the
+    tracked-baseline component keeps its HIGH confidence."""
+    identity = textwrap.dedent(
+        """
+        monthly_expenses_total_nis: 1000
+        monthly_expenses_breakdown:
+          mortgage_nis: 500
+          groceries: 500
+        mortgage_balance:
+          keret_1_nis: 0
+        """
+    )
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'reconciled.db'}")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        s.add(User(id="ariel", plan="free"))
+        s.add(UserContext(user_id="ariel", identity_yaml=identity, goals_yaml=""))
+        s.commit()
+        m = compute_fi_target(s, user_id="ariel")
+        assert m is not None
+        rows_sum = sum(amt for _, amt in m.baseline_breakdown)
+        assert rows_sum == pytest.approx(m.baseline_annual_nis)
+        assert m.baseline_residual_nis == pytest.approx(0.0)
+        labels = [label for label, _ in m.baseline_breakdown]
+        assert "Unitemized tracked-spend residual" not in labels
+        tracked = [c for c in m.components if c.label == "Tracked baseline living (full T12)"][0]
+        assert tracked.confidence == "HIGH"
+    finally:
+        s.close()
+        engine.dispose()
+
+
+def test_derivations_appendix_residual_row_reconciles_and_says_unitemized(session):
+    """The rendered appendix table (the artifact a blind reviewer actually
+    reads) must show category rows that sum to the printed total, and must
+    say in prose that the gap is unitemized — not just fix the underlying
+    dataclass while leaving the rendered markdown dishonest."""
+    from argosy.orchestrator.flows.plan_synthesis.render import (
+        render_number_derivations_appendix,
+    )
+
+    m = compute_fi_target(session, user_id="ariel")
+    md = render_number_derivations_appendix(session=session, user_id="ariel", resolved=None)
+
+    assert "Unitemized tracked-spend residual" in md
+    assert "unitemized" in md.lower()
+    assert f"{m.baseline_residual_nis:,.0f}" in md
+
+    # Extract the "| Category | ₪/yr | share |" table and check the rows
+    # (everything before the bold Total row) sum to the bold total.
+    lines = md.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("| Category"))
+    total_idx = next(
+        i for i, l in enumerate(lines[start:], start) if l.startswith("| **Total tracked T12**")
+    )
+    row_sum = 0.0
+    for l in lines[start + 2:total_idx]:
+        amt_str = l.split("|")[2].strip()
+        row_sum += float(amt_str.replace(",", ""))
+    assert row_sum == pytest.approx(m.baseline_annual_nis)
+
+
 def test_no_baseline_returns_none(tmp_path):
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     Base.metadata.create_all(engine)

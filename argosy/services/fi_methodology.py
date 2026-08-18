@@ -124,13 +124,24 @@ class FiMethodology:
     finite_liability_reserve_nis: float
     fi_total_capital_nis: float        # perpetuity + reserve
     components: list[FiComponent] = field(default_factory=list)
-    # Raw T12 category rollup that sums to baseline_annual_nis — the audit
-    # trail behind the tracked-spend figure. (category_label, annual_nis),
-    # sorted descending. Empty when the breakdown isn't in identity_yaml.
+    # Raw T12 category rollup that RECONCILES EXACTLY to baseline_annual_nis —
+    # the audit trail behind the tracked-spend figure. (category_label,
+    # annual_nis), sorted descending. Empty when the breakdown isn't in
+    # identity_yaml. When the itemized categories don't sum to the tracked
+    # total (the identity_yaml breakdown is a partial itemization of the
+    # authoritative total), an explicit "Unitemized tracked-spend residual"
+    # row is appended so the displayed rows always sum to the printed total —
+    # see ``baseline_residual_nis``.
     baseline_breakdown: list[tuple[str, float]] = field(default_factory=list)
+    # The unitemized gap: baseline_annual_nis - sum(category rows BEFORE the
+    # residual row was appended). 0.0 when the categories fully reconcile.
+    # Never hardcoded — always computed from the live breakdown.
+    baseline_residual_nis: float = 0.0
     baseline_source: str = ""
     method: str = ""
     confidence: str = "MEDIUM"
+
+    RESIDUAL_LABEL = "Unitemized tracked-spend residual"
 
     def perpetuity_at(self, swr: float) -> float:
         """FI perpetuity target at an alternate SWR (sensitivity band)."""
@@ -285,6 +296,29 @@ def compute_fi_target(
     # lines; group them into ~10 parent categories so the plan reads cleanly.
     breakdown = identity.get("monthly_expenses_breakdown") or {}
     baseline_breakdown = _rollup_to_categories(breakdown) if isinstance(breakdown, dict) else []
+    # The itemized categories are a PARTIAL breakdown of the identity_yaml
+    # `monthly_expenses_breakdown`; the authoritative tracked total (`baseline`,
+    # e.g. the household_budget agent's T12 burn or
+    # `monthly_expenses_total_nis`) can legitimately exceed the sum of the
+    # itemized lines when the total captures spend the line-item breakdown
+    # doesn't enumerate. NEVER silently print a "Total" row that doesn't equal
+    # the sum of the rows above it — compute the gap and surface it as its own
+    # explicit row rather than hiding it inside the "Total" label.
+    baseline_residual = 0.0
+    baseline_confidence = "HIGH"
+    if baseline_breakdown:
+        rows_sum = sum(amt for _, amt in baseline_breakdown)
+        gap = baseline - rows_sum
+        if abs(gap) > 0.5:  # ignore float dust; a real unitemized gap
+            baseline_residual = gap
+            baseline_breakdown = sorted(
+                [*baseline_breakdown, (FiMethodology.RESIDUAL_LABEL, gap)],
+                key=lambda kv: kv[1],
+                reverse=True,
+            )
+            # The tracked-total figure itself is not fully itemized while a
+            # residual exists — downgrade its confidence until it is.
+            baseline_confidence = "MEDIUM"
     mortgage_monthly = _f(breakdown.get("mortgage_nis")) if isinstance(breakdown, dict) else None
     mortgage_annual = (mortgage_monthly or 0.0) * 12.0
     mort_bal = identity.get("mortgage_balance") or {}
@@ -306,7 +340,7 @@ def compute_fi_target(
         annual_nis=baseline,
         reserve_nis=0.0,
         source=baseline_src,
-        confidence="HIGH",
+        confidence=baseline_confidence,
     ))
     components.append(FiComponent(
         label="Less: mortgage runoff (finite, not perpetual)",
@@ -404,6 +438,7 @@ def compute_fi_target(
         fi_total_capital_nis=fi_total,
         components=components,
         baseline_breakdown=baseline_breakdown,
+        baseline_residual_nis=baseline_residual,
         baseline_source=baseline_src,
         method=method,
         confidence="MEDIUM",

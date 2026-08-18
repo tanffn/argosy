@@ -1388,7 +1388,7 @@ def render_number_derivations_appendix(
     if session is None:
         return ""
     try:
-        from argosy.services.fi_methodology import compute_fi_target
+        from argosy.services.fi_methodology import FiMethodology, compute_fi_target
     except Exception:  # pragma: no cover
         return ""
 
@@ -1432,6 +1432,16 @@ def render_number_derivations_appendix(
             share = (amt / m.baseline_annual_nis * 100.0) if m.baseline_annual_nis else 0.0
             lines.append(f"| {label} | {amt:,.0f} | {share:.1f}% |")
         lines.append(f"| **Total tracked T12** | **{m.baseline_annual_nis:,.0f}** | 100% |")
+        if abs(m.baseline_residual_nis) > 0.5:
+            lines.append("")
+            lines.append(
+                f"*The itemized identity_yaml category breakdown is unitemized against the "
+                f"tracked total: {_n(abs(m.baseline_residual_nis))}/yr of tracked spend has "
+                "no category assignment yet, shown above as its own "
+                f"\"{FiMethodology.RESIDUAL_LABEL}\" row (never folded silently into a "
+                "category or hidden inside the total) — the tracked-total confidence is "
+                "downgraded to MEDIUM until it is itemized.*"
+            )
     else:
         lines.append("| (raw category breakdown not available in identity_yaml) |")
     lines.append("")
