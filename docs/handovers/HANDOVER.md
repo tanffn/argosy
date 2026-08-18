@@ -4,6 +4,43 @@
 
 Last updated: **2026-08-18**.
 
+> **⚠️ PLAN 111 IS THE LIVE DRAFT (2026-08-18). 18/18 RED findings addressed. UNREVIEWED.**
+> Runs 404 + 405 (section-frozen amendments off 109 → 110 → 111). v92 still `current`.
+>
+> | metric | 92 | 107 (worst) | **111** |
+> |---|---|---|---|
+> | chars | 56,123 | 44,629 | **51,220** |
+> | section slugs | 18 | 15 | **18** |
+> | numeric facts | 33 | 14 | **22** |
+> | qualitative placeholders | 1 | 2 | **0** |
+> | `[derivation pending]` | — | 19 | **0** |
+>
+> Erosion reversed. `tax-year allowance` 0, `SGOV` 0, raw `46` 0. Retirement pair published
+> as tokens per Ariel's ruling. Surtax threshold cited 4×.
+>
+> **TRAP THAT COST A WHOLE AMENDMENT RUN:** the `freeze_except` allow-list is now LOAD-BEARING.
+> Run 404's list was built from where the FIGURES lived, so the freeze correctly protected
+> `short/actions` + `long/action_items` — the exact sections holding the SGOV instruction and the
+> fictitious tax-year-allowance rationale. Result: plan 110 CONTRADICTED ITSELF (tax_plan said the
+> allowance does not exist; actions acted on it). No error, no warning — a silent no-op on the
+> sections you cared about. **Always derive the allow-list by grepping the defect strings out of
+> the baseline plan, never from memory.** Run 405 fixed it with a measured list.
+>
+> **RESIDUAL — 8 drift violations on plan 111, one of them a REAL CONFLICT:**
+> The dated glide figures (3,924 / 5,493 / 1,523 / 9,417) are written as DIGITS because no
+> resolver key owns a per-year tranche — so they will drift on the next regeneration, the same
+> disease this session cured everywhere else. Fix = resolver keys for the 2026/2027 tranches,
+> then bind them.
+> **AND:** `concentration.nvda_quota_tax_year_sh` resolves to **7,304** while the adjudicated
+> glide verdict (`action_proposals #66`) says the 2026 tranche is **3,924**. Two sources disagree
+> on how many NVDA shares to sell in 2026. Nothing could detect this before today (the quota key
+> had no AnchorSpec). NOT resolved — needs derivation before any 2026 sale order.
+>
+> **NEXT:** review plan 111. `plan_critique` is runnable again (`claude-opus-5`), and
+> `/api/plan/draft` now reports `critique_is_for_this_version` honestly — 111 will correctly
+> report FALSE until something actually reviews it.
+
+
 > **DERIVED FIGURES FOR THE CLOSING AMENDMENT (verified 2026-08-18 on the live DB — cite these,
 > do NOT let a synthesizer re-derive them).**
 >
