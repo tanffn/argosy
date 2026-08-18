@@ -1101,8 +1101,15 @@ def render_trajectory_reconciliation_appendix(
     from argosy.services.plan_numeric_resolver import resolve_plan_numbers
 
     try:
+        # include_canonical_ages=True: this appendix is a top-level display
+        # surface (RED-16 fix) and MUST resolve retirement.earliest_safe_age
+        # (now the mandate-compliant capital-preservation headline) + the
+        # secondary drawdown_scenario_age — without this flag both were
+        # silently pending here and the "three ages" reconciliation below
+        # rendered incomplete.
         resolved = resolve_plan_numbers(
-            session, user_id=user_id, decision_run_id=decision_run_id
+            session, user_id=user_id, decision_run_id=decision_run_id,
+            include_canonical_ages=True,
         )
     except Exception:  # pragma: no cover - resolver is itself defensive
         return ""
@@ -1114,7 +1121,14 @@ def render_trajectory_reconciliation_appendix(
     fi_total = resolved.get("retirement.fi_total_capital_nis")
     fi_reserve = resolved.get("retirement.liquidity_reserve_nis")
     fi_age = resolved.get("retirement.fi_age")
+    # ARIEL'S RULING (2026-08-18): publish BOTH ages, no single headline.
+    # preservation_age = MANDATE case (capital preservation, no principal
+    # drawdown); earliest_safe_age/drawdown_scenario_age = OFF-MANDATE case
+    # (typical drawdown, spends principal) — the latter two are the SAME
+    # value (duplicate keys, kept for back-compat with existing consumers).
+    preservation_age = resolved.get("retirement.preservation_age")
     earliest_safe_age = resolved.get("retirement.earliest_safe_age")
+    drawdown_scenario_age = resolved.get("retirement.drawdown_scenario_age")
     req_yield = resolved.get("retirement.required_real_yield_pct")
     ret_assumption = resolved.get("retirement.return_assumption_pct")
     fi_spend = resolved.get("spend.fi_basis_nis")
@@ -1430,25 +1444,39 @@ def render_trajectory_reconciliation_appendix(
     lines.append(
         "|---|---|---|"
     )
-    lines.append(
-        f"| Deterministic full-self-sufficiency age (net of the {_fmt_nis_m(fi_reserve)} "
-        f"reserve; withdrawal-model basis — live off perpetual yield, no principal "
-        f"drawdown) | {fi_age_disp} | `retirement.fi_age` |"
-    )
-    # Cross-reference the Monte-Carlo earliest-safe headline age in the SAME
-    # table so the deterministic FI age never reads as an orphaned, conflicting
-    # number. Only when resolved — it is a cross-reference, not a primary row;
-    # never fabricate a pending figure here.
+    # ARIEL'S RULING (2026-08-18): publish BOTH ages — no single headline.
+    # Row 1 = the mandate case, Row 2 = the off-mandate case. Neither is "the"
+    # retirement age; state the pair every time.
+    if (
+        preservation_age is not None
+        and preservation_age.status == "resolved"
+        and preservation_age.value is not None
+    ):
+        lines.append(
+            "| **Retirement age — MANDATE case** (Monte-Carlo, capital-preservation "
+            "/ no-principal-drawdown — worst-10% real path preserves today's real "
+            f"principal to 95, ≥99% solvent; matches the household's EXPLICIT "
+            f"mandate) | **{_age_str(preservation_age.value)}** "
+            "| `retirement.preservation_age` |"
+        )
     if (
         earliest_safe_age is not None
         and earliest_safe_age.status == "resolved"
         and earliest_safe_age.value is not None
     ):
         lines.append(
-            "| Earliest safe retirement age (Monte-Carlo, 90% solvency to 95, "
-            f"typical-drawdown) | {_age_str(earliest_safe_age.value)} "
+            "| **Retirement age — OFF-MANDATE case** (Monte-Carlo, 90% solvency to "
+            "95, typical-drawdown — PERMITS spending principal; NOT the household's "
+            f"stated mandate) | **{_age_str(earliest_safe_age.value)}** "
             "| `retirement.earliest_safe_age` |"
         )
+    lines.append(
+        f"| Full-FI / perpetuity trajectory marker (agent-OPINION, not a "
+        f"deterministic MC reading of either policy; net of the "
+        f"{_fmt_nis_m(fi_reserve)} reserve; informational ONLY — never a "
+        f"retirement age, never used to size a published bridge) | "
+        f"{fi_age_disp} | `retirement.fi_age` |"
+    )
     req_disp = (
         f"{req_yield.value * 100:.2f}%"
         if req_yield.status == "resolved" and req_yield.value is not None
@@ -1473,32 +1501,31 @@ def render_trajectory_reconciliation_appendix(
     )
     lines.append("")
     lines.append(
-        "**Honest reconciliation — three DIFFERENT age definitions that measure "
-        "DIFFERENT things (not a contradiction):** "
-        "(1) the *deterministic full-self-sufficiency age* (withdrawal-model basis, "
-        "net of the finite-liability reserve) is the age the portfolio can sustain "
-        "PERPETUAL real drawdown — living off yield with no principal draw, through "
-        "the pension/bridge sequence. It is LATER than the gross capital-stock "
-        "crossings above (perpetuity base cleared today; total target crossed at the "
-        "FV year) precisely because sustaining a perpetuity net of the reserve is a "
-        "higher bar than the balance merely touching the target gross; it is NOT a "
-        "capital-stock crossing; "
-        "(2) the *earliest safe retirement age* (Monte-Carlo, 90% solvency "
-        "to 95, typical-drawdown) is THE headline retirement age — the "
-        "earliest you could stop working with the money lasting in ~9 of 10 "
-        "market paths; it is normally a year or two below the deterministic "
-        "full-self-sufficiency age because it permits drawing principal down "
-        "rather than living off a perpetuity yield; "
-        "(3) the per-scenario *target age* in the retirement-projection grid "
-        "is the SAME Monte-Carlo earliest-safe age as (2), recomputed under "
-        "EACH scenario's central real return as μ (the Typical-scenario row IS "
-        "the headline earliest-safe age; Bear/Conservative are the same MC "
-        "method at lower μ). It is NOT a deterministic crossing — that is the "
-        "full-self-sufficiency age in (1) — so the grid's Typical age and the "
-        "deterministic full-self-sufficiency age legitimately differ. Each MC age encodes "
-        "return-rate uncertainty, sequence risk, NVDA concentration, and "
-        "life-event spend spikes through the simulated draws — none is a round "
-        "marketing number."
+        "**Honest reconciliation — publish BOTH ages, never a single headline "
+        "(Ariel's ruling, 2026-08-18):** "
+        "(1) **the MANDATE-case age** (Monte-Carlo, capital-preservation / "
+        "no-principal-drawdown — worst-10% real path preserves today's real "
+        "principal to 95, ≥99% solvent) operationalizes the household's "
+        "EXPLICIT mandate (goals_yaml.retirement_drawdown_style="
+        "capital_preservation_returns_only: 'no principal drawdown after "
+        "retirement ... 0% SWR on principal'); "
+        "(2) **the OFF-MANDATE-case age** (Monte-Carlo, 90% solvency to 95, "
+        "typical-drawdown) is the SAME MC method as (1) but PERMITS spending "
+        "principal — a materially looser bar, so it is normally earlier. "
+        "Neither (1) nor (2) is 'the' retirement age — state the PAIR every "
+        "time, each labeled by its discipline. If a surface can show only one "
+        "number, it shows (1), the mandate case, and says the off-mandate "
+        "reading exists. The per-scenario grid elsewhere in this plan uses "
+        "the SAME off-mandate method as (2) under each scenario's central real "
+        "return as μ and is labeled accordingly; "
+        "(3) the *full-FI / perpetuity trajectory marker* (agent OPINION, NOT "
+        "a deterministic MC reading of either policy — see the withdrawal_sequencer "
+        "role, and note it is frequently donor-inherited/stale) is "
+        "INFORMATIONAL ONLY. It is NEVER a retirement age and is NEVER used to "
+        "size a published FIRE bridge — both published bridge figures below are "
+        "sized from (1) or (2), never from (3). Each MC age encodes return-rate "
+        "uncertainty, sequence risk, NVDA concentration, and life-event spend "
+        "spikes through the simulated draws — none is a round marketing number."
     )
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1620,51 +1647,86 @@ def render_number_derivations_appendix(
     lines.append("")
 
     # --- FIRE bridge: retirement → first pension unlock (age 60). -----------
-    # Derived here from the permanent-equivalent spend (NOT the lower tracked
-    # T12 burn) so the plan never states a fabricated bridge figure.
-    ret_rv = resolved.get("retirement.fi_age") if resolved is not None else None
-    if ret_rv is not None and ret_rv.status == "resolved" and ret_rv.value is not None:
-        from argosy.services.cashflow_projection import LUMP_PENSION_AGE
-        ret_age = float(ret_rv.value)
-        bridge_years = max(0.0, float(LUMP_PENSION_AGE) - ret_age)
-        bridge_nis = bridge_years * m.permanent_annual_spend_nis
-        esa_rv = (
-            resolved.get("retirement.earliest_safe_age") if resolved is not None else None
-        )
-        esa = (
-            float(esa_rv.value)
-            if (esa_rv is not None and esa_rv.status == "resolved" and esa_rv.value is not None)
-            else None
-        )
+    # ARIEL'S RULING (2026-08-18): publish TWO bridge figures, each sized from
+    # the age it is presented against, each saying which — never a single
+    # "the" bridge, and never sized from fi_age. Read the resolver's OWN
+    # ``retirement.fire_bridge_nis`` / ``retirement.fire_bridge_offmandate_nis``
+    # (single source of truth) rather than recomputing here.
+    pres_rv = resolved.get("retirement.preservation_age") if resolved is not None else None
+    esa_rv = resolved.get("retirement.earliest_safe_age") if resolved is not None else None
+    bridge_rv = resolved.get("retirement.fire_bridge_nis") if resolved is not None else None
+    offmandate_bridge_rv = (
+        resolved.get("retirement.fire_bridge_offmandate_nis") if resolved is not None else None
+    )
+    pres_age_v = (
+        float(pres_rv.value)
+        if (pres_rv is not None and pres_rv.status == "resolved" and pres_rv.value is not None)
+        else None
+    )
+    esa = (
+        float(esa_rv.value)
+        if (esa_rv is not None and esa_rv.status == "resolved" and esa_rv.value is not None)
+        else None
+    )
+    from argosy.services.cashflow_projection import LUMP_PENSION_AGE
+
+    any_bridge_row = False
+    if (
+        pres_age_v is not None
+        and bridge_rv is not None and bridge_rv.status == "resolved" and bridge_rv.value is not None
+    ):
+        bridge_nis = float(bridge_rv.value)
+        bridge_years = max(0.0, float(LUMP_PENSION_AGE) - pres_age_v)
         lines.append(
-            f"### FIRE bridge — {_n(bridge_nis)} liquid drawdown "
-            f"(perpetuity track: {_age_str(ret_age)}→{LUMP_PENSION_AGE})"
+            f"### FIRE bridge — MANDATE case: {_n(bridge_nis)} liquid drawdown "
+            f"(capital-preservation track: {_age_str(pres_age_v)}→{LUMP_PENSION_AGE})"
         )
         lines.append("")
         lines.append(
-            f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {_age_num(ret_age)}) "
+            f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {_age_num(pres_age_v)}) "
             f"= {_age_num(bridge_years)} yrs × permanent-equivalent spend "
             f"{_n(m.permanent_annual_spend_nis)}/yr = **{_n(bridge_nis)}** — the liquid "
-            "capital that funds spend BEFORE the age-60 partial pension unlock. "
-            "Sized on the permanent-equivalent basis, not the lower tracked T12 burn."
+            "capital that funds spend from the MANDATE-case (capital-preservation) "
+            "retirement age BEFORE the age-60 partial pension unlock. Sized on the "
+            "permanent-equivalent basis, not the lower tracked T12 burn."
         )
-        # Two-track reconciliation: the bridge belongs to the PERPETUITY track
-        # (retire at the deterministic perpetuity-FI age, then live off yield).
-        # The HEADLINE earliest-safe age is a DISTINCT, more aggressive track —
-        # its pre-60 funding is modelled INSIDE the Monte-Carlo drawdown (90%
-        # solvent to 95), NOT via this perpetuity bridge — so the two ages are
-        # two valid retirement models, not a contradiction.
-        if esa is not None and abs(esa - ret_age) >= 0.5:
+        any_bridge_row = True
+    if (
+        esa is not None
+        and offmandate_bridge_rv is not None
+        and offmandate_bridge_rv.status == "resolved" and offmandate_bridge_rv.value is not None
+    ):
+        off_bridge_nis = float(offmandate_bridge_rv.value)
+        off_bridge_years = max(0.0, float(LUMP_PENSION_AGE) - esa)
+        lines.append("")
+        lines.append(
+            f"### FIRE bridge — OFF-MANDATE case: {_n(off_bridge_nis)} liquid drawdown "
+            f"(typical-drawdown track: {_age_str(esa)}→{LUMP_PENSION_AGE})"
+        )
+        lines.append("")
+        lines.append(
+            f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {_age_num(esa)}) "
+            f"= {_age_num(off_bridge_years)} yrs × permanent-equivalent spend "
+            f"{_n(m.permanent_annual_spend_nis)}/yr = **{_n(off_bridge_nis)}** — the "
+            "liquid capital that funds spend from the OFF-MANDATE (typical-drawdown, "
+            "permits spending principal) retirement age BEFORE the age-60 partial "
+            "pension unlock. Shown for comparison; the MANDATE-case bridge above is "
+            "the one that matches the household's stated constraint."
+        )
+        any_bridge_row = True
+    if any_bridge_row:
+        fi_age_rv = resolved.get("retirement.fi_age") if resolved is not None else None
+        fi_age_val = (
+            float(fi_age_rv.value)
+            if (fi_age_rv is not None and fi_age_rv.status == "resolved" and fi_age_rv.value is not None)
+            else None
+        )
+        if fi_age_val is not None:
             lines.append(
-                f"- **Which age is this?** This bridge is sized to the **perpetuity "
-                f"self-sufficiency age {_age_num(ret_age)}** (live off yield forever, no "
-                f"principal drawdown). The plan's **headline retirement age is the "
-                f"earliest-safe {_age_num(esa)}** — a distinct, more aggressive track that "
-                "draws principal down and is validated by the Monte-Carlo solvency "
-                "run (which already funds its own age-→60 gap internally). Retiring at "
-                f"{_age_num(esa)} is the earlier option; reaching {_age_num(ret_age)} is when the "
-                "portfolio becomes perpetuity-self-sufficient. Both are real; they are "
-                "NOT two conflicting values for one age."
+                f"- **Note:** the full-FI / perpetuity trajectory marker "
+                f"(`retirement.fi_age` = {_age_num(fi_age_val)}) is an agent-OPINION, "
+                "informational age from a different, non-deterministic source — it is "
+                "NEVER used to size either bridge above."
             )
         lines.append("")
 
@@ -1762,7 +1824,7 @@ def render_number_derivations_appendix(
             ("savings.annual_net_nis", "Annual net savings"),
             ("concentration.nvda_cap_pct", "NVDA concentration cap"),
             ("concentration.nvda_current_pct", "NVDA current weight"),
-            ("retirement.fi_age", "Full-FI / perpetuity target age"),
+            ("retirement.fi_age", "Full-FI / perpetuity trajectory marker (agent OPINION; informational only — never a retirement age, never sizes a published bridge)"),
         ):
             rv = resolved.get(key)
             if rv is None or rv.status != "resolved" or rv.value is None:

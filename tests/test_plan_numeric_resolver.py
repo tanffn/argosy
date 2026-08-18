@@ -657,9 +657,15 @@ def _fake_feasible(*, earliest=46.0, p=0.91, pres=53.0):
 
 
 def test_canonical_ages_resolve_when_opted_in(session, monkeypatch):
-    """include_canonical_ages=True exposes the canonical dual-track earliest-safe
-    (typical drawdown) age + the capital-preservation age, sourced from
-    retirement_plan.canonical_feasible_dual_track — NOT the stale fi_age."""
+    """include_canonical_ages=True exposes the canonical dual-track ages,
+    sourced from retirement_plan.canonical_feasible_dual_track.
+
+    ARIEL'S RULING (2026-08-18, RED-16, plan-109 review): publish BOTH ages,
+    no single headline. ``retirement.preservation_age`` is the
+    MANDATE-SATISFYING (capital-preservation, no-principal-drawdown) reading;
+    ``retirement.earliest_safe_age`` (duplicated at ``retirement.drawdown_scenario_age``)
+    is the OFF-MANDATE (typical-drawdown) reading. Neither key is an alias of
+    the other — they carry DISTINCT values."""
     import argosy.services.retirement.retirement_plan as rp
 
     monkeypatch.setattr(rp, "canonical_feasible_dual_track", lambda **kw: _fake_feasible())
@@ -668,6 +674,7 @@ def test_canonical_ages_resolve_when_opted_in(session, monkeypatch):
         session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
     )
 
+    # OFF-MANDATE reading (fixture earliest=46.0).
     early = resolved.get("retirement.earliest_safe_age")
     assert early.status == "resolved"
     assert early.value == pytest.approx(46.0)
@@ -676,17 +683,40 @@ def test_canonical_ages_resolve_when_opted_in(session, monkeypatch):
         early.source_locator
         == "retirement_plan.canonical_feasible_dual_track.earliest_feasible_age"
     )
+    assert "off-mandate" in early.formula.lower()
 
+    # Duplicate key for the SAME off-mandate value.
+    drawdown = resolved.get("retirement.drawdown_scenario_age")
+    assert drawdown.status == "resolved"
+    assert drawdown.value == pytest.approx(46.0)
+    assert drawdown.unit == "age"
+
+    # MANDATE-SATISFYING reading (fixture pres=53.0) — a DISTINCT value, not
+    # an alias of earliest_safe_age.
     pres = resolved.get("retirement.preservation_age")
     assert pres.status == "resolved"
     assert pres.value == pytest.approx(53.0)
     assert pres.unit == "age"
     assert "preservation_age" in pres.source_locator
+    assert "mandate" in pres.formula.lower()
 
-    # fi_age (the trajectory-feasibility number) is untouched — still its own
-    # value, kept for FIRE-bridge sizing.
+    # fi_age (the agent-opinion trajectory marker) is untouched — still its
+    # own value, and Decision 2 forbids it from sizing a published bridge.
     fi_age = resolved.get("retirement.fi_age")
     assert fi_age.value == pytest.approx(51.7)
+
+    # RED-12/Decision 2: TWO published bridges, each sized from the age it is
+    # presented against — never from fi_age (51.7).
+    bridge = resolved.get("retirement.fire_bridge_nis")
+    assert bridge.status == "resolved"
+    assert "preservation_age" in bridge.source_locator
+    assert "fi_age" not in bridge.source_locator
+
+    off_bridge = resolved.get("retirement.fire_bridge_offmandate_nis")
+    assert off_bridge.status == "resolved"
+    assert "earliest_safe_age" in off_bridge.source_locator
+    assert "fi_age" not in off_bridge.source_locator
+    assert bridge.value != pytest.approx(off_bridge.value)
 
 
 def test_canonical_ages_not_computed_by_default(session, monkeypatch):
@@ -732,8 +762,38 @@ def test_canonical_age_failure_is_pending_no_fabrication(session, monkeypatch):
 
 
 def test_canonical_age_none_when_no_safe_age(session, monkeypatch):
-    """A portfolio that never clears the solvency bar (earliest_feasible_age is
-    None) resolves the earliest-safe age to pending, not 0 or a guess."""
+    """A portfolio that never clears the capital-preservation bar (basis'
+    preservation_age is None) resolves preservation_age to pending, not 0 or
+    a guess — never a fabricated fallback. The off-mandate earliest_safe_age
+    is a DISTINCT computation and is unaffected."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    monkeypatch.setattr(
+        rp, "canonical_feasible_dual_track", lambda **kw: _fake_feasible(pres=None)
+    )
+    _seed_all(session)
+    resolved = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
+    )
+    assert resolved.get("retirement.preservation_age").status == "pending"
+    assert resolved.get("retirement.earliest_safe_age").status == "resolved"
+    # The MANDATE-case bridge cannot be sized from a pending preservation_age
+    # — it stays pending too (never a fi_age-based fabrication under the
+    # published key, per Decision 2).
+    bridge = resolved.get("retirement.fire_bridge_nis")
+    assert bridge.status == "pending"
+    # The internal fi_age-based estimate is still resolved under its own,
+    # explicitly non-published key.
+    fi_age_estimate = resolved.get("retirement.fire_bridge_fi_age_estimate_nis")
+    assert fi_age_estimate.status == "resolved"
+
+
+def test_drawdown_scenario_age_none_when_never_feasible(session, monkeypatch):
+    """A portfolio that never clears the typical-drawdown solvency bar
+    (earliest_feasible_age is None) resolves the OFF-MANDATE
+    earliest_safe_age/drawdown_scenario_age to pending, and its bridge along
+    with it — the MANDATE-case preservation_age is unaffected since it is a
+    distinct computation."""
     import argosy.services.retirement.retirement_plan as rp
 
     monkeypatch.setattr(
@@ -743,13 +803,22 @@ def test_canonical_age_none_when_no_safe_age(session, monkeypatch):
     resolved = resolve_plan_numbers(
         session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
     )
+    assert resolved.get("retirement.drawdown_scenario_age").status == "pending"
     assert resolved.get("retirement.earliest_safe_age").status == "pending"
+    assert resolved.get("retirement.preservation_age").status == "resolved"
+    assert resolved.get("retirement.fire_bridge_offmandate_nis").status == "pending"
+    assert resolved.get("retirement.fire_bridge_nis").status == "resolved"
 
 
 def test_render_synth_leads_with_earliest_safe_age(session, monkeypatch):
-    """The synth/narrative numbers block surfaces the canonical earliest-safe age
-    BEFORE the fi_age line, and relabels fi_age as the full-FI/perpetuity target
-    (so the narrative can no longer call 49 'the earliest you can retire')."""
+    """The synth/narrative numbers block surfaces BOTH published retirement
+    ages (Ariel's ruling — no single headline) BEFORE the fi_age line, and
+    relabels fi_age as an agent-opinion, informational-only marker (so the
+    narrative can no longer call 51.7 'the earliest you can retire').
+
+    RED-16 (plan-109 review): preservation_age (mandate case, fixture
+    pres=53.0) and earliest_safe_age (off-mandate case, fixture earliest=46.0)
+    are DISTINCT published values, neither aliased to the other."""
     import argosy.services.retirement.retirement_plan as rp
 
     monkeypatch.setattr(rp, "canonical_feasible_dual_track", lambda **kw: _fake_feasible())
@@ -759,11 +828,12 @@ def test_render_synth_leads_with_earliest_safe_age(session, monkeypatch):
     )
     block = render_numbers_for_synth(resolved)
 
-    assert "age 46.0" in block  # the honest earliest-safe age is stated
-    assert "age 53.0" in block  # the preservation what-if
+    assert "age 53.0" in block  # the mandate-case (capital-preservation) age
+    assert "age 46.0" in block  # the off-mandate (typical-drawdown) age
     # fi_age must no longer be labeled as the "earliest" age.
     assert "Earliest feasible FI age" not in block
-    # earliest-safe age leads the fi_age (49/51.7) line.
+    # both published ages lead the fi_age (51.7) line.
+    assert block.index("age 53.0") < block.index("age 51.7")
     assert block.index("age 46.0") < block.index("age 51.7")
 
 

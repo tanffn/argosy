@@ -44,17 +44,32 @@ RUN106_FACTS: dict[str, FactSpec] = {
     "retirement.earliest_safe_age": _spec(
         "retirement.earliest_safe_age", "resolver:retirement.earliest_safe_age",
         {"body": SiteKind.LLM_PROSE, "appendix": SiteKind.TEMPLATE},
-        "headline age; finding [2]",
+        "OFF-MANDATE reading (typical drawdown, spends principal) — Ariel's "
+        "ruling 2026-08-18: publish alongside retirement.preservation_age, "
+        "NEVER as a single headline; finding [2]; RED-16 (plan-109)",
+    ),
+    "retirement.preservation_age": _spec(
+        "retirement.preservation_age", "resolver:retirement.preservation_age",
+        {"body": SiteKind.LLM_PROSE, "appendix": SiteKind.TEMPLATE},
+        "MANDATE-SATISFYING reading (capital preservation, no principal "
+        "drawdown, per goals_yaml) — Ariel's ruling 2026-08-18: publish "
+        "alongside retirement.earliest_safe_age, the pair the age shown if "
+        "a surface can hold only one; finding [2]; RED-16 (plan-109)",
     ),
     "retirement.fi_age": _spec(
         "retirement.fi_age", "resolver:retirement.fi_age",
         {"body": SiteKind.LLM_PROSE, "appendix": SiteKind.TEMPLATE},
-        "FIRE-bridge sizing age, deliberately distinct from earliest_safe_age; finding [2]",
+        "agent-OPINION trajectory marker (withdrawal_sequencer LLM output, "
+        "often donor-inherited/stale) — Ariel's ruling 2026-08-18: MUST NEVER "
+        "be presented as a retirement age or size a published FIRE bridge; "
+        "finding [2]; RED-12/RED-16 (plan-109)",
     ),
     "retirement.bridge_start_age": _spec(
-        "retirement.bridge_start_age", "derived:bridge sized from resolver fi_age",
+        "retirement.bridge_start_age", "derived:bridge sized from the age it is presented against",
         {"body": SiteKind.LLM_PROSE, "appendix": SiteKind.TEMPLATE},
-        "must equal the resolver sizing age; finding [2] (net-new fact)",
+        "must equal whichever published age (preservation_age or "
+        "earliest_safe_age) the bridge is presented against; never fi_age; "
+        "finding [2] (net-new fact); RED-12 (plan-109)",
     ),
     "allocation.target_weights": _spec(
         "allocation.target_weights", "doc:classes[].target_pct",

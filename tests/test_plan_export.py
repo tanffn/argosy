@@ -387,15 +387,18 @@ def test_export_includes_wealth_dashboard_numbers(client_with_db):
     assert "| Bear |" in body
     assert "| Conservative |" in body
     assert "| Typical |" in body
-    # Coherence guard (reader BLOCKER): the per-scenario age column must be
-    # labelled for what it IS — the Monte-Carlo earliest-safe age recomputed
-    # under each scenario's μ — NOT a bare "Target age" and NOT a mislabelled
-    # "deterministic crossing" (that is the perpetuity-basis fi_age). The caption
-    # must explicitly distinguish it from the deterministic fi_age so the grid's
-    # Typical age (46) and the deterministic fi_age (49) don't read as a conflict.
-    assert "Earliest-safe age (MC" in body
+    # Coherence guard (reader BLOCKER, updated RED-13/RED-16, Ariel's ruling
+    # 2026-08-18 — plan-109 review): the export must publish BOTH retirement
+    # ages (mandate case + off-mandate case), never a single headline. The
+    # per-scenario grid recomputes the OFF-MANDATE typical-drawdown Monte-
+    # Carlo age (spends principal) under each scenario's μ — it must be
+    # labelled off-mandate, and NOT as a bare "Target age".
+    assert "off-mandate" in body.lower()
     assert "Target age |" not in body
-    assert "deterministic perpetuity-basis fi_age" in body
+    assert "Mandate case" in body
+    assert "Off-mandate case" in body
+    assert "retirement.preservation_age" in body
+    assert "retirement.earliest_safe_age" in body
 
 
 def test_export_renders_canonical_allocation_table(client_with_db):

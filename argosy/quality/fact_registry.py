@@ -46,6 +46,10 @@ FACT_DISPLAY: dict[str, str] = {
     "retirement.fi_total_capital_nis": "nis_millions",
     "retirement.fi_target_nis": "nis_millions",
     "retirement.fire_bridge_nis": "nis_millions",
+    # OFF-MANDATE counterpart (Ariel's ruling, 2026-08-18): publish BOTH FIRE
+    # bridge figures, never just the mandate-case one. See
+    # plan_numeric_resolver._apply_canonical_dual_track_age.
+    "retirement.fire_bridge_offmandate_nis": "nis_millions",
     "retirement.liquidity_reserve_nis": "nis_millions",
     # Signed margins / flows — shown in full so the sign + exact gap are legible.
     "retirement.fi_margin_signed_nis": "nis",
@@ -92,10 +96,16 @@ FACT_DISPLAY: dict[str, str] = {
     # never hand-type a conflated "~47%" (the run-117 reader A/B drift).
     "tax.retention_at_vest_pct": "pct",
     "tax.retention_capital_track_pct": "pct",
-    # Ages.
+    # Ages. Ariel's ruling (2026-08-18, RED-16): publish BOTH
+    # preservation_age (mandate case) and earliest_safe_age (off-mandate
+    # case) — neither is "the" headline. fi_age is agent OPINION, never a
+    # published retirement age.
     "retirement.fi_age": "age",
     "retirement.earliest_safe_age": "age",
     "retirement.preservation_age": "age",
+    # Duplicate key for retirement.earliest_safe_age (same off-mandate value) —
+    # kept for surfaces already wired to this name.
+    "retirement.drawdown_scenario_age": "age",
     # Fixed structural ages (pension unlock / MC solvency horizon) — constants,
     # placeholdered so a correctly-stated `age 60` / `age 95` is single-sourced.
     "retirement.pension_unlock_age": "age",

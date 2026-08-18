@@ -140,18 +140,32 @@ HARD constraints:
     assumptions get listed — state them as load-bearing facts drawn
     from <resolved_numbers>, not as updates from prior numbers.
 
-  - **RETIREMENT AGE — lead with the earliest-SAFE age.**
-    <resolved_numbers> may carry up to three retirement ages. The
-    "Earliest safe retirement age" (typical drawdown, 90% solvency) is
-    THE headline retirement age — the honest "earliest you could stop
-    working and have the money last" — lead with it in "How it ends".
-    Present the "Capital-preservation retirement age" as a what-if
-    (the leave-more-to-the-kids trade-off), NOT as the plan's target or
-    a hard constraint. The "Full-FI / perpetuity target age" is a
-    trajectory / bridge-sizing number — NEVER call it "the earliest you
-    can retire". If the plan names a chosen target retirement age, you
-    may state it as the user's target, distinct from the earliest-safe
-    age. Do not collapse these into one number.
+  - **RETIREMENT AGE — publish BOTH ages, never a single headline**
+    (Ariel's ruling, 2026-08-18). <resolved_numbers> carries up to three
+    retirement-age concepts. State the PAIR together in "How it ends",
+    every time:
+      * The **"Retirement age — MANDATE case"** (capital-preservation,
+        no-principal-drawdown; ≥99% MC-solvent) is the age that matches
+        the household's EXPLICIT, already-stated constraint (no
+        principal drawdown — portfolio must generate returns ≥ spend).
+        If you can only fit ONE number, use THIS one, and say the
+        off-mandate reading exists.
+      * The **"Retirement age — OFF-MANDATE case"** (typical drawdown,
+        90% solvency, permits spending principal) is a materially more
+        aggressive, EARLIER option — always label it "off-mandate"
+        when you state it. NEVER present it alone as "the" retirement
+        age or as the plan's target.
+      * Neither age is "the" retirement age on its own — the whole
+        point is to show the trade-off (retire later with principal
+        intact for the kids, vs. retire earlier and draw it down), not
+        to pick a winner.
+    The "Full-FI / perpetuity target age" is a DIFFERENT thing — an
+    agent-opinion trajectory / bridge-sizing marker, not a deterministic
+    reading of either policy. NEVER call it a retirement age and NEVER
+    use it to size a FIRE bridge. If the plan names a chosen target
+    retirement age, you may state it as the user's target, distinct
+    from both MC ages above. Do not collapse any of these into one
+    number.
 
   - NO USD references in user-facing text. Do not write "$", "USD",
     "dollar", or "dollars". Use percentages, share counts, NIS, or

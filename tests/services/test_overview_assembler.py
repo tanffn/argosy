@@ -229,16 +229,20 @@ def test_chapter_nvda_pending_facts_degrade():
 # Test 5 — _chapter_dual_track, _chapter_liquidity: headline + degrade + viz.
 # ---------------------------------------------------------------------------
 def test_chapter_dual_track_renders_ages():
+    # ARIEL'S RULING (2026-08-18, RED-16): publish BOTH ages, no single
+    # headline. retirement.preservation_age = MANDATE-SATISFYING
+    # (capital-preservation) reading; retirement.earliest_safe_age =
+    # OFF-MANDATE (typical drawdown) reading. This card shows the pair.
     resolved = _resolved(
         {
-            "retirement.earliest_safe_age": (47.0, "age"),
             "retirement.preservation_age": (54.0, "age"),
+            "retirement.earliest_safe_age": (47.0, "age"),
         }
     )
     ch = oa._chapter_dual_track(resolved)
     assert ch.degraded is False
-    assert render_fact("retirement.earliest_safe_age", resolved) in ch.headline
     assert render_fact("retirement.preservation_age", resolved) in ch.headline
+    assert render_fact("retirement.earliest_safe_age", resolved) in ch.headline
     assert ch.viz.kind == "dual_track_age"
     assert ch.viz.data["earliest_safe_age"] == pytest.approx(47.0)
     assert ch.viz.data["preservation_age"] == pytest.approx(54.0)
@@ -247,8 +251,8 @@ def test_chapter_dual_track_renders_ages():
 def test_chapter_dual_track_pending_degrades():
     resolved = _resolved(
         {
-            "retirement.earliest_safe_age": (None, "age"),
             "retirement.preservation_age": (54.0, "age"),
+            "retirement.earliest_safe_age": (None, "age"),
         }
     )
     ch = oa._chapter_dual_track(resolved)

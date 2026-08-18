@@ -103,11 +103,14 @@ class GateCheck(str, Enum):
     # existing FI_SHOCK_SUFFICIENCY covers the NVDA shock; this extends the same
     # idea to currency, the dimension the run-106 reader flagged as load-bearing.
     FI_FX_SHOCK_SUFFICIENCY = "fi_fx_shock_sufficiency"
-    # finding [2] — the headline retirement age (earliest_safe_age) and the
-    # FIRE-bridge sizing age (fi_age) are DELIBERATELY distinct; they must each
-    # carry their defining label wherever they appear, and the bridge sleeve
-    # must be sized from the resolver's CHOSEN sizing age (not silently dropped
-    # a year vs the prior plan). NOT a forced-equality check.
+    # finding [2] — the two PUBLISHED retirement ages (preservation_age =
+    # mandate case, earliest_safe_age = off-mandate case) are DELIBERATELY
+    # distinct and both must be published (Ariel's ruling 2026-08-18 — no
+    # single headline); they must each carry their defining label wherever
+    # they appear, and the FIRE-bridge sleeve must be sized from the
+    # resolver's CHOSEN sizing age for that bridge (not silently dropped a
+    # year vs the prior plan, and never sized from fi_age, an agent opinion).
+    # NOT a forced-equality check between the two published ages.
     RETIREMENT_AGE_LABEL = "retirement_age_label"
     # finding [3] — RSU net-retention % must agree across the RSU ledger, the
     # equity-comp evidence, and the prose (run-106: 47% vs 65%). A divergence is

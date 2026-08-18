@@ -59,9 +59,12 @@ def _full_resolved() -> ResolvedPlanNumbers:
             "concentration.nvda_eligible_now_sh": (3_500.0, "sh"),
             "concentration.nvda_sell_sh": (8_000.0, "sh"),
             "concentration.nvda_target_sh": (5_000.0, "sh"),
-            # Dual-track (chapter 7).
-            "retirement.earliest_safe_age": (47.0, "age"),
+            # Dual-track (chapter 7). Ariel's ruling (RED-16): publish BOTH —
+            # preservation_age (mandate-satisfying) and earliest_safe_age
+            # (off-mandate) are DISTINCT values, neither aliased nor "the"
+            # headline.
             "retirement.preservation_age": (54.0, "age"),
+            "retirement.earliest_safe_age": (47.0, "age"),
         }
     )
 

@@ -858,22 +858,35 @@ def _resolved_value(resolved: "ResolvedPlanNumbers", key: str) -> float | None:
 
 
 def _derive_retirement_ages(resolved: "ResolvedPlanNumbers") -> dict:
-    """Pull the headline + sizing retirement ages from the resolver.
+    """Pull the published retirement ages + the MANDATE-case bridge sizing age
+    from the resolver.
 
-    Returns ``earliest_safe_age`` (headline) and ``fi_age`` (the FIRE-bridge
-    sizing age — deliberately distinct from the headline). ``bridge_start_age``
-    is intentionally absent: there is no canonical ``retirement.bridge_start_age``
-    fact today (the bridge value is derived from ``fi_age``), so the gate's
-    bridge-sizing check is skipped until that fact exists (Phase 2). Missing
-    values are simply absent from the dict (the gate tolerates None).
+    ARIEL'S RULING (2026-08-18, RED-12/RED-16, Decision 1+2): publish BOTH
+    ``retirement.preservation_age`` (mandate-satisfying) and
+    ``retirement.earliest_safe_age`` (off-mandate) — neither is "the"
+    headline. ``retirement.fi_age`` (agent opinion) must NEVER size a
+    published bridge.
+
+    The gate's ``fi_age`` param — historically named for "the resolver's
+    chosen sizing age" — is now sourced from ``retirement.preservation_age``,
+    because ``retirement.fire_bridge_nis`` (the MANDATE-case bridge, the one
+    the gate checks) is sized from it (see
+    ``plan_numeric_resolver._apply_canonical_dual_track_age``). ``bridge_start_age``
+    is the SAME value, so invariant (1) (bridge sized from the chosen sizing
+    age) is a real regression check on the MANDATE-case bridge: if a future
+    change re-derives ``fire_bridge_nis`` from a different age, this fires.
+    The OFF-MANDATE bridge (``retirement.fire_bridge_offmandate_nis``, sized
+    from ``retirement.earliest_safe_age``) is not covered by this gate today.
+    Missing values are simply absent from the dict (the gate tolerates None).
     """
     out: dict = {}
     esa = _resolved_value(resolved, "retirement.earliest_safe_age")
-    fia = _resolved_value(resolved, "retirement.fi_age")
+    pres = _resolved_value(resolved, "retirement.preservation_age")
     if esa is not None:
         out["earliest_safe_age"] = esa
-    if fia is not None:
-        out["fi_age"] = fia
+    if pres is not None:
+        out["fi_age"] = pres
+        out["bridge_start_age"] = pres
     return out
 
 

@@ -760,9 +760,16 @@ def _retirement(
             )
             # Honest dual-track basis (sigma-glide + NVDA CGT + PV reserve + 10%
             # interim tax + healthcare-in-central-spend), this scenario's real μ.
+            # RED-13 (plan-109 review): the default max_age=67 cut the sweep off
+            # before a low/zero-return scenario could clear 90% solvency, so a
+            # scenario that IS reachable (just later than 67) rendered as
+            # "Unreachable at current burn" — arithmetically false. Sweep out to
+            # one year short of the MC solvency horizon (age 95) so "Unreachable"
+            # only ever means "does not clear 90% solvency to 95 by age 94",
+            # never "the search stopped early".
             canon = canonical_feasible_dual_track(
                 session=session, user_id=user_id, target_p_solvent=0.90,
-                assumptions=RetirementAssumptions(mu_real_typical=r, n_paths=800),
+                assumptions=RetirementAssumptions(mu_real_typical=r, n_paths=800, max_age=94),
             )
             if canon.earliest_feasible_age is not None:
                 target_age = int(round(canon.earliest_feasible_age))

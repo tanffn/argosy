@@ -653,20 +653,53 @@ def build_plan_export_markdown(
         push(estate_line)
         push("")
 
-        push("### Retirement projection")
+        push("### Retirement age — publish BOTH readings (Ariel's ruling, 2026-08-18)")
+        pres_age_disp = "[derivation pending]"
+        esa_age_disp = "[derivation pending]"
+        if plan is not None:
+            try:
+                from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+                _drun = getattr(plan, "decision_run_id", None)
+                if _drun is not None:
+                    _ages_resolved = resolve_plan_numbers(
+                        db, user_id=user_id, decision_run_id=int(_drun),
+                        include_canonical_ages=True,
+                    )
+                    _pres_rv = _ages_resolved.get("retirement.preservation_age")
+                    _esa_rv = _ages_resolved.get("retirement.earliest_safe_age")
+                    if _pres_rv is not None and _pres_rv.status == "resolved" and _pres_rv.value is not None:
+                        pres_age_disp = f"{float(_pres_rv.value):.0f}"
+                    if _esa_rv is not None and _esa_rv.status == "resolved" and _esa_rv.value is not None:
+                        esa_age_disp = f"{float(_esa_rv.value):.0f}"
+            except Exception:  # noqa: BLE001 — defensive; never crash the export
+                pass
         push(
-            "_Earliest-safe retirement age by scenario — the Monte-Carlo age "
-            "(90% solvency to 95) recomputed under each scenario's central real "
-            "return as μ. The Typical-scenario row IS the headline earliest-safe "
-            "age; it is NOT a deterministic crossing, so it legitimately differs "
-            "from the deterministic perpetuity-basis fi_age._"
+            f"- **Mandate case (capital preservation, no principal drawdown)**: "
+            f"age **{pres_age_disp}** — `retirement.preservation_age`. Matches "
+            "the household's explicit stated constraint."
         )
-        push("| Scenario | Real return | Years to safe retirement | Earliest-safe age (MC, this μ) |")
+        push(
+            f"- **Off-mandate case (typical drawdown, spends principal)**: "
+            f"age **{esa_age_disp}** — `retirement.earliest_safe_age`. Shown for "
+            "comparison only."
+        )
+        push(
+            "_Neither age above is 'the' retirement age — state the pair. The "
+            "scenario grid below recomputes the OFF-MANDATE (typical-drawdown, "
+            "90% solvency to 95, PERMITS spending principal) reading under each "
+            "scenario's central real return as μ — it is the SAME model as "
+            "`retirement.drawdown_scenario_age` / `retirement.earliest_safe_age` "
+            "above, never the mandate case. 'Unreachable' below means the sweep "
+            "found no age up to 94 clearing 90% solvency to 95 at that μ — not "
+            "that the search was cut off early._"
+        )
+        push("| Scenario | Real return | Years to safe retirement (off-mandate) | Off-mandate age (MC, this μ) |")
         push("|---|---|---|---|")
         for sc in ret.scenarios:
             y2t = sc.years_to_target
             if y2t is None:
-                y2t_label = "Unreachable at current burn"
+                y2t_label = "Unreachable to age 94 at this μ"
             elif y2t <= 0:
                 y2t_label = "At target"
             else:

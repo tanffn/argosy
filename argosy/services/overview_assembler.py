@@ -243,9 +243,11 @@ _T_PHASES = (
     "the road of what life costs over time."
 )
 _T_DUAL_TRACK = (
-    "Retire and spend normally at about {{fact:retirement.earliest_safe_age}}, "
-    "or keep every cent of principal safe and it's about "
-    "{{fact:retirement.preservation_age}}. Same plan — it's your call on the risk."
+    "Keep every cent of principal safe (your stated mandate — no principal "
+    "drawdown) and it's about {{fact:retirement.preservation_age}}, or retire "
+    "earlier and spend down principal at about "
+    "{{fact:retirement.earliest_safe_age}} — an off-mandate, more "
+    "aggressive option. Same plan — neither is 'the' answer; both are real."
 )
 
 # Templates whose ONLY magnitudes are {{fact:}} tokens (the runtime-substituted
@@ -593,11 +595,17 @@ def _chapter_phases(phase_rows: list[dict]) -> OverviewChapterData:
 
 
 def _chapter_dual_track(resolved) -> OverviewChapterData:
-    keys = ["retirement.earliest_safe_age", "retirement.preservation_age"]
+    # ARIEL'S RULING (2026-08-18, RED-16, plan-109 review): publish BOTH
+    # ages, no single headline. retirement.preservation_age is the
+    # MANDATE-SATISFYING (capital-preservation / no-principal-drawdown)
+    # reading; retirement.earliest_safe_age is the OFF-MANDATE (typical
+    # drawdown, spends principal) reading. This card exists precisely to
+    # show the pair — neither key is aliased to the other.
+    keys = ["retirement.preservation_age", "retirement.earliest_safe_age"]
     facts = [_fact_ref(resolved, k) for k in keys]
     headline, ok = _render_headline(_T_DUAL_TRACK, resolved)
-    earliest = _value(resolved, "retirement.earliest_safe_age")
     preservation = _value(resolved, "retirement.preservation_age")
+    earliest = _value(resolved, "retirement.earliest_safe_age")
     viz_data = {
         "earliest_safe_age": earliest,
         "preservation_age": preservation,

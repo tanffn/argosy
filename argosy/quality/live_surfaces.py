@@ -2,9 +2,17 @@
 shared DERIVED node, so two surfaces CANNOT show different values/bases.
 
 The root cause of the recurring cross-surface contradictions (the FI tile saying
-"reached" while the appendix says "short ₪X"; the headline retirement age 46 vs a
-dashboard age of 47; net worth quoted on a liquid basis in one place and an
-investable basis in another) is that each surface computed its own number. Here
+"reached" while the appendix says "short ₪X"; a headline retirement age on one
+surface vs a different age on a dashboard; net worth quoted on a liquid basis in
+one place and an investable basis in another) is that each surface computed its
+own number. (RED-16, plan-109 review, Ariel's ruling 2026-08-18: retirement age
+is published as a PAIR — ``retirement.preservation_age`` (mandate-satisfying)
+and ``EARLIEST_SAFE_AGE_NODE`` = ``retirement.earliest_safe_age`` (off-mandate)
+— never a single winner. ``retirement_age_headline`` here still canonicalizes
+the off-mandate reading for any legacy single-number surface; those surfaces
+must be read as ONE HALF of the pair, not "the" retirement age — see
+``plan_numeric_resolver._apply_canonical_dual_track_age`` for the full
+derivation of both keys and the two FIRE-bridge figures.) Here
 we bind every such subject to a SINGLE ``NodeKind.DERIVED`` node and build all of
 its surfaces (headline, dashboard tile, appendix row, verdict) as
 ``NodeKind.SURFACE`` nodes whose ONLY inbound edge is that derived node. Because
@@ -128,20 +136,24 @@ def _fi_sufficiency_surfaces(node_key: str) -> list[Node]:
 
 
 def _retirement_age_surfaces(node_key: str) -> list[Node]:
-    """Retirement-age surfaces — the headline and the dashboard age tile, ALL
-    from the one earliest_safe_age node. Identical age by construction (kills the
-    46-vs-dashboard divergence)."""
+    """Retirement-age surfaces bound to the OFF-MANDATE reading
+    (retirement.earliest_safe_age) — ALL surfaces here render the SAME age by
+    construction (kills the old 46-vs-dashboard divergence). Ariel's ruling
+    (2026-08-18): this off-mandate age is one HALF of the published pair —
+    the mandate-satisfying retirement.preservation_age is the other half. A
+    surface built here must not be presented standalone as "the" retirement
+    age; pair it with preservation_age wherever it is rendered to a user."""
     return [
         make_surface_node(
             key="surface:retirement_age_headline",
             inputs=(node_key,),
-            recipe=lambda i: f"Earliest safe retirement age: {int(i[node_key])}.",
+            recipe=lambda i: f"Off-mandate retirement age (spends principal): {int(i[node_key])}.",
             compute_version="age-headline-v1",
         ),
         make_surface_node(
             key="surface:dashboard.age_tile",
             inputs=(node_key,),
-            recipe=lambda i: f"Earliest safe age: {int(i[node_key])}",
+            recipe=lambda i: f"Off-mandate age: {int(i[node_key])}",
             compute_version="age-tile-v1",
         ),
     ]

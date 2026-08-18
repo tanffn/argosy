@@ -1,14 +1,24 @@
 """Retirement-age-label gate — run-106 finding [2].
 
-The resolver DELIBERATELY distinguishes two retirement ages:
-  - ``earliest_safe_age`` — the HEADLINE age the user reads as "you can retire".
-  - ``fi_age``            — the FIRE-bridge SIZING age the bridge sleeve funds
-                            from.
-They are NOT meant to be equal. So the invariant is NOT "the two ages match".
-It is:
+UPDATED 2026-08-18 (ARIEL'S RULING, RED-12/RED-16, plan-109 review): publish
+BOTH ages, no single headline. ``retirement.preservation_age`` is the
+MANDATE-SATISFYING (capital-preservation, no principal drawdown) reading;
+``retirement.earliest_safe_age`` is the OFF-MANDATE (typical drawdown, spends
+principal) reading. Two published FIRE-bridge figures exist —
+``retirement.fire_bridge_nis`` (sized from ``preservation_age``, the mandate
+case this gate checks) and ``retirement.fire_bridge_offmandate_nis`` (sized
+from ``earliest_safe_age``, not covered by this gate today). Neither bridge
+is EVER sized from ``retirement.fi_age`` (an agent-opinion trajectory marker,
+informational only).
+
+This module's params are named historically (``fi_age`` = "the resolver's
+chosen sizing age for the bridge this gate checks" — whatever key currently
+backs that bridge, today ``retirement.preservation_age``; it has NEVER meant
+the literal ``retirement.fi_age`` resolver key since the RED-12 fix). The
+invariant is NOT "the two ages match" for their own sake. It is:
   (a) each age is LABELED BY ITS DEFINITION everywhere it appears, AND
   (b) the bridge sleeve is sized from the resolver's CHOSEN sizing age (today
-      that is ``fi_age``): ``bridge_start_age == fi_age``.
+      that is ``preservation_age``): ``bridge_start_age == fi_age`` (param name).
 
 The run-106 defect: headline 46 / ``fi_age`` 46, but the bridge sleeve was
 sized from age 47 to 60 — silently dropping one year of bridge funding vs the
