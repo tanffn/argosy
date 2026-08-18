@@ -1,12 +1,17 @@
+from datetime import date
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
 from argosy.services.tax_simulation_ingest import (
     LotTaxAggregate,
+    dated_eligible_shares,
+    eligibility_schedule,
     eligible_shares,
     ingest_report,
     realization_tax_summary,
+    section_102_eligible_date,
 )
 from argosy.services.tax_simulation_parser import TaxSimLot, TaxSimReport
 from argosy.state.models import TaxSimulationLot
@@ -359,3 +364,139 @@ def test_round3_blocker3_breaking_lot_no_ordinary_income_refused_for_revaluation
 
     # The 50 refused shares are in incomplete_lot_shares.
     assert agg_rev.incomplete_lot_shares == pytest.approx(50.0)
+
+
+# ---------------------------------------------------------------------------
+# RED-9 (plan-109 review): dated Section-102 eligibility (24 months from grant,
+# Amendment 147) — eligibility is time-varying, not a fixed snapshot.
+# ---------------------------------------------------------------------------
+
+
+def test_section_102_eligible_date_is_24_months_from_grant():
+    """Amendment 147: 24 months FROM THE GRANT (allotment) date, not end of the
+    tax year of grant. domain_knowledge/tax/israel/section_102.md."""
+    assert section_102_eligible_date("10/03/2025") == date(2027, 3, 10)
+    assert section_102_eligible_date("08/04/2024") == date(2026, 4, 8)
+    # No parseable grant date (e.g. ESPP rows in the ingested report) -> unknown,
+    # never a guessed maturity.
+    assert section_102_eligible_date("") is None
+    assert section_102_eligible_date(None) is None
+    assert section_102_eligible_date("49.355") is None  # not a date at all
+
+
+def _dated_report(sim_date="18/06/2026"):
+    """Mirrors the shape of the live book: one already-eligible core, one
+    Breaking RSU grant with a KNOWN maturity date, and one Breaking ESPP lot
+    with no parseable grant date (maturity genuinely unknown)."""
+    return TaxSimReport(simulation_date=sim_date, lots=[
+        TaxSimLot(
+            plan_type="RSU", shares=9_230, holding_period="OK", eligible=True,
+            grant_id="213000", grant_date="08/06/2022",
+            sale_price_usd=200.0, cost_basis_usd=20.0,
+            capital_income_usd=9_230 * 180.0, ordinary_income_usd=9_230 * 20.0,
+            net_proceeds_usd=9_230 * 200.0 * 0.85,
+        ),
+        TaxSimLot(
+            plan_type="RSU", shares=358, holding_period="Breaking", eligible=False,
+            grant_id="331375", grant_date="10/03/2025",
+            sale_price_usd=200.0, cost_basis_usd=150.0,
+            capital_income_usd=0.0, ordinary_income_usd=358 * 50.0,
+            net_proceeds_usd=358 * 150.0,
+        ),
+        TaxSimLot(
+            plan_type="ESPP", shares=1_295, holding_period="Breaking", eligible=False,
+            grant_id="", grant_date="",  # no dated grant -> unknown maturity
+            sale_price_usd=200.0, cost_basis_usd=190.0,
+            capital_income_usd=0.0, ordinary_income_usd=1_295 * 10.0,
+            net_proceeds_usd=1_295 * 190.0,
+        ),
+    ])
+
+
+def test_eligibility_schedule_dates_the_breaking_rsu_lot_only():
+    """A Breaking lot with a parseable grant date gets a dated tranche; the ESPP
+    lot (no grant date in the report) is excluded — its maturity is unknown, not
+    assumed. This is the dated multi-year eligibility schedule Sol asked for."""
+    s = _db()
+    ingest_report(s, user_id="ariel", report=_dated_report())
+    sched = eligibility_schedule(s, "ariel")
+    assert len(sched) == 1
+    assert sched[0].grant_id == "331375"
+    assert sched[0].shares == pytest.approx(358.0)
+    assert sched[0].eligible_date == date(2027, 3, 10)
+
+
+def test_dated_eligible_shares_grows_past_the_report_snapshot():
+    """The eligible pool is NOT a fixed 9,230 forever: by 2027-03-10 the 331375
+    grant matures, growing the dated-eligible pool to 9,588 — the ESPP tail
+    (1,295 sh, no dated grant) never grows because its maturity is unknown."""
+    s = _db()
+    ingest_report(s, user_id="ariel", report=_dated_report())
+
+    assert eligible_shares(s, "ariel") == pytest.approx(9_230.0)  # unchanged snapshot
+    assert dated_eligible_shares(s, "ariel", date(2026, 12, 31)) == pytest.approx(9_230.0)
+    assert dated_eligible_shares(s, "ariel", date(2027, 3, 9)) == pytest.approx(9_230.0)  # 1 day early
+    assert dated_eligible_shares(s, "ariel", date(2027, 3, 10)) == pytest.approx(9_588.0)  # matures
+    assert dated_eligible_shares(s, "ariel", date(2030, 1, 1)) == pytest.approx(9_588.0)  # ESPP never joins
+
+
+def test_dated_eligible_shares_no_report_is_none():
+    s = _db()
+    assert dated_eligible_shares(s, "ariel", date(2027, 1, 1)) is None
+
+
+def test_realization_tax_summary_as_of_date_relabels_matured_lot_to_capital_rate():
+    """Selling 9,480 sh (the plan's planned glide sale) is short of the 9,230-sh
+    snapshot-eligible pool by 250 sh — but by 2027-03-10 the 331375 grant matures,
+    covering the shortfall entirely at CAPITAL rates. Without ``as_of_date`` the
+    250-sh shortfall prices at the Breaking (ordinary) rate; with the dated
+    projection it prices at the Section-102 Capital rate instead."""
+    s = _db()
+    ingest_report(s, user_id="ariel", report=_dated_report())
+
+    sell_sh = 9_480.0
+    eligible_now = 9_230.0
+    breaking_now = sell_sh - eligible_now  # 250
+
+    undated = realization_tax_summary(
+        s, "ariel", max_eligible_shares=eligible_now, max_breaking_shares=breaking_now,
+    )
+    assert undated.total_shares == pytest.approx(sell_sh)
+
+    dated = realization_tax_summary(
+        s, "ariel", max_eligible_shares=sell_sh, max_breaking_shares=0.0,
+        as_of_date=date(2027, 12, 31),
+    )
+    assert dated.total_shares == pytest.approx(sell_sh)
+    # Every one of the 9,480 planned-sale shares now prices at the eligible
+    # (capital-track) group's economics — no breaking-rate shares remain.
+    # Sanity: the 250-sh shortfall came entirely from the matured 331375 grant
+    # (cost_basis $150, ordinary_income $50/sh), which is a DIFFERENT per-share
+    # economics than the undated run's arbitrary first-in-query-order breaking
+    # lot (the ESPP grant), so the two totals need not be numerically equal —
+    # only the SHARE COUNT priced at capital-vs-ordinary rate must differ.
+    assert dated.embedded_tax_at_sim_usd != pytest.approx(undated.embedded_tax_at_sim_usd)
+
+
+def test_realization_tax_summary_as_of_date_espp_never_relabeled():
+    """as_of_date must NEVER relabel the ESPP tail (no parseable grant date) —
+    even at a far-future as_of, only the dated RSU grant matures."""
+    s = _db()
+    ingest_report(s, user_id="ariel", report=_dated_report())
+
+    # Cap at the full dated-eligible pool (9,588) + 0 breaking: must succeed
+    # without needing to touch the ESPP tail.
+    agg = realization_tax_summary(
+        s, "ariel", max_eligible_shares=9_588.0, max_breaking_shares=0.0,
+        as_of_date=date(2099, 1, 1),
+    )
+    assert agg.total_shares == pytest.approx(9_588.0)
+
+    # Asking for MORE than the dated-eligible pool at max_breaking=0 must fall
+    # back to whatever's left in the (still-unrelabeled) ESPP breaking group —
+    # i.e. the ESPP shares are still excluded from the "eligible" cap group.
+    agg_all = realization_tax_summary(
+        s, "ariel", max_eligible_shares=9_588.0, max_breaking_shares=1_295.0,
+        as_of_date=date(2099, 1, 1),
+    )
+    assert agg_all.total_shares == pytest.approx(9_588.0 + 1_295.0)

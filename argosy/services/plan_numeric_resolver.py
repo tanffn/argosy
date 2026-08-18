@@ -203,6 +203,12 @@ _KEY_UNITS: dict[str, str] = {
     # replacing it. See _apply_nvda_realization_tax_glide.
     "tax.nvda_embedded_cgt_glide_nis": "nis",
     "retirement.fi_margin_net_of_realization_glide_nis": "nis",
+    # DATED counterparts (RED-9) — eligibility projected forward per-lot via the
+    # Section-102 24-months-from-grant clock instead of frozen at the report's
+    # point-in-time markings. See _apply_nvda_realization_tax_glide_dated.
+    "tax.nvda_embedded_cgt_glide_dated_nis": "nis",
+    "retirement.fi_margin_net_of_realization_glide_dated_nis": "nis",
+    "concentration.nvda_eligible_by_glide_horizon_sh": "shares",
 }
 
 # Fixed STRUCTURAL ages — not derived, not MC-dependent. The pension unlock age
@@ -1404,6 +1410,11 @@ def resolve_plan_numbers(
     # realization-tax pass (shares FX/price sourcing).
     _apply_nvda_realization_tax_glide(session, user_id, values)
 
+    # DATED counterpart (RED-9): eligibility projected forward per-lot to the
+    # settled glide horizon instead of frozen at the report's point-in-time
+    # markings. Alongside, never replacing, the single-year figure above.
+    _apply_nvda_realization_tax_glide_dated(session, user_id, values)
+
     # FI margin net of the embedded NVDA realization tax.  Adds the honest after-tax
     # FI sufficiency figure alongside the gross margin — never replaces it.
     _apply_fi_margin_net_of_realization(values)
@@ -1411,6 +1422,9 @@ def resolve_plan_numbers(
     # Glide-consistent net margin (plan-as-written), alongside the full-liquidation
     # bound above — FM run 379 required BOTH visible, neither replacing the other.
     _apply_fi_margin_net_of_realization_glide(values)
+
+    # DATED counterpart of the glide-consistent net margin (RED-9).
+    _apply_fi_margin_net_of_realization_glide_dated(values)
 
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
     # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
@@ -2468,6 +2482,212 @@ def _apply_nvda_realization_tax_glide(
             f"max_breaking_shares={breaking_cap:,.0f}) at {price_label} × BOI USD/NIS "
             "— tax on the PLANNED sale only, eligible and breaking shares taxed at "
             "their own rates (never blended)"
+        ),
+    )
+
+
+def _apply_nvda_realization_tax_glide_dated(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """DATED counterpart to ``_apply_nvda_realization_tax_glide``.
+
+    RED-9 (Sol, plan-109 review): the ``concentration.nvda_eligible_now_sh`` pool
+    (9,230 sh) is a POINT-IN-TIME snapshot from the ingested tax-sim report, but
+    Section-102 eligibility is time-varying — each Breaking lot matures 24 months
+    from ITS OWN grant date (Amendment 147; see
+    ``domain_knowledge/tax/israel/section_102.md``). The single-year glide tax
+    above prices the ``nvda_sell_sh − nvda_eligible_now_sh`` shortfall at whatever
+    Breaking lot happens to sort first (a documented but ARBITRARY lot-order
+    assumption — see ``_cap_group_shares`` docstring), because it has no dated
+    schedule to consult.
+
+    This publishes the SAME glide-consistent tax, but computed against the DATED
+    eligibility projected to the end of NEXT tax year (the horizon of the settled
+    2-year glide verdict, ``action_proposals`` ``plan_glide_schedule_verdict``) —
+    ``tax_simulation_ingest.dated_eligible_shares`` / ``realization_tax_summary(...,
+    as_of_date=...)``. Shares with no parseable grant date (ESPP Breaking lots)
+    never season under this projection — conservatively excluded, not assumed.
+
+    Adds ``tax.nvda_embedded_cgt_glide_dated_nis`` and
+    ``concentration.nvda_eligible_by_glide_horizon_sh`` ALONGSIDE the single-year
+    figures above — never replacing them (same doctrine as the glide vs
+    full-liquidation pair). Pending — never a guess — when inputs are missing.
+    """
+    from datetime import date as _date
+
+    tax_key = "tax.nvda_embedded_cgt_glide_dated_nis"
+    horizon_key = "concentration.nvda_eligible_by_glide_horizon_sh"
+
+    sell_rv = values.get("concentration.nvda_sell_sh")
+    if (
+        sell_rv is None or sell_rv.status != "resolved" or sell_rv.value is None
+    ):
+        values[tax_key] = ResolvedValue.pending(
+            tax_key, "nis", "concentration.nvda_sell_sh not resolved")
+        values[horizon_key] = ResolvedValue.pending(
+            horizon_key, "shares", "concentration.nvda_sell_sh not resolved")
+        return
+
+    sell_sh = float(sell_rv.value)
+    as_of = _date(_date.today().year + 1, 12, 31)
+
+    from argosy.services.tax_simulation_ingest import dated_eligible_shares
+
+    try:
+        dated_elig = dated_eligible_shares(session, user_id, as_of)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.dated_eligible_failed err=%s", exc)
+        dated_elig = None
+
+    if dated_elig is None:
+        values[tax_key] = ResolvedValue.pending(
+            tax_key, "nis", "no tax-sim report ingested")
+        values[horizon_key] = ResolvedValue.pending(
+            horizon_key, "shares", "no tax-sim report ingested")
+        return
+
+    values[horizon_key] = ResolvedValue(
+        key=horizon_key, value=dated_elig, unit="shares", status="resolved",
+        source_locator=(
+            f"tax_simulation_ingest.dated_eligible_shares(as_of={as_of.isoformat()}) "
+            "— currently-eligible pool + Breaking lots whose grant_date+24mo matures "
+            "by that date (ESPP Breaking lots excluded: no parseable grant date)"
+        ),
+        confidence="HIGH",
+        formula="eligible_shares(now) + sum(dated Breaking tranches maturing by the glide horizon)",
+    )
+
+    eligible_cap = min(dated_elig, sell_sh)
+    breaking_cap = max(0.0, sell_sh - eligible_cap)
+
+    fx = 0.0
+    try:
+        _snap_for_fx = _head_snapshot_row(session, user_id)
+        if _snap_for_fx is not None:
+            _snap_fx = _to_float(_snap_for_fx.fx_usd_nis) or 0.0
+            fx, _ = _current_boi_usd_nis(session, _snap_fx)
+    except Exception:  # noqa: BLE001
+        fx = 0.0
+    if not fx or fx <= 0:
+        fx_rv = values.get("fx.usd_nis")
+        if fx_rv is None or fx_rv.status != "resolved" or not fx_rv.value:
+            values[tax_key] = ResolvedValue.pending(tax_key, "nis", "fx.usd_nis not resolved")
+            return
+        fx = float(fx_rv.value)
+
+    current_nvda_px: float | None = None
+    try:
+        from argosy.services.holding_books import load_total_book, parse_positions_json
+
+        snap = _head_snapshot_row(session, user_id)
+        if snap is not None:
+            raw = parse_positions_json(snap.positions_json)
+            book = load_total_book(
+                session, user_id, raw,
+                snapshot_date=getattr(snap, "snapshot_date", None),
+            )
+            if not book.degraded:
+                for p in book.total:
+                    if str(p.get("symbol", "")).upper() == "NVDA":
+                        px = _to_float(p.get("current_price"))
+                        if px and px > 0:
+                            current_nvda_px = px
+                        break
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.realization_tax_glide_dated_price_failed err=%s", exc)
+
+    try:
+        from argosy.services.tax_simulation_ingest import realization_tax_summary
+
+        agg = realization_tax_summary(
+            session, user_id, current_nvda_price_usd=current_nvda_px,
+            max_eligible_shares=eligible_cap, max_breaking_shares=breaking_cap,
+            as_of_date=as_of,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.realization_tax_glide_dated_summary_failed err=%s", exc)
+        agg = None
+
+    if agg is None:
+        values[tax_key] = ResolvedValue.pending(tax_key, "nis", "no tax-sim report ingested")
+        return
+
+    embedded_tax_nis = agg.embedded_tax_at_revalue_usd * fx
+    price_label = (
+        f"REVALUED at current NVDA ${agg.revalue_price_usd:,.2f}"
+        if agg.uses_current_price
+        else f"AS-OF sim date {agg.simulation_date} @ ${agg.sim_sale_price_usd:,.2f}"
+    )
+    values[tax_key] = ResolvedValue(
+        key=tax_key,
+        value=embedded_tax_nis,
+        unit="nis",
+        status="resolved",
+        source_locator=(
+            f"DATED glide (as of {as_of.isoformat()}, the settled 2-year glide "
+            f"horizon): {eligible_cap:,.0f} sh capital-track (§102, 30% effective; "
+            f"includes lots projected to mature by {as_of.isoformat()}) + "
+            f"{breaking_cap:,.0f} sh still-Breaking/ordinary "
+            f"(no parseable grant date, e.g. ESPP) = {agg.total_shares:,.0f} sh of "
+            f"concentration.nvda_sell_sh={sell_sh:,.0f} | tax_simulation_lots "
+            f"{agg.simulation_date} @ ${agg.sim_sale_price_usd:,.2f} | {price_label} | "
+            f"BOI FX {fx:.4f} NIS/USD"
+        ),
+        agent_report_id=None,
+        confidence="MEDIUM",  # projection of future maturity dates, not a live report marking
+        formula=(
+            f"realization_tax_summary(max_eligible_shares={eligible_cap:,.0f}, "
+            f"max_breaking_shares={breaking_cap:,.0f}, as_of_date={as_of.isoformat()}) "
+            f"at {price_label} × BOI USD/NIS — DATED counterpart of "
+            "tax.nvda_embedded_cgt_glide_nis: eligibility is projected forward per-lot "
+            "via the Section-102 24-months-from-grant clock instead of frozen at the "
+            "report's own point-in-time markings"
+        ),
+    )
+
+
+def _apply_fi_margin_net_of_realization_glide_dated(values: dict[str, ResolvedValue]) -> None:
+    """DATED counterpart to ``_apply_fi_margin_net_of_realization_glide`` — same
+    construction (gross margin − embedded tax) but netting
+    ``tax.nvda_embedded_cgt_glide_dated_nis`` instead of the single-year figure.
+    Alongside, never replacing, the single-year glide margin."""
+    key = "retirement.fi_margin_net_of_realization_glide_dated_nis"
+    gross_margin_rv = values.get("retirement.fi_margin_signed_nis")
+    dated_tax_rv = values.get("tax.nvda_embedded_cgt_glide_dated_nis")
+
+    if (
+        gross_margin_rv is None
+        or dated_tax_rv is None
+        or gross_margin_rv.status != "resolved"
+        or dated_tax_rv.status != "resolved"
+        or gross_margin_rv.value is None
+        or dated_tax_rv.value is None
+    ):
+        values[key] = ResolvedValue.pending(
+            key, "nis",
+            "retirement.fi_margin_signed_nis or tax.nvda_embedded_cgt_glide_dated_nis not resolved",
+        )
+        return
+
+    net_margin = float(gross_margin_rv.value) - float(dated_tax_rv.value)
+    tax_src = dated_tax_rv.source_locator or "tax_simulation_lots (dated glide)"
+    values[key] = ResolvedValue(
+        key=key,
+        value=net_margin,
+        unit="nis",
+        status="resolved",
+        source_locator=(
+            f"retirement.fi_margin_signed_nis − tax.nvda_embedded_cgt_glide_dated_nis | {tax_src}"
+        ),
+        agent_report_id=None,
+        confidence=dated_tax_rv.confidence or "MEDIUM",
+        formula=(
+            "fi_margin_signed_nis − nvda_embedded_cgt_glide_dated_nis "
+            "(gross margin less the DATED glide-consistent tax — eligibility projected "
+            "forward per-lot to the settled glide horizon rather than frozen at the "
+            "report's point-in-time markings; "
+            ">0 => FI reached under the plan as written; "
+            "<0 => the plan as written does not yet clear FI after tax)"
         ),
     )
 

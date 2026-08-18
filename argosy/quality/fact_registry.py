@@ -63,6 +63,13 @@ FACT_DISPLAY: dict[str, str] = {
     # full-liquidation [bound]"). See plan_numeric_resolver._apply_nvda_realization_tax_glide.
     "tax.nvda_embedded_cgt_glide_nis": "nis",
     "retirement.fi_margin_net_of_realization_glide_nis": "nis",
+    # DATED counterparts (RED-9, plan-109 review): eligibility projected forward
+    # per-lot to the settled glide horizon (Section-102 24-months-from-grant
+    # clock) instead of frozen at the tax-sim report's point-in-time markings.
+    # See plan_numeric_resolver._apply_nvda_realization_tax_glide_dated.
+    "tax.nvda_embedded_cgt_glide_dated_nis": "nis",
+    "retirement.fi_margin_net_of_realization_glide_dated_nis": "nis",
+    "concentration.nvda_eligible_by_glide_horizon_sh": "sh",
     # Magnitude (abs) form of the SAME signed margin, for shortfall phrasing
     # ("short by ₪X" — the canonical FI verdict itself renders `short ₪{abs(m)}`,
     # see plan_numeric_resolver / surface_rendering.render_fi_verdict_text). A

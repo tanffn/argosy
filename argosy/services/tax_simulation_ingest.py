@@ -7,8 +7,9 @@ NVDA deconcentration schedule reflects how many shares are capital-track-eligibl
 """
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
 
@@ -26,6 +27,44 @@ _SECTION_102_HIGH_INCOME_RATE: float = 0.30
 # Used as the TAX FLOOR for eligible lots: even if the capital gain goes to zero because
 # the price falls below the cost basis, the ordinary income tax is still owed.
 _ORDINARY_HIGH_INCOME_RATE: float = 0.50
+
+# Section-102 Capital-track trustee holding period: 24 months FROM THE GRANT
+# (allotment) DATE, per Amendment 147 (2006) — domain_knowledge/tax/israel/
+# section_102.md "Holding-period clock" section (corrected 2026-07-09 against
+# the trustee's own eligibility engine; NOT "end of the tax year of grant").
+_SECTION_102_HOLDING_MONTHS: int = 24
+
+
+def _parse_ddmmyyyy(s: str | None) -> date | None:
+    """Parse the tax-sim report's ``dd/mm/yyyy`` grant-date string. Returns
+    ``None`` for blank/unparseable values (e.g. ESPP lots, which the ingested
+    report does not carry a Section-102 grant date for) — never raises, so a
+    lot with no usable date simply cannot be dated-eligibility-projected."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def _add_months(d: date, months: int) -> date:
+    total = d.month - 1 + months
+    y = d.year + total // 12
+    m = total % 12 + 1
+    day = min(d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day)
+
+
+def section_102_eligible_date(grant_date_str: str | None) -> date | None:
+    """The date a lot becomes Section-102 capital-track eligible: grant date +
+    24 months (Amendment 147). ``None`` when the grant date is missing/unparseable
+    (never a guessed date)."""
+    gd = _parse_ddmmyyyy(grant_date_str)
+    if gd is None:
+        return None
+    return _add_months(gd, _SECTION_102_HOLDING_MONTHS)
 
 
 @dataclass
@@ -160,6 +199,75 @@ def eligible_shares(session, user_id: str, *, plan_type: str | None = None,
 
 
 @dataclass
+class EligibilityTranche:
+    """One currently-Breaking grant that has a KNOWN Section-102 capital-track
+    eligible date (grant_date + 24 months, Amendment 147). ESPP lots (no
+    per-lot grant date in the ingested report) are never represented here —
+    their maturity is genuinely unknown, not silently assumed."""
+
+    grant_id: str
+    shares: float
+    grant_date: str
+    eligible_date: date
+
+
+def eligibility_schedule(session, user_id: str) -> list[EligibilityTranche]:
+    """The DATED multi-year Section-102 eligibility schedule for shares that are
+    Breaking in the LATEST ingested report but carry a parseable grant date —
+    i.e. the shares ``eligible_shares(..., eligible=False)`` counts TODAY, broken
+    out by the calendar date each grant's 24-month trustee clock (from the grant/
+    allotment date, Amendment 147) actually completes.
+
+    This is what makes "the eligible pool is currently smaller than the planned
+    sale" a DATED-SCHEDULE fact rather than a permanent shortfall: eligibility is
+    time-varying, and this returns exactly how many more shares mature and on
+    what date. Sorted by eligible_date ascending. Empty list if no report
+    ingested or no dated Breaking lots exist.
+    """
+    sim = _latest_simulation_date(session, user_id)
+    if sim is None:
+        return []
+    lots = session.execute(
+        sa.select(TaxSimulationLot).where(
+            TaxSimulationLot.user_id == user_id,
+            TaxSimulationLot.simulation_date == sim,
+            TaxSimulationLot.eligible.is_(False),
+        ).order_by(TaxSimulationLot.grant_date.asc(), TaxSimulationLot.id.asc())
+    ).scalars().all()
+    out: list[EligibilityTranche] = []
+    for lot in lots:
+        elig_date = section_102_eligible_date(lot.grant_date)
+        if elig_date is None or not lot.shares:
+            continue  # no parseable grant date (e.g. ESPP) -> genuinely unknown, not projected
+        out.append(EligibilityTranche(
+            grant_id=lot.grant_id, shares=float(lot.shares),
+            grant_date=lot.grant_date, eligible_date=elig_date,
+        ))
+    out.sort(key=lambda t: t.eligible_date)
+    return out
+
+
+def dated_eligible_shares(session, user_id: str, as_of: date) -> float | None:
+    """Capital-track-eligible share count PROJECTED to ``as_of`` — the currently
+    eligible pool (``eligible_shares``) plus any dated tranche from
+    :func:`eligibility_schedule` whose ``eligible_date <= as_of``. ``None`` if no
+    tax-sim report is ingested (never a guess).
+
+    This is the time-varying counterpart to ``eligible_shares`` (which is a
+    point-in-time snapshot as of the report's own eligibility markings). Shares
+    with no parseable grant date (ESPP Breaking lots in the current report) never
+    become eligible under this projection — they are conservatively excluded,
+    not assumed to season.
+    """
+    now_elig = eligible_shares(session, user_id, eligible=True)
+    if now_elig is None:
+        return None
+    schedule = eligibility_schedule(session, user_id)
+    matured = sum(t.shares for t in schedule if t.eligible_date <= as_of)
+    return now_elig + matured
+
+
+@dataclass
 class _ScaledLot:
     """Lightweight stand-in for a ``TaxSimulationLot`` row, scaled down (shares +
     the linear-in-shares totals) to represent a PARTIAL sale out of a lot. Used
@@ -216,6 +324,33 @@ def _cap_group_shares(lots: list, *, eligible: bool, max_shares: float | None) -
     return out
 
 
+def _relabel_for_as_of(lots: list, as_of: date) -> list:
+    """Return ``lots`` with any Breaking lot RELABELED eligible when its dated
+    Section-102 clock (grant_date + 24 months) completes on/before ``as_of`` —
+    i.e. projects the report's point-in-time eligibility markings FORWARD to a
+    future sale date. Lots with no parseable grant date (ESPP) are returned
+    unchanged: their maturity is unknown, never assumed. Currently-eligible
+    lots pass through unchanged. Used by ``realization_tax_summary`` only when
+    the caller passes ``as_of_date`` — the default (``as_of_date=None``) keeps
+    the report's own snapshot eligibility, unchanged behavior."""
+    out: list = []
+    for lot in lots:
+        eligible = bool(lot.eligible)
+        if not eligible:
+            elig_date = section_102_eligible_date(getattr(lot, "grant_date", None))
+            if elig_date is not None and as_of >= elig_date:
+                eligible = True
+        if eligible == bool(lot.eligible):
+            out.append(lot)
+        else:
+            out.append(_ScaledLot(
+                shares=lot.shares, sale_price_usd=lot.sale_price_usd,
+                net_proceeds_usd=lot.net_proceeds_usd,
+                ordinary_income_usd=lot.ordinary_income_usd, eligible=eligible,
+            ))
+    return out
+
+
 def realization_tax_summary(
     session,
     user_id: str,
@@ -223,8 +358,18 @@ def realization_tax_summary(
     current_nvda_price_usd: float | None = None,
     max_eligible_shares: float | None = None,
     max_breaking_shares: float | None = None,
+    as_of_date: date | None = None,
 ) -> "LotTaxAggregate | None":
     """Aggregate tax figures for the NVDA position from the latest simulation.
+
+    ``as_of_date``, when given, projects each Breaking lot's eligibility FORWARD
+    to that date using the dated Section-102 24-months-from-grant clock (see
+    :func:`_relabel_for_as_of` / :func:`section_102_eligible_date`) before the
+    ``max_eligible_shares`` / ``max_breaking_shares`` caps are applied — this is
+    what lets a multi-year glide tranche correctly price shares that are
+    Breaking TODAY but will have matured into the capital track by the tranche's
+    sale date. Default (``None``) preserves the report's own point-in-time
+    eligibility markings — unchanged behavior for every existing caller.
 
     If ``current_nvda_price_usd`` is provided and differs from the simulation price, the
     result is revalued to the current mark; otherwise ``uses_current_price=False`` and the
@@ -269,6 +414,9 @@ def realization_tax_summary(
     ).scalars().all()
     if not lots:
         return None
+
+    if as_of_date is not None:
+        lots = _relabel_for_as_of(lots, as_of_date)
 
     if max_eligible_shares is not None or max_breaking_shares is not None:
         lots = (

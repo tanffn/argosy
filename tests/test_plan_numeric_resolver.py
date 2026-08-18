@@ -1577,6 +1577,141 @@ class TestBlocker4SimShareMismatch:
         assert "10,940" in src, f"sim share count missing from source_locator: {src!r}"
 
 
+def _seed_dated_tax_sim_lots(session):
+    """One eligible core lot + one Breaking lot with a KNOWN maturity date
+    (grant + 24mo, Amendment 147) — the RED-9 fixture: eligibility is
+    time-varying, not the fixed snapshot the un-dated glide figure uses."""
+    from argosy.services.tax_simulation_ingest import ingest_report
+    from argosy.services.tax_simulation_parser import TaxSimLot, TaxSimReport
+    from argosy.state.models import TaxSimulationLot
+    TaxSimulationLot.__table__.create(session.get_bind(), checkfirst=True)
+    rpt = TaxSimReport(simulation_date="18/06/2026", lots=[
+        TaxSimLot(
+            plan_type="RSU", shares=100, holding_period="OK", eligible=True,
+            grant_id="A1", grant_date="08/06/2022",
+            sale_price_usd=200.0, cost_basis_usd=20.0,
+            capital_income_usd=100 * 180.0, ordinary_income_usd=100 * 20.0,
+            net_proceeds_usd=100 * 200.0 * 0.85,
+        ),
+        TaxSimLot(
+            plan_type="RSU", shares=30, holding_period="Breaking", eligible=False,
+            grant_id="B1", grant_date="10/03/2025",  # matures 2027-03-10
+            sale_price_usd=200.0, cost_basis_usd=150.0,
+            capital_income_usd=0.0, ordinary_income_usd=30 * 50.0,
+            net_proceeds_usd=30 * 150.0,
+        ),
+    ])
+    ingest_report(session, user_id="ariel", report=rpt)
+
+
+class TestRed9DatedGlideRealizationTax:
+    """RED-9 (plan-109 review): the un-dated glide figure prices any sell_sh
+    beyond nvda_eligible_now_sh at the Breaking (ordinary) rate — even when a
+    Breaking lot has a KNOWN maturity date that lands before the glide's
+    2-year horizon. The dated counterpart must price those shares at the
+    Section-102 Capital rate instead, once they've matured by the horizon."""
+
+    def test_dated_horizon_shares_published(self, session, monkeypatch):
+        from argosy.services import plan_numeric_resolver as rp_mod
+        from argosy.state.models import FxRate
+        from decimal import Decimal
+        from datetime import date
+
+        _seed_dated_tax_sim_lots(session)
+        session.add(FxRate(date=date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+        session.commit()
+        monkeypatch.setattr(rp_mod, "_head_snapshot_row", lambda *a, **kw: _make_fake_snap())
+
+        values: dict = {
+            "concentration.nvda_sell_sh": ResolvedValue(
+                key="concentration.nvda_sell_sh", value=110.0, unit="shares",
+                status="resolved", source_locator="test",
+            ),
+            "concentration.nvda_eligible_now_sh": ResolvedValue(
+                key="concentration.nvda_eligible_now_sh", value=100.0, unit="shares",
+                status="resolved", source_locator="test",
+            ),
+            "fx.usd_nis": ResolvedValue(
+                key="fx.usd_nis", value=3.0, unit="nis_per_usd", status="resolved",
+                source_locator="test", confidence="HIGH",
+            ),
+        }
+        rp_mod._apply_nvda_realization_tax_glide(session, "ariel", values)
+        rp_mod._apply_nvda_realization_tax_glide_dated(session, "ariel", values)
+
+        horizon = values.get("concentration.nvda_eligible_by_glide_horizon_sh")
+        assert horizon is not None and horizon.status == "resolved"
+        # 100 already eligible + 30 from the dated B1 grant (matures well within
+        # the 2-year glide horizon from "today").
+        assert horizon.value == pytest.approx(130.0)
+
+        undated = values.get("tax.nvda_embedded_cgt_glide_nis")
+        dated = values.get("tax.nvda_embedded_cgt_glide_dated_nis")
+        assert undated is not None and undated.status == "resolved"
+        assert dated is not None and dated.status == "resolved"
+        # The dated figure is a DISTINCT, separately-sourced number (never
+        # silently overwrites the un-dated one).
+        assert "DATED glide" in (dated.source_locator or "")
+        assert "PLANNED SALE ONLY" in (undated.source_locator or "")
+        # All 10 shortfall shares (110 sell - 100 eligible) now source from the
+        # matured B1 grant at capital-track economics, not ordinary/Breaking —
+        # so 0 sh remain priced at Breaking under the dated figure.
+        assert "0 sh still-Breaking" in (dated.source_locator or "")
+
+    def test_dated_fi_margin_alongside_undated(self, session, monkeypatch):
+        from argosy.services import plan_numeric_resolver as rp_mod
+        from argosy.state.models import FxRate
+        from decimal import Decimal
+        from datetime import date
+
+        _seed_dated_tax_sim_lots(session)
+        session.add(FxRate(date=date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+        session.commit()
+        monkeypatch.setattr(rp_mod, "_head_snapshot_row", lambda *a, **kw: _make_fake_snap())
+
+        values: dict = {
+            "concentration.nvda_sell_sh": ResolvedValue(
+                key="concentration.nvda_sell_sh", value=110.0, unit="shares",
+                status="resolved", source_locator="test",
+            ),
+            "concentration.nvda_eligible_now_sh": ResolvedValue(
+                key="concentration.nvda_eligible_now_sh", value=100.0, unit="shares",
+                status="resolved", source_locator="test",
+            ),
+            "fx.usd_nis": ResolvedValue(
+                key="fx.usd_nis", value=3.0, unit="nis_per_usd", status="resolved",
+                source_locator="test", confidence="HIGH",
+            ),
+            "retirement.fi_margin_signed_nis": ResolvedValue(
+                key="retirement.fi_margin_signed_nis", value=1_000_000.0, unit="nis",
+                status="resolved", source_locator="test",
+            ),
+        }
+        rp_mod._apply_nvda_realization_tax_glide(session, "ariel", values)
+        rp_mod._apply_nvda_realization_tax_glide_dated(session, "ariel", values)
+        rp_mod._apply_fi_margin_net_of_realization_glide(values)
+        rp_mod._apply_fi_margin_net_of_realization_glide_dated(values)
+
+        undated_margin = values["retirement.fi_margin_net_of_realization_glide_nis"]
+        dated_margin = values["retirement.fi_margin_net_of_realization_glide_dated_nis"]
+        assert undated_margin.status == "resolved" and dated_margin.status == "resolved"
+        undated_tax = values["tax.nvda_embedded_cgt_glide_nis"].value
+        dated_tax = values["tax.nvda_embedded_cgt_glide_dated_nis"].value
+        assert undated_margin.value == pytest.approx(1_000_000.0 - undated_tax)
+        assert dated_margin.value == pytest.approx(1_000_000.0 - dated_tax)
+
+    def test_pending_when_sell_sh_unresolved(self, session):
+        from argosy.services import plan_numeric_resolver as rp_mod
+
+        values: dict = {}
+        rp_mod._apply_nvda_realization_tax_glide_dated(session, "ariel", values)
+        assert values["tax.nvda_embedded_cgt_glide_dated_nis"].status == "pending"
+        assert values["concentration.nvda_eligible_by_glide_horizon_sh"].status == "pending"
+
+        rp_mod._apply_fi_margin_net_of_realization_glide_dated(values)
+        assert values["retirement.fi_margin_net_of_realization_glide_dated_nis"].status == "pending"
+
+
 class TestR3IncompleteLotConfidenceDegrades:
     """Round 3 Blocker 2+3 integration: when the LotTaxAggregate has
     incomplete_lot_shares > 0 (missing net_proceeds or refused breaking lot),
