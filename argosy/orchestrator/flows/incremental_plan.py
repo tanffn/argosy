@@ -67,6 +67,7 @@ from argosy.quality.graph_collections import (
 )
 from argosy.quality.live_surfaces import (
     EARLIEST_SAFE_AGE_NODE, FI_CROSSING_YEAR_NODE, FI_MARGIN_NODE,
+    FI_NET_MARGIN_NODE,
     NVDA_CAP_PCT_NODE, NVDA_TARGET_PCT_NODE,
     RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
     canonical_surface_concepts, register_canonical_surfaces, valid_crossing_year,
@@ -105,9 +106,19 @@ SUBJECT_NODE_MAP: dict[str, str] = {
 # graph always carries the resolver's single authoritative value for both —
 # preventing stale hardcodes in LLM prompts (e.g. plan_change_team's old "12%")
 # from diverging from the canonical node's value.
+#
+# FI_NET_MARGIN_NODE MUST be included: register_canonical_surfaces wires
+# surface:fi_verdict / surface:dashboard.fi_tile to (FI_MARGIN_NODE,
+# FI_NET_MARGIN_NODE) unconditionally (see live_surfaces._fi_sufficiency_
+# surfaces). If this key is left out of the seed, graph.recompute() calls
+# DerivationGraph.get("retirement.fi_margin_net_of_realization_nis") on a node
+# that was never added and raises UnknownNodeError — every single
+# build_base_graph() call hits this, not just an edge case (verified: the
+# topo sort's indegree count ignores edges to not-yet-added nodes, so the
+# surface node is never skipped — it always reaches recompute()).
 _RESOLVER_SCALAR_KEYS = (
-    FI_MARGIN_NODE, EARLIEST_SAFE_AGE_NODE, LIQUID_NW_KEY, INVESTABLE_NW_KEY,
-    TOTAL_NW_KEY, FI_CROSSING_YEAR_NODE,
+    FI_MARGIN_NODE, FI_NET_MARGIN_NODE, EARLIEST_SAFE_AGE_NODE, LIQUID_NW_KEY,
+    INVESTABLE_NW_KEY, TOTAL_NW_KEY, FI_CROSSING_YEAR_NODE,
     RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
     NVDA_CAP_PCT_NODE, NVDA_TARGET_PCT_NODE,
 )

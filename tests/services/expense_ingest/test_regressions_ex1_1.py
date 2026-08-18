@@ -648,4 +648,6 @@ def test_bug1_rest_upload_returns_400_for_max_without_card_last4(client_with_db)
     assert response.status_code == 200  # the route returns 200 with per-file results
     body = response.json()
     assert body["results"][0]["status"] == "failed"
-    assert "card_last4 required for Max uploads" in body["results"][0]["error"]
+    # Wording was expanded (argosy/api/routes/expenses.py) for clarity —
+    # pin the invariant ("card_last4 required") not the exact sentence.
+    assert "card_last4 required" in body["results"][0]["error"]

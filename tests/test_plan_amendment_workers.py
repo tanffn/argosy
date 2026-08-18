@@ -297,6 +297,357 @@ def test_medium_worker_failure_preserves_original_notes(
     assert notes["error"] == "synthesizer down"
 
 
+def test_medium_worker_freeze_except_merges_before_tokenize(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """Section-freeze integration: the merge must run BEFORE tokenization,
+    against real (not mocked) merge_frozen_sections + tokenize_bodies /
+    resolve_plan_numbers. Only the synthesizer seam is mocked.
+
+    Sets a prior current plan with a distinguishable "## Targets" value
+    (unslugged heading, matched via the normalized-heading fallback key),
+    then checks that with freeze_except NOT naming "targets" the prior
+    value survives untouched, and with freeze_except naming "targets"
+    the new value wins.
+    """
+    from argosy.orchestrator.flows.plan_amendment import workers
+    from argosy.state.models import PlanVersion as _PV
+
+    sess, run = session_with_baseline_and_run
+
+    prior_current = (
+        sess.query(_PV)
+        .filter_by(user_id="ariel", role="current")
+        .one()
+    )
+    prior_current.horizon_medium_md = (
+        "# Medium horizon\n\n## Targets\n- **NVDA cap**: 15% of net worth\n"
+    )
+    sess.commit()
+
+    def _fake_run_phase_3(**kw):
+        from datetime import date
+
+        from argosy.agents.plan_synthesizer_types import (
+            HorizonSection, PlanSynthesisOutput, SynthesisInputs, SynthTarget,
+        )
+        med = HorizonSection(
+            horizon="medium", freshness_expected="quarterly", status="minor_revision",
+            posture="x",
+            targets=[SynthTarget(
+                label="NVDA cap", value=12, unit="pct_of_net_worth",
+                stated_at=date(2026, 8, 17), revisit_after=date(2027, 8, 17),
+            )],
+        )
+        return PlanSynthesisOutput(
+            long=HorizonSection(horizon="long", freshness_expected="annual", status="no_change", posture="x"),
+            medium=med,
+            short=HorizonSection(horizon="short", freshness_expected="monthly", status="no_change", posture="x"),
+            inputs=SynthesisInputs(),
+        )
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", _fake_run_phase_3)
+
+    # freeze everything -> the new 12% target must be discarded, prior 15% kept.
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+        freeze_except=set(),
+    )
+    draft = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+    assert "15% of net worth" in draft.horizon_medium_md
+    assert "12% of net worth" not in draft.horizon_medium_md
+
+    # New run for the "allowed" case.
+    run2 = DecisionRun(
+        user_id="ariel", ticker="(plan)", tier="medium",
+        decision_kind="plan_amendment_chat", status="running",
+    )
+    sess.add(run2)
+    sess.commit()
+    sess.refresh(run2)
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run2, guidance="x",
+        freeze_except={"targets"},
+    )
+    draft2 = (
+        sess.query(PlanVersion)
+        .filter_by(user_id="ariel", role="draft", decision_run_id=run2.id)
+        .one()
+    )
+    assert "12% of net worth" in draft2.horizon_medium_md
+
+
+def test_medium_worker_freeze_except_none_is_full_reroll(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """Default behaviour (freeze_except=None) must be byte-for-byte the
+    same as before this feature existed — no merge applied."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+    from argosy.state.models import PlanVersion as _PV
+
+    sess, run = session_with_baseline_and_run
+    prior_current = (
+        sess.query(_PV)
+        .filter_by(user_id="ariel", role="current")
+        .one()
+    )
+    prior_current.horizon_medium_md = (
+        "# Medium horizon\n\n## Targets\n- **NVDA cap**: 15% of net worth\n"
+    )
+    sess.commit()
+
+    def _fake_run_phase_3(**kw):
+        from datetime import date
+
+        from argosy.agents.plan_synthesizer_types import (
+            HorizonSection, PlanSynthesisOutput, SynthesisInputs, SynthTarget,
+        )
+        med = HorizonSection(
+            horizon="medium", freshness_expected="quarterly", status="minor_revision",
+            posture="x",
+            targets=[SynthTarget(
+                label="NVDA cap", value=12, unit="pct_of_net_worth",
+                stated_at=date(2026, 8, 17), revisit_after=date(2027, 8, 17),
+            )],
+        )
+        return PlanSynthesisOutput(
+            long=HorizonSection(horizon="long", freshness_expected="annual", status="no_change", posture="x"),
+            medium=med,
+            short=HorizonSection(horizon="short", freshness_expected="monthly", status="no_change", posture="x"),
+            inputs=SynthesisInputs(),
+        )
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", _fake_run_phase_3)
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+    )
+    draft = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+    assert "12% of net worth" in draft.horizon_medium_md
+    assert "15% of net worth" not in draft.horizon_medium_md
+
+
+def test_medium_worker_freeze_baseline_plan_id_uses_that_plan(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """freeze_baseline_plan_id must freeze against the NAMED plan, not
+    the role='current' row — seed two different plans so the assertion
+    discriminates between them."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+    from argosy.state.models import PlanVersion as _PV
+
+    sess, run = session_with_baseline_and_run
+
+    # role='current' row (the WRONG baseline for this test).
+    prior_current = (
+        sess.query(_PV).filter_by(user_id="ariel", role="current").one()
+    )
+    prior_current.horizon_medium_md = (
+        "# Medium horizon\n\n## Targets\n- **NVDA cap**: 15% of net worth\n"
+    )
+
+    # A later draft-turned-superseded plan — the one actually being amended.
+    later_plan = _PV(
+        user_id="ariel", role="superseded", version_label="later",
+        raw_markdown="",
+        horizon_medium_md=(
+            "# Medium horizon\n\n## Targets\n- **NVDA cap**: 20% of net worth\n"
+        ),
+    )
+    sess.add(later_plan)
+    sess.commit()
+    sess.refresh(later_plan)
+
+    def _fake_run_phase_3(**kw):
+        from datetime import date
+
+        from argosy.agents.plan_synthesizer_types import (
+            HorizonSection, PlanSynthesisOutput, SynthesisInputs, SynthTarget,
+        )
+        med = HorizonSection(
+            horizon="medium", freshness_expected="quarterly", status="minor_revision",
+            posture="x",
+            targets=[SynthTarget(
+                label="NVDA cap", value=12, unit="pct_of_net_worth",
+                stated_at=date(2026, 8, 17), revisit_after=date(2027, 8, 17),
+            )],
+        )
+        return PlanSynthesisOutput(
+            long=HorizonSection(horizon="long", freshness_expected="annual", status="no_change", posture="x"),
+            medium=med,
+            short=HorizonSection(horizon="short", freshness_expected="monthly", status="no_change", posture="x"),
+            inputs=SynthesisInputs(),
+        )
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", _fake_run_phase_3)
+
+    # Freeze "targets" is NOT in allow, so the frozen section must come
+    # from later_plan's 20% (not prior_current's 15%, not the new 12%).
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+        freeze_except=set(),
+        freeze_baseline_plan_id=later_plan.id,
+    )
+    draft = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+    assert "20% of net worth" in draft.horizon_medium_md
+    assert "15% of net worth" not in draft.horizon_medium_md
+    assert "12% of net worth" not in draft.horizon_medium_md
+
+
+def test_medium_worker_freeze_baseline_plan_id_missing_raises(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """A freeze_baseline_plan_id that doesn't exist must fail loudly —
+    never silently fall back to prior_current."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+
+    sess, run = session_with_baseline_and_run
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", lambda **kw: _stub_output())
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+        freeze_except=set(), freeze_baseline_plan_id=999999,
+    )
+
+    sess.refresh(run)
+    assert run.status == "failed"
+    notes = json.loads(run.notes_json or "{}")
+    assert "999999" in notes["error"]
+    drafts = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").all()
+    assert len(drafts) == 0
+
+
+def test_medium_worker_freeze_baseline_plan_id_cross_tenant_raises(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """A freeze_baseline_plan_id belonging to a different user must fail
+    loudly, never read across tenants."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+    from argosy.state.models import PlanVersion as _PV, User
+
+    sess, run = session_with_baseline_and_run
+
+    sess.add(User(id="someone_else", plan="free"))
+    other_plan = _PV(
+        user_id="someone_else", role="current", version_label="other",
+        raw_markdown="",
+        horizon_medium_md="# Medium horizon\n\n## Targets\n- **NVDA cap**: 99% of net worth\n",
+    )
+    sess.add(other_plan)
+    sess.commit()
+    sess.refresh(other_plan)
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", lambda **kw: _stub_output())
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+        freeze_except=set(), freeze_baseline_plan_id=other_plan.id,
+    )
+
+    sess.refresh(run)
+    assert run.status == "failed"
+    notes = json.loads(run.notes_json or "{}")
+    assert str(other_plan.id) in notes["error"]
+    drafts = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").all()
+    assert len(drafts) == 0
+
+
+def test_medium_worker_freeze_except_none_ignores_baseline_id(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """freeze_except=None must mean NO freezing at all, even if a
+    freeze_baseline_plan_id is (irrelevantly) supplied."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+    from argosy.state.models import PlanVersion as _PV
+
+    sess, run = session_with_baseline_and_run
+    prior_current = (
+        sess.query(_PV).filter_by(user_id="ariel", role="current").one()
+    )
+    prior_current.horizon_medium_md = (
+        "# Medium horizon\n\n## Targets\n- **NVDA cap**: 15% of net worth\n"
+    )
+    sess.commit()
+
+    def _fake_run_phase_3(**kw):
+        from datetime import date
+
+        from argosy.agents.plan_synthesizer_types import (
+            HorizonSection, PlanSynthesisOutput, SynthesisInputs, SynthTarget,
+        )
+        med = HorizonSection(
+            horizon="medium", freshness_expected="quarterly", status="minor_revision",
+            posture="x",
+            targets=[SynthTarget(
+                label="NVDA cap", value=12, unit="pct_of_net_worth",
+                stated_at=date(2026, 8, 17), revisit_after=date(2027, 8, 17),
+            )],
+        )
+        return PlanSynthesisOutput(
+            long=HorizonSection(horizon="long", freshness_expected="annual", status="no_change", posture="x"),
+            medium=med,
+            short=HorizonSection(horizon="short", freshness_expected="monthly", status="no_change", posture="x"),
+            inputs=SynthesisInputs(),
+        )
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", _fake_run_phase_3)
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+        freeze_except=None, freeze_baseline_plan_id=999999,
+    )
+    draft = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+    assert "12% of net worth" in draft.horizon_medium_md
+    assert "15% of net worth" not in draft.horizon_medium_md
+
+
+def test_medium_worker_freeze_except_no_baseline_id_uses_prior_current_and_warns(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """freeze_except set + freeze_baseline_plan_id=None must fall back to
+    prior_current (unchanged legacy behaviour) AND log a warning naming
+    the plan id used, so a stale-baseline freeze is visible."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+    from argosy.state.models import PlanVersion as _PV
+
+    sess, run = session_with_baseline_and_run
+    prior_current = (
+        sess.query(_PV).filter_by(user_id="ariel", role="current").one()
+    )
+    prior_current.horizon_medium_md = (
+        "# Medium horizon\n\n## Targets\n- **NVDA cap**: 15% of net worth\n"
+    )
+    sess.commit()
+    prior_current_id = prior_current.id
+
+    warnings = []
+    orig_warning = workers.log.warning
+
+    def _capture_warning(event, **kw):
+        warnings.append((event, kw))
+        return orig_warning(event, **kw)
+
+    monkeypatch.setattr(workers.log, "warning", _capture_warning)
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", lambda **kw: _stub_output())
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+        freeze_except=set(),
+    )
+
+    draft = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+    assert "15% of net worth" in draft.horizon_medium_md
+
+    matching = [
+        (event, kw) for event, kw in warnings
+        if event == "plan_amendment.medium.freeze_baseline_defaulted_to_prior_current"
+    ]
+    assert matching, f"expected a warning naming the fallback baseline; got {warnings}"
+    assert matching[0][1]["freeze_baseline_plan_id"] == prior_current_id
+
+
 def _stub_output():
     from argosy.agents.plan_synthesizer_types import (
         HorizonSection, PlanSynthesisOutput, SynthesisInputs,

@@ -19,11 +19,31 @@ from argosy.quality.registry_review_artifact import (
 def _seed_graph(values: dict[str, float]) -> DerivationGraph:
     """A hermetic graph: canonical derived nodes as INPUTs + all canonical
     surfaces, with the given values applied (others left 0.0, mimicking the
-    build_base_graph fail-closed seed)."""
+    build_base_graph fail-closed seed).
+
+    Seeds every node any REGISTERED surface actually depends on — not just
+    ``CANONICAL_SUBJECT_NODE.values()``. A surface builder (e.g.
+    ``_fi_sufficiency_surfaces``) can declare an EXTRA input beyond its
+    subject's canonical node (``FI_NET_MARGIN_NODE`` alongside
+    ``FI_MARGIN_NODE``); production seeds that from
+    ``incremental_plan._RESOLVER_SCALAR_KEYS``, so the hermetic helper must
+    derive the same closure programmatically instead of hand-listing subject
+    nodes, or it silently rots the next time a surface grows a new input
+    (this is exactly how the suite broke: ``register_canonical_surfaces`` grew
+    a `` FI_NET_MARGIN_NODE`` dependency for the fi-verdict surfaces and the
+    hand-maintained seed set here was never updated to match)."""
     g = DerivationGraph()
     for node_key in set(CANONICAL_SUBJECT_NODE.values()):
         g.add_node(Node(key=node_key, kind=NodeKind.INPUT, value=0.0))
-    register_canonical_surfaces(g)
+    registrations = register_canonical_surfaces(g)
+    # Discover every input any registered surface node declares, and seed any
+    # that aren't already present as INPUT nodes.
+    surface_keys = {sid for reg in registrations for sid in reg.surface_ids}
+    for key in surface_keys:
+        node = g.get(key)
+        for input_key in node.inputs:
+            if input_key not in g.keys():
+                g.add_node(Node(key=input_key, kind=NodeKind.INPUT, value=0.0))
     for k, v in values.items():
         g.set_input(k, v)
     g.recompute()
@@ -32,6 +52,10 @@ def _seed_graph(values: dict[str, float]) -> DerivationGraph:
 
 _RUN117 = {
     "retirement.fi_margin_signed_nis": -167_736.0,
+    # Net of the embedded NVDA realization tax the shortfall is deeper than the
+    # gross margin (tax only makes an already-short position shorter) — a
+    # plausible resolved figure for this fixture, not a real production value.
+    "retirement.fi_margin_net_of_realization_nis": -1_922_736.0,
     "retirement.fi_crossing_year": 2027.0,
     "net_worth.liquid_nis": 11_668_397.0,
     "net_worth.investable_nis": 11_871_533.0,
@@ -140,8 +164,18 @@ def test_production_node_key_overrides_render_via_resolver_authority():
         "portfolio.total_net_worth_incl_residence_nis": 14_049_622.0,
         "concentration.us_situs_estate_nis": 9_447_090.0,
         "retirement.fi_margin_signed_nis": -167_736.0,
+        # production seeds this alongside the gross margin (incremental_plan.
+        # _RESOLVER_SCALAR_KEYS) since surface:fi_verdict declares it as a
+        # second input — must be present here too or recompute() raises
+        # UnknownNodeError.
+        "retirement.fi_margin_net_of_realization_nis": -1_922_736.0,
         "retirement.fi_crossing_year": 2027.0,
         "retirement.earliest_safe_age": 46.0,
+        # nvda_cap / nvda_target are NOT overridden by SUBJECT_NODE_MAP, so
+        # register_canonical_surfaces falls back to the CANONICAL_SUBJECT_NODE
+        # defaults for them — those default nodes must exist too.
+        "concentration.nvda_cap_pct": 0.13,
+        "concentration.nvda_target_pct": 0.08,
         "tax.retention_at_vest_pct": 0.50,
         "tax.retention_capital_track_pct": 0.70,
     }

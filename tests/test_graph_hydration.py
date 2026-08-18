@@ -45,13 +45,16 @@ def test_fi_margin_edges_match_resolver_derivation():
 
 
 def test_nvda_deconcentration_edges_match_resolver_derivation():
+    # cap is deliberately NOT an edge: verified by execution that cap does not
+    # affect nvda_target_sh/nvda_sell_sh (only the optional nvda_cap_breach_x
+    # diagnostic, which this manifest does not track). Declaring cap here used
+    # to falsely invalidate target/sell on a cap-only change and falsely block
+    # blind rederivation whenever cap was unresolved (the plan-amendment bug).
     assert MANIFEST_EDGES["concentration.nvda_target_sh"] == (
         "concentration.nvda_current_pct",
-        "concentration.nvda_cap_pct",
     )
     assert MANIFEST_EDGES["concentration.nvda_sell_sh"] == (
         "concentration.nvda_current_pct",
-        "concentration.nvda_cap_pct",
     )
 
 

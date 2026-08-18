@@ -2569,14 +2569,47 @@ from argosy.services.allocation_plan import NVDA_TARGET_PCT as _NVDA_TARGET_PCT
 _NVDA_IPS_TARGET_W = _NVDA_TARGET_PCT / 100.0
 
 
+def _resolve_nvda_eligible_now_sh(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Capital-track-eligible NVDA share count, from the latest tax-sim report.
+
+    Deliberately INDEPENDENT of nvda_weight / nvda_cap_pct / the total book / the
+    spine gate: it reads only tax-sim lots (``eligible_shares``), which have no
+    causal relationship to the book snapshot or the concentration cap. Must run
+    even when weight is pending or the spine gate refuses the book, so a
+    pending weight (or a degraded/unvalidated snapshot) does not needlessly
+    block this figure too. Pending — never a guess — only when the underlying
+    tax-sim lookup itself has nothing to report or errors."""
+    k = "concentration.nvda_eligible_now_sh"
+    elig = None
+    try:
+        from argosy.services.tax_simulation_ingest import eligible_shares
+        elig = eligible_shares(session, user_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.nvda_eligible_failed err=%s", exc)
+    if elig is None:
+        values[k] = ResolvedValue.pending(k, "shares", "no tax-sim report ingested")
+    else:
+        values[k] = ResolvedValue(
+            key=k, value=int(elig), unit="shares", status="resolved",
+            source_locator="tax_simulation_lots (latest report, eligible=OK)",
+            agent_report_id=None, confidence="HIGH",
+            formula="sum(shares) where Holding Period=OK in the latest tax-sim report",
+        )
+
+
 def _apply_nvda_deconcentration(
     session: "Session", user_id: str, values: dict[str, ResolvedValue]
 ) -> None:
     """Derive the NVDA deconcentration target/sell-count + the capital-track-eligible
     share count (from the latest tax-sim report), as authoritative values. Pending — never
     a guess — when inputs are missing."""
-    keys = ("concentration.nvda_target_sh", "concentration.nvda_sell_sh",
-            "concentration.nvda_eligible_now_sh")
+    keys = ("concentration.nvda_target_sh", "concentration.nvda_sell_sh")
+    # nvda_eligible_now_sh is resolved separately, independent of weight/cap/book —
+    # see _resolve_nvda_eligible_now_sh docstring. Run it first so it is never
+    # collaterally blocked by the early returns below.
+    _resolve_nvda_eligible_now_sh(session, user_id, values)
     # The IPS target WEIGHT is a policy constant DISTINCT from the 13% hard cap:
     # the cap is LOOK-THROUGH (counts NVDA inside the index sleeves), so the
     # direct target is CAP-DERIVED by Argosy's allocation analysis to keep total
@@ -2606,12 +2639,17 @@ def _apply_nvda_deconcentration(
         nvda_weight = implied_nvda_weight_frac(
             values, tradeable_securities_nis=tradeable,
         )
-    if (
-        nvda_weight is None
-        or not cap or cap.status != "resolved" or cap.value is None
-    ):
+    # The cap is NOT an input to target/sell shares — verified by execution
+    # (target/sell are identical across cap 0.07/0.12/0.13/0.99; only the
+    # optional nvda_cap_breach_x diagnostic depends on cap). Gating this
+    # derivation on the cap being resolved was a false dependency: on a
+    # Phase-3-only plan amendment run (no concentration agent_reports row) the
+    # cap sits pending, and this gate permanently pending'd all three share
+    # counts, killing the fact-tokenizer anchors for them. Gate on the WEIGHT
+    # only; pass cap through (possibly None) to derive_nvda_deconcentration.
+    if nvda_weight is None:
         for k in keys:
-            values[k] = ResolvedValue.pending(k, "shares", "nvda weight/cap pending")
+            values[k] = ResolvedValue.pending(k, "shares", "nvda weight pending")
         return
     nvda_sh = nvda_px = None
     _book_stale = False
@@ -2665,9 +2703,18 @@ def _apply_nvda_deconcentration(
         return
     from argosy.services.plan_derivation import derive_nvda_deconcentration
 
+    # cap is resolved-or-None here, never a placeholder — see the false-dependency
+    # note above the weight-only gate. derive_nvda_deconcentration treats a None
+    # cap by simply omitting the optional nvda_cap_breach_x diagnostic; target/sell
+    # are unaffected either way.
+    _cap_val = (
+        float(cap.value)
+        if (cap is not None and cap.status == "resolved" and cap.value is not None)
+        else None
+    )
     dec = derive_nvda_deconcentration(
         nvda_sh=int(nvda_sh), nvda_px_usd=nvda_px, nvda_weight=float(nvda_weight),
-        target_w=_NVDA_IPS_TARGET_W, cap=float(cap.value),
+        target_w=_NVDA_IPS_TARGET_W, cap=_cap_val,
     )
     # Actionable sell/target shares can be no more confident than the NVDA
     # weight they derive from (MEDIUM when that weight rode a soft-stale mark)
@@ -2689,22 +2736,8 @@ def _apply_nvda_deconcentration(
             ),
             agent_report_id=None, confidence=_deconf, formula=dec[field].formula,
         )
-    elig = None
-    try:
-        from argosy.services.tax_simulation_ingest import eligible_shares
-        elig = eligible_shares(session, user_id)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("plan_numeric_resolver.nvda_eligible_failed err=%s", exc)
-    k = "concentration.nvda_eligible_now_sh"
-    if elig is None:
-        values[k] = ResolvedValue.pending(k, "shares", "no tax-sim report ingested")
-    else:
-        values[k] = ResolvedValue(
-            key=k, value=int(elig), unit="shares", status="resolved",
-            source_locator="tax_simulation_lots (latest report, eligible=OK)",
-            agent_report_id=None, confidence="HIGH",
-            formula="sum(shares) where Holding Period=OK in the latest tax-sim report",
-        )
+    # nvda_eligible_now_sh was already resolved at the top of this function,
+    # independent of weight/cap/book — see _resolve_nvda_eligible_now_sh.
 
 
 def _apply_adjudicated_glide(

@@ -64,9 +64,15 @@ def standard_recipes() -> dict[str, Recipe]:
 
     def _nvda(field_key: str) -> Recipe:
         def _r(inp: dict):
+            # cap is OPTIONAL — it is not an input to target/sell shares (only
+            # to the optional nvda_cap_breach_x diagnostic). Use .get so a
+            # caller (e.g. graph_hydration's blind rederivation) that never
+            # wired cap into `inp` for the target/sell keys still recomputes
+            # correctly instead of KeyError-ing on an irrelevant input.
             return derive_nvda_deconcentration(
                 nvda_sh=inp["nvda_sh"], nvda_px_usd=inp["nvda_px_usd"],
-                nvda_weight=inp["nvda_weight"], target_w=inp["target_w"], cap=inp["cap"],
+                nvda_weight=inp["nvda_weight"], target_w=inp["target_w"],
+                cap=inp.get("cap"),
             )[field_key].value
         return _r
 

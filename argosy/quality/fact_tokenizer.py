@@ -136,6 +136,51 @@ _ANCHOR_NVDA_ELIGIBLE_NOW_SH = AnchorSpec(
     exclude_any=(_p(r"\bsell(?:s|ing)?\b|\btarget\b|\bretain\b"),),
     global_term=_NVDA_TERM,
 )
+# Per-tax-year sale-ALLOWANCE balance (concentration.nvda_quota_tax_year_sh)
+# — a DISTINCT concept from sell/target/eligible: "how much of this tax
+# year's quota is left to sell", not the glide's total sell count, the
+# post-glide retained target, or the currently-vested-and-eligible count.
+# Registered by plan_numeric_resolver._apply_adjudicated_glide but, until
+# now, had NO AnchorSpec, so no spec could ever claim its own number and
+# value-nearest arbitration (Rule 2b) handed it to whichever OTHER concept's
+# canonical happened to be closest in value — see module docstring Defect B.
+#
+# Anchor: the distinctive phrasing is "quota" together with "tax-year" /
+# "tax year" / a bare 4-digit year, in either order, within a modest gap
+# (covers "tax-year 2026 quota remaining" and "quota remaining for the 2026
+# tax year" alike). Requiring BOTH words (not "quota" alone) keeps this
+# spec from firing on the glide-sell sentence's own "...at the quota PACE,
+# holding fresh vests..." (module docstring / SELL exclude_any comment) —
+# that sentence never mentions a tax year, so this spec's concept_any simply
+# never matches there; no exclude_any is needed to keep quota narrow against
+# THAT sentence shape. exclude_any below is still added as defence-in-depth
+# in case a sentence names both a tax-year AND a sell/retain/eligible verb
+# in the same clause as "quota" (e.g. "sell no more than this tax-year 2026
+# quota").
+#
+# Consistency with SELL's / TARGET_SH's existing ``\bquota\s+remaining\b``
+# exclude_any: those still guard the OPPOSITE direction — a clause where
+# SELL's/TARGET's OWN anchor verb (sell/retain/etc.) also fires alongside a
+# "quota remaining" phrase glued to the same number, e.g. "sell no more than
+# the tax-year 2026 quota remaining: 3,924 sh" — SELL's concept_any ("sell")
+# would otherwise fire on the whole clause and, without that exclusion,
+# wrongly compete for 3,924. That exclusion's reasoning is unchanged by this
+# spec's addition: it stops the SIBLING concepts from stealing quota's
+# number; this spec's exclude_any stops quota from stealing THEIRS. Both are
+# still needed and are mutually consistent.
+_ANCHOR_NVDA_QUOTA_TAX_YEAR_SH = AnchorSpec(
+    key="concentration.nvda_quota_tax_year_sh", unit="sh",
+    concept_any=(
+        _p(r"\bquota\b.{0,40}(?:tax[- ]year|\b(?:19|20)\d{2}\b)"),
+        _p(r"(?:tax[- ]year|\b(?:19|20)\d{2}\b).{0,40}\bquota\b"),
+    ),
+    exclude_any=(
+        _p(r"\bsell(?:s|ing)?\b|\bsold\b|\btrim(?:s|med|ming)?\b|\bglide\b"
+           r"|\bretain(?:s|ed|ing)?\b|\btarget\b|\bpost-sale\b|\bkeep\b"
+           r"|\beligible\b|\bvested\b"),
+    ),
+    global_term=_NVDA_TERM,
+)
 
 # NVDA policy percentages — same domain-specific phrases the whole-artifact
 # extractor already uses (assembled_artifact._PROSE_NVDA_CAP_RE /
@@ -199,6 +244,7 @@ DEFAULT_ANCHORS: tuple[AnchorSpec, ...] = (
     _ANCHOR_NVDA_SELL_SH,
     _ANCHOR_NVDA_TARGET_SH,
     _ANCHOR_NVDA_ELIGIBLE_NOW_SH,
+    _ANCHOR_NVDA_QUOTA_TAX_YEAR_SH,
     _ANCHOR_NVDA_CAP_PCT,
     _ANCHOR_NVDA_TARGET_PCT,
     _ANCHOR_NVDA_CURRENT_PCT,
@@ -214,7 +260,34 @@ DEFAULT_ANCHORS: tuple[AnchorSpec, ...] = (
 
 # Share count: digits immediately followed by "shares"/"sh" — never a bare
 # number (that would match any narrative integer of the same magnitude).
-_SH_VALUE_RE = re.compile(r"(?<![\d,.])(\d[\d,]*)(?!\.\d)\s*(?:shares?\b|sh\b)", re.IGNORECASE)
+#
+# The digit group must also not be part of a HYPHENATED IDENTIFIER — a
+# statute/rule/instrument reference like "Section-102 shares", "Rule-10b5-1",
+# "ETF-500 sh" glues a bare number to a preceding word via a hyphen with no
+# space; that digit group is a document/rule LABEL, not a quantity, even
+# though the text right after it happens to read "shares"/"sh". Guarded with
+# a fixed 2-char lookbehind (word-char immediately followed by hyphen)
+# anchored right before the digit group's start. Combined with the existing
+# ``(?<![\d,.])`` guard — which already blocks any match attempt from
+# restarting MID-digit-run (so the engine cannot dodge the hyphen guard by
+# starting one digit later, e.g. matching "02 shares" out of "Section-102
+# shares") — this fully excludes the hyphen-glued run without excluding a
+# genuine "- 102 shares" (space-separated dash, e.g. a minus sign or list
+# bullet) or a "some-thing - 102 shares" dash-surrounded-by-spaces case:
+# neither has a word character directly glued to the hyphen directly glued
+# to the digit, so the lookbehind does not fire for either.
+#
+# Do NOT hardcode "Section" — this is a general hyphen-glued-identifier
+# guard, not a statute-specific one (also catches "Rule-10b5-1", "ETF-500").
+#
+# The pct ("%") and nis ("₪") value regexes are NOT given the same guard:
+# their trigger characters never appear as the suffix of a hyphenated
+# document identifier in this domain ("Section-102%" / "₪Section-102" do not
+# occur in plan prose), so there is no equivalent false-positive class to
+# guard against there — adding it would be unexercised defensive code.
+_SH_VALUE_RE = re.compile(
+    r"(?<!\w-)(?<![\d,.])(\d[\d,]*)(?!\.\d)\s*(?:shares?\b|sh\b)", re.IGNORECASE
+)
 _PCT_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 # Bare-fraction percent form ("0.12" for a 12% rate) — only 2-4 decimal
 # digits, not immediately followed by '%' (that is the percent-sign form
@@ -312,7 +385,12 @@ def _span(m: re.Match, kind: str) -> tuple[int, int]:
 _CLAUSE_BOUNDARY = re.compile(r"(?<!\d)[.;!?,](?!\d)|\n")
 
 
-def _clause_bounded_context(masked: str, start: int, end: int, window: int) -> str:
+def _clause_bounded_context(masked: str, start: int, end: int, window: int) -> tuple[str, int]:
+    """Return ``(context, abs_start)`` — the clause-bounded window text and
+    its absolute offset into ``masked``, so a match found inside ``context``
+    can be translated back to a real position (needed by the exclude-
+    proximity check below, which must compare against OTHER candidate spans
+    in the full text, not just this window's local coordinates)."""
     lo = max(0, start - window)
     hi = min(len(masked), end + window)
     left = masked[lo:start]
@@ -323,15 +401,142 @@ def _clause_bounded_context(masked: str, start: int, end: int, window: int) -> s
     right_bound = _CLAUSE_BOUNDARY.search(right)
     if right_bound is not None:
         right = right[: right_bound.start()]
-    return left + masked[start:end] + right
+    return left + masked[start:end] + right, start - len(left)
+
+
+# An exclude_any hit only means "this literal belongs to a SIBLING concept"
+# — or disqualifies the number it sits next to — when the exclude term is
+# actually ATTACHED TO A NUMBER (its own candidate's number, or a
+# neighbour's). A bare adjective modifying a noun, with no number anywhere
+# near it, is not concept evidence at all and must not disqualify anything.
+#
+# Two real calibration points (measured against plan 106 / decision_run 400):
+#
+#   * "...sells 9,417 shares from Section-102 capital-track-eligible
+#     inventory at the quota pace" — "eligible" modifies "inventory", not
+#     any number; the nearest unit-candidate is "9,417 shares" itself,
+#     ~32 chars away. This exclude term is NOT attached to a number at that
+#     distance, so it must NOT disqualify 9,417 — the sell anchor must fire
+#     (and then correctly report DRIFT, since canonical is 9,479, not 9,417).
+#   * "3,924 sh of tax-year 2026 quota remaining" — "quota remaining" sits
+#     directly against "3,924 sh" (its OWN candidate number, distance 0).
+#     This exclude term IS attached to a number, so it must disqualify
+#     3,924 as a sell-count candidate.
+#
+# The discriminator is proximity-to-A-number, not "different vs. same" —
+# self-overlap (an exclude phrase glued to the very candidate under
+# evaluation, e.g. "quota remaining" right after "3,924 sh") counts, with
+# gap 0. There is no "skip the candidate itself" branch: excluding a
+# candidate because the exclude term is attached to ITSELF is exactly the
+# 3,924 case above.
+#
+# Measured stable plateau: this rule's outcome (0 new drift regressions on
+# the live dev DB) is insensitive to _EXCLUDE_PROXIMITY anywhere in 5..30;
+# it breaks (the "eligible ... quota pace" case wrongly disqualifies again)
+# at 40, because "eligible" only reaches "inventory"/"pace", never a real
+# number, until the window is wide enough to spuriously bridge back to
+# "9,417" itself across the whole clause.
+_EXCLUDE_PROXIMITY = 15
+
+
+def _exclude_term_binds_a_number(
+    masked: str, e_start: int, e_end: int, unit: str,
+) -> bool:
+    """True if SOME unit-candidate digit group — i.e. a span the unit's own
+    value regex(es) would tokenize, e.g. ``_SH_VALUE_RE`` for "sh" — sits
+    within ``_EXCLUDE_PROXIMITY`` characters of the exclude term's span
+    ``[e_start, e_end)``. This includes the candidate under evaluation
+    itself: an exclude phrase glued to its OWN number ("3,924 sh ... quota
+    remaining") is real concept evidence, not merely a nearby unrelated
+    adjective. Deliberately reuses the value regexes (not a bare ``\\d+``
+    scan): a bare digit group that is not itself a unit-candidate — e.g. the
+    "102" in "Section-102", which is never followed by "shares" — must not
+    count as a bound number just because it is nearby digits."""
+    for rule in _UNIT_RULES.get(unit, ()):
+        for m in rule.regex.finditer(masked):
+            cand_start, cand_end = _span(m, rule.span)
+            if cand_end <= e_start:
+                gap = e_start - cand_end
+            elif cand_start >= e_end:
+                gap = cand_start - e_end
+            else:
+                gap = 0  # touches/overlaps the exclude term itself
+            if gap <= _EXCLUDE_PROXIMITY:
+                return True
+    return False
+
+
+def _span_distance(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    """Gap between two spans, shared convention used throughout this module:
+    a span ending at or before the other -> the gap between them; a span
+    beginning at or after the other -> the gap the other way; overlapping
+    (including touching) -> 0."""
+    if a_end <= b_start:
+        return b_start - a_end
+    if a_start >= b_end:
+        return a_start - b_end
+    return 0
+
+
+def _nearest_concept_distance(
+    masked: str, start: int, end: int, spec: AnchorSpec,
+) -> int | None:
+    """Gap from the literal span ``[start, end)`` to the NEAREST
+    ``concept_any`` match for ``spec``, inside spec's own clause-bounded
+    window — or ``None`` if none is found there at all (e.g. the concept
+    phrase sits outside the window entirely, as with `eligible` in the
+    "9230 sh" case in the module docstring measurements). Used by Rule 1
+    (exclusion is subordinate to the spec's own concept proximity) — see
+    ``_anchor_ok``."""
+    ctx, ctx_abs_start = _clause_bounded_context(masked, start, end, spec.window)
+    best: int | None = None
+    for pat in spec.concept_any:
+        for m in pat.finditer(ctx):
+            m_start = ctx_abs_start + m.start()
+            m_end = ctx_abs_start + m.end()
+            gap = _span_distance(m_start, m_end, start, end)
+            if best is None or gap < best:
+                best = gap
+    return best
 
 
 def _anchor_ok(masked: str, start: int, end: int, spec: AnchorSpec) -> bool:
-    ctx = _clause_bounded_context(masked, start, end, spec.window)
+    ctx, ctx_abs_start = _clause_bounded_context(masked, start, end, spec.window)
     if not any(p.search(ctx) for p in spec.concept_any):
         return False
-    if any(p.search(ctx) for p in spec.exclude_any):
-        return False
+    # An exclude_any match only disqualifies this candidate if the exclude
+    # term is actually ATTACHED TO A NUMBER (see _exclude_term_binds_a_
+    # number) — its own candidate's number, or a neighbour's. A bare
+    # adjective modifying a noun, with no number anywhere near it
+    # ("capital-track-eligible inventory"), is not concept evidence and must
+    # not disqualify anything. Self-overlap counts: an exclude phrase glued
+    # to the very candidate under evaluation ("3,924 sh ... quota
+    # remaining") is real evidence that THIS number belongs to the sibling
+    # concept, at gap 0.
+    #
+    # Rule 1 (measured against real plan-106 prose): even an exclude term
+    # that IS attached to a number only disqualifies the candidate if it
+    # sits STRICTLY CLOSER to the literal than this spec's OWN nearest
+    # concept_any match. "...forward shares to sell (retains 1,523
+    # shares)": `1,523` is the RETAINED count — target's own concept
+    # `retains` sits 1 char away, while the excluding term `sell` sits 10
+    # chars away. Disqualifying target there (old behaviour) let `sell`
+    # wrongly claim a number that target's own anchor names far more
+    # tightly. If the spec has NO concept match in its window at all
+    # (``_nearest_concept_distance`` -> None), keep the prior behaviour:
+    # the exclusion still fires.
+    for pat in spec.exclude_any:
+        for m in pat.finditer(ctx):
+            e_start = ctx_abs_start + m.start()
+            e_end = ctx_abs_start + m.end()
+            if not _exclude_term_binds_a_number(masked, e_start, e_end, spec.unit):
+                continue
+            concept_distance = _nearest_concept_distance(masked, start, end, spec)
+            if concept_distance is not None:
+                exclude_distance = _span_distance(e_start, e_end, start, end)
+                if exclude_distance >= concept_distance:
+                    continue  # spec's own concept is at least as close — exclusion does not fire
+            return False
     if spec.global_term is not None:
         glo = max(0, start - spec.global_window)
         ghi = min(len(masked), end + spec.global_window)
@@ -437,34 +642,96 @@ def tokenize_text(
 
         # Phase 2 — drift-only, on whatever's left after every match in the
         # group has been tokenized away.
+        #
+        # Rule 2 (measured against real plan-106 prose): drift is EXCLUSIVE —
+        # at most one violation per literal span. Every spec in the group
+        # first gets a crack at flagging a given literal (as before); then,
+        # instead of each spec independently raising its own violation, all
+        # candidate-spec flags for the SAME span are collected and
+        # arbitrated:
+        #
+        #   (a) if the literal equals ANY active same-unit spec's canonical
+        #       (within that spec's own tolerance) — even a spec whose
+        #       anchor never matched here, e.g. `nvda_eligible_now_sh`'s
+        #       concept sitting outside its clause window for a "9230 sh"
+        #       literal — the arithmetic decides ownership: no drift at all.
+        #       This mirrors the Phase-1 arbitration comment above ("the
+        #       arithmetic itself decides, not a textual exclusion").
+        #   (b) otherwise exactly ONE spec reports it: the one whose
+        #       canonical is NEAREST IN VALUE to the literal. Measured: a
+        #       distance-to-CONCEPT tie-break correctly relabels the
+        #       "(retains 1,523 shares)" case to target, but then WRONGLY
+        #       relabels "9417 sh" to target too (target's concept can sit
+        #       nearer in TEXT while its canonical, 1,461, is far in VALUE
+        #       from 9417) — value-nearest gets both right, because a
+        #       drifted figure is a small perturbation of its OWN canonical,
+        #       not a wild divergence from an unrelated concept's text
+        #       proximity. Do not "simplify" this back to distance-to-
+        #       concept.
+        masked = _mask_protected_spans(working)
+        by_span: dict[
+            tuple[int, int], list[tuple[AnchorSpec, float, str, re.Match, _Rule, float]]
+        ] = {}
         for spec, canonical_value, resolver_unit in group:
             for rule in rules:
-                masked = _mask_protected_spans(working)
-                for m in reversed(list(rule.regex.finditer(masked))):
+                for m in rule.regex.finditer(masked):
                     if not _anchor_ok(masked, m.start(0), m.end(0), spec):
                         continue
                     candidate = rule.candidate(m)
                     if candidate is None:
                         continue
                     if _is_match(candidate, canonical_value, rule.tol(canonical_value)):
-                        continue  # matched a DIFFERENT spec's canonical — not this one's drift
-                    rendered = format_fact(
-                        canonical_value, resolver_unit, display=FACT_DISPLAY[spec.key]
+                        continue  # matches THIS spec's own canonical — not drift
+                    span = _span(m, rule.span)
+                    by_span.setdefault(span, []).append(
+                        (spec, canonical_value, resolver_unit, m, rule, candidate)
                     )
-                    violations.append(
-                        GateViolation(
-                            check=GateCheck.FACT_LITERAL_DRIFT,
-                            detail=(
-                                f"literal `{m.group(0).strip()}` near concept `{spec.key}` "
-                                f"diverges from canonical {rendered} — surfaced, NOT "
-                                "auto-corrected"
-                            ),
-                            locator=(
-                                f"horizon={horizon} pos={m.start(0)}" if horizon
-                                else f"pos={m.start(0)}"
-                            ),
-                        )
-                    )
+
+        for span in sorted(by_span):
+            candidates = by_span[span]
+            _, _, _, _m0, rule0, candidate0 = candidates[0]
+            # Rule 2(a): literal equals some sibling's canonical -> no drift.
+            if any(
+                _is_match(candidate0, cv, rule0.tol(cv)) for _, cv, _ in group
+            ):
+                continue
+            # Rule 2(b): value-nearest canonical owns the violation. Stable
+            # tie-break: first spec (DEFAULT_ANCHORS order) on exact ties.
+            spec, canonical_value, resolver_unit, m, _rule, candidate = min(
+                candidates, key=lambda c: abs(c[5] - c[1])
+            )
+            # Strict lookup, deliberately not FACT_DISPLAY.get(spec.key,
+            # spec.unit): every key in DEFAULT_ANCHORS is substitutable (it
+            # can be rewritten into a {{fact:key}} token by Phase 1 above),
+            # so it MUST be registered in FACT_DISPLAY — the same "anchored
+            # => substitutable => must render" rule as fact_registry.py's
+            # comment on retirement.fi_margin_net_of_realization_nis. A
+            # lenient .get() fallback here previously let an anchored-but-
+            # unregistered key (concentration.nvda_quota_tax_year_sh) go
+            # unnoticed until it silently degraded to "[derivation pending]"
+            # in a live plan. test_fact_tokenizer.py asserts every
+            # DEFAULT_ANCHORS key is in FACT_DISPLAY, so this KeyError can
+            # now only ever fire for a key added to DEFAULT_ANCHORS without
+            # updating FACT_DISPLAY in the SAME change — a loud CI failure,
+            # not a silent one in Ariel's plan.
+            rendered = format_fact(
+                canonical_value, resolver_unit,
+                display=FACT_DISPLAY[spec.key],
+            )
+            violations.append(
+                GateViolation(
+                    check=GateCheck.FACT_LITERAL_DRIFT,
+                    detail=(
+                        f"literal `{m.group(0).strip()}` near concept `{spec.key}` "
+                        f"diverges from canonical {rendered} — surfaced, NOT "
+                        "auto-corrected"
+                    ),
+                    locator=(
+                        f"horizon={horizon} pos={m.start(0)}" if horizon
+                        else f"pos={m.start(0)}"
+                    ),
+                )
+            )
 
     return TokenizeResult(text=working, violations=violations, substitutions=substitutions)
 
