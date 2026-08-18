@@ -4,6 +4,61 @@
 
 Last updated: **2026-08-18**.
 
+> **⚠️ STATE AS OF 2026-08-18 — master `42bd75a`, pushed through `61b3c1b`; later commits local.**
+> Plan **109** is the live draft (v92 still `current`, unpromoted, 18 RED open at review time).
+>
+> **8 of the 18 RED findings are CLOSED in code.** Sol triaged all 18: 9 CODE / 5 DERIVATION /
+> 2 MANDATE / 2 DATA and **zero Ariel forks** — the two that looked like escalations (the
+> no-principal-drawdown mandate, the SGOV domicile conflict) are constraints Ariel ALREADY set,
+> so applying them is compliance, not a choice. Full triage: scratchpad `sol_red18.md`.
+>
+> | RED | fix | commit |
+> |---|---|---|
+> | 1 spend table didn't sum | computed residual row; rows reconcile to the printed total | `19f957c` |
+> | 2 net worth mislabelled | refuses to publish under a label it can't satisfy (subtract-without-add) | `0efeb63` |
+> | 3 bullet stated two margins | anchor widened to "margin of safety" | `9b80d93` |
+> | 6 dashboard NVDA target 11% | reads canonical doc, not prose labels | `0efeb63` |
+> | 7 horizon targets lagged canonical | projected from TargetAllocationDoc (4 drifts, not 2) | `3f289f5` |
+> | 9 glide exceeded eligible pool | dated §102 seasoning: 9,588 by-horizon ≥ 9,480 sold | `42bd75a` |
+> | 5 after-tax margin placeholder | keys already resolved; verified only | — |
+> | 15 amendment facts pending | follows donor run 379; pending 6 → 1 | `61b3c1b` |
+>
+> **FIVE of these were ONE disease: a surface trusting authored prose over the canonical
+> structured document.** RED-6 and RED-7 are literally the same bug on two surfaces, and RED-6
+> had already been patched once with another text heuristic that then broke on a new label
+> ("Global quality growth (screened to avoid NVDA-heavy names)" contains NVDA as a whole token).
+> Fix pattern: read the structured doc, match on a stable identifier, NEVER fuzzy prose — and log
+> loudly when you cannot match, so non-coverage is visible.
+>
+> **SUBSTANTIVE FINDING, unresolved:** canonical `retirement.fi_age` = **49**, while the plan's
+> headline says **46**. Corroborated from three directions (RED-12's bridge implies 47, RED-16's
+> mandate conflict, and the now-resolving resolver key). This matters more than every formatting
+> fix combined and was invisible while those keys sat pending.
+>
+> **STILL OPEN (10):** #10 tax-year-allowance rationale (Sol says Israeli CGT has no such
+> allowance — verify against `domain_knowledge/tax/israel/**` before acting), #12/#13/#16
+> retirement math + drawdown mandate, #14 FX "100% USD" false, #17 FI basis omits ₪384k Keren
+> Hishtalmut, #11 sale-ledger contradiction, #8 SGOV violates the domicile mandate, #18 estate
+> documents undated, #4 SWR band (publish 2.4/3.0/3.5 and label non-robust).
+> **#8, #11, #14, #17, #18 are PLAN CONTENT, not code** — they close with a section-frozen
+> amendment, not a patch.
+>
+> **ENDGAME:** finish the code fixes → ONE section-frozen amendment repairing prose against the
+> now-correct resolver (RED-9's flat "sell N from eligible lots" sentence must become the dated
+> 2026/2027 schedule; the adjudicated verdict `action_proposals #66` already says 3,924 + 5,493
+> retaining 1,523) → re-review.
+>
+> **TRAPS FOUND THE HARD WAY THIS SESSION:**
+> - `derived_from_id` is `5` (the May intake upload) on EVERY amendment — plan ancestry is a flat
+>   fan, so no lineage walk works until that is fixed at the source in `_medium_worker`.
+> - `plan_critique` is pinned to `claude-fable-5`, which this account CANNOT access; the
+>   `models:` block in `agent_settings.yaml` is DEAD CONFIG (`model_for_role()` has zero callers).
+>   The `/plan` "Re-critique now" button is therefore broken. The API route is fine otherwise —
+>   only the CLI reads the empty `raw_markdown`.
+> - Don't sort `decision_id` by casting to int: `'plan-synth-99'` casts to 0. That error made me
+>   report a donor as two months stale when it was three days old.
+
+
 > **⚠️ PLAN 109 WAS REVIEWED (2026-08-18) — 18 RED. Do NOT promote it.**
 > First review of any plan since run 397. Plan 109 is the best-BUILT draft
 > (no sections lost, 25 numeric facts, 27 `{{fact:}}` tokens, erosion reversed)
