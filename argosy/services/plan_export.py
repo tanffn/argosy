@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from argosy.services.fact_token_render import render_plan_facts
 from argosy.services.wealth_dashboard import (
     WealthDashboard,
     compute_wealth_dashboard,
@@ -407,6 +408,44 @@ def build_plan_export_markdown(
     # ----- Resolve current plan + status ----------------------------------
     plan, status_label = _resolve_plan(db, user_id)
 
+    # ----- READ-time {{fact:key}} render (item I / SAME seam as /draft) ---
+    # ``horizon_*_md`` (and the Quick Reference block, which is sourced from
+    # ``horizon_long_md``) are persisted with unrendered ``{{fact:key}}``
+    # tokens — the tokens are the drift protection; the stored text is never
+    # mutated. Render them here through the existing seam
+    # (``render_plan_facts`` / ``_render_text_with_provenance``) so every
+    # consumer of this export (the download AND ``assemble_plan_artifact``,
+    # which composes it) sees resolved numbers or the loud ``PENDING_LABEL``
+    # fallback — never a raw unrendered token. Mirrors
+    # ``argosy.api.routes.plan._apply_fact_token_render`` exactly; no second
+    # renderer.
+    horizon_long_md = plan.horizon_long_md if plan is not None else None
+    horizon_medium_md = plan.horizon_medium_md if plan is not None else None
+    horizon_short_md = plan.horizon_short_md if plan is not None else None
+    if plan is not None:
+        try:
+            # use_cache=False: the export is called far less often than the
+            # /draft route this seam was built for, and the process-global
+            # render cache is keyed only on (plan_version_id, snapshot_id) —
+            # ids that legitimately collide across distinct DBs (e.g. per-test
+            # fixtures), so a cached bundle from a DIFFERENT database could
+            # otherwise leak into this export. Skipping the cache costs one
+            # extra resolve per export call and buys always-live numbers.
+            _bundle = render_plan_facts(
+                db, user_id=user_id, plan_version=plan, write_staleness_flag=True,
+                use_cache=False,
+            )
+            horizon_long_md = _bundle.horizon_long_md
+            horizon_medium_md = _bundle.horizon_medium_md
+            horizon_short_md = _bundle.horizon_short_md
+        except Exception as exc:  # noqa: BLE001 — never crash the export on render
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "plan_export.fact_token_render_failed user=%s plan=%s error=%s",
+                user_id, getattr(plan, "id", None), str(exc)[:200],
+            )
+
     # ----- Wealth dashboard -----------------------------------------------
     try:
         dash: WealthDashboard | None = compute_wealth_dashboard(
@@ -516,8 +555,8 @@ def build_plan_export_markdown(
     if plan is not None:
         # Prefer the long-horizon markdown rendering (set by the synthesizer)
         # if present — it's the user-facing "this is your plan" text.
-        if plan.horizon_long_md:
-            qref = plan.horizon_long_md.strip()
+        if horizon_long_md:
+            qref = horizon_long_md.strip()
         else:
             qref = _extract_quick_reference(plan.raw_markdown or "")
     if qref:
@@ -733,24 +772,24 @@ def build_plan_export_markdown(
 
     # Long-horizon plan ----------------------------------------------------
     push("## Long-horizon plan")
-    if plan is not None and plan.horizon_long_md:
-        push(plan.horizon_long_md.strip())
+    if plan is not None and horizon_long_md:
+        push(horizon_long_md.strip())
     else:
         push("_No long-horizon detail available._")
     push("")
 
     # Medium-horizon plan --------------------------------------------------
     push("## Medium-horizon plan")
-    if plan is not None and plan.horizon_medium_md:
-        push(plan.horizon_medium_md.strip())
+    if plan is not None and horizon_medium_md:
+        push(horizon_medium_md.strip())
     else:
         push("_No medium-horizon detail available._")
     push("")
 
     # Short-horizon plan ---------------------------------------------------
     push("## Short-horizon plan (next 30 days)")
-    if plan is not None and plan.horizon_short_md:
-        push(plan.horizon_short_md.strip())
+    if plan is not None and horizon_short_md:
+        push(horizon_short_md.strip())
     else:
         push("_No short-horizon detail available._")
     push("")
