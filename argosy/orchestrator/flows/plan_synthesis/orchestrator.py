@@ -5056,6 +5056,24 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
         authored_overrides=authored_overrides,
     )
 
+    # RED-7: structured horizon Targets are an OPERATIONAL surface and must
+    # not lag the canonical TargetAllocationDoc (same disease as the RED-6
+    # dashboard fix, commit 0efeb63 — a surface trusting authored prose
+    # instead of the canonical structured document). Overwrite in place, on
+    # ``output.{long,medium,short}.targets``, BEFORE the markdown renders
+    # below so both the *_md and *_json bodies agree. Matches on the EXACT
+    # class ``label`` string (a stable identifier the canonical doc and the
+    # synth output share verbatim for unmodified classes) — never a fuzzy
+    # prose match: fuzzy label matching is exactly the bug that produced
+    # RED-6, where "Global quality growth (screened to avoid NVDA-heavy
+    # names)" was read as the NVDA sleeve. A target whose label has no exact
+    # canonical counterpart (e.g. the long-horizon SWR/return assumptions,
+    # which are not allocation classes at all) passes through untouched.
+    _pkg._overwrite_horizon_targets_from_canonical(
+        output, _target_allocation_json, user_id=user_id,
+        decision_run_id=decision_run_id,
+    )
+
     # v4 block B1 — assemble the three plan-doc appendices ONCE (sections are
     # global, not per-horizon) and append to the LONG horizon only (the
     # strategic frame anchors the evidence + assumption ledger).

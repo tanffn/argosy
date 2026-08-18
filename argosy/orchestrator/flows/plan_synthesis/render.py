@@ -53,6 +53,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
+from argosy.logging import get_logger
 from argosy.quality.regex_patterns import HISTORY_LEAK_PATTERNS
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker hint only
@@ -62,6 +63,8 @@ if TYPE_CHECKING:  # pragma: no cover — type-checker hint only
         PlanSynthesisOutput,
         Section,
     )
+
+log = get_logger(__name__)
 
 
 # ----------------------------------------------------------------------
@@ -232,6 +235,133 @@ def _emit_deltas_block(section, lines: list[str]) -> None:
             f"- [{d.change_kind}] {d.summary} ({d.item_kind} `{d.item_id}`)"
         )
     lines.append("")
+
+
+def _overwrite_horizon_targets_from_canonical(
+    output, target_allocation_json: "str | None", *, user_id: str = "",
+    decision_run_id=None,
+) -> None:
+    """Overwrite drifted horizon ``Target.value`` in place from the canonical
+    ``TargetAllocationDoc`` (RED-7).
+
+    Structured horizon Targets are an OPERATIONAL surface (rendered
+    verbatim into the client body and persisted to
+    ``horizon_{long,medium,short}_json``) and must never lag the
+    governing, engine-authored allocation document — the same defect
+    class as the RED-6 dashboard fix (commit ``0efeb63``): a surface
+    trusting authored/LLM prose instead of the canonical structured
+    document.
+
+    Matches on the EXACT ``AllocationClassDoc.label`` string, never a
+    fuzzy prose match. Exact-string match is deliberate: fuzzy label
+    matching on this exact document is what produced RED-6, where
+    "Global quality growth (screened to avoid NVDA-heavy names)" was
+    mis-read as the NVDA sleeve. A horizon Target whose label has no
+    verbatim canonical counterpart (e.g. long-horizon SWR/return
+    assumptions, which are not allocation classes) is left untouched —
+    passthrough, not a forced match.
+
+    Mutates ``output.long/medium/short.targets`` (pydantic models are
+    NOT frozen here) so every downstream consumer — the user/audit
+    markdown renders AND the ``horizon_*_json`` dump — sees the
+    corrected value; there is no second write path to keep in sync.
+
+    Best-effort: any parse failure degrades to a no-op (targets pass
+    through as authored) and is logged; this correction must never
+    break plan synthesis.
+
+    NO SILENT CAPS: exact-label matching means a class whose authored
+    and canonical labels have drifted apart (e.g. authored "Global
+    quality growth (screened to avoid NVDA-heavy names)" vs canonical
+    "Global quality growth (ex-NVDA-dense)" on plan 109) is never
+    corrected — and, deliberately, never fuzzy-matched either (see
+    above). That non-correction must not look like full coverage, so
+    a second pass logs the gap in BOTH directions:
+
+    - canonical classes with no authored counterpart at all (e.g. a
+      newly-added sleeve the synth output hasn't caught up to), and
+    - authored ALLOCATION-UNIT targets with no canonical counterpart
+      (a near-miss label, or a genuinely orphaned sleeve).
+
+    "Allocation-unit" is identified by ``Target.unit ==
+    "pct_of_portfolio"`` — the stable signal already on the schema
+    that separates allocation-class targets from targets that are
+    legitimately not allocation classes and must NOT be flagged: the
+    long-horizon SWR floor / expected-return assumptions use unit
+    ``"pct"``, and the short-horizon SGOV liquidity floor uses
+    ``"pct_of_liquid"``. Matching against ALL authored labels (any
+    unit) when checking the canonical-side gap, since a canonical
+    label could in principle collide with a non-allocation-unit
+    target's label.
+    """
+    if not target_allocation_json:
+        return
+    try:
+        doc = json.loads(target_allocation_json)
+        canonical_by_label = {
+            c["label"]: c["target_pct"]
+            for c in doc.get("classes", [])
+            if "label" in c and "target_pct" in c
+        }
+    except Exception as exc:  # noqa: BLE001 — never break synthesis
+        log.warning(
+            "plan_synthesis.horizon_target_overwrite_parse_failed",
+            user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+        )
+        return
+    if not canonical_by_label:
+        return
+
+    overwritten: list[dict] = []
+    all_authored_labels: set[str] = set()
+    allocation_unit_targets: list[dict] = []
+    for section in (
+        getattr(output, "long", None),
+        getattr(output, "medium", None),
+        getattr(output, "short", None),
+    ):
+        if section is None:
+            continue
+        for t in getattr(section, "targets", None) or []:
+            all_authored_labels.add(t.label)
+            if getattr(t, "unit", None) == "pct_of_portfolio":
+                allocation_unit_targets.append({
+                    "horizon": section.horizon,
+                    "label": t.label,
+                    "value": t.value,
+                })
+            canonical_value = canonical_by_label.get(t.label)
+            if canonical_value is None:
+                continue  # no canonical counterpart — pass through untouched
+            if t.value != canonical_value:
+                overwritten.append({
+                    "horizon": section.horizon,
+                    "label": t.label,
+                    "authored_value": t.value,
+                    "canonical_value": canonical_value,
+                })
+                t.value = canonical_value
+    if overwritten:
+        log.warning(
+            "plan_synthesis.horizon_targets_overwritten_from_canonical",
+            user_id=user_id, decision_run_id=decision_run_id,
+            count=len(overwritten), overwrites=overwritten,
+        )
+
+    canonical_without_authored = sorted(
+        set(canonical_by_label) - all_authored_labels
+    )
+    authored_without_canonical = [
+        item for item in allocation_unit_targets
+        if item["label"] not in canonical_by_label
+    ]
+    if canonical_without_authored or authored_without_canonical:
+        log.warning(
+            "plan_synthesis.horizon_target_canonical_coverage_gap",
+            user_id=user_id, decision_run_id=decision_run_id,
+            canonical_without_authored=canonical_without_authored,
+            authored_without_canonical=authored_without_canonical,
+        )
 
 
 def _horizon_md_user(section) -> str:
