@@ -238,7 +238,29 @@ def _moonshot_buy(symbol="RGTI", amount_usd=50_000.0, disclosed=True):
                justification=justification, claimed_us_weight=1.0)
 
 
+def _c4_buy(symbol, amount_usd, floored):
+    label = "FLOORED" if floored else "UNFLOORED"
+    return Buy(
+        symbol=symbol, amount_usd=amount_usd, sleeve="",
+        justification=(
+            f"x10 moonshot sleeve. {label}: downside math stated. It is a US-situs "
+            "single name and adds to the NRA estate-tax base (up to 40% marginal "
+            "above the $60K exemption) per "
+            "domain_knowledge/tax/us/estate_tax_nonresidents.md"
+        ),
+        claimed_us_weight=1.0,
+    )
+
+
 def test_moonshot_us_situs_buy_with_disclosure_accepts():
+    """Composition note (2026-08-21, mandate (c4)): this was ONE unlabelled $50k
+    buy, which now correctly trips (c4) -- an undeclared floor scores as NO floor,
+    so a single unlabelled name makes the tranche 100% unfloored. Recomposed as a
+    compliant pair (unfloored $10k of $50k = 20%, under both the one-third and the
+    half-of-largest-floored ceilings) so this test keeps exercising what it was
+    written for -- plan-menu sleeve attribution, the estate disclosure, and the
+    derived US-situs cap -- not the composition rule. The FLOORED/UNFLOORED labels
+    are FIXTURE VALUES exercising arithmetic, not claims about the real companies."""
     """US-situs RGTI, attributed to the moonshot sleeve via the plan menu (NOT via
     Buy.sleeve, which is deliberately left blank here to prove attribution doesn't
     depend on it), sized under the derived cap, with the estate disclosure -> ACCEPT."""
@@ -246,7 +268,7 @@ def test_moonshot_us_situs_buy_with_disclosure_accepts():
     # Derived cap: 40% x (8.0% x $4.15M) = 40% x $332,000 = $132,800. $50k buy fits.
     p = AllocationProposal(
         cash_to_deploy=50_000.0, cash_to_reserve=0.0,
-        buys=[_moonshot_buy(amount_usd=50_000.0)],
+        buys=[_c4_buy("ACHR", 40_000.0, True), _c4_buy("RGTI", 10_000.0, False)],
         sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
     )
     r = verify_allocation_proposal(p, packet)
@@ -328,3 +350,74 @@ def test_nvda_still_sanctioned_inside_moonshot_packet():
     r = verify_allocation_proposal(p, packet)
     assert not any(f.code == "us_situs" for f in r.failures)
     assert not any(f.code.startswith("moonshot_") for f in r.failures)
+
+
+# --- Mandate (c4): unfloored growth stories take a SMALLER cut ------------------
+# Ariel's 2026-08-21 ruling. These pin the ARITHMETIC only -- whether a FLOORED
+# label is TRUE is a judgement call for the blind re-deriver, never for this gate.
+# The live 2026-08-21 run (RXRX/TEM floored, RGTI/OKLO unfloored) is the ACCEPT
+# case, so a regression that breaks a compliant real plan is caught here.
+
+_C4_TICKERS = ("RXRX", "TEM", "RGTI", "OKLO")
+
+
+def _c4_packet(**over):
+    return _moonshot_packet(tickers=_C4_TICKERS, deployable_usd=100_000.0, **over)
+
+
+def _c4_codes(buys):
+    total = round(sum(b.amount_usd for b in buys), 2)
+    p = AllocationProposal(
+        cash_to_deploy=total, cash_to_reserve=0.0, buys=buys,
+        sells=[], holds=[], rationale="fund the moonshot sleeve",
+    )
+    res = verify_allocation_proposal(p, _c4_packet())
+    return {f.code for f in res.failures}
+
+
+def test_c4_real_2026_08_21_sleeve_passes():
+    """The sleeve the live run actually produced: unfloored $3,300 of $10,000
+    (under the $3,333 one-third cap) and each unfloored under half of RXRX's
+    $3,500. Compliant -> neither (c4) code fires."""
+    codes = _c4_codes([
+        _c4_buy("RXRX", 3_500.0, True), _c4_buy("TEM", 3_200.0, True),
+        _c4_buy("RGTI", 1_700.0, False), _c4_buy("OKLO", 1_600.0, False),
+    ])
+    assert "moonshot_c4_unfloored_share" not in codes
+    assert "moonshot_c4_unfloored_name_size" not in codes
+
+
+def test_c4_unfloored_share_over_one_third_is_flagged():
+    """Push the unfloored pair to $4,000 of $10,700 (37%) -> over the one-third
+    ceiling. This is the drift the prose could not prevent."""
+    codes = _c4_codes([
+        _c4_buy("RXRX", 3_500.0, True), _c4_buy("TEM", 3_200.0, True),
+        _c4_buy("RGTI", 2_000.0, False), _c4_buy("OKLO", 2_000.0, False),
+    ])
+    assert "moonshot_c4_unfloored_share" in codes
+
+
+def test_c4_single_unfloored_over_half_of_largest_floored_is_flagged():
+    """RGTI at $1,900 exceeds half of RXRX's $3,500 (=$1,750), even though the
+    combined unfloored share stays under one third."""
+    codes = _c4_codes([
+        _c4_buy("RXRX", 3_500.0, True), _c4_buy("TEM", 3_200.0, True),
+        _c4_buy("RGTI", 1_900.0, False), _c4_buy("OKLO", 500.0, False),
+    ])
+    assert "moonshot_c4_unfloored_name_size" in codes
+
+
+def test_c4_unlabelled_name_counts_as_unfloored():
+    """Mandate (c2): an undeclared floor is scored as NO floor. Here EVERY name is
+    unlabelled, so the whole sleeve reads unfloored and blows the one-third cap --
+    the author cannot dodge (c4) by simply omitting the label."""
+    plain = [
+        Buy(symbol=s, amount_usd=a, sleeve="",
+            justification=("x10 moonshot sleeve pick. US-situs single name adding to "
+                           "the NRA estate-tax base (40% marginal above the $60K "
+                           "exemption) per "
+                           "domain_knowledge/tax/us/estate_tax_nonresidents.md"),
+            claimed_us_weight=1.0)
+        for s, a in (("RXRX", 3_500.0), ("TEM", 3_200.0), ("RGTI", 1_700.0), ("OKLO", 1_600.0))
+    ]
+    assert "moonshot_c4_unfloored_share" in _c4_codes(plain)

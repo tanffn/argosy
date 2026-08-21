@@ -112,6 +112,32 @@ def _implies_exus(buy) -> bool:
     return "ex-us" in text or "ex us" in text or "international" in text
 
 
+# --- Mandate (c4) sizing arithmetic (Ariel, 2026-08-21) --------------------------
+# The sleeve mandate says growth stories stay eligible but take a SMALLER cut: no
+# single UNFLOORED name above half the largest FLOORED name's weight, and unfloored
+# names together under one third of the sleeve. Until now that lived only in the
+# prompt -- the 2026-08-21 run happened to comply, but nothing made the next one.
+#
+# DOCTRINE NOTE (why this may be deterministic): it checks only the ARITHMETIC of
+# the labels the author DECLARED. It never judges whether a floor claim is TRUE --
+# that is a judgement call and belongs to the blind re-deriver
+# (plan_change_team.moonshot_divergences), never to a gate. Determinism here is the
+# inviolable-arithmetic floor; it does not adjudicate "is this a good decision".
+_C4_UNFLOORED_SLEEVE_FRACTION = 1.0 / 3.0   # unfloored names, combined
+_C4_UNFLOORED_VS_FLOORED = 0.50             # any one unfloored vs largest floored
+
+
+def _c4_label(text: str) -> str:
+    """FLOORED / UNFLOORED as DECLARED by the author. Mandate (c2): an undeclared
+    floor is scored as NO floor, so anything unlabelled fails closed to UNFLOORED."""
+    up = (text or "").upper()
+    if "UNFLOORED" in up:
+        return "UNFLOORED"
+    if "FLOORED" in up:
+        return "FLOORED"
+    return "UNFLOORED"
+
+
 def verify_allocation_proposal(
     proposal: AllocationProposal,
     packet: dict[str, Any],
@@ -264,6 +290,39 @@ def verify_allocation_proposal(
                 "of the sleeve's target-pct-of-book size) — trim the US-situs names "
                 "or size more into the sleeve's UCITS core.",
                 "revision"))
+
+    # --- Mandate (c4): unfloored growth stories take a SMALLER cut ---------------
+    # Arithmetic only, on the author's OWN declared labels (see _c4_label).
+    _sleeve_buys = [b for b in proposal.buys
+                    if b.symbol.upper() != "NVDA" and b.symbol.upper() in _moonshot_syms]
+    if _sleeve_buys:
+        _sleeve_total = round(sum(b.amount_usd for b in _sleeve_buys), 2)
+        _unfloored = [b for b in _sleeve_buys if _c4_label(b.justification) == "UNFLOORED"]
+        _floored = [b for b in _sleeve_buys if _c4_label(b.justification) == "FLOORED"]
+        _unfloored_total = round(sum(b.amount_usd for b in _unfloored), 2)
+        _cap_total = _sleeve_total * _C4_UNFLOORED_SLEEVE_FRACTION
+        if _unfloored_total > _cap_total + _MONEY_EPS:
+            _names = ", ".join(f"{b.symbol} ${b.amount_usd:,.0f}" for b in _unfloored)
+            fails.append(GateFailure(
+                "moonshot_c4_unfloored_share",
+                f"unfloored moonshot names total ${_unfloored_total:,.0f} of a "
+                f"${_sleeve_total:,.0f} sleeve, over the mandate (c4) ceiling of "
+                f"${_cap_total:,.0f} (one third). Unfloored: {_names}. Either size "
+                "them down or add a name with a written, countable downside floor. "
+                "(An unlabelled name counts as UNFLOORED per mandate (c2).)",
+                "revision"))
+        if _floored:
+            _largest_floored = max(b.amount_usd for b in _floored)
+            _per_name_cap = _largest_floored * _C4_UNFLOORED_VS_FLOORED
+            for b in _unfloored:
+                if b.amount_usd > _per_name_cap + _MONEY_EPS:
+                    fails.append(GateFailure(
+                        "moonshot_c4_unfloored_name_size",
+                        f"{b.symbol} is UNFLOORED at ${b.amount_usd:,.0f}, above the "
+                        f"mandate (c4) per-name ceiling of ${_per_name_cap:,.0f} "
+                        f"(half the largest floored name, ${_largest_floored:,.0f}) — "
+                        "trim it or justify a countable floor.",
+                        "revision"))
 
     for b in proposal.buys:
         # Require an explicit US-weight claim on every buy so the sourced cross-check
