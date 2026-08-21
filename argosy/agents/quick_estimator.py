@@ -75,7 +75,7 @@ class QuickEstimatorAgent(BaseAgent[EstimatorOutput]):
             "only when a plausible x10 path exists in 5-10 years (not just a "
             "real growth story or a momentum spike — a safe compounder that "
             "might 2x is a NO for this sleeve). conviction is the ASYMMETRY "
-            "grade (upside-asymmetry x plausibility), HIGH/MED/LOW — "
+            "grade (upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2), HIGH/MED/LOW — "
             "defensibility must not raise it; sentiment is -1..1; one_line is a "
             "single clause and should carry the cap-math (cap today -> "
             "plausible outcome)."

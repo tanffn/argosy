@@ -922,7 +922,7 @@ def build_target_allocation(
                     "written justification), sourced GLOBALLY (US/EU/ISR/anywhere) and "
                     "deliberately NOT estate-gated. Accepted per-name loss is 100%, so "
                     "defensibility never boosts rank; rank and deploy fill order are "
-                    "asymmetry-first (upside-asymmetry x plausibility — the instrument "
+                    "asymmetry-first ((upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2) — the instrument "
                     "weights ARE the asymmetry rank). Safe maybe-2x compounders belong "
                     "in the core/growth sleeves, not here. Held as a fixed strategic "
                     "weight; its sourced sigma feeds the FI solver so the book's "

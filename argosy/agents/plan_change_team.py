@@ -253,7 +253,8 @@ class DiversifierAdjudicatorAgent(BaseAgent[DiversifierAdjudication]):
 # The permanent ~5% high-growth sleeve is re-sourced under the BINDING x10
 # asymmetry mandate (high_potential_sleeve.X10_SLEEVE_MANDATE): cap-math test,
 # accepted per-name loss = 100% (defensibility never boosts rank), rank =
-# upside-asymmetry x plausibility, weights = the deploy fill order. The author
+# (upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2),
+# weights = the deploy fill order. The author
 # re-grades the current names and may source new candidates (WebSearch); the
 # blind reviewer re-derives independently; divergence is compared IN CODE and
 # forces a reconciliation round — never auto-resolved.
@@ -263,6 +264,12 @@ class MoonshotName(BaseModel):
     action: str = "KEEP"          # KEEP | ADD | EXIT
     weight_pct: float = Field(default=0.0, ge=0.0, le=100.0)  # of the sleeve; 0 for EXIT
     cap_math: str = ""            # one line: cap today -> plausible outcome -> multiple
+    downside_math: str = ""       # one line: the FLOOR — price/book, net cash vs
+                                  # cap, or revenue at a defensible multiple; or an
+                                  # explicit "no floor". Mandate (c2): undeclared
+                                  # == none, and unfloored never outranks floored
+                                  # at equal upside. Without this the rank is
+                                  # variance, not asymmetry.
     disposition: str = ""         # for EXIT: what to do with any existing fill
 
 
@@ -274,14 +281,19 @@ class MoonshotSleeveComposition(BaseModel):
 _MOONSHOT_OUTPUT_SPEC = (
     "OUTPUT: a single JSON object {\"names\": [{\"ticker\": str, \"action\": "
     "\"KEEP|ADD|EXIT\", \"weight_pct\": number, \"cap_math\": str, "
-    "\"disposition\": str}], \"rationale\": str}. Rules: KEEP/ADD weights are % "
+    "\"downside_math\": str, \"disposition\": str}], \"rationale\": str}. "
+    "Rules: KEEP/ADD weights are % "
     "of the sleeve, MUST sum to 100, and MUST be ordered + sized "
     "asymmetry-first (highest asymmetry rank = largest weight = filled first); "
     "EXIT names get weight_pct=0 plus a disposition (existing small fills are "
     "held or migrated on a scheduled rebalance — never a forced sell); every "
     "name's cap_math is ONE line with real numbers: market cap today -> "
-    "plausible 5-10y outcome -> implied multiple. 6-10 surviving names. No "
-    "prose outside the JSON."
+    "plausible 5-10y outcome -> implied multiple; and every name's "
+    "downside_math is ONE line with real numbers naming the FLOOR "
+    "(price/book, net cash vs market cap, or revenue at a defensible "
+    "multiple) or the literal words 'no floor'. A name whose downside_math "
+    "is blank is scored as HAVING NO FLOOR and must rank below any floored "
+    "name of equal upside. 6-10 surviving names. No prose outside the JSON."
 )
 
 

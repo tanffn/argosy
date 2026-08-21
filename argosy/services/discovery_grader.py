@@ -73,7 +73,7 @@ class DiscoveryGraderAgent(BaseAgent[FleetGradeOutput]):
             "not an executable order.\n\n"
             f"{X10_SLEEVE_MANDATE}\n\n"
             "Produce: conviction = the ASYMMETRY grade (HIGH/MED/LOW — "
-            "upside-asymmetry x plausibility under the cap-math test; "
+            "(upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2) under the cap-math + floor tests; "
             "defensibility / quality / profitability must NOT boost it); a "
             "verdict (BUY = passes the cap-math test with a plausible x10 path "
             "and is worth a sleeve position, WATCH = track, PASS = fails the "

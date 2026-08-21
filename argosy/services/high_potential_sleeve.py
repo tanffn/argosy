@@ -45,18 +45,42 @@ X10_SLEEVE_MANDATE = (
     "needs an EXTRAORDINARY written justification — a $70-120B company that can "
     "'maybe 2x' is the OPPOSITE of this sleeve's job (it belongs in the "
     "core/growth sleeves, not here).\n"
-    "  (b) ACCEPTED PER-NAME LOSS = 100%. Every name is sized so a total loss is "
-    "survivable; therefore 'defensibility' / quality / already-profitable safety "
-    "must NOT boost a name's rank in this sleeve.\n"
-    "  (c) RANK = upside-asymmetry x plausibility (the expected multiple times "
-    "the chance the path is real) — never conviction-safety.\n"
+    "  (b) ACCEPTED PER-NAME LOSS = 100% is a SIZING rule, not a ranking "
+    "rule. Every name is sized so a total loss is survivable. Do NOT conflate "
+    "two different things: 'quality/defensibility' (wide moat, strong brand, "
+    "steady margins) is a COMPOUNDER trait and remains correctly irrelevant "
+    "here; a DOWNSIDE FLOOR (assets, net cash, or real revenue that "
+    "mechanically limits how far the price can fall) is NOT the same thing, "
+    "and it MUST boost rank — a floor is precisely what makes an asymmetry "
+    "asymmetric.\n"
+    "  (c) RANK = (plausible upside multiple x plausibility) / plausible "
+    "DOWNSIDE. Asymmetry is a RATIO and BOTH terms are mandatory. A name "
+    "ranked on upside alone is ranked on VARIANCE, and variance is symmetric "
+    "— it delivers -80% exactly as readily as +800%. At equal upside x "
+    "plausibility, a floored name MUST outrank an unfloored one.\n"
+    "  (c2) WRITE THE FLOOR DOWN. For every name, state what mechanically "
+    "stops the price: price/book, net cash vs market cap, or revenue at a "
+    "defensible multiple. 'No floor' is a permitted answer but MUST be "
+    "declared as such — an undeclared floor is scored as no floor.\n"
+    "  (c3) CALIBRATION — the archetype this sleeve exists to catch. SanDisk "
+    "(SNDK) on 2025-08-21: $45.50/share, market cap $6.66B against FY25 "
+    "revenue $7.36B (P/S 0.91x) and stockholders equity $9.22B (0.72x BOOK) "
+    "— the whole company cost less than the accounting value of its net "
+    "assets, while losing money at a CYCLICAL trough (EBITDA -$1.25B) with an "
+    "identifiable demand inflection ahead (AI memory/storage). Twelve months "
+    "later: $1,600.62, +3,418%. Note what it was NOT: not pre-revenue, not a "
+    "story stock, not a big-TAM narrative. The 10x came from a countable "
+    "asset floor plus a catalyst. Over that SAME window the pre-revenue "
+    "archetype delivered its downside and none of its upside (RXRX -30%, "
+    "ACHR -35%, RGTI +13%; drawdowns 58-77%). Prefer a real business the "
+    "market has priced for death over a narrative with no floor under it.\n"
     "  (d) DEPLOY FILL ORDER = asymmetry-first: tranches fill the "
     "highest-asymmetry names first (the sleeve's stored instrument weights ARE "
     "the asymmetry rank), never safety-first."
 )
 
 # Weight per grade. NOTE (x10 mandate): within THIS sleeve a grade is an
-# ASYMMETRY grade — HIGH means the strongest upside-asymmetry x plausibility
+# ASYMMETRY grade — HIGH means the strongest (upside x plausibility)/DOWNSIDE
 # under the cap-math test above, NOT the safest / most defensible name. The
 # graders (quick_estimator / discovery_grader) are prompted with the mandate so
 # the existing weight math below ranks and fills asymmetry-first by meaning.
