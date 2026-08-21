@@ -108,9 +108,8 @@ def _build_default_session_factory() -> sessionmaker:
     """
     global _DEFAULT_SESSION_FACTORY
 
-    import sqlalchemy as sa
-
     from argosy.config import get_settings
+    from argosy.state.db import create_sync_engine
 
     settings = get_settings()
     db_file = str(settings.db_file)
@@ -121,7 +120,12 @@ def _build_default_session_factory() -> sessionmaker:
             return cached_factory
 
     sync_url = f"sqlite:///{db_file}"
-    engine = sa.create_engine(
+    # Route through the documented reliability seam (WAL + busy_timeout=60s +
+    # synchronous=NORMAL) instead of a bare create_engine, which gets SQLite's
+    # default busy_timeout=0 and raises "database is locked" INSTANTLY on any
+    # write contention — this was exactly that bug (funnel_runs INSERT failing
+    # under concurrent writers while the funnel computation itself succeeded).
+    engine = create_sync_engine(
         sync_url, connect_args={"check_same_thread": False}
     )
     factory = sessionmaker(bind=engine, expire_on_commit=False)

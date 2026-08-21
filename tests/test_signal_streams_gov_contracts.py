@@ -118,8 +118,9 @@ def test_signal_stream_config_defaults_and_validation() -> None:
         materiality_threshold=0.05,
         lookback_days=90,
         recent_scan_days=2,
-        max_pages_per_query=10,
+        max_pages_per_query=50,
         agent_error_ttl_hours=24,
+        cursor_max_catchup_days=3,
     )
     assert config.insider_cluster == InsiderClusterSignalConfig(
         enabled=False,

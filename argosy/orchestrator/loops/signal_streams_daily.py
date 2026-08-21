@@ -73,6 +73,7 @@ def _default_streams(user_id: str) -> list[SignalStream]:
                     recent_scan_days=gov.recent_scan_days,
                     max_pages_per_query=gov.max_pages_per_query,
                     agent_error_ttl_hours=gov.agent_error_ttl_hours,
+                    cursor_max_catchup_days=gov.cursor_max_catchup_days,
                 )
             )
         )

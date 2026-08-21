@@ -584,8 +584,27 @@ class GovContractsSignalConfig(BaseModel):
     materiality_threshold: float = Field(default=0.05, gt=0, le=1)
     lookback_days: int = Field(default=90, gt=0)
     recent_scan_days: int = Field(default=2, gt=0)
-    max_pages_per_query: int = Field(default=10, gt=0)
+    # Was 10 (1,000 records @ limit=100). Measured live against USAspending
+    # 2026-08-21: the unfiltered "global" discovery query returns 0 pages for
+    # a 1-2 day window most days, but jumps past 3,000 records (>30 pages) the
+    # moment the window crosses certain dates (bulk-dated award batches).
+    # 10 was too tight for the steady-state 2-day scan to survive that
+    # variance and made every catch-up run after any outage un-recoverable
+    # (see cursor_max_catchup_days). Bumped for headroom; still a hard
+    # fail-closed cap, not unbounded.
+    max_pages_per_query: int = Field(default=50, gt=0)
     agent_error_ttl_hours: int = Field(default=24, gt=0, le=168)
+    # Bounds how far back the unfiltered "global" new-ticker-discovery scan
+    # is allowed to reach when the cursor has fallen behind (outage
+    # catch-up), mirroring InsiderClusterSignalConfig.cursor_max_catchup_days.
+    # Without this the gov_contracts cursor stalling for any reason (network
+    # blip, page-cap trip) makes every subsequent day's catch-up window wider
+    # or equal to lookback_days=90, which reliably re-trips the page cap
+    # forever (observed live: cursor stuck since 2026-07-11, every run
+    # failing since). Recipient-filtered queries (curated companies +
+    # previously-discovered tickers) are unaffected — they always use the
+    # fixed lookback_days window, not the cursor.
+    cursor_max_catchup_days: int = Field(default=3, gt=0, le=90)
 
 
 class InsiderClusterSignalConfig(BaseModel):

@@ -71,8 +71,14 @@ class GovContractsConfig:
     materiality_threshold: float = 0.05
     lookback_days: int = 90
     recent_scan_days: int = 2
-    max_pages_per_query: int = 10
+    max_pages_per_query: int = 50
     agent_error_ttl_hours: int = 24
+    # Bounds how far back the unfiltered "global" discovery scan is allowed
+    # to reach on cursor catch-up. See GovContractsSignalConfig in
+    # argosy/config.py for the full rationale (2026-08-21 stuck-cursor
+    # incident: without this the catch-up window grows toward lookback_days
+    # and permanently re-trips max_pages_per_query).
+    cursor_max_catchup_days: int = 3
 
     def __post_init__(self) -> None:
         if not 0 < self.materiality_threshold <= 1:
@@ -85,6 +91,11 @@ class GovContractsConfig:
             )
         if self.max_pages_per_query <= 0:
             raise ValueError("max_pages_per_query must be positive")
+        if not 0 < self.cursor_max_catchup_days <= self.lookback_days:
+            raise ValueError(
+                "cursor_max_catchup_days must be positive and no greater than "
+                "lookback_days"
+            )
         if (
             isinstance(self.agent_error_ttl_hours, bool)
             or not isinstance(self.agent_error_ttl_hours, int)
