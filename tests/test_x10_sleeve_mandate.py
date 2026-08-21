@@ -216,3 +216,65 @@ def test_refinement_hg_override_replaces_instruments_only_when_sleeve_exists():
 
     pct, instruments = _fixed_sleeves_from_current(_NoDoc())
     assert pct == 0.0 and instruments == ()
+
+
+# --- the blind re-deriver must compare the FLOOR CLAIM, not just the sizing -----
+# Sol's finding (2026-08-21): moonshot_divergences compared inclusion and weights
+# only, so it would have MISSED the failure that motivated the whole fix. RXRX was
+# mis-LABELLED, not mis-weighted -- the author called it floored on "real revenue"
+# ($55M at 34x sales with NEGATIVE gross profit) while calling OKLO unfloored
+# despite it holding the largest cash cushion of the four. Whether a floor claim is
+# TRUE is a judgement call, so it must be caught by two blind derivations
+# disagreeing -- never by a deterministic gate.
+
+def _mk(ticker, weight, downside_math):
+    from argosy.agents.plan_change_team import MoonshotName
+    return MoonshotName(ticker=ticker, action="KEEP", weight_pct=weight,
+                        cap_math="cap -> outcome -> multiple", downside_math=downside_math)
+
+
+def _comp(*names):
+    from argosy.agents.plan_change_team import MoonshotSleeveComposition
+    return MoonshotSleeveComposition(names=list(names))
+
+
+def test_divergence_catches_the_2026_08_21_floor_mislabel():
+    """Identical tickers AND identical weights -- only the floor reading differs.
+    The pre-2026-08-21 comparison returned no divergence for this input."""
+    from argosy.agents.plan_change_team import moonshot_divergences
+    author = _comp(_mk("RXRX", 35.0, "FLOORED: real drug-discovery revenue plus net cash"),
+                   _mk("OKLO", 16.0, "UNFLOORED: pre-revenue, no floor"))
+    reviewer = _comp(_mk("RXRX", 35.0, "UNFLOORED: negative gross profit, 34x sales"),
+                     _mk("OKLO", 16.0, "FLOORED: net cash is 31% of market cap"))
+    d = moonshot_divergences(author, reviewer)
+    assert len(d) == 2
+    assert all("FLOOR CLASSIFICATION" in x for x in d)
+    assert any(x.startswith("RXRX:") for x in d) and any(x.startswith("OKLO:") for x in d)
+
+
+def test_divergence_silent_when_both_agree_on_the_floor():
+    from argosy.agents.plan_change_team import moonshot_divergences
+    a = _comp(_mk("RXRX", 35.0, "UNFLOORED: cash cushion only"))
+    b = _comp(_mk("RXRX", 33.0, "UNFLOORED: no asset floor"))
+    assert moonshot_divergences(a, b) == []   # 2pp weight gap is inside tolerance
+
+
+def test_undeclared_floor_reads_as_unfloored():
+    """Mandate (c2): an undeclared floor is scored as NO floor, so an agent cannot
+    manufacture agreement by simply leaving downside_math blank."""
+    from argosy.agents.plan_change_team import _floor_class, moonshot_divergences
+    assert _floor_class(_mk("X", 1.0, "")) == "UNFLOORED"
+    d = moonshot_divergences(_comp(_mk("X", 50.0, "")),
+                             _comp(_mk("X", 50.0, "FLOORED: 0.6x tangible book")))
+    assert len(d) == 1 and "FLOOR CLASSIFICATION" in d[0]
+
+
+def test_divergence_still_catches_inclusion_and_weight():
+    """The original two comparisons must survive the extension."""
+    from argosy.agents.plan_change_team import moonshot_divergences
+    a = _comp(_mk("AAA", 60.0, "FLOORED: x"), _mk("BBB", 40.0, "FLOORED: x"))
+    b = _comp(_mk("AAA", 20.0, "FLOORED: x"), _mk("CCC", 80.0, "FLOORED: x"))
+    d = moonshot_divergences(a, b)
+    assert any("author keeps" in x for x in d)      # BBB dropped by reviewer
+    assert any("reviewer keeps" in x for x in d)    # CCC added by reviewer
+    assert any("weight diverges" in x for x in d)   # AAA 60 vs 20

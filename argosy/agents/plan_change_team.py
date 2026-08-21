@@ -388,6 +388,22 @@ class MoonshotSleeveBlindReviewerAgent(BaseAgent[MoonshotSleeveComposition]):
         return system, _moonshot_user_block(current_sleeve, book, notes)
 
 
+def _floor_class(name: "MoonshotName") -> str:
+    """FLOORED / UNFLOORED as the agent DECLARED it in downside_math.
+
+    Mandate (c2): an undeclared floor is scored as NO floor, so a blank or
+    unlabelled downside_math reads UNFLOORED. This is a parse of the claim, never
+    a judgement about whether the claim is true -- that is what the two blind
+    derivations are FOR.
+    """
+    up = (getattr(name, "downside_math", "") or "").upper()
+    if "UNFLOORED" in up or "NO FLOOR" in up:
+        return "UNFLOORED"
+    if "FLOORED" in up:
+        return "FLOORED"
+    return "UNFLOORED"
+
+
 def moonshot_divergences(
     author: MoonshotSleeveComposition,
     reviewer: MoonshotSleeveComposition,
@@ -395,8 +411,17 @@ def moonshot_divergences(
     weight_tolerance_pp: float = 5.0,
 ) -> list[str]:
     """Deterministic comparison of the two blind compositions. Returns a list of
-    human-readable divergences (empty = agreement). Compared IN CODE — the
-    reviewer never adjudicates its own agreement."""
+    human-readable divergences (empty = agreement). Compared IN CODE -- the
+    reviewer never adjudicates its own agreement.
+
+    Compares three things: INCLUSION, WEIGHT, and -- added 2026-08-21 -- the
+    FLOOR CLASSIFICATION. The first two alone would have MISSED the failure that
+    motivated this: on 2026-08-21 the author called RXRX floored on "real revenue"
+    ($55M at 34x sales, negative gross profit) and OKLO unfloored despite the
+    largest cash cushion of the four. That is a mis-LABEL, not a mis-weight, and
+    it is exactly the class of factual claim two independent derivations should be
+    forced to reconcile.
+    """
     def _kept(c: MoonshotSleeveComposition) -> dict[str, float]:
         return {
             n.ticker.upper(): float(n.weight_pct)
@@ -404,7 +429,15 @@ def moonshot_divergences(
             if n.action.upper() in ("KEEP", "ADD") and n.weight_pct > 0
         }
 
+    def _floors(c: MoonshotSleeveComposition) -> dict[str, str]:
+        return {
+            n.ticker.upper(): _floor_class(n)
+            for n in c.names
+            if n.action.upper() in ("KEEP", "ADD") and n.weight_pct > 0
+        }
+
     a, r = _kept(author), _kept(reviewer)
+    af, rf = _floors(author), _floors(reviewer)
     out: list[str] = []
     for t in sorted(a.keys() - r.keys()):
         out.append(f"{t}: author keeps at {a[t]:.0f}%, reviewer excludes it")
@@ -415,6 +448,12 @@ def moonshot_divergences(
             out.append(
                 f"{t}: weight diverges by {abs(a[t] - r[t]):.0f}pp "
                 f"(author {a[t]:.0f}% vs reviewer {r[t]:.0f}%)"
+            )
+        if af.get(t) != rf.get(t):
+            out.append(
+                f"{t}: FLOOR CLASSIFICATION diverges — author says {af.get(t)}, "
+                f"reviewer says {rf.get(t)}. One of them has misread the balance "
+                "sheet; reconcile against the filings before this name is sized."
             )
     return out
 
