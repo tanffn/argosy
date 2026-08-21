@@ -4,6 +4,33 @@
 
 Last updated: **2026-08-21**.
 
+> **THE BLIND PAIR RAN FOR THE FIRST TIME (2026-08-21, master `f6a7fdc`).** `$1.41`, 9 min,
+> `scripts/adjudicate_moonshot_sleeve.py`. It had NEVER executed: MoonshotSleeveAuthorAgent,
+> its blind reviewer and `moonshot_divergences` had no callers outside tests. NOT just the
+> moonshot pair -- `SleeveInstrumentAuthorAgent`, its reviewer and `sleeve_instrument_divergences`
+> STILL have no callers. The adversarial-pair layer is largely written-but-unrun.
+>
+> **It overturned the morning's sleeve.** RXRX shipped that day as moonshot rank #1 ($3,500,
+> "FLOORED: real drug-discovery revenue"). Author now: 9%, UNFLOORED, "NEGATIVE gross profit
+> (-$393M)". Reviewer: excludes it. OKLO and RGTI: BOTH agents independently said UNFLOORED,
+> both wrote "cushion, not a floor" -- Sol's exact distinction, reached without seeing Sol.
+> 7 divergences, deliberately unreconciled. **Consensus pick: LEU (Centrus)**, both blind #1
+> (28% vs 34%), and it survives independent checking: gross profit +$112M, operating cash flow
+> +$51M, net cash $691M (19% of cap). Verified names the pair disagreed on: TEM has NEGATIVE
+> tangible book (-$334M) and net cash (-$628M); CIFR has net cash -$4.755B (-73% of cap);
+> UEC's NCAV is 1.8% of cap on NEGATIVE gross profit.
+>
+> **OPEN DEFECT IN MY OWN MANDATE WORDING.** Both agents use FLOORED to mean "profitable
+> operating business", NOT "asset floor" -- correctly, since (c2) says "assets, net cash, OR
+> real revenue". But at P/B 4.3-16.6 none of these names has liquidation protection, so
+> "floor" does far less work than the SNDK story implies. The wording needs tightening, and
+> the agents are not at fault for following it.
+>
+> **ALSO STILL OPEN:** `downside_math` is free text -- an agent can write "defensible P/S
+> floor" and pass (Sol). It needs to be a stored number with burn-to-catalyst + source date.
+> SDD 4011 still documents the old numerator-only formula. The deterministic allocator
+> (`high_potential_sleeve.py`) still sizes on HIGH/MED/LOW 3/2/1 with no downside input.
+
 > **⚠️ THE SCOUT / DISCOVERY WORK (2026-08-21) — master `30037d1`. Read before touching discovery.**
 >
 > **Question asked:** would Argosy have caught SanDisk (SNDK: $45.50 -> $1,600.62, +3,417%)?
