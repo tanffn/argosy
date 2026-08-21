@@ -117,6 +117,91 @@ def test_custom_filter_band():
     assert [c.ticker for c in res.shortlist] == ["MEGA"]
 
 
+# --- MOMENTUM_SUSTAINED family + thematic lane ------------------------------
+
+
+def test_momentum_sustained_family_weight():
+    s = _sig("X", families={"MOMENTUM_SUSTAINED"})
+    assert score_signal(s) == 40.0
+
+
+def test_momentum_sustained_participates_in_pump_guard():
+    # single family (even the highest-weighted one) is still held back
+    uni = {"AAA": _sig("AAA", families={"MOMENTUM_SUSTAINED"}, **_liquid_kw())}
+    res = score_and_filter(uni)
+    assert res.shortlist == ()
+    uni2 = {"BBB": _sig("BBB", families={"MOMENTUM_SUSTAINED", "GROWTH"},
+                        **_liquid_kw())}
+    res2 = score_and_filter(uni2)
+    assert [c.ticker for c in res2.shortlist] == ["BBB"]
+    assert res2.shortlist[0].score == 65.0  # 40 + 25
+
+
+def test_thematic_lane_off_by_default_megacap_dropped():
+    # 2-family, liquid, but $130bn cap -- above the satellite ceiling and the
+    # thematic lane is not enabled -> quarantined, not silently admitted.
+    uni = {"MU": _sig("MU", families={"MOMENTUM_SUSTAINED", "GROWTH"},
+                      price=120.0, market_cap=130e9, avg_volume=20_000_000)}
+    res = score_and_filter(uni)
+    assert res.shortlist == ()
+    assert ("MU", "failed-liquidity") in res.quarantine
+
+
+def test_thematic_lane_enabled_admits_large_cap_tagged_thematic():
+    uni = {"MU": _sig("MU", families={"MOMENTUM_SUSTAINED", "GROWTH"},
+                      price=120.0, market_cap=130e9, avg_volume=20_000_000)}
+    res = score_and_filter(uni, thematic_lane_enabled=True)
+    assert [c.ticker for c in res.shortlist] == ["MU"]
+    assert res.shortlist[0].lane == "thematic"
+
+
+def test_thematic_lane_still_respects_its_own_band():
+    # $600bn is above even the thematic ceiling ($500bn) -> still rejected.
+    uni = {"HUGE": _sig("HUGE", families={"MOMENTUM_SUSTAINED", "GROWTH"},
+                        price=300.0, market_cap=600e9, avg_volume=50_000_000)}
+    res = score_and_filter(uni, thematic_lane_enabled=True)
+    assert res.shortlist == ()
+    assert ("HUGE", "failed-liquidity") in res.quarantine
+
+
+def test_satellite_lane_default_tag():
+    uni = {"SAT": _sig("SAT", families={"MOMENTUM", "GROWTH"}, **_liquid_kw())}
+    res = score_and_filter(uni, thematic_lane_enabled=True)
+    assert res.shortlist[0].lane == "satellite"
+
+
+def test_insufficient_history_flag_propagates_to_candidate():
+    uni = {"NEW": _sig("NEW", families={"MOMENTUM_SUSTAINED", "GROWTH"},
+                       insufficient_history=True, **_liquid_kw())}
+    res = score_and_filter(uni)
+    assert res.shortlist[0].insufficient_history is True
+
+
+def test_thematic_lane_enabled_flag_reads_env(monkeypatch):
+    from argosy.services.trend_radar import thematic_lane_enabled
+
+    monkeypatch.delenv("ARGOSY_THEMATIC_LANE_ENABLED", raising=False)
+    assert thematic_lane_enabled() is False
+    monkeypatch.setenv("ARGOSY_THEMATIC_LANE_ENABLED", "true")
+    assert thematic_lane_enabled() is True
+    monkeypatch.setenv("ARGOSY_THEMATIC_LANE_ENABLED", "0")
+    assert thematic_lane_enabled() is False
+
+
+def test_to_sleeve_candidates_excludes_thematic_lane():
+    from argosy.services.trend_radar import TrendCandidate, to_sleeve_candidates
+
+    cands = [
+        TrendCandidate("SAT", "Satellite pick", 80.0, ("MOMENTUM", "GROWTH"),
+                       ("r",), 10.0, 1e9, 5e7, 5.0, lane="satellite"),
+        TrendCandidate("THM", "Thematic pick", 90.0,
+                       ("MOMENTUM_SUSTAINED", "GROWTH"), ("r",), 100.0, 130e9,
+                       5e7, 2.0, lane="thematic"),
+    ]
+    out = to_sleeve_candidates(cands)
+    assert [s.ticker for s in out] == ["SAT"]
+
+
 # --- bridge to the sleeve --------------------------------------------------
 
 
