@@ -4,11 +4,30 @@ ONE canonical record per held position that every surface projects — kills
 the three-voices defect where /portfolio said HOLD while the fleet review
 said SELL and the inbox held a proposal for the same ticker (SPCX).
 
-Three stance sources, fixed precedence:
+Three stance sources, precedence (revised 2026-08-21 — decision-basis gate):
 
     open proposal (awaiting_human/approved/cooling)
+        >  plan stance, WHEN decision_basis in {CONSTRAINT, MIXED}
         >  verified review (holding_reviews outcome 'proposed'/'hold')
-        >  plan stance (derive_position_theses)
+        >  plan stance, WHEN decision_basis == FORECAST (or unrecorded)
+
+The conviction rewrite (per_position_thesis.py) gave the plan layer a
+``decision_basis`` per card: CONSTRAINT (a deterministic rule — domicile,
+policy-cap breach, duplicate-exposure target-zero), FORECAST (a qualitative
+company view, no binding rule), or MIXED (destination from a binding rule,
+timing from forecast — e.g. GOOG SELL: US_SITUS + DUPLICATE + TARGET_ZERO
+decide "get to zero", tax-loss timing decides "when"). A CONSTRAINT/MIXED
+verdict states a FACT that is true independent of what an older forecast-only
+review concluded, so it is never downgraded by a review — the review is
+still recorded and the conflict still sets ``divergence=True`` with a note
+naming the binding rule(s), it just doesn't win. A FORECAST-basis verdict (or
+a pre-rewrite thesis with no ``decision_basis`` recorded — the dataclass
+default is "FORECAST", so this path is fail-closed to the PRE-2026-08-21
+behaviour) still lets a verified review win, unchanged from before.
+
+An OPEN PROPOSAL still overrides everything, including a CONSTRAINT/MIXED
+plan verdict — it is the human's own live decision surface (e.g. a filed
+NVDA TRIM), strictly fresher than any plan-derived fact.
 
 A ``held_unverified`` review (fleet said act, blind gate diverged,
 fail-closed) NEVER changes the stance: it sets ``divergence=True`` and a
@@ -255,6 +274,36 @@ def _proposal_stance(r: Proposal, card: PositionThesis) -> str:
     return "ADD" if (card.current_shares or 0) > 0 else "BUY"
 
 
+def _plan_timestamp(pv: PlanVersion | Any) -> datetime | None:
+    """Best-effort 'as-of' timestamp for a plan version.
+
+    Prefer ``accepted_at`` (when this plan became the standing plan) and
+    fall back to ``imported_at``/``distilled_at``. Tests and callers may pass
+    a ``SimpleNamespace`` lacking these attributes — best-effort, never
+    fatal.
+    """
+    for attr in ("accepted_at", "imported_at", "distilled_at"):
+        ts = getattr(pv, attr, None)
+        if ts is not None:
+            return ts
+    return None
+
+
+def _review_is_post_plan(hr: HoldingReview, pv: PlanVersion | Any) -> bool:
+    """True when a review was recorded strictly after the plan's timestamp.
+
+    Used only to word the binding-rule-override note honestly ("this review
+    postdates the plan" vs. "this review predates the plan") — it never
+    changes precedence. A binding CONSTRAINT/MIXED fact does not expire just
+    because a newer review disagreed with it; see the module docstring.
+    """
+    plan_ts = _as_utc(_plan_timestamp(pv))
+    review_ts = _as_utc(getattr(hr, "reviewed_at", None))
+    if plan_ts is None or review_ts is None:
+        return False
+    return review_ts > plan_ts
+
+
 def rebuild_stances(
     db: Session,
     user_id: str,
@@ -333,29 +382,75 @@ def rebuild_stances(
         review_outcome: str | None = None
         notes: list[str] = []
 
+        # Decision-basis gate (2026-08-21): a plan verdict grounded in a
+        # deterministic rule (CONSTRAINT — domicile, policy-cap, duplicate-
+        # exposure target-zero) or partly grounded in one (MIXED — e.g.
+        # GOOG's SELL: destination from policy, timing from tax forecast)
+        # states a FACT that does not become false because an older
+        # forecast-only review reached a different verdict. Only a pure
+        # FORECAST-basis card (or a pre-rewrite thesis with no basis
+        # recorded — dataclass default is "FORECAST", so this is
+        # fail-closed to TODAY'S behaviour) still lets a verified review
+        # override the plan. See per_position_thesis.py PositionThesis.
+        decision_basis = (getattr(card, "decision_basis", None) or "FORECAST").upper()
+        plan_is_binding = decision_basis in ("CONSTRAINT", "MIXED")
+
         hr = reviews.get(sym)
         if hr is not None:
             review_verdict = hr.verdict
             review_outcome = hr.outcome or ""
             if review_outcome in ("proposed", "hold"):
-                # Verified review — beats the plan stance, with one carve-out:
-                # a HOLD verdict (outcome 'hold') answers "should we act on
-                # this HOLDING?" with "no action"; it does NOT adjudicate the
-                # plan's deployment-schedule BUY/ADD (underweight vs target),
-                # so it never downgrades those (SPMV would otherwise lose its
-                # funded-by-schedule BUY to a routine thesis-intact review).
+                # Verified review — beats the plan stance, with two
+                # carve-outs:
+                #  (a) a HOLD verdict (outcome 'hold') answers "should we act
+                #      on this HOLDING?" with "no action"; it does NOT
+                #      adjudicate the plan's deployment-schedule BUY/ADD
+                #      (underweight vs target), so it never downgrades those
+                #      (SPMV would otherwise lose its funded-by-schedule BUY
+                #      to a routine thesis-intact review);
+                #  (b) plan_is_binding (below) — a CONSTRAINT/MIXED plan
+                #      verdict is never downgraded by a review at all.
                 rv = (hr.verdict or "").upper()
                 if rv == "BUY" and (card.current_shares or 0) > 0:
                     rv = "ADD"
-                overrides = rv in ("BUY", "ADD", "TRIM", "SELL") or (
-                    rv == "HOLD" and plan_verdict == "HOLD"
+                overrides = (
+                    not plan_is_binding
+                    and (
+                        rv in ("BUY", "ADD", "TRIM", "SELL")
+                        or (rv == "HOLD" and plan_verdict == "HOLD")
+                    )
                 )
-                if overrides:
+                if plan_is_binding and rv != plan_verdict:
+                    # The review disagrees with a binding-rule verdict. The
+                    # review row is NOT discarded (review_verdict/
+                    # review_outcome are still recorded on the row below,
+                    # and its own re-derivation may well be correct) — it
+                    # simply cannot silently overturn a deterministic fact.
+                    # Staleness is called out explicitly: a review dated
+                    # AFTER the plan is flagged as "post-plan" so a human
+                    # knows it isn't just a stale artifact being ignored.
+                    divergence = True
+                    freshness = "post-plan " if _review_is_post_plan(hr, pv) else ""
+                    rules = ", ".join(getattr(card, "binding_rules", None) or []) or "no rule listed"
+                    notes.append(
+                        f"**Binding-rule override ({str(hr.reviewed_at)[:10]}, "
+                        f"{freshness}review):** the plan's {plan_verdict} on "
+                        f"{sym} is a {decision_basis.lower()}-basis decision "
+                        f"[{rules}] — a deterministic fact that a fleet review "
+                        f"cannot overturn. The latest review said {rv}; the "
+                        f"stance shown stays the plan's {plan_verdict} — this "
+                        f"conflict is flagged, not hidden.\n\n"
+                    )
+                elif overrides:
                     stance = rv
                     stance_source = "review"
                     if hr.confidence:
                         conviction = _norm_conviction(hr.confidence)
-                elif rv in ("HOLD", "WAIT", "BUY") and plan_verdict in ("SELL", "TRIM"):
+                elif (
+                    not plan_is_binding
+                    and rv in ("HOLD", "WAIT", "BUY")
+                    and plan_verdict in ("SELL", "TRIM")
+                ):
                     # (i) Review-verb divergence: the latest verified review KEEPS
                     # (HOLD/WAIT) while the plan STANDS a reduction. Precedence is
                     # untouched — the stance shown remains the plan's SELL/TRIM

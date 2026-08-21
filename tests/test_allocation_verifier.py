@@ -185,3 +185,146 @@ def test_empty_known_symbols_fails_closed():
     r = verify_allocation_proposal(p, _packet(known_symbols=set()))
     assert r.status == GateStatus.BLOCK
     assert any(f.code == "invented_ticker" for f in r.failures)
+
+
+# --- Moonshot-sleeve US-situs carve-out (Ariel, 2026-08-21) --------------------
+# domain_knowledge/tax/us/estate_tax_nonresidents.md, "Sleeve carve-out for the
+# x10 moonshot sleeve". Sleeve attribution is derived from the plan_menu entry
+# carrying the X10 mandate — NEVER from the author's free-text Buy.sleeve field
+# (observed empty/unreliable on a live run).
+
+_MOONSHOT_SLEEVE_LABEL = "High-growth / high-potential"
+
+
+def _moonshot_packet(target_pct=8.0, book_usd=4_150_000.0, tickers=("RGTI", "ACHR"),
+                      deployable_usd=50_000.0, **over):
+    """A packet with a moonshot plan_menu entry carrying the X10 mandate, plus a
+    core US-equity entry with NO mandate (RKT lives only there)."""
+    p = _packet(
+        deployable_usd=deployable_usd,
+        known_symbols={"EXUS", "SPMV", "FWRA", "SCHD", "NVDA", "RGTI", "ACHR", "RKT"},
+        plan_menu=[
+            {
+                "sleeve": _MOONSHOT_SLEEVE_LABEL,
+                "target_pct": target_pct,
+                "tickers": list(tickers),
+                "domiciles": ["US"] * len(tickers),
+                "mandate": "SLEEVE MANDATE — x10 ASYMMETRY (binding).",
+            },
+            {
+                "sleeve": "US equity (core)",
+                "target_pct": 20.0,
+                "tickers": ["RKT", "SCHD"],
+                "domiciles": ["US", "US"],
+                # no "mandate" key -> not the moonshot sleeve
+            },
+        ],
+        nvda={"lookthrough_usd": 2_296_000.0, "book_usd": book_usd, "pct": 55.3, "cap_pct": 60.0},
+    )
+    p.update(over)
+    return p
+
+
+def _moonshot_buy(symbol="RGTI", amount_usd=50_000.0, disclosed=True):
+    justification = (
+        "the strongest x10-asymmetry candidate in the moonshot sleeve; it is a "
+        "US-situs single name and adds to the NRA estate-tax base (up to 40% "
+        "marginal above the $60K exemption) described in "
+        "domain_knowledge/tax/us/estate_tax_nonresidents.md"
+        if disclosed else
+        "the strongest x10-asymmetry candidate in the moonshot sleeve"
+    )
+    return Buy(symbol=symbol, amount_usd=amount_usd, sleeve="",
+               justification=justification, claimed_us_weight=1.0)
+
+
+def test_moonshot_us_situs_buy_with_disclosure_accepts():
+    """US-situs RGTI, attributed to the moonshot sleeve via the plan menu (NOT via
+    Buy.sleeve, which is deliberately left blank here to prove attribution doesn't
+    depend on it), sized under the derived cap, with the estate disclosure -> ACCEPT."""
+    packet = _moonshot_packet()
+    # Derived cap: 40% x (8.0% x $4.15M) = 40% x $332,000 = $132,800. $50k buy fits.
+    p = AllocationProposal(
+        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        buys=[_moonshot_buy(amount_usd=50_000.0)],
+        sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
+    )
+    r = verify_allocation_proposal(p, packet)
+    assert r.status == GateStatus.ACCEPT, r.failures
+
+
+def test_moonshot_us_situs_buy_without_disclosure_is_revision():
+    """Same buy, same sizing, but the justification never names the US-situs/
+    estate consequence -> REVISION_REQUIRED (fixable by the author), not BLOCK
+    and not a silent ACCEPT."""
+    packet = _moonshot_packet()
+    p = AllocationProposal(
+        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        buys=[_moonshot_buy(amount_usd=50_000.0, disclosed=False)],
+        sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
+    )
+    r = verify_allocation_proposal(p, packet)
+    assert r.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "moonshot_estate_disclosure_missing" for f in r.failures)
+
+
+def test_core_sleeve_us_situs_buy_still_blocked():
+    """RKT is US-situs but lives only under the CORE 'US equity (core)' menu entry
+    (no X10 mandate) -> the carve-out must NOT apply; still BLOCKED, same as today."""
+    packet = _moonshot_packet()
+    p = AllocationProposal(
+        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        buys=[Buy(symbol="RKT", amount_usd=50_000.0, sleeve="US equity (core)",
+                  justification="core US financials pick", claimed_us_weight=1.0)],
+        sells=[], holds=[], rationale="fill the core US-equity gap",
+    )
+    r = verify_allocation_proposal(p, packet)
+    assert r.status == GateStatus.BLOCK
+    assert any(f.code == "us_situs" for f in r.failures)
+
+
+def test_moonshot_sleeve_us_situs_total_over_cap_is_revision():
+    """Two moonshot US-situs buys totalling $200k blow the derived $132,800 cap
+    (40% x 8.0% x $4.15M) -> REVISION_REQUIRED with the cap failure, even though
+    each individual buy discloses the estate consequence correctly."""
+    packet = _moonshot_packet(tickers=("RGTI", "ACHR"), deployable_usd=200_000.0)
+    p = AllocationProposal(
+        cash_to_deploy=200_000.0, cash_to_reserve=0.0,
+        buys=[_moonshot_buy(symbol="RGTI", amount_usd=120_000.0),
+              _moonshot_buy(symbol="ACHR", amount_usd=80_000.0)],
+        sells=[], holds=[], rationale="load up the moonshot sleeve's top two picks",
+    )
+    r = verify_allocation_proposal(p, packet)
+    assert r.status == GateStatus.REVISION_REQUIRED
+    assert any(f.code == "moonshot_us_situs_cap" for f in r.failures)
+
+
+def test_ambiguous_sleeve_attribution_fails_closed_as_core():
+    """RGTI is US-situs but the packet has NO plan_menu at all (sleeve attribution
+    cannot be established) -> must be treated as CORE and BLOCKED, never silently
+    treated as moonshot just because the symbol happens to be one the sleeve could
+    plausibly hold."""
+    packet = _packet(known_symbols={"RGTI"})  # no plan_menu, no nvda/book info
+    p = AllocationProposal(
+        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        buys=[_moonshot_buy(amount_usd=50_000.0)],
+        sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
+    )
+    r = verify_allocation_proposal(p, packet)
+    assert r.status == GateStatus.BLOCK
+    assert any(f.code == "us_situs" for f in r.failures)
+
+
+def test_nvda_still_sanctioned_inside_moonshot_packet():
+    """NVDA remains sanctioned regardless of the moonshot machinery — proves the
+    carve-out didn't change NVDA's existing exemption."""
+    packet = _moonshot_packet()
+    p = AllocationProposal(
+        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        buys=[Buy(symbol="NVDA", amount_usd=50_000.0, sleeve="",
+                  justification="add to the sanctioned NVDA sleeve", claimed_us_weight=1.0)],
+        sells=[], holds=[], rationale="top up NVDA",
+    )
+    r = verify_allocation_proposal(p, packet)
+    assert not any(f.code == "us_situs" for f in r.failures)
+    assert not any(f.code.startswith("moonshot_") for f in r.failures)

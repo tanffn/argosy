@@ -4701,9 +4701,14 @@ class PositionStance(Base):
 
     Kills the three-voices defect (2026-07-10): /portfolio said HOLD while the
     fleet review said SELL and the inbox held a proposal for the same ticker.
-    The stance registry reconciles the three sources with a fixed precedence:
+    The stance registry reconciles the three sources with a fixed precedence
+    (revised 2026-08-21 — see ``argosy/services/position_stance.py`` module
+    docstring for the full rule):
 
-        open proposal  >  verified review (outcome 'proposed'/'hold')  >  plan
+        open proposal
+            >  plan (decision_basis in {CONSTRAINT, MIXED} — a binding rule)
+            >  verified review (outcome 'proposed'/'hold')
+            >  plan (decision_basis == FORECAST, or unrecorded)
 
     A ``held_unverified`` review (fleet said act, blind gate diverged,
     fail-closed) NEVER changes the stance — it sets ``divergence=True`` and a

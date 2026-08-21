@@ -27,6 +27,66 @@ _MONEY_EPS = 1.0            # $ tolerance for conservation
 _EXUS_US_CEILING = 0.40     # a fund >40% US cannot be called "ex-US"
 _CLAIM_TOLERANCE = 0.25     # |claimed - sourced| US weight before it's "unsupported"
 
+# --- Ariel's ruling (2026-08-21): the x10 moonshot sleeve MAY buy US-situs -----
+# names. See domain_knowledge/tax/us/estate_tax_nonresidents.md, "Sleeve carve-out
+# for the x10 moonshot sleeve" — this is the authoritative record of the ruling and
+# its conditions. Core/growth sleeves are UNCHANGED: still blocked (below).
+#
+# Sleeve attribution is NOT trusted from `Buy.sleeve` (an LLM-authored free-text
+# field observed EMPTY on a live run — unreliable, and evadable even when filled).
+# Instead it is derived deterministically from the plan menu the packet already
+# carries: a plan_menu entry is the moonshot sleeve iff it carries the binding
+# X10_SLEEVE_MANDATE text (packet_assembly keys this on
+# ``sigma_class == HIGH_GROWTH_SIGMA_CLASS``), and sleeve membership is ticker
+# membership in that entry's own `tickers` list. A buy whose symbol is not listed
+# under a mandated sleeve is fail-closed to CORE — never treated as moonshot.
+#
+# Cap derivation (not invented): the sleeve's UCITS thematic core is, by
+# construction, never US-situs (see high_potential_sleeve.py) — only its
+# single-name carve-out can be. That carve-out is sized ~40% of the sleeve by the
+# seed design's conviction-weight split ("~60% UCITS thematic core / ~40%
+# single-name carve-out"). So the per-proposal ceiling on US-situs dollars added by
+# the sleeve is that fraction of the sleeve's OWN steady-state target dollar size
+# (target_pct/100 x book_usd, both already in the packet) — never a fixed dollar
+# figure.
+_MOONSHOT_US_SITUS_CARVEOUT_FRACTION = 0.40
+
+
+def _moonshot_plan_menu_entries(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    """plan_menu entries carrying the binding X10 mandate — i.e. the moonshot
+    sleeve. Empty if the packet has no plan_menu (fail-closed: no moonshot)."""
+    return [e for e in (packet.get("plan_menu") or []) if e.get("mandate")]
+
+
+def _moonshot_tickers(packet: dict[str, Any]) -> set[str]:
+    """Tickers actually listed under the moonshot sleeve in the plan menu — the
+    ONLY basis for sleeve attribution (never the author's free-text Buy.sleeve)."""
+    out: set[str] = set()
+    for entry in _moonshot_plan_menu_entries(packet):
+        out |= {str(t).upper() for t in (entry.get("tickers") or [])}
+    return out
+
+
+def _moonshot_us_situs_cap_usd(packet: dict[str, Any]) -> float:
+    """Derived (not invented) $ ceiling: carve-out fraction x sleeve target $ size.
+    0.0 (nothing allowed) if the packet doesn't establish a moonshot sleeve/book."""
+    book = float((packet.get("nvda") or {}).get("book_usd") or 0.0)
+    if book <= 0:
+        return 0.0
+    total = 0.0
+    for entry in _moonshot_plan_menu_entries(packet):
+        total += book * float(entry.get("target_pct") or 0.0) / 100.0
+    return total * _MOONSHOT_US_SITUS_CARVEOUT_FRACTION
+
+
+def _discloses_estate_consequence(text: str) -> bool:
+    """Mirrors what the Fund Manager already requires: the justification must
+    name BOTH the US-situs fact and the estate-tax consequence, not just one."""
+    t = (text or "").lower()
+    has_situs = "us-situs" in t or "us situs" in t
+    has_estate = "estate" in t
+    return has_situs and has_estate
+
 
 class GateStatus(str, Enum):
     ACCEPT = "ACCEPT"
@@ -103,14 +163,22 @@ def verify_allocation_proposal(
                 f"{b.symbol} is not a known instrument"
                 + ("." if known else " (no known-symbol universe to validate against)."),
                 "block"))
-        # Unsanctioned US-situs estate exposure (NVDA is the one sanctioned name).
+        # Unsanctioned US-situs estate exposure. NVDA is the one sanctioned single
+        # name; the x10 moonshot sleeve is a bounded carve-out (Ariel, 2026-08-21 —
+        # see domain_knowledge/tax/us/estate_tax_nonresidents.md), checked as a
+        # sleeve-level cap + disclosure below. Anything else (core/growth sleeves,
+        # or a symbol not listed under the moonshot plan-menu entry) is still
+        # blocked outright — fail-closed on ambiguous/unattributable sleeve.
         try:
             from argosy.services.instrument_reference import lookup as _ref
             ref = _ref(b.symbol)
-            if ref is not None and not ref.estate_safe and b.symbol.upper() != "NVDA":
+            if (ref is not None and not ref.estate_safe
+                    and b.symbol.upper() != "NVDA"
+                    and b.symbol.upper() not in _moonshot_tickers(packet)):
                 fails.append(GateFailure(
                     "us_situs", f"{b.symbol} is US-situs (estate-exposed) and not "
-                    "the sanctioned NVDA sleeve.", "block"))
+                    "the sanctioned NVDA sleeve or the x10 moonshot sleeve carve-out.",
+                    "block"))
         except Exception:  # noqa: BLE001 — estate lookup is best-effort
             pass
 
@@ -155,6 +223,47 @@ def verify_allocation_proposal(
             "(what it fills, what it declines, and why) so the recommendation "
             "carries its reasoning.",
             "revision"))
+
+    # --- Moonshot-sleeve US-situs buys: disclosure + derived cap (revision) ---
+    # These are the buys the BLOCK-level loop above let through under the carve-out
+    # (US-situs, not NVDA, ticker attributed to the moonshot sleeve). Both checks
+    # are fixable by the author (add the disclosure sentence / trim the size), so
+    # they are REVISION_REQUIRED, not BLOCK — consistent with this module's
+    # doctrine that BLOCK is reserved for unsafe/ungrounded, not judgment tweaks.
+    _moonshot_syms = _moonshot_tickers(packet)
+    _moonshot_us_situs_buys = []
+    for b in proposal.buys:
+        if b.symbol.upper() == "NVDA" or b.symbol.upper() not in _moonshot_syms:
+            continue
+        try:
+            from argosy.services.instrument_reference import lookup as _ref2
+            _ref = _ref2(b.symbol)
+        except Exception:  # noqa: BLE001 — best-effort
+            _ref = None
+        if _ref is not None and not _ref.estate_safe:
+            _moonshot_us_situs_buys.append(b)
+
+    for b in _moonshot_us_situs_buys:
+        if not _discloses_estate_consequence(b.justification):
+            fails.append(GateFailure(
+                "moonshot_estate_disclosure_missing",
+                f"{b.symbol} is a US-situs moonshot-sleeve buy but its "
+                "justification doesn't disclose the US-situs/estate-tax "
+                "consequence (mirrors the Fund Manager's requirement) — state it "
+                "explicitly.",
+                "revision"))
+
+    if _moonshot_us_situs_buys:
+        _cap = _moonshot_us_situs_cap_usd(packet)
+        _added = round(sum(b.amount_usd for b in _moonshot_us_situs_buys), 2)
+        if _added > _cap + _MONEY_EPS:
+            fails.append(GateFailure(
+                "moonshot_us_situs_cap",
+                f"moonshot-sleeve US-situs buys total ${_added:,.0f}, over the "
+                f"derived cap ${_cap:,.0f} ({_MOONSHOT_US_SITUS_CARVEOUT_FRACTION:.0%} "
+                "of the sleeve's target-pct-of-book size) — trim the US-situs names "
+                "or size more into the sleeve's UCITS core.",
+                "revision"))
 
     for b in proposal.buys:
         # Require an explicit US-weight claim on every buy so the sourced cross-check
