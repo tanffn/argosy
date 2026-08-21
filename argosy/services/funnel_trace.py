@@ -102,6 +102,35 @@ def open_run(
         select(FunnelRun).where(FunnelRun.idempotency_key == key)
     ).scalar_one_or_none()
     if existing is not None:
+        # Row reuse is idempotency BY DESIGN (one row per user/day/trigger),
+        # but settings that can legitimately change between same-day runs
+        # (e.g. ARGOSY_DECISION_FUNNEL_SHADOW flipped mid-day) must be
+        # refreshed to the LATEST run's actual values. Leaving them stale
+        # made the audit row lie about whether the reused run was live.
+        changed = False
+        new_shadow = 1 if shadow else 0
+        if existing.shadow != new_shadow:
+            existing.shadow = new_shadow
+            changed = True
+        if existing.policy_version != policy_version:
+            existing.policy_version = policy_version
+            changed = True
+        if existing.ips_version != ips_version:
+            existing.ips_version = ips_version
+            changed = True
+        if existing.plan_version_id != plan_version_id:
+            existing.plan_version_id = plan_version_id
+            changed = True
+        if changed:
+            existing.status = "running"
+            session.commit()
+            session.refresh(existing)
+            _log.info(
+                "funnel_trace.run_reused_settings_refreshed",
+                run_id=existing.id, user_id=user_id, day=day, trigger=trigger,
+                shadow=bool(shadow), policy_version=policy_version,
+                ips_version=ips_version,
+            )
         return existing
     row = FunnelRun(
         user_id=user_id,
