@@ -2,7 +2,63 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-18**.
+Last updated: **2026-08-21**.
+
+> **⚠️ THE SCOUT / DISCOVERY WORK (2026-08-21) — master `30037d1`. Read before touching discovery.**
+>
+> **Question asked:** would Argosy have caught SanDisk (SNDK: $45.50 -> $1,600.62, +3,417%)?
+> **Answer: no, and it failed at FOUR independent points.** All four now fixed, each verified on
+> the live book, not in a fixture.
+>
+> | link | was | now |
+> |---|---|---|
+> | radar could SEE it | day-gainer screens only | `MOMENTUM_SUSTAINED` 12-1 family |
+> | radar could ADMIT it | $30B cap excluded the theme | thematic lane, backtest 0/4 -> 4/4 |
+> | funnel could SURFACE it | shadow mode + 3 broken jobs | live; surfaced proposal #33 GRAL |
+> | allocator could BUY it | estate rule blocked all US-situs | bounded, disclosed carve-out |
+>
+> **Backtest exists and is repeatable: `scripts/backtest_radar.py`.** Look-ahead-free by
+> construction — as-of features only, cap reconstructed as shares x price_T, tickers ANONYMIZED
+> before any judgement, winners scored against a 14-name control. Imports the real band constants
+> from `trend_radar` so it cannot drift from the code it tests.
+> Honest reading: the thematic lane is COVERAGE (it admits 14/14 controls too); the
+> DISCRIMINATION comes from `MOMENTUM_SUSTAINED` (fires 4/4 winners, 4/5 of top-5).
+>
+> **THREE JOBS WERE SILENTLY BROKEN, none diagnosable from its own error message:**
+> - `decision_funnel` "database is locked" — the funnel COMPUTED fine every run and threw the
+>   result away; a bare `sa.create_engine` (busy_timeout=0) in `state_observer.py`. The same
+>   builder was also breaking `state_observer_daily`. ~15 other loop files STILL use this
+>   pattern — highest-value cleanup left in the repo.
+> - `signal_streams_daily` "getaddrinfo failed" — DNS was a red herring. The gov_contracts cursor
+>   had SELF-DEADLOCKED since 2026-07-11: a stalled cursor widens the catch-up window, which
+>   re-trips the page cap, which stalls it further. Six weeks, no escape.
+> - The insider stream (1,978 lines of SEC Form 4) had produced ONE nomination ever because it
+>   was `enabled: False` AND `ARGOSY_SEC_CONTACT_EMAIL` was unset. Verified working: a live 2-day
+>   EDGAR run parsed 4,153 filings -> 9 cluster nominations.
+>
+> **CONVICTION MODEL REWRITTEN.** Argosy graded 31 of 38 positions HOLD/LOW — no view on 82% of
+> the book, incl. NVDA at 57.9% vs its own 13% cap. Cause: `_aggregate_conviction` AVERAGED
+> analyst confidence, so one uncertain analyst dragged deterministic decisions down.
+> Conviction now = confidence in the ACTION, computed as a MINIMUM over NECESSARY inputs.
+> `decision_basis` in {CONSTRAINT, FORECAST, MIXED}; a missing fair value caps a VALUATION call
+> at LOW but cannot touch a domicile or policy-cap decision. `SELL` now means target weight zero
+> (the old "large reduction => SELL" heuristic is why NVDA read SELL for a trim-to-cap).
+> Plan layer {HIGH:1, LOW:31, MED:6} -> {HIGH:25, LOW:13}. Stored stances -> {HIGH:23, LOW:13, MED:2}.
+> **Stale reviews no longer bury constraints:** a `holding_reviews` row from ANY date could
+> previously overturn a fresh plan verdict (no staleness check existed). GOOG was the proof — a
+> stale HOLD was burying a live US_SITUS+DUPLICATE+TARGET_ZERO violation.
+>
+> **RISK THIS INTRODUCES:** the system now ASSERTS confidence on 23 positions where it used to
+> abstain. Confidently wrong is worse than silent. The falsifier / revisit-trigger requirement is
+> the intended backstop and has NOT been exercised yet. The conviction design came from
+> codex-tandem, so codex cannot serve as its independent review — it needs a genuinely
+> independent adversarial pass before its verdicts are trusted at scale.
+>
+> **LIVE $100k DEPLOYMENT (Argosy's own, gate ACCEPT, 2 attempts):** CSPX 20k / EXUS 14k /
+> IWQU 12k / IB01 14k / IBTA 10k / FUSA 8k / EIMI 6k / SPMV 5k / DPYA 3k / RXRX 3k / ACHR 2.5k /
+> RGTI 2.5k. $8,000 US-situs, disclosed, inside the derived ~$132,800 sleeve cap.
+> It does NOT touch the 57.9% NVDA concentration — only selling does.
+
 
 > **⚠️ CLOSURE STATE 2026-08-18 — plan 116 is the live draft, 12 RED, 5 are ARIEL BLOCKERS.**
 > RED trend across reviews: 18 (p109) → 19 (p111) → 14 (p112) → 13 (p115) → **12 (p116)**.
