@@ -7,8 +7,21 @@ Last updated: **2026-08-21**.
 > **⚠️ THE SCOUT / DISCOVERY WORK (2026-08-21) — master `30037d1`. Read before touching discovery.**
 >
 > **Question asked:** would Argosy have caught SanDisk (SNDK: $45.50 -> $1,600.62, +3,417%)?
-> **Answer: no, and it failed at FOUR independent points.** All four now fixed, each verified on
-> the live book, not in a fixture.
+> **Answer: no, and it failed at FOUR independent points.** All four fixed 2026-08-21.
+>
+> **READ THIS BEFORE CITING THE SNDK CASE.** The first version of this block, and the
+> mandate text it shipped, claimed SNDK traded at "0.72x BOOK -- less than the accounting
+> value of its net assets." **That is false** and an adversarial (codex/Sol) review caught it;
+> the numbers were then verified against the filings. $4.999B of the $9.216B FY25 equity was
+> GOODWILL, so tangible book was $4.217B and the stock traded at **1.58x TANGIBLE book, not
+> below it**; NCAV was $1.317B against a $6.66B cap. It was also NOT "losing money at a
+> cyclical trough": FY25 gross profit **+$2.212B**, operating income **+$0.507B**, operating
+> cash flow **+$0.084B** -- the headline GAAP loss was a NONCASH goodwill impairment.
+> What SNDK actually was: a depressed cyclical/spinoff **valuation** on real cash-generating
+> operations plus a demand catalyst, at **P/S 0.91x**. That -- not liquidation protection --
+> is the pattern. And it is ONE winner: cheap cyclicals that never inflect, dilute or delist
+> are the base rate and are invisible in this case. `test_x10_sleeve_mandate` now asserts the
+> false version CANNOT return.
 >
 > | link | was | now |
 > |---|---|---|

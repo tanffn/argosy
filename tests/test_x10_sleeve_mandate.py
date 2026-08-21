@@ -35,8 +35,22 @@ def test_mandate_encodes_all_four_clauses():
     assert "floored name MUST outrank an unfloored one" in m
     # (c2) the floor must be written down; undeclared == none
     assert "WRITE THE FLOOR DOWN" in m and "no floor" in m
-    # (c3) the SanDisk calibration case, with its real pre-move numbers
-    assert "SanDisk" in m and "0.72x BOOK" in m and "0.91x" in m
+    # (c3) the SanDisk calibration, stated ACCURATELY. Corrected 2026-08-21:
+    # the first version claimed SNDK traded below book. It did not -- $4.999B of
+    # its $9.216B equity was goodwill, so tangible book was $4.217B and the
+    # stock was at 1.58x TANGIBLE book. It was also not "losing money": FY25
+    # gross profit +$2.212B, operating income +$0.507B, operating cash flow
+    # +$0.084B; the GAAP loss was a noncash goodwill impairment. The real
+    # pattern is a depressed cyclical/spinoff valuation on cash-generating
+    # operations -- NOT liquidation-value protection. These asserts exist so the
+    # false version cannot come back.
+    assert "SanDisk" in m and "0.91x" in m
+    assert "0.72x BOOK" not in m           # the false claim, banned
+    assert "1.58x TANGIBLE book" in m and "GOODWILL" in m
+    assert "NONCASH goodwill impairment" in m
+    assert "NOT liquidation-value protection" in m
+    # and the base-rate caveat, so one winner is never read as a rule
+    assert "SURVIVOR-BIAS WARNING" in m and "base rate" in m
     # (c4) growth stories stay eligible but take a smaller cut (Ariel 2026-08-21)
     assert "BOTH ARCHETYPES ARE ELIGIBLE" in m
     assert "SMALLER cut" in m and "HALF the weight" in m and "ONE " in m
