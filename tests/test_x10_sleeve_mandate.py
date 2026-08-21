@@ -1,7 +1,8 @@
 """The x10-ASYMMETRY sleeve mandate (Ariel, 2026-07-06) — binding criterion for
 the permanent ~5% high-growth / moonshot sleeve: cap-math x10 test, accepted
-per-name loss = 100% (defensibility never boosts rank), rank = upside-asymmetry
-x plausibility, deploy fill order = asymmetry-first.
+per-name loss = 100% (a SIZING rule), rank = (upside x plausibility) / DOWNSIDE
+with a written floor, growth stories eligible at a smaller cut, deploy fill
+order = asymmetry-first.
 
 These tests pin the mandate into every surface that grades, ranks, sizes, or
 fills the sleeve, so a future tranche can't quietly revert to safety-first
@@ -19,11 +20,26 @@ def test_mandate_encodes_all_four_clauses():
     # (a) cap-math test, with the mechanical size preference + the >$50B bar
     assert "CAP-MATH" in m and "10x" in m and "5-10 years" in m
     assert "$20-30B" in m and "$50B" in m and "EXTRAORDINARY" in m.upper()
-    # (b) 100% accepted per-name loss; defensibility must not boost rank
+    # (b) 100% accepted per-name loss is a SIZING rule. Quality/defensibility
+    # (a compounder trait) still must not boost rank -- but a DOWNSIDE FLOOR is
+    # a different thing and MUST boost it. Reversed 2026-08-21: the old mandate
+    # conflated the two and so forbade crediting the floor, which is precisely
+    # what made SanDisk (0.72x book, P/S 0.91x) an asymmetry rather than a bet.
     assert "100%" in m and "defensibility" in m.lower()
-    assert "NOT boost" in m
-    # (c) rank = asymmetry x plausibility
-    assert "upside-asymmetry x plausibility" in m
+    assert "SIZING rule, not a ranking" in m
+    assert "MUST boost rank" in m
+    assert "conflate" in m.lower()
+    # (c) rank is a RATIO -- upside alone is variance, and variance is symmetric
+    assert "/ plausible DOWNSIDE" in m and "RATIO" in m
+    assert "VARIANCE" in m and "symmetric" in m
+    assert "floored name MUST outrank an unfloored one" in m
+    # (c2) the floor must be written down; undeclared == none
+    assert "WRITE THE FLOOR DOWN" in m and "no floor" in m
+    # (c3) the SanDisk calibration case, with its real pre-move numbers
+    assert "SanDisk" in m and "0.72x BOOK" in m and "0.91x" in m
+    # (c4) growth stories stay eligible but take a smaller cut (Ariel 2026-08-21)
+    assert "BOTH ARCHETYPES ARE ELIGIBLE" in m
+    assert "SMALLER cut" in m and "HALF the weight" in m and "ONE " in m
     # (d) asymmetry-first fill order for deploy tranches
     assert "asymmetry-first" in m and "never safety-first" in m
     # the anti-goal is spelled out (maybe-2x large caps are the opposite job)

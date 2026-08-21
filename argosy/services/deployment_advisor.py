@@ -9,7 +9,7 @@ docs/superpowers/plans/2026-06-12-deployment-advisor.md.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Literal
 
@@ -416,6 +416,37 @@ def _high_potential_lines(
     return lines, round(exposed, 2), round(sanctioned, 2)
 
 
+# Max over-allocation (USD) treated as per-leg cent-rounding noise rather than a
+# sizing bug. Deliberately $1.00: the sleeve guard above already tolerates $0.50
+# of renormalisation drift on its own, so a whole-plan ceiling below that would
+# be self-contradictory. Anything larger is a real bug and must surface.
+_OVER_ALLOCATION_SHAVE_MAX = 1.00
+
+
+def _shave_overage(
+    tiers: tuple["DeploymentTier", ...], over: float
+) -> tuple["DeploymentTier", ...]:
+    """Remove ``over`` dollars from the single largest line.
+
+    Shaving the LARGEST line keeps the relative distortion smallest (a cent off
+    a $20,000 core leg is 5e-7 of it). Only ever subtracts, so the invariant it
+    protects — total <= cash — cannot be violated by the repair itself.
+    """
+    biggest: tuple[int, int, float] | None = None  # (tier_idx, line_idx, amount)
+    for ti, tier in enumerate(tiers):
+        for li, line in enumerate(tier.lines):
+            if biggest is None or line.amount_usd > biggest[2]:
+                biggest = (ti, li, line.amount_usd)
+    if biggest is None:
+        return tiers
+    ti, li, amt = biggest
+    out = list(tiers)
+    lines = list(out[ti].lines)
+    lines[li] = replace(lines[li], amount_usd=round(amt - over, 2))
+    out[ti] = replace(out[ti], lines=tuple(lines))
+    return tuple(out)
+
+
 def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
     market_context=None, sleeve_pct: float = 5.0, use_high_potential: bool = True,
@@ -579,11 +610,25 @@ def assemble_deployment_plan(
         DeploymentTier("high", DEPLOY_TIER_CAPS["high"], tuple(high_lines)),
     )
     deployed = round(sum(t.total_usd for t in tiers), 2)
-    if deployed - amount > 0.01:
-        # Over-deploy is never allowed — the engine water-fills to <= cash.
-        raise ValueError(
-            f"deploy-cash over-allocated: buys total {deployed} > amount {amount}"
-        )
+    # Over-deploy is never allowed — the engine water-fills to <= cash. But the
+    # legs are independently rounded to the cent (and the sleeve renormalises
+    # conviction weights, tolerating up to $0.50 of drift just above), so a few
+    # cents of float noise on a six-figure tranche is EXPECTED and must not fail
+    # the whole plan. Absorb sub-dollar drift by SHAVING it off the largest line
+    # — never by widening the ceiling, and never by adding to any line. Anything
+    # larger is a real sizing bug and still raises.
+    over = round(deployed - amount, 2)
+    if over > 0:
+        if over > _OVER_ALLOCATION_SHAVE_MAX:
+            raise ValueError(
+                f"deploy-cash over-allocated: buys total {deployed} > amount {amount}"
+            )
+        tiers = _shave_overage(tiers, over)
+        deployed = round(sum(t.total_usd for t in tiers), 2)
+        if deployed - amount > 0.005:  # post-condition: the shave must have worked
+            raise ValueError(
+                f"deploy-cash over-allocation shave failed: {deployed} > {amount}"
+            )
     remainder = round(max(0.0, amount - deployed), 2)
     caveats = _CAVEATS
     # Surface the caveat only for a MATERIAL remainder; sub-dollar drift is just
