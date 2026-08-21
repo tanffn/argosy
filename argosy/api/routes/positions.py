@@ -54,6 +54,12 @@ class PositionThesisDTO(BaseModel):
     cited_sources: list[str] = []
     target_weight_pct: float | None = None
     target_shares: int | None = None
+    # Action-vs-forecast conviction split (2026-08-21, additive) — see
+    # argosy/services/per_position_thesis.py module docstring.
+    forecast_confidence: str | None = None
+    decision_basis: str = "FORECAST"
+    binding_rules: list[str] = []
+    decision_inputs: list[dict] = []
     # Provenance (additive — never break older clients that ignore them)
     falsifier_state: str = "none_recorded"  # armed | fired | none_recorded
     falsifiers: list[str] = []

@@ -146,8 +146,15 @@ def test_nvda_over_weight_classified_as_trim_for_moderate_target():
     assert any("portfolio/holdings" in s for s in nvda.cited_sources)
 
 
-def test_nvda_large_reduction_classified_as_sell():
-    """NVDA at 64.9% with a 10% target → SELL (>50% reduction)."""
+def test_nvda_large_reduction_classified_as_trim_not_sell():
+    """NVDA at 64.9% with a 10% (positive, non-zero) target → TRIM.
+
+    2026-08-21 conviction-model rewrite: the old "reduction > 50% of current
+    weight => SELL" ratio heuristic is REMOVED. SELL now means target weight
+    ZERO; any positive target, however large the cut, is TRIM — a SELL
+    verdict with a nonzero target_weight_pct was internally incoherent
+    (target stays positive, so the position isn't meant to be exited).
+    """
     positions = [_make_position("NVDA", 11471, 6490.0)]
     horizon_long = _make_horizon(
         "long",
@@ -162,8 +169,12 @@ def test_nvda_large_reduction_classified_as_sell():
     snap = _portfolio(positions)
     out = derive_position_theses(pv, snap, [])
     nvda = next(c for c in out if c.ticker == "NVDA")
-    assert nvda.verdict == "SELL"
+    assert nvda.verdict == "TRIM"
     assert nvda.target_weight_pct == 10.0
+    # Sizing-band target is a deterministic CONSTRAINT input — HIGH
+    # action_conviction regardless of any return forecast.
+    assert nvda.conviction == "HIGH"
+    assert nvda.decision_basis == "CONSTRAINT"
 
 
 def test_sgov_at_floor_classified_as_hold():
@@ -231,16 +242,34 @@ def test_ucits_replacement_xeon_appears_as_add_card():
     assert not any(c.ticker == "UCITS" for c in out)
 
 
-def test_ticker_with_empty_analyst_data_holds_with_low_conviction():
-    """No analyst mentions of a held ticker → HOLD + LOW conviction."""
-    positions = [_make_position("MSFT", 50, 200.0)]
+def test_ticker_with_empty_analyst_data_waits_not_holds():
+    """No analyst mentions, no plan target, no policy constraint → WAIT, not a
+    silent LOW-conviction HOLD.
+
+    2026-08-21 conviction-model rewrite ("abstention costs something"): this
+    exact shape — a held ticker with zero evidence and zero constraint basis
+    — was the 31-of-38-positions blind-LOW-HOLD bug. It is now written as
+    WAIT/INSUFFICIENT_EVIDENCE instead of a HOLD that looks like a considered
+    opinion.
+    """
+    positions = [
+        _make_position("MSFT", 50, 200.0),
+        # Filler so MSFT sits well under the 10% general single-name cap —
+        # a single 100%-weight holding would legitimately TRIM under the
+        # policy cap regardless of evidence; that's not the case this test
+        # isolates (it isolates "no evidence, no constraint, at all").
+        _make_position("SGOV", 7000, 2800.0),
+    ]
     horizon_med = _make_horizon("medium", targets=[], actions=[])
     pv = _plan_version(horizon_medium=horizon_med)
     snap = _portfolio(positions)
     out = derive_position_theses(pv, snap, [])
     msft = next(c for c in out if c.ticker == "MSFT")
-    assert msft.verdict == "HOLD"
+    assert msft.verdict == "WAIT"
     assert msft.conviction == "LOW"
+    assert msft.forecast_confidence == "LOW"
+    assert msft.decision_basis == "FORECAST"
+    assert msft.binding_rules == ["NO_SIGNAL"]
     assert msft.cited_sources == []
 
 
@@ -441,12 +470,133 @@ def test_route_returns_cards_from_draft(client_with_db):
     nvda = next(c for c in body if c["ticker"] == "NVDA")
     assert nvda["verdict"] == "TRIM"
     assert nvda["target_weight_pct"] == 30.0
-    assert nvda["conviction"] == "LOW"  # no analyst reports seeded
+    # 2026-08-21: an explicit numeric plan target is a deterministic
+    # CONSTRAINT (sizing band), so action_conviction is HIGH even with zero
+    # analyst reports seeded — conviction is about the ACTION, not a return
+    # forecast.
+    assert nvda["conviction"] == "HIGH"
+    assert nvda["decision_basis"] == "CONSTRAINT"
 
 
 # ---------------------------------------------------------------------------
 # Dataclass round-trip
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Acceptance table (2026-08-21 conviction-model rewrite) — action_conviction
+# vs forecast_confidence, decision_basis, binding_rules. No session/ips is
+# passed, so these exercise the module fallback policy constants (NVDA cap
+# 13%, general single-name cap 10%, sanctioned_us_situs={NVDA}) — the same
+# constants argosy.services.decision_funnel.policy.RoutingPolicy uses when
+# the IPS is pending.
+# ---------------------------------------------------------------------------
+
+
+def test_acceptance_nvda_policy_cap_breach_trim_high_no_add():
+    """NVDA at 57.9% vs the 13% policy cap, no explicit plan target -> TRIM to
+    <=13%, HIGH action_conviction, CONSTRAINT/POLICY_CAP_BREACH. Never ADD."""
+    positions = [
+        _make_position("NVDA", 100, 579.0),
+        _make_position("SGOV", 100, 421.0),
+    ]
+    pv = _plan_version(horizon_medium=_make_horizon("medium"))
+    snap = _portfolio(positions)
+    out = derive_position_theses(pv, snap, [])
+    nvda = next(c for c in out if c.ticker == "NVDA")
+    assert nvda.verdict == "TRIM"
+    assert nvda.verdict != "ADD"
+    assert nvda.target_weight_pct == pytest.approx(13.0)
+    assert nvda.conviction == "HIGH"
+    assert nvda.decision_basis == "CONSTRAINT"
+    assert "POLICY_CAP_BREACH" in nvda.binding_rules
+
+
+def test_acceptance_cspx_domicile_ok_in_band_hold_high():
+    """CSPX at 4.8% Irish-domiciled core, no plan directive -> HOLD, HIGH
+    action_conviction, DOMICILE_OK+ROLE_MATCH+IN_BAND. forecast_confidence
+    is not load-bearing (LOW/no-analyst-data is fine)."""
+    positions = [
+        _make_position("CSPX", 10, 48.0),
+        _make_position("SGOV", 100, 952.0),
+    ]
+    pv = _plan_version(horizon_medium=_make_horizon("medium"))
+    snap = _portfolio(positions)
+    out = derive_position_theses(pv, snap, [])
+    cspx = next(c for c in out if c.ticker == "CSPX")
+    assert cspx.verdict == "HOLD"
+    assert cspx.conviction == "HIGH"
+    assert cspx.decision_basis == "CONSTRAINT"
+    assert cspx.binding_rules == ["DOMICILE_OK", "ROLE_MATCH", "IN_BAND"]
+
+
+def test_acceptance_goog_us_situs_duplicate_sell_target_zero():
+    """GOOG at 1.0%, US-situs, duplicated by a held core index (CSPX) ->
+    SELL, target weight 0, HIGH action_conviction, MIXED (destination from
+    policy, timing from tax), US_SITUS+DUPLICATE+TARGET_ZERO."""
+    positions = [
+        _make_position("GOOG", 5, 10.0),
+        _make_position("CSPX", 200, 960.0),
+        _make_position("SGOV", 3, 30.0),
+    ]
+    pv = _plan_version(horizon_medium=_make_horizon("medium"))
+    snap = _portfolio(positions)
+    out = derive_position_theses(pv, snap, [])
+    goog = next(c for c in out if c.ticker == "GOOG")
+    assert goog.verdict == "SELL"
+    assert goog.target_weight_pct == 0.0
+    assert goog.conviction == "HIGH"
+    assert goog.decision_basis == "MIXED"
+    assert goog.binding_rules == ["US_SITUS", "DUPLICATE", "TARGET_ZERO"]
+    # forecast_confidence is irrelevant to this call — never recorded/floored.
+    assert goog.forecast_confidence is None
+
+
+def test_acceptance_sofi_permitted_speculative_hold_low_low():
+    """SOFI at 0.9%, small unsanctioned US-situs name, no plan target, zero
+    analyst coverage -> HOLD (provisional), LOW action_conviction, LOW
+    forecast_confidence — size is permitted, but the thesis must earn the
+    slot (MIXED, SPECULATIVE_PERMITTED)."""
+    positions = [
+        _make_position("SOFI", 50, 9.0),
+        _make_position("SGOV", 100, 991.0),
+    ]
+    pv = _plan_version(horizon_medium=_make_horizon("medium"))
+    snap = _portfolio(positions)
+    out = derive_position_theses(pv, snap, [])
+    sofi = next(c for c in out if c.ticker == "SOFI")
+    assert sofi.verdict == "HOLD"
+    assert sofi.conviction == "LOW"
+    assert sofi.forecast_confidence == "LOW"
+    assert sofi.decision_basis == "MIXED"
+    assert sofi.binding_rules == ["SPECULATIVE_PERMITTED", "SIZE_WITHIN_CAP"]
+
+
+def test_acceptance_exus_below_min_add_high():
+    """EXUS at 3.4% Irish-domiciled, underweight vs its 5% plan target ->
+    ADD (not BUY — this is a sizing-band CONSTRAINT, not a forecast call),
+    HIGH action_conviction, DOMICILE_OK+ROLE_MATCH+BELOW_MIN."""
+    positions = [
+        _make_position("EXUS", 10, 34.0),
+        _make_position("SGOV", 100, 966.0),
+    ]
+    horizon_med = _make_horizon(
+        "medium",
+        targets=[{
+            "label": "EXUS share of portfolio",
+            "value": 5.0,
+            "unit": "pct_of_portfolio",
+            "rationale": "Ex-US equity sleeve target.",
+        }],
+    )
+    pv = _plan_version(horizon_medium=horizon_med)
+    snap = _portfolio(positions)
+    out = derive_position_theses(pv, snap, [])
+    exus = next(c for c in out if c.ticker == "EXUS")
+    assert exus.verdict == "ADD"
+    assert exus.conviction == "HIGH"
+    assert exus.decision_basis == "CONSTRAINT"
+    assert exus.binding_rules == ["DOMICILE_OK", "ROLE_MATCH", "BELOW_MIN"]
 
 
 def test_position_thesis_to_dict_is_json_safe():

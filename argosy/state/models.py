@@ -4815,6 +4815,30 @@ class Verdict(Base):
     reasoning_md: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=""
     )
+    # --- action-vs-forecast conviction split (2026-08-21) ---------------------
+    # ``conviction`` above is ACTION conviction: confidence the exact action
+    # (verdict/size/timing) is correct NOW. It must never be conflated with
+    # confidence about future returns — that lives here, separately, and may
+    # legitimately be LOW/unknown on a HIGH-action-conviction constraint call
+    # (e.g. a policy-cap TRIM: we don't need a return forecast to know the
+    # position is oversized). NULL = not applicable / not computed (existing
+    # rows, and any CONSTRAINT-only card that never touched forecast logic).
+    forecast_confidence: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    # CONSTRAINT | FORECAST | MIXED — what kind of reasoning produced the
+    # action. See argosy/services/per_position_thesis.py module docstring.
+    # NULL for pre-migration rows (no basis was recorded).
+    decision_basis: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    # JSON list[str] of rule ids that produced the action (e.g.
+    # ["POLICY_CAP_BREACH"], ["DOMICILE_OK", "ROLE_MATCH", "IN_BAND"]).
+    binding_rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[dict] of the necessary decision inputs consulted, each shaped
+    # {"name", "value", "source", "necessary", "confidence"} — the audit trail
+    # for the action_conviction = min(...) floor.
+    decision_inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=_utcnow,

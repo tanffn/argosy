@@ -41,12 +41,10 @@ logger = logging.getLogger(__name__)
 # thresholds via inspection rather than mocking. The values are tuned
 # against the May 2026 NVDA/SCHD/SGOV draft and documented in the T4.1
 # return summary so future revisions can argue from data.
-_TRIM_VS_SELL_RATIO = 0.50
-"""When a target wants the position weight reduced by more than this
-fraction of the *current* weight, classify as ``SELL`` rather than
-``TRIM``. Example: NVDA at 64.9% with a target of 45% loses ~31% of its
-current weight => still ``TRIM``; a target of 15% loses ~77% =>
-``SELL``."""
+# NOTE (2026-08-21): the old "large reduction ⇒ SELL" ratio heuristic
+# (_TRIM_VS_SELL_RATIO) is REMOVED per the conviction-model rewrite. SELL now
+# means target weight zero; any positive target, however large the cut, is
+# TRIM (see ``_classify_position``, band ``TARGET_ZERO`` vs ``ABOVE_MAX``).
 
 _REASONING_CAP_CHARS = 500
 """Hard cap on the reasoning_md field per card. Plenty of room for 2-3
@@ -69,6 +67,419 @@ _US_DOMICILED_UCITS_SWAP: dict[str, str] = {
     "SGOV": "IB01",
     "VGSH": "IBTA",
 }
+
+
+# ---------------------------------------------------------------------------
+# Constraint-vs-forecast conviction model (2026-08-21, Ariel-directed).
+#
+# The fleet was confusing uncertainty about ALPHA (forecast_confidence) with
+# uncertainty about ACTION (action_conviction — the ``conviction`` field).
+# Stock forecasting deserves low conviction; policy compliance, domicile/situs
+# and duplicate-exposure decisions do not. See the ownership brief for the
+# full taxonomy; this block implements it.
+#
+#   action_conviction = min(rule_confidence, confidence of every NECESSARY
+#                            decision input, conflict-resolution confidence,
+#                            tax/execution confidence when realization is
+#                            required)
+#
+# Only inputs marked necessary=True impose the floor. A missing fair value
+# caps a VALUATION-driven (FORECAST) action at LOW; it must NOT cap a
+# policy-cap or domicile decision (those never touch forecast_confidence).
+# ---------------------------------------------------------------------------
+
+# Fallback policy constants — mirror argosy.services.decision_funnel.policy
+# (RoutingPolicy.fallback_nvda_cap_pct / fallback_general_single_name_cap_pct)
+# and argosy.services.ips (GENERAL_SINGLE_NAME_CAP_PCT). Used when no live IPS
+# is available (unit tests, or a session-less caller) — deterministic and
+# documented, never a silent guess.
+_FALLBACK_NVDA_CAP_PCT = 13.0
+_FALLBACK_GENERAL_SINGLE_NAME_CAP_PCT = 10.0
+# Mirrors argosy.services.ips.SANCTIONED_US_SITUS — the one held US-situs name
+# permitted despite the domicile tail (concentrated RSU stock).
+_SANCTIONED_US_SITUS: frozenset[str] = frozenset({"NVDA"})
+
+# Mega-cap US single names whose economic exposure is already fully contained
+# in any broad-market core index the book holds — a duplicate, not a distinct
+# thesis. Deliberately NARROW (vs. every US-situs stock): a small speculative
+# satellite name (SOFI, RKLB, ...) is a PERMITTED holding whose slot must be
+# earned by its own thesis, not an auto-duplicate. This is a documented proxy
+# for true look-through decomposition (out of scope for a pure derivation
+# layer) — see argosy.services.exposure_attribution for the sleeve-level
+# (fund-vs-fund) version of this idea, which doesn't cover single-name-vs-index.
+_MEGA_CAP_DUPLICATE_CANDIDATES: frozenset[str] = frozenset({
+    "GOOG", "GOOGL", "META", "AMZN", "MSFT", "AAPL",
+})
+# Any held ticker in this set is read as "the book already has a core
+# broad-market index sleeve" for duplication purposes.
+_CORE_INDEX_HOLDINGS: frozenset[str] = frozenset({
+    "CSPX", "VOO", "VTI", "FUSA", "R1GR", "SCHG", "QQQM",
+})
+
+# Sizing-band drift thresholds (relative to current weight) — same numbers the
+# old single-path classifier used, now scoped to the "explicit plan target
+# known" branch only.
+_ADD_TRIGGER_DRIFT_REL = 0.10
+_TRIM_TRIGGER_DRIFT_REL = -0.05
+
+
+def _conviction_rank(value: str | None) -> int:
+    return {"LOW": 0, "MEDIUM": 1, "MED": 1, "HIGH": 2}.get((value or "").upper(), 0)
+
+
+def _min_conviction(*values: str | None) -> str:
+    """min(...) over the HIGH>MEDIUM>LOW confidence lattice, ignoring None."""
+    present = [v for v in values if v]
+    if not present:
+        return "LOW"
+    worst = min(present, key=_conviction_rank)
+    return "MEDIUM" if worst.upper() == "MED" else worst.upper()
+
+
+def _di(
+    name: str,
+    value: Any,
+    source: str,
+    *,
+    confidence: str,
+    necessary: bool = True,
+    freshness: str | None = None,
+    quality: str | None = None,
+) -> dict[str, Any]:
+    """One ``decision_inputs`` entry — the audit trail behind the
+    action_conviction floor."""
+    return {
+        "name": name,
+        "value": value,
+        "source": source,
+        "necessary": necessary,
+        "confidence": confidence,
+        "freshness": freshness,
+        "quality": quality,
+    }
+
+
+def _cap_pct_for(ticker: str, ips: Any) -> tuple[float, bool]:
+    """Return ``(cap_pct, resolved_from_ips)`` for a ticker's concentration
+    cap. Mirrors decision_funnel.stage1_routing._cap_for. ``resolved`` is
+    True when the IPS supplied a real (resolved or policy_default) value;
+    False when we fell back to the module constant. Either way the returned
+    value is usable — a policy_default IPS field and the local fallback carry
+    the SAME confidence (HIGH): both are known, documented policy, not a
+    forecast."""
+    is_nvda = ticker.upper() == "NVDA"
+    if ips is not None:
+        field = ips.nvda_cap_pct if is_nvda else ips.general_single_name_cap_pct
+        if getattr(field, "value", None) is not None and getattr(field, "status", None) in (
+            "resolved", "policy_default",
+        ):
+            return float(field.value), True
+    return (
+        (_FALLBACK_NVDA_CAP_PCT if is_nvda else _FALLBACK_GENERAL_SINGLE_NAME_CAP_PCT),
+        False,
+    )
+
+
+def _sanctioned_us_situs(ips: Any) -> frozenset[str]:
+    if ips is not None and getattr(ips, "sanctioned_us_situs", None):
+        return frozenset(s.upper() for s in ips.sanctioned_us_situs)
+    return _SANCTIONED_US_SITUS
+
+
+def _estate_safe(ticker: str) -> bool | None:
+    """True=non-US-situs (domicile-safe), False=US-situs, None=unknown
+    instrument. Delegates to the curated instrument_reference table — the
+    single source of truth for situs (see estate_safe_for docstring)."""
+    try:
+        from argosy.services.instrument_reference import estate_safe_for
+
+        return estate_safe_for(ticker)
+    except Exception:  # noqa: BLE001 — never break derivation on an import hiccup
+        return None
+
+
+def _is_etf(ticker: str) -> bool | None:
+    try:
+        from argosy.services.instrument_reference import STRUCT_ETF, lookup
+
+        ref = lookup(ticker)
+        return ref.structure == STRUCT_ETF if ref is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_duplicated_by_core(ticker: str, held_set: set[str]) -> bool:
+    return (
+        ticker.upper() in _MEGA_CAP_DUPLICATE_CANDIDATES
+        and bool(held_set & _CORE_INDEX_HOLDINGS)
+    )
+
+
+@dataclass
+class _ClassificationResult:
+    verdict: str
+    target_weight_pct: float | None
+    target_shares: int | None
+    decision_basis: str  # CONSTRAINT | FORECAST | MIXED
+    binding_rules: list[str]
+    decision_inputs: list[dict[str, Any]]
+    action_conviction: str
+    forecast_confidence: str | None
+
+
+def _numeric_target(
+    matched_targets: list[dict[str, Any]],
+) -> tuple[float | None, int | None]:
+    """Pull the strongest numeric weight/share target hint — same extraction
+    the old single-path classifier used."""
+    target_weight_pct: float | None = None
+    target_shares: int | None = None
+    for t in matched_targets:
+        unit = (t.get("unit") or "").lower()
+        label = (t.get("label") or "").lower()
+        value = t.get("value")
+        if not isinstance(value, (int, float)):
+            continue
+        if (
+            unit == "pct_of_portfolio"
+            or "share of portfolio" in label
+            or "% of portfolio" in label
+            or "weight" in label and "ratio" not in label
+        ):
+            if target_weight_pct is None:
+                target_weight_pct = float(value)
+        elif unit == "shares" or "share count" in label or "share ceiling" in label:
+            if target_shares is None:
+                target_shares = int(value)
+    return target_weight_pct, target_shares
+
+
+def _classify_position(
+    ticker: str,
+    current_weight_pct: float | None,
+    matched_targets: list[dict[str, Any]],
+    matched_actions: list[dict[str, Any]],
+    held_set: set[str],
+    ips: Any,
+    forecast_confidence: str,
+) -> _ClassificationResult:
+    """Decide verdict + decision_basis/binding_rules/action_conviction for one
+    held ticker. Order matters — most specific / hardest constraint first:
+
+      1. US-situs + duplicated-by-core (unsanctioned) -> SELL, target 0.
+      2. Explicit numeric plan sizing target -> band verdict off it.
+      3. Policy concentration cap breach -> TRIM to the cap.
+      4. Domicile-safe instrument with no action cue -> default HOLD (the
+         "boring correct-sized UCITS core" case — HIGH without a forecast).
+      5. Action-label cue (sell/trim/buy words) -> FORECAST-basis verdict.
+      6. No signal at all -> FORECAST-basis HOLD, LOW.
+    """
+    upper = ticker.upper()
+    inputs: list[dict[str, Any]] = []
+    if current_weight_pct is not None:
+        inputs.append(_di(
+            "current_weight_pct", round(current_weight_pct, 3),
+            "portfolio_snapshot", confidence="HIGH",
+        ))
+
+    # ---- 1. US-situs + duplicated-by-core -------------------------------
+    safe = _estate_safe(upper)
+    sanctioned = upper in _sanctioned_us_situs(ips)
+    if safe is False and not sanctioned and _is_duplicated_by_core(upper, held_set):
+        inputs.append(_di("estate_safe", False, "instrument_reference.estate_safe_for", confidence="HIGH"))
+        inputs.append(_di("duplicated_by_core", True, "per_position_thesis._is_duplicated_by_core", confidence="HIGH"))
+        return _ClassificationResult(
+            verdict="SELL",
+            target_weight_pct=0.0,
+            target_shares=None,
+            decision_basis="MIXED",  # destination from policy, timing from tax
+            binding_rules=["US_SITUS", "DUPLICATE", "TARGET_ZERO"],
+            decision_inputs=inputs,
+            action_conviction="HIGH",
+            forecast_confidence=None,  # irrelevant — the swap is policy, not alpha
+        )
+
+    # ---- 2. Explicit numeric plan sizing target --------------------------
+    target_weight_pct, target_shares = _numeric_target(matched_targets)
+    if (
+        target_weight_pct is not None
+        and current_weight_pct is not None
+        and current_weight_pct > 0
+    ):
+        etf = _is_etf(upper)
+        domicile_tag = safe is True and etf is not False
+        inputs.append(_di(
+            "plan_target_weight_pct", target_weight_pct,
+            "horizon_json.targets", confidence="HIGH",
+        ))
+        rel = (target_weight_pct - current_weight_pct) / current_weight_pct
+        if target_weight_pct <= 1e-9:
+            verdict = "SELL"
+            band_tag = "TARGET_ZERO"
+        elif rel >= _ADD_TRIGGER_DRIFT_REL:
+            verdict = "ADD"
+            band_tag = "BELOW_MIN"
+        elif rel <= _TRIM_TRIGGER_DRIFT_REL:
+            verdict = "TRIM"
+            band_tag = "ABOVE_MAX"
+        else:
+            verdict = "HOLD"
+            band_tag = "IN_BAND"
+        binding_rules = (
+            ["DOMICILE_OK", "ROLE_MATCH", band_tag] if domicile_tag
+            else ["SIZING_BAND", band_tag]
+        )
+        return _ClassificationResult(
+            verdict=verdict,
+            target_weight_pct=target_weight_pct,
+            target_shares=target_shares,
+            decision_basis="CONSTRAINT",
+            binding_rules=binding_rules,
+            decision_inputs=inputs,
+            action_conviction="HIGH",
+            forecast_confidence=None,
+        )
+
+    # ---- 3. Policy concentration cap breach -------------------------------
+    # Single-name concentration risk is a STOCK concept (the general/NVDA cap
+    # exists to bound idiosyncratic single-company risk) — never applied to a
+    # diversified fund (a cash-sleeve ETF like SGOV, or a core index ETF like
+    # CSPX, legitimately sits at any weight the plan wants). Skip the cap
+    # check outright for a confirmed ETF; apply it to a stock or an
+    # unclassified ticker (fail toward the conservative/flagged side).
+    cap_pct, cap_resolved = _cap_pct_for(upper, ips)
+    etf_for_cap = _is_etf(upper)
+    if (
+        etf_for_cap is not True
+        and current_weight_pct is not None
+        and current_weight_pct > cap_pct + 1e-9
+    ):
+        inputs.append(_di(
+            "policy_cap_pct", cap_pct,
+            "ips.nvda_cap_pct" if upper == "NVDA" else "ips.general_single_name_cap_pct",
+            confidence="HIGH",
+        ))
+        return _ClassificationResult(
+            verdict="TRIM",
+            target_weight_pct=cap_pct,
+            target_shares=None,
+            decision_basis="CONSTRAINT",
+            binding_rules=["POLICY_CAP_BREACH"],
+            decision_inputs=inputs,
+            action_conviction="HIGH",
+            forecast_confidence=None,
+        )
+
+    # ---- Action-label cues (used by both 4b and 5) ------------------------
+    label_blob = " ".join(
+        (a.get("label") or "") + " " + (a.get("detail") or "")
+        for a in matched_actions
+    ).lower()
+    sell_cues = ("liquidate", "exit", "sell all", "close position", "close out")
+    trim_cues = (
+        "deconcentrat", "reduce", "trim", " sell ", "sale", "down to",
+        "tighten", "tighter", "scale back",
+    )
+    buy_cues = ("redeploy", "add ", "buy ", "accumulate", "increase", "grow")
+    has_cue = any(
+        cue in label_blob for cue in (*sell_cues, *trim_cues, *buy_cues)
+    )
+
+    # ---- 4. Known-role ETF, no action cue -> default HOLD ------------------
+    # Two sub-cases, both CONSTRAINT/HIGH — a diversified fund with no signal
+    # at all ("nothing changed, still fits its role") is not an abstention,
+    # unlike a single stock with no thesis (that falls through to step 6):
+    #   (a) confirmed estate-safe (UCITS/Israeli) core/satellite ETF, or
+    #   (b) a recognized legacy US-domiciled ETF the plan already has a
+    #       documented UCITS-swap note for (SGOV, SCHD, ...) — situs-exposed,
+    #       so NOT tagged DOMICILE_OK, but its role/size is still a settled
+    #       constraint, not a blind opinion. The swap note (prepended to
+    #       reasoning_md elsewhere) carries the situs caveat.
+    etf_default_hold = safe is True or upper in _US_DOMICILED_UCITS_SWAP
+    if etf_default_hold and not has_cue:
+        rules = ["DOMICILE_OK", "ROLE_MATCH", "IN_BAND"] if safe is True else ["ROLE_MATCH", "IN_BAND"]
+        inputs.append(_di("estate_safe", safe, "instrument_reference.estate_safe_for", confidence="HIGH"))
+        return _ClassificationResult(
+            verdict="HOLD",
+            target_weight_pct=None,
+            target_shares=None,
+            decision_basis="CONSTRAINT",
+            binding_rules=rules,
+            decision_inputs=inputs,
+            action_conviction="HIGH",
+            forecast_confidence=forecast_confidence,  # N/A-equivalent; recorded, not load-bearing
+        )
+
+    # ---- 5. Action-label cue, no numeric target — FORECAST/MIXED ----------
+    if has_cue:
+        if any(cue in label_blob for cue in sell_cues):
+            verdict = "SELL"
+        elif any(cue in label_blob for cue in trim_cues):
+            verdict = "TRIM"
+        elif any(cue in label_blob for cue in buy_cues):
+            verdict = "BUY"
+        else:  # pragma: no cover — has_cue implies one of the above matched
+            verdict = "HOLD"
+        inputs.append(_di(
+            "forecast_confidence", forecast_confidence,
+            "per_position_thesis._forecast_confidence_from_analysts", confidence=forecast_confidence,
+        ))
+        basis = "MIXED" if safe is True else "FORECAST"
+        rules = ["THESIS_DRIVEN"]
+        if safe is True:
+            rules = ["DOMICILE_OK", "ROLE_MATCH", "THESIS_DRIVEN"]
+        return _ClassificationResult(
+            verdict=verdict,
+            target_weight_pct=None,
+            target_shares=None,
+            decision_basis=basis,
+            binding_rules=rules,
+            decision_inputs=inputs,
+            action_conviction=_min_conviction("HIGH", forecast_confidence),
+            forecast_confidence=forecast_confidence,
+        )
+
+    # ---- 6. No signal at all -----------------------------------------------
+    # Permitted-speculative satellite: a small, unsanctioned US-situs single
+    # name (or unknown-domicile ticker) within the general cap and with no
+    # plan directive at all. The constraint (size is allowed) is HIGH; the
+    # THESIS (does it earn the slot) is a forecast call — action_conviction
+    # floors to forecast_confidence per the min(...) rule.
+    # Gated on ``safe is False`` (a KNOWN, curated US-situs single name) —
+    # NOT ``safe is None`` (unclassified ticker). An instrument we can't even
+    # classify is genuinely "no signal" (step 6's WAIT path below), not a
+    # deliberately-permitted speculative satellite.
+    is_speculative_satellite = (
+        current_weight_pct is not None
+        and current_weight_pct <= cap_pct
+        and safe is False
+    )
+    inputs.append(_di(
+        "forecast_confidence", forecast_confidence,
+        "per_position_thesis._forecast_confidence_from_analysts", confidence=forecast_confidence,
+    ))
+    if is_speculative_satellite:
+        inputs.append(_di("size_within_general_cap", True, "ips.general_single_name_cap_pct", confidence="HIGH"))
+        return _ClassificationResult(
+            verdict="HOLD",
+            target_weight_pct=None,
+            target_shares=None,
+            decision_basis="MIXED",
+            binding_rules=["SPECULATIVE_PERMITTED", "SIZE_WITHIN_CAP"],
+            decision_inputs=inputs,
+            action_conviction=_min_conviction("HIGH", forecast_confidence),
+            forecast_confidence=forecast_confidence,
+        )
+    return _ClassificationResult(
+        verdict="HOLD",
+        target_weight_pct=None,
+        target_shares=None,
+        decision_basis="FORECAST",
+        binding_rules=["NO_SIGNAL"],
+        decision_inputs=inputs,
+        action_conviction=_min_conviction("HIGH", forecast_confidence),
+        forecast_confidence=forecast_confidence,
+    )
 
 
 def _domicile_swap_note(ticker: str) -> str | None:
@@ -98,12 +509,32 @@ class PositionThesis:
     current_shares: float | None
     current_weight_pct: float | None
     current_usd_value: float | None
-    verdict: str  # HOLD | BUY | TRIM | SELL | ADD
-    conviction: str  # HIGH | MEDIUM | LOW
+    verdict: str  # HOLD | BUY | TRIM | SELL | ADD | WAIT
+    # ACTION conviction: confidence the exact action (verdict/size/timing) is
+    # correct NOW — never confidence about the future. Maps to
+    # verdicts.conviction. See the module-level "Constraint-vs-forecast
+    # conviction model" block: action_conviction = min(rule_confidence,
+    # confidence of every NECESSARY decision input, ...). A CONSTRAINT-basis
+    # card (policy cap, domicile, sizing band) can be HIGH with an unknowable
+    # return; a FORECAST-basis card floors to forecast_confidence.
+    conviction: str  # HIGH | MEDIUM | LOW  (== action_conviction)
     reasoning_md: str
     cited_sources: list[str] = field(default_factory=list)
     target_weight_pct: float | None = None
     target_shares: int | None = None
+    # Confidence in the expected-return / fair-value / thesis call. None when
+    # not applicable (a pure CONSTRAINT action never touches this) or "N/A".
+    forecast_confidence: str | None = None
+    # CONSTRAINT | FORECAST | MIXED — what kind of reasoning produced the
+    # verdict. See argosy.services.per_position_thesis module docstring.
+    decision_basis: str = "FORECAST"
+    # Rule ids that produced the action, e.g. ["POLICY_CAP_BREACH"] or
+    # ["DOMICILE_OK", "ROLE_MATCH", "IN_BAND"].
+    binding_rules: list[str] = field(default_factory=list)
+    # Necessary inputs consulted, each {"name","value","source","necessary",
+    # "confidence","freshness","quality"} — the audit trail behind
+    # action_conviction.
+    decision_inputs: list[dict[str, Any]] = field(default_factory=list)
     # Spec C commit #6 / §6.3 — soft annotation surfaced for each
     # contributing source (currently just ``internal_news_signal_analyst``
     # which is the per-position-thesis derivation's primary upstream
@@ -255,109 +686,15 @@ def _scan_horizon_for_ticker(
     return matched_targets, matched_actions, rationale_snippets
 
 
-def _classify_verdict(
-    ticker: str,
-    current_weight_pct: float | None,
-    matched_targets: list[dict[str, Any]],
-    matched_actions: list[dict[str, Any]],
-) -> tuple[str, float | None, int | None]:
-    """Decide HOLD / BUY / TRIM / SELL for one held ticker.
-
-    Returns ``(verdict, target_weight_pct, target_shares)`` — the
-    target columns are pulled from the strongest matching target if
-    one exists so the UI can show "12-month target: 45%".
-
-    Heuristic:
-
-      * Look at targets first. A target whose label mentions "share"
-        + "ceiling" or "share count" => translate value to
-        ``target_shares``. A target whose unit is "pct_of_portfolio"
-        or whose label mentions "share of portfolio" / "weight" =>
-        ``target_weight_pct``.
-      * If we have a numeric ``target_weight_pct`` and a
-        ``current_weight_pct``:
-            - target >= current * 1.10 => BUY (plan wants more)
-            - target <= current * (1 - _TRIM_VS_SELL_RATIO) => SELL
-            - target <  current * 0.95 => TRIM
-            - otherwise => HOLD
-      * No numeric target? Look at action labels for words like
-        "sell", "trim", "liquidate", "buy", "add", "increase",
-        "reduce", "deconcentrate". Each maps to the obvious verdict;
-        ties resolve toward TRIM (the more conservative move).
-      * Falls through to HOLD when nothing matched.
-    """
-    target_weight_pct: float | None = None
-    target_shares: int | None = None
-
-    # Pull numeric target hints from matched targets.
-    for t in matched_targets:
-        unit = (t.get("unit") or "").lower()
-        label = (t.get("label") or "").lower()
-        value = t.get("value")
-        if not isinstance(value, (int, float)):
-            continue
-        if (
-            unit == "pct_of_portfolio"
-            or "share of portfolio" in label
-            or "% of portfolio" in label
-            or "weight" in label and "ratio" not in label
-        ):
-            # Take the first / strongest one.
-            if target_weight_pct is None:
-                target_weight_pct = float(value)
-        elif unit == "shares" or "share count" in label or "share ceiling" in label:
-            if target_shares is None:
-                target_shares = int(value)
-
-    # Numeric path — weight comparison.
-    if (
-        target_weight_pct is not None
-        and current_weight_pct is not None
-        and current_weight_pct > 0
-    ):
-        # ratio of target to current.
-        delta = target_weight_pct - current_weight_pct
-        rel = delta / current_weight_pct
-        if rel >= 0.10:
-            return ("BUY", target_weight_pct, target_shares)
-        if rel <= -_TRIM_VS_SELL_RATIO:
-            return ("SELL", target_weight_pct, target_shares)
-        if rel <= -0.05:
-            return ("TRIM", target_weight_pct, target_shares)
-        return ("HOLD", target_weight_pct, target_shares)
-
-    # Heuristic path — look at action labels for verb cues.
-    label_blob = " ".join(
-        (a.get("label") or "") + " " + (a.get("detail") or "")
-        for a in matched_actions
-    ).lower()
-
-    # Strong sell signals: "liquidate", "exit", "sell all", "close position".
-    sell_cues = ("liquidate", "exit", "sell all", "close position", "close out")
-    if any(cue in label_blob for cue in sell_cues):
-        return ("SELL", target_weight_pct, target_shares)
-
-    # Trim signals: "deconcentrate", "reduce", "trim", "sell", "sale", "down to".
-    trim_cues = (
-        "deconcentrat", "reduce", "trim", " sell ", "sale", "down to",
-        "tighten", "tighter", "scale back",
-    )
-    if any(cue in label_blob for cue in trim_cues):
-        return ("TRIM", target_weight_pct, target_shares)
-
-    # Buy / add cues.
-    buy_cues = ("redeploy", "add ", "buy ", "accumulate", "increase", "grow")
-    if any(cue in label_blob for cue in buy_cues):
-        return ("BUY", target_weight_pct, target_shares)
-
-    return ("HOLD", target_weight_pct, target_shares)
-
-
-def _aggregate_conviction(
+def _forecast_confidence_from_analysts(
     analyst_reports: Iterable[dict[str, Any]],
     ticker: str,
 ) -> str:
-    """Majority-vote analyst confidence for one ticker.
+    """Majority-vote analyst confidence for one ticker — this is
+    ``forecast_confidence`` (alpha/return-call confidence), NOT
+    ``action_conviction``. Do NOT feed this directly into a CONSTRAINT-basis
+    verdict's conviction (see ``_classify_position``); it is only a floor
+    input for FORECAST/MIXED-basis verdicts.
 
     For each analyst row whose ``response_text`` mentions the ticker,
     contribute its confidence (``HIGH`` / ``MEDIUM`` / ``LOW``). Then:
@@ -367,8 +704,8 @@ def _aggregate_conviction(
       * Else MEDIUM (the default for "no data" or "mixed").
 
     Tickers with zero analyst mentions also resolve to LOW since we have
-    no evidence to back any verdict — the UI surfaces that as the "we're
-    flying blind on this one" signal.
+    no evidence to back any forecast — the "we're flying blind on this
+    one" signal.
     """
     counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
     matched_any = False
@@ -734,6 +1071,22 @@ def derive_position_theses(
                 "falling through with empty annotations list"
             )
 
+    # ---- IPS (best-effort; None => module fallback constants) -------------
+    # Live policy caps / sanctioned-situs list for the constraint branches of
+    # _classify_position. Never blocks derivation — a build failure just
+    # means the fallback constants (13% NVDA / 10% general) are used, same
+    # as the decision_funnel's own IPS-pending behavior.
+    ips: Any = None
+    if session is not None and user_id:
+        try:
+            from argosy.services.ips import build_ips
+
+            ips = build_ips(session, user_id=user_id)
+        except Exception:  # noqa: BLE001 — never break derivation
+            logger.warning("per_position_thesis: build_ips failed", exc_info=True)
+
+    held_set = set(held_map.keys())
+
     # ---- Held tickers ------------------------------------------------------
     held_cards: list[PositionThesis] = []
     for ticker, rec in held_map.items():
@@ -756,10 +1109,13 @@ def derive_position_theses(
             all_actions.extend(acs)
             all_snippets.extend(snips)
 
-        verdict, tgt_w, tgt_sh = _classify_verdict(
-            ticker, current_weight_pct, all_targets, all_actions
+        forecast_confidence = _forecast_confidence_from_analysts(analyst_norm, ticker)
+        result = _classify_position(
+            ticker, current_weight_pct, all_targets, all_actions,
+            held_set, ips, forecast_confidence,
         )
-        conviction = _aggregate_conviction(analyst_norm, ticker)
+        verdict = result.verdict
+        conviction = result.action_conviction
         cited = _collect_cited_sources(analyst_norm, ticker)
         reasoning = _assemble_reasoning(ticker, all_snippets, analyst_norm)
         # If this is a US-domiciled ETF the plan swaps for a UCITS twin, lead with
@@ -767,9 +1123,38 @@ def derive_position_theses(
         swap_note = _domicile_swap_note(ticker)
         if swap_note:
             reasoning = (swap_note + ("\n\n" + reasoning if reasoning else "")).strip()
-            if len(reasoning) > _REASONING_CAP_CHARS:
-                cut = reasoning.rfind(" ", 0, _REASONING_CAP_CHARS - 1)
-                reasoning = reasoning[: cut if cut > 0 else _REASONING_CAP_CHARS - 1].rstrip() + "…"
+
+        # Abstention costs something (2026-08-21): a plain "we have no
+        # opinion" LOW HOLD (no CONSTRAINT basis, no forecast evidence) is
+        # relabeled WAIT rather than published as a silent HOLD — this is
+        # the exact 31-blind-LOW-HOLD pattern the conviction-model rewrite
+        # targets. A MIXED "permitted speculative" HOLD (SPECULATIVE_PERMITTED
+        # — e.g. a small satellite name) is NOT downgraded: its slot is
+        # explicitly provisional, so we say so instead of hiding it.
+        if (
+            verdict == "HOLD"
+            and conviction == "LOW"
+            and result.binding_rules == ["NO_SIGNAL"]
+        ):
+            verdict = "WAIT"
+            note = (
+                "**WAIT — insufficient evidence:** no plan target, no policy "
+                "constraint, and no analyst coverage for this ticker. This is "
+                "an abstention, not a considered HOLD; it will be revisited "
+                "once evidence exists.\n\n"
+            )
+            reasoning = (note + reasoning).strip()
+        elif result.binding_rules == ["SPECULATIVE_PERMITTED", "SIZE_WITHIN_CAP"]:
+            note = (
+                "**Provisional — 30-day review:** size is permitted within "
+                "the general single-name cap, but this slot must be earned "
+                "by its own thesis; re-checked within 30 days.\n\n"
+            )
+            reasoning = (note + reasoning).strip()
+
+        if len(reasoning) > _REASONING_CAP_CHARS:
+            cut = reasoning.rfind(" ", 0, _REASONING_CAP_CHARS - 1)
+            reasoning = reasoning[: cut if cut > 0 else _REASONING_CAP_CHARS - 1].rstrip() + "…"
 
         held_cards.append(PositionThesis(
             ticker=ticker,
@@ -783,8 +1168,12 @@ def derive_position_theses(
             conviction=conviction,
             reasoning_md=reasoning,
             cited_sources=cited,
-            target_weight_pct=tgt_w,
-            target_shares=tgt_sh,
+            target_weight_pct=result.target_weight_pct,
+            target_shares=result.target_shares,
+            forecast_confidence=result.forecast_confidence,
+            decision_basis=result.decision_basis,
+            binding_rules=result.binding_rules,
+            decision_inputs=result.decision_inputs,
             reliability_annotations=list(shared_annotations),
         ))
 
@@ -796,7 +1185,6 @@ def derive_position_theses(
     )
 
     # ---- "Should add" tickers ---------------------------------------------
-    held_set = set(held_map.keys())
     universe = _add_ticker_universe(held_set, allowed_symbols)
     candidate_tickers: set[str] = set()
     for h_payload in horizon_payloads.values():
@@ -833,20 +1221,35 @@ def derive_position_theses(
         # rationale — i.e., no real action targeted them.
         if not all_actions and not all_targets:
             continue
-        conviction = _aggregate_conviction(analyst_norm, ticker)
+        forecast_confidence = _forecast_confidence_from_analysts(analyst_norm, ticker)
         cited = _collect_cited_sources(analyst_norm, ticker)
         reasoning = _assemble_reasoning(ticker, all_snippets, analyst_norm)
+        # A "should-add" candidate is not held today, so there is no
+        # POLICY_CAP_BREACH / sizing-band to check — it's plan-named
+        # (PLAN_NAMED_ADD) and its action_conviction is the rule confidence
+        # that the plan named it (HIGH) floored by whatever forecast
+        # evidence exists, same min(...) rule as everywhere else.
         add_cards.append(PositionThesis(
             ticker=ticker,
             current_shares=None,
             current_weight_pct=None,
             current_usd_value=None,
             verdict="ADD",
-            conviction=conviction,
+            conviction=_min_conviction("HIGH", forecast_confidence),
             reasoning_md=reasoning,
             cited_sources=cited,
             target_weight_pct=None,
             target_shares=None,
+            forecast_confidence=forecast_confidence,
+            decision_basis="MIXED",
+            binding_rules=["PLAN_NAMED_ADD"],
+            decision_inputs=[
+                _di(
+                    "forecast_confidence", forecast_confidence,
+                    "per_position_thesis._forecast_confidence_from_analysts",
+                    confidence=forecast_confidence,
+                ),
+            ],
             reliability_annotations=list(shared_annotations),
         ))
 
