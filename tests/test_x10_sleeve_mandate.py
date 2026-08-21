@@ -16,48 +16,40 @@ from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
 # --- the mandate text itself -------------------------------------------------
 
 def test_mandate_encodes_all_four_clauses():
+    """Rewritten 2026-08-21 after adversarial review. The mandate previously told
+    agents to find a downside FLOOR; they duly reported one, by relabelling
+    ordinary operating viability as downside protection. It now forbids the word
+    and requires one of three explicit classes, and it states the base rates so a
+    promise the evidence cannot support is never implied."""
     m = X10_SLEEVE_MANDATE
-    # (a) cap-math test, with the mechanical size preference + the >$50B bar
+    # (a) cap-math, unchanged
     assert "CAP-MATH" in m and "10x" in m and "5-10 years" in m
     assert "$20-30B" in m and "$50B" in m and "EXTRAORDINARY" in m.upper()
-    # (b) 100% accepted per-name loss is a SIZING rule. Quality/defensibility
-    # (a compounder trait) still must not boost rank -- but a DOWNSIDE FLOOR is
-    # a different thing and MUST boost it. Reversed 2026-08-21: the old mandate
-    # conflated the two and so forbade crediting the floor, which is precisely
-    # what made SanDisk (0.72x book, P/S 0.91x) an asymmetry rather than a bet.
-    assert "100%" in m and "defensibility" in m.lower()
-    assert "SIZING rule, not a ranking" in m
-    assert "MUST boost rank" in m
-    assert "conflate" in m.lower()
-    # (c) rank is a RATIO -- upside alone is variance, and variance is symmetric
-    assert "/ plausible DOWNSIDE" in m and "RATIO" in m
-    assert "VARIANCE" in m and "symmetric" in m
-    assert "floored name MUST outrank an unfloored one" in m
-    # (c2) the floor must be written down; undeclared == none
-    assert "WRITE THE FLOOR DOWN" in m and "no floor" in m
-    # (c3) the SanDisk calibration, stated ACCURATELY. Corrected 2026-08-21:
-    # the first version claimed SNDK traded below book. It did not -- $4.999B of
-    # its $9.216B equity was goodwill, so tangible book was $4.217B and the
-    # stock was at 1.58x TANGIBLE book. It was also not "losing money": FY25
-    # gross profit +$2.212B, operating income +$0.507B, operating cash flow
-    # +$0.084B; the GAAP loss was a noncash goodwill impairment. The real
-    # pattern is a depressed cyclical/spinoff valuation on cash-generating
-    # operations -- NOT liquidation-value protection. These asserts exist so the
-    # false version cannot come back.
+    # (b) 100% loss is a SIZING rule; generic quality still irrelevant
+    assert "100%" in m and "SIZING rule, not a ranking" in m
+    # (c) the word "floor" is banned, and the three classes replace it
+    assert "DO NOT USE THE WORD" in m
+    assert all(c in m for c in ("ASSET_BACKED", "EARNING_POWER", "FUNDED_OPTIONALITY"))
+    assert "VIABILITY EVIDENCE, not floors" in m
+    assert "CUSHION STATISTIC" in m          # net cash is not an asset floor
+    assert "NCAV" in m                       # the real Graham test, not P/TB < 1
+    # (c2) unclassified fails closed to the SMALLEST cut
+    assert "UNCLASSIFIED name is scored as" in m and "FUNDED_OPTIONALITY" in m
+    # (c3) SNDK, classified correctly and with the corrections that cost two passes
     assert "SanDisk" in m and "0.91x" in m
-    assert "0.72x BOOK" not in m           # the false claim, banned
+    assert "0.72x BOOK" not in m                       # the original false claim
     assert "1.58x TANGIBLE book" in m and "GOODWILL" in m
     assert "NONCASH goodwill impairment" in m
-    assert "NOT liquidation-value protection" in m
-    # and the base-rate caveat, so one winner is never read as a rule
-    assert "SURVIVOR-BIAS WARNING" in m and "base rate" in m
-    # (c4) growth stories stay eligible but take a smaller cut (Ariel 2026-08-21)
-    assert "BOTH ARCHETYPES ARE ELIGIBLE" in m
-    assert "SMALLER cut" in m and "HALF the weight" in m and "ONE " in m
-    # (d) asymmetry-first fill order for deploy tranches
+    assert "SNDK was EARNING_POWER" in m
+    # (c4) growth stories eligible, smaller cut (Ariel)
+    assert "SMALLEST cut" in m and "HALF the weight" in m and "ONE " in m
+    # (c5) the honesty clause -- base rates, not a promise
+    assert "Bessembinder" in m and "0.8%" in m
+    assert "32.5%" in m and "Bounded downside is a MYTH" in m
+    assert "REJECTING likely losers" in m
+    assert "Never tell the owner a name cannot fall 90%" in m
+    # (d) fill order
     assert "asymmetry-first" in m and "never safety-first" in m
-    # the anti-goal is spelled out (maybe-2x large caps are the opposite job)
-    assert "2x" in m and "OPPOSITE" in m
 
 
 # --- discovery/triage graders embed the mandate -------------------------------
@@ -238,42 +230,44 @@ def _comp(*names):
     return MoonshotSleeveComposition(names=list(names))
 
 
-def test_divergence_catches_the_2026_08_21_floor_mislabel():
+def test_divergence_catches_the_2026_08_21_class_mislabel():
     """Identical tickers AND identical weights -- only the floor reading differs.
     The pre-2026-08-21 comparison returned no divergence for this input."""
     from argosy.agents.plan_change_team import moonshot_divergences
-    author = _comp(_mk("RXRX", 35.0, "FLOORED: real drug-discovery revenue plus net cash"),
-                   _mk("OKLO", 16.0, "UNFLOORED: pre-revenue, no floor"))
-    reviewer = _comp(_mk("RXRX", 35.0, "UNFLOORED: negative gross profit, 34x sales"),
-                     _mk("OKLO", 16.0, "FLOORED: net cash is 31% of market cap"))
+    author = _comp(_mk("RXRX", 35.0, "EARNING_POWER: real drug-discovery revenue plus net cash"),
+                   _mk("OKLO", 16.0, "FUNDED_OPTIONALITY: pre-revenue"))
+    reviewer = _comp(_mk("RXRX", 35.0, "FUNDED_OPTIONALITY: negative gross profit, 34x sales"),
+                     _mk("OKLO", 16.0, "ASSET_BACKED: net cash is 31% of market cap"))
     d = moonshot_divergences(author, reviewer)
     assert len(d) == 2
-    assert all("FLOOR CLASSIFICATION" in x for x in d)
+    assert all("SLEEVE CLASS" in x for x in d)
     assert any(x.startswith("RXRX:") for x in d) and any(x.startswith("OKLO:") for x in d)
 
 
 def test_divergence_silent_when_both_agree_on_the_floor():
     from argosy.agents.plan_change_team import moonshot_divergences
-    a = _comp(_mk("RXRX", 35.0, "UNFLOORED: cash cushion only"))
-    b = _comp(_mk("RXRX", 33.0, "UNFLOORED: no asset floor"))
+    a = _comp(_mk("RXRX", 35.0, "FUNDED_OPTIONALITY: cash cushion only"))
+    b = _comp(_mk("RXRX", 33.0, "FUNDED_OPTIONALITY: no asset coverage"))
     assert moonshot_divergences(a, b) == []   # 2pp weight gap is inside tolerance
 
 
-def test_undeclared_floor_reads_as_unfloored():
+def test_unclassified_reads_as_funded_optionality():
     """Mandate (c2): an undeclared floor is scored as NO floor, so an agent cannot
     manufacture agreement by simply leaving downside_math blank."""
     from argosy.agents.plan_change_team import _floor_class, moonshot_divergences
-    assert _floor_class(_mk("X", 1.0, "")) == "UNFLOORED"
+    assert _floor_class(_mk("X", 1.0, "")) == "FUNDED_OPTIONALITY"
+    # the discredited legacy label must NOT inherit a large cut either
+    assert _floor_class(_mk("X", 1.0, "FLOORED: real revenue")) == "FUNDED_OPTIONALITY"
     d = moonshot_divergences(_comp(_mk("X", 50.0, "")),
-                             _comp(_mk("X", 50.0, "FLOORED: 0.6x tangible book")))
-    assert len(d) == 1 and "FLOOR CLASSIFICATION" in d[0]
+                             _comp(_mk("X", 50.0, "ASSET_BACKED: 0.6x haircutted NCAV")))
+    assert len(d) == 1 and "SLEEVE CLASS" in d[0]
 
 
 def test_divergence_still_catches_inclusion_and_weight():
     """The original two comparisons must survive the extension."""
     from argosy.agents.plan_change_team import moonshot_divergences
-    a = _comp(_mk("AAA", 60.0, "FLOORED: x"), _mk("BBB", 40.0, "FLOORED: x"))
-    b = _comp(_mk("AAA", 20.0, "FLOORED: x"), _mk("CCC", 80.0, "FLOORED: x"))
+    a = _comp(_mk("AAA", 60.0, "EARNING_POWER: x"), _mk("BBB", 40.0, "EARNING_POWER: x"))
+    b = _comp(_mk("AAA", 20.0, "EARNING_POWER: x"), _mk("CCC", 80.0, "EARNING_POWER: x"))
     d = moonshot_divergences(a, b)
     assert any("author keeps" in x for x in d)      # BBB dropped by reviewer
     assert any("reviewer keeps" in x for x in d)    # CCC added by reviewer

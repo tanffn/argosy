@@ -238,12 +238,19 @@ def _moonshot_buy(symbol="RGTI", amount_usd=50_000.0, disclosed=True):
                justification=justification, claimed_us_weight=1.0)
 
 
-def _c4_buy(symbol, amount_usd, floored):
-    label = "FLOORED" if floored else "UNFLOORED"
+def _c4_buy(symbol, amount_usd, cls):
+    """cls is a mandate (c) sleeve class. True/False are accepted for the
+    pre-2026-08-21 FLOORED/UNFLOORED binary and map onto EARNING_POWER /
+    FUNDED_OPTIONALITY -- the old labels themselves now fail closed."""
+    if cls is True:
+        cls = "EARNING_POWER"
+    elif cls is False:
+        cls = "FUNDED_OPTIONALITY"
+    label = cls
     return Buy(
         symbol=symbol, amount_usd=amount_usd, sleeve="",
         justification=(
-            f"x10 moonshot sleeve. {label}: downside math stated. It is a US-situs "
+            f"x10 moonshot sleeve. {label}: class evidence stated. It is a US-situs "
             "single name and adds to the NRA estate-tax base (up to 40% marginal "
             "above the $60K exemption) per "
             "domain_knowledge/tax/us/estate_tax_nonresidents.md"

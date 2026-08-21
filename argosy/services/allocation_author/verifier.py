@@ -127,12 +127,20 @@ _C4_UNFLOORED_SLEEVE_FRACTION = 1.0 / 3.0   # unfloored names, combined
 _C4_UNFLOORED_VS_FLOORED = 0.50             # any one unfloored vs largest floored
 
 
-def _c4_label(text: str) -> str:
-    """FLOORED / UNFLOORED as DECLARED by the author. Mandate (c2): an undeclared
-    floor is scored as NO floor, so anything unlabelled fails closed to UNFLOORED."""
+SLEEVE_CLASSES = ("ASSET_BACKED", "EARNING_POWER", "FUNDED_OPTIONALITY")
+
+# Mandate (c2): an UNCLASSIFIED name is scored as FUNDED_OPTIONALITY -- the
+# smallest cut -- so vagueness can never buy a larger allocation. The legacy
+# FLOORED/UNFLOORED labels also land here on purpose: "floored" was the
+# discredited concept (agents reported operating viability as downside
+# protection), so a name still carrying it must be re-authored under the
+# three-class model rather than inheriting its old weight.
+def _sleeve_class(text: str) -> str:
     up = (text or "").upper()
-    if "UNFLOORED" in up:
-        return "UNFLOORED"
+    for c in ("ASSET_BACKED", "EARNING_POWER"):
+        if c in up:
+            return c
+    return "FUNDED_OPTIONALITY"
     if "FLOORED" in up:
         return "FLOORED"
     return "UNFLOORED"
@@ -297,19 +305,21 @@ def verify_allocation_proposal(
                     if b.symbol.upper() != "NVDA" and b.symbol.upper() in _moonshot_syms]
     if _sleeve_buys:
         _sleeve_total = round(sum(b.amount_usd for b in _sleeve_buys), 2)
-        _unfloored = [b for b in _sleeve_buys if _c4_label(b.justification) == "UNFLOORED"]
-        _floored = [b for b in _sleeve_buys if _c4_label(b.justification) == "FLOORED"]
+        _unfloored = [b for b in _sleeve_buys if _sleeve_class(b.justification) == "FUNDED_OPTIONALITY"]
+        _floored = [b for b in _sleeve_buys if _sleeve_class(b.justification) != "FUNDED_OPTIONALITY"]
         _unfloored_total = round(sum(b.amount_usd for b in _unfloored), 2)
         _cap_total = _sleeve_total * _C4_UNFLOORED_SLEEVE_FRACTION
         if _unfloored_total > _cap_total + _MONEY_EPS:
             _names = ", ".join(f"{b.symbol} ${b.amount_usd:,.0f}" for b in _unfloored)
             fails.append(GateFailure(
                 "moonshot_c4_unfloored_share",
-                f"unfloored moonshot names total ${_unfloored_total:,.0f} of a "
+                f"funded-optionality (unclassified or story) names total "
+                f"${_unfloored_total:,.0f} of a "
                 f"${_sleeve_total:,.0f} sleeve, over the mandate (c4) ceiling of "
                 f"${_cap_total:,.0f} (one third). Unfloored: {_names}. Either size "
                 "them down or add a name with a written, countable downside floor. "
-                "(An unlabelled name counts as UNFLOORED per mandate (c2).)",
+                "(An UNCLASSIFIED name counts as FUNDED_OPTIONALITY per mandate (c2), "
+                "as does a legacy FLOORED/UNFLOORED label.)",
                 "revision"))
         if _floored:
             _largest_floored = max(b.amount_usd for b in _floored)
@@ -318,10 +328,11 @@ def verify_allocation_proposal(
                 if b.amount_usd > _per_name_cap + _MONEY_EPS:
                     fails.append(GateFailure(
                         "moonshot_c4_unfloored_name_size",
-                        f"{b.symbol} is UNFLOORED at ${b.amount_usd:,.0f}, above the "
+                        f"{b.symbol} is FUNDED_OPTIONALITY at ${b.amount_usd:,.0f}, above the "
                         f"mandate (c4) per-name ceiling of ${_per_name_cap:,.0f} "
-                        f"(half the largest floored name, ${_largest_floored:,.0f}) — "
-                        "trim it or justify a countable floor.",
+                        f"(half the largest ASSET_BACKED/EARNING_POWER name, "
+                        f"${_largest_floored:,.0f}) - "
+                        "trim it or evidence an ASSET_BACKED / EARNING_POWER class.",
                         "revision"))
 
     for b in proposal.buys:

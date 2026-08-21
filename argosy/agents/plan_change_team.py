@@ -388,17 +388,20 @@ class MoonshotSleeveBlindReviewerAgent(BaseAgent[MoonshotSleeveComposition]):
         return system, _moonshot_user_block(current_sleeve, book, notes)
 
 
-def _floor_class(name: "MoonshotName") -> str:
-    """FLOORED / UNFLOORED as the agent DECLARED it in downside_math.
+SLEEVE_CLASSES = ("ASSET_BACKED", "EARNING_POWER", "FUNDED_OPTIONALITY")
 
-    Mandate (c2): an undeclared floor is scored as NO floor, so a blank or
-    unlabelled downside_math reads UNFLOORED. This is a parse of the claim, never
-    a judgement about whether the claim is true -- that is what the two blind
-    derivations are FOR.
-    """
+# Mandate (c2): an UNCLASSIFIED name is scored as FUNDED_OPTIONALITY -- the
+# smallest cut -- so vagueness can never buy a larger allocation. The legacy
+# FLOORED/UNFLOORED labels also land here on purpose: "floored" was the
+# discredited concept (agents reported operating viability as downside
+# protection), so a name still carrying it must be re-authored under the
+# three-class model rather than inheriting its old weight.
+def _floor_class(name) -> str:
     up = (getattr(name, "downside_math", "") or "").upper()
-    if "UNFLOORED" in up or "NO FLOOR" in up:
-        return "UNFLOORED"
+    for c in ("ASSET_BACKED", "EARNING_POWER"):
+        if c in up:
+            return c
+    return "FUNDED_OPTIONALITY"
     if "FLOORED" in up:
         return "FLOORED"
     return "UNFLOORED"
@@ -451,9 +454,10 @@ def moonshot_divergences(
             )
         if af.get(t) != rf.get(t):
             out.append(
-                f"{t}: FLOOR CLASSIFICATION diverges — author says {af.get(t)}, "
+                f"{t}: SLEEVE CLASS diverges - author says {af.get(t)}, "
                 f"reviewer says {rf.get(t)}. One of them has misread the balance "
-                "sheet; reconcile against the filings before this name is sized."
+                "sheet or the class definitions; reconcile against the filings "
+                "before this name is sized."
             )
     return out
 
