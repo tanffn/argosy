@@ -170,12 +170,38 @@ Schwab number.
 2,196,072** across 3,937 shares in six sales. Schwab's US-basis figure for the
 same sales is $472,911 — only 64% of the true Israeli gain.
 
-**Withholding: none at sale.** Across every 2026 Schwab sale the `Taxes` field is
-empty and the full gross was disbursed (`Forced Disbursement` equal to the sale
-proceeds). Shares withheld at *vest* (`SharesSoldWithheldForTaxes` on the Lapse
-rows) cover the payroll withholding, not the capital slice. The §102 capital tax
-on post-release sales is therefore **payable on the annual return and is not
-withheld at source** — it needs an explicit reserve.
+### Withholding: the trustee DOES withhold — in the wire leg, not at Schwab
+
+An earlier revision of this section (2026-08-22, same day) concluded "no
+withholding at sale" from Schwab's empty `Taxes` field and its `Forced
+Disbursement` equal to the full gross. **That was wrong and would have had the
+household reserve ~ILS 644,000 it does not owe.** Schwab does not perform Israeli
+withholding; the **trustee** does, between the Schwab disbursement and the wire
+that lands at Leumi. The evidence is in the bank statement, not the broker one.
+
+Every 2026 sale, matched to its incoming Leumi USD wire:
+
+| Sale | Gross $ | Wired $ | Withheld $ | % of gross | §102 gain $ | withheld / gain |
+|---|---|---|---|---|---|---|
+| 01-28 | 107,144.75 | 77,768.88 | 29,375.87 | 27.4% | 96,880 | 30.3% |
+| 02-06 | 91,826.70 | 66,554.31 | 25,272.39 | 27.5% | 81,820 | 30.9% |
+| 04-20 | 207,538.02 | 150,864.02 | 56,674.00 | 27.3% | 188,479 | 30.1% |
+| 05-08 | 121,005.00 | 88,253.43 | 32,751.57 | 27.1% | 110,745 | 29.6% |
+| 06-01 | 153,947.69 | 112,229.99 | 41,717.70 | 27.1% | 141,120 | 29.6% |
+| 08-12 | 125,325.31 | 93,350.08 | 31,975.23 | 25.5% | 115,183 | 27.8% |
+| **TOTAL** | **806,787.47** | **589,020.71** | **217,766.76** | **27.0%** | **734,227** | **29.7%** |
+
+Withheld ILS 651,340 against a statutory computation of ILS 644,390 — agreeing
+to **1.1%**. That agreement is itself the strongest available confirmation that
+the 30-trading-day-mean basis above is right: an incorrect basis would not
+produce a withheld/gain ratio sitting exactly in the 28-30% surtax band.
+
+**Consequences for agents.** (a) There is NO unreserved 2026 capital-tax
+liability; do not add one to the finite-liability reserve. (b) The annual return
+reconciles the withheld amount against the true liability — expect a small
+refund or top-up, not a six-figure payment. (c) Never conclude "nothing was
+withheld" from broker fields alone: for §102 shares the withholding is invisible
+at the broker and only appears as the gap between gross proceeds and the wire.
 
 ## Stack with related rates
 

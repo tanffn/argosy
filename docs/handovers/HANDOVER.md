@@ -6,11 +6,16 @@ Last updated: **2026-08-22**.
 
 > ## 2026-08-22 — the §102 basis was wrong in the domain file, and it moved ILS 780k
 >
-> **THE HEADLINE: ILS 644,390 of Israeli tax is owed on the 2026 NVDA sales, unwithheld and
-> unreserved.** Every 2026 Schwab sale row has an empty `Taxes` field and a `Forced
-> Disbursement` equal to the full gross, so nothing was taken at source. It is payable on the
-> annual return. The plan's ILS 1,450,000 finite-liability reserve has no line for it — a 44%
-> addition. This is the single most urgent open item and it is not a modelling dispute.
+> **CORRECTED WITHIN THE SESSION — the 2026 tax WAS withheld; there is no missing ILS 644k.**
+> I first concluded it was unwithheld from Schwab's empty `Taxes` field and its full-gross
+> `Forced Disbursement`, and committed that. Wrong: Schwab does not do Israeli withholding —
+> the TRUSTEE does, in the wire leg. Matching each sale to its incoming Leumi USD wire shows
+> **$217,766.76 withheld on $806,787.47 of gross = 27.0%**, which is **29.7% of the computed
+> §102 gain** — ILS 651,340 withheld against ILS 644,390 computed, agreeing to **1.1%**.
+> That agreement is also the strongest confirmation the 30-day-mean basis is right. The
+> reviewer's RED "no reserve for unwithheld CGT" DISSOLVES. Lesson: never conclude "nothing
+> was withheld" from broker fields — for §102 the withholding is invisible at the broker and
+> shows up only as gross-minus-wire in the BANK statement.
 >
 > **The §102 grant benchmark is the 30-TRADING-DAY MEAN of split-adjusted NVDA closes before
 > the grant date.** Reproduces the trustee's own engine to **0.000%** on all three grants it
