@@ -122,13 +122,41 @@ above **$40,000** (abroad) or **$60,000** (domestic, at 0.150% → 0.0375%).
 Funding the Schwab account in small increments costs a flat $22.50 per transfer,
 plus correspondent charges that sit outside the benefit entirely.
 
-**The שער מוסכם spread is not disclosed in any statement.** Fees on conversion
-are effectively zero (₪49.87 on ₪250,000 converted in 2025 = 0.0199%), but the
-*spread* is invisible. The 1.34% FX/FX figure being exactly 2 × 0.67% suggests
-these are per-leg rate improvements against Leumi's customer buy/sell rate — not
-a discount off the spread margin. **Unverified.** To measure: record ILS debited
-÷ FX credited within seconds of execution and compare to a contemporaneous
-market mid.
+**The שער מוסכם spread is not disclosed in any statement**, but it has now been
+measured. Fees on conversion are effectively zero (₪49.87 on ₪250,000 converted
+in 2025 = 0.0199%); the cost sits in the rate.
+
+Measured 21/08/2026 against the BoI representative rate of 2.9910, using each
+bank's own שער העברות והמחאות:
+
+| Bank | Half-spread (one-way) | Agorot (full bid/ask) |
+|---|---|---|
+| Mizrahi-Tefahot | 0.80% | 4.79 |
+| Beinleumi | 0.90% | 5.36 |
+| **Leumi** | **0.92%** | 5.50 |
+| Mercantile | 1.01% | 6.03 |
+| Discount | 1.10% | 6.60 |
+
+**0.92% is the RACK rate — it is not what this household pays.** The benefits
+letter grants "0.67% הטבה" on the שער מוסכם, so the effective one-way cost is
+roughly **0.92% − 0.67% ≈ 0.25%**, or ~₪625/yr on the ₪250,000 converted in
+2025. Do not quote the 0.92% as this household's cost; that error was made twice
+during the 2026-08-22 review.
+
+**The base of the 0.67% is ambiguous and worth settling.** `הנחה מהשער`
+(percentage points off the rate) and `הנחה על המרווח` (a percentage *of* the
+margin) coincide near 50% and diverge quickly — at 0.67% the two readings differ
+by roughly $250 per $100,000 converted. Make the banker state which applies, and
+verify post-execution: record ILS debited ÷ FX credited within seconds and
+compare to the contemporaneous שער יציג.
+
+Forum consensus is that **~0.7% off the rate is the achievable ceiling**, with
+0.5% the common outcome. This package is therefore already at or near the top of
+the negotiable range — opening offers of 0.05% or "חצי פרומיל" should be
+rejected. Israeli brokers quote FX in **fixed agorot**, so their percentage cost
+rose ~23% as the shekel went 3.7 → 3.0: Meitav 2.1 agorot = 0.70% at 2.9910
+(the widely-quoted "0.57%" was computed at 3.50 and is stale), Excellence 2
+agorot = 0.67%, IBI 0.70% published. None of them beats 0.25%.
 
 ## Current account
 
@@ -150,6 +178,68 @@ were ₪0.00 across 136 actions. Not a material cost centre.
 **July 2026 is unexplained** — 71% of the entire H1 bill in a single month, and
 it predates the 20/08 minimum change. The trade-level detail is not in any
 document currently held. Pull it before projecting an annual run-rate.
+
+## Is a better deal available? (verified 2026-08-22)
+
+**On trading: barely.** Modelled at ~70 trades/yr, ₪45,000 average ticket,
+40 foreign + 30 Israeli, USD/ILS 2.9910:
+
+| Provider | Annual trading cost |
+|---|---|
+| Psagot Trade | ₪1,528 |
+| Excellence Trade | ₪1,543 |
+| Meitav Trade | ₪1,678 |
+| IBI Trade | ₪1,977 |
+| **Leumi, current package** | **₪2,205** |
+
+Switching brokerage saves **₪530–680/yr**. Negotiating the *rate* from 0.07% to
+0.05% saves ~₪630/yr — the same benefit without moving. Negotiating the
+*minimum* is worth almost nothing: average ticket is ₪46,200, so the percentage
+binds on most trades and the observed floor drag was only ₪62 in H1-2026.
+
+**Peer benchmarks, >₪1M band, from each bank's Directive 414 disclosure:**
+Leumi 0.10% Israeli / 0.13% foreign / 0.06% / 0.09% custody · Hapoalim 0.16% /
+0.15% / 0.09% / 0.07% · Mizrahi 0.13% / 0.12% / 0.08% / 0.11%. The current
+package beats every one of those. Best commonly-reported negotiated bank deals
+cluster at **0.06–0.08% with a ₪5–7 minimum** and custody exempt.
+
+⚠ **Interactive Israel is not IBKR.** It is a brand of MEXEM Ltd (Cyprus,
+CySEC) operating as an IBKR introducing broker under a s.49a permit, and per its
+own site **Israeli private clients cannot trade TASE through it**. With ~₪1.9M
+in Israeli ETFs that disqualifies a full move. Its FX is genuinely cheap
+(0.002%, min $2) but a wire costs ~$135, which erases most of the gain at this
+conversion volume.
+
+## Leverage available in 2026
+
+- **Directive 414** (הוראת ניהול בנקאי תקין 414, "גילוי עלות שירותים בניירות
+  ערך") compels every bank to publish semi-annually the weighted-average
+  commission it *actually* collected, banded by portfolio size. It is the bank's
+  own admission of what it charges comparable clients — the single most useful
+  document to put on the table.
+- **Leumi's own 2026 promo**: transfer ≥₪100,000 of securities into an existing
+  account during 2026 → full custody waiver for 2026, plus a refund of the lower
+  of net trading loss or buy/sell commissions, capped ₪3,000, paid January 2027.
+  The trigger is low relative to this portfolio.
+- **Pepper (Leumi's own digital arm)** offers zero buy/sell commissions, zero FX
+  conversion commissions, no per-trade minimum and no third-party expenses for
+  one year, plus up to ₪1,500 cash, conditional on salary deposit. A Leumi-group
+  product priced at zero is a direct internal comparator.
+- A separate Leumi campaign offering a year of commission-free trading drew
+  **public criticism from the Banking Supervisor**.
+- The Competition Authority declared the five big banks a **קבוצת ריכוז**
+  (concentration group); the banks appealed, live as of August 2026.
+- The **BoI ₪3bn benefits framework** (₪1.5bn/yr, Q2-2025 → Q1-2027) obliges
+  banks to report delivered amounts. A customer may legitimately ask what share
+  their branch has allocated.
+
+## Open question: are third-party expenses riding on top?
+
+Leumi's tariff §4(א)(4) note 8 reserves the right to charge third-party expenses
+**in addition** to the negotiated percentage — foreign broker fees, SEC/FINRA,
+stamp duty, SWIFT. Hapoalim publishes its equivalent openly at $0.004/share, min
+$3/trade. Whether Leumi actually levies these here is **unresolved**; only a
+trade confirmation settles it. Check one before assuming 0.07% is all-in.
 
 ## Benchmark: what Leumi's other clients pay
 
@@ -186,11 +276,16 @@ conversation in **October 2026**, not December.
 
 - A same-owner securities transfer out is capped by Bank of Israel at **₪5 plus
   actual third-party expense** — moving is cheap, which is the leverage.
-- The account-portability regime (ניוד חשבונות) moves securities and compatible
-  FX balances online in seven business days, free, but is **all-or-nothing**; a
-  partial securities transfer must be requested separately. Mortgages, loans,
-  deposits and pledged assets do **not** move — so the ₪334k Leumi mortgage is
-  weak leverage, contrary to intuition.
+- The account-portability regime (ניוד חשבונות) moves a current account online
+  in ~7 business days, free. **Whether a securities portfolio travels with it is
+  DISPUTED** and must be checked before it is used as leverage: one review held
+  that securities and compatible FX balances move; a second, better-sourced one
+  held that a תיק ני"ע is **not** part of the automated flow and moves only by
+  separate in-kind transfer instruction, with the ISA's push to extend one-click
+  switching to securities accounts never enacted. Assume the separate
+  instruction until confirmed. Either way mortgages, loans, deposits and pledged
+  assets do **not** move — so the ₪334k Leumi mortgage is weak leverage,
+  contrary to intuition.
 - The bank's own letter suggests checking `עסק קטן` classification if turnover
   is under ₪5M. That framework keys on genuine business activity and turnover,
   **not portfolio size**; a personal joint account already receives retail
