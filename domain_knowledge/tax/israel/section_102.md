@@ -96,6 +96,42 @@ Current book (2026-08-22 Schwab exports): **10,380** vested NVDA shares at Schwa
 are past the 24-month clock. A further **3,378** unvested shares vest through
 2030-03-15. These are post-trustee-release shares.
 
+### The grant-date benchmark is the 30-TRADING-DAY MEAN — derived 2026-08-22
+
+The statute says the ordinary slice is "the lesser of (a) FMV at grant and (b)
+the average closing price over the 30 trading days preceding grant". In practice
+the trustee has used **(b) every time**, and the rule reproduces EXACTLY:
+
+| Grant | Granted | Trustee "Grant Stock Price (For Tax)" | 30-trading-day mean of NVDA closes before grant | Error |
+|---|---|---|---|---|
+| 213000 | 2022-06-08 | 18.1159 | 18.1159 | 0.000% |
+| 246477 | 2023-06-08 | 31.9859 | 31.9859 | 0.000% |
+| 289173 | 2024-04-08 | 87.4976 | 87.4976 | 0.000% |
+
+Note 246477: FMV at grant was 38.4351 but the trustee used 31.9859 — a 17% gap,
+so this is genuinely the 30-day mean and not a coincidence of the two agreeing.
+
+**This means the basis for ANY grant is derivable without the trustee**, from
+split-adjusted NVDA closes:
+
+```python
+c = yf.Ticker("NVDA").history(start=..., auto_adjust=False)["Close"]  # split-adjusted
+basis = float(c[c.index <= grant_date].tail(31)[:-1].tail(30).mean())
+```
+
+Derived on that basis for the grants the 2026-06-18 trustee report does not
+cover — do NOT substitute a vest-FMV proxy for these:
+
+| Grant | Granted | Shares held | §102 basis |
+|---|---|---|---|
+| 182406 | 2021-07-09 | 1,420 | **18.3305** |
+| 331375 | 2025-03-10 | 358 | **126.8600** |
+| 374434 | 2026-03-09 | 57 | **185.7690** |
+
+A vest-FMV proxy for 182406 would have used ~149.38 and understated that grant's
+gain by roughly **8x**. Because 182406 is the source of most 2026 sales, the
+proxy understated the whole 2026 realized gain by 36%.
+
 ### Which cost basis feeds the 25% — CORRECTED 2026-08-22
 
 An earlier revision of this file asserted that "the `Avg Price` Schwab tracks is
@@ -126,11 +162,13 @@ surtax stack (`surtax.md`).
 
 **Consequence for agents: never compute the Israeli §102 liability from Schwab's
 `RealizedGainLoss`.** It is the US-basis number. Computing the Israeli figure
-requires the grant-date price for each grant, which is available only from the
-trustee simulation report — and that report covers only the grants it was run
-for. As of 2026-08-22 the grant-date price for **grant 182406** (the source of
-most 2026 sales) is in no file held, so the 2026 Israeli liability **cannot yet
-be computed exactly**; say so rather than substituting the Schwab number.
+requires the grant-date price for each grant. That price is DERIVABLE — see the
+30-trading-day-mean section above — so there is no excuse for substituting the
+Schwab number.
+
+**2026 realized §102 capital gain (computed 2026-08-22): $734,227 = ILS
+2,196,072** across 3,937 shares in six sales. Schwab's US-basis figure for the
+same sales is $472,911 — only 64% of the true Israeli gain.
 
 **Withholding: none at sale.** Across every 2026 Schwab sale the `Taxes` field is
 empty and the full gross was disbursed (`Forced Disbursement` equal to the sale
