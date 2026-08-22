@@ -274,6 +274,13 @@ class DeploymentLineDTO(BaseModel):
     cites: list[str] = []
     held_value_usd: float = 0.0
     pace_rationale: str = ""
+    # Execution cost of this line as one trade (argosy.services.broker_fees).
+    # commission_below_breakeven means the broker's per-trade FLOOR set the
+    # price, so the headline rate is NOT what is being paid on this ticket.
+    commission_usd: float = 0.0
+    commission_bps: float = 0.0
+    commission_below_breakeven: bool = False
+    commission_note: str = ""
 
 
 class DeploymentTierDTO(BaseModel):
@@ -593,6 +600,10 @@ class DeploymentPlanDTO(BaseModel):
     us_situs_exposed_usd: float
     us_situs_sanctioned_usd: float
     undeployed_remainder_usd: float
+    # Household expense money withheld before anything else was allocated
+    # (argosy.services.operating_reserve). 0.0 when the caller named an
+    # explicit amount, or when no USD/ILS rate was available.
+    operating_floor_usd: float = 0.0
     market_context_age: str | None = None
     market_context: DeploymentMarketContextDTO | None = None
     tiers: list[DeploymentTierDTO]
@@ -629,6 +640,7 @@ def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
         us_situs_exposed_usd=plan.us_situs_exposed_usd,
         us_situs_sanctioned_usd=plan.us_situs_sanctioned_usd,
         undeployed_remainder_usd=plan.undeployed_remainder_usd,
+        operating_floor_usd=getattr(plan, "operating_floor_usd", 0.0),
         market_context_age=plan.market_context_age,
         market_context=ctx_dto,
         tiers=[DeploymentTierDTO(
@@ -641,6 +653,11 @@ def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
                 cap_note=l.cap_note, net_of_tax_caveat=l.net_of_tax_caveat,
                 rationale=l.rationale, cites=list(l.cites), held_value_usd=l.held_value_usd,
                 pace_rationale=l.pace_rationale,
+                commission_usd=getattr(l, "commission_usd", 0.0),
+                commission_bps=getattr(l, "commission_bps", 0.0),
+                commission_below_breakeven=getattr(
+                    l, "commission_below_breakeven", False),
+                commission_note=getattr(l, "commission_note", ""),
             ) for l in t.lines],
         ) for t in plan.tiers],
         caveats=list(plan.caveats), note=plan.note,

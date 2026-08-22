@@ -115,6 +115,10 @@ LOOKTHROUGH_MAP: dict[str, dict[str, float]] = {
     "NVDA": {"nvda": 1.00, "us": 1.00},
     # Direct US single names — HELD and/or plan v64 high-growth sleeve.
     # Single US stock => us=1.0, nvda=0.0 by construction (no look-through).
+    # NASDAQ-listed ADSs of a UK plc, so "us": 1.00 reflects MARKET exposure;
+    # the US-situs estate question for ADRs of foreign issuers is separate and
+    # is NOT settled by this entry.
+    "CMPS": {"nvda": 0.00, "us": 1.00},   # HELD (Compass Pathways)
     "AMD": {"nvda": 0.00, "us": 1.00},    # HELD; high-potential seed
     "AMZN": {"nvda": 0.00, "us": 1.00},   # HELD
     "BMY": {"nvda": 0.00, "us": 1.00},    # HELD

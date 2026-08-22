@@ -153,3 +153,47 @@ async def _persist_plan(*, user_id: str, version_label: str, source_path: str,
         )
         session.add(pv)
         await session.commit()
+
+
+# ----------------------------------------------------------------------
+# `argosy ingest leumi-portfolio <portfolio.xls>`
+# ----------------------------------------------------------------------
+
+
+@app.command("leumi-portfolio")
+def ingest_leumi_portfolio(
+    portfolio: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True,
+                                     help="Leumi 'מבט אישי' deposit export (.xls)."),
+    ils: Path = typer.Option(None, "--ils", exists=True, dir_okay=False,
+                             help="ILS current-account movements export."),
+    usd: Path = typer.Option(None, "--usd", exists=True, dir_okay=False,
+                             help="USD (פמ\"ח) movements export."),
+    eur: Path = typer.Option(None, "--eur", exists=True, dir_okay=False,
+                             help="EUR (פמ\"ח) movements export."),
+    user_id: str = typer.Option("ariel", "--user-id"),
+    apply: bool = typer.Option(False, "--apply",
+                               help="Write the snapshot. Omitted = dry run."),
+) -> None:
+    """Import the Leumi deposit + cash balances into the book snapshot.
+
+    Feeds Leumi-located rows only; ``persist_snapshot`` carries every other
+    account forward. Dry run by default — inspect the counts before writing.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+    from argosy.services.leumi_import import import_leumi
+    from argosy.state.db import create_sync_engine
+
+    fx_paths = {c: p for c, p in (("USD", usd), ("EUR", eur)) if p}
+    url = get_settings().database_url.replace("+aiosqlite", "")
+    session = sessionmaker(bind=create_sync_engine(url), expire_on_commit=False)()
+    try:
+        report = import_leumi(
+            session, user_id=user_id, portfolio_path=portfolio,
+            ils_path=ils, fx_paths=fx_paths, apply=apply,
+        )
+    finally:
+        session.close()
+    for line in report.lines():
+        typer.echo(line)

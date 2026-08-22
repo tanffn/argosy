@@ -110,7 +110,6 @@ def parse(path: Path) -> ParseResult:
     text = raise_if_custody(path)
 
     tables = pd.read_html(path, encoding="utf-8")
-    tx_table = max(tables, key=lambda t: t.shape[0])
 
     # Column accessors — the file always carries these named headers.
     col_date = "תאריך"
@@ -120,6 +119,21 @@ def parse(path: Path) -> ParseResult:
     col_debit = "חובה"
     col_credit = "זכות"
     col_balance = "יתרה"
+
+    # Pick the table that HAS the transaction columns, not the one with the
+    # most rows. Leumi's FX export ships ~7 tables; the transactions table is
+    # the only one carrying a date column, but a QUIET PERIOD makes it smaller
+    # than a 9-row summary block and "largest wins" then selects the wrong one
+    # and dies on KeyError: 'תאריך'. Observed 2026-08-22 on the EUR account
+    # (4 transactions), but nothing about it is currency-specific — the USD
+    # account breaks identically in any month with fewer than 9 movements.
+    candidates = [t for t in tables if col_date in [str(c) for c in t.columns]]
+    if not candidates:
+        raise ValueError(
+            f"{path}: no table carries a {col_date!r} column "
+            f"({len(tables)} tables found) — not a Leumi FX movements export"
+        )
+    tx_table = max(candidates, key=lambda t: t.shape[0])
 
     txs: list[NormalizedTransaction] = []
     for _, row in tx_table.iterrows():
