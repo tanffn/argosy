@@ -49,6 +49,16 @@ class DeploymentLine:
     # P2 market-aware pacing rationale. Empty string when market_context is None
     # (P1 behavior preserved). Set by pace_for_line when context is supplied.
     pace_rationale: str = ""
+    # Execution cost of this line as a single trade, from the deterministic
+    # broker tariff (argosy.services.broker_fees). ANNOTATION ONLY — nothing
+    # here resizes or rejects a line; "is this ticket too small to bother with"
+    # is a judgment the team and the user make, not an arithmetic gate.
+    commission_usd: float = 0.0
+    commission_bps: float = 0.0
+    # True when the broker's per-trade FLOOR set the price, i.e. the ticket is
+    # below breakeven and the headline percentage is not what is being paid.
+    commission_below_breakeven: bool = False
+    commission_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -235,6 +245,70 @@ _CAVEATS: tuple[str, ...] = (
     "Single-name US-situs holdings carry US estate exposure above the $60k "
     "non-resident exemption; estate status is shown per line.",
 )
+
+
+def _annotate_commissions(
+    tiers: tuple[DeploymentTier, ...],
+) -> tuple[tuple[DeploymentTier, ...], tuple[str, ...]]:
+    """Attach per-trade execution cost to every line; return (tiers, caveats).
+
+    Pure annotation. Amounts are USD and every deploy line is a foreign-security
+    buy at Leumi, so ``LEUMI_FOREIGN`` applies and no FX conversion is needed —
+    that schedule's minimum is denominated in dollars.
+
+    Deliberately does NOT drop, merge or resize sub-breakeven lines. Batching
+    small orders is a real remedy, but choosing to defer a trade trades market
+    risk for a few dollars of commission — that is a judgment call for the team
+    and the user, and a deterministic resizer here would be exactly the
+    whack-a-mole antipattern the SDD warns against. Surface it loudly; decide
+    elsewhere.
+    """
+    from argosy.services import broker_fees
+
+    out: list[DeploymentTier] = []
+    small: list[tuple[str, float, float]] = []   # (symbol, amount, commission)
+    total_commission = 0.0
+    disputed = False
+    for tier in tiers:
+        lines = []
+        for line in tier.lines:
+            est = broker_fees.estimate(line.amount_usd, broker_fees.LEUMI_FOREIGN)
+            total_commission += est.commission
+            if est.note:
+                disputed = True
+            if est.below_breakeven and line.amount_usd > 0:
+                small.append((line.symbol, line.amount_usd, est.commission))
+            lines.append(replace(
+                line,
+                commission_usd=est.commission,
+                commission_bps=est.cost_bps,
+                commission_below_breakeven=est.below_breakeven,
+                commission_note=est.note,
+            ))
+        out.append(replace(tier, lines=tuple(lines)))
+
+    caveats: list[str] = []
+    if total_commission > 0:
+        caveats.append(
+            f"Estimated execution cost across all buys: "
+            f"${total_commission:,.2f} (Leumi tariff, "
+            f"{broker_fees.LEUMI_FOREIGN.rate * 100:.2f}% with a "
+            f"${broker_fees.LEUMI_FOREIGN.minimum:,.0f} per-trade minimum). "
+            f"Source: {broker_fees.LEUMI_FOREIGN.source}."
+        )
+    if small:
+        be = broker_fees.breakeven_ticket(broker_fees.LEUMI_FOREIGN)
+        worst = max(small, key=lambda s: s[2] / s[1])
+        caveats.append(
+            f"{len(small)} of these buys are below the ${be:,.0f} breakeven "
+            f"ticket, so the per-trade FLOOR sets their cost, not the headline "
+            f"rate — worst is {worst[0]} at ${worst[1]:,.0f} paying "
+            f"${worst[2]:,.2f} ({worst[2] / worst[1] * 10_000:.0f} bps). "
+            f"Consider batching them into fewer, larger orders."
+        )
+    if disputed:
+        caveats.append(broker_fees.MINIMUM_DISPUTE_NOTE)
+    return tuple(out), tuple(caveats)
 
 
 def _remainder_caveat(remainder_usd: float) -> str:
@@ -630,7 +704,10 @@ def assemble_deployment_plan(
                 f"deploy-cash over-allocation shave failed: {deployed} > {amount}"
             )
     remainder = round(max(0.0, amount - deployed), 2)
-    caveats = _CAVEATS
+    # Execution cost, computed on the FINAL line amounts (after any shave) so the
+    # figures shown match the orders actually proposed. Annotation only.
+    tiers, fee_caveats = _annotate_commissions(tiers)
+    caveats = _CAVEATS + fee_caveats
     # Surface the caveat only for a MATERIAL remainder; sub-dollar drift is just
     # pro-rata rounding noise (the exact figure is still on undeployed_remainder_usd).
     if remainder >= 1.0:
