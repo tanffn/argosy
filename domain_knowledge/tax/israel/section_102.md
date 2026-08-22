@@ -17,7 +17,7 @@ sources:
     retrieved: 2026-08-15
     tier: 1
   - url: https://www.vestingstrategy.com/guides/israel-equity-compensation-tax-guide
-    retrieved: 2026-08-14
+    retrieved: 2026-08-15
     tier: 2
   - url: https://www.rnc.co.il/employee-stock-options-israel/
     retrieved: 2026-08-12
@@ -91,7 +91,53 @@ Sources: NASPP "Hiring in Israel — How Section 102 Shapes Equity Compensation"
 
 ### Ariel-specific cash-flow corollary (May 2026 portfolio snapshot)
 
-Current book (2026-07-09 equity-events correction): 10,940 NVDA shares at Schwab (RSU 9,445 + ESPP 1,495 per the trustee sim), ~$204/share, ~$2.23M USD. These are post-trustee-release shares; the 24-month Section 102 Capital clock has elapsed for the bulk of tranches. Each quarterly sale tranche under Plan v2.0 realizes a Section 102 Capital gain at 25% + surtax stack (`surtax.md`). The "Avg Price" Schwab tracks is the FMV-at-vest cost basis used for the capital-slice computation, **not** the original grant FMV — the agent must read the broker basis as the basis-for-25%-CGT, with the FMV-at-vest-minus-grant-FMV piece already having been taxed as ordinary income at vest.
+Current book (2026-08-22 Schwab exports): **10,380** vested NVDA shares at Schwab
+(RSU/award 8,885 + ESPP 1,495), ~$215.38/share, ~$2.236M USD, of which **9,573**
+are past the 24-month clock. A further **3,378** unvested shares vest through
+2030-03-15. These are post-trustee-release shares.
+
+### Which cost basis feeds the 25% — CORRECTED 2026-08-22
+
+An earlier revision of this file asserted that "the `Avg Price` Schwab tracks is
+the FMV-at-vest cost basis used for the capital-slice computation, **not** the
+original grant FMV". **That is wrong, and it understates or overstates the
+Israeli liability depending on the grant.** The two brokers compute for two
+different tax systems:
+
+| | Basis used | For |
+|---|---|---|
+| Schwab `TotalCostBasis` / `RealizedGainLoss` | **FMV at vest** | US-style reporting |
+| Israeli trustee (§102) | **Grant-date price** | the 25% capital slice |
+
+Verified against the trustee's own simulation engine (`Nvidia simulation
+Report.xlsx`, 2026-06-18), whose grants span a wide enough price range to
+distinguish the rules — a single 2022 grant cannot, because its grant and vest
+prices sit within 2.5% of each other:
+
+| Grant | Granted | Grant px | Capital income | = n x (sale - GRANT px)? | Ordinary income | = n x GRANT px? |
+|---|---|---|---|---|---|---|
+| 213000 | 2022-06-08 | 18.1159 | 52,230 | 52,230 YES | 5,069 | 5,072 YES |
+| 246477 | 2023-06-08 | 31.9859 | 36,259 | 36,259 YES | 6,715 | 6,717 YES |
+| 289173 | 2024-04-08 | 87.4976 |  9,372 |  9,372 YES | 6,999 | 7,000 YES |
+
+So: **ordinary slice = shares x grant-date price** (marginal rate, ~62.17% in the
+sim); **capital slice = shares x (sale price - grant-date price)** at 25% + the
+surtax stack (`surtax.md`).
+
+**Consequence for agents: never compute the Israeli §102 liability from Schwab's
+`RealizedGainLoss`.** It is the US-basis number. Computing the Israeli figure
+requires the grant-date price for each grant, which is available only from the
+trustee simulation report — and that report covers only the grants it was run
+for. As of 2026-08-22 the grant-date price for **grant 182406** (the source of
+most 2026 sales) is in no file held, so the 2026 Israeli liability **cannot yet
+be computed exactly**; say so rather than substituting the Schwab number.
+
+**Withholding: none at sale.** Across every 2026 Schwab sale the `Taxes` field is
+empty and the full gross was disbursed (`Forced Disbursement` equal to the sale
+proceeds). Shares withheld at *vest* (`SharesSoldWithheldForTaxes` on the Lapse
+rows) cover the payroll withholding, not the capital slice. The §102 capital tax
+on post-release sales is therefore **payable on the annual return and is not
+withheld at source** — it needs an explicit reserve.
 
 ## Stack with related rates
 
