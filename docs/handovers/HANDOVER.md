@@ -4,6 +4,98 @@
 
 Last updated: **2026-08-22**.
 
+> ## START HERE — 2026-08-22 session close. HEAD `3a33ec7` on master.
+>
+> **Read this block, then `git log --oneline -12`. Everything below it is older.**
+>
+> ### The one thing waiting on Ariel
+> **Does he still want the FAST NVDA glide now that the tax bill is ~45% bigger than he was
+> first told?** Nothing else is blocked on him from this session. The number moved because the
+> ordinary slice (taxed ~50%, not 30%) was omitted from the first table:
+> **ILS 1,849,929 total on a 2-year path, not ILS 1,274,268.** The premium for 2 years over 7
+> is **ILS 68,543** — 0.9% of a $2.24M single-stock position. My recommendation is unchanged
+> (go fast; one bad day in NVDA costs more), but it is a risk-preference call and therefore
+> genuinely his. Do NOT re-derive it as if it were arithmetic.
+>
+> ### What is now SETTLED about Section 102 — do not re-litigate
+> Four passes, two of them wrong, three independent confirmations. See
+> `domain_knowledge/tax/israel/section_102.md` and `argosy/services/section_102.py` (15 tests).
+> * **The grant benchmark is the 30-TRADING-DAY MEAN of split-adjusted closes preceding the
+>   grant.** Reproduces the trustee engine to **0.000%** on all three grants it covers.
+>   Grant 246477 rules out coincidence: FMV at grant 38.4351, trustee used 31.9859.
+>   So ANY grant's basis is derivable: `closes[closes.index <= grant].iloc[:-1].tail(30).mean()`.
+>   Derived: **182406 = 18.3305**, 331375 = 126.8600, 374434 = 185.7690.
+> * **Schwab's basis is the WRONG basis** (vest FMV, a US number). Using it understated grant
+>   182406's gain **8-fold**, and 182406 is the source of most 2026 sales.
+> * **BOTH slices fall due at SALE.** 74 `Lapse` events, every tax field empty, each `Deposit`
+>   matching its `Lapse` exactly. A portal election reading "Withhold Shares" is a preference,
+>   not evidence.
+> * **Tax per share = 0.30(S−B) + 0.50B.** Higher benchmark ⇒ HIGHER total tax. So sell
+>   LOWEST-benchmark first, and retain the HIGHEST-benchmark lots (which defer ILS 416,142 vs
+>   ILS 310,840). Both are the reverse of what an earlier draft said.
+> * **Nothing is unreserved.** The trustee withholds in the WIRE leg (invisible at the broker,
+>   visible as gross-minus-wire in the BANK statement: $217,766.76 on $806,787.47 of 2026
+>   gross). The 2025 **Form 106** confirms the employer reports both slices — ordinary
+>   ILS 411,704, capital ILS 1,327,411, tax withheld ILS 763,650. Capital + ordinary = 97.2%
+>   of proceeds. **Create no tax reserve. The semiannual-filing alarm is withdrawn.**
+>
+> ### The corrected glide (drafted, NOT yet written into the plan)
+> Replace plan 116's TERMINATING schedule (3,924 + 5,493 = done) with TWO rules:
+> 1. Sell **8,857** of the 10,380 vested, LOWEST-benchmark first, retaining the
+>    **highest**-benchmark 1,523 — which is almost exactly the 807 shares not yet §102-eligible
+>    plus the next lot, so the retain set and the can't-sell-yet set nearly coincide.
+> 2. **Queue each new vest to its §102 eligibility date** — NOT "sell on arrival", which would
+>    dump 491 shares inside their 24-month clocks and reclassify them wholly to ordinary income.
+> Net cash is **68% of gross**, not 73% (the 2026 actuals read 73% only because the ordinary
+> slice had not been taken). Size deployment off 68%.
+> Sell order by benchmark: 213000 (18.12) → 182406 (18.33) → 246477 (31.99) → ESPP-2023 (49.36)
+> → 289173/172 (87.50) → ESPP-2024 (119.37) → then the ineligible tail.
+>
+> ### Position (snapshot 151, 2026-08-22)
+> NVDA **10,380 vested** (9,573 §102-eligible) + **3,378 unvested** through 2030-03-15;
+> 909/1,368/739/304/58 by year — **77% lands before end-2027**, then it collapses.
+> Book ILS 4,136.7k, NVDA 54.0%. Leumi deposit $1,635,587 + ILS 47,100.50 / $112,960.99 /
+> EUR 6,108.31 cash. Schwab 876 $60,616.
+>
+> ### Plan 116 re-review (cost $2.33, confidence MEDIUM)
+> 12 RED → 10. **Dissolved:** the 2026 tranche is complete (3,940 sold vs 3,924 scheduled) and
+> §102 eligibility covers the whole glide (9,573 vs 8,857). **Standing:** full execution of the
+> remaining schedule still parks NVDA at ~43.6% against a 13% ceiling; the flat contribution
+> runs to 2031 while the vest stream collapses 78% by 2029.
+> **The three FI "contradictions" are ONE root** — the spend basis is written both
+> ILS 310,576 (the `{{fact:spend.fi_basis_nis}}` token, from
+> `withdrawal_sequencer.fi_base.annual_spend_nis`) and ILS 311,584 (hardcoded prose).
+> 310,576/3% = 10,352,533 and 311,584/3% = 10,386,133 — exactly the two published perpetuity
+> bases; 12,237,719 − (10,386,133 + 1,450,000) = 401,585, exactly the published margin.
+> **Fix = bind the Targets section to the token.** Same digits-drift disease as the NVDA figures.
+> **Ariel's ruling (2026-08-22): the plan GUIDES, he executes at Schwab.** `managed=False`
+> stays; RED #10 is a WORDING fix, not a plumbing change.
+>
+> ### New this session (all committed, all real-path verified)
+> `broker_fees` + per-line commission on deploy proposals · `operating_reserve` (the ILS 30,000
+> household floor, applied ONLY to inferred cash) · `leumi_import` + `argosy ingest
+> leumi-portfolio` · `schwab_import` + `argosy ingest schwab` · `section_102` ·
+> `domain_knowledge/brokers/leumi.md`.
+> **The DTO bug is the lesson:** commission and floor fields had 36 green service tests and were
+> never serialised past `deployment_plan_to_dto`, so the UI could never show them. Green tests
+> at the service layer prove nothing about the API. Check the DTO.
+>
+> ### Open, not blocked on Ariel
+> * Write the corrected glide into the plan (strategy change ⇒ full run, not an amendment).
+> * Bind the Targets section to `{{fact:spend.fi_basis_nis}}`.
+> * `deployment_author` fails schema validation — emits `ticker` where the schema wants
+>   `symbol`, 13 errors, then degrades to the deterministic fallback. Pre-existing.
+> * **A DISPUTED $25 Leumi per-trade minimum fired 2026-08-20.** The benefits letter dropped the
+>   explicit "$7 minimum" line when the rate improved to 0.06%. If the list $25 applies the H1
+>   bill doubles. **Ariel's next trade settles it for free** — one small buy, read the commission.
+> * Leumi: every valuable benefit expires **31/12/2026**; open the renewal in October.
+> * Pre-existing test failures, unrelated: 8 in `test_plan_refine_route`, 1 in
+>   `TestAllocationDefer::test_defer_with_due_date` (verified by stashing).
+>
+> ### Still blocked on Ariel from the earlier queue
+> #2 the EUR 147,452 foreign obligations + the 2027 Pipera draw · #6 the estate dates ·
+> #8 which SWR to headline. No document supplied this session touches any of them.
+
 > ## 2026-08-22 — the §102 basis was wrong in the domain file, and it moved ILS 780k
 >
 > **CORRECTED WITHIN THE SESSION — the 2026 tax WAS withheld; there is no missing ILS 644k.**
