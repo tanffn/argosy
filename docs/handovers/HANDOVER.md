@@ -4,9 +4,13 @@
 
 Last updated: **2026-08-22**.
 
-> ## START HERE — 2026-08-22 session close. HEAD `3a33ec7` on master.
+> ## START HERE — 2026-08-22 session close. HEAD `992b96f` on master.
 >
-> **Read this block, then `git log --oneline -12`. Everything below it is older.**
+> **Read this block, then `git log --oneline -14`. Everything below it is older.**
+>
+> The question below has **not been asked yet** — a session opened after `992b96f`, did no
+> code work, and closed with this handover refresh. So the queue is unchanged; only the
+> working-tree note at the end of this block is new.
 >
 > ### The one thing waiting on Ariel
 > **Does he still want the FAST NVDA glide now that the tax bill is ~45% bigger than he was
@@ -91,6 +95,27 @@ Last updated: **2026-08-22**.
 > * Leumi: every valuable benefit expires **31/12/2026**; open the renewal in October.
 > * Pre-existing test failures, unrelated: 8 in `test_plan_refine_route`, 1 in
 >   `TestAllocationDefer::test_defer_with_due_date` (verified by stashing).
+>
+> ### The working tree is NOT clean — and the diff is a RULING, not noise
+> `git status` shows three modified `domain_knowledge/` files and an untracked `scratchpad/`.
+> The 2026-08-22 session left them alone as "not mine, intent unknown". Intent is now known —
+> **read the diff before you commit or discard anything**:
+> * `tax/us/estate_tax_nonresidents.md` (+42 lines) encodes **Ariel's 2026-08-21 ruling that
+>   the x10 moonshot sleeve MAY buy US-situs**: *"For moonshot it's ok to buy US-situs... We
+>   need moonshot!"* — given after deploy-cash blocked every moonshot candidate but NVDA and
+>   fell back to a single distressed Israeli micro-cap (INVZ). It is scoped: moonshot sleeve
+>   only (`sigma_class == "high_growth_basket"`), CORE/growth still UCITS-preferred; the buy
+>   must state the estate-tax tradeoff; bounded by the sleeve's single-name carve-out share;
+>   non-US-situs still preferred where a comparable name exists; NVDA uncounted. It also
+>   narrows the plan-critique instruction so a compliant moonshot buy is no longer flagged
+>   solely for being US-situs.
+> * `tax/israel/surtax.md` and `tax/israel/retirement/section_102.md` are **`retrieved:` date
+>   bumps only** (2026-08-13/14 → 2026-08-15). No prose changed. Trivial.
+> * `scratchpad/moonshot_adjudication.json` — the fundamentals pull behind that ruling
+>   (RXRX / TEM / RGTI / OKLO, as of 2026-08-21T18:03Z).
+> **Decide deliberately:** commit the carve-out (it is a standing user ruling and belongs in
+> git), and either add `scratchpad/` to `.gitignore` or delete it. It is currently neither
+> ignored nor tracked, so it will keep dirtying `git status`.
 >
 > ### Still blocked on Ariel from the earlier queue
 > #2 the EUR 147,452 foreign obligations + the 2027 Pipera draw · #6 the estate dates ·
