@@ -97,6 +97,10 @@ class DeploymentPlan:
     # and deploy_amount = deployed_buys + undeployed_remainder.
     discovery_reserve_usd: float = 0.0
     cash_total_usd: float | None = None
+    #: Household expense money withheld before anything else (SEE
+    #: argosy.services.operating_reserve). 0.0 when no FX rate was available —
+    #: which the caveats say out loud rather than guessing a rate.
+    operating_floor_usd: float = 0.0
 
     @property
     def deployed_total_usd(self) -> float:
@@ -525,6 +529,7 @@ def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
     market_context=None, sleeve_pct: float = 5.0, use_high_potential: bool = True,
     user_id: str = "ariel", exposure_aware: bool = False,
+    usd_ils: float | None = None, cash_is_inferred: bool = False,
 ) -> DeploymentPlan:
     """Build the deploy plan: plan-bound ``cash_only_deploy`` buys, each
     annotated with tier/estate/cap/tax/horizon/pacing, grouped into tiers that
@@ -548,6 +553,26 @@ def assemble_deployment_plan(
     amount = round(deploy_amount_usd, 2)
     cash_total = amount
 
+    # Household operating floor comes off FIRST — before the discovery reserve
+    # and before any allocation math. This is the family's expense money, not a
+    # strategy choice, so nothing downstream may see it as deployable.
+    #
+    # ONLY when the amount was INFERRED from the account balance. If the caller
+    # named an explicit figure they have already decided that money is spare,
+    # and withholding the floor from it would double-count the buffer — a $10k
+    # explicit request would deploy $0 against a ILS 30k floor, which is not
+    # what "deploy $10,000" means.
+    from argosy.services.operating_reserve import (
+        apply_operating_floor,
+        labeled_operating_floor,
+        operating_floor_usd,
+    )
+
+    op_floor = operating_floor_usd(usd_ils) if cash_is_inferred else 0.0
+    amount, operating_floor = apply_operating_floor(
+        cash_total_usd=amount, floor_usd=op_floor,
+    )
+
     # Item D — discovery dry-powder earmark is not deployable general cash.
     from argosy.services.discovery_reserve import (
         DISCOVERY_RESERVE_LABEL,
@@ -559,7 +584,7 @@ def assemble_deployment_plan(
     book_for_pct = round(sum(holdings.values()), 2)
     reserve_resolved = resolve_discovery_reserve_usd(doc, book_usd=book_for_pct)
     amount, discovery_reserve = apply_discovery_reserve(
-        cash_total_usd=cash_total, reserve_usd=reserve_resolved,
+        cash_total_usd=amount, reserve_usd=reserve_resolved,
     )
 
     # Resolve market_context_age up front.
@@ -575,6 +600,7 @@ def assemble_deployment_plan(
             note="No current canonical plan — accept a plan first.",
             discovery_reserve_usd=discovery_reserve,
             cash_total_usd=cash_total,
+            operating_floor_usd=operating_floor,
         )
 
     from argosy.services.allocation_engine import cash_only_deploy
@@ -712,6 +738,8 @@ def assemble_deployment_plan(
     # pro-rata rounding noise (the exact figure is still on undeployed_remainder_usd).
     if remainder >= 1.0:
         caveats = caveats + (_remainder_caveat(remainder),)
+    if operating_floor > 0 or op_floor > 0:
+        caveats = caveats + (labeled_operating_floor(operating_floor, usd_ils),)
     if discovery_reserve > 0:
         caveats = caveats + (labeled_exclusion(discovery_reserve),)
     # P2: loud staleness caveat when any context feed is stale.
@@ -740,4 +768,5 @@ def assemble_deployment_plan(
         note=note,
         discovery_reserve_usd=discovery_reserve,
         cash_total_usd=cash_total,
+        operating_floor_usd=operating_floor,
     )

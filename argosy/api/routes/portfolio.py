@@ -2135,10 +2135,22 @@ def get_deploy_cash(
         )
         ctx = assemble_deployment_market_context(db)
 
+    # USD/ILS for the household operating floor (shekel-denominated). Best
+    # effort: on failure the floor is skipped and the plan SAYS SO in a caveat
+    # rather than guessing a rate and under-reserving the family's expense cash.
+    _usd_ils: float | None = None
+    _inferred = cash_usd is None   # balance-derived, so the floor applies
+    try:
+        from argosy.services.fx import rate as _fx_rate
+        _usd_ils = float(_fx_rate(db, "USD", "ILS", _date.today()))
+    except Exception as exc:  # noqa: BLE001 — never break deploy on FX
+        _log.warning("deploy_cash.usd_ils_unavailable", error=str(exc)[:120])
+
     plan = assemble_deployment_plan(
         doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
         market_context=ctx, sleeve_pct=sleeve_pct,
         use_high_potential=use_high_potential, user_id=user_id,
+        usd_ils=_usd_ils, cash_is_inferred=_inferred,
     )
     dto = deployment_plan_to_dto(plan, market_context=ctx)
 
