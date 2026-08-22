@@ -156,9 +156,44 @@ prices sit within 2.5% of each other:
 | 246477 | 2023-06-08 | 31.9859 | 36,259 | 36,259 YES | 6,715 | 6,717 YES |
 | 289173 | 2024-04-08 | 87.4976 |  9,372 |  9,372 YES | 6,999 | 7,000 YES |
 
-So: **ordinary slice = shares x grant-date price** (marginal rate, ~62.17% in the
-sim); **capital slice = shares x (sale price - grant-date price)** at 25% + the
+So: **ordinary slice = shares x the 30-day benchmark** (marginal rate, ~62.17%
+in the sim); **capital slice = shares x (sale price - benchmark)** at 25% + the
 surtax stack (`surtax.md`).
+
+### BOTH slices fall due at SALE — the ordinary slice is NOT settled at vest
+
+Established 2026-08-22 after asserting the opposite. Section 102 makes the
+taxable realization event the earlier of *transfer out of the trustee* or *sale*
+— **not vesting**. Verified in the data: across **74 `Lapse` events** in the
+full-history Schwab export, `SharesSoldWithheldForTaxes`, `NetSharesDeposited`,
+`Taxes`, `SharesWithheld` and `TaxWithholdingMethod` are **empty on every single
+one**, and each `Deposit` matches its `Lapse` quantity exactly. Nothing is
+withheld at vest. The trustee's own simulation confirms it from the other side:
+it charges ordinary tax at realization on shares that vested years earlier.
+
+A portal election reading "Withhold Shares" is a *preference*, not evidence that
+withholding occurred.
+
+**Consequence — the tax per share is:**
+
+```
+tax_per_share ~= 0.30 x (S - B) + 0.50 x B  =  0.30 x S + 0.20 x B
+```
+
+where S is the sale price and B the benchmark. **A HIGHER benchmark means HIGHER
+total tax**, because it swaps 30%-taxed capital income for 50%-taxed ordinary
+income. Two direct consequences, both the reverse of what an earlier draft of
+the glide proposed:
+
+* **Sell LOWEST-benchmark lots first** if minimising total tax. (Selling
+  highest-benchmark first maximises *shares shed per shekel of capital-source
+  income* — a different objective, worth stating explicitly whenever used.)
+* **Retaining the lowest-benchmark grant defers the LEAST total tax**, not the
+  most. It defers the most *capital* tax while carrying the largest ordinary
+  slice forward.
+
+Estate exposure is unaffected by basis: any 1,523 NVDA shares are the same
+US-situs value.
 
 **Consequence for agents: never compute the Israeli §102 liability from Schwab's
 `RealizedGainLoss`.** It is the US-basis number. Computing the Israeli figure
@@ -196,12 +231,22 @@ to **1.1%**. That agreement is itself the strongest available confirmation that
 the 30-trading-day-mean basis above is right: an incorrect basis would not
 produce a withheld/gain ratio sitting exactly in the 28-30% surtax band.
 
-**Consequences for agents.** (a) There is NO unreserved 2026 capital-tax
-liability; do not add one to the finite-liability reserve. (b) The annual return
-reconciles the withheld amount against the true liability — expect a small
-refund or top-up, not a six-figure payment. (c) Never conclude "nothing was
-withheld" from broker fields alone: for §102 shares the withholding is invisible
-at the broker and only appears as the gap between gross proceeds and the wire.
+**Consequences for agents.** (a) Never conclude "nothing was withheld" from
+broker fields alone: for §102 shares the withholding is invisible at the broker
+and appears only as the gap between gross proceeds and the wire. (b) But the
+withheld amount matches the **capital slice only**. Adding the ordinary slice
+(~ILS 214,886 for 2026) puts the full 2026 liability nearer **ILS 748,000**
+against **ILS ~648,000** withheld — an indicative **ILS ~100,000 outstanding**,
+not zero and not the ILS 644,390 an earlier draft claimed. **Do not book that
+figure as exact**; only the trustee's per-sale tax certificates establish what
+was actually remitted. (c) Obtain those certificates, the Form 106 wage totals
+and the payslips for sale months before reserving anything.
+
+**Filing timing may already be breached.** Where full tax was not withheld on
+marketable securities, Israel generally requires SEMIANNUAL reporting and
+advances — Jan-Jun due 31 July, Jul-Dec due 31 January. **31 July 2026 has
+passed.** Whether trustee withholding discharged that obligation must be
+established from the certificates.
 
 ## Stack with related rates
 
