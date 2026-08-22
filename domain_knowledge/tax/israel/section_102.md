@@ -242,7 +242,39 @@ figure as exact**; only the trustee's per-sale tax certificates establish what
 was actually remitted. (c) Obtain those certificates, the Form 106 wage totals
 and the payslips for sale months before reserving anything.
 
-**Filing timing may already be breached.** Where full tax was not withheld on
+### Form 106 closes it — both slices are withheld and reported by the employer
+
+The 2025 Form 106 (`Resources/2025/106/`) is the authoritative reconciliation and
+it settles the open questions:
+
+| Line | 2025 |
+|---|---|
+| משכורת (salary) | ILS 745,431 |
+| **שווי הטבה לפי סעיף 102 — מסלול הכנסת עבודה** | **ILS 411,704** |
+| **רווח הון מנייר ערך (אחרי תיקון 132)** | **ILS 1,327,411** |
+| **תמורה ממכירות ני"ע לפי סעיף 102** | **ILS 1,790,099** |
+| מס הכנסה withheld | **ILS 763,650** |
+
+Three conclusions:
+
+1. **The ordinary slice IS taxed at sale** — it appears as employment income in
+   the year of SALE, confirming the Lapse-row evidence above.
+2. **Both slices are withheld and reported by the employer.** There is no
+   silently-accruing liability; the trustee remits, the employer reports on the
+   106, and the annual return reconciles. Do NOT create a reserve for it.
+3. **The model reproduces:** capital 1,327,411 + ordinary 411,704 = 1,739,115
+   against 1,790,099 of proceeds = **97.2%**, the remainder being fees. So
+   `proceeds ~= shares x (sale - benchmark) + shares x benchmark` holds, which is
+   an independent confirmation of the 30-day-benchmark reading.
+
+**Semiannual reporting: not applicable.** The Jan-Jun/Jul-Dec advance-reporting
+obligation exists where tax is NOT withheld at source. Here it is — trustee
+withholding in the wire leg plus employer reporting on the 106. An earlier note
+in this file flagged the passed 31-July-2026 deadline as a possible breach; the
+106 mechanism dismisses it. Confirm the same lines appear on the 2026 form when
+it issues (~March 2027).
+
+**Filing timing — superseded by the above, retained for the reasoning.** Where full tax was not withheld on
 marketable securities, Israel generally requires SEMIANNUAL reporting and
 advances — Jan-Jun due 31 July, Jul-Dec due 31 January. **31 July 2026 has
 passed.** Whether trustee withholding discharged that obligation must be
