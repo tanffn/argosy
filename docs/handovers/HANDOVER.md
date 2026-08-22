@@ -36,7 +36,36 @@ Last updated: **2026-08-22**.
 > (9,573 past the 24-month clock) + 3,378 unvested vesting through 2030-03-15. Embedded §102
 > gain on the vested block **$1,752,713 = ILS 5,242,365**. NVDA is 54.0% of a ILS 4,136.7k book.
 >
-> **The glide proposal (Sol review in flight):** replace plan 116's TERMINATING schedule
+> **SOL REVIEWED THE GLIDE AND BROKE THREE PARTS OF IT (2026-08-22).** Verified each
+> before accepting. (1) **The ordinary slice falls due at SALE, not vest** — 74 `Lapse`
+> events in the full-history export have EVERY tax field empty and each `Deposit` matches
+> its `Lapse` exactly. I had assumed vest-time settlement from a portal election reading
+> "Withhold Shares", which is a preference, not evidence. That omitted **ILS 835,418** of
+> ordinary income from the forward table. (2) **Tax per share is 0.30(S-B) + 0.50B**, so a
+> HIGHER benchmark costs MORE total tax — "sell highest basis first" was backwards for total
+> tax (it is right only for the different objective of shedding the most SHARES per shekel of
+> capital-source income), and retaining the LOWEST-benchmark grant defers the LEAST total tax
+> (ILS 310,840 vs ILS 416,142). (3) **A naive sell-every-vest rule breaks §102** — 491 shares
+> would be sold inside their 24-month clocks and reclassify wholly to ordinary income.
+> Also: the ILS 721,560 threshold is shared with ALL capital-source income (the Leumi deposit
+> alone could throw off ILS 147k-245k of interest); historical sales must use SALE-DATE FX,
+> not today's; and the semiannual reporting deadline of **31 July 2026 has passed**.
+>
+> **The 2026 reconciliation, third and final version.** I claimed ILS 644,390 owed (ignored
+> withholding), then ~zero (ignored the ordinary slice). Withholding covers the CAPITAL slice
+> only, so the full liability is nearer **ILS 748,000 against ~ILS 648,000 withheld —
+> indicatively ~ILS 100,000 outstanding.** NOT exact: only the trustee's per-sale tax
+> certificates settle it. Get those, Form 106, and the payslips for sale months.
+>
+> **CORRECTED GLIDE.** Retain the **HIGHEST**-benchmark 1,523 — which naturally comprises
+> almost exactly the 807 shares not yet §102-eligible plus the next-highest lot, so the retain
+> set and the can't-sell-yet set nearly coincide. Sell the rest LOWEST-benchmark first.
+> Full tax on the 8,857: capital ILS 4,870,275 + ordinary ILS 835,418 of income →
+> **ILS 1,849,929 total on a 2-year path** (vs ILS 1,781,386 over 7 years; premium
+> **ILS 68,543**). **Net cash is 68% of gross, not 73%** — the 2026 actuals showed 73%
+> precisely because the ordinary slice had not been taken. Size deployment off 68%.
+>
+> **The original glide proposal (superseded above, kept for the reasoning):** replace plan 116's TERMINATING schedule
 > (3,924 in 2026 + 5,493 in 2027 = done) with TWO rules — (1) sell 8,857 of the vested 10,380
 > across 8 quarterly tranches 2027-2028, keeping 1,523 from the lowest-basis grant 213000;
 > (2) a STANDING rule selling each new vest on arrival through 2030-03-15. Rationale: the
