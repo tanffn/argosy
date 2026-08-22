@@ -295,17 +295,23 @@ def _retention_pct_or_pending(value, label: str) -> str:
 
 
 def _retention_at_vest_surfaces(node_key: str) -> list[Node]:
-    """At-vest RSU income retention (ordinary income — top marginal + surtax).
-    Distinctly labelled 'at-vest (ordinary)' so it is never conflated with the
-    capital-track rate."""
+    """Retention on the Section-102 ORDINARY slice (top marginal + surtax).
+
+    The key and node name still say "at_vest" for registry compatibility, but
+    the label must not: nothing is taxed at vesting. Across 74 ``Lapse`` events
+    every tax field is empty, and the 2025 Form 106 reports the ordinary slice
+    as employment income in the year of SALE. Both slices fall due together on
+    the sale, so neither rate is the retention on a whole sale — that is
+    ``0.70 - 0.20 x B/S``, lot- and price-dependent (~68% here)."""
     return [
         make_surface_node(
             key="surface:retention_at_vest_statement",
             inputs=(node_key,),
             recipe=lambda i: _retention_pct_or_pending(
                 i[node_key],
-                "RSU net retention — at-vest (ordinary income, top marginal + surtax)"),
-            compute_version="retention-at-vest-v1",
+                "RSU net retention — ordinary slice, shares x grant benchmark "
+                "(top marginal + surtax; falls due at SALE, not at vest)"),
+            compute_version="retention-ordinary-slice-v2",
         ),
     ]
 

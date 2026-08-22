@@ -402,18 +402,41 @@ def realization_tax_summary(
 
     # DETERMINISTIC ORDER (Sol): when a share cap is applied, WHICH lots the cap
     # consumes changes the tax — the boundary lot sets the implied rate. Without
-    # an ORDER BY the glide figure varied run to run on the same data. Oldest
-    # grant first: it is the order Section-102 holding-period eligibility
-    # actually matures in, so the capped set matches what would really be sold
-    # first. `id` breaks ties so the sequence is total.
+    # an ORDER BY the glide figure varied run to run on the same data.
+    #
+    # The order is LOWEST GRANT BENCHMARK FIRST, which is both the tax-minimising
+    # sequence and the one the plan instructs. Under the settled Section-102 model
+    # tax per share is 0.30(S-B) + 0.50B, so a higher benchmark B costs MORE total
+    # tax — it swaps 30%-taxed capital income for 50%-taxed ordinary income. The
+    # cap must therefore consume the cheapest lots first.
+    #
+    # This previously ordered by ``grant_date.asc()``, which sorts a DD/MM/YYYY
+    # TEXT column lexicographically: blank ESPP dates, then 08/04/2024, 08/06/2022,
+    # 08/06/2023, 09/07/2021. That is neither chronological (the 2021 grant sorted
+    # LAST despite the comment claiming oldest-first) nor benchmark-ordered — it
+    # put the HIGHEST-benchmark lots (289172/3 at ~87.49/sh) first, the exact
+    # inverse of the rule. Confirmed 2026-08-22 by executing the query.
+    #
+    # ``ordinary_income_usd / shares`` IS the benchmark, net of a flat 0.010996/sh
+    # fee (verified: cost_basis - ordinary/sh == sale_price - (capital+ordinary)/sh
+    # == 0.010996 for every RSU lot). Lots missing either field sort last on a
+    # +inf key rather than crashing; ``id`` makes the sequence total.
     lots = session.execute(
         sa.select(TaxSimulationLot).where(
             TaxSimulationLot.user_id == user_id,
             TaxSimulationLot.simulation_date == sim_date,
-        ).order_by(TaxSimulationLot.grant_date.asc(), TaxSimulationLot.id.asc())
+        )
     ).scalars().all()
     if not lots:
         return None
+
+    def _benchmark_sort_key(lot):
+        oi, sh = lot.ordinary_income_usd, lot.shares
+        if oi is None or not sh:
+            return (float("inf"), lot.id)
+        return (oi / sh, lot.id)
+
+    lots = sorted(lots, key=_benchmark_sort_key)
 
     if as_of_date is not None:
         lots = _relabel_for_as_of(lots, as_of_date)
@@ -484,19 +507,37 @@ def realization_tax_summary(
         lot_gross_sim = lot.shares * sim_price
         lot_tax_sim = lot_gross_sim - lot.net_proceeds_usd
         if lot.eligible:
-            # Eligible (§102 Capital track): ordinary income is fixed at grant-date FMV
-            # and does NOT change with the sale price.  Only the capital income shifts.
-            # ΔEmbedded_tax = §102-rate × Δprice × shares.
+            # Eligible (§102 Capital track). The two slices are taxed at their own
+            # STATUTORY rates and summed:
             #
-            # CLAMP (blocker 3): when the price falls, tax can only fall as far as the
-            # ordinary-income tax floor — a lower price reduces the capital gain but the
-            # ordinary-income component (already taxed at the employer level and modelled
-            # here as still owed) cannot go below zero.  Clamping prevents tax going
-            # negative, which would make net proceeds exceed gross (impossible).
-            lot_ordinary_tax = _ORDINARY_HIGH_INCOME_RATE * (lot.ordinary_income_usd or 0.0)
-            lot_tax_rev = max(
-                lot_ordinary_tax,
-                lot_tax_sim + _SECTION_102_HIGH_INCOME_RATE * delta_price * lot.shares,
+            #     tax = 0.30 x capital_income(revalued) + 0.50 x ordinary_income
+            #
+            # Ordinary income is `shares x grant benchmark` and does NOT move with
+            # the sale price — the benchmark is fixed when the grant is priced. Only
+            # the capital slice revalues, by Δprice × shares.
+            #
+            # This previously started from ``lot_tax_sim`` (= gross − the workbook's
+            # net_proceeds) and added 0.30 only on Δprice. That base is the TRUSTEE'S
+            # WITHHOLDING mix — ~25% on capital and ~62.17% on ordinary — not the
+            # settled statutory 30/50. Reproduced exactly on 2026-08-22: the old path
+            # published ILS 1,737,258 for the glide where the settled model on the
+            # same selected lots gives ~ILS 1,847,731, a 6.5% understatement. The
+            # source locator claiming "§102 Capital 30% effective rate" described a
+            # computation that only ever applied 30% to the price delta.
+            #
+            # Using the income COLUMNS rather than `shares × benchmark` also keeps
+            # ESPP lots correct: the workbook already splits their ordinary slice
+            # from the capital slice and leaves the paid purchase basis untaxed.
+            #
+            # CLAMP: a falling price can drive the capital slice to zero but the
+            # ordinary slice is still owed, so tax floors at the ordinary component
+            # — never negative, which would make net proceeds exceed gross.
+            lot_ordinary_income = lot.ordinary_income_usd or 0.0
+            lot_capital_rev = max(
+                0.0, (lot.capital_income_usd or 0.0) + delta_price * lot.shares)
+            lot_tax_rev = (
+                _SECTION_102_HIGH_INCOME_RATE * lot_capital_rev
+                + _ORDINARY_HIGH_INCOME_RATE * lot_ordinary_income
             )
             revalue_embedded_tax += lot_tax_rev
             revalue_shares += lot.shares

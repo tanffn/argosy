@@ -772,8 +772,10 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
 
     if _valid_pct(ret_vest) and _valid_pct(ret_cap) and "A7" in by_id:
         by_id["A7"]["value"] = (
-            f"{ret_vest*100:.0f}% at-vest ordinary-income retention / "
-            f"{ret_cap*100:.0f}% Section 102 capital-gain-slice retention"
+            f"{ret_vest*100:.0f}% retention on the Section 102 ordinary slice "
+            f"(shares x grant benchmark) / "
+            f"{ret_cap*100:.0f}% on the capital-gain slice — BOTH fall due at "
+            f"SALE, so neither is the retention on a whole sale"
         )
         by_id["A7"]["source"] = (
             "tax_analyst (resolver: tax.retention_at_vest_pct / "

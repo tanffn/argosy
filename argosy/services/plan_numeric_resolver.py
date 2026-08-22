@@ -1469,15 +1469,25 @@ def _apply_structural_ages(values: dict[str, ResolvedValue]) -> None:
 
 
 def _apply_retention_rates(values):
-    """Publish BOTH RSU net-retention rates as DISTINCT, statutory-derived figures
-    so prose can never conflate them (the recurring reader contradiction):
+    """Publish BOTH Section-102 slice retention rates as DISTINCT, statutory-derived
+    figures so prose can never conflate them (the recurring reader contradiction):
 
-      * tax.retention_at_vest_pct — retention on AT-VEST ORDINARY income: top
-        marginal IL 47% + 3% general surtax = 50% tax (domain_knowledge/tax/israel/
-        surtax.md: ordinary income above the threshold). retention = 0.50.
+      * tax.retention_at_vest_pct — retention on the ORDINARY slice (shares x grant
+        benchmark): top marginal IL 47% + 3% general surtax = 50% tax
+        (domain_knowledge/tax/israel/surtax.md). retention = 0.50. **The key name
+        is legacy and wrong**: this is NOT settled at vest. 74 `Lapse` rows carry
+        no withholding and the 2025 Form 106 reports the slice as employment income
+        in the year of SALE. Renaming the key would touch seven modules and the
+        fact registry, so the LABELS were corrected instead (live_surfaces.py,
+        render.py); fix the key when the registry is next migrated.
       * tax.retention_capital_track_pct — retention on the Section-102 capital-GAIN
         SLICE at the high-income marginal: 25% CGT + 3% + 2% capital-source surtax
         = 30% (section_102.md "use 30% marginal effective"). retention = 0.70.
+
+    NEITHER is the retention on a whole §102 sale. Both slices fall due together,
+    so whole-gross retention is ``1 - [0.30(S-B) + 0.50B]/S = 0.70 - 0.20 B/S`` —
+    lot- and price-dependent, ~68% on the 2026 actuals against the 73% a
+    capital-only reading gives. Do not let prose present 0.70 as take-home.
 
     Both are statutory policy parameters auditable to domain knowledge — not the
     equity_comp analyst's ambiguous blended net_retention_pct (72% on run 117)."""
