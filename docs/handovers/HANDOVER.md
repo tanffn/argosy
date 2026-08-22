@@ -2,7 +2,69 @@
 
 **This is the ONLY handover file.** It is a living document: update it in place, don't add dated siblings. The 33 dated handovers that used to live here (2026-06-01 → 2026-08-12) were consolidated into this file on 2026-08-12 and deleted; they remain in git history at `87ca7f3` — `git show 87ca7f3:docs/handovers/<name>.md` to read one, `git log --diff-filter=D --name-only -- docs/handovers/` to list them.
 
-Last updated: **2026-08-21**.
+Last updated: **2026-08-22**.
+
+> ## 2026-08-22 — the §102 basis was wrong in the domain file, and it moved ILS 780k
+>
+> **THE HEADLINE: ILS 644,390 of Israeli tax is owed on the 2026 NVDA sales, unwithheld and
+> unreserved.** Every 2026 Schwab sale row has an empty `Taxes` field and a `Forced
+> Disbursement` equal to the full gross, so nothing was taken at source. It is payable on the
+> annual return. The plan's ILS 1,450,000 finite-liability reserve has no line for it — a 44%
+> addition. This is the single most urgent open item and it is not a modelling dispute.
+>
+> **The §102 grant benchmark is the 30-TRADING-DAY MEAN of split-adjusted NVDA closes before
+> the grant date.** Reproduces the trustee's own engine to **0.000%** on all three grants it
+> covers (18.1159 / 31.9859 / 87.4976). Grant 246477 settles it beyond coincidence: FMV at
+> grant was 38.4351, the trustee used 31.9859 — a 17% gap. So the basis for ANY grant is
+> derivable without the trustee; see `domain_knowledge/tax/israel/section_102.md`.
+>
+> **The domain file previously asserted the OPPOSITE** — that Schwab's vest-FMV basis "is the
+> basis-for-25%-CGT". It is not; that is the US-basis number. Schwab's figure for the 2026
+> sales is $472,911 against a true Israeli gain of **$734,227 = ILS 2,196,072** — only 64%.
+> Corrected in `791387b` / `13783c8` with the evidence table so it does not get re-fixed back.
+>
+> **Derived bases for grants the trustee report omits:** 182406 = **18.3305** (1,420 sh),
+> 331375 = 126.8600 (358 sh), 374434 = 185.7690 (57 sh). I had proxied 182406 at its vest FMV
+> of ~149.38 — an **8x** understatement, and 182406 is the source of most 2026 sales.
+>
+> **Position, from the 2026-08-22 Schwab exports (snapshot 151):** 10,380 vested NVDA
+> (9,573 past the 24-month clock) + 3,378 unvested vesting through 2030-03-15. Embedded §102
+> gain on the vested block **$1,752,713 = ILS 5,242,365**. NVDA is 54.0% of a ILS 4,136.7k book.
+>
+> **The glide proposal (Sol review in flight):** replace plan 116's TERMINATING schedule
+> (3,924 in 2026 + 5,493 in 2027 = done) with TWO rules — (1) sell 8,857 of the vested 10,380
+> across 8 quarterly tranches 2027-2028, keeping 1,523 from the lowest-basis grant 213000;
+> (2) a STANDING rule selling each new vest on arrival through 2030-03-15. Rationale: the
+> household cannot sell shares it does not own and unvested RSUs are forfeited on termination,
+> so committing to 12,235 shares is not executable — but a terminating schedule lets the vest
+> stream re-accrete concentration. Sell highest-§102-basis lots FIRST: the rate is identical on
+> every lot so ordering cannot change total tax, but high-basis lots shed more SHARES per
+> shekel of gain. **Cost of speed: clearing at the ILS 721,560 threshold takes 7 years at 28%;
+> compressing to 2 years costs ILS 58,013 extra = 0.87% of the position.** Ariel's ruling
+> (2026-08-22): the plan GUIDES and he executes at Schwab — `managed=False` stays, RED #10
+> becomes a wording fix, not a plumbing change.
+>
+> **The plan's three FI "contradictions" are ONE root.** The permanent-equivalent spend basis
+> is written both ILS 310,576 (the `{{fact:spend.fi_basis_nis}}` token, resolved from
+> `withdrawal_sequencer.fi_base.annual_spend_nis`) and ILS 311,584 (hardcoded prose). Everything
+> forks from that: 310,576/3% = 10,352,533 and 311,584/3% = 10,386,133 — exactly the two
+> published perpetuity bases; and 12,237,719 − (10,386,133 + 1,450,000) = 401,585, exactly the
+> published margin. Fix = bind the Targets section to the token. Same digits-drift disease as
+> the NVDA figures.
+>
+> **Re-review of plan 116 against the corrected facts (cost $2.33, confidence MEDIUM):**
+> 12 RED → 10. Two dissolved: the 2026 tranche is complete (3,940 sold vs 3,924 scheduled) and
+> §102 eligibility covers the whole remaining glide (9,573 vs 8,857, 716 headroom). New: the
+> missing CGT reserve; the flat contribution held to 2031 while the vest stream collapses 78%
+> by 2029; and full execution of the remaining schedule still parking NVDA at ~43.6% of book
+> against a 13% ceiling.
+>
+> **Also this session:** Leumi fee package reviewed end-to-end (`domain_knowledge/brokers/leumi.md`);
+> `broker_fees` + per-line commission on deploy proposals; the ILS 30,000 household cash floor
+> (`operating_reserve.py`); Leumi and Schwab importers with CLIs. **A DISPUTED $25 per-trade
+> minimum fires 2026-08-20** — the benefits letter dropped the explicit "$7 minimum" line when
+> the rate improved to 0.06%; if the list $25 applies the H1 bill doubles. Ariel's next trade
+> settles it for free.
 
 > **THE BLIND PAIR RAN FOR THE FIRST TIME (2026-08-21, master `f6a7fdc`).** `$1.41`, 9 min,
 > `scripts/adjudicate_moonshot_sleeve.py`. It had NEVER executed: MoonshotSleeveAuthorAgent,
