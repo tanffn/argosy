@@ -197,3 +197,42 @@ def ingest_leumi_portfolio(
         session.close()
     for line in report.lines():
         typer.echo(line)
+
+
+# ----------------------------------------------------------------------
+# `argosy ingest schwab`
+# ----------------------------------------------------------------------
+
+
+@app.command("schwab")
+def ingest_schwab(
+    positions: Path = typer.Option(None, "--positions", exists=True, dir_okay=False,
+                                   help="Individual-Positions-<date>.csv"),
+    equity: Path = typer.Option(None, "--equity", exists=True, dir_okay=False,
+                                help="EquityAwardsCenter_EquityDetails_<stamp>.xlsx"),
+    user_id: str = typer.Option("ariel", "--user-id"),
+    apply: bool = typer.Option(False, "--apply",
+                               help="Write the snapshot. Omitted = dry run."),
+) -> None:
+    """Import Schwab holdings (individual account + equity-award NVDA).
+
+    Feeds the ``schwab``/``schwab 876`` locations only; every other account is
+    carried forward by ``persist_snapshot``'s per-account merge.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+    from argosy.services.schwab_import import import_schwab
+    from argosy.state.db import create_sync_engine
+
+    url = get_settings().database_url.replace("+aiosqlite", "")
+    session = sessionmaker(bind=create_sync_engine(url), expire_on_commit=False)()
+    try:
+        report = import_schwab(
+            session, user_id=user_id, positions_path=positions,
+            equity_details_path=equity, apply=apply,
+        )
+    finally:
+        session.close()
+    for line in report.lines():
+        typer.echo(line)
