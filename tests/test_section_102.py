@@ -124,3 +124,65 @@ class TestAgainstTheRealWithholding:
         schwab_gain_usd = 472_910.71
         implied = self.WITHHELD_USD / schwab_gain_usd
         assert implied > 0.42, f"implied {implied:.1%} — nowhere near 28-30%"
+
+
+class TestOrdinarySlice:
+    """The slice that was missing, and that moved the bill 45%."""
+
+    def test_it_is_shares_times_benchmark_not_sale_price(self):
+        assert s102.ordinary_income_usd(1000, 18.3305) == pytest.approx(18_330.5)
+
+    def test_it_does_not_move_with_the_sale_price(self):
+        """Timing-invariant: this is why pacing the glide saves so little."""
+        a = s102.ordinary_income_usd(1000, 18.3305)
+        assert a == s102.ordinary_income_usd(1000, 18.3305)
+
+    def test_the_rate_is_fifty_percent(self):
+        assert s102.ordinary_tax_ils(100_000.0) == pytest.approx(50_000.0)
+
+    def test_negative_inputs_are_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            s102.ordinary_income_usd(-1, 18.0)
+        with pytest.raises(ValueError, match="non-negative"):
+            s102.ordinary_tax_ils(-1.0)
+
+
+class TestSaleTaxAgainstForm106:
+    """The 2025 Form 106 is the authoritative reconciliation: it reports both
+    slices, so it pins the combined model in a way the withheld cash (capital
+    slice only) cannot."""
+
+    FX = 2.9910
+
+    def test_both_slices_are_charged_on_one_sale(self):
+        t = s102.sale_tax(1000, 200.0, 18.3305, fx=self.FX)
+        assert t.capital.tax_ils > 0
+        assert t.ordinary_tax_ils > 0
+        assert t.total_tax_ils == pytest.approx(
+            t.capital.tax_ils + t.ordinary_tax_ils)
+
+    def test_a_higher_benchmark_costs_MORE_total_tax(self):
+        """The inversion that cost two pieces of advice: retain the HIGHEST
+        benchmark, sell the lowest."""
+        low = s102.sale_tax(1000, 200.0, 18.3305, fx=self.FX)
+        high = s102.sale_tax(1000, 200.0, 87.4976, fx=self.FX)
+        assert high.total_tax_ils > low.total_tax_ils
+
+    def test_form_106_proportions_reproduce(self):
+        """Capital + ordinary = 97.2% of gross 102 proceeds on the 2025 form
+        (ILS 1,327,411 + 411,704 against 1,790,099), the rest fees."""
+        assert (1_327_411 + 411_704) / 1_790_099 == pytest.approx(0.972, abs=0.001)
+
+    def test_net_retention_is_68_not_73_percent(self):
+        """Sizing deployment off the capital slice alone overstates cash by ~5
+        points. The 2026 actuals read 73% only because the ordinary slice had
+        not been taken."""
+        lots = [(18.3305, 560, 191.33), (18.3305, 517, 176.59),
+                (18.3305, 1040, 199.56), (18.3305, 560, 216.09),
+                (18.3305, 700, 219.93), (18.1159, 560, 223.80)]
+        gross = sum(sh * px for _, sh, px in lots) * self.FX
+        gain = sum(s102.capital_gain_usd(sh, px, b) for b, sh, px in lots) * self.FX
+        ordinary = sum(s102.ordinary_income_usd(sh, b) for b, sh, _ in lots) * self.FX
+        total = s102.capital_tax_ils(gain).tax_ils + s102.ordinary_tax_ils(ordinary)
+        retention = (gross - total) / gross
+        assert retention == pytest.approx(0.68, abs=0.01), f"got {retention:.1%}"

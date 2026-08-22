@@ -17,6 +17,23 @@ establish and each of which an agent got wrong first (see
    in the broker export, visible only as gross-minus-wire in the bank
    statement. Concluding "unwithheld" from broker fields alone produced a
    phantom six-figure liability.
+4. **BOTH slices fall due at SALE, not at vest.** Across 74 ``Lapse`` events in
+   the full-history Schwab export every tax field is empty and each ``Deposit``
+   matches its ``Lapse`` quantity exactly — nothing is withheld at vesting. The
+   2025 Form 106 confirms it from the other side, reporting the ordinary slice
+   (ILS 411,704) as EMPLOYMENT income in the year of SALE alongside the capital
+   slice (ILS 1,327,411). A portal election reading "Withhold Shares" is a
+   preference, not evidence; assuming otherwise inverted two pieces of advice.
+
+So the tax on one share is::
+
+    0.30 x (S - B) + 0.50 x B   =   0.30 x S + 0.20 x B
+
+for sale price ``S`` and grant benchmark ``B`` (0.30 being the capital
+marginal above the surtax threshold — the banded computation lives in
+:func:`capital_tax_ils`). A HIGHER benchmark therefore means HIGHER total tax:
+it swaps 30%-taxed capital income for 50%-taxed ordinary income. Sell the
+LOWEST-benchmark lots first, and retain the highest.
 """
 
 from __future__ import annotations
@@ -29,10 +46,15 @@ __all__ = [
     "STATUTORY_CGT",
     "GENERAL_SURTAX",
     "CAPITAL_SOURCE_SURTAX",
+    "ORDINARY_RATE",
     "TaxBands",
+    "SaleTax",
     "grant_benchmark",
     "capital_gain_usd",
     "capital_tax_ils",
+    "ordinary_income_usd",
+    "ordinary_tax_ils",
+    "sale_tax",
     "KNOWN_NVDA_BENCHMARKS",
 ]
 
@@ -46,6 +68,14 @@ STATUTORY_CGT = 0.25
 GENERAL_SURTAX = 0.03
 #: Additional, and tests the CAPITAL-SOURCE income alone against the threshold.
 CAPITAL_SOURCE_SURTAX = 0.02
+#: The ordinary slice is EMPLOYMENT income (Form 106, 2025), so it carries the
+#: top marginal 47% plus the 3% general surtax for a salary already past the
+#: threshold — see domain_knowledge/tax/israel/surtax.md. Unlike the capital
+#: slice this is flat and, crucially, **timing-invariant**: shares x benchmark
+#: is fixed the day the grant is priced, so pacing sales across more tax years
+#: cannot shrink it. Only the capital slice's 2% band responds to pacing, which
+#: is why the premium for a fast glide is small.
+ORDINARY_RATE = 0.50
 
 #: Trustee-confirmed benchmarks, exact. Use these rather than recomputing when
 #: the grant is one of them — they are the ground truth the derivation was
@@ -103,8 +133,11 @@ def grant_benchmark(
 def capital_gain_usd(shares: float, sale_price: float, benchmark: float) -> float:
     """The Section-102 capital slice: ``shares x (sale price - grant benchmark)``.
 
-    The ordinary slice (``shares x benchmark``) is settled at VEST via
-    sell-to-cover and is NOT recomputed here.
+    This is only HALF the bill. The ordinary slice (:func:`ordinary_income_usd`)
+    falls due on the same sale — see fact 4 in the module docstring. An earlier
+    revision of this docstring claimed the ordinary slice was "settled at VEST
+    via sell-to-cover"; 74 empty-tax ``Lapse`` rows and the 2025 Form 106 both
+    disprove that. Use :func:`sale_tax` unless you specifically want one slice.
     """
     return shares * (sale_price - benchmark)
 
@@ -140,4 +173,87 @@ def capital_tax_ils(
     return TaxBands(
         gain_ils=gain_ils, prior_capital_income_ils=prior_capital_income_ils,
         at_28_ils=round(at_28, 2), at_30_ils=round(at_30, 2), tax_ils=round(tax, 2),
+    )
+
+
+def ordinary_income_usd(shares: float, benchmark: float) -> float:
+    """The Section-102 ordinary slice: ``shares x grant benchmark``.
+
+    Independent of the sale price — the benchmark fixes it when the grant is
+    priced. Reported as EMPLOYMENT income in the year of SALE (Form 106).
+    """
+    if shares < 0 or benchmark < 0:
+        raise ValueError(f"shares and benchmark must be non-negative, got {shares}, {benchmark}")
+    return shares * benchmark
+
+
+def ordinary_tax_ils(ordinary_income_ils: float) -> float:
+    """Tax on the ordinary slice: flat :data:`ORDINARY_RATE` for this household.
+
+    No banding. The salary already clears the threshold, so there is no
+    lower-rate headroom to allocate and nothing here responds to pacing.
+    """
+    if ordinary_income_ils < 0:
+        raise ValueError(f"ordinary_income_ils must be non-negative, got {ordinary_income_ils}")
+    return round(ordinary_income_ils * ORDINARY_RATE, 2)
+
+
+@dataclass(frozen=True)
+class SaleTax:
+    """Both slices of one Section-102 sale, in ILS, plus what survives it."""
+
+    gross_proceeds_ils: float
+    capital: TaxBands
+    ordinary_income_ils: float
+    ordinary_tax_ils: float
+
+    @property
+    def total_tax_ils(self) -> float:
+        return round(self.capital.tax_ils + self.ordinary_tax_ils, 2)
+
+    @property
+    def net_proceeds_ils(self) -> float:
+        return round(self.gross_proceeds_ils - self.total_tax_ils, 2)
+
+    @property
+    def net_retention(self) -> float:
+        """Fraction of GROSS proceeds that reaches the bank — the number to
+        size deployment off. Reading it off the capital slice alone overstates
+        it by ~5 points (0.73 vs 0.68 on the 2026 actuals)."""
+        if not self.gross_proceeds_ils:
+            return 0.0
+        return self.net_proceeds_ils / self.gross_proceeds_ils
+
+
+def sale_tax(
+    shares: float,
+    sale_price: float,
+    benchmark: float,
+    *,
+    fx: float,
+    prior_capital_income_ils: float = 0.0,
+    salary_clears_threshold: bool = True,
+) -> SaleTax:
+    """The whole bill for selling ``shares`` of one grant: ``0.30(S-B) + 0.50B``.
+
+    ``fx`` converts USD to ILS. ``prior_capital_income_ils`` is the capital
+    income already realised this tax year, which consumes the 2% band's
+    headroom — pass it when pacing a multi-lot or multi-year glide, or the
+    second lot is charged at the first lot's rate.
+
+    Sell LOWEST-benchmark first: a higher ``B`` moves money from the 30% slice
+    into the 50% one, so total tax rises with the benchmark.
+    """
+    gross_ils = shares * sale_price * fx
+    gain_ils = max(0.0, capital_gain_usd(shares, sale_price, benchmark) * fx)
+    ordinary_ils = ordinary_income_usd(shares, benchmark) * fx
+    return SaleTax(
+        gross_proceeds_ils=round(gross_ils, 2),
+        capital=capital_tax_ils(
+            gain_ils,
+            prior_capital_income_ils=prior_capital_income_ils,
+            salary_clears_threshold=salary_clears_threshold,
+        ),
+        ordinary_income_ils=round(ordinary_ils, 2),
+        ordinary_tax_ils=ordinary_tax_ils(ordinary_ils),
     )
