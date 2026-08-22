@@ -272,6 +272,12 @@ def import_leumi(
 
     snap.positions = new_rows          # feed covers Leumi only — merge does the rest
     snap.snapshot_date = portfolio.as_of
+    # Drop the PRIOR snapshot's parse warnings. snap came from row_to_snapshot,
+    # so its warnings describe the previous feed, not this one — carrying them
+    # forward resurrects warnings about symbols that no longer exist
+    # ("reprice_miss:ATF" survived two snapshots after ATF was renamed) and
+    # they then propagate indefinitely. persist_snapshot appends its own.
+    snap.parse_warnings = []
     written = persist_snapshot(
         session, user_id=user_id, snapshot=snap, actor="leumi_import")
     session.commit()

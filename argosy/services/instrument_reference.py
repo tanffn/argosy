@@ -129,6 +129,10 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "OKLO": InstrumentRef(ASSET_EQUITY, SECTOR_OTHER, REGION_US, STRUCT_STOCK),
     "IONQ": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
     "RXRX": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US, STRUCT_STOCK),
+    # Compass Pathways: ADSs on NASDAQ, but the issuer is an ENGLISH plc, so
+    # the shares are NOT US-situs — same treatment as NU (Cayman) and INVZ
+    # (Israel) below. Deliberately absent from _US_SITUS_TICKERS.
+    "CMPS": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US, STRUCT_STOCK),
     "MELI": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_EM, STRUCT_STOCK),
     "NU": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_EM, STRUCT_STOCK),
     "INVZ": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_ISRAEL, STRUCT_STOCK),
@@ -344,6 +348,7 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "OKLO": "Oklo",
     "IONQ": "IonQ",
     "RXRX": "Recursion Pharmaceuticals",
+    "CMPS": "Compass Pathways (UK plc, NASDAQ ADSs)",
     "MELI": "MercadoLibre",
     "NU": "Nu Holdings",
     "INVZ": "Innoviz Technologies",
