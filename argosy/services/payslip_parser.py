@@ -209,7 +209,15 @@ def _rev(s: str) -> str:
 
 
 def _has(line: str, *needles: str) -> bool:
-    return all(_rev(n) in line for n in needles)
+    """Match a Hebrew label needle in either orientation.
+
+    Hilan's PDFs carry no ToUnicode map, so their Hebrew arrives reversed and
+    must be matched via :func:`_rev`. Other payroll vendors (e.g. the Haifa
+    municipal slips) embed proper ToUnicode and extract as clean, correctly
+    ordered Hebrew. Accepting BOTH orientations lets one needle set serve both
+    without threading a profile flag through every parse helper.
+    """
+    return all((_rev(n) in line) or (n in line) for n in needles)
 
 
 def _find_amount(lines: list[str], *needles: str) -> float | None:
@@ -230,20 +238,54 @@ def _approx_eq(a: float | None, b: float | None, tol: float = 0.05) -> bool:
 # --------------------------------------------------------------------------
 
 
-def parse_payslip(pdf_path: str | Path) -> PayslipFacts:
-    """Parse a Hilan payslip PDF into :class:`PayslipFacts`.
+def parse_payslip(
+    pdf_path: str | Path, *, password: str | None = None
+) -> PayslipFacts:
+    """Parse a payslip PDF into :class:`PayslipFacts`.
+
+    Handles two layouts:
+
+    * **Hilan** (Ariel's NVIDIA/Mellanox slips) — mojibake'd, character-reversed
+      Hebrew; every summary figure sits as the leading token of its own label
+      line.
+    * **Clean-Unicode vendors** (Noga's Haifa municipal slips) — correctly
+      ordered Hebrew, and a STACKED summary block where the labels are emitted
+      first and their amounts follow as bare numeric lines. Parsed by
+      :func:`_parse_summary_stacked`, which is accepted only when the
+      gross − deductions = net identity holds, so a mis-association fails
+      closed rather than publishing a wrong salary.
 
     Args:
         pdf_path: path to the payslip PDF. The filename, when of the form
-            ``YYYY_MM.pdf``, is used as the authoritative period key and is
-            cross-checked against the period printed in the document.
+            ``YYYY_MM.pdf`` or ``...__YYYY_MM.pdf``, is the authoritative
+            period key and is cross-checked against the printed period.
+        password: for encrypted PDFs. Israeli payroll providers commonly lock
+            slips with the employee's ת.ז. Never hard-code one — pass it in
+            from the caller's secret source.
     """
     from pypdf import PdfReader  # local import; optional dep elsewhere
 
     pdf_path = Path(pdf_path)
     reader = PdfReader(str(pdf_path))
+    if reader.is_encrypted:
+        if not password:
+            raise ValueError(
+                f"{pdf_path.name} is encrypted; pass password= to parse it"
+            )
+        if not reader.decrypt(password):
+            raise ValueError(f"{pdf_path.name}: password rejected")
     raw = "\n".join((p.extract_text() or "") for p in reader.pages)
-    lines = [_recover_hebrew(ln) for ln in raw.split("\n")]
+
+    # Profile detection. _recover_hebrew reinterprets every non-ASCII run as
+    # CP1255 bytes, which repairs Hilan but CORRUPTS already-clean Hebrew, so
+    # it must only run on the mojibake'd layout.
+    clean_unicode = any(
+        marker in raw for marker in ("נטו לתשלום", "תלוש משכורת", "תשלומים")
+    )
+    lines = (
+        raw.split("\n") if clean_unicode
+        else [_recover_hebrew(ln) for ln in raw.split("\n")]
+    )
 
     facts = PayslipFacts()
     conf = facts.confidence
@@ -381,7 +423,11 @@ def _parse_period(
     warn = facts.warnings
 
     file_year = file_month = None
-    m = re.match(r"(\d{4})[_-](\d{2})", pdf_path.stem)
+    # Ariel's Hilan slips are named ``YYYY_MM.pdf``; Noga's arrive as
+    # ``תלוש_שכר__YYYY_MM.pdf``, and catalogued copies carry an upload prefix
+    # (``160103__8ea00e83__...``). Search anywhere in the stem rather than
+    # anchoring at the start, so all three shapes yield a period.
+    m = re.search(r"(20\d{2})[_-](0[1-9]|1[0-2])(?!\d)", pdf_path.stem)
     if m:
         file_year, file_month = int(m.group(1)), int(m.group(2))
 
@@ -450,6 +496,78 @@ def _parse_summary(facts: PayslipFacts, lines: list[str]) -> None:
         else:
             # Provisionally high; identity checks may downgrade net_salary.
             conf[attr] = HIGH
+
+    # Stacked-summary fallback for vendors that emit the labels as a block and
+    # the amounts as bare numeric lines underneath (see _parse_summary_stacked).
+    if facts.total_payments is None or facts.net_to_pay is None:
+        _parse_summary_stacked(facts, lines)
+
+
+def _parse_summary_stacked(facts: PayslipFacts, lines: list[str]) -> None:
+    """Recover the summary block of a STACKED-layout payslip.
+
+    Noga's Haifa municipal slip emits::
+
+        14,423.74 משרה + תשלומים
+        ניכויים אישיים + חובה
+        ניכויי רשות
+        נטו לתשלום
+        2,739.99
+        11,683.75
+
+    — gross inline with its label, the remaining labels bare, then their
+    amounts. Line-needle matching cannot associate those, so this walks the
+    numeric lines that follow the label block and accepts the reading ONLY if
+
+        total_payments - total_tax_deductions == net_to_pay
+
+    holds. That identity is the whole safety mechanism: a wrong association
+    almost never satisfies it, so this fails closed and leaves the fields
+    None rather than publishing a plausible-but-wrong salary.
+    """
+    conf, warn = facts.confidence, facts.warnings
+
+    anchor = None
+    for i, ln in enumerate(lines):
+        if _has(ln, "תשלומים") and _leading_num(ln) is not None:
+            anchor = i
+            break
+    if anchor is None:
+        return
+
+    gross = _leading_num(lines[anchor])
+    nums: list[float] = []
+    for ln in lines[anchor + 1 : anchor + 12]:
+        n = _leading_num(ln)
+        if n is not None and _NUM_RE.fullmatch(ln.strip() or "x"):
+            nums.append(n)
+        if len(nums) >= 4:
+            break
+
+    for i in range(len(nums)):
+        for j in range(len(nums)):
+            if i == j:
+                continue
+            if gross is not None and _approx_eq(gross - nums[i], nums[j]):
+                facts.total_payments = gross
+                facts.total_tax_deductions = nums[i]
+                facts.net_to_pay = nums[j]
+                facts.net_salary = nums[j]
+                for k in (
+                    "total_payments", "total_tax_deductions",
+                    "net_to_pay", "net_salary",
+                ):
+                    conf[k] = HIGH
+                warn.append(
+                    "Stacked-summary layout: fields recovered positionally and "
+                    "confirmed by gross - deductions = net."
+                )
+                return
+
+    warn.append(
+        "Stacked-summary layout detected but the gross - deductions = net "
+        "identity did not hold; summary fields left unset."
+    )
 
     # Cross-check: anchor the summary by document order as a fallback sanity
     # check. The six amounts also appear as the first six summary lines.
