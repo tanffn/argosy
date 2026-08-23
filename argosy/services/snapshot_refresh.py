@@ -102,16 +102,66 @@ _PENCE_CURRENCIES = {"GBP_PENCE", "GBX", "GBP0.01", "GBp"}
 # ---------------------------------------------------------------------------
 
 
-def _hinted_suffixes(details: str) -> tuple[str, ...]:
-    """Order the suffix candidates, trying the Details exchange hint first."""
+#: Quote currency each venue suffix can actually produce. A candidate whose
+#: venue cannot quote the position's currency is not worth an HTTP call — and
+#: is worse than useless, because a same-ticker foreign listing that omits its
+#: currency slips through :func:`_currencies_agree` (which tolerates a ``None``
+#: currency for USD positions) and would price the WRONG instrument.
+_SUFFIX_CURRENCIES: dict[str, frozenset[str]] = {
+    "": frozenset({"USD"}),          # bare = US listing
+    ".L": frozenset({"USD", "GBP"}),  # LSE quotes both USD and GBP lines
+    ".AS": frozenset({"EUR"}),
+    ".MI": frozenset({"EUR"}),
+    ".DE": frozenset({"EUR"}),
+    # SIX does carry USD-denominated lines, but reaching one WITHOUT a venue
+    # hint is not a real case: Leumi writes the hint (``IWDP SW``) for every
+    # such holding, and the hint branch above handles it. Leaving USD in here
+    # would keep making the exact SOFI.SW call this filter exists to stop.
+    ".SW": frozenset({"CHF"}),
+}
+
+
+def _hinted_suffixes(details: str, currency: str = "USD") -> tuple[str, ...]:
+    """Order the suffix candidates, trying the Details exchange hint first.
+
+    An explicit venue hint (Leumi writes ``CSPX LN`` / ``IWDP SW``) always
+    wins and the rest of the chain follows as a fallback.
+
+    Without a hint the chain is FILTERED to venues that can quote
+    ``currency``. Previously every position walked the full chain, so a plain
+    US line like SOFI or TEM (no hint, USD) tried ``.L``, ``.AS``, ``.MI``,
+    ``.DE`` and ``.SW`` in turn — observed on 2026-08-23 as repeated
+    ``SOFI.SW``/``TEM.AS`` 404s during a plan run, each costing several HTTP
+    round-trips with retries. Filtering removes that, and closes the
+    wrong-instrument hole described on :data:`_SUFFIX_CURRENCIES`.
+    """
+    pc = (currency or "USD").strip().upper()
+    if pc == "NIS":
+        pc = "ILS"
+
+    def _plausible(chain: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(
+            s for s in chain
+            if pc in _SUFFIX_CURRENCIES.get(s, frozenset({pc}))
+        )
+
     m = _EXCHANGE_HINT_RE.search((details or "").strip())
     if m:
         suffix = _EXCHANGE_HINT_SUFFIX.get(m.group(1))
         if suffix:
-            return (suffix,) + tuple(
-                s for s in _YF_QUOTE_SUFFIXES if s != suffix
+            # The hint is authoritative and is tried regardless of currency —
+            # the venue is stated, not guessed. Only the FALLBACK tail is
+            # filtered, so a hinted line no longer walks venues that cannot
+            # quote its currency.
+            rest = _plausible(
+                tuple(s for s in _YF_QUOTE_SUFFIXES if s != suffix)
             )
-    return _YF_QUOTE_SUFFIXES
+            return (suffix,) + rest
+
+    plausible = _plausible(_YF_QUOTE_SUFFIXES)
+    # Never return an empty chain: an unknown currency falls back to the full
+    # list rather than silently refusing to price the position.
+    return plausible or _YF_QUOTE_SUFFIXES
 
 
 def _currencies_agree(position_currency: str, quote_currency: str | None) -> bool:
@@ -142,7 +192,7 @@ def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | Non
 
     yf_symbol = symbol.strip().upper().replace("/", "-").replace(".", "-")
     adapter = YFinanceAdapter()
-    for suffix in _hinted_suffixes(details):
+    for suffix in _hinted_suffixes(details, currency):
         try:
             q = asyncio.run(adapter.get_quote(f"{yf_symbol}{suffix}"))
         except Exception as exc:  # noqa: BLE001 — best-effort per listing

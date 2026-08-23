@@ -389,6 +389,39 @@ def test_exchange_hint_orders_suffixes():
     assert _hinted_suffixes("")[0] == ""
 
 
+def test_us_line_does_not_probe_eur_or_chf_venues():
+    """A plain US line must not walk foreign venues.
+
+    Observed 2026-08-23 during plan run 436: SOFI and TEM carry no venue hint
+    and are USD, yet the resolver tried SOFI.SW and TEM.AS, each costing
+    several 404 round-trips with retries. Worse than wasteful — a same-ticker
+    foreign listing that omits its currency passes _currencies_agree (which
+    tolerates None for USD positions) and would price the WRONG instrument.
+    """
+    for details in ("(Sofi Technologies Inc) SOFI", "(Tempus Ai Inc) TEM"):
+        chain = _hinted_suffixes(details, "USD")
+        assert chain[0] == "", f"{details}: bare US listing must be tried first"
+        for bad in (".AS", ".MI", ".DE", ".SW"):
+            assert bad not in chain, f"{details}: must not probe {bad}"
+
+
+def test_currency_filter_keeps_hinted_venue_and_prunes_the_tail():
+    # An explicit hint is authoritative even when the venue's usual currency
+    # differs — the venue is stated, not guessed.
+    chain = _hinted_suffixes("(ISHR DM PRPTY YD) DPYA SW", "USD")
+    assert chain[0] == ".SW"
+    # ...but the FALLBACK tail is still pruned to venues that can quote USD.
+    assert ".AS" not in chain and ".MI" not in chain and ".DE" not in chain
+
+    # A EUR position should only ever see EUR venues.
+    eur = _hinted_suffixes("some european line", "EUR")
+    assert set(eur) == {".AS", ".MI", ".DE"}
+
+    # An unknown currency must never yield an empty chain — falling back to
+    # the full list beats silently refusing to price the position.
+    assert _hinted_suffixes("mystery line", "JPY")
+
+
 # ---------------------------------------------------------------------------
 # apply_fills_to_snapshot — executed broker buys folded into a new row
 # ---------------------------------------------------------------------------
