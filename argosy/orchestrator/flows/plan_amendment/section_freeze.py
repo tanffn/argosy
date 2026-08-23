@@ -113,11 +113,28 @@ def merge_frozen_sections(
     prior_preamble, prior_sections = _split_sections(prior_md)
     new_preamble, new_sections = _split_sections(new_md)
 
-    # First-occurrence wins if a key repeats (shouldn't happen in
-    # practice; defensive rather than silently dropping data).
-    new_by_key: dict[str, str] = {}
+    # Repeated keys are NOT hypothetical: a real plan carries `targets`,
+    # `themes`, `actions` and `rationale` once per horizon — 12 of plan 116's
+    # 41 sections. First-occurrence-wins silently gave the MEDIUM and SHORT
+    # `actions` sections the LONG horizon's new text and reported three
+    # cheerful "updated (allowed)" notes (measured 2026-08-23). That is
+    # section-level data corruption dressed as a successful merge.
+    #
+    # Pair by OCCURRENCE: the Nth prior instance of a key takes the Nth new
+    # instance. Identical behaviour for unique keys.
+    new_by_key: dict[str, list[str]] = {}
     for key, text in new_sections:
-        new_by_key.setdefault(key, text)
+        new_by_key.setdefault(key, []).append(text)
+    _taken: dict[str, int] = {}
+
+    def _next_new(key: str) -> str | None:
+        """Nth prior occurrence of ``key`` consumes the Nth new occurrence."""
+        idx = _taken.get(key, 0)
+        texts = new_by_key.get(key) or []
+        if idx >= len(texts):
+            return None
+        _taken[key] = idx + 1
+        return texts[idx]
 
     out_parts: list[str] = []
 
@@ -134,7 +151,7 @@ def merge_frozen_sections(
 
     for key, prior_text in prior_sections:
         if key in allow:
-            new_text = new_by_key.get(key)
+            new_text = _next_new(key)
             if new_text is not None:
                 out_parts.append(new_text)
                 if new_text != prior_text:
@@ -144,7 +161,7 @@ def merge_frozen_sections(
                 notes.append(f"{key}: allowed but dropped by model — restored prior")
         else:
             out_parts.append(prior_text)
-            new_text = new_by_key.get(key)
+            new_text = _next_new(key)
             if new_text is None:
                 notes.append(f"{key}: frozen — restored (absent from new)")
             elif new_text != prior_text:
