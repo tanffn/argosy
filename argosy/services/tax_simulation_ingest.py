@@ -280,6 +280,13 @@ class _ScaledLot:
     sale_price_usd: float | None
     net_proceeds_usd: float | None
     ordinary_income_usd: float | None
+    #: Added 2026-08-23 with the statutory 30/50 rewrite of
+    #: ``realization_tax_summary``, which reads the capital slice directly.
+    #: Its absence here made the eligible branch raise AttributeError on any
+    #: cap that scaled a boundary lot, and the resolver reported the miss as
+    #: "no tax-sim report ingested" — a message that hid a crash behind
+    #: apparently-absent data.
+    capital_income_usd: float | None
     eligible: bool
 
 
@@ -318,6 +325,9 @@ def _cap_group_shares(lots: list, *, eligible: bool, max_shares: float | None) -
                 ordinary_income_usd=(
                     lot.ordinary_income_usd * frac if lot.ordinary_income_usd is not None else None
                 ),
+                capital_income_usd=(
+                    lot.capital_income_usd * frac if lot.capital_income_usd is not None else None
+                ),
                 eligible=eligible,
             ))
             remaining = 0.0
@@ -346,7 +356,11 @@ def _relabel_for_as_of(lots: list, as_of: date) -> list:
             out.append(_ScaledLot(
                 shares=lot.shares, sale_price_usd=lot.sale_price_usd,
                 net_proceeds_usd=lot.net_proceeds_usd,
-                ordinary_income_usd=lot.ordinary_income_usd, eligible=eligible,
+                ordinary_income_usd=lot.ordinary_income_usd,
+                # Carried, not scaled: relabelling changes only the eligibility
+                # flag, never the lot's size or its income split.
+                capital_income_usd=lot.capital_income_usd,
+                eligible=eligible,
             ))
     return out
 
