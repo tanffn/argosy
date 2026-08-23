@@ -96,6 +96,20 @@ FACT_DISPLAY: dict[str, str] = {
     # never hand-type a conflated "~47%" (the run-117 reader A/B drift).
     "tax.retention_at_vest_pct": "pct",
     "tax.retention_capital_track_pct": "pct",
+    # Household earned income (added with the resolver keys on 2026-08-23).
+    # MUST be registered here as well as in plan_numeric_resolver._KEY_UNITS:
+    # the resolver decides what a key RESOLVES to, this registry decides what
+    # the tokenizer can RENDER. Registering only the former is why plan 121's
+    # cashflow section shipped "Annualized household net income is [derivation
+    # pending], split between [derivation pending] and [derivation pending]" —
+    # three values that resolve perfectly (468,313 / 310,642 / 153,886) but had
+    # no render binding. That tripped the artifact leakage gate, which blocked
+    # the whole-artifact reader, which left the promote gate unable to clear.
+    # Same shape as the DTO incident: green at one layer, unwired at the next.
+    "income.household_net_annual_nis": "nis",
+    "income.primary_net_annual_nis": "nis",
+    "income.secondary_net_annual_nis": "nis",
+    "income.other_recurring_annual_nis": "nis",
     # Ages. Ariel's ruling (2026-08-18, RED-16): publish BOTH
     # preservation_age (mandate case) and earliest_safe_age (off-mandate
     # case) — neither is "the" headline. fi_age is agent OPINION, never a
