@@ -180,6 +180,9 @@ def _load_relevant_kb_for_israeli_user() -> dict[str, str]:
     settings = get_settings()
     root = settings.domain_knowledge_dir
     targets = [
+        # Who the household is — residence, citizenship, account registration.
+        # Every estate and marital rule below is unusable without it.
+        "household/members.md",
         "tax/israel/brackets_2026.md",
         "tax/israel/national_insurance.md",
         "tax/israel/capital_gains.md",

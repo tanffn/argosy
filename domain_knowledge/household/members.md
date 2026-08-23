@@ -1,8 +1,11 @@
 ---
-title: Household members — residence, citizenship, and what they imply
+topic: Household members — residence, citizenship, and what they imply
+jurisdiction: household
 last_verified: 2026-08-23
+next_refresh_due: 2027-08-23
 sources:
-  - source: Ariel, directly (2026-08-23)
+  - source: Ariel, directly, in conversation 2026-08-23
+    retrieved: 2026-08-23
     tier: 1
 ---
 

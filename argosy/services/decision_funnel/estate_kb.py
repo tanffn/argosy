@@ -25,7 +25,20 @@ _log = get_logger("argosy.services.decision_funnel.estate_kb")
 
 #: The estate/us-situs rule file(s), relative to ``domain_knowledge_dir``.
 #: Same file the alternatives sourcer / plan critique cite for the rule.
-ESTATE_KB_RELPATHS: tuple[str, ...] = ("tax/us/estate_tax_nonresidents.md",)
+#:
+#: ``household/members.md`` rides along because the estate rule is MEANINGLESS
+#: without knowing who the household is: whether the spouse is a US person
+#: (no unlimited marital deduction without one), how the accounts are
+#: registered (§2040(a) includes the WHOLE joint asset in the first estate
+#: when the survivor is not a US citizen), and which properties are US-situs.
+#: Added 2026-08-23 after Ariel asked why Argosy did not know Noga's
+#: citizenship — the answer was that nothing recorded it, and then that
+#: nothing LOADED it. Documenting a fact and feeding it to the fleet are two
+#: different things; this is the second one.
+ESTATE_KB_RELPATHS: tuple[str, ...] = (
+    "tax/us/estate_tax_nonresidents.md",
+    "household/members.md",
+)
 
 # Rule summary rendered even when the file read fails, so the packet is never
 # silently rule-free. Mirrors the standing prose used across the deploy /

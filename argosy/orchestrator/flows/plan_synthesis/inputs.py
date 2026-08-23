@@ -916,11 +916,23 @@ def _load_tax_domain_kb_files() -> dict[str, str]:
     from argosy.config import get_settings
 
     settings = get_settings()
-    tax_dir = settings.domain_knowledge_dir / "tax"
-    if not tax_dir.exists() or not tax_dir.is_dir():
-        return {}
     out: dict[str, str] = {}
-    for path in sorted(tax_dir.rglob("*.md")):
+
+    # ``household/members.md`` is not under tax/ but every tax rule that turns
+    # on residence, citizenship or account registration is unusable without
+    # it — the marital deduction, §2040(a) joint inclusion and US-situs all
+    # depend on who the household is. Loaded alongside deliberately; a missing
+    # file is skipped like any other.
+    extra = [settings.domain_knowledge_dir / "household" / "members.md"]
+
+    tax_dir = settings.domain_knowledge_dir / "tax"
+    paths = list(extra)
+    if tax_dir.exists() and tax_dir.is_dir():
+        paths.extend(sorted(tax_dir.rglob("*.md")))
+
+    for path in paths:
+        if not path.is_file():
+            continue
         try:
             rel = path.relative_to(settings.home).as_posix()
             out[rel] = path.read_text(encoding="utf-8")
