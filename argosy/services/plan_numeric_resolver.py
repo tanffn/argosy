@@ -163,6 +163,17 @@ class ResolvedPlanNumbers:
 # ---------------------------------------------------------------------------
 
 _KEY_UNITS: dict[str, str] = {
+    # Household earned income. RECURRING only — salary and child benefit —
+    # deliberately excluding income.rsu_vest_proceeds, because a one-off
+    # equity sale is not savings capacity and the NVDA glide already models
+    # that stream separately. Ariel asked on 2026-08-23 "what was the income
+    # related/linked to?" after noticing his and Noga's salaries in the bank
+    # data; they were categorised and surfaced by the expenses API, but NO
+    # plan key ever consumed them, so the plan's contribution assumption was
+    # never derived from what the household actually earns.
+    "income.household_net_annual_nis": "nis",
+    "income.primary_net_annual_nis": "nis",
+    "income.secondary_net_annual_nis": "nis",
     "portfolio.net_worth_nis": "nis",
     "portfolio.liquid_net_worth_nis": "nis",
     "portfolio.total_net_worth_incl_residence_nis": "nis",
@@ -1425,6 +1436,11 @@ def resolve_plan_numbers(
     # markings. Alongside, never replacing, the single-year figure above.
     _apply_nvda_realization_tax_glide_dated(session, user_id, values)
 
+    # Household recurring net income, from the categorised bank credits. The
+    # plan had no income key at all before 2026-08-23, so contribution and
+    # savings-capacity prose was assumption-driven rather than derived.
+    _apply_household_income(session, user_id, values)
+
     # FI margin net of the embedded NVDA realization tax.  Adds the honest after-tax
     # FI sufficiency figure alongside the gross margin — never replaces it.
     _apply_fi_margin_net_of_realization(values)
@@ -1503,6 +1519,84 @@ def _apply_retention_rates(values):
         source_locator="plan_numeric_resolver.SECTION_102_HIGH_INCOME_RATE (domain_knowledge/tax/israel/section_102.md)",
         confidence="HIGH",
         formula="1 - Section-102 high-income marginal (25% CGT + 3% + 2% surtax) on the capital-gain slice")
+
+
+def _apply_household_income(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Household RECURRING net income, from the categorised bank credits.
+
+    Trailing 12 months of ``direction='credit'`` rows whose category is an
+    inflow, EXCLUDING ``income.rsu_vest_proceeds`` and ``income.dividends``:
+    a one-off equity sale is not savings capacity, and the NVDA glide models
+    that stream on its own. Counting it here would make the savings rate jump
+    in vest years and collapse afterwards.
+
+    These are NET-of-deduction bank credits, not gross salary — that is what a
+    savings-capacity figure should be built on, and it is what the statements
+    actually contain. The two earners are published separately so prose can
+    never silently attribute the whole household income to one of them.
+
+    Pending — never a guess — when no categorised credits exist.
+    """
+    key_h = "income.household_net_annual_nis"
+    key_p = "income.primary_net_annual_nis"
+    key_s = "income.secondary_net_annual_nis"
+
+    import sqlalchemy as _sa
+
+    try:
+        rows = session.execute(
+            _sa.text(
+                """
+                SELECT t.merchant_raw, SUM(t.amount_nis) AS tot
+                FROM expense_transactions t
+                JOIN expense_categories c ON c.id = t.category_id
+                WHERE t.user_id = :u
+                  AND t.direction = 'credit'
+                  AND c.is_inflow = 1
+                  AND c.slug NOT IN ('income.rsu_vest_proceeds', 'income.dividends')
+                  AND (t.tx_type IS NULL OR t.tx_type != 'refund')
+                  AND t.occurred_on >= date('now', '-12 months')
+                GROUP BY t.merchant_raw
+                ORDER BY tot DESC
+                """
+            ),
+            {"u": user_id},
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 - resolver never raises
+        log.warning("plan_numeric_resolver.household_income_failed err=%s", exc)
+        rows = []
+
+    earners = [(str(r[0]), float(r[1] or 0.0)) for r in rows if (r[1] or 0) > 0]
+    if not earners:
+        for k in (key_h, key_p, key_s):
+            values[k] = ResolvedValue.pending(
+                k, "nis", "no categorised inflow credits in the trailing 12 months")
+        return
+
+    total = sum(v for _, v in earners)
+    primary = earners[0]
+    secondary = earners[1] if len(earners) > 1 else ("(none)", 0.0)
+    src = (
+        "expense_transactions credits x expense_categories.is_inflow, trailing "
+        "12 months, excluding rsu_vest_proceeds + dividends"
+    )
+
+    values[key_h] = ResolvedValue(
+        key=key_h, value=round(total, 2), unit="nis", status="resolved",
+        source_locator=src, confidence="HIGH",
+        formula=(
+            "sum(credit amount_nis) over inflow categories, trailing 12mo, "
+            f"{len(earners)} sources; recurring only"
+        ),
+    )
+    for key, (name, amt) in ((key_p, primary), (key_s, secondary)):
+        values[key] = ResolvedValue(
+            key=key, value=round(amt, 2), unit="nis", status="resolved",
+            source_locator=f"{src} — source '{name}'", confidence="HIGH",
+            formula=f"trailing-12mo credits from '{name}'",
+        )
 
 
 def _apply_canonical_mc_spend(
