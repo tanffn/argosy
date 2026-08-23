@@ -775,3 +775,21 @@ Start-Process cmd.exe -ArgumentList "/c","npm run dev" -WorkingDirectory "D:\Pro
 ```
 
 **Tests:** `.venv/Scripts/python.exe -m pytest -m "not llm_eval" <path>`
+
+> ## FOLLOW-UP — plan 119 US-situs literal (opened 2026-08-23)
+>
+> `targets` carries **ILS 9,825,302** for US-situs estate exposure. The derived
+> value is **ILS 9,127,060** (`concentration.us_situs_estate_exposure_nis`), so
+> the literal is high by ~ILS 698,000. Sol judged it a documented follow-up
+> rather than a promotion blocker: it OVERSTATES the exposure, so it is
+> conservative in direction, and it changes no action or threshold.
+>
+> A narrow amendment pass (baseline 118, unfreezing only `targets` + `tax_plan`)
+> instructed replacing it with the token. The synthesizer bound the two tax
+> tokens as asked but copied this literal forward from the prior text. A fourth
+> pass was not run: prose eroded 53,944 -> 52,586 -> 50,106 chars across three
+> passes, which costs more than the number is worth.
+>
+> **Fix when next amending `targets` for another reason** — bind it to
+> `{{fact:concentration.us_situs_estate_exposure_nis}}`. Do not run a pass
+> solely for this.
