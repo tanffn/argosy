@@ -107,6 +107,25 @@ def _medium_worker(*, session: Session, user_id: str,
                    ) -> None:
     """Run Phase 3 only with the user's amendment as guidance.
 
+    **THE DRAFT THIS PRODUCES CANNOT BE PROMOTED.** Phase 3 only means phases
+    4/4.5/5/5.5 never run, so no ``synthesis.phase_45`` (codex) or
+    ``synthesis.phase_55`` (reader) row is written, and
+    ``promote_gate.evaluate_promotion`` fails closed without them. The verdicts
+    cannot be back-filled either: ``run_codex_second_opinion`` requires the
+    phase 1/2/4 artifacts (analyst reports, debate outcomes, risk verdict) that
+    this tier never produces.
+
+    Use this tier ONLY for a prose or cosmetic correction you do not intend to
+    promote. For anything that must become ``role='current'``, use
+    :func:`_large_worker`, which delegates to ``run_synthesis`` and runs every
+    gate — ETA 15 minutes nominal, not the "~80 min" folklore (that figure came
+    from a repricing bug fixed 2026-08-23 in ``2d760db``).
+
+    Learned the expensive way on 2026-08-23: three medium passes produced plans
+    117 -> 118 -> 119 with good, externally-reviewed content that no authority
+    could ever clear, because the tier structurally cannot generate the
+    verdicts.
+
     ``freeze_except`` (slugs / normalized-heading keys, see
     ``section_freeze.py``): when provided, every horizon section NOT
     named here is restored to the prior current plan's text verbatim

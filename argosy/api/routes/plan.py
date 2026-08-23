@@ -48,6 +48,40 @@ from argosy.state.queries import get_active_baseline
 router = APIRouter(prefix="/plan", tags=["plan"])
 
 
+#: Values of ``DecisionRun.fund_manager_decision`` that count as FM clearance.
+#: The plan-synthesis flow writes exactly ``"approved"`` or ``"rejected"``
+#: (orchestrator: ``fund_manager_decision = "approved" if approved else
+#: "rejected"``), and ``plan_synthesis.inputs`` already selects FM-approved runs
+#: with ``== "approved"``. The other values seen in this column — ``hold``,
+#: ``green_light``, ``block``, ``insufficient_data`` — belong to the per-TRADE
+#: decision flow and never reach a plan-draft promotion.
+_FM_CLEAR_DECISIONS = frozenset({"approved"})
+
+
+def fund_manager_cleared(run, *, override_fm_rejection: bool = False) -> bool:
+    """Did the fund manager actually clear this run? FAIL-CLOSED on absence.
+
+    This previously read ``fund_manager_decision != "rejected"``, so a run whose
+    FM agent never executed carried ``None``, ``None != "rejected"`` was True,
+    and the promote gate recorded the authority as ``"approved"`` — inside a
+    barrier whose stated contract is "a missing verdict fails closed". Measured
+    2026-08-23 on plan 119 (amendment run 440): the other four authorities
+    correctly blocked on missing verdicts while this one returned approval off a
+    NULL column. **Absence of rejection is not approval; it is absence of
+    review.**
+
+    ``run is None`` still clears, deliberately: a draft with no ``decision_run``
+    is not a synthesis product, and the promote barrier documents that it does
+    not apply to that class.
+    """
+    if override_fm_rejection:
+        return True
+    if run is None:
+        return True
+    decision = (getattr(run, "fund_manager_decision", None) or "").strip().lower()
+    return decision in _FM_CLEAR_DECISIONS
+
+
 # ---------------------------------------------------------------------------
 # WebSocket event publish indirection (T2.16).
 # ---------------------------------------------------------------------------
@@ -3905,10 +3939,24 @@ def post_draft_accept(
             db.get(DecisionRun, pv.decision_run_id)
             if pv.decision_run_id is not None else None
         )
-        _fm_clear = (
-            override_fm_rejection
-            or _run is None
-            or _run.fund_manager_decision != "rejected"
+        # FAIL-CLOSED on a fund manager that never ran.
+        #
+        # This previously read `fund_manager_decision != "rejected"`, so a run
+        # where the FM agent never executed carries None, None != "rejected" is
+        # True, and the authority was recorded as "approved". A plan no fund
+        # manager had ever seen therefore CLEARED the FM gate — inside a
+        # barrier whose own contract is "a missing verdict fails closed".
+        #
+        # Measured 2026-08-23 on plan 119 (amendment run 440): the other four
+        # authorities correctly blocked on missing verdicts while this one
+        # returned "approved" off a NULL column. Absence of rejection is not
+        # approval; it is absence of review.
+        #
+        # `_run is None` still clears, deliberately: a draft with no
+        # decision_run is not a synthesis product and the barrier above
+        # documents that it does not apply to that class.
+        _fm_clear = fund_manager_cleared(
+            _run, override_fm_rejection=override_fm_rejection
         )
         _det_clear = bool(override_gate) or not gate_blocking
         _hns_clean = (
@@ -4037,10 +4085,29 @@ def post_draft_accept(
                         "blocking_authorities": decision.blocking_authorities,
                         "reasons": decision.reasons,
                         "hint": (
-                            "Promotion is fail-closed across all authorities. "
-                            "Re-run synthesis until every authority clears, or "
-                            "pass ?override_promote_gate=true to promote anyway "
-                            "(audit-logged)."
+                            (
+                                "This draft has NO phase-authority verdicts at "
+                                "all (codex + whole_artifact_reader both "
+                                "missing), which is the signature of a MEDIUM "
+                                "amendment (plan_amendment.workers."
+                                "_medium_worker — Phase 3 only). That tier "
+                                "structurally cannot produce them, and they "
+                                "cannot be back-filled: run_codex_second_opinion "
+                                "needs phase 1/2/4 artifacts a medium run never "
+                                "creates. Do NOT reach for "
+                                "?override_promote_gate — re-run the amendment "
+                                "through _large_worker (full run_synthesis, ~15 "
+                                "min) so the gates actually execute."
+                                if {"codex", "whole_artifact_reader"}.issubset(
+                                    set(decision.blocking_authorities)
+                                )
+                                else
+                                "Promotion is fail-closed across all "
+                                "authorities. Re-run synthesis until every "
+                                "authority clears, or pass "
+                                "?override_promote_gate=true to promote anyway "
+                                "(audit-logged)."
+                            )
                         ),
                     },
                 )
