@@ -11,7 +11,7 @@ sources:
     retrieved: 2026-08-15
     tier: 1
   - url: https://www.irs.gov/pub/irs-pdf/i706na.pdf
-    retrieved: 2026-08-14
+    retrieved: 2026-08-15
     tier: 1
 ---
 
@@ -70,6 +70,44 @@ Total US-situs is in the multi-million-dollar range, which is why the plan descr
 4. **Consider term life insurance** sized to the residual exposure — user has explicitly declined this for now (per `LLM_Advisor_Handoff.md` §9.5).
 5. **Israeli holding company** — also explicitly declined for now; risk of "wallet company" reclassification, plus cannot transfer NVDA RSUs cleanly.
 
+## Sleeve carve-out for the x10 moonshot sleeve (Ariel's ruling, 2026-08-21)
+
+**This is a scoped exception to the flat rule above, not a weakening of it.** Ariel,
+2026-08-21: *"For moonshot it's ok to buy US-situs. If we can find moonshot in
+israel / eu / other that's also great, but might be harder to find. We need
+moonshot!"* — given directly in response to the deploy-cash flow blocking every
+candidate in the x10 / high-growth ("moonshot") sleeve except NVDA and falling back
+to a single distressed Israeli micro-cap (INVZ) as the sleeve's only buyable name.
+
+- **Scope:** ONLY the permanent high-growth / "moonshot" sleeve (the x10-asymmetry
+  sleeve; see `argosy/services/high_potential_sleeve.py::X10_SLEEVE_MANDATE`,
+  `sigma_class == "high_growth_basket"`). CORE and growth sleeves are NOT covered —
+  a US-domiciled ETF/stock bought as a core position is still subject to the flat
+  rule above and must be UCITS where an equivalent exists.
+- **Conditions that must hold for a moonshot US-situs buy to be acceptable:**
+  1. The position is genuinely attributed to the moonshot sleeve (not merely
+     labeled so) — attribution is sleeve-membership by ticker against the plan's
+     own moonshot instrument list, not a free-text claim.
+  2. The estate-tax consequence is stated explicitly in the buy's justification —
+     "this is a US-situs single name inside the moonshot sleeve; it adds to the
+     $60K-exemption / up-to-40%-marginal-rate NRA estate-tax base described in this
+     file" (or equivalent) — a buy that is silent on the tradeoff is not disclosed
+     and must be revised.
+  3. The total US-situs dollars added to the sleeve by one proposal stays within a
+     bounded cap derived from the sleeve's own target allocation (see
+     `argosy/services/allocation_author/verifier.py` — the cap is the sleeve's
+     single-name carve-out share, ~40% by construction of
+     `high_potential_sleeve.py`'s seed design, of the sleeve's target-pct-of-book
+     dollar size). It is not open-ended.
+  4. Preference for non-US-situs moonshot names (Israel / EU / elsewhere) continues
+     to apply where a comparably asymmetric candidate exists — the carve-out
+     permits US-situs, it does not prefer it.
+- **NVDA remains the separately-sanctioned name** it already was — unaffected by
+  this carve-out and not counted against the moonshot cap above.
+- **Everything else in this file is unchanged.** Core-sleeve UCITS preference,
+  the $60K exemption, the 40% top marginal rate, and the mitigation strategies all
+  continue to govern every position outside the moonshot sleeve.
+
 ## Form 706-NA filing
 
 Heirs must file Form 706-NA within 9 months of death if US-situs assets exceed $60K. Penalties for late filing are severe. Reducing US-situs to under $60K eliminates the filing burden entirely.
@@ -78,7 +116,7 @@ Heirs must file Form 706-NA within 9 months of death if US-situs assets exceed $
 
 - **Cite this file** for any reasoning about why UCITS is preferred over US-domiciled ETFs for new buys.
 - For the income-tax angle on the same UCITS-vs-US-ETF question, also cite `nonresident_withholding.md`.
-- The plan-critique agent should flag any plan item that *adds* US-situs exposure beyond the existing NVDA position as a YELLOW or RED finding, citing this file.
+- The plan-critique agent should flag any plan item that *adds* US-situs exposure beyond the existing NVDA position as a YELLOW or RED finding, citing this file — EXCEPT bounded moonshot-sleeve buys that satisfy the carve-out conditions above, which are expected and should not be flagged solely for being US-situs (still flag if a condition is unmet).
 - If `last_verified` is older than 12 months OR is `1900-01-01`, report `confidence=low`.
 
 ## Refresh cadence
