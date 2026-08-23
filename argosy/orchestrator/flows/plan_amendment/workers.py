@@ -567,12 +567,21 @@ def _medium_worker(*, session: Session, user_id: str,
 
 
 def _large_worker(*, session: Session, user_id: str,
-                  decision_run: DecisionRun, guidance: str) -> None:
+                  decision_run: DecisionRun, guidance: str,
+                  anchor_plan_version_id: int | None = None) -> None:
     """Delegate to run_synthesis (full 5-phase) with guidance.
 
     Reuses the worker's own DecisionRun row for synthesis (via
     `existing_decision_run_id`) so chat-turn → amendment row → draft is
     a single audit chain instead of two independent rows.
+
+    ``anchor_plan_version_id`` passes straight through: it lets the run
+    anchor on a corrected DRAFT rather than ``role='current'``, so an
+    amendment chain accumulates instead of being rebuilt from whatever
+    plan happens to be accepted. Without it, a full run re-anchors on
+    ``current`` and silently discards every draft since — the closed loop
+    found 2026-08-23 (drafts 93..119 vs a July ``current``). Default None
+    keeps the historical behaviour.
     """
     session.refresh(decision_run)
     if decision_run.status == "cancelled":
@@ -591,6 +600,7 @@ def _large_worker(*, session: Session, user_id: str,
         result = run_synthesis(
             session, user_id=user_id, trigger="check_in", guidance=guidance,
             existing_decision_run_id=decision_run.id,
+            anchor_plan_version_id=anchor_plan_version_id,
         )
 
         # I5: cancellation can land mid-synthesis (~15 min window). Re-fetch

@@ -1458,8 +1458,25 @@ def resolve_plan_numbers(
     if include_canonical_ages:
         _apply_canonical_dual_track_age(session, user_id, values)
         _apply_canonical_mc_spend(session, user_id, values)
-        if decision_run_id is not None:
-            _apply_canonical_allocation(session, decision_run_id, values)
+
+    # The canonical TargetAllocationDoc weights are NOT age-gated. They were,
+    # and it produced the "12%-vs-13% cap" contradiction CLAUDE.md names as a
+    # known class: this reads the plan's own settled ``target_allocation_json``
+    # (one cheap JSON column — no Monte Carlo, no re-entrancy), while
+    # ``include_canonical_ages`` exists solely to suppress an expensive MC age
+    # computation. Sharing one switch meant every caller that skipped the MC
+    # also silently fell back to ``concentration.nvda_cap_pct`` = 12%, the
+    # analyst's MIN-over-constraints FLOOR, while the settled doc — and the
+    # prose — said 13%.
+    #
+    # Measured on run 448 (2026-08-23): cap_pct resolved to 0.12 while
+    # nvda_target_pct's own formula cited "under the 13% concentration cap",
+    # and the run's own codex authority BLOCKED the draft for exactly that
+    # contradiction ("[C2_NO_CONTRADICTION] Cap is 13.0% in the plan but 12.0%
+    # in the canonical headline surface"). The settled doc is authoritative;
+    # the floor is an input to it, not a competing answer.
+    if decision_run_id is not None:
+        _apply_canonical_allocation(session, decision_run_id, values)
 
     return ResolvedPlanNumbers(values=values)
 

@@ -185,6 +185,7 @@ def run_synthesis(
     existing_decision_run_id: int | None = None,
     resume_from_phase: int = 1,
     reuse_phases_from_run_id: int | None = None,
+    anchor_plan_version_id: int | None = None,
 ):
     """Execute the 5-phase synthesis. Writes a role='draft' row.
 
@@ -202,6 +203,15 @@ def run_synthesis(
             phase_output_json) instead of re-running them. Requires
             ``existing_decision_run_id`` so we know which prior run's
             phases to load. Default 1 = run all phases from scratch.
+        anchor_plan_version_id: the PlanVersion the synthesizer anchors on,
+            in place of ``role='current'``. Lets a corrected DRAFT seed the
+            next run WITHOUT being promoted first — promotion is a public,
+            durable state change (supersedes the prior plan, emits
+            current-change events, refreshes caches, can close corrective
+            proposals) and must never be used as a scratch anchor. Validated
+            for existence, tenant and role ('current' or 'draft' only); a bad
+            id raises rather than silently falling back, because a silent
+            fallback would rebuild from a stale plan and look like success.
         reuse_phases_from_run_id: corrective re-synthesis tier
             (docs/design/corrective_resynthesis.md §2.B.3). When set, load
             ANOTHER completed run's persisted phase 1-2 outputs (analysts +
@@ -221,11 +231,53 @@ def run_synthesis(
     from argosy.services.adapter_outcomes import reset_outcomes
     reset_outcomes()
 
+    # The synthesizer's anchor. Normally the accepted plan; overridable so a
+    # corrected DRAFT can seed the next run without being promoted first.
+    #
+    # Why this exists (2026-08-23): promote_gate needs codex + reader verdicts
+    # that only a full run writes, a full run anchored on role='current', and
+    # role='current' was plan 92 from 13 July — so every full run rebuilt from
+    # July and discarded the corrections in drafts 93..119, which then could
+    # never be promoted because they had no verdicts. A closed loop, and the
+    # likely mechanism behind this repo's seven non-converging drafts: each
+    # regen re-anchored on a stale current, so fixes never accumulated.
+    #
+    # The tempting shortcut was to promote the draft first "just as an anchor".
+    # Rejected: role='current' is not a private synthesis variable. Promotion
+    # durably stamps acceptance, supersedes the prior plan, emits
+    # current-change events, refreshes caches/narrative and can close
+    # corrective proposals — none of which a later supersede undoes.
+    prior_current = None
+    if anchor_plan_version_id is not None:
+        anchor = session.get(PlanVersion, anchor_plan_version_id)
+        if anchor is None:
+            raise ValueError(
+                f"anchor_plan_version_id={anchor_plan_version_id} not found"
+            )
+        if anchor.user_id != user_id:
+            raise ValueError(
+                f"anchor_plan_version_id={anchor_plan_version_id} belongs to "
+                f"{anchor.user_id!r}, not {user_id!r} — refusing cross-tenant anchor"
+            )
+        if anchor.role not in {"current", "draft"}:
+            raise ValueError(
+                f"anchor_plan_version_id={anchor_plan_version_id} has "
+                f"role={anchor.role!r}; only 'current' or 'draft' may anchor a run"
+            )
+        prior_current = anchor
+        log.info(
+            "plan_synthesis.anchor_override plan_version_id=%s role=%s user=%s",
+            anchor.id, anchor.role, user_id,
+        )
+
     baseline = get_active_baseline(session, user_id)
     if baseline is None:
         raise NoBaselineError(f"user {user_id!r} has no active baseline plan")
 
-    prior_current = get_current_plan(session, user_id)
+    if prior_current is None:
+        prior_current = get_current_plan(session, user_id)
+
+
 
     if existing_decision_run_id is not None:
         # Reuse the caller's row (e.g. plan_amendment_chat large worker)
