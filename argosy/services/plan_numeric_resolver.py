@@ -1542,7 +1542,9 @@ def _apply_household_income(
     key_h = "income.household_net_annual_nis"
     key_p = "income.primary_net_annual_nis"
     key_s = "income.secondary_net_annual_nis"
+    key_o = "income.other_recurring_annual_nis"
 
+    import re
     import sqlalchemy as _sa
 
     try:
@@ -1555,7 +1557,11 @@ def _apply_household_income(
                 WHERE t.user_id = :u
                   AND t.direction = 'credit'
                   AND c.is_inflow = 1
-                  AND c.slug NOT IN ('income.rsu_vest_proceeds', 'income.dividends')
+                  AND c.slug NOT IN (
+                        'income.rsu_vest_proceeds',
+                        'income.dividends',
+                        'income.interest_credit'
+                  )
                   AND (t.tx_type IS NULL OR t.tx_type != 'refund')
                   AND t.occurred_on >= date('now', '-12 months')
                 GROUP BY t.merchant_raw
@@ -1568,9 +1574,20 @@ def _apply_household_income(
         log.warning("plan_numeric_resolver.household_income_failed err=%s", exc)
         rows = []
 
-    earners = [(str(r[0]), float(r[1] or 0.0)) for r in rows if (r[1] or 0) > 0]
+    # Merge employer-name variants before ranking. Leumi writes the same payer
+    # two ways — 'עיריית חיפה-י' and 'עיריית חיפה--י' — and grouping on the raw
+    # string split Noga into a phantom second earner, understating her by
+    # ILS 1,843 and breaking the identity primary + secondary + other == total.
+    merged: dict[str, float] = {}
+    for r in rows:
+        amt = float(r[1] or 0.0)
+        if amt <= 0:
+            continue
+        name = re.sub(r"-{2,}", "-", str(r[0] or "")).strip()
+        merged[name] = merged.get(name, 0.0) + amt
+    earners = sorted(merged.items(), key=lambda kv: -kv[1])
     if not earners:
-        for k in (key_h, key_p, key_s):
+        for k in (key_h, key_p, key_s, key_o):
             values[k] = ResolvedValue.pending(
                 k, "nis", "no categorised inflow credits in the trailing 12 months")
         return
@@ -1578,6 +1595,10 @@ def _apply_household_income(
     total = sum(v for _, v in earners)
     primary = earners[0]
     secondary = earners[1] if len(earners) > 1 else ("(none)", 0.0)
+    # Everything that is not one of the two earners — child benefit, grants.
+    # Published so the components ADD UP: a plan that states three numbers
+    # which do not sum is a defect a reviewer will (correctly) block on.
+    other = round(total - primary[1] - secondary[1], 2)
     src = (
         "expense_transactions credits x expense_categories.is_inflow, trailing "
         "12 months, excluding rsu_vest_proceeds + dividends"
@@ -1597,6 +1618,12 @@ def _apply_household_income(
             source_locator=f"{src} — source '{name}'", confidence="HIGH",
             formula=f"trailing-12mo credits from '{name}'",
         )
+    values[key_o] = ResolvedValue(
+        key=key_o, value=other, unit="nis", status="resolved",
+        source_locator=f"{src} — all sources beyond the two largest earners",
+        confidence="HIGH",
+        formula="household total - primary - secondary (child benefit, grants)",
+    )
 
 
 def _apply_canonical_mc_spend(
