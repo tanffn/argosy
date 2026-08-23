@@ -313,6 +313,15 @@ async def reconcile_critique(
 
     selected_indices = [i for i, _ in selected]
     edited_markdown = raw_markdown
+    # A snapshot refresh reprices the ENTIRE book against live quotes. It is a
+    # per-ROUND action, not a per-finding one: three findings routing to
+    # refresh_snapshot used to trigger three full repricings of all 51
+    # positions. Measured 2026-08-23 on amendment run 437 — GOOG was repriced
+    # at 09:39, 10:10 and 10:40, ~30 minutes per pass, and the run was killed
+    # at 1h36m having produced nothing. The first refresh already serves every
+    # finding in this round; later ones re-fetch prices that cannot have moved
+    # since the last pass minutes earlier.
+    snapshot_refreshed = False
     corrections_applied: list[str] = []
     escalations: list[dict[str, Any]] = []  # escalated original findings
     disputes: list[dict[str, Any]] = []  # {finding, rebuttal}
@@ -359,22 +368,34 @@ async def reconcile_critique(
             outcome.escalated += 1
         elif action == "refresh_snapshot":
             status = "routed"
-            refresher = snapshot_refresher or _default_snapshot_refresher
-            try:
-                maybe = refresher(user_id)
-                if hasattr(maybe, "__await__"):
-                    await maybe
+            if snapshot_refreshed:
+                # Already repriced this round. Record the routing honestly —
+                # the finding IS served — without paying for a second
+                # full-book fetch. Falls through to the shared per-finding
+                # bookkeeping at the loop tail; never `continue` past it.
+                detail = "covered by this round's earlier snapshot refresh"
                 corrections_applied.append(
-                    f"Snapshot refresh dispatched for finding [{idx}] "
-                    f"({f.get('topic')})."
+                    f"Snapshot refresh already dispatched this round; finding "
+                    f"[{idx}] ({f.get('topic')}) is covered by it."
                 )
-            except Exception as exc:  # noqa: BLE001 — fail-soft; re-verify still runs
-                detail = f"snapshot refresh failed: {exc}"
-                _log.warning(
-                    "critique_reconcile.snapshot_refresh_failed",
-                    user_id=user_id,
-                    error=str(exc)[:200],
-                )
+            else:
+                refresher = snapshot_refresher or _default_snapshot_refresher
+                try:
+                    maybe = refresher(user_id)
+                    if hasattr(maybe, "__await__"):
+                        await maybe
+                    snapshot_refreshed = True
+                    corrections_applied.append(
+                        f"Snapshot refresh dispatched for finding [{idx}] "
+                        f"({f.get('topic')})."
+                    )
+                except Exception as exc:  # noqa: BLE001 — fail-soft; re-verify still runs
+                    detail = f"snapshot refresh failed: {exc}"
+                    _log.warning(
+                        "critique_reconcile.snapshot_refresh_failed",
+                        user_id=user_id,
+                        error=str(exc)[:200],
+                    )
             outcome.routed_to_service += 1
         elif action == "needs_user_input":
             status = "escalated"
