@@ -50,6 +50,23 @@ FACT_DISPLAY: dict[str, str] = {
     # bridge figures, never just the mandate-case one. See
     # plan_numeric_resolver._apply_canonical_dual_track_age.
     "retirement.fire_bridge_offmandate_nis": "nis_millions",
+    # Registered 2026-08-24. All six RESOLVED in plan_numeric_resolver but had
+    # no display entry, so `{{fact:<key>}}` rendered "[derivation pending]" and
+    # tripped the leakage gate. The fleet therefore could not cite them and
+    # typed literals instead — literals that then drifted between surfaces and
+    # became reviewer BLOCKERS. Three separate findings trace to exactly this:
+    #   * codex [C1] "FI target cannot be independently reproduced" — the
+    #     tracked-vs-agent T12 reconciliation needs the donor-check figure;
+    #   * reader "two different net-worth results for the same -10% adverse FX
+    #     scenario" — both shock figures were untokenised;
+    #   * the FIRE-bridge divergence — the FI-age estimate was untokenised.
+    # A resolver key that cannot render is a key the plan cannot honestly use.
+    "retirement.fi_shock_net_worth_nis": "nis_millions",
+    "retirement.fi_fx_shock_net_worth_nis": "nis_millions",
+    "retirement.fire_bridge_fi_age_estimate_nis": "nis_millions",
+    "portfolio.usd_exposure_nis": "nis_millions",
+    "concentration.nvda_value_nis": "nis_millions",
+    "spend.annual_t12_donor_check_nis": "nis",
     "retirement.liquidity_reserve_nis": "nis_millions",
     # Signed margins / flows — shown in full so the sign + exact gap are legible.
     "retirement.fi_margin_signed_nis": "nis",
