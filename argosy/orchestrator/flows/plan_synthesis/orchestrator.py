@@ -186,6 +186,7 @@ def run_synthesis(
     resume_from_phase: int = 1,
     reuse_phases_from_run_id: int | None = None,
     anchor_plan_version_id: int | None = None,
+    corrective_ctx_override: object | None = None,
 ):
     """Execute the 5-phase synthesis. Writes a role='draft' row.
 
@@ -391,8 +392,23 @@ def run_synthesis(
     _corrective_ctx = None
     if _os.environ.get("ARGOSY_CORRECTIVE_SYNTHESIS", "1") == "1":
         try:
-            _corrective_ctx = _pkg.build_corrective_context(
-                session, user_id=user_id, decision_run_id=decision_run_id,
+            # A caller may supply a BOUNDED, pre-verified corrective set.
+            #
+            # The auto-builder returns every open finding, and critique-sourced
+            # corrections deliberately carry no wrong_values (extracting
+            # figures from finding prose is not deterministic enough for a
+            # gate). Both properties make the patch path unreachable: an
+            # unaddressable correction forces FULL outright, and a dozen
+            # findings blow past MAX_IMPLICATED_GROUPS regardless. Every
+            # corrective round therefore re-authored the whole plan.
+            #
+            # An override lets a caller hand in a small set whose wrong values
+            # are VERIFIED to occur in the anchor draft, classify it, and only
+            # then launch — so a bounded edit stays a bounded edit.
+            _corrective_ctx = corrective_ctx_override or (
+                _pkg.build_corrective_context(
+                    session, user_id=user_id, decision_run_id=decision_run_id,
+                )
             )
             if _corrective_ctx is not None and _corrective_ctx.rendered:
                 guidance = (
@@ -1954,8 +1970,27 @@ def run_synthesis(
             )
         )
 
+    # A reader verdict, once obtained, is never thrown away by a LATER
+    # re-read. The coherence-reconcile loop below re-invokes the reader and
+    # reassigns this pair; a re-read that degrades to (None, None) — reader
+    # kill-switch, dispatch failure, empty assemble — used to CLEAR a verdict
+    # we already held, so the phase-55 row was never persisted and the
+    # promote gate then failed closed on "authority never ran". That is
+    # indistinguishable from a genuine BLOCK but carries no information.
+    # Runs 456 and 461 both logged whole_artifact_reader.leakage_blocked —
+    # a real, actionable BLOCK — and still recorded no phase_55 row.
+    _reader_verdict_held = None
+    _reader_row_held = None
+
+    def _keep_reader(verdict, row):
+        """Latch the newest NON-EMPTY reader result."""
+        nonlocal _reader_verdict_held, _reader_row_held
+        if row is not None:
+            _reader_verdict_held, _reader_row_held = verdict, row
+        return verdict, row
+
     try:
-        _reader_verdict, _reader_row = _assemble_and_read()
+        _reader_verdict, _reader_row = _keep_reader(*_assemble_and_read())
     except Exception as exc:  # noqa: BLE001 — fail-soft; draft already persisted
         log.warning(
             "whole_artifact_reader.run_failed",
@@ -2104,7 +2139,7 @@ def run_synthesis(
                         agent_report_rows=[],
                     )
                     if _own.made_progress or _sec_qualified:
-                        _reader_verdict, _reader_row = _assemble_and_read()
+                        _reader_verdict, _reader_row = _keep_reader(*_assemble_and_read())
                         # Iterate (or exit clean): the while condition re-checks BLOCK
                         # and the round bound; never fall through to a full re-synth
                         # while the owner path is still making targeted prose progress.
@@ -2245,9 +2280,9 @@ def run_synthesis(
                         {"subject_type": rr.subject_type, "ruling": rr.ruling}
                         for rr in _coh_ledger.load_active_rulings(session, user_id=user_id)
                     ]
-                    _reader_verdict, _reader_row = _assemble_and_read(
+                    _reader_verdict, _reader_row = _keep_reader(*_assemble_and_read(
                         settled_rulings=_delib_rulings
-                    )
+                    ))
                     if getattr(_reader_verdict, "overall_assessment", "") != "BLOCK":
                         continue  # deliberation cleared the BLOCK — loop exits clean
                     # Still BLOCKing — the next round (if any) re-reads with this
@@ -2314,7 +2349,7 @@ def run_synthesis(
                             if _n:
                                 draft.sections_json = _sj
                         session.commit()
-                        _reader_verdict, _reader_row = _assemble_and_read()
+                        _reader_verdict, _reader_row = _keep_reader(*_assemble_and_read())
                         if getattr(_reader_verdict, "overall_assessment", "") != "BLOCK":
                             continue  # surgical edits cleared the block — skip re-synth
                         if not _reader_coherence_reconcile_guidance(_reader_verdict):
@@ -2390,7 +2425,7 @@ def run_synthesis(
                 # path's one bounded escalation (design §2.D).
                 if _patch_used:
                     _patch_superseded_by_full = True
-                _reader_verdict, _reader_row = _assemble_and_read()
+                _reader_verdict, _reader_row = _keep_reader(*_assemble_and_read())
             except Exception as exc:  # noqa: BLE001 — reconcile is best-effort
                 log.warning(
                     "plan_synthesis.reader_reconcile_failed",
@@ -2416,6 +2451,15 @@ def run_synthesis(
     # codex's 4.5 and the FM's phase 5), folding the reconcile marker into the
     # phase output JSON so /decisions/[id] can show the reader zigzag. Mirror
     # codex's guard: only record a real row.
+    # Fall back to the latched pair when the final re-read came back empty.
+    if _reader_row is None and _reader_row_held is not None:
+        log.warning(
+            "whole_artifact_reader.recovered_held_verdict",
+            user_id=user_id, decision_run_id=decision_run_id,
+            assessment=getattr(_reader_verdict_held, "overall_assessment", None),
+        )
+        _reader_verdict, _reader_row = _reader_verdict_held, _reader_row_held
+
     if _reader_row is not None:
         _reader_phase_output = (
             _reader_verdict.model_dump_json() if _reader_verdict else ""
@@ -2588,7 +2632,9 @@ def run_synthesis(
                     # the reader must judge what will actually be promoted.
                     _esc_reader_ran = False
                     try:
-                        _reader_verdict, _esc_reader_row = _assemble_and_read()
+                        _reader_verdict, _esc_reader_row = _keep_reader(
+                            *_assemble_and_read()
+                        )
                         if _esc_reader_row is not None:
                             _pkg._record_phase_completion(
                                 user_id=user_id, decision_run_id=decision_run_id,
