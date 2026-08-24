@@ -569,7 +569,8 @@ def _medium_worker(*, session: Session, user_id: str,
 def _large_worker(*, session: Session, user_id: str,
                   decision_run: DecisionRun, guidance: str,
                   anchor_plan_version_id: int | None = None,
-                  resume_from_phase: int | None = None) -> None:
+                  resume_from_phase: int | None = None,
+                  corrective_ctx_override: object | None = None) -> None:
     """Delegate to run_synthesis (full 5-phase) with guidance.
 
     Reuses the worker's own DecisionRun row for synthesis (via
@@ -613,6 +614,8 @@ def _large_worker(*, session: Session, user_id: str,
             {"resume_from_phase": resume_from_phase}
             if resume_from_phase is not None else {}
         )
+        if corrective_ctx_override is not None:
+            _resume_kw["corrective_ctx_override"] = corrective_ctx_override
         result = run_synthesis(
             session, user_id=user_id, trigger="check_in", guidance=guidance,
             existing_decision_run_id=decision_run.id,
