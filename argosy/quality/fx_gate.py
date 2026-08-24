@@ -50,6 +50,22 @@ _DURATION_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A number next to the pair can describe the pair's CHANGE rather than its
+# LEVEL ("USD/NIS weakened 1.81 percent", "USD/NIS move is +1.55%"). Those
+# percentages are dimensionally valid and must not be tested against the
+# 2.5-4.5 spot-rate band. The cue is deliberately required: a bare
+# "USD/NIS 0.34%" remains the recurring mislabeled-spot defect.
+_CHANGE_CUE_RE = re.compile(
+    r"\b(?:move|change|weaken(?:ed|ing)?|strengthen(?:ed|ing)?|"
+    r"appreciat(?:ed|ing|ion)|depreciat(?:ed|ing|ion)|"
+    r"rose|risen|fell|fallen|gained|lost|increase(?:d)?|decrease(?:d)?|"
+    r"up|down)\b|[+-]\s*$",
+    re.IGNORECASE,
+)
+_PERCENT_WORD_SUFFIX_RE = re.compile(
+    r"^\s*(?:percent|per\s+cent)\b", re.IGNORECASE
+)
+
 
 def check_fx_unit_direction(
     *, plan_text: str, fx_usd_nis: float | None = None
@@ -92,7 +108,13 @@ def check_fx_unit_direction(
         if _DURATION_SUFFIX_RE.match(text[m.end():]):
             continue
         num = float(m.group("num"))
-        is_percent = m.group("pct") == "%"
+        is_percent = (
+            m.group("pct") == "%"
+            or bool(_PERCENT_WORD_SUFFIX_RE.match(text[m.end():]))
+        )
+        if is_percent and _CHANGE_CUE_RE.search(m.group("gap")):
+            # Percentage CHANGE prose, not a spot-rate claim.
+            continue
         if is_percent:
             violations.append(
                 GateViolation(

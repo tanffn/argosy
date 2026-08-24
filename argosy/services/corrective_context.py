@@ -98,6 +98,76 @@ _WORD_RE = re.compile(r"[a-z0-9%]+")
 _FACT_TOKEN_STOPWORDS = frozenset({"sh", "w", "x", "nis", "pct", "usd"})
 
 
+@dataclass(frozen=True)
+class RequiredStatementContract:
+    """A durable prose replacement that a corrective round can enforce.
+
+    ``wrong`` records the rejected claim, ``canonical`` records the compact
+    state distinction, and ``must_be_absent`` records dangerous phrasings the
+    next artifact must purge. ``required_statement`` is the exact replacement
+    wording carried by :class:`Correction` into author and reader prompts.
+    """
+
+    contract_id: str
+    wrong: str
+    canonical: str
+    must_be_absent: tuple[str, ...]
+    required_statement: str
+
+
+_C6_REQUIRED_STATEMENT = (
+    "The 9,230 eligible-share count comes from the 18 June tax simulation, "
+    "before the 560-share sale on 12 August. Because the sold shares have not "
+    "been mapped back to that simulation, the current eligible balance is "
+    "between 8,670 and 9,230; it therefore does not yet prove that all 8,918 "
+    "planned-sale shares qualify. The 8,918 figure is the programme ceiling, "
+    "not a released order. Each tranche may use only trustee-confirmed eligible "
+    "lots, must remain within the per-decision size cap, and cumulative sales "
+    "may not exceed the lesser of 8,918 and the re-derived remaining eligible "
+    "balance. Any residual waits for its own eligibility date. Missing cost "
+    "basis prevents an exact after-tax-proceeds estimate; it does not by itself "
+    "determine the 24-month eligibility clock."
+)
+_AFTER_TAX_REQUIRED_STATEMENT = (
+    "Tax-year spacing can reduce surtax, but it cannot eliminate the underlying "
+    "Section-102 capital-gains tax. Timing mitigates the after-tax gap; it does "
+    "not by itself close it."
+)
+
+# Household-specific verdict contracts captured after run 463.  These live in
+# code (rather than an ad-hoc launch script) so every ordinary corrective-
+# context build can reload them from the persisted Codex/FM findings.
+REQUIRED_STATEMENT_CONTRACTS: tuple[RequiredStatementContract, ...] = (
+    RequiredStatementContract(
+        contract_id="c6_eligible_share_release",
+        wrong=(
+            "9,230 definitively covers 8,918; the entire programme can run at "
+            "capital rates now."
+        ),
+        canonical=(
+            "9,230 is a pre-sale estimate; 8,918 is a programme ceiling, not a "
+            "released eligible order."
+        ),
+        must_be_absent=(
+            "fully covered",
+            "entire programme runs at capital rates now",
+            "pool larger than the sale",
+        ),
+        required_statement=_C6_REQUIRED_STATEMENT,
+    ),
+    RequiredStatementContract(
+        contract_id="after_tax_gap_timing",
+        wrong="The after-tax gap is a timing problem.",
+        canonical=_AFTER_TAX_REQUIRED_STATEMENT,
+        must_be_absent=(
+            "The after-tax gap is a timing problem.",
+            "tax-timing problem, not a savings problem",
+        ),
+        required_statement=_AFTER_TAX_REQUIRED_STATEMENT,
+    ),
+)
+
+
 @dataclass
 class Correction:
     """One correction the corrective run must clear."""
@@ -757,6 +827,57 @@ def _verdict_ref(text: str) -> str:
     return m.group(0).lower() if m else ""
 
 
+def _required_statement_contract(
+    text: str,
+) -> RequiredStatementContract | None:
+    """Match only the two settled run-463 correction subjects."""
+    folded = " ".join((text or "").lower().replace(",", "").split())
+    if (
+        "9230" in folded
+        and "8918" in folded
+        and ("eligible" in folded or "capital rate" in folded)
+    ):
+        return REQUIRED_STATEMENT_CONTRACTS[0]
+    if (
+        "after-tax gap" in folded
+        and (
+            "timing problem" in folded
+            or "tax-year spacing" in folded
+            or "underlying section-102" in folded
+        )
+    ):
+        return REQUIRED_STATEMENT_CONTRACTS[1]
+    return None
+
+
+def _apply_required_statement_contract(
+    finding: dict[str, Any], *, source_text: str
+) -> dict[str, Any]:
+    """Attach exact WRONG/CANONICAL/ABSENT/REQUIRED semantics to a finding."""
+    contract = _required_statement_contract(source_text)
+    if contract is None:
+        return finding
+    # A named contract supersedes heuristic figure extraction. In particular,
+    # the run-463 FM prose also contained an unsupported 3,700-share idea; it
+    # must not become an accidental numeric correction simply because it sat
+    # in the same verdict paragraph.
+    finding["wrong_values"] = list(dict.fromkeys(
+        (contract.wrong, *contract.must_be_absent)
+    ))
+    # The deterministic presence floor verifies the exact required wording.
+    finding["canonical_values"] = [contract.required_statement]
+    finding["required_statement"] = contract.required_statement
+    finding["contract_id"] = contract.contract_id
+    finding["summary"] = (
+        f"CORRECTION CONTRACT [{contract.contract_id}]"
+        + f"\nWRONG: {contract.wrong}"
+        + f"\nCANONICAL: {contract.canonical}"
+        + "\nMUST-BE-ABSENT: "
+        + "; ".join(contract.must_be_absent)
+    )
+    return finding
+
+
 def _loads_lenient(text: str | None) -> dict[str, Any] | None:
     """Parse a persisted agent ``response_text`` as JSON — strict first,
     then ``raw_decode`` from the first ``{`` (model chatter tolerated)."""
@@ -783,7 +904,7 @@ def _verdict_finding(
     text: str, *, severity: str, agent: str, evidence: list[str] | None = None
 ) -> dict[str, Any]:
     wrong, canonical = extract_verdict_figures(text)
-    return {
+    finding = {
         "severity": severity,
         "topic": _verdict_topic(text),
         "plan_item_ref": _verdict_ref(text),
@@ -794,6 +915,7 @@ def _verdict_finding(
         "required_statement": extract_required_statement(text),
         "verdict_agent": agent,
     }
+    return _apply_required_statement_contract(finding, source_text=text)
 
 
 def _load_rejected_corrective_draft(
@@ -1016,6 +1138,46 @@ def _harvest_verdict_feedback(
                         text, severity="RED", agent="fund_manager",
                     ))
 
+    # Codex Phase 4.5 is not generally re-fed here (FM + reader own the broad
+    # corrective verdict loop), but it is the sole persisted source of the
+    # settled after-tax wording contract. Carry only findings that match a
+    # named contract, and avoid duplicating a contract already supplied by FM.
+    codex_row = _load_latest_verdict_report(
+        session, user_id=user_id, decision_run_id=run.id,
+        agent_role="codex_second_opinion",
+    )
+    if codex_row is not None:
+        codex = _loads_lenient(codex_row.response_text)
+        if codex is not None:
+            existing_contracts = {
+                str(f.get("contract_id")) for f in findings
+                if f.get("contract_id")
+            }
+            for item in codex.get("findings") or []:
+                if not isinstance(item, dict):
+                    continue
+                topic = str(item.get("topic") or "").strip()
+                detail = str(item.get("detail") or "").strip()
+                suggested = str(item.get("suggested_fix") or "").strip()
+                source_text = " ".join(x for x in (topic, detail, suggested) if x)
+                contract = _required_statement_contract(source_text)
+                if contract is None or contract.contract_id in existing_contracts:
+                    continue
+                evidence = item.get("cited_synthesizer_paragraphs")
+                finding = _verdict_finding(
+                    source_text,
+                    severity=(
+                        "RED" if str(item.get("severity")) == "BLOCKER" else "YELLOW"
+                    ),
+                    agent="codex_second_opinion",
+                    evidence=(
+                        [str(v) for v in evidence[:4]]
+                        if isinstance(evidence, list) else []
+                    ),
+                )
+                findings.append(finding)
+                existing_contracts.add(contract.contract_id)
+
     reader_row = _load_latest_verdict_report(
         session, user_id=user_id, decision_run_id=run.id,
         agent_role="whole_artifact_reader",
@@ -1044,6 +1206,21 @@ def _harvest_verdict_feedback(
                     agent="whole_artifact_reader",
                     evidence=evidence,
                 ))
+
+    # FM, Codex, and reader may all flag the same named contract. Carry it
+    # once; the exact contract is the authority, not the number of reviewers
+    # who independently noticed it. Non-contract findings retain today's
+    # behavior and ordering.
+    deduped_findings: list[dict[str, Any]] = []
+    seen_contracts: set[str] = set()
+    for finding in findings:
+        contract_id = str(finding.get("contract_id") or "")
+        if contract_id and contract_id in seen_contracts:
+            continue
+        if contract_id:
+            seen_contracts.add(contract_id)
+        deduped_findings.append(finding)
+    findings = deduped_findings
 
     if not findings:
         return None
@@ -1952,6 +2129,8 @@ __all__ = [
     "OPEN_RECONCILE_STATUSES",
     "build_corrective_context",
     "extract_required_statement",
+    "RequiredStatementContract",
+    "REQUIRED_STATEMENT_CONTRACTS",
     "extract_verdict_figures",
     "match_fact_to_finding",
     "settlement_matches",

@@ -210,6 +210,17 @@ class TestNoFalsePositivesOnLegitimateProse:
         text = "This claim was superseded by the prior draft's correction."
         assert check_history_leak(text)
 
+    def test_assumption_precedence_supersedes_is_allowed(self):
+        """Draft-124: policy precedence in an assumption row is current state."""
+        text = (
+            "| A11 | Policy hierarchy | The permanent deconcentration rule "
+            "supersedes tactical timing signals. |"
+        )
+        assert check_history_leak(text) == []
+
+    def test_supersedes_prior_plan_still_flagged(self):
+        assert check_history_leak("This allocation supersedes the prior plan.")
+
     @pytest.mark.parametrize("sentence", FINANCIAL_ADVICE_CORPUS)
     def test_history_leak_no_false_positives(self, sentence: str):
         violations = check_history_leak(sentence)

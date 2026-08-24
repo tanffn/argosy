@@ -72,7 +72,7 @@ _LABEL_RE = re.compile(
     # the event identity and anchors on its own key — not collapsed to bare
     # `label:tax:`. Live pv55: a NIS "estate-tax" exposure and a USD RSU
     # "estimated tax" both lost their qualifier and spuriously flipped currency.
-    r"\b((?:[a-z]+[\s-]+){0,3})"
+    r"\b((?:(?:[a-z]+|\d+)[\s-]+){0,3})"
     # "after-tax" / "pre-tax" / "post-tax" / "before-tax" are ADJECTIVES modifying
     # another noun (a rate, an SWR, a return) — NOT a tax-liability event. Exclude
     # them so a NIS "after-tax SWR" capital figure is not flipped against a tax event.
@@ -119,6 +119,24 @@ _EQUIV_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Citation/source paths are provenance, not tax events. In a clause that also
+# contains a money amount, `/domain_knowledge/tax/...` used to create a generic
+# `label:tax:` anchor and collide with an unrelated amount elsewhere. Mask only
+# the known domain-knowledge tax path shape; ordinary prose remains available
+# to the event parser.
+_TAX_SOURCE_PATH_RE = re.compile(
+    r"(?:domain_kb:)?/?domain_knowledge/tax/[^\s`|)\]}>,;]+",
+    re.IGNORECASE,
+)
+
+# "tax simulation" names a source/model, not a payable event. Keeping it out
+# of the event labels also prevents a sale amount in the same clause from
+# being attached to a generic tax anchor.
+_NON_EVENT_TAX_HEAD_RE = re.compile(
+    r"\btax\s+(?:simulation|simulator|model|methodology|source|document|file|path)\b",
+    re.IGNORECASE,
+)
+
 
 def _anchor_keys(clause: str) -> set[str]:
     """The set of normalised event-anchor keys a clause refers to.
@@ -128,6 +146,8 @@ def _anchor_keys(clause: str) -> set[str]:
     collapse together; this is what binds two surfaces to the SAME event.
     """
     keys: set[str] = set()
+    clause = _TAX_SOURCE_PATH_RE.sub(" ", clause)
+    clause = _NON_EVENT_TAX_HEAD_RE.sub(" ", clause)
 
     for m in _ISO_DATE_RE.finditer(clause):
         # ISO 2026-06-17 → month-day key "06-17" so it can match "June 17".

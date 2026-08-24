@@ -1663,9 +1663,8 @@ def run_synthesis(
                 error=str(exc),
             )
 
-    # Stamp the DecisionRun row as finished — provides the audit lineage
-    # SDD §6.11 promises: you can reconstruct the full synthesis by joining
-    # plan_versions.decision_run_id → decision_runs.id.
+    # Persist the FM authority so the downstream reader/gates can tighten it,
+    # but keep the DecisionRun running until those authorities finish.
     #
     # T2.8 — the prior implementation gated this on
     # `existing_decision_run_id is None` to avoid racing the plan_amendment
@@ -1675,15 +1674,8 @@ def run_synthesis(
     # — the draft persisted + FM verdict fired but #24's row still showed
     # status='running' after completion.
     #
-    # Fix: always stamp the completion fields when the orchestrator owns
-    # the synthesis to its end. The amendment-cancel path uses a different
-    # code path (the worker that runs the amendment owns its own
-    # status-transition logic and checks cancellation BEFORE entering
-    # run_synthesis); by the time we reach this line, the synthesis has
-    # already produced the draft, so a late cancellation flip would be
-    # incorrect anyway.
-    decision_run.finished_at = datetime.now(timezone.utc)
-    decision_run.status = "completed"
+    # The terminal status and finished_at transition is immediately before
+    # return, after the deterministic gate, reader, and final authority receipt.
     decision_run.fund_manager_decision = "approved" if approved else "rejected"
     session.commit()
 
@@ -3213,6 +3205,14 @@ def run_synthesis(
             "plan_synthesis.record_phase_failed",
             user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
         )
+
+    # Do not advertise completion until every synchronous authority above has
+    # finished.  The draft and FM decision are committed earlier so the
+    # deterministic gate and reader can inspect them, while status remains
+    # ``running`` throughout those checks and any reader reconciliation.
+    decision_run.finished_at = datetime.now(timezone.utc)
+    decision_run.status = "completed"
+    session.commit()
 
     return SynthesisResult(decision_run_id=decision_run_id, draft_id=draft.id)
 

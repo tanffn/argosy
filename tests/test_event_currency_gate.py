@@ -92,3 +92,24 @@ def test_dollar_cost_average_is_not_a_usd_amount() -> None:
     only ₪180,000 (NIS) is present → no flip, no violation."""
     text = "On June 17 we will dollar-cost average ₪180,000 into the index."
     assert check_event_currency_consistency(plan_text=text) == []
+
+
+def test_domain_tax_source_paths_are_not_tax_events() -> None:
+    """Draft-124 false positive: SOURCE PATH segments are provenance only."""
+    text = (
+        "Planned reserve: NIS 1,857,994 "
+        "[source: /domain_knowledge/tax/israel/section_102.md].\n"
+        "Estate counsel budget: USD 36,064 "
+        "[source: domain_kb:domain_knowledge/tax/us/estate_tax_nonresidents.md]."
+    )
+    assert check_event_currency_consistency(plan_text=text) == []
+
+
+def test_tax_simulation_is_not_a_tax_event() -> None:
+    """A simulation is a data source, not the liability paid in the clause."""
+    text = (
+        "Tax on the planned sale is NIS 1,857,994.\n"
+        "The tax simulation covers 10,940 shares; a known sale was USD 125,325.\n"
+        "Section-102 tax owed on a vest sale is USD 36,064."
+    )
+    assert check_event_currency_consistency(plan_text=text) == []

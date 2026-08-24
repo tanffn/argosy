@@ -56,3 +56,22 @@ def test_real_inverted_rate_still_flagged_alongside_duration():
     text = "BOI USD/NIS 90-day band. Elsewhere the plan says USD/NIS of 0.33."
     viol = check_fx_unit_direction(plan_text=text, fx_usd_nis=None)
     assert len(viol) == 1
+
+
+def test_percentage_change_weakened_is_not_read_as_spot_rate():
+    """Draft-124 false positive: 1.81% is the pair's move, not its level."""
+    text = "USD/NIS weakened 1.81 percent over the review window."
+    assert check_fx_unit_direction(plan_text=text, fx_usd_nis=None) == []
+
+
+def test_percentage_change_move_is_not_read_as_spot_rate():
+    """Draft-124 false positive: the signed 90-day move is not a spot rate."""
+    text = "The 90-day USD/NIS move is +1.55 percent."
+    assert check_fx_unit_direction(plan_text=text, fx_usd_nis=None) == []
+
+
+def test_bare_percent_spot_claim_still_flags():
+    """The change carve-out must not admit the original mislabeled spot form."""
+    assert check_fx_unit_direction(
+        plan_text="USD/NIS was 0.34%", fx_usd_nis=None
+    )

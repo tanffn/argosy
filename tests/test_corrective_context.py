@@ -1300,6 +1300,72 @@ def test_verdict_finding_carries_required_statement(session):
     assert "required wording (apply this restatement)" in ctx.rendered
 
 
+def test_run_463_required_statement_contracts_load_from_verdicts(session):
+    """C6 (FM) and after-tax (Codex-only AMBER) survive into the next round."""
+    from argosy.services.corrective_context import build_corrective_context
+
+    run = _add_run(session)
+    _add_corrective_draft(session, run)
+    _add_verdict_report(
+        session,
+        run,
+        role="fund_manager",
+        payload=_fm_rejection([
+            "[C6_NO_FALSE_CERTAINTY] The 9,230 eligible pool is described as "
+            "definitively covering all 8,918 planned shares at capital rates."
+        ]),
+    )
+    _add_verdict_report(
+        session,
+        run,
+        role="codex_second_opinion",
+        payload={
+            "overall_assessment": "BLOCK",
+            "findings": [{
+                "severity": "AMBER",
+                "topic": "After-tax gap is overstated as purely a timing problem",
+                "detail": (
+                    "Tax-year spacing reduces surtax but the underlying "
+                    "Section-102 tax remains, so the after-tax gap is not "
+                    "closed by timing."
+                ),
+                "suggested_fix": "Separate the permanent tax from surtax.",
+                "cited_synthesizer_paragraphs": [
+                    "That gap is a tax-timing problem, not a savings problem."
+                ],
+            }],
+        },
+    )
+
+    ctx = build_corrective_context(session, user_id="ariel")
+    assert ctx is not None
+    contracted = {c.verdict_agent: c for c in ctx.corrections}
+    assert set(contracted) == {"fund_manager", "codex_second_opinion"}
+
+    c6 = contracted["fund_manager"]
+    assert c6.required_statement.startswith(
+        "The 9,230 eligible-share count comes from the 18 June tax simulation"
+    )
+    assert "fully covered" in c6.wrong_values
+    assert "pool larger than the sale" in c6.wrong_values
+    assert 3700 not in c6.wrong_values
+    assert c6.required_statement in [v for _, v in c6.canonical_facts]
+    assert "WRONG:" in c6.summary and "CANONICAL:" in c6.summary
+    assert "MUST-BE-ABSENT:" in c6.summary
+
+    after_tax = contracted["codex_second_opinion"]
+    assert after_tax.required_statement == (
+        "Tax-year spacing can reduce surtax, but it cannot eliminate the "
+        "underlying Section-102 capital-gains tax. Timing mitigates the "
+        "after-tax gap; it does not by itself close it."
+    )
+    assert "tax-timing problem, not a savings problem" in after_tax.wrong_values
+    assert after_tax.required_statement in [
+        v for _, v in after_tax.canonical_facts
+    ]
+    assert "required wording (apply this restatement)" in ctx.rendered
+
+
 # ---------------------------------------------------------------------------
 # Landed-set UNION across the corrective-draft chain (2026-07-08 night bug:
 # draft 72's verdict-only landed set shadowed draft 71's critique landed set)
