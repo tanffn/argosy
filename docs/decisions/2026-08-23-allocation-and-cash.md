@@ -32,29 +32,51 @@ short fixed income. Liquidity runway must stop counting it as cash. If true cash
 is wanted instead, `IB01` (iShares USD Treasury 0–1yr UCITS) is the like-for-like
 swap.
 
-### SCHD — HOLD. Do not switch.
+### SCHD — HOLD, exit gradually. Ariel's decision, 2026-08-24.
 
-This **reverses** an earlier recommendation of mine to sell SCHD into a UCITS
-equivalent. Ariel pushed back; the pushback was right.
+**Final: hold the position, wind it down over time. No forced sale, no switch.**
 
-| fund | 10y / since-inception annualised |
-|---|---|
-| SCHD | ~13.19% |
-| DHSA (WisdomTree US High Dividend UCITS) | 9.64% since 2016 inception |
-| UDVD (SPDR US Dividend Aristocrats UCITS) | 8.76% 10y |
+This is a third path, taken after both prior recommendations were shown to be
+answering the wrong question:
 
-On the USD 286.15k position the DHSA give-up is ~USD 255k over the period,
-against a contingent estate tax of ~USD 114.5k. **The cure costs more than the
-disease**, and the cost is certain while the estate tax is contingent on death.
-No Irish UCITS tracks the Dow Jones US Dividend 100 index.
+* I first said SELL into a UCITS equivalent. Ariel pushed back. He was right.
+* I then said HOLD, citing DHSA's 9.64% annualised since inception against
+  SCHD's ~13.19% — roughly USD 255k of give-up on the position. **That
+  comparison was wrong**: it measured SCHD against a worse *dividend* fund, not
+  against the broad UCITS core that would actually replace it.
+* Codex then said EXIT: *"projecting SCHD's historical outperformance into a
+  USD 255k future advantage is not a defensible reason to retain approximately
+  USD 114.5k of marginal estate exposure. The relevant cost is principally
+  accelerated tax payment / lost deferral, not the eventual tax itself."*
+  Correct — Israel gives no step-up, so the CGT is owed eventually regardless.
 
-Operationally: **stop purchases and DRIP in both SCHD accounts**, redirect new
-flow to the UCITS core, and revisit only if a capital-loss offset appears or the
-embedded gain falls materially.
+Gradual exit resolves the real tension. The whole cost of exiting is
+**deferral**, so spreading the realisation preserves most of that deferral value
+while still removing the US-situs tail. It also avoids realising the full
+USD 67.88k gain in one tax year.
 
-**Do not buy FUSA to imitate SCHD** — it holds ~7.3% NVIDIA (re-adding the
-concentration being sold) and its distributing share yields ~1.36% against
-SCHD's ~3.13%.
+**Position:** USD 286.15k across two accounts, ~31.2% embedded gain
+(~USD 67.88k), so roughly USD 19.4k of CGT if realised in a single year.
+
+**Standing instructions, effective now:**
+
+1. **Stop all purchases and turn off DRIP in both SCHD accounts.** At ~3.13%
+   yield on USD 286k that is ~USD 9k/yr silently buying more US-situs. This is
+   the immediate action and requires no market timing.
+2. **Redirect that flow to the UCITS core** (CSPX / EXUS / EIMI at the section-3
+   weights). Do NOT buy DHSA or FUSA — FUSA holds ~7.3% NVIDIA, re-adding the
+   concentration being sold.
+3. **Wind the position down in annual slices**, sized so the year's total
+   capital-source income stays inside the ILS 721,560 surtax threshold wherever
+   possible. The NVDA glide consumes that headroom in 2026–2027, so SCHD slices
+   should be small in those years and larger from 2028.
+4. **Accelerate if a capital-loss offset appears** — that converts the deferral
+   cost to roughly zero.
+
+**Open:** the per-year slice sizes cannot be fixed until the NVDA glide schedule
+is settled, which is itself gated on the trustee lot-ledger refresh. Compute
+SCHD slice sizes from the glide's residual threshold headroom once that lands —
+do not guess them in the meantime.
 
 ## 3. Free cash — USD 125,800, LUMP SUM on the next LSE session
 
