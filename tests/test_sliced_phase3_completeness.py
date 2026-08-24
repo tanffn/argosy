@@ -197,3 +197,100 @@ def test_pair_roster_reports_inventions_without_failing():
 ])
 def test_roster_missing_table(roster, emitted, expected):
     assert _roster_missing(roster, emitted, lambda x: x) == expected
+
+
+
+# --- the assembly occurrence key (run 456's SECOND failure) ------------
+
+def _skeleton_with(section_ids, horizon="long"):
+    from argosy.agents.plan_skeleton_synthesizer import (
+        PlanSkeleton, SkeletonHorizon, SkeletonSectionEntry,
+    )
+
+    def _h(h):
+        return SkeletonHorizon(
+            horizon=h, freshness_expected="quarterly", status="no_change",
+            posture_summary="steady",
+        )
+
+    return PlanSkeleton(
+        long=_h("long"), medium=_h("medium"), short=_h("short"),
+        section_roster=[
+            SkeletonSectionEntry(
+                section_id=s, horizon=horizon, one_line_thesis=f"thesis {s}",
+            )
+            for s in section_ids
+        ],
+    )
+
+
+def _emitted(section_ids, horizon="long"):
+    from argosy.agents.plan_synthesizer_types import SectionEvidence
+    from argosy.agents.plan_slice_synthesizer import Section
+    return [
+        Section(
+            section_id=s, horizon=horizon, title=s.replace("_", " ").title(),
+            body_md=f"body for {s}", evidence=SectionEvidence(missing_data=["pinned in test"]),
+        )
+        for s in section_ids
+    ]
+
+
+def _horizon_outputs():
+    from argosy.agents.plan_slice_synthesizer import HorizonSection
+    return {
+        h: HorizonSection(
+            horizon=h, freshness_expected="quarterly", status="no_change",
+            posture="steady",
+        )
+        for h in ("long", "medium", "short")
+    }
+
+
+def test_multi_section_horizon_assembles():
+    """The third key element is the OCCURRENCE index, not the list position.
+
+    Run 456 (2026-08-24) cleared the roster-omission bug and immediately hit
+    "section roster entry (net_worth, long) has no assembled output". The
+    store loop keyed ``assembled_by_key`` by ``enumerate(pairs)`` position
+    while the reader counted occurrences of ``(section_id, horizon)``. Those
+    agree only for the FIRST section of a horizon, so any horizon holding
+    more than one section could never assemble — which is why the sliced
+    path kept degrading to the monolith.
+    """
+    from argosy.orchestrator.flows.plan_synthesis.sliced_phase3 import (
+        _assemble_sliced_output,
+    )
+    out, _ = _assemble_sliced_output(
+        skeleton=_skeleton_with(RUN_456_ROSTER),
+        horizon_outputs=_horizon_outputs(),
+        section_outputs={"long": _emitted(RUN_456_ROSTER)},
+    )
+    assert [s.section_id for s in out.sections] == RUN_456_ROSTER
+
+
+def test_repeated_section_id_keeps_both_occurrences():
+    """The 3-tuple key exists to allow a roster to repeat a section."""
+    from argosy.orchestrator.flows.plan_synthesis.sliced_phase3 import (
+        _assemble_sliced_output,
+    )
+    ids = ["estate", "concentration", "estate"]
+    out, _ = _assemble_sliced_output(
+        skeleton=_skeleton_with(ids),
+        horizon_outputs=_horizon_outputs(),
+        section_outputs={"long": _emitted(ids)},
+    )
+    assert [s.section_id for s in out.sections] == ids
+
+
+def test_single_section_horizon_still_assembles():
+    """The shape that accidentally worked before must keep working."""
+    from argosy.orchestrator.flows.plan_synthesis.sliced_phase3 import (
+        _assemble_sliced_output,
+    )
+    out, _ = _assemble_sliced_output(
+        skeleton=_skeleton_with(["estate"]),
+        horizon_outputs=_horizon_outputs(),
+        section_outputs={"long": _emitted(["estate"])},
+    )
+    assert [s.section_id for s in out.sections] == ["estate"]

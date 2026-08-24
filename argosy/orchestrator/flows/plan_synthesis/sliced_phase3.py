@@ -538,7 +538,18 @@ def _assemble_sliced_output(
             roster, emitted, lambda x: getattr(x, "section_id", None),
             what="section", slice_name=f"sections_{h}",
         )
-        for i, (sk_s, em_s) in enumerate(pairs):
+        # The third key element is the OCCURRENCE index of this
+        # (section_id, horizon) pair — the roster may legitimately carry
+        # the same section twice — NOT the position in the pairs list.
+        # The reader below counts occurrences; storing by list position
+        # made the two disagree for every section after the first in a
+        # horizon (`net_worth` stored at 1, read at 0 -> "has no assembled
+        # output", run 456, 2026-08-24).
+        occurrence: dict[tuple[str, str], int] = {}
+        for sk_s, em_s in pairs:
+            _k = (sk_s.section_id, sk_s.horizon)
+            i = occurrence.get(_k, 0)
+            occurrence[_k] = i + 1
             restored_total += _count_lock_diffs(
                 {"section_id": sk_s.section_id, "horizon": sk_s.horizon},
                 {"section_id": em_s.section_id, "horizon": em_s.horizon},
