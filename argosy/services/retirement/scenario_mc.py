@@ -550,7 +550,20 @@ def earliest_feasible_retire_age(
 
 SIGMA_DIVERSIFIED = 0.18          # post-deconcentration target σ (8-asset-class)
 DECONCENTRATION_TAPER_YEARS = 3   # σ falls hi→lo over the NVDA sell-down period
-DEFAULT_NVDA_CAP_PCT = 0.13       # strategic single-name ceiling (fallback)
+# Strategic single-name ceiling — the level that FORCES action, distinct
+# from the 8% steering target the glide is sized against. Tightened
+# 0.13 -> 0.12 on 2026-08-24: the glide lands NVDA at ~8.9% of book, so a
+# 13% ceiling tolerates a +52% NVDA move before anything happens, versus
+# +39% at 12%. For a household whose mandate is deconcentration, +52% is
+# permission to silently re-concentrate, not a guardrail.
+#
+# This is the STABLE governing ceiling. The concentration analyst also
+# publishes a derived MIN-over-constraints cap, but it moves run to run
+# (0.13 / 0.14 / 0.09 / 0.07 / 0.12 / 0.12 over runs 363-456), so it is
+# carried separately as concentration.nvda_analyst_floor_pct and never
+# governs. Do NOT tune this constant to match it — they are different
+# objects and chasing agreement re-creates the divergence next run.
+DEFAULT_NVDA_CAP_PCT = 0.12
 
 
 def _calibrated_sigma(session, user_id: str) -> float:

@@ -97,7 +97,7 @@ class TargetAllocationDoc(BaseModel):
     basis: str = "full tradeable book"
     anchor_sigma: float
     blended_sigma: float
-    nvda_cap_pct: float  # the 13% ceiling
+    nvda_cap_pct: float  # governing single-name ceiling (DEFAULT_NVDA_CAP_PCT)
     fi_pct: float  # derived
     provenance: str
     classes: list[AllocationClassDoc]

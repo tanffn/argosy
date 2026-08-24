@@ -1896,34 +1896,34 @@ def _apply_canonical_allocation(
     # flags them, which is the safe direction).
     _inherited_doc = False
     if pv is None or not pv.target_allocation_json:
+        # Synthesise a cap-only doc from the SAME constant
+        # ``build_plan_target_allocation_doc`` will use when this run persists
+        # its draft. Reading a PRIOR plan's persisted snapshot instead would
+        # re-create the very divergence this fix exists to remove the moment
+        # the constant changes: the prose would be authored from the old
+        # snapshot while the doc written minutes later carried the new value.
+        # The constant is the single stable source; go to it directly.
         try:
-            run_user = user_id or session.execute(
-                text("SELECT user_id FROM decision_runs WHERE id = :r"),
-                {"r": decision_run_id},
-            ).scalar()
-            pv = session.execute(
-                select(PlanVersion)
-                .where(PlanVersion.user_id == run_user)
-                .where(PlanVersion.target_allocation_json.isnot(None))
-                .order_by(PlanVersion.id.desc())
-            ).scalars().first()
+            from argosy.services.retirement.scenario_mc import (
+                DEFAULT_NVDA_CAP_PCT,
+            )
         except Exception as exc:  # noqa: BLE001
-            log.warning("plan_numeric_resolver.alloc_inherit_failed err=%s", exc)
+            log.warning("plan_numeric_resolver.cap_constant_failed err=%s", exc)
             return
-        if pv is None or not pv.target_allocation_json:
-            return
+        doc = {"nvda_cap_pct": float(DEFAULT_NVDA_CAP_PCT) * 100.0}
         _inherited_doc = True
         log.info(
-            "plan_numeric_resolver.alloc_doc_inherited "
-            "run=%s from_plan=%s (this run has not written its draft yet)",
-            decision_run_id, pv.id,
+            "plan_numeric_resolver.alloc_cap_from_constant run=%s cap_pct=%s "
+            "(this run has not written its draft yet)",
+            decision_run_id, doc["nvda_cap_pct"],
         )
-    try:
-        import json as _json
+    if not _inherited_doc:
+        try:
+            import json as _json
 
-        doc = _json.loads(pv.target_allocation_json)
-    except Exception:  # noqa: BLE001
-        return
+            doc = _json.loads(pv.target_allocation_json)
+        except Exception:  # noqa: BLE001
+            return
 
     # Per-class target weights (percent-points in the doc → fraction here).
     for cls in ((doc.get("classes", []) or []) if not _inherited_doc else []):
@@ -1974,7 +1974,12 @@ def _apply_canonical_allocation(
             value=float(cap) / 100.0,
             unit="pct",
             status="resolved",
-            source_locator="target_allocation_doc.nvda_cap_pct (canonical binding cap)",
+            source_locator=(
+                "scenario_mc.DEFAULT_NVDA_CAP_PCT (governing ceiling; this "
+                "run has not written its doc yet)"
+                if _inherited_doc
+                else "target_allocation_doc.nvda_cap_pct (canonical binding cap)"
+            ),
             confidence="HIGH",
             formula="canonical user-settled concentration cap (overrides analyst tail-loss)",
         )

@@ -25,6 +25,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
 from argosy.services.plan_numeric_resolver import _apply_canonical_allocation
+from argosy.services.retirement.scenario_mc import DEFAULT_NVDA_CAP_PCT
 
 
 @pytest.fixture
@@ -66,13 +67,42 @@ def _values_with_analyst_cap():
 
 
 def test_settled_cap_governs_while_the_draft_is_being_authored(session):
-    """The live failure: run 456 mid-phase-3, no PlanVersion yet."""
+    """The live failure: run 456 mid-phase-3, no PlanVersion yet.
+
+    The cap comes from the CONSTANT, not from a prior plan's persisted
+    snapshot — the constant is what this run will write into its own doc
+    minutes later, so authoring and persistence agree even across a tuning
+    of the constant. Asserted against the constant rather than a literal so
+    tuning it does not break this pin.
+    """
     values = _values_with_analyst_cap()
     _apply_canonical_allocation(session, 456, values, user_id="ariel")
-    assert values["concentration.nvda_cap_pct"].value == pytest.approx(0.13)
-    assert "target_allocation_doc" in (
+    assert values["concentration.nvda_cap_pct"].value == pytest.approx(
+        DEFAULT_NVDA_CAP_PCT
+    )
+    assert "DEFAULT_NVDA_CAP_PCT" in (
         values["concentration.nvda_cap_pct"].source_locator
     )
+
+
+def test_authoring_cap_matches_what_the_run_will_persist(session):
+    """The regression that motivated reading the constant directly.
+
+    A prior plan carrying a STALE cap (13%) must not drive the prose when
+    the constant has since moved, or the draft contradicts its own doc.
+    """
+    from argosy.state.models import PlanVersion
+    import sqlalchemy as _sa
+    stale = session.execute(
+        _sa.select(PlanVersion).where(PlanVersion.id == 1)
+    ).scalar_one()
+    assert '"nvda_cap_pct": 13.0' in stale.target_allocation_json
+
+    values = _values_with_analyst_cap()
+    _apply_canonical_allocation(session, 456, values, user_id="ariel")
+    assert values["concentration.nvda_cap_pct"].value == pytest.approx(
+        DEFAULT_NVDA_CAP_PCT
+    ), "authored from the stale prior snapshot instead of the constant"
 
 
 def test_analyst_cap_is_preserved_as_a_subordinate_floor(session):
@@ -115,12 +145,17 @@ def test_own_draft_still_wins_and_carries_its_class_weights(session):
     assert values["allocation.global_equity_target_pct"].value == pytest.approx(0.55)
 
 
-def test_no_doc_anywhere_leaves_the_analyst_value_untouched(session):
-    """Absent is the safe direction — never fabricate a cap."""
+def test_no_plan_history_still_yields_the_governing_ceiling(session):
+    """With no plan history at all the constant still governs — the ceiling
+    is a policy parameter, not something derived from past drafts."""
     from argosy.state.models import PlanVersion
     session.query(PlanVersion).delete()
     session.commit()
     values = _values_with_analyst_cap()
     _apply_canonical_allocation(session, 456, values, user_id="ariel")
-    assert values["concentration.nvda_cap_pct"].value == pytest.approx(0.12)
-    assert "concentration.nvda_analyst_floor_pct" not in values
+    assert values["concentration.nvda_cap_pct"].value == pytest.approx(
+        DEFAULT_NVDA_CAP_PCT
+    )
+    assert values["concentration.nvda_analyst_floor_pct"].value == pytest.approx(
+        0.12
+    )
