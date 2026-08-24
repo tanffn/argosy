@@ -32,7 +32,7 @@ _log = logging.getLogger(__name__)
 # two in sync by hand (this module cannot import ``argosy.agents.base`` without
 # creating an import cycle; see ``model_for_role`` below).
 _SHORT_MODEL_ALIASES: dict[str, str] = {
-    "opus": "claude-opus-4-8",
+    "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5",
 }

@@ -75,7 +75,7 @@ _log = get_logger("argosy.services.decision_funnel.orchestrator")
 # The fleet's headline model (per accuracy-over-cost: T2 deep decisions run the
 # Opus fleet). The granular per-agent model/prompt identities live in
 # agent_reports under the snapshot's decision_run_id.
-_FLEET_MODEL = "claude-opus-4-8"
+_FLEET_MODEL = "claude-opus-5"
 
 
 def _utcnow() -> datetime:

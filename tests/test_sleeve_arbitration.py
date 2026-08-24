@@ -97,7 +97,7 @@ class _FakeAgentReport:
     tokens_in: int = 100
     tokens_out: int = 200
     cost_usd: float = 0.0
-    model: str = "claude-opus-4-8"
+    model: str = "claude-opus-5"
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
     cache_input_tokens: int = 0
     cache_creation_tokens: int = 0

@@ -32,7 +32,7 @@ def test_override_all_beats_everything():
     settings = AgentSettings.model_validate(
         {"models": {"defaults": {"trader": "haiku"}, "override": {"all": "sonnet"}}}
     )
-    assert settings.model_for_role("trader", code_default="claude-opus-4-8") == (
+    assert settings.model_for_role("trader", code_default="claude-opus-5") == (
         _SHORT_MODEL_ALIASES["sonnet"]
     )
 
@@ -41,7 +41,7 @@ def test_override_role_beats_code_default():
     settings = AgentSettings.model_validate(
         {"models": {"override": {"concentration": "claude-opus-5"}}}
     )
-    resolved = settings.model_for_role("concentration", code_default="claude-opus-4-8")
+    resolved = settings.model_for_role("concentration", code_default="claude-opus-5")
     assert resolved == "claude-opus-5"
 
 
@@ -49,7 +49,7 @@ def test_override_all_beats_override_role():
     settings = AgentSettings.model_validate(
         {"models": {"override": {"all": "opus", "trader": "haiku"}}}
     )
-    resolved = settings.model_for_role("trader", code_default="claude-opus-4-8")
+    resolved = settings.model_for_role("trader", code_default="claude-opus-5")
     assert resolved == _SHORT_MODEL_ALIASES["opus"]
 
 
@@ -59,8 +59,8 @@ def test_code_default_beats_legacy_defaults_block():
     settings = AgentSettings.model_validate(
         {"models": {"defaults": {"concentration": "haiku"}, "override": {}}}
     )
-    resolved = settings.model_for_role("concentration", code_default="claude-opus-4-8")
-    assert resolved == "claude-opus-4-8"
+    resolved = settings.model_for_role("concentration", code_default="claude-opus-5")
+    assert resolved == "claude-opus-5"
     assert resolved != _SHORT_MODEL_ALIASES["haiku"]
 
 
@@ -84,8 +84,8 @@ def test_unknown_short_name_in_override_is_ignored_and_falls_through(caplog):
         {"models": {"override": {"trader": "gpt-99"}}}
     )
     with caplog.at_level(logging.WARNING, logger="argosy.agent_settings"):
-        resolved = settings.model_for_role("trader", code_default="claude-opus-4-8")
-    assert resolved == "claude-opus-4-8"  # fell through to code default
+        resolved = settings.model_for_role("trader", code_default="claude-opus-5")
+    assert resolved == "claude-opus-5"  # fell through to code default
     assert any("unrecognized model name" in r.message for r in caplog.records)
 
 
@@ -106,7 +106,7 @@ def test_full_model_id_passed_through_unchanged():
     settings = AgentSettings.model_validate(
         {"models": {"override": {"trader": "claude-opus-5"}}}
     )
-    assert settings.model_for_role("trader", code_default="claude-opus-4-8") == (
+    assert settings.model_for_role("trader", code_default="claude-opus-5") == (
         "claude-opus-5"
     )
 
@@ -164,8 +164,8 @@ def test_explicit_model_kwarg_still_wins_over_yaml(monkeypatch, tmp_path: Path):
         "models:\n  override:\n    trader: sonnet\n"
     )
     monkeypatch.setenv("ARGOSY_AGENT_SETTINGS_PATH", str(yaml_path))
-    agent = _make_agent_cls("trader")(user_id="ariel", model="claude-opus-4-8")
-    assert agent.model == "claude-opus-4-8"
+    agent = _make_agent_cls("trader")(user_id="ariel", model="claude-opus-5")
+    assert agent.model == "claude-opus-5"
 
 
 def test_override_role_wins_via_base_agent(monkeypatch, tmp_path: Path):
@@ -250,4 +250,4 @@ def test_real_ariel_yaml_shape_trader_matches_code_default_anyway(
     monkeypatch.setenv("ARGOSY_AGENT_SETTINGS_PATH", str(yaml_path))
 
     agent = _make_agent_cls("trader")(user_id="ariel")
-    assert agent.model == DEFAULT_MODEL_BY_ROLE["trader"] == "claude-opus-4-8"
+    assert agent.model == DEFAULT_MODEL_BY_ROLE["trader"] == "claude-opus-5"

@@ -113,7 +113,7 @@ def test_record_snapshot_dedup_identical(session):
         decision={"action": "sell", "shares": 100, "why": "trim to cap"},
         portfolio_snapshot=_portfolio(), market_snapshot=_market(),
         policy_version="pol-1", policy={"nvda_cap": 13.0},
-        model_name="claude-opus-4-8", prompt_template_hash="abc123",
+        model_name="claude-opus-5", prompt_template_hash="abc123",
     )
     s1 = ft.record_snapshot(session, **common)
     s2 = ft.record_snapshot(session, **common)
@@ -134,7 +134,7 @@ def test_record_snapshot_new_row_when_input_changes(session):
         decision={"action": "sell", "shares": 100},
         portfolio_snapshot=_portfolio(), market_snapshot=_market(),
         policy_version="pol-1", policy={"nvda_cap": 13.0},
-        model_name="claude-opus-4-8", prompt_template_hash="abc123",
+        model_name="claude-opus-5", prompt_template_hash="abc123",
     )
     s1 = ft.record_snapshot(session, **base)
     # Market moved -> different fingerprint -> a NEW immutable row, not a loss.

@@ -6532,13 +6532,55 @@ def _force_preserve_structured_fields(
         before_by_key = {
             (s.section_id, s.horizon): s for s in before.sections
         }
+        # POSITIONAL FALLBACK. This lookup joins on ``section_id`` — which is
+        # itself a preserved field the rewriter is capable of mutating. When it
+        # does, the key misses, the branch below concludes "new section
+        # invented", keeps the rewriter's renamed id, and the validator then
+        # aborts the whole run. Measured 2026-08-24 on run 452: 14 structural
+        # violations, all "rewriter modified preserved field
+        # sections[N].section_id", killing the run before risk/codex/FM/reader
+        # and writing no draft.
+        #
+        # A key-based join cannot protect the field it joins on. The rewriter is
+        # a PROSE pass — it must never add, drop or reorder sections — so when
+        # the counts match, index N of `after` IS index N of `before` and the
+        # original identity is recoverable positionally. Restore section_id and
+        # horizon from that pairing so a renamed id is corrected rather than
+        # fatal. When the counts DIFFER the rewriter did something structural
+        # we must not paper over: fall through to the id join and let the
+        # validator fail loudly.
+        positional = (
+            list(zip(after.sections, before.sections))
+            if len(after.sections) == len(before.sections)
+            else None
+        )
         restored_sections = []
-        for s_after in after.sections:
+        for _idx, s_after in enumerate(after.sections):
             key = (s_after.section_id, s_after.horizon)
             s_before = before_by_key.get(key)
+            if s_before is None and positional is not None:
+                _, s_before = positional[_idx]
+                if (
+                    s_before.section_id != s_after.section_id
+                    or s_before.horizon != s_after.horizon
+                ):
+                    log.warning(
+                        "plan_synthesis.rewriter_section_identity_restored "
+                        "idx=%s after=%r/%r before=%r/%r",
+                        _idx, s_after.section_id, s_after.horizon,
+                        s_before.section_id, s_before.horizon,
+                    )
+                restored_sections.append(
+                    s_after.model_copy(update={
+                        "section_id": s_before.section_id,
+                        "horizon": s_before.horizon,
+                        "evidence": s_before.evidence,
+                    })
+                )
+                continue
             if s_before is None:
-                # New section invented by rewriter — keep as-is; the
-                # validator will fail on the unexpected section_id.
+                # Section count changed — genuinely structural. Keep as-is so
+                # the validator fails on it.
                 restored_sections.append(s_after)
                 continue
             # Preserve evidence subtree bit-for-bit; rewrite title +

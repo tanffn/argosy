@@ -1742,7 +1742,7 @@ async def test_effective_input_tokens_in_finished_log(monkeypatch):
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     msg_text = AssistantMessage(
-        content=[TextBlock(text='{"text": "ok"}')], model="claude-opus-4-8"
+        content=[TextBlock(text='{"text": "ok"}')], model="claude-opus-5"
     )
     result = _make_result_message(
         input_tokens=3,
@@ -2018,7 +2018,7 @@ def test_plan_synthesizer_scale_command_line_under_windows_limit():
             system_prompt=system_prompt_value,
             max_turns=3,
             permission_mode="bypassPermissions",
-            model="claude-opus-4-8",
+            model="claude-opus-5",
             setting_sources=[],
             tools=[],
             output_format={"type": "json_schema", "schema": schema},

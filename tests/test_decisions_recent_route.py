@@ -385,7 +385,7 @@ async def test_decisions_recent_plan_synth_prefix_resolves_kind(
                 decision_id=f"plan-synth-{dr.id}",
                 response_text="{}", prompt_hash="h",
                 tokens_in=10, tokens_out=20, cost_usd=0.05,
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
             ))
         await session.commit()

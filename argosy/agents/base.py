@@ -237,9 +237,9 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # `BaseAgent.__init__` override loader). The prior 4.7 posture and the
     # earlier mixed Opus/Sonnet fleet are preserved in git history if a
     # downgrade is ever needed for a specific role.
-    "intake": "claude-opus-4-8",
-    "advisor": "claude-opus-4-8",
-    "intake_extractor": "claude-opus-4-8",
+    "intake": "claude-opus-5",
+    "advisor": "claude-opus-5",
+    "intake_extractor": "claude-opus-5",
     # plan_critique — Claude Opus 5 (2026-08-18). The critique is the
     # adversarial READER class (re-derives blind against the whole
     # artifact) — per binding preference "accuracy over LLM cost" it
@@ -247,7 +247,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # Fable 5 was owner-approved for this role on 2026-07-07, but verified
     # NOT accessible on this account: running the bundled claude.exe
     # (claude_agent_sdk._bundled, v2.1.126) directly against each id shows
-    # claude-opus-4-8 / claude-opus-5 / claude-sonnet-5 all succeed while
+    # claude-opus-5 / claude-opus-5 / claude-sonnet-5 all succeed while
     # claude-fable-5 returns "There's an issue with the selected model...
     # It may not exist or you may not have access to it." That made the
     # ONLY reviewer in the fleet dead on arrival (the /plan "Re-critique
@@ -256,67 +256,67 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # this subscription. Re-verify claude-fable-5 against the bundled CLI
     # before ever switching back to it.
     "plan_critique": "claude-opus-5",
-    "plan_distiller": "claude-opus-4-8",
+    "plan_distiller": "claude-opus-5",
     # Phase 2 analyst team:
-    "news": "claude-opus-4-8",
-    "macro": "claude-opus-4-8",
-    "concentration": "claude-opus-4-8",
+    "news": "claude-opus-5",
+    "macro": "claude-opus-5",
+    "concentration": "claude-opus-5",
     # Phase 3 decision team:
-    "bull_researcher": "claude-opus-4-8",
-    "bear_researcher": "claude-opus-4-8",
-    "researcher_facilitator": "claude-opus-4-8",
-    "trader": "claude-opus-4-8",
-    "risk_officer": "claude-opus-4-8",
-    "risk_facilitator": "claude-opus-4-8",
-    "fund_manager": "claude-opus-4-8",
+    "bull_researcher": "claude-opus-5",
+    "bear_researcher": "claude-opus-5",
+    "researcher_facilitator": "claude-opus-5",
+    "trader": "claude-opus-5",
+    "risk_officer": "claude-opus-5",
+    "risk_facilitator": "claude-opus-5",
+    "fund_manager": "claude-opus-5",
     # Phase 7 analysts (SDD §3.1, §3.8):
-    "fundamentals": "claude-opus-4-8",
-    "technical": "claude-opus-4-8",
-    "sentiment": "claude-opus-4-8",
-    "tax": "claude-opus-4-8",
-    "fx": "claude-opus-4-8",
+    "fundamentals": "claude-opus-5",
+    "technical": "claude-opus-5",
+    "sentiment": "claude-opus-5",
+    "tax": "claude-opus-5",
+    "fx": "claude-opus-5",
     # Phase 7 cross-cutting (SDD §3.6):
-    "domain_refresh": "claude-opus-4-8",
-    "audit": "claude-opus-4-8",
-    "watchlist": "claude-opus-4-8",
+    "domain_refresh": "claude-opus-5",
+    "audit": "claude-opus-5",
+    "watchlist": "claude-opus-5",
     # Plan synthesizer (Phase 3 of plan_synthesis_flow).
-    "plan_synthesizer": "claude-opus-4-8",
+    "plan_synthesizer": "claude-opus-5",
     # Objection translator (T4.6).
-    "objection_translator": "claude-opus-4-8",
+    "objection_translator": "claude-opus-5",
     # Advisor welcome-card insight (single-paragraph "today's insight" appended
     # below the static welcome surface on /advisor — see argosy/agents/advisor_insight.py).
-    "advisor_insight": "claude-opus-4-8",
+    "advisor_insight": "claude-opus-5",
     # FM-objection ZigZag (T4.9).
-    "analyst_responder": "claude-opus-4-8",
-    "fund_manager_dialogue_verdict": "claude-opus-4-8",
+    "analyst_responder": "claude-opus-5",
+    "fund_manager_dialogue_verdict": "claude-opus-5",
     # Living-plan negotiation ladder — node owner's verdict on a proposed change.
-    "plan_node_owner": "claude-opus-4-8",
+    "plan_node_owner": "claude-opus-5",
     # Household-budget analyst (synth Phase 1 #10).
-    "household_budget": "claude-opus-4-8",
+    "household_budget": "claude-opus-5",
     # Household-expenses categorizer.
-    "household_categorizer": "claude-opus-4-8",
+    "household_categorizer": "claude-opus-5",
     # Daily-briefer (T4.5).
-    "daily_briefer": "claude-opus-4-8",
+    "daily_briefer": "claude-opus-5",
     # Spec B commit #4 — general state-vs-expectation observer.
     # Opus per binding preference "accuracy over LLM cost"; the observer
     # is doing emergent flag-classification with high downstream
     # consequence (replaces hand-rolled detectors). No Haiku fallback.
-    "state_observer": "claude-opus-4-8",
+    "state_observer": "claude-opus-5",
     # Spec E commit #2 — action_proposer agent (LLM money path).
     # Opus per binding preference "accuracy over LLM cost"; the proposer
     # turns observer flags / snapshot triggers / inferred events into
     # structured action suggestions. NO auto-execution — the agent
     # RECORDS only; user reviews via /proposals. No Haiku fallback.
-    "action_proposer": "claude-opus-4-8",
+    "action_proposer": "claude-opus-5",
     # Per-holding thesis monitor (LLM money path). Opus per binding preference
     # "accuracy over LLM cost"; high bar, RECORDS only (escalations flow through
     # the monitor-flag → action_proposer pipeline). No Haiku fallback.
-    "thesis_monitor": "claude-opus-4-8",
+    "thesis_monitor": "claude-opus-5",
     # Fund/ETF vehicle analyst — one Opus call per collective instrument to settle
     # a fund-specific verdict (domicile, TER, mandate fit, overlap, NVDA
     # look-through). Opus per binding preference "accuracy over LLM cost":
     # estate-domicile and sleeve-fit reasoning is a high-consequence money path.
-    "fund_vehicle_analyst": "claude-opus-4-8",
+    "fund_vehicle_analyst": "claude-opus-5",
     # Long-form Discord alpha-report analyst — replaces the regex
     # extract_alpha_call_from_text for posts > 500 chars / > 5 newlines.
     # Opus per binding preference "accuracy over LLM cost" — the agent
@@ -324,7 +324,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # cautions from multi-page commentary; downstream writes fan out to
     # the predictions ledger (source='discord_alpha_report') and
     # monitor_flags (kind='alpha_report_caution'). No Haiku fallback.
-    "alpha_report_analyst": "claude-opus-4-8",
+    "alpha_report_analyst": "claude-opus-5",
     # Equity-comp analyst (Phase 5 topic owner) — owns the RSU /
     # equity-compensation projection across three scenarios
     # (known_grants_only / conservative_decay / optimistic_flat).
@@ -333,34 +333,34 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # assumption with a year-by-year contractual-vs-discretionary
     # projection. Downstream consequence is large (FI-date sensitivity
     # + cashflow + concentration cap all read from the output).
-    "equity_comp_analyst": "claude-opus-4-8",
+    "equity_comp_analyst": "claude-opus-5",
     # Alternatives sourcer (feat/alternatives-asset-class) — sources the
     # Alternatives sleeve's instruments so they are agent-derived +
     # estate-gated, not hardcoded. Opus per binding preference "accuracy
     # over LLM cost": sourcing estate-safe (non-US-situs) instruments is a
     # high-consequence money path; the picks feed the domicile gate.
-    "alternatives_sourcer": "claude-opus-4-8",
+    "alternatives_sourcer": "claude-opus-5",
     # Alternatives reviewer fleet + sleeve fund-manager (ETP-aware debate over
     # the verified candidates). Opus per "accuracy over LLM cost"; these weigh
     # wrapper/structure, diversification value, liquidity/tax, and the final
     # sleeve size (which may be 0%) — a high-consequence money path.
-    "alt_exposure_structure": "claude-opus-4-8",
-    "alt_macro_diversification": "claude-opus-4-8",
-    "alt_risk_liquidity_tax": "claude-opus-4-8",
-    "alternatives_fund_manager": "claude-opus-4-8",
+    "alt_exposure_structure": "claude-opus-5",
+    "alt_macro_diversification": "claude-opus-5",
+    "alt_risk_liquidity_tax": "claude-opus-5",
+    "alternatives_fund_manager": "claude-opus-5",
     # Deployment author (fleet-authors / determinism-verifies pivot) — the LLM
     # that AUTHORS the AllocationProposal for a deploy request in ONE holistic
     # reasoning pass (the deterministic verifier gates it). Opus per binding
     # preference "accuracy over LLM cost": this is the core money-decision the
     # whole pivot exists to make smart (a plain LLM prompt beat the old
     # deterministic water-fill). One call, not a debate fleet.
-    "deployment_author": "claude-opus-4-8",
+    "deployment_author": "claude-opus-5",
     # Critique-reconcile closer (2026-07-07) — routes each weekly-critique
     # RED/notable-YELLOW finding to its closer path (prose edit vs
     # requires-re-synthesis vs data refresh vs needs-user vs dispute).
     # Opus 4.8 (closing/authoring class, not the reader class — the reader
     # class runs Opus 5, see plan_critique above).
-    "critique_closer": "claude-opus-4-8",
+    "critique_closer": "claude-opus-5",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -369,7 +369,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # to Haiku is still possible per-role via agent_settings.yaml for
     # cost-sensitive tenants.
 }
-FALLBACK_MODEL = "claude-opus-4-8"
+FALLBACK_MODEL = "claude-opus-5"
 
 # Per-role adaptive-thinking effort (Opus 4.7 canonical pattern).
 #
@@ -734,7 +734,7 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
     # model: (input_per_mtok, output_per_mtok)
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),
-    "claude-opus-4-8": (5.00, 25.00),
+    "claude-opus-5": (5.00, 25.00),
     # Opus 5 (plan_critique role, 2026-08-18) — same list price as Opus 4.8
     # ($5/$25 per MTok; a drop-in-priced upgrade per Anthropic's docs).
     "claude-opus-5": (5.00, 25.00),

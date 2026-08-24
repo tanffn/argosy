@@ -184,7 +184,7 @@ class _FakeAgentReport:
         self.tokens_in = 0
         self.tokens_out = 0
         self.cost_usd = 0.0
-        self.model = "claude-opus-4-8"
+        self.model = "claude-opus-5"
         self.confidence = None
         self.cache_input_tokens = 0
         self.cache_creation_tokens = 0

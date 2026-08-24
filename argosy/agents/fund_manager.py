@@ -124,7 +124,7 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         user_id: str,
         model: str | None = None,
     ) -> None:
-        super().__init__(user_id=user_id, model=model or "claude-opus-4-8")
+        super().__init__(user_id=user_id, model=model or "claude-opus-5")
         # Tracks which schema to validate against; set during build_prompt.
         self._current_decision_kind: str = "trade_proposal"
 
