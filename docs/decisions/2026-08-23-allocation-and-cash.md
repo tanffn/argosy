@@ -17,20 +17,21 @@ not a re-cut of the surviving sleeves.
 
 ## 2. The two approved changes
 
-### SGOV → IBTA — approved, execute
+### SGOV → IB01 — approved, execute
 
 | | |
 |---|---|
 | sell | SGOV, USD 85.5k |
-| buy | IBTA (iShares USD Treasury 1–3yr UCITS) |
+| buy | **IB01** (iShares USD Treasury **0–1yr** UCITS) |
 | embedded gain | **0.1%** — CGT ≈ USD 30 |
 | effect | removes USD 85.5k from the US-situs estate base at essentially zero cost |
 
-**Caveat recorded:** SGOV is 0–3 month duration; IBTA is 1–3 year (~1.81y
-effective vs ~0.30y). This changes the sleeve from cash-equivalent parking to
-short fixed income. Liquidity runway must stop counting it as cash. If true cash
-is wanted instead, `IB01` (iShares USD Treasury 0–1yr UCITS) is the like-for-like
-swap.
+**IB01, not IBTA — corrected 2026-08-24.** The first draft named IBTA (1–3yr,
+~1.81y effective vs SGOV's ~0.30y), which would have turned a cash-equivalent
+sleeve into short fixed income. Once the USD 125,800 deployment in section 3 is
+executed, this sleeve is the ONLY liquid reserve left, so it must stay
+cash-equivalent. IB01 is the like-for-like swap and keeps the liquidity runway
+honest. Do not execute the IBTA version.
 
 ### SCHD — HOLD, exit gradually. Ariel's decision, 2026-08-24.
 
