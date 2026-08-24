@@ -239,6 +239,75 @@ def _sections_assignment_block(
 # ---------------------------------------------------------------------------
 
 
+class SliceIncompleteError(RuntimeError):
+    """A slice returned successfully but omitted roster entries.
+
+    Retryable, and raised INSIDE the retry envelope so an incomplete
+    expansion is never checkpointed as good.
+    """
+
+
+def _roster_missing(roster: list, emitted: list, key_fn) -> list[str]:
+    """Roster keys with no emitted counterpart, under the SAME join rules
+    assembly uses: key join first, positional fallback when counts match.
+
+    Extracted so the pre-checkpoint slice check and the assembly pairing
+    cannot drift apart. Run 456 (2026-08-24) persisted a ``sections_long``
+    expansion that omitted 11 of its 11 roster entries: completeness was
+    only tested at ASSEMBLY, minutes after the slice had been written to
+    ``decision_phases`` as good. The retry envelope therefore never saw a
+    failure, a resume would have replayed the same hole forever, and the
+    whole sliced path degraded to the monolith — which then burned three
+    900s timeouts. Validate where the retry can act on it.
+    """
+    remaining = list(emitted)
+    missing: list[str] = []
+    for r in roster:
+        k = key_fn(r)
+        match = next((e for e in remaining if key_fn(e) == k), None)
+        if match is not None:
+            remaining.remove(match)
+        else:
+            missing.append(str(k))
+    if missing and len(emitted) == len(roster):
+        return []
+    return missing
+
+
+def _slice_completeness_error(name: str, output, skeleton) -> str | None:
+    """Check one slice's output against its share of the skeleton roster.
+
+    Returns a human-readable reason, or ``None`` when the expansion covers
+    everything assembly will later demand of it.
+    """
+    if name in HORIZONS:
+        sk = getattr(skeleton, name)
+        checks = (
+            ("target", list(sk.targets), list(output.targets),
+             lambda t: item_slug(t.label)),
+            ("theme", list(sk.theme_roster), list(output.themes),
+             lambda t: item_slug(t.label)),
+            ("action", list(sk.action_roster), list(output.actions),
+             lambda a: item_slug(a.label)),
+        )
+    else:
+        h = name[len(_SECTION_SLICE_PREFIX):]
+        checks = (
+            ("section",
+             [e for e in skeleton.section_roster if e.horizon == h],
+             list(output.sections),
+             lambda x: getattr(x, "section_id", None)),
+        )
+    for what, roster, emitted, key_fn in checks:
+        missing = _roster_missing(roster, emitted, key_fn)
+        if missing:
+            return (
+                f"{what} roster entr(y/ies) {missing} omitted — "
+                f"{len(emitted)} emitted for {len(roster)} roster entries"
+            )
+    return None
+
+
 def _pair_roster(
     roster: list, emitted: list, key_fn, *, what: str, slice_name: str,
 ) -> tuple[list[tuple[Any, Any]], int]:
@@ -251,28 +320,30 @@ def _pair_roster(
     decides which PROSE attaches where. An omitted roster entry (count
     short and no key match) raises loudly — never a silent hole. Returns
     (pairs, dropped_invented_count)."""
-    remaining = list(emitted)
-    pairs: list[tuple[Any, Any]] = []
-    missing: list[str] = []
-    for r in roster:
-        k = key_fn(r)
-        match = next((e for e in remaining if key_fn(e) == k), None)
-        if match is not None:
-            remaining.remove(match)
-            pairs.append((r, match))
-        else:
-            pairs.append((r, None))
-            missing.append(str(k))
-    if missing and len(emitted) == len(roster):
-        pairs = list(zip(roster, emitted, strict=True))
-        missing = []
-        remaining = []
+    missing = _roster_missing(roster, emitted, key_fn)
     if missing:
         raise SlicedAssemblyError(
             f"slice {slice_name!r}: {what} roster entr(y/ies) "
             f"{missing} omitted by the expansion output — assembly fails "
             "loudly on omitted roster entries"
         )
+    remaining = list(emitted)
+    pairs: list[tuple[Any, Any]] = []
+    keyed = True
+    for r in roster:
+        k = key_fn(r)
+        match = next((e for e in remaining if key_fn(e) == k), None)
+        if match is None:
+            keyed = False
+            break
+        remaining.remove(match)
+        pairs.append((r, match))
+    if not keyed:
+        # ``_roster_missing`` already cleared this as count-matched, so the
+        # positional fallback is safe here and only decides which PROSE
+        # attaches where (every LOCKED field is restored from the skeleton).
+        pairs = list(zip(roster, emitted, strict=True))
+        remaining = []
     if remaining:
         log.warning(
             "plan_synthesis.sliced_assembly_dropped_inventions",
@@ -755,6 +826,11 @@ def _run_phase_3_sliced(
                 ),
                 decision_id=decision_run_id,
             )
+        # Completeness is ASSEMBLY's requirement, so test it HERE — inside
+        # the retry envelope, before the checkpoint is written.
+        incomplete = _slice_completeness_error(name, report.output, skeleton)
+        if incomplete is not None:
+            raise SliceIncompleteError(f"slice {name!r}: {incomplete}")
         return report
 
     max_retries = _slice_retries()
@@ -793,24 +869,38 @@ def _run_phase_3_sliced(
             and cp.get("skeleton_sha256") == skeleton_hash
             and cp.get("output_json")
         ):
+            parsed = None
             try:
-                results[name] = _parse_slice_output(name, cp["output_json"])
-                slice_provenance[name] = {
-                    "sha256": _sha256_text(cp["output_json"]),
-                    "retries": int(cp.get("retries") or 0),
-                    "resumed": True,
-                }
-                log.info(
-                    "plan_synthesis.sliced_slice_resumed",
-                    user_id=user_id, decision_run_id=decision_run_id,
-                    slice=name,
-                )
-                continue
+                parsed = _parse_slice_output(name, cp["output_json"])
             except Exception as exc:  # noqa: BLE001 — corrupt → re-run
                 log.warning(
                     "plan_synthesis.sliced_slice_checkpoint_corrupt",
                     user_id=user_id, slice=name, error=str(exc),
                 )
+            if parsed is not None:
+                # Checkpoints written before this check existed can carry
+                # roster holes. Replaying one fails assembly identically on
+                # every resume, so re-run the slice instead.
+                incomplete = _slice_completeness_error(name, parsed, skeleton)
+                if incomplete is not None:
+                    log.warning(
+                        "plan_synthesis.sliced_slice_checkpoint_incomplete",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        slice=name, detail=incomplete[:300],
+                    )
+                else:
+                    results[name] = parsed
+                    slice_provenance[name] = {
+                        "sha256": _sha256_text(cp["output_json"]),
+                        "retries": int(cp.get("retries") or 0),
+                        "resumed": True,
+                    }
+                    log.info(
+                        "plan_synthesis.sliced_slice_resumed",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        slice=name,
+                    )
+                    continue
         to_run.append(name)
 
     failures: dict[str, str] = {}
@@ -901,6 +991,7 @@ __all__ = [
     "SkeletonGateError",
     "SliceExpansionError",
     "SlicedAssemblyError",
+    "SliceIncompleteError",
     "_assemble_sliced_output",
     "_run_phase_3_sliced",
 ]
