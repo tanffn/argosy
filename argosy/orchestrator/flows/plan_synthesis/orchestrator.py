@@ -1276,18 +1276,67 @@ def run_synthesis(
             try:
                 _augmented = (guidance + "\n\n" + _reconcile_guidance).strip()
                 _recon_started = datetime.now(timezone.utc)
-                _recon_result = _pkg._run_phase_3_synthesizer(
-                    session=session, user_id=user_id,
-                    baseline=baseline, prior_current=prior_current,
-                    analyst_reports_text=analyst_reports_text,
-                    debate_outcomes_text=debate_outcomes_text,
-                    portfolio_summary=portfolio_summary,
-                    fills_summary=fills_summary,
-                    decision_run_id=decision_audit_token,
-                    speculation_cap_pct=cap.max_pct_of_net_worth,
-                    speculation_cap_concurrent=cap.max_concurrent_positions,
-                    guidance=_augmented,
-                )
+                # SLICED first, monolith as fail-soft fallback — the same
+                # precedence phase 3 itself uses.
+                #
+                # The reconcile re-synthesis used to call the MONOLITH
+                # unconditionally. That re-emits the whole ~45-50k-token plan
+                # in one call, which is exactly the shape that exhausts the
+                # 900s plan_synthesizer SDK timeout: run 456 (2026-08-24)
+                # burned attempt after attempt here, and each schema retry
+                # restarted the timeout budget underneath it. Slicing keeps
+                # every call comfortably inside the timeout. A reconcile
+                # carries new guidance, so the skeleton hash changes and the
+                # pre-reconcile sub-checkpoints are invalidated and re-expanded
+                # rather than wrongly reused.
+                _recon_result = None
+                if _pkg._env_flag_on(
+                    "ARGOSY_SLICED_SYNTH",
+                    settings_attr="sliced_synth",
+                    default=True,
+                ):
+                    try:
+                        _r_out, _r_reports, _r_prov = _pkg._run_phase_3_sliced(
+                            session=session, user_id=user_id,
+                            baseline=baseline, prior_current=prior_current,
+                            analyst_reports_text=analyst_reports_text,
+                            debate_outcomes_text=debate_outcomes_text,
+                            portfolio_summary=portfolio_summary,
+                            fills_summary=fills_summary,
+                            decision_run_id=decision_audit_token,
+                            decision_run_int=_decision_run_int(decision_run_id),
+                            speculation_cap_pct=cap.max_pct_of_net_worth,
+                            speculation_cap_concurrent=(
+                                cap.max_concurrent_positions
+                            ),
+                            guidance=_augmented,
+                            corrective_ctx=_corrective_ctx,
+                        )
+                        _recon_result = (_r_out, _r_reports)
+                        log.info(
+                            "plan_synthesis.reconcile_sliced_used",
+                            user_id=user_id, decision_run_id=decision_run_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — fail-soft
+                        _recon_result = None
+                        log.warning(
+                            "plan_synthesis.reconcile_sliced_degraded",
+                            user_id=user_id, decision_run_id=decision_run_id,
+                            error=str(exc)[:500],
+                        )
+                if _recon_result is None:
+                    _recon_result = _pkg._run_phase_3_synthesizer(
+                        session=session, user_id=user_id,
+                        baseline=baseline, prior_current=prior_current,
+                        analyst_reports_text=analyst_reports_text,
+                        debate_outcomes_text=debate_outcomes_text,
+                        portfolio_summary=portfolio_summary,
+                        fills_summary=fills_summary,
+                        decision_run_id=decision_audit_token,
+                        speculation_cap_pct=cap.max_pct_of_net_worth,
+                        speculation_cap_concurrent=cap.max_concurrent_positions,
+                        guidance=_augmented,
+                    )
                 if (
                     isinstance(_recon_result, tuple) and len(_recon_result) == 2
                     and not isinstance(_recon_result, PlanSynthesisOutput)
