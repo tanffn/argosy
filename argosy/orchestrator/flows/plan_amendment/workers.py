@@ -568,7 +568,8 @@ def _medium_worker(*, session: Session, user_id: str,
 
 def _large_worker(*, session: Session, user_id: str,
                   decision_run: DecisionRun, guidance: str,
-                  anchor_plan_version_id: int | None = None) -> None:
+                  anchor_plan_version_id: int | None = None,
+                  resume_from_phase: int | None = None) -> None:
     """Delegate to run_synthesis (full 5-phase) with guidance.
 
     Reuses the worker's own DecisionRun row for synthesis (via
@@ -582,6 +583,17 @@ def _large_worker(*, session: Session, user_id: str,
     ``current`` and silently discards every draft since — the closed loop
     found 2026-08-23 (drafts 93..119 vs a July ``current``). Default None
     keeps the historical behaviour.
+
+    ``resume_from_phase`` also passes straight through, so a run that died
+    late can be restarted from its own persisted checkpoints instead of
+    re-running the expensive early phases. It exists so the standing rule
+    ("anchored via ``_large_worker``, never a bare ``run_synthesis``") and
+    the need to resume are not in conflict: run 456 (2026-08-24) had a
+    gate-passed skeleton and five good phase-3 slices on disk when it
+    died, and the only way to reuse them used to be calling the
+    underlying function directly — which drops the amendment events and
+    the cancellation re-check this worker provides. Default None runs from
+    the beginning, as before.
     """
     session.refresh(decision_run)
     if decision_run.status == "cancelled":
@@ -597,10 +609,15 @@ def _large_worker(*, session: Session, user_id: str,
     })
 
     try:
+        _resume_kw = (
+            {"resume_from_phase": resume_from_phase}
+            if resume_from_phase is not None else {}
+        )
         result = run_synthesis(
             session, user_id=user_id, trigger="check_in", guidance=guidance,
             existing_decision_run_id=decision_run.id,
             anchor_plan_version_id=anchor_plan_version_id,
+            **_resume_kw,
         )
 
         # I5: cancellation can land mid-synthesis (~15 min window). Re-fetch
