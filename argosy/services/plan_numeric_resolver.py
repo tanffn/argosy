@@ -3851,6 +3851,22 @@ def _display_value(rv: ResolvedValue) -> str:
     return f"{v:,.2f}"
 
 
+# Keys whose `formula` is printed inline in the synth manifest. These are the
+# headline figures a blind reviewer is required to re-derive from raw evidence;
+# without the derivation they can only be taken on trust, which is precisely
+# what C1_HEADLINE_TRACE refuses to do.
+_DERIVATION_KEYS: frozenset[str] = frozenset({
+    "spend.fi_basis_nis",
+    "retirement.fi_target_nis",
+    "retirement.fi_total_capital_nis",
+    "retirement.fi_margin_signed_nis",
+    "spend.annual_t12_nis",
+    "spend.annual_t12_donor_check_nis",
+    "concentration.nvda_cap_pct",
+    "concentration.nvda_current_pct",
+})
+
+
 def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
     """Render the authoritative derived-numbers block for the synth prompt.
 
@@ -3916,6 +3932,25 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
             )
         else:
             lines.append(f"  - {label}: {disp}   [{src}{conf}]")
+
+        # DERIVATION, printed inline for the keys a blind reviewer must be
+        # able to RE-DERIVE rather than take on trust.
+        #
+        # The manifest emitted `label: value [source]` and dropped the
+        # `formula` field entirely — yet that is exactly where the itemised
+        # line-by-line bridge lives (fi_methodology.itemized_spend_derivation:
+        # tracked T12 - mortgage runoff + car + healthcare + home upgrades +
+        # the user-settled adjustment = the published basis). So codex was
+        # handed "FI spend basis: NIS 300,000" with no way to reconstruct it
+        # and returned C1_HEADLINE_TRACE "cannot be independently reproduced"
+        # on runs 448, 456, 461 and 463. Three of those rounds asked the
+        # fleet, in prose, to publish a bridge it had never been shown.
+        # A derivation the reviewer cannot see is a derivation that does not
+        # exist.
+        if key in _DERIVATION_KEYS:
+            _formula = (getattr(rv, "formula", "") or "").strip()
+            if _formula:
+                lines.append(f"      derivation: {_formula}")
 
     # Canonical FI-sufficiency VERDICT — a single rendered conclusion the synthesizer must
     # state VERBATIM. The recurring contradiction was the model RE-COMPUTING sufficiency

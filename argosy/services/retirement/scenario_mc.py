@@ -563,7 +563,14 @@ DECONCENTRATION_TAPER_YEARS = 3   # σ falls hi→lo over the NVDA sell-down per
 # carried separately as concentration.nvda_analyst_floor_pct and never
 # governs. Do NOT tune this constant to match it — they are different
 # objects and chasing agreement re-creates the divergence next run.
-DEFAULT_NVDA_CAP_PCT = 0.12
+# REVERTED 2026-08-24 from the 0.12 tightening: a SETTLED ADJUDICATION
+# already records "nvda_cap = 13.0 ... apply as canonical on EVERY
+# surface, do NOT re-litigate", and it is injected into every corrective
+# run. Changing the constant without retiring that ruling put two
+# canonical sources in play — the fleet obeyed the ruling and wrote 13.0,
+# the resolver reported 12.0, and codex blocked the mismatch (run 463).
+# The cap is not binding either way: the glide lands NVDA at ~8.9%.
+DEFAULT_NVDA_CAP_PCT = 0.13
 
 
 def _calibrated_sigma(session, user_id: str) -> float:
