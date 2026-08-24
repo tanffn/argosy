@@ -379,6 +379,32 @@ def compute_fi_target(
 
     permanent_annual_spend = sum(c.annual_nis for c in components if c.kind == "permanent")
 
+    # --- USER-SETTLED FI SPEND BASIS (goals_yaml) ---------------------------
+    # Ariel settles the headline FI spend directly (2026-08-24: "FI target can
+    # be a round 300k"). His figure GOVERNS, but it must stay auditable, so it
+    # is applied as an explicit reconciling row rather than by overwriting the
+    # sum: the derived lines remain visible and an adjustment line carries the
+    # delta and the directive as its source. A blind reviewer can therefore
+    # still tie the published basis back to tracked spend.
+    #
+    # Written as DATA, not prose. Guidance alone would have the fleet write
+    # "₪300,000" into the plan while `{{fact:retirement.fi_target_nis}}` kept
+    # resolving to the derived value — manufacturing exactly the two-values-for-
+    # one-concept contradiction codex blocks on (C2_NO_CONTRADICTION).
+    settled_spend = _f(goals.get("fi_target_annual_spend_nis"))
+    if settled_spend is not None and settled_spend > 0:
+        delta = settled_spend - permanent_annual_spend
+        if abs(delta) > 0.5:
+            components.append(FiComponent(
+                label="User-settled FI spend basis (adjustment to derived)",
+                kind="permanent",
+                annual_nis=delta,
+                reserve_nis=0.0,
+                source="goals_yaml.fi_target_annual_spend_nis (Ariel, settled)",
+                confidence="HIGH",
+            ))
+        permanent_annual_spend = settled_spend
+
     # --- Finite liabilities → reserve bucket (NOT capitalized into the -------
     # perpetuity per the core-spend-plus-reserve design).
     edu = goals.get("education_funding_targets") or {}
@@ -420,8 +446,14 @@ def compute_fi_target(
     fi_perpetuity = permanent_annual_spend / swr
     fi_total = fi_perpetuity + reserve
 
+    _basis_note = (
+        " (user-settled basis; derived lines above reconcile to it via the "
+        "explicit adjustment row)"
+        if (settled_spend is not None and settled_spend > 0) else ""
+    )
     method = (
-        f"FI perpetuity = permanent-equivalent spend ₪{permanent_annual_spend:,.0f}/yr "
+        f"FI perpetuity = permanent-equivalent spend ₪{permanent_annual_spend:,.0f}/yr"
+        f"{_basis_note} "
         f"÷ {swr*100:.1f}% real after-tax perpetual SWR = ₪{fi_perpetuity:,.0f}; "
         f"finite liabilities (education, mortgage runoff, weddings) held in a "
         f"₪{reserve:,.0f} liquidity reserve, NOT capitalized into the perpetuity."
