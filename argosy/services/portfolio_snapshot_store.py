@@ -247,6 +247,29 @@ def persist_snapshot(
             f"SYMBOL_RENAME old={old_s!r} new={new_s!r} account={acct} shares={sh}"
         )
 
+    # LOUD when the position block carries real estate but the "Real estate
+    # details:" section parsed to nothing. Empty is legitimate (no property);
+    # empty ALONGSIDE a non-zero real-estate stub is a parse failure — and it
+    # is silent. It degrades `total_net_worth_incl_residence` to None, which
+    # renders 21x "[derivation pending]", which trips the leakage gate, which
+    # blocks the whole-artifact reader from ever running, which fails the
+    # promote gate closed. One unparsed section cost six weeks of exactly that
+    # (snapshots 35..157, from 2026-07-13) with no error logged anywhere.
+    if not snapshot.real_estate:
+        try:
+            from argosy.services.net_worth_bases import real_estate_stub_usd_k
+            _re_stub = real_estate_stub_usd_k(snapshot)
+        except Exception:  # noqa: BLE001 — a warning must never break persist
+            _re_stub = 0.0
+        if _re_stub:
+            log.warning(
+                "portfolio_snapshot_store.real_estate_section_empty "
+                "user=%s stub_usd_k=%s — position block carries real estate "
+                "but no detail rows parsed; residence-inclusive net worth "
+                "will be UNAVAILABLE",
+                user_id, _re_stub,
+            )
+
     row = PortfolioSnapshotRow(
         user_id=user_id,
         snapshot_date=snapshot.snapshot_date,
