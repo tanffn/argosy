@@ -34,7 +34,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from argosy.state.models import AgentReport, PlanVersion, PortfolioSnapshotRow, UserContext
 
@@ -1476,7 +1476,9 @@ def resolve_plan_numbers(
     # in the canonical headline surface"). The settled doc is authoritative;
     # the floor is an input to it, not a competing answer.
     if decision_run_id is not None:
-        _apply_canonical_allocation(session, decision_run_id, values)
+        _apply_canonical_allocation(
+            session, decision_run_id, values, user_id=user_id
+        )
 
     return ResolvedPlanNumbers(values=values)
 
@@ -1853,7 +1855,8 @@ def _slug(label: str) -> str:
 
 
 def _apply_canonical_allocation(
-    session: "Session", decision_run_id: int, values: dict[str, ResolvedValue]
+    session: "Session", decision_run_id: int, values: dict[str, ResolvedValue],
+    *, user_id: str | None = None,
 ) -> None:
     """Register the canonical TargetAllocationDoc weights + structural ages as
     RESOLVED values, so the headline-numeric-source gate can trace every
@@ -1878,8 +1881,43 @@ def _apply_canonical_allocation(
     except Exception as exc:  # noqa: BLE001
         log.warning("plan_numeric_resolver.alloc_lookup_failed err=%s", exc)
         return
+    # CHICKEN-AND-EGG (fixed 2026-08-24): this run's PlanVersion does not exist
+    # yet while phase 3 is AUTHORING the prose, so the settled-cap override
+    # below silently no-opped and the synthesizer saw the concentration
+    # analyst's derived cap (12%) instead of the user-settled binding cap
+    # (13%). After the draft persisted, the SAME call returned 13% — so the
+    # prose said 12 while the canonical block said 13, and codex blocked the
+    # divergence on every run (448, 449, 456).
+    #
+    # The binding cap is USER-SETTLED and does not depend on this run's output,
+    # so inherit it from the most recent plan that carries a doc. Scoped
+    # deliberately to the cap: per-class target weights ARE this run's authored
+    # output and must not be inherited, so they stay absent (the gate then
+    # flags them, which is the safe direction).
+    _inherited_doc = False
     if pv is None or not pv.target_allocation_json:
-        return
+        try:
+            run_user = user_id or session.execute(
+                text("SELECT user_id FROM decision_runs WHERE id = :r"),
+                {"r": decision_run_id},
+            ).scalar()
+            pv = session.execute(
+                select(PlanVersion)
+                .where(PlanVersion.user_id == run_user)
+                .where(PlanVersion.target_allocation_json.isnot(None))
+                .order_by(PlanVersion.id.desc())
+            ).scalars().first()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("plan_numeric_resolver.alloc_inherit_failed err=%s", exc)
+            return
+        if pv is None or not pv.target_allocation_json:
+            return
+        _inherited_doc = True
+        log.info(
+            "plan_numeric_resolver.alloc_doc_inherited "
+            "run=%s from_plan=%s (this run has not written its draft yet)",
+            decision_run_id, pv.id,
+        )
     try:
         import json as _json
 
@@ -1888,7 +1926,7 @@ def _apply_canonical_allocation(
         return
 
     # Per-class target weights (percent-points in the doc → fraction here).
-    for cls in doc.get("classes", []) or []:
+    for cls in ((doc.get("classes", []) or []) if not _inherited_doc else []):
         label = cls.get("label") or cls.get("class_label") or cls.get("name")
         tgt = cls.get("target_pct")
         if label is None or tgt is None:
