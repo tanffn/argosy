@@ -1,0 +1,61 @@
+tax_simulation_lots columns: id, user_id, simulation_date, plan_type, shares, holding_period, eligible, grant_id, grant_date, purchase_date, sale_price_usd, cost_basis_usd, capital_income_usd, ordinary_income_usd, net_proceeds_usd, source_file_id, ingested_at
+
+rows in latest pull: 57
+
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     270 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     210 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     270 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=289173     gdate=08/04/2024   elig=1        shares=      80 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=289173     gdate=08/04/2024   elig=1        shares=      80 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     270 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=182406     gdate=09/07/2021   elig=1        shares=     340 ordinary/sh=   18.3195
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=289173     gdate=08/04/2024   elig=1        shares=      80 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=331375     gdate=10/03/2025   elig=0        shares=      71 ordinary/sh=  204.6390
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=182406     gdate=09/07/2021   elig=1        shares=     520 ordinary/sh=   18.3195
+  grant=289173     gdate=08/04/2024   elig=1        shares=      90 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=182406     gdate=09/07/2021   elig=1        shares=     560 ordinary/sh=   18.3195
+  grant=213000     gdate=08/06/2022   elig=1        shares=     270 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=289173     gdate=08/04/2024   elig=1        shares=      80 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=331375     gdate=10/03/2025   elig=0        shares=      72 ordinary/sh=  204.6390
+  grant=289173     gdate=08/04/2024   elig=1        shares=      80 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=331375     gdate=10/03/2025   elig=0        shares=      71 ordinary/sh=  204.6390
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=331375     gdate=10/03/2025   elig=0        shares=      72 ordinary/sh=  204.6390
+  grant=289173     gdate=08/04/2024   elig=1        shares=      90 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=213000     gdate=08/06/2022   elig=1        shares=     280 ordinary/sh=   18.1049  benchmark=18.1159   delta=-0.06%
+  grant=246477     gdate=08/06/2023   elig=1        shares=     220 ordinary/sh=   31.9749  benchmark=31.9859   delta=-0.03%
+  grant=289172     gdate=08/04/2024   elig=1        shares=      20 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=331375     gdate=10/03/2025   elig=0        shares=      72 ordinary/sh=  204.6390
+  grant=289173     gdate=08/04/2024   elig=1        shares=      80 ordinary/sh=   87.4866  benchmark=87.4976   delta=-0.01%
+  grant=374434     gdate=09/03/2026   elig=0        shares=      57 ordinary/sh=  204.6390
+  grant=?          gdate=             elig=1        shares=     200 ordinary/sh=   37.4970
+  grant=?          gdate=             elig=0        shares=     903 ordinary/sh=  192.7890
+  grant=?          gdate=             elig=0        shares=     134 ordinary/sh=  112.8390
+  grant=?          gdate=             elig=0        shares=      97 ordinary/sh=  112.8390
+  grant=?          gdate=             elig=0        shares=     161 ordinary/sh=  112.8390

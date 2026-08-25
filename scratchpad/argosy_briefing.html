@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argosy — briefing 2026-08-23</title>
+<style>
+  :root{
+    --ink:#1a1d21; --muted:#5b6570; --line:#e2e5e9; --bg:#fbfbfc;
+    --card:#fff; --accent:#1f5f8b; --warn:#9c3a1f; --good:#1f6b45; --amber:#8a6410;
+    --warnbg:#fdf3f0; --goodbg:#f0f7f3; --accbg:#f0f5f9; --amberbg:#fdf9ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.65 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    padding:48px 20px 80px}
+  .wrap{max-width:840px;margin:0 auto}
+  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:32px}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;
+    color:var(--muted);margin:46px 0 14px;font-weight:700}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:20px 24px;margin:14px 0}
+  .card h3{margin:0 0 10px;font-size:17px;letter-spacing:-.01em}
+  .card p{margin:9px 0}
+  .card ul{margin:9px 0;padding-left:22px}
+  .card li{margin:5px 0}
+  .warn{border-left:4px solid var(--warn);background:var(--warnbg)}
+  .good{border-left:4px solid var(--good);background:var(--goodbg)}
+  .acc{border-left:4px solid var(--accent);background:var(--accbg)}
+  .amber{border-left:4px solid var(--amber);background:var(--amberbg)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.06em;
+    text-transform:uppercase;padding:3px 9px;border-radius:20px;vertical-align:3px;margin-left:8px}
+  .tag-w{background:#f0cfc4;color:var(--warn)}
+  .tag-g{background:#cfe6da;color:var(--good)}
+  .tag-a{background:#f2e4bd;color:var(--amber)}
+  .tag-p{background:#e5e8ec;color:var(--muted)}
+  .he{direction:rtl;text-align:right;font-size:17px;line-height:1.85}
+  .he h3{font-size:19px;margin:0}
+  .he ul{padding-right:22px;padding-left:0}
+  .he .q{margin-top:12px;padding:12px 16px;background:#eaeff4;
+    border-radius:8px;font-weight:600}
+  .hd{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .num{display:inline-flex;align-items:center;justify-content:center;
+    width:27px;height:27px;border-radius:50%;background:var(--ink);color:#fff;
+    font-size:14px;font-weight:700;flex:none}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  code{background:#eef0f3;padding:1px 6px;border-radius:4px;font-size:13.5px}
+  .strike{color:var(--muted);text-decoration:line-through}
+  .big{font-size:21px;font-weight:700}
+  footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:13.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Argosy — briefing</h1>
+  <div class="sub">23 August 2026 · reviewed with Sol · plan run <code>plan-synth-436</code> in flight</div>
+</header>
+
+<h2>Stop — this changes your FUSA plan</h2>
+
+<div class="card warn">
+  <h3>FUSA holds NVIDIA at 7.3%<span class="tag tag-w">act on this</span></h3>
+  <p>You said you'd stop buying SCHD and put new money into FUSA instead. Sol checked the July factsheet: <strong>FUSA's largest holding is NVIDIA at 7.3%</strong>. You would be buying back NVDA exposure through the back door while paying tax to sell it out the front.</p>
+  <p>It's also a weak income substitute — SCHD yields 3.13% at a 0.06% fee; FUSA's distributing class yields 1.36% at 0.25%.</p>
+  <p><strong>I've halted the FUSA routing.</strong> Two better candidates to test, both Irish UCITS:</p>
+  <table>
+    <tr><th>Candidate</th><th class="n">Fee</th><th class="n">Yield</th><th>Note</th></tr>
+    <tr><td><strong>DHS / DHSA</strong> WisdomTree US Equity Income</td><td class="n">0.29%</td><td class="n">~3.57%</td><td>closest yield match</td></tr>
+    <tr><td><strong>UDVD</strong> SPDR US Dividend Aristocrats <code>IE00B6YX5D40</code></td><td class="n">0.35%</td><td class="n">~1.97%</td><td>structurally excludes NVDA — needs 20yr dividend growth</td></tr>
+    <tr><td class="strike">FUSA Fidelity US Quality Income</td><td class="n strike">0.25%</td><td class="n strike">1.36%</td><td class="strike">7.3% NVDA</td></tr>
+  </table>
+  <p>Picking between them is a derivation, not your call — I'll run the comparison on look-through, total return, spread and Leumi availability. <strong>What you should do today: turn DRIP off in both SCHD accounts</strong>, so the position stops growing while I work.</p>
+</div>
+
+<h2>A better route than selling SCHD</h2>
+
+<div class="card acc">
+  <h3>Gift shares to Noga — into her <em>sole</em> account<span class="tag tag-p">needs one fact</span></h3>
+  <p>Your instinct not to sell was right. There's a route that gets much of the estate benefit at <strong>no income-tax cost at all</strong>:</p>
+  <ul>
+    <li><strong>US side:</strong> a non-resident's gift of US <em>intangibles</em> — company stock, ETF shares — is outside US gift tax entirely, at any size. No Form 709-NA.</li>
+    <li><strong>Israeli side:</strong> a genuine gift between resident relatives is exempt under §97(a)(5). Deferred, not free — Noga inherits your basis and acquisition date. There's a Tax Authority "green route" for in-kind transfers through an exchange member.</li>
+  </ul>
+  <p class="big">Splitting SCHD saves roughly USD 32.8k of estate tax; moving all of it, roughly USD 43.5k.</p>
+  <p><strong>The trap, and it's a big one:</strong> do <em>not</em> add Noga as a joint owner. For a non-US-citizen survivor there's no automatic 50/50 rule — §2040(a) pulls the <em>entire</em> joint asset into the first estate unless the survivor proves independent consideration, and assets you gifted her don't count as proof. It has to be a completed, irrevocable transfer into an account she solely owns and controls.</p>
+  <p>Honest caveat: this <em>moves</em> exposure rather than eliminating it, and it carries real divorce, creditor and succession consequences. Selling is the only thing that removes it permanently.</p>
+</div>
+
+<div class="card good">
+  <h3>Possibly better still — harvest against losses<span class="tag tag-g">if you have them</span></h3>
+  <p>If you have Israeli capital-loss carryforwards big enough to absorb the ~USD 67.9k gain, you sell the matched lots and buy the Irish fund: the US-situs asset is gone permanently, at little or no Israeli tax. That beats both gifting and holding. It depends entirely on what your loss schedule actually shows — question 3 below.</p>
+</div>
+
+<div class="card amber">
+  <h3>Two things I had slightly wrong<span class="tag tag-a">corrected</span></h3>
+  <ul>
+    <li><strong>Your SCHD is USD 286.15k, not 272.1k</strong> — there's a second 400-share lot at Schwab. Aggregate gain ~USD 67.88k, tax ~USD 20.36k at 30%.</li>
+    <li><strong>Bleeding it out from 2028 isn't worth it.</strong> The 30%→28% band difference applies to the <em>gain</em>, not proceeds: maximum saving ~USD 1.36k. Not a reason to carry two more years of estate exposure. I withdraw that suggestion.</li>
+  </ul>
+</div>
+
+<h2>Approved — with one consequence</h2>
+
+<div class="card good">
+  <h3>SGOV &rarr; IBTA<span class="tag tag-g">executing</span></h3>
+  <p>USD 85.5k, embedded gain 0.1%, CGT ≈ $30, removes USD 85.5k from the estate base.</p>
+  <p><strong>But it stops being cash.</strong> IBTA's effective duration is ~1.81 years against SGOV's ~0.30. Argosy currently counts SGOV in your liquidity runway as 90-day parking; after this trade it can't. I'm reclassifying it and recalculating the runway — if that produces an actual shortfall I'll come back to you, otherwise it's just bookkeeping. If you'd rather keep true cash, <strong>IB01</strong> (0–1yr UCITS) is the like-for-like swap.</p>
+</div>
+
+<h2>Earlier corrections</h2>
+
+<div class="card amber">
+  <h3>The 2-vs-7 premium I gave you was from a broken engine</h3>
+  <p>I said the corrected model would <em>shrink</em> the premium. Sol showed that's structurally false — both the ordinary and the base capital terms cancel across horizons, and the old model's 28% base was also timing-invariant.</p>
+  <table>
+    <tr><th>2-vs-7 year premium</th><th class="n">ILS</th></tr>
+    <tr><td class="strike">quoted when you decided</td><td class="n strike">68,543</td></tr>
+    <tr><td><strong>corrected estimate</strong></td><td class="n"><strong>71,700</strong></td></tr>
+  </table>
+  <p>Still about 1% of the position, so <strong>your 2-year decision stands</strong> — but the honest number is slightly worse, not better, and I'll give you the final figure once the engine is rebuilt.</p>
+  <p>Also: the USD 60k estate exemption is <strong>per person</strong>, not per household — I had modelled it as one pool. And my swap basket didn't add up (482.3k of listed rows under a 529.3k header). Both mine.</p>
+</div>
+
+<div class="card good">
+  <h3>Verified: Israel gives no step-up on death</h3>
+  <p>§88 — heirs carry over your basis for deaths after 31 March 1981. Israeli CGT is deferred, never erased; US estate tax is genuinely avoidable. That asymmetry is what makes the whole UCITS direction worth doing.</p>
+</div>
+
+<h2 style="direction:rtl;text-align:right">מה אני צריך ממך — ארבעה דברים</h2>
+
+<div class="card he">
+  <div class="hd"><span class="num">1</span><h3>המעמד של נוגה</h3></div>
+  <p>כדי לבדוק את מסלול המתנה אני חייב לדעת את המעמד שלה. במאגר יש את המעמד שלך, אבל לא שלה.</p>
+  <p>אם נוגה היא אזרחית אמריקאית או בעלת גרין קארד — כל המסלול נופל, כי היא נכנסת למערכת המס האמריקאית לגמרי.</p>
+  <div class="q">נוגה תושבת ישראל לצורכי מס? יש לה אזרחות אמריקאית, גרין קארד, או עבר של ויתור על אחד מהם?</div>
+</div>
+
+<div class="card he">
+  <div class="hd"><span class="num">2</span><h3>אטלנטה — מסמכים, לא הערכות</h3></div>
+  <p>במסד הנתונים כתוב שהנכס <strong>מעולם לא נמסר</strong> ושהמשכנתא על 219,475 דולר <strong>מעולם לא נמשכה</strong>. זה לא מסתדר עם "ה‑100 אלף שירדו לאפס".</p>
+  <p>ההבדל מהותי: אם יש לך עדיין זכות קניינית בנדל"ן אמריקאי, הוא נכנס לעיזבון לפי <strong>שווי שוק מלא</strong> ולא לפי ההון העצמי. אם מה שנשאר זו תביעה מול היזם — זה דין אחר לגמרי.</p>
+  <div class="q">תוכל לשלוח את מסמכי הרכישה/הסגירה, מסמך הביטול או המסירה, ודף החשבון של המלווה? אני אחשב מזה — אל תעריך שווי בעצמך.</div>
+</div>
+
+<div class="card he">
+  <div class="hd"><span class="num">3</span><h3>הפסדי הון מועברים והכנסות חוץ‑תיקיות</h3></div>
+  <p>זו אולי השאלה הכי שווה כאן. אם יש לך הפסדי הון מועברים שמכסים את הרווח של כ‑68 אלף דולר ב‑SCHD, אפשר למכור אותו כמעט בלי מס ולקנות קרן אירית — וזה פותר את החשיפה לצמיתות, טוב יותר גם ממתנה וגם מהחזקה.</p>
+  <p>את הכנסות ההון מהתיק אני מחשב לבד. אני צריך רק את מה שמחוץ לתיק.</p>
+  <div class="q">יש הפסדי הון מועברים משנים קודמות? אפשר לקבל את הדוח או השומה האחרונה? ויש הכנסות הון מחוץ לתיק ב‑2026–2027?</div>
+</div>
+
+<div class="card he">
+  <div class="hd"><span class="num">4</span><h3>בעלות על חשבונות — רק מה שלא הצלחתי לחלץ</h3></div>
+  <p>הפטור של 60,000 דולר הוא <strong>לכל אדם בנפרד</strong>, ולכן על שם מי רשום כל נייר משנה מהותית את החשיפה — בלי למכור כלום.</p>
+  <p>אני קודם אחלץ את הבעלות מהדפים עצמם, ואשאל אותך רק על מה שיישאר פתוח. אז זו שאלה שתגיע אחר כך, ורק אם צריך.</p>
+  <div class="q">אין צורך לענות עכשיו — רק דע שזה בא.</div>
+</div>
+
+<div class="card he" style="background:#f4f6f8">
+  <p style="margin:0"><strong>שתי שאלות ששאלתי קודם ואני מושך בחזרה:</strong> ה‑moonshot כבר הוחלט על ידך ב‑21/08 — לשאול שוב זה לא בסדר, אני פשוט עושה קומיט. ועל ה‑SGOV: Argosy כבר יודעת שהוא חניית כסף ל‑90 יום, אז לא הייתי צריך לשאול.</p>
+</div>
+
+<h2 style="direction:rtl;text-align:right">מה אני עושה עכשיו, בלי לחכות לך</h2>
+<div class="card he">
+  <ul>
+    <li>השוואת DHS/DHSA מול UDVD מול FUSA — כולל חשיפת NVDA דרך הקרן</li>
+    <li>איחוד מנוע המס: לולאה לפי שנות מס, ותיקון ה‑<code>deconcentration_optimizer</code>, ואז חישוב הפרמיה מחדש</li>
+    <li>קומיט להחלטת ה‑moonshot, עם בדיקת רגרסיה</li>
+    <li>צילום מצב לפני העסקה, ופנקס החלפות ברמת חשבון ולוט שיסתדר בדיוק</li>
+    <li>מודל <strong>מס</strong> עיזבון נפרד לך ולנוגה — לא רק חשיפה, אלא סולמות מס, סדר פטירה, ו‑QDOT</li>
+    <li>חישוב מחדש של הנזילות אחרי ש‑SGOV יוצא מסליב המזומן</li>
+    <li>קליטת נתוני הנדל"ן עם מקורות ואי‑ודאויות מפורשות</li>
+    <li>שורות <code>instrument_reference</code> לכל הקרנות הרלוונטיות</li>
+  </ul>
+</div>
+
+<footer>
+  Committed: <code>5073fb9</code> §102 ordinary slice in code ·
+  <code>e3e9b05</code> glide token taxed the trustee's withholding, not the statute; lot ordering was inverted ·
+  <code>8f4ec66</code> handover pointer.<br>
+  Sol reviews: <code>codex_s102_glide_review.md</code>, <code>codex_opens_triage.md</code>, <code>codex_action_list.md</code> in <code>scratchpad/</code>.
+</footer>
+
+</div>
+</body>
+</html>

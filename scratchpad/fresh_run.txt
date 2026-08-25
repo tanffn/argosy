@@ -1,0 +1,9 @@
+FRESH run 470 on anchor plan 124 (role=draft)
+corrections: 8 (8 value-pair + 2 sol contracts)
+forces_full_tier=True — donor-379 phase-1/2 reuse SUPPRESSED
+rendered guidance: 7324 chars
+run status: 'completed'
+fm: 'rejected'
+newest plan: 125 (draft)
+role='current' stays: plan 92
+SUCCEEDED — new draft written

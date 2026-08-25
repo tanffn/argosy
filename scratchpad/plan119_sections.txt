@@ -1,0 +1,39 @@
+## Targets
+- **Financial-independence capital target (perpetuity base)**: ₪10,386,133 — The perpetuity base funds permanent real spending at the 3.0% safe-withdrawal floor; it is kept distinct from the total capital target, which adds the finite-liability reserve.
+- **Total financial-independence capital target (perpetuity base plus finite-liability reserve)**: ₪11,836,133 — Total target = perpetuity base + the separately held finite-liability reserve; net worth clearing the perpetuity base does not clear this level.
+- **Liquidity reserve for finite liabilities (held separately from the perpetuity base)**: ₪1,450,000 — Finite, dated liabilities are reserved separately so they are never funded out of the perpetuity base.
+- **Required real perpetual safe-withdrawal floor on the perpetuity base**: 3% — A 3.0% real perpetual withdrawal floor sizes the perpetuity base for indefinite drawdown.
+- **Expected real portfolio return (trajectory assumption only)**: 5% — A 5.0% real-return trajectory assumption drives the accumulation projections; it carries broad-market multiple-compression risk to re-check annually.
+- **US-situs estate exposure (current level across all brokers, by instrument domicile)**: ₪9,825,302 — The US-situs estate tail is set at the currently derived exposure; Irish-domiciled (UCITS) first deployment is designed to arrest its growth.
+- **Education set-aside (combined household contribution, two children)**: ₪1,000,000 — Combined household education set-aside for two children, held inside the finite-liability planning.
+- **Defensive sleeve target at the start of retirement**: 15% of portfolio — A 15% defensive sleeve at the start of retirement buffers early-sequence drawdown without dragging on accumulation now.
+
+### US-Situs Estate Exposure and the Operative Remedy — `estate` (long)
+
+NVDA and US-domiciled ETFs count as US-situs assets because situs follows where the instrument is domiciled; Irish UCITS shares strip the US situs at the wrapper level, which is why they are the default choice for any new non-NVDA exposure. The USD 60,000 US-situs estate exemption applies per decedent, and changing account registration shifts how assets are allocated at first death but does not remove the situs. The working remedy is the NVDA glide plus the UCITS migration, not a documents checklist on its own. Current US-situs exposure is [derivation pending] until a live token is available.
+
+### Household Cashflow — `cashflow` (medium)
+
+Recurring household income is tracked via live tokens: total household income {{fact:income.household_net_annual_nis}}, primary earner {{fact:income.primary_net_annual_nis}}, secondary earner {{fact:income.secondary_net_annual_nis}}, and other recurring income {{fact:income.other_recurring_annual_nis}}. This recurring surplus, before any RSU sales, funds ongoing saving and reduces the need for forced NVDA sales.
+
+### NVDA De-Concentration as the Dominant Long-Horizon Job — `concentration` (long)
+
+Over the long run the biggest job is shrinking the single-stock NVDA position from {{fact:concentration.nvda_current_pct}} down toward the hard ceiling of {{fact:concentration.nvda_cap_pct}}, keeping {{fact:concentration.nvda_target_sh}} shares as the strategic core, while moving the non-NVDA US-domiciled holdings into UCITS wrappers.
+
+### NVDA Glide Tax Totals — `tax_plan` (medium)
+
+Two totals anchor the tax picture for winding down the NVDA position. The Section-102 tax on the planned two-year glide sale resolves to {{fact:tax.nvda_embedded_cgt_glide_nis}}. The full-liquidation embedded capital-gains figure on the NVDA position — the tax if the entire position were sold at once — resolves to {{fact:tax.nvda_embedded_cgt_nis}}. Spreading the sale across two tax years keeps the realized cost below that full-liquidation figure.
+
+### This Cycle's Action Checklist — `action_items` (short)
+
+This cycle: sell the NVDA capital-track slice from eligible lots, lowest benchmark first; hold the September vest; put proceeds into IBTA or the UCITS core (not SGOV); check the September 2026 RSU withholding; load the Schwab tax-lot CSV; and deploy the first UCITS dollar-cost-averaging tranche sized off roughly 67.6% net proceeds.
+
+### RSU Vest Policy — `equity_comp` (medium)
+
+Each newly vested NVDA lot is lined up to its trustee-confirmed Section-102 eligibility date (ordinarily 24 months) and held — never sold the moment it vests. Concentration reduction draws only from lots that are already past eligibility, sold lowest grant benchmark first. The September 2026 vest is held and its withholding is checked against the Section-102 estimate.
+
+## Targets
+- **NVDA net sale proceeds as a share of gross (used to size deployment)**: 67.6% — Net Section-102 proceeds are approximately 67.6% of gross, not a rounded 73%; deployment must be sized off actual settled proceeds so the UCITS/IBTA buy lines are not oversized.
+
+## Targets
+- **NVDA net proceeds as a share of gross (this cycle's deployment sizing)**: 67.6% — Size this cycle's IBTA/UCITS buys off net settled proceeds of roughly 67.6% of gross, not gross times a rounded factor.

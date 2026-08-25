@@ -1,0 +1,52 @@
+sim=18/06/2026  sim_price=204.65  rev_price=215.38
+delta_price=10.7300
+
+cap consumes (lowest benchmark first):
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    270 bench/sh=  18.1049  cap_rev=$      53,261  ord=$      4,888
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    270 bench/sh=  18.1049  cap_rev=$      53,261  ord=$      4,888
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    270 bench/sh=  18.1049  cap_rev=$      53,261  ord=$      4,888
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    270 bench/sh=  18.1049  cap_rev=$      53,261  ord=$      4,888
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=213000   RSU    sh=    280 bench/sh=  18.1049  cap_rev=$      55,234  ord=$      5,069
+  grant=182406   RSU    sh=    340 bench/sh=  18.3195  cap_rev=$      66,997  ord=$      6,229
+  grant=182406   RSU    sh=    560 bench/sh=  18.3195  cap_rev=$     110,348  ord=$     10,259
+  grant=182406   RSU    sh=    520 bench/sh=  18.3195  cap_rev=$     102,466  ord=$      9,526
+  grant=246477   RSU    sh=    210 bench/sh=  31.9749  cap_rev=$      38,513  ord=$      6,715
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=246477   RSU    sh=    220 bench/sh=  31.9749  cap_rev=$      40,347  ord=$      7,034
+  grant=         ESPP   sh=    200 bench/sh=  37.4970  cap_rev=$      33,205  ord=$      7,499
+  grant=289173   RSU    sh=     80 bench/sh=  87.4866  cap_rev=$      10,231  ord=$      6,999
+  grant=289172   RSU    sh=     20 bench/sh=  87.4866  cap_rev=$       2,558  ord=$      1,750
+  grant=289173   RSU    sh=     80 bench/sh=  87.4866  cap_rev=$      10,231  ord=$      6,999
+  grant=289172   RSU    sh=     20 bench/sh=  87.4866  cap_rev=$       2,558  ord=$      1,750
+  grant=289172   RSU    sh=     20 bench/sh=  87.4866  cap_rev=$       2,558  ord=$      1,750
+  grant=289173   RSU    sh=     80 bench/sh=  87.4866  cap_rev=$      10,231  ord=$      6,999
+  grant=289172   RSU    sh=     20 bench/sh=  87.4866  cap_rev=$       2,558  ord=$      1,750
+  grant=289173   RSU    sh=     90 bench/sh=  87.4866  cap_rev=$      11,509  ord=$      7,874
+  grant=289172   RSU    sh=     20 bench/sh=  87.4866  cap_rev=$       2,558  ord=$      1,750
+  grant=289173   RSU    sh=     80 bench/sh=  87.4866  cap_rev=$      10,231  ord=$      6,999
+
+shares taken                    8,920
+capital tax (30%)  USD     504,354.14
+ordinary tax (50%) USD     118,770.83
+total              USD     623,124.97
+  x FX 2.991          ILS      1,863,767
+  x FX 3.0          ILS      1,869,375

@@ -1,0 +1,8 @@
+resuming run 456 from phase 3
+anchor: plan 121 (role=draft)
+checkpoints: skeleton + 7 slices
+expect: sections_long DISCARDED as incomplete and re-run (dc384b4)
+run status: 'completed'
+newest plan: 122 (draft)
+role='current' stays: plan 92
+SUCCEEDED — new draft written

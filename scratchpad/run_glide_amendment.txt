@@ -1,0 +1,5 @@
+freeze baseline: plan 118 role=draft
+unfrozen sections: ['targets', 'tax_plan']
+decision_run=440
+COMPLETED
+live-quote calls intercepted: 420

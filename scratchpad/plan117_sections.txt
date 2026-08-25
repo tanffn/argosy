@@ -1,0 +1,123 @@
+### Estate Documentation Gap — `estate` (long)
+
+The missing estate documents — will, guardianship, power of attorney, healthcare directive, and living trust — remain a top-three structural risk, made worse by the seven-figure US-situs tail. Engage cross-border counsel to complete the package.
+
+<details>
+<summary>Evidence subtree</summary>
+
+**Facts**
+0. *(qualitative)* Missing estate documents remain a top-three structural risk
+
+**Citations**
+- fact[0] · `plan_doc` · `plan_doc:H4:Estate:L1` — extract: “Missing estate documents are a top-three structural risk”
+
+**Missing data**
+- Executed will, guardianship, POA, healthcare directive, and living-trust instruments not yet on file in user_files.
+
+</details>
+
+
+### Household Income and Net-Cash Basis — `cashflow` (medium)
+
+Net household income is a settled figure: ILS 468,657 a year (Ariel ILS 310,642, Noga ILS 152,044). Net cash from an RSU sale is 68% of gross, not 73% — the 2026 actuals look high only because the ordinary tax slice had not yet been taken. Size all deployment off 68%.
+
+<details>
+<summary>Evidence subtree</summary>
+
+**Facts**
+0. *(numeric)* Net household income is ILS 468,657 annually — value: `468657 NIS`
+1. *(numeric)* Ariel's net income is ILS 310,642 annually — value: `310642 NIS`
+2. *(numeric)* Noga's net income is ILS 152,044 annually — value: `152044 NIS`
+3. *(numeric)* Net cash on RSU liquidation is 68% of gross, not 73% — value: `68 %`
+
+**Citations**
+- fact[0] · `analyst_report` · `analyst_report:household_income:L1` — extract: “ILS 468,657 net annually (Ariel ILS 310,642, Noga ILS 152,044)”
+- fact[1] · `analyst_report` · `analyst_report:household_income:L1` — extract: “Ariel ILS 310,642”
+- fact[2] · `analyst_report` · `analyst_report:household_income:L1` — extract: “Noga ILS 152,044”
+- fact[3] · `analyst_report` · `analyst_report:nvda_glide_amendment:L15` — extract: “NET CASH IS 68% OF GROSS, not 73%”
+
+</details>
+
+
+### NVDA Concentration — Two Standing Rules — `concentration` (medium)
+
+NVDA is trimmed under two standing rules. Rule 1 sells 8,857 of the 10,380 vested shares over two years, starting with the lowest grant benchmark, and keeps the roughly 1,523 highest-benchmark shares because a higher benchmark carries more total Section-102 tax. Rule 2 queues each new vest to its own 24-month eligibility date and never sells it the moment it lands. The endpoint is a firm 13% ceiling with an {{fact:concentration.nvda_target_pct}} steering target inside it.
+
+<details>
+<summary>Evidence subtree</summary>
+
+**Facts**
+0. *(numeric)* RULE 1 sells 8,857 of the 10,380 vested NVDA shares over two years — value: `8857 shares`
+1. *(numeric)* The retained high-benchmark NVDA set is about 1,523 shares — value: `1523 shares`
+2. *(numeric)* The NVDA concentration cap is {{fact:concentration.nvda_cap_pct}} of the tradeable book — value: `13 %`
+3. *(numeric)* The NVDA policy steering target is {{fact:concentration.nvda_target_pct}} of portfolio — value: `8 %`
+
+**Citations**
+- fact[0] · `analyst_report` · `analyst_report:nvda_glide_amendment:L5` — extract: “Sell 8,857 of the 10,380 vested shares over two years, lowest grant benchmark first, retaining the ~1,523 highest-benchmark shares”
+- fact[1] · `analyst_report` · `analyst_report:nvda_glide_amendment:L6` — extract: “retaining the ~1,523 highest-benchmark shares”
+- fact[2] · `plan_doc` · `plan_doc:H2:Concentration:L1` — extract: “NVDA concentration cap (binding instrument-level cap) 13.0 pct”
+- fact[3] · `plan_doc` · `plan_doc:H2:Concentration:L2` — extract: “Strategic single-stock (NVDA) target 8.0 pct_of_portfolio”
+
+</details>
+
+
+### Section-102 Glide Tax — `tax_plan` (medium)
+
+Section-102 tax per share is 0.30(S-B) + 0.50B, so the ordinary slice is fixed at grant pricing and pacing cannot shrink it — only the capital slice's surtax band responds. The two-year glide totals ILS 1,849,929, roughly ILS 71,700 more than spreading the sales over seven years. A higher benchmark carries more total tax, which is why low-benchmark lots sell first.
+
+<details>
+<summary>Evidence subtree</summary>
+
+**Facts**
+0. *(numeric)* The two-year NVDA glide totals ILS 1,849,929 in Section-102 tax — value: `1849929 NIS`
+1. *(numeric)* The two-year pacing premium over a seven-year glide is about ILS 71,700 — value: `71700 NIS`
+2. *(policy)* Section-102 tax per share equals 0.30(S-B) plus 0.50B
+3. *(categorical)* A higher grant benchmark costs more total tax under Section 102
+
+**Citations**
+- fact[0] · `analyst_report` · `analyst_report:nvda_glide_amendment:L12` — extract: “The 2-year glide totals ILS 1,849,929 — NOT the ILS 1,274,268 in earlier drafts”
+- fact[1] · `analyst_report` · `analyst_report:nvda_glide_amendment:L13` — extract: “The premium for 2 years over 7 is roughly ILS 71,700 (~1% of the position)”
+- fact[2] · `analyst_report` · `analyst_report:nvda_glide_amendment:L4` — extract: “Section 102 tax per share is 0.30(S-B) + 0.50B”
+- fact[3] · `analyst_report` · `analyst_report:nvda_glide_amendment:L4` — extract: “a HIGHER benchmark costs MORE total tax: it swaps 30%-taxed capital income for 50%-taxed ordinary income”
+
+</details>
+
+
+### This-Cycle Action Checklist — `action_items` (short)
+
+Load the Schwab tax-lot CSV; sell the next NVDA capital-track tranche from eligible lots, lowest benchmark first; hold the September vest and verify its withholding; park proceeds in SGOV; and deploy the first UCITS dollar-cost-averaging tranche sized off the 68% net-cash basis.
+
+<details>
+<summary>Evidence subtree</summary>
+
+**Facts**
+0. *(policy)* The first UCITS DCA tranche is deployed into Irish-domiciled instruments this cycle
+
+**Citations**
+- fact[0] · `analyst_report` · `analyst_report:cross_border_estate:L1` — extract: “proceeds go into UCITS (Irish-domiciled) instruments”
+
+**Missing data**
+- Exact this-cycle NVDA sell-slice count pending derivation by the concentration analyst.
+
+</details>
+
+
+### RSU Vest Policy — Queue to 24-Month Eligibility — `equity_comp` (medium)
+
+Each new NVDA vest is queued to its own Section-102 eligibility date, 24 months from its grant. Selling a lot the moment it vests dumps it inside its 24-month clock and reclassifies it entirely as ordinary income taxed at 50%.
+
+<details>
+<summary>Evidence subtree</summary>
+
+**Facts**
+0. *(numeric)* Each new vest is queued to its Section-102 eligibility, 24 months from grant — value: `24 months`
+1. *(numeric)* Selling a lot on arrival reclassifies it wholly to ordinary income at 50% — value: `50 %`
+
+**Citations**
+- fact[0] · `analyst_report` · `analyst_report:nvda_glide_amendment:L9` — extract: “Queue each NEW vest to its own Section-102 eligibility date, 24 months from ITS grant date”
+- fact[1] · `analyst_report` · `analyst_report:nvda_glide_amendment:L10` — extract: “that would dump shares inside their 24-month clocks and reclassify them WHOLLY to ordinary income at 50%”
+
+</details>
+
+
+

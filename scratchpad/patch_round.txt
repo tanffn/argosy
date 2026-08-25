@@ -1,0 +1,11 @@
+classifier verdict: PATCH
+reason: every correction/directive is a concrete, addressable, bounded-spread edit (long, sections)
+   [1] PATCH groups=['long', 'sections']
+   [2] PATCH groups=['long', 'sections']
+   [3] PATCH groups=['long', 'sections']
+launching PATCH round as run 461 on plan 122
+run status: 'completed'
+fm: 'rejected'
+newest plan: 123 (draft)
+role='current' stays: plan 92
+SUCCEEDED — new draft written

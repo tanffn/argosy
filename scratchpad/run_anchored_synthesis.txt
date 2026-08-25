@@ -1,0 +1,6 @@
+anchor: plan 121 (role=draft)
+current stays: plan 92 (role=current)
+decision_run=456
+run status: 'failed'
+newest plan: 121 (draft)
+FAILED — status='failed', new draft written=False. Check the log for plan_amendment.large.failed / rewriter_structural_violations.

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ארגוסי — תדריך ותוכנית עבודה</title>
+<style>
+  :root{
+    --ink:#1a1d21; --muted:#5b6570; --line:#e2e5e9; --bg:#fbfbfc; --card:#fff;
+    --accent:#1f5f8b; --warn:#9c3a1f; --good:#1f6b45; --amber:#8a6410;
+    --warnbg:#fdf3f0; --goodbg:#f0f7f3; --accbg:#f0f5f9; --amberbg:#fdf9ee;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);direction:rtl;text-align:right;
+    font:17px/1.85 "Segoe UI",Arial,"Helvetica Neue",sans-serif;padding:48px 20px 80px;
+  }
+  .wrap{max-width:820px;margin:0 auto}
+  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:30px}
+  h1{font-size:29px;margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:14.5px;line-height:1.6}
+  h2{font-size:22px;margin:44px 0 6px;letter-spacing:-.01em}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:20px 26px;margin:16px 0}
+  .card h3{margin:0 0 10px;font-size:19px}
+  .card p{margin:10px 0}
+  .card ol,.card ul{padding-right:24px;padding-left:0;margin:10px 0}
+  .card li{margin:7px 0}
+  .warn{border-right:4px solid var(--warn);background:var(--warnbg)}
+  .good{border-right:4px solid var(--good);background:var(--goodbg)}
+  .acc{border-right:4px solid var(--accent);background:var(--accbg)}
+  .amber{border-right:4px solid var(--amber);background:var(--amberbg)}
+  .q{margin-top:14px;padding:13px 17px;background:#eaeff4;border-radius:8px;font-weight:600}
+  .hd{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+  .num{display:inline-flex;align-items:center;justify-content:center;width:29px;height:29px;
+    border-radius:50%;background:var(--ink);color:#fff;font-size:15px;font-weight:700;flex:none}
+  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:16px}
+  th,td{text-align:right;padding:11px 12px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:13px}
+  td.n,th.n{text-align:left;font-variant-numeric:tabular-nums;direction:ltr}
+  tr.total td{font-weight:700;font-size:18px;border-top:2px solid var(--ink);border-bottom:none}
+  code{background:#eef0f3;padding:1px 6px;border-radius:4px;font-size:14px;direction:ltr;display:inline-block}
+  .en{direction:ltr;display:inline-block;unicode-bidi:isolate}
+  footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>ארגוסי — תדריך ותוכנית עבודה</h1>
+  <div class="sub">23 באוגוסט 2026 · הנוסח נבדק מול Sol · הרצת התוכנית <code>plan-synth-436</code> רצה ברקע</div>
+</header>
+
+<h2>מה השתנה היום</h2>
+
+<div class="card">
+  <p>ענית על ארבע שאלות. שלוש מהן סוגרות נושאים פתוחים; הרביעית פותחת נושא גדול יותר.</p>
+  <p><strong>נוגה</strong> — תושבת ישראל ואזרחית גרמניה, ואינה אמריקאית. אין לה אזרחות אמריקאית או גרין קארד. תיעדתי זאת בקובץ ייעודי חדש, כדי שלא אשאל שוב.</p>
+  <p><strong>אטלנטה</strong> — שילמת מקדמה ליזם, החברה קרסה, הכסף אבד ולא נרשמה שום זכות על שמך. כלומר, אין לך נכס מקרקעין אמריקאי, והחשיפה למס עיזבון מהכיוון הזה היא אפס. הרישום הישן במערכת, שהציג נכס בשווי 318 אלף דולר מול משכנתה של 219 אלף דולר, תיאר את תנאי החוזה ולא נכס שבבעלותך.</p>
+  <p><strong>הפסדי הון</strong> — אין. ההפסדים שהיו כבר הוחזרו באמצעות רשות המסים. בכך נסגר המסלול הזול ביותר שהיה על השולחן: אי אפשר לקזז את הרווח ממכירת <span class="en">SCHD</span> כנגד הפסדים.</p>
+  <p><strong>החשבונות משותפים</strong> — וכאן נמצאת הבעיה המרכזית.</p>
+</div>
+
+<h2>הממצא המרכזי: החשבון המשותף פועל לרעתכם</h2>
+
+<div class="card warn">
+  <p>בארה״ב חל כלל שנקבע בסעיף <span class="en">2040(a)</span>. אם החשבונות הם חשבונות משותפים עם זכות מעבר אוטומטי לבן הזוג השורד, ובן הזוג השורד אינו אזרח אמריקאי, אין חלוקה אוטומטית של חצי־חצי. כברירת מחדל, מלוא שוויו של הנכס המשותף נכלל בעיזבון ברוטו של מי שנפטר ראשון, אלא אם בן הזוג השורד מוכיח איזה חלק מהנכס נרכש מכספו שלו.</p>
+
+  <table>
+    <tr><th>מבנה הבעלות בפטירה הראשונה</th><th class="n">מס עיזבון אמריקאי</th></tr>
+    <tr><td>המצב הנוכחי — חשבון משותף, 3.058 מיליון דולר נכללים</td><td class="n">1,156,000 $</td></tr>
+    <tr><td>שני חשבונות נפרדים — מחצית לכל אחד</td><td class="n">544,400 $</td></tr>
+    <tr class="total"><td>הפרש</td><td class="n">611,600 $</td></tr>
+  </table>
+
+  <p>זהו תרחיש קצה, שבו אי אפשר להוכיח מימון עצמאי של בן הזוג השורד. <strong>ההפרש גדול מכל דבר אחר שדנּו בו עד היום — והתיקון אינו מחייב למכור דבר.</strong></p>
+
+  <p>עם זאת, תלושי השכר של נוגה עשויים לשנות את התמונה. הם מוכיחים שהיו לה הכנסות עצמאיות, אבל אינם מספיקים לבדם. צריך לקשר בין השכר שהתקבל, חשבון הבנק שאליו הופקד, ההעברות לחשבון ההשקעות ורכישת ניירות הערך.</p>
+
+  <p>הזיכוי של נוגה והמדרגות הנמוכות שלה אינם נעלמים לצמיתות; הם פשוט אינם מנוצלים בפטירה הראשונה בתרחיש הזה. אם נוגה תחזיק בניירות ערך אמריקאיים בעת פטירתה, העיזבון שלה ייבחן בנפרד.</p>
+
+  <p><strong>התיקון אינו שינוי טכני של שם החשבון.</strong> תחילה צריך לקבוע מהי הבעלות הכלכלית הקיימת, לתעד מי מימן כל חלק, ורק לאחר מכן להעביר את הנכסים לשני חשבונות נפרדים בבעלות אמיתית של כל אחד מכם. אם נכס שבבעלות כלכלית של אריאל מועבר לחשבון על שם נוגה בלבד, מדובר במתנה ולא רק בשינוי רישום.</p>
+
+  <p>לפני העברה כזאת צריך לברר מתי נוגה עזבה את גרמניה. אם טרם חלפו חמש שנים, המתנה עלולה להיות חייבת במס מתנה בגרמניה.</p>
+</div>
+
+<h2>מה זה אומר לגבי SCHD</h2>
+
+<div class="card">
+  <p>בהיעדר הפסדים לקיזוז, סדר העדיפויות משתנה.</p>
+  <p><strong>ראשון —</strong> מבחינת מס עיזבון, הפתרון הטוב ביותר הוא למכור את <span class="en">SCHD</span> ולהחליף אותה בקרן אירית מתאימה. על רווח של כ־67.88 אלף דולר, המס הישראלי הבסיסי בשיעור של 25% הוא כ־16.97 אלף דולר, לפני מס יסף והתאמות מטבע. המכירה מסירה כ־286.15 אלף דולר מבסיס הנכסים האמריקאיים.</p>
+  <p><strong>שני —</strong> להעביר את <span class="en">SCHD</span> בעין לחשבון נפרד בבעלות נוגה, כחלק מחלוקה מתועדת של הנכסים. כך לא מממשים את הרווח, אבל גם לא מבטלים את החשיפה למס עיזבון אמריקאי — רק מעבירים אותה לעיזבון של נוגה. את המהלך הזה יש לבצע רק לאחר בדיקת המס הגרמני.</p>
+  <p><strong>שלישי —</strong> להמשיך להחזיק ב־<span class="en">SCHD</span> בחשבון המשותף ולהפנות רק את הכסף החדש לקרנות שאינן אמריקאיות. זו האפשרות הזולה ביותר בטווח הקצר, אבל היא משאירה את הבעיה הקיימת ללא פתרון מיידי.</p>
+</div>
+
+<div class="card warn">
+  <h3>ובנוסף, כפי שכבר דיווחתי — אין להעביר כסף חדש ל־<span class="en">FUSA</span></h3>
+  <p>הקרן מחזיקה כ־7.3% באנבידיה, ולכן השקעה בה תחזיר לתיק בדיוק את הריכוזיות שאתה משלם מס כדי לצמצם. אני בודק במקומה שתי חלופות איריות: <span class="en">DHS/DHSA</span> ו־<span class="en">UDVD</span>. הבחירה ביניהן היא גזירה, לא החלטה שלך.</p>
+  <p><strong>מה שכן כדאי לעשות היום:</strong> לכבות <span class="en">DRIP</span> בשני חשבונות ה־<span class="en">SCHD</span>, כדי שהפוזיציה תפסיק לגדול בזמן שאני עובד.</p>
+</div>
+
+<h2>מה אני צריך ממך</h2>
+
+<div class="card acc">
+  <div class="hd"><span class="num">1</span><h3>מתי נוגה עזבה את גרמניה?</h3></div>
+  <p>זו השאלה החשובה ביותר כרגע, והיא משפיעה לשני כיוונים מנוגדים.</p>
+  <p><strong>אם טרם חלפו חמש שנים</strong> — מתנה אליה עלולה להיות חייבת במס מתנה גרמני. הפטור לבן זוג הוא 500 אלף אירו, ומחצית מהתיק חורגת ממנו. גם העיזבון שלה עלול להיכנס לחבות גרמנית על נכסיה בעולם כולו.</p>
+  <p><strong>אם חלפו יותר מחמש שנים</strong> — החשש הזה יורד. אבל אז כנראה גם אמנת המס בין ארה״ב לגרמניה אינה חלה עליה, ולאמנה הזאת יש סעיף שעשוי לבטל לחלוטין את מס העיזבון האמריקאי על מניות אמריקאיות רגילות. זה נושא שדורש עורך דין שמתמחה באמנה, ולא נסתמך עליו בלי בדיקה.</p>
+  <div class="q">באיזו שנה נוגה עזבה את גרמניה? האם נשארו לה שם בית, כתובת מגורים או נכסים?</div>
+</div>
+
+<div class="card acc">
+  <div class="hd"><span class="num">2</span><h3>מסמכי פתיחת החשבונות</h3></div>
+  <p>כדי לדעת אם סעיף <span class="en">2040(a)</span> בכלל חל, צריך לראות את הסכמי פתיחת החשבון ואת תנאי הבעלות. חשבון משותף ישראלי אינו בהכרח חשבון עם זכות מעבר אוטומטי במובן האמריקאי — וייתכן שכל החישוב למעלה חמור מדי.</p>
+  <div class="q">תוכל להוציא מלאומי ומ־<span class="en">Schwab</span> את הסכמי פתיחת החשבון ותנאי הבעלות?</div>
+</div>
+
+<h2>תוכנית העבודה</h2>
+
+<div class="card good">
+  <p>מה שאני עושה עכשיו, בלי לחכות לך:</p>
+  <ol>
+    <li>בדיקת מסמכי פתיחת החשבונות, תנאי הבעלות וסעיף אריכות הימים</li>
+    <li>חילוץ וקליטה של תלושי השכר של נוגה ושל טופס 106, ובניית שרשרת המימון מהשכר ועד לחשבון ההשקעות</li>
+    <li>בניית מודל מלא של מס העיזבון לשני אנשים בנפרד — מדרגות מס, סדר פטירה והשוואה בין הרישום הנוכחי לחשבונות נפרדים</li>
+    <li>השוואת קרנות דיבידנד איריות לצורך החלפת <span class="en">SCHD</span> ולקליטת הכסף החדש</li>
+    <li>איחוד מנוע המס וחישוב מחדש של הפרמיה בין אופק של שנתיים לאופק של שבע שנים</li>
+    <li>עדכון רשומות הנדל״ן בהתאם למידע שמסרת</li>
+    <li>תיעוד סופי של ההחלטה לגבי ה־<span class="en">moonshot</span> — כבר בוצע</li>
+  </ol>
+</div>
+
+<div class="card amber">
+  <h3>שני דברים שטעיתי בהם היום</h3>
+  <p><strong>תלושי השכר של נוגה.</strong> אמרתי שלא נקלטו למערכת, ומכאן שאין ראיה להכנסות שלה. טעות: מסרת אותם ואת טופס 106 עוד במאי, והם נמצאים במאגר הקבצים — אבל אף תהליך לא קרא אותם. הבייטים נשמרו, שום דבר לא ניתח אותם. זו תקלה אמיתית שאני מתקן.</p>
+  <p><strong>הפרמיה בין שנתיים לשבע.</strong> אמרתי לך שהמודל המתוקן יקטין אותה. Sol הראה שזה לא נכון: היא דווקא גדלה מעט, מ־68,543 ש״ח לכ־71,700 ש״ח. ההחלטה שלך על אופק של שנתיים נשארת נכונה — מדובר בכ־1% מהפוזיציה — אבל המספר שעליו התבססת הגיע ממנוע שגוי, ואמסור לך את הסופי אחרי התיקון.</p>
+</div>
+
+<footer>
+  קומיטים היום: <code>5073fb9</code> · <code>e3e9b05</code> · <code>fa67aa6</code> · <code>a33813b</code><br>
+  חוות הדעת של Sol שמורות ב־<code>scratchpad/</code>.
+</footer>
+
+</div>
+</body>
+</html>

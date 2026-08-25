@@ -1,0 +1,9 @@
+FRESH corrective run 463 (not a resume — 456's slices are stale)
+anchor: plan 123 (role=draft)
+guidance: F1..F7 from run 456's codex + reader findings
+false [B1] cap directive REMOVED
+run status: 'completed'
+fm: 'rejected'
+newest plan: 124 (draft)
+role='current' stays: plan 92
+SUCCEEDED — new draft written

@@ -1,0 +1,36 @@
+recent plan decision_runs (id, kind, status, started):
+  406  plan_amendment_chat  completed  2026-08-18 11:04:26.269877
+  405  plan_amendment_chat  completed  2026-08-18 09:19:48.840694
+  404  plan_amendment_chat  completed  2026-08-18 09:07:29.852284
+  403  plan_amendment_chat  completed  2026-08-18 05:24:36.203915
+  402  plan_amendment_chat  completed  2026-08-17 17:37:35.273013
+
+resolving against decision_run_id=406
+
+RESOLVED GLIDE / TAX KEYS
+  tax.nvda_embedded_cgt_glide_nis                            resolved  1,863,767
+      formula: realization_tax_summary(max_eligible_shares=8,920, max_breaking_shares=0) at REVALUED at current NVDA $215.38 × BOI USD/NIS — tax on the PLANNED sale only, eligible and breaking shares taxed at their own rates (never blended)
+  tax.nvda_embedded_cgt_glide_dated_nis                      resolved  1,863,767
+      formula: realization_tax_summary(max_eligible_shares=8,920, max_breaking_shares=0, as_of_date=2027-12-31) at REVALUED at current NVDA $215.38 × BOI USD/NIS — DATED counterpart of tax.nvda_embedded_cgt_glide_nis: eligibility is projected forward per-lot via the Section-102 24-months-from-grant clock instead of frozen at the report's own point-in-time markings
+  tax.nvda_embedded_cgt_nis                                  resolved  2,537,965
+      formula: sum(gross − net_proceeds per lot) at REVALUED at current NVDA $215.38 × BOI USD/NIS; eligible lots revalued at §102 Capital 30% effective rate on Δcapital; breaking lots at per-lot implied effective rate from trustee sim
+  tax.retention_at_vest_pct                                  resolved  0.5000
+      formula: 1 - at-vest ordinary high-income rate (47% marginal + 3% surtax)
+  tax.retention_capital_track_pct                            resolved  0.7000
+      formula: 1 - Section-102 high-income marginal (25% CGT + 3% + 2% surtax) on the capital-gain slice
+  concentration.nvda_sell_sh                                 resolved  8,920
+      formula: nvda_sh - nvda_target_sh
+  concentration.nvda_target_sh                               resolved  1,460
+      formula: floor(target_w * (nvda_sh*nvda_px_usd/nvda_weight) / nvda_px_usd)
+  concentration.nvda_eligible_now_sh                         resolved  9,230
+      formula: sum(shares) where Holding Period=OK in the latest tax-sim report
+  concentration.nvda_eligible_by_glide_horizon_sh            resolved  9,588
+      formula: eligible_shares(now) + sum(dated Breaking tranches maturing by the glide horizon)
+  concentration.nvda_cap_pct                                 resolved  0.1300
+      formula: MIN over four constraint caps (sequence/tail/risk/tax)
+  concentration.nvda_current_pct                             resolved  0.5686
+      formula: NVDA usd_value_k ÷ tradeable securities book (excl. cash + physical real estate), snapshot-derived — % of tradeable book; NVDA present-but-UNMANAGED — counted for concentration + US-situs estate on the TOTAL book, held OUT of the managed / tradeable / sell-eligible sleeve (never emitted as a BUY/SELL)
+  retirement.fi_margin_net_of_realization_glide_nis          resolved  -1,533,387
+      formula: fi_margin_signed_nis − nvda_embedded_cgt_glide_nis (gross margin less the tax on the PLANNED sale only — nvda_sell_sh shares, eligible/breaking split respected, retained shares untaxed; THE PLAN-AS-WRITTEN after-tax margin, as opposed to the full-liquidation bound; >0 => FI reached under the plan as written; <0 => the plan as written does not yet clear FI after tax)
+  retirement.fi_margin_net_of_realization_glide_dated_nis    resolved  -1,533,387
+      formula: fi_margin_signed_nis − nvda_embedded_cgt_glide_dated_nis (gross margin less the DATED glide-consistent tax — eligibility projected forward per-lot to the settled glide horizon rather than frozen at the report's point-in-time markings; >0 => FI reached under the plan as written; <0 => the plan as written does not yet clear FI after tax)
