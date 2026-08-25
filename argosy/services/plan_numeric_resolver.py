@@ -3980,7 +3980,15 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
                 # Gross positive, net negative — the most important case to qualify.
                 # Do NOT say "REACHED" without the gross-only qualifier.
                 verdict = (
-                    f"FI sufficiency VERDICT: REACHED ON A GROSS PRE-TAX BASIS ONLY — "
+                    # AT THE CURRENT USD/NIS MARK: the fi_fx_shock_sufficiency gate
+                    # requires an FX qualifier in the SAME sentence as any
+                    # affirmative "reached" claim, because a -10% USD/NIS shock
+                    # puts net worth below the total capital target. Without it
+                    # the canonical verdict the synthesizer must quote VERBATIM
+                    # is itself a gate violation — the resolver's canon and the
+                    # gate's rule contradicted each other (draft 125).
+                    f"FI sufficiency VERDICT: REACHED ON A GROSS PRE-TAX BASIS ONLY, "
+                    f"AT THE CURRENT USD/NIS MARK — "
                     f"liquid net worth exceeds the total capital target by ₪{m:,.0f} BEFORE "
                     f"accounting for the embedded NVDA realization tax. "
                     f"Net of realization tax, the margin is ₪{net_m:,.0f} (a SHORTFALL). "
