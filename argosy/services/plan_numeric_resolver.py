@@ -701,7 +701,8 @@ def _resolve_net_worth(
         value = usd_assets_usd * fx + nis_native_nis
         loc = (
             f"USD assets ${usd_assets_usd/1e6:.2f}M × {fx_src} {fx:.3f} + "
-            f"NIS-native ₪{nis_native_nis:,.0f}; holdings as of {as_of} (provisional)"
+            "NIS-native cash from the same holdings snapshot; "
+            f"holdings as of {as_of} (provisional)"
         )
         formula = "USD-denominated assets × current BOI USD/NIS + NIS-native cash"
     else:
@@ -885,9 +886,9 @@ def _resolve_liquid_net_worth(
     holdings_as_of = getattr(snap, "snapshot_date", None)
     as_of = holdings_as_of.isoformat() if holdings_as_of else f"snapshot id={snap.id}"
     loc = (
-        f"liquid = USD ${usd_assets_usd/1e6:.2f}M × {fx_src} {fx:.3f} + NIS-native "
-        f"₪{nis_native_nis:,.0f}, EXCLUDING ₪{re_excluded_nis:,.0f} real estate; "
-        f"holdings as of {as_of} (provisional)"
+        f"liquid = USD ${usd_assets_usd/1e6:.2f}M × {fx_src} {fx:.3f} + "
+        "NIS-native cash from the same holdings snapshot, EXCLUDING "
+        f"₪{re_excluded_nis:,.0f} real estate; holdings as of {as_of} (provisional)"
     )
     _liq_conf = "MEDIUM" if _book.stale_marks else "HIGH"
     _liq_note = (

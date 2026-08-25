@@ -5440,7 +5440,7 @@ def _collect_action_items(
     withholding_status: dict[str, Any] | None = None,
     evidence_ctx: Any | None = None,
 ) -> list[ActionItem]:
-    """Walk a plan version's short + medium horizon actions and emit
+    """Walk a plan version's long + medium + short horizon actions and emit
     surfaced ``ActionItem`` rows.
 
     Cutoff: keep an action when its ``dated`` is on or before
@@ -5451,6 +5451,7 @@ def _collect_action_items(
     cutoff = today + timedelta(days=window_days)
     items: list[ActionItem] = []
     for horizon, json_str in (
+        ("long", pv.horizon_long_json),
         ("short", pv.horizon_short_json),
         ("medium", pv.horizon_medium_json),
     ):

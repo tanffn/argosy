@@ -67,11 +67,29 @@ def _make_medium_actions_json(actions: list[dict]) -> str:
     )
 
 
+def _make_long_actions_json(actions: list[dict]) -> str:
+    return json.dumps(
+        {
+            "horizon": "long",
+            "freshness_expected": "annual",
+            "status": "minor_revision",
+            "posture": "test",
+            "targets": [],
+            "themes": [],
+            "actions": actions,
+            "deltas_from_prior": [],
+            "rationale": "",
+            "cited_sources": [],
+        }
+    )
+
+
 def _seed_draft(
     client_with_db,
     *,
     short_actions: list[dict] | None = None,
     medium_actions: list[dict] | None = None,
+    long_actions: list[dict] | None = None,
     user_id: str = "ariel",
 ) -> int:
     """Insert a role='draft' PlanVersion with the supplied actions."""
@@ -85,6 +103,7 @@ def _seed_draft(
             raw_markdown="",
             horizon_short_json=_make_short_actions_json(short_actions or []),
             horizon_medium_json=_make_medium_actions_json(medium_actions or []),
+            horizon_long_json=_make_long_actions_json(long_actions or []),
         )
         sess.add(pv)
         sess.commit()
@@ -123,6 +142,28 @@ def _seed_current(
 
 def _today_iso(offset_days: int = 0) -> str:
     return (date.today() + timedelta(days=offset_days)).isoformat()
+
+
+def test_long_horizon_structured_deadline_reaches_action_dashboard(client_with_db):
+    """Regression: plan 125's estate-counsel date lived in long.actions."""
+    _seed_draft(
+        client_with_db,
+        long_actions=[{
+            "label": "Book cross-border estate counsel",
+            "horizon_kind": "dated",
+            "trigger_or_date": _today_iso(12),
+            "detail": "Book counsel before the deadline.",
+            "rationale": "Estate documents are missing.",
+            "cited_sources": ["plan_section:estate"],
+        }],
+    )
+    body = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel&window_days=14"
+    ).json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["horizon"] == "long"
+    assert body["items"][0]["label"] == "Book cross-border estate counsel"
+    assert body["next_due"] == _today_iso(12)
 
 
 # ---------- Empty / no-data cases ----------------------------------------

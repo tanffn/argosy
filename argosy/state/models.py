@@ -211,6 +211,33 @@ class PlanVersion(Base):
     )
 
 
+class PlanRepairAttempt(Base):
+    """Immutable audit receipt for one same-row plan repair attempt."""
+
+    __tablename__ = "plan_repair_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_version_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_artifact_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_artifact_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    before_violations_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    after_violations_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    affected_fields_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    instructions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    refusals_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    terminal_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
 class CoherenceDecision(Base):
     """A durable, machine-checkable coherence ruling. Versioned/supersedable:
     a replacement supersedes the prior row (which is retained for audit)."""

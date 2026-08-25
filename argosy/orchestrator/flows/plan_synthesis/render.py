@@ -82,6 +82,11 @@ def _fmt_target_value(t) -> str:
     """
     v = t.value
     u = t.unit
+    if u == "pct_of_portfolio" and getattr(t, "source_section", None) == "target_allocation_doc":
+        # The full numeric projection is rendered once in the canonical IPS
+        # table. Repeating dynamic class values here creates a second raw
+        # representation without a registered fact owner for every class.
+        return "see canonical IPS allocation table"
     if u == "pct":
         return f"{v:g}%"
     if u in ("pct_of_portfolio", "pct_of_net_worth", "pct_of_liquid"):

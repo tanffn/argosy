@@ -573,6 +573,28 @@ class TokenizeResult:
     text: str
     violations: list[GateViolation] = field(default_factory=list)
     substitutions: list[tuple[str, str]] = field(default_factory=list)  # (key, literal)
+    # Machine-readable candidates for the repair service.  The tokenizer still
+    # NEVER applies these itself: a stale literal is evidence of drift until a
+    # caller has proved that the surface, canonical owner and units agree.
+    drift_candidates: list["FactDriftCandidate"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class FactDriftCandidate:
+    """One anchored stale literal located in ``TokenizeResult.text``.
+
+    ``start``/``end`` refer to the post-match-tokenization text returned in
+    ``TokenizeResult.text``.  This makes candidates directly consumable by an
+    atomic, right-to-left materializer without reparsing prose from reviewer
+    hints.
+    """
+
+    fact_key: str
+    literal: str
+    start: int
+    end: int
+    resolver_unit: str
+    canonical_rendered: str
 
 
 def _is_match(candidate: float, canonical_value: float, tol: float) -> bool:
@@ -616,6 +638,7 @@ def tokenize_text(
 
     violations: list[GateViolation] = []
     substitutions: list[tuple[str, str]] = []
+    drift_candidates: list[FactDriftCandidate] = []
     working = text
 
     active: list[tuple[AnchorSpec, float, str]] = []
@@ -750,8 +773,22 @@ def tokenize_text(
                     ),
                 )
             )
+            start, end = _span(m, _rule.span)
+            drift_candidates.append(FactDriftCandidate(
+                fact_key=spec.key,
+                literal=working[start:end],
+                start=start,
+                end=end,
+                resolver_unit=resolver_unit,
+                canonical_rendered=rendered,
+            ))
 
-    return TokenizeResult(text=working, violations=violations, substitutions=substitutions)
+    return TokenizeResult(
+        text=working,
+        violations=violations,
+        substitutions=substitutions,
+        drift_candidates=drift_candidates,
+    )
 
 
 def tokenize_bodies(
@@ -779,6 +816,7 @@ def tokenize_bodies(
 __all__ = [
     "AnchorSpec",
     "DEFAULT_ANCHORS",
+    "FactDriftCandidate",
     "TokenizeResult",
     "tokenize_text",
     "tokenize_bodies",

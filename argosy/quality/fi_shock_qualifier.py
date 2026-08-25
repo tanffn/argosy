@@ -55,7 +55,11 @@ _NEGATION_RE = re.compile(
     r"fails? to|does not|doesn't|never|cannot|can't|can not)\b",
     re.IGNORECASE,
 )
-_SENTENCE_KEEP_RE = re.compile(r"([.!?\n]+)")
+# A period terminates a sentence only when followed by whitespace/EOF.  This
+# deliberately does NOT split decimal figures (13.0) or fact keys
+# (retirement.fi_margin_signed_nis); the old broad ``[.!?]`` splitter broke a
+# reached-claim immediately before/after a token and made the qualifier a no-op.
+_SENTENCE_KEEP_RE = re.compile(r"(\.(?=\s|$)|[!?]+|\n+)")
 
 _NVDA_CLAUSE = " only at the full NVDA mark"
 _FX_CLAUSE = " only at the current FX / currency mark"

@@ -293,12 +293,21 @@ def check_fact_literal_should_be_token(
             display_to_keys.setdefault(bare, []).append(key)
 
     violations: list[GateViolation] = []
+    canonical_allocation_block = re.compile(
+        r"<!-- canonical-allocation:start -->.*?<!-- canonical-allocation:end -->",
+        re.DOTALL,
+    )
     for horizon_name, text in horizon_text.items():
+        # This table is a direct, complete projection from TargetAllocationDoc,
+        # whose class labels are dynamic and therefore do not each have a
+        # registry key. Its start/end markers are emitted only by the trusted
+        # renderer. The allocation conservation gate validates the numbers.
+        text = canonical_allocation_block.sub("", text or "")
         if not text or "{{fact:" in text:
             # Bodies that still carry tokens are mid-protocol; only flag
             # pure-literal bodies (or scan the non-token spans).
             pass
-        for viol in find_unauthorized_numbers(text or ""):
+        for viol in find_unauthorized_numbers(text):
             token = viol.token
             # Normalize for lookup
             candidates = [token, token.replace(" ", "")]
