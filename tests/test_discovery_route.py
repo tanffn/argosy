@@ -780,3 +780,29 @@ def test_discovery_funnel_loop_tick_runs_funnel(monkeypatch):
     assert called["user_id"] == "ariel"
     assert called["force"] is False           # daily refresh is SMART (not force)
     assert out["picks"] == 1
+
+
+def test_discovery_funnel_loop_retries_transient_failure(monkeypatch):
+    import argosy.orchestrator.loops.discovery_funnel_loop as dfl
+
+    attempts = []
+
+    async def fake_run(user_id, *, force=False, now=None):
+        attempts.append((user_id, force))
+        if len(attempts) == 1:
+            raise RuntimeError("transient database lock")
+        return FunnelResult(
+            picks=[], estimated=[], radar=[], last_refreshed_at="recovered"
+        )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(dfl, "run_funnel", fake_run)
+    monkeypatch.setattr(dfl.asyncio, "sleep", no_sleep)
+    loop = dfl.DiscoveryFunnelLoop(user_id="ariel")
+
+    out = asyncio.run(loop.tick())
+
+    assert attempts == [("ariel", False), ("ariel", False)]
+    assert out["last_refreshed_at"] == "recovered"

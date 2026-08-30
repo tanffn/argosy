@@ -9,6 +9,7 @@ so only new/changed names are re-researched.
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime
 
@@ -26,6 +27,28 @@ _log = get_logger("argosy.loops.discovery_funnel")
 # fresh discovery picks are on the radar when Stage 0 reads the book.
 _DEFAULT_CRON = "0 16 * * *"
 _DEFAULT_TZ = "Asia/Jerusalem"
+_MAX_ATTEMPTS = 2
+_RETRY_DELAY_SECONDS = 2.0
+
+
+async def _run_with_retry(user_id: str):
+    """Retry a failed smart refresh once within the same scheduled receipt."""
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            return await run_funnel(user_id, force=False)
+        except Exception as exc:  # noqa: BLE001 - retry boundary
+            last_error = exc
+            _log.warning(
+                "discovery_funnel.attempt_failed",
+                attempt=attempt,
+                max_attempts=_MAX_ATTEMPTS,
+                error=str(exc)[:200],
+            )
+            if attempt < _MAX_ATTEMPTS:
+                await asyncio.sleep(_RETRY_DELAY_SECONDS)
+    assert last_error is not None
+    raise last_error
 
 
 class DiscoveryFunnelLoop(CadenceLoop):
@@ -56,7 +79,7 @@ class DiscoveryFunnelLoop(CadenceLoop):
             )
             return {"status": "paused", "reason": "cost_cap"}
         try:
-            result = await run_funnel(self.user_id, force=False)
+            result = await _run_with_retry(self.user_id)
         except Exception as exc:  # noqa: BLE001 — failure isolation (codex #10)
             _log.warning("discovery_funnel.tick_failed", error=str(exc)[:200])
             return {"error": str(exc)[:200]}

@@ -183,8 +183,9 @@ def _persist_scan_states(user_id: str, states) -> None:
 
     url = str(get_settings().database_url).replace("+aiosqlite", "")
     factory = sessionmaker(bind=create_sync_engine(url))
+    state_rows = list(states)
     with factory() as db:
-        for s in states:
+        for s in state_rows:
             row = db.get(ScanState, {"user_id": user_id, "ticker": s["ticker"]})
             if row is None:
                 row = ScanState(user_id=user_id, ticker=s["ticker"])
@@ -204,35 +205,46 @@ def _persist_scan_states(user_id: str, states) -> None:
             row.last_fleet_at = _parse(s.get("last_fleet_at"))
             row.last_seen_at = _parse(s.get("last_seen_at"))
             row.updated_at = datetime.now(UTC)
-            observation = s.get("observation")
-            if isinstance(observation, dict) and observation.get("price"):
-                try:
-                    from argosy.services.predictions.writers import (
-                        write_signal_stream_predictions,
-                    )
-
-                    observed_at = _parse(s.get("last_radar_at")) or datetime.now(UTC)
-                    write_signal_stream_predictions(
-                        db,
-                        user_id,
-                        stream="radar_observation",
-                        dedup_key=(
-                            f"{observed_at.date().isoformat()}|{s['ticker']}|"
-                            f"{s.get('radar_fingerprint', '')}"
-                        ),
-                        ticker=s["ticker"],
-                        direction="long",
-                        event_at=observed_at,
-                        entry_price=float(observation["price"]),
-                        evidence=observation,
-                    )
-                except Exception as exc:  # noqa: BLE001 - memory write still lands
-                    log.warning(
-                        "high_potential_funnel.radar_clock_failed",
-                        ticker=s.get("ticker"),
-                        error=str(exc)[:160],
-                    )
         db.commit()
+
+    # Outcome clocks are additive telemetry, never part of the discovery-memory
+    # transaction. A writer flush used to poison the shared Session; catching
+    # that exception without a rollback then made the final commit fail and
+    # discarded every estimator/fleet result in the run. Commit the decision
+    # inputs first, then give each clock its own transaction so one bad ticker or
+    # a transient SQLite lock cannot erase the comparison cohort.
+    for s in state_rows:
+        observation = s.get("observation")
+        if not isinstance(observation, dict) or not observation.get("price"):
+            continue
+        try:
+            from argosy.services.predictions.writers import (
+                write_signal_stream_predictions,
+            )
+
+            observed_at = _parse(s.get("last_radar_at")) or datetime.now(UTC)
+            with factory() as telemetry_db:
+                write_signal_stream_predictions(
+                    telemetry_db,
+                    user_id,
+                    stream="radar_observation",
+                    dedup_key=(
+                        f"{observed_at.date().isoformat()}|{s['ticker']}|"
+                        f"{s.get('radar_fingerprint', '')}"
+                    ),
+                    ticker=s["ticker"],
+                    direction="long",
+                    event_at=observed_at,
+                    entry_price=float(observation["price"]),
+                    evidence=observation,
+                )
+                telemetry_db.commit()
+        except Exception as exc:  # noqa: BLE001 - telemetry is best-effort
+            log.warning(
+                "high_potential_funnel.radar_clock_failed",
+                ticker=s.get("ticker"),
+                error=str(exc)[:160],
+            )
 
 
 # --- helpers ---------------------------------------------------------------

@@ -18,8 +18,8 @@ from argosy.services.allocation_author.proposal import (
     Buy,
     Sell,
 )
-from argosy.services.order_sheet import CandidateComparison, OutcomeScenario
 from argosy.services.allocation_author.verifier import GateStatus, verify_allocation_proposal
+from argosy.services.order_sheet import CandidateComparison, OutcomeScenario
 
 
 def _packet(**over):
@@ -137,6 +137,11 @@ def _discovery_row(ticker: str, rank: int, score: float) -> dict:
         "rank": rank,
         "score": score,
         "fresh_as_of": "2026-08-26T06:00:00+00:00",
+        "estimator": {
+            "go": True,
+            "conviction": "MED",
+            "sentiment": 0.5,
+        },
         "fleet": {"verdict": "BUY", "conviction": "MED", "thesis_md": f"{ticker} thesis"},
     }
 
@@ -181,6 +186,34 @@ def test_discovery_buy_requires_explicit_comparison_with_every_buy_finalist():
     )
     report = verify_allocation_proposal(_ok_proposal(), packet)
     assert "candidate_comparison_missing" in {f.code for f in report.failures}
+
+
+def test_discovery_buy_blocks_when_higher_ranked_name_is_unevaluated():
+    selected = _discovery_row("EXUS", 15, 80.1)
+    unevaluated = {
+        "ticker": "ONDS",
+        "rank": 1,
+        "score": 108.2,
+        "fresh_as_of": "2026-08-29T07:29:58+00:00",
+        "estimator": None,
+        "fleet": None,
+    }
+    packet = _packet(discovery_candidates=[unevaluated, selected])
+    proposal = _ok_proposal().model_copy(
+        update={
+            "candidate_comparisons": [
+                _candidate_comparison("EXUS", 15, 80.1, True)
+            ]
+        }
+    )
+
+    report = verify_allocation_proposal(proposal, packet)
+
+    assert report.status == GateStatus.BLOCK
+    failure = next(
+        f for f in report.failures if f.code == "discovery_evaluation_incomplete"
+    )
+    assert "ONDS" in failure.detail
 
 
 def test_discovery_comparison_records_winner_losers_and_raw_grades():

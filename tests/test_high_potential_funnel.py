@@ -8,10 +8,11 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-import argosy.services.high_potential_funnel as hpf
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
+
+import argosy.services.high_potential_funnel as hpf
 from argosy.services.contracts import EstimatorVerdict, FleetPick
 from argosy.services.trend_radar import ScanResult, TrendCandidate
 from argosy.state.models import Base, Prediction, ScanState, User
@@ -320,4 +321,67 @@ def test_persist_scan_state_writes_dated_radar_outcome_clocks(
         assert [row.timeframe_days for row in clocks] == [30, 180]
         assert {row.entry_price for row in clocks} == {18.25}
         assert len({row.message_id for row in clocks}) == 2
+    engine.dispose()
+
+
+def test_radar_clock_failure_cannot_rollback_discovery_state(
+    monkeypatch,
+    tmp_path,
+):
+    from argosy import config
+    from argosy.services.predictions import writers
+
+    db_path = tmp_path / "radar-clock-failure.db"
+    url = f"sqlite:///{db_path.as_posix()}"
+    engine = sa.create_engine(url)
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(User(id="ariel"))
+        db.commit()
+    engine.dispose()
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(database_url=url),
+    )
+
+    def failed_clock(*args, **kwargs):
+        raise sa.exc.OperationalError("insert", {}, RuntimeError("database locked"))
+
+    monkeypatch.setattr(writers, "write_signal_stream_predictions", failed_clock)
+    observed_at = datetime(2026, 8, 29, 7, 29, tzinfo=UTC)
+    estimator_json = json.dumps(
+        {
+            "ticker": "ONDS",
+            "go": True,
+            "conviction": "HIGH",
+            "sentiment": 0.8,
+            "one_line": "evaluate",
+        }
+    )
+    state = {
+        "ticker": "ONDS",
+        "last_score": 108.2,
+        "radar_fingerprint": "s=108.2|f=MOMENTUM|l=high",
+        "status": "active",
+        "rank": 1,
+        "quarantine_reason": "",
+        "estimator_json": estimator_json,
+        "fleet_json": None,
+        "last_estimated_at": observed_at.isoformat(),
+        "last_radar_at": observed_at.isoformat(),
+        "last_fleet_at": None,
+        "last_seen_at": observed_at.isoformat(),
+        "observation": {"price": 12.5, "rank": 1, "score": 108.2},
+    }
+
+    hpf._persist_scan_states("ariel", [state])  # telemetry failure is swallowed
+
+    engine = sa.create_engine(url)
+    with Session(engine) as db:
+        scan = db.get(ScanState, ("ariel", "ONDS"))
+        assert scan is not None
+        assert scan.rank == 1
+        assert scan.estimator_json == estimator_json
+        assert db.query(Prediction).count() == 0
     engine.dispose()

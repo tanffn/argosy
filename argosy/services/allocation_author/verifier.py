@@ -164,6 +164,58 @@ def verify_allocation_proposal(
         if str(b.symbol or "").strip().upper() in discovery_rows
     }
     discovery_buys = set(discovery_buy_amounts)
+    # Discovery is a staged judgment pipeline: radar -> estimator -> fleet. A
+    # missing stage is not a negative verdict. Never allow an already-graded
+    # name to win merely because newer or higher-ranked alternatives have NULL
+    # research. This checks input completeness only; it never chooses a ticker.
+    if discovery_buys:
+        missing_estimators = sorted(
+            ticker
+            for ticker, row in discovery_rows.items()
+            if not isinstance(row.get("estimator"), dict)
+        )
+        estimated_go_rows = [
+            (ticker, row)
+            for ticker, row in discovery_rows.items()
+            if isinstance(row.get("estimator"), dict)
+            and bool((row.get("estimator") or {}).get("go"))
+        ]
+        conviction_rank = {"HIGH": 3, "MED": 2, "LOW": 1}
+        estimated_go_rows.sort(
+            key=lambda item: (
+                conviction_rank.get(
+                    str(
+                        (item[1].get("estimator") or {}).get("conviction") or ""
+                    ).upper(),
+                    0,
+                ),
+                float(
+                    (item[1].get("estimator") or {}).get("sentiment") or 0.0
+                ),
+            ),
+            reverse=True,
+        )
+        comparison_cohort = estimated_go_rows[:5]
+        missing_fleet = sorted(
+            ticker
+            for ticker, row in comparison_cohort
+            if not isinstance(row.get("fleet"), dict)
+        )
+        if missing_estimators or missing_fleet:
+            details: list[str] = []
+            if missing_estimators:
+                details.append(f"estimator missing for {missing_estimators}")
+            if missing_fleet:
+                details.append(f"fleet review missing for {missing_fleet}")
+            fails.append(
+                GateFailure(
+                    "discovery_evaluation_incomplete",
+                    "Discovery allocation is ungrounded because the current "
+                    + "; ".join(details)
+                    + ". Rerun discovery before selecting a moonshot.",
+                    "block",
+                )
+            )
     research_buy_finalists = {
         ticker
         for ticker, row in discovery_rows.items()
