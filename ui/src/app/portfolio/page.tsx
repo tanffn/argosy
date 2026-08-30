@@ -215,6 +215,24 @@ export default function PortfolioPage() {
         </div>
       ) : null}
 
+      {snap?.market_data_warnings && snap.market_data_warnings.length > 0 && (
+        <div className="rounded-md border border-amber-400/30 bg-amber-400/5 p-3">
+          <p className="text-sm font-medium text-amber-200">
+            Market-data refresh incomplete — using prior marks for{" "}
+            {snap.market_data_warnings.length} quote/FX lookup
+            {snap.market_data_warnings.length > 1 ? "s" : ""}.
+          </p>
+          <details className="mt-1 text-xs text-muted-foreground">
+            <summary className="cursor-pointer">Technical details</summary>
+            <ul className="mt-1 list-disc pl-5 font-mono space-y-0.5">
+              {snap.market_data_warnings.map((warning, index) => (
+                <li key={index}>{warning}</li>
+              ))}
+            </ul>
+          </details>
+        </div>
+      )}
+
       {/* Parse warnings surfaced (nothing hidden, nothing lost): the snapshot
           DTO has always carried parse_warnings; this renders them so a row the
           parser couldn't fully read is visible rather than silently dropped. */}
@@ -450,7 +468,7 @@ export default function PortfolioPage() {
                         {sleeveTableLabel(sleeveOf(p)) || "—"}
                         {sleeveOf(p) === "Unmapped — needs classification" && (
                           <div className="text-[10px] text-amber-400 font-normal">
-                            needs classification
+                            automatic classification pending
                           </div>
                         )}
                       </td>

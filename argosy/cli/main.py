@@ -22,6 +22,7 @@ from argosy.cli.gemelnet import app as gemelnet_app
 from argosy.cli.ingest import app as ingest_app
 from argosy.cli.intake import intake
 from argosy.cli.lots import app as lots_app
+from argosy.cli.order_sheet import order_sheet
 from argosy.cli.proposals import app as proposals_app
 from argosy.cli.run import run
 from argosy.cli.secrets import app as secrets_app
@@ -42,6 +43,7 @@ app.command("run")(run)
 app.command("brief")(brief)
 app.command("decide")(decide)
 app.command("execute")(execute)
+app.command("order-sheet")(order_sheet)
 
 # Subcommand groups.
 app.add_typer(ingest_app, name="ingest", help="Ingestion commands (TSV, plan).")

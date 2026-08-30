@@ -1,17 +1,17 @@
 ---
 topic: us_nonresident_alien_withholding
 jurisdiction: us
-last_verified: 2026-08-15
+last_verified: 2026-08-28
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.irs.gov/individuals/international-taxpayers/nonresident-aliens
-    retrieved: 2026-08-15
+    retrieved: 2026-08-27
     tier: 1
   - url: https://www.irs.gov/pub/irs-pdf/p515.pdf
     retrieved: 1900-01-01
     tier: 1
   - url: https://www.irs.gov/forms-pubs/about-form-w-8-ben
-    retrieved: 2026-08-11
+    retrieved: 2026-08-28
     tier: 1
 ---
 

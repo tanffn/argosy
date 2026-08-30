@@ -40,6 +40,7 @@ def list_cmd(
             typer.echo(
                 f"#{r.id:>4} {mark:7} {r.broker:10} {r.action:<4} {r.ticker:<6} "
                 f"qty={r.quantity} price={r.price} commission={r.commission} "
+                f"account={r.account_id or '-'} exec={r.external_fill_id or '-'} "
                 f"proposal={r.proposal_id} at {r.filled_at.isoformat()}"
             )
 

@@ -246,6 +246,10 @@ class CostBlock(BaseModel):
     monthly_budget_usd: float = 100.0
     alert_at_pct: float = 80.0
     pause_at_pct: float = 100.0
+    # Explicit development-only escape hatch. The budget remains configured
+    # and visible for telemetry, but cadence loops do not pause on spend while
+    # this is true. Production/default settings keep it false.
+    developer_mode: bool = False
 
 
 class AlertsBlock(BaseModel):
@@ -484,6 +488,7 @@ cost:
   monthly_budget_usd: 100
   alert_at_pct: 80
   pause_at_pct: 100
+  developer_mode: false
 
 alerts:
   email_enabled: true

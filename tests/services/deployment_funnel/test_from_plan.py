@@ -58,6 +58,22 @@ def test_live_quote_prefers_bare_us_symbol(monkeypatch):
     assert calls == ["AAPL"], "bare hit must short-circuit before suffix retries"
 
 
+def test_live_quote_normalizes_class_share_symbol_for_yahoo(monkeypatch):
+    calls: list[str] = []
+
+    class _FakeAdapter:
+        async def get_quote(self, ticker):
+            calls.append(ticker)
+            return _StubQuote(500.0) if ticker == "BRK-B" else _StubQuote(None)
+
+    monkeypatch.setattr(
+        "argosy.adapters.data.yfinance_adapter.YFinanceAdapter",
+        lambda *a, **k: _FakeAdapter(),
+    )
+    assert SnapshotOrLiveProvider().quote("BRK/B") == 500.0
+    assert calls == ["BRK-B"]
+
+
 def _doc():
     return SimpleNamespace(
         nvda_cap_pct=13.0,

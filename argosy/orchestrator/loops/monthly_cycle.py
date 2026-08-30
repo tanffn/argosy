@@ -18,10 +18,10 @@ pause and kill switch.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 
-import sqlalchemy as sa
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -120,7 +120,7 @@ def _trigger_plan_synthesis_for_all(session: Session) -> None:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class MonthlyCycleLoop(CadenceLoop):
@@ -138,6 +138,7 @@ class MonthlyCycleLoop(CadenceLoop):
         statement_reconcile: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         rsu_vest_pull: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
         buy_template_generator: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        plan_synthesis_trigger: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
@@ -147,6 +148,7 @@ class MonthlyCycleLoop(CadenceLoop):
         self._statement_reconcile = statement_reconcile or _noop_reconcile
         self._rsu_vest_pull = rsu_vest_pull or _real_rsu_pull
         self._buy_template_generator = buy_template_generator or _default_buy_template
+        self._plan_synthesis_trigger = plan_synthesis_trigger
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
         if os.environ.get("ARGOSY_KILL") == "1":
@@ -204,6 +206,14 @@ class MonthlyCycleLoop(CadenceLoop):
                     user_context_yaml="",
                     domain_kb_files={},
                 )
+                from argosy.services.agent_report_persistence import (
+                    persist_agent_report_async,
+                )
+
+                await persist_agent_report_async(
+                    report,
+                    decision_id=f"monthly-critique:{plan.id}",
+                )
                 async with db_mod.get_session() as session:
                     session.add(
                         PlanCritique(
@@ -254,9 +264,9 @@ class MonthlyCycleLoop(CadenceLoop):
         def _run_sync_tick() -> None:
             settings = get_settings()
             sync_url = settings.database_url.replace("+aiosqlite", "")
-            engine = sa.create_engine(
-                sync_url, connect_args={"check_same_thread": False}
-            )
+            from argosy.state.db import create_sync_engine
+
+            engine = create_sync_engine(sync_url)
             SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
             sess = SessionLocal()
             try:
@@ -266,7 +276,10 @@ class MonthlyCycleLoop(CadenceLoop):
                 engine.dispose()
 
         try:
-            await asyncio.to_thread(_run_sync_tick)
+            if self._plan_synthesis_trigger is not None:
+                await self._plan_synthesis_trigger()
+            else:
+                await asyncio.to_thread(_run_sync_tick)
         except Exception:  # pragma: no cover - defensive
             _log.exception("monthly_cycle.synthesis_trigger_failed")
 

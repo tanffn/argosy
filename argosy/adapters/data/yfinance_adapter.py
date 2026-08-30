@@ -130,8 +130,10 @@ def _compute_indicators(
         prev_ma_50 = _sma(closes[:-1], 50)
         prev_ma_200 = _sma(closes[:-1], 200)
         if (
-            ma_50 is not None and ma_200 is not None
-            and prev_ma_50 is not None and prev_ma_200 is not None
+            ma_50 is not None
+            and ma_200 is not None
+            and prev_ma_50 is not None
+            and prev_ma_200 is not None
         ):
             if prev_ma_50 <= prev_ma_200 and ma_50 > ma_200:
                 cross = "golden"
@@ -218,6 +220,19 @@ class YFinanceAdapter:
             raise MissingDataSourceError(
                 "yfinance package is not installed. Run: uv add yfinance"
             ) from exc
+        # yfinance otherwise writes its cookie/timezone SQLite cache under the
+        # OS user profile. Services and sandboxed agents may not have write
+        # access there, which made every Yahoo fallback fail with the opaque
+        # message "unable to open database file". Keep provider cache state
+        # beside Argosy's own writable DB instead.
+        try:
+            from argosy.config import get_settings
+
+            cache_dir = get_settings().db_file.parent / "yfinance-cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            yfinance.set_tz_cache_location(str(cache_dir))
+        except Exception:  # noqa: BLE001 - upstream calls can still proceed
+            pass
         self._client = yfinance
         return self._client
 
@@ -315,9 +330,7 @@ class YFinanceAdapter:
                     # a fixed-window history call.
                     hist = tk.history(period="6mo")
                 if hist is None:
-                    raise MissingDataSourceError(
-                        f"yfinance returned no history for {ticker}"
-                    )
+                    raise MissingDataSourceError(f"yfinance returned no history for {ticker}")
                 # Duck-typed: a test double may return a list-of-dict.
                 rows: list[dict[str, Any]]
                 if isinstance(hist, list):
@@ -340,9 +353,7 @@ class YFinanceAdapter:
                             f"yfinance history for {ticker} unreadable: {exc}"
                         ) from exc
                 if not rows:
-                    raise MissingDataSourceError(
-                        f"yfinance returned no history for {ticker}"
-                    )
+                    raise MissingDataSourceError(f"yfinance returned no history for {ticker}")
 
                 closes = [float(r["Close"]) for r in rows]
                 highs = [float(r["High"]) for r in rows]
@@ -366,9 +377,7 @@ class YFinanceAdapter:
             _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
             return payload
 
-    async def get_quote(
-        self, ticker: str, *, ttl_seconds: int = 300
-    ) -> Quote:
+    async def get_quote(self, ticker: str, *, ttl_seconds: int = 300) -> Quote:
         """Latest quote (typically last close)."""
         client = self._resolve_client()
         key = f"quote:{ticker}"
@@ -377,10 +386,7 @@ class YFinanceAdapter:
             tk = client.Ticker(ticker)
             info = getattr(tk, "fast_info", None)
             if info is not None:
-                price = (
-                    getattr(info, "last_price", None)
-                    or getattr(info, "lastPrice", None)
-                )
+                price = getattr(info, "last_price", None) or getattr(info, "lastPrice", None)
                 currency = getattr(info, "currency", None)
                 if price is not None:
                     return {
@@ -415,7 +421,8 @@ class YFinanceAdapter:
 
         Returns a dict with keys:
           ``ticker``, ``price``, ``shares``, ``market_cap``, ``average_volume``,
-          ``currency``, ``timestamp_utc``.
+          ``currency``, ``country``, ``exchange``, ``quote_type``,
+          ``timestamp_utc``.
 
         ``shares`` and ``market_cap`` may be ``None`` when yfinance does not
         carry them for the given ticker (e.g. ETFs).  ``price`` is ``None``
@@ -438,13 +445,13 @@ class YFinanceAdapter:
             market_cap: float | None = None
             average_volume: float | None = None
             currency: str | None = None
+            country: str | None = None
+            exchange: str | None = None
+            quote_type: str | None = None
 
             # Prefer full info dict — it carries shares/market_cap.
             if info_dict:
-                raw_price = (
-                    info_dict.get("currentPrice")
-                    or info_dict.get("regularMarketPrice")
-                )
+                raw_price = info_dict.get("currentPrice") or info_dict.get("regularMarketPrice")
                 if raw_price is not None:
                     try:
                         price = float(raw_price)
@@ -469,15 +476,15 @@ class YFinanceAdapter:
                     except (TypeError, ValueError):
                         pass
                 currency = info_dict.get("currency")
+                country = info_dict.get("country")
+                exchange = info_dict.get("fullExchangeName") or info_dict.get("exchange")
+                quote_type = info_dict.get("quoteType")
 
             # Fallback to fast_info for price when info dict missed it.
             if price is None:
                 fi = getattr(tk, "fast_info", None)
                 if fi is not None:
-                    raw_price = (
-                        getattr(fi, "last_price", None)
-                        or getattr(fi, "lastPrice", None)
-                    )
+                    raw_price = getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None)
                     if raw_price is not None:
                         try:
                             price = float(raw_price)
@@ -486,9 +493,8 @@ class YFinanceAdapter:
                     if currency is None:
                         currency = getattr(fi, "currency", None)
                     if average_volume is None:
-                        raw_avg_volume = (
-                            getattr(fi, "three_month_average_volume", None)
-                            or getattr(fi, "ten_day_average_volume", None)
+                        raw_avg_volume = getattr(fi, "three_month_average_volume", None) or getattr(
+                            fi, "ten_day_average_volume", None
                         )
                         if raw_avg_volume is not None:
                             try:
@@ -503,12 +509,13 @@ class YFinanceAdapter:
                 "market_cap": market_cap,
                 "average_volume": average_volume,
                 "currency": currency,
+                "country": country,
+                "exchange": exchange,
+                "quote_type": quote_type,
                 "timestamp_utc": None,
             }
 
-        with track_adapter_call(
-            "yfinance_quote_fundamentals", target=ticker
-        ) as outcome:
+        with track_adapter_call("yfinance_quote_fundamentals", target=ticker) as outcome:
             payload = await cached_call(
                 kind=CacheKind.PRICES,
                 provider=self.PROVIDER,

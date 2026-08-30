@@ -9,12 +9,11 @@ otherwise default to Opus).
 """
 from __future__ import annotations
 
-import json
 from typing import Literal
 
 from pydantic import BaseModel
 
-from argosy.agents.base import BaseAgent
+from argosy.agents.base import AgentReport, BaseAgent
 from argosy.services.contracts import EstimatorVerdict
 
 
@@ -75,7 +74,8 @@ class QuickEstimatorAgent(BaseAgent[EstimatorOutput]):
             "only when a plausible x10 path exists in 5-10 years (not just a "
             "real growth story or a momentum spike — a safe compounder that "
             "might 2x is a NO for this sleeve). conviction is the ASYMMETRY "
-            "grade (upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2), HIGH/MED/LOW — "
+            "grade (upside plausibility relative to downside risk under the mandate's "
+            "explicit evidence classes), HIGH/MED/LOW — "
             "defensibility must not raise it; sentiment is -1..1; one_line is a "
             "single clause and should carry the cap-math (cap today -> "
             "plausible outcome)."
@@ -89,14 +89,24 @@ class QuickEstimatorAgent(BaseAgent[EstimatorOutput]):
         return system, user
 
 
-def estimate(candidate, *, user_id: str = "ariel") -> EstimatorVerdict:
-    """Run the Sonnet estimator over one radar candidate -> EstimatorVerdict."""
+def estimate_with_report(
+    candidate, *, user_id: str = "ariel"
+) -> tuple[EstimatorVerdict, AgentReport]:
+    """Run one estimate and retain the telemetry record for its caller."""
     agent = QuickEstimatorAgent(user_id=user_id)
-    out: EstimatorOutput = agent.run_sync(candidate=candidate).output
-    return EstimatorVerdict(
+    report = agent.run_sync(candidate=candidate)
+    out: EstimatorOutput = report.output
+    verdict = EstimatorVerdict(
         ticker=out.ticker or _ticker_of(candidate), go=out.go,
         conviction=out.conviction, sentiment=out.sentiment, one_line=out.one_line,
     )
+    return verdict, report
+
+
+def estimate(candidate, *, user_id: str = "ariel") -> EstimatorVerdict:
+    """Run the Sonnet estimator over one radar candidate -> EstimatorVerdict."""
+    verdict, _report = estimate_with_report(candidate, user_id=user_id)
+    return verdict
 
 
 def triage(candidates, *, top_k: int | None = None,
@@ -111,4 +121,10 @@ def triage(candidates, *, top_k: int | None = None,
     return survivors[:top_k] if top_k else survivors
 
 
-__all__ = ["QuickEstimatorAgent", "EstimatorOutput", "estimate", "triage"]
+__all__ = [
+    "EstimatorOutput",
+    "QuickEstimatorAgent",
+    "estimate",
+    "estimate_with_report",
+    "triage",
+]

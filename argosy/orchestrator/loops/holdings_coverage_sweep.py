@@ -90,12 +90,10 @@ def _utcnow() -> datetime:
 
 
 def _default_session_factory() -> sessionmaker:
-    import sqlalchemy as sa
-
     from argosy.state import db as db_mod
 
     url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
-    engine = sa.create_engine(url, connect_args={"check_same_thread": False})
+    engine = db_mod.create_sync_engine(url)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 

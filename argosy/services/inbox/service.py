@@ -149,7 +149,8 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
                 id=f"trade:{r.id}",
                 kind="trade",
                 title=(f"{verb} {r.ticker} (beta)" if beta else f"{verb} {r.ticker}"),
-                why_now=_trim(r.rationale_summary) or f"A {verb.lower()} decision is waiting on you.",
+                why_now=_trim(r.rationale_summary)
+                or f"A {verb.lower()} decision is waiting on you.",
                 primary_action=primary,
                 secondary_actions=secondary,
                 body={**body, "beta": beta},
@@ -217,9 +218,7 @@ def _option_detail_text(key: str, value: Any) -> str:
         if isinstance(value.get("then"), str):
             bits.append(value["then"])
         if isinstance(value.get("conditions_all"), list):
-            bits.append(
-                "if: " + "; ".join(str(c) for c in value["conditions_all"][:4])
-            )
+            bits.append("if: " + "; ".join(str(c) for c in value["conditions_all"][:4]))
         return " — ".join(bits) if bits else _humanize_option_key(key)
     return _humanize_option_key(key)
 
@@ -270,7 +269,22 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
         decision_required = kind_lc in DECISION_PROPOSAL_KINDS and (
             "flagsig:" not in (getattr(row, "dedup_key", None) or "")
         )
+        is_order_sheet = (
+            getattr(row, "dedup_key", None) == f"period_directive:{user_id}"
+            and isinstance(payload, dict)
+            and payload.get("artifact_type") == "validated_order_sheet"
+            and isinstance(payload.get("order_sheet"), dict)
+        )
         body: dict[str, Any] = {"detail": v.rationale_md or ""}
+        if is_order_sheet:
+            raw_sheet = payload["order_sheet"]
+            body.update(
+                {
+                    "artifact_type": "validated_order_sheet",
+                    "fingerprint": payload.get("order_sheet_fingerprint"),
+                    "line_count": len(raw_sheet.get("lines") or []),
+                }
+            )
         ticker = _ticker_from_action_payload(payload)
         if ticker:
             prov = prov_map.get(ticker)
@@ -294,9 +308,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                 body["recommendation"] = rec.strip()
             choice_actions: list[InboxAction] = []
             for k, val in options.items():
-                is_rec = isinstance(rec, str) and (
-                    rec == k or k in rec or rec in k
-                )
+                is_rec = isinstance(rec, str) and (rec == k or k in rec or rec in k)
                 label = _option_button_label(k, val)
                 if is_rec:
                     label = f"{label} (recommended)"
@@ -319,15 +331,37 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                 InboxAction("dismiss", "Dismiss", "secondary"),
             ]
 
+        sheet_lines = payload.get("order_sheet", {}).get("lines", []) if is_order_sheet else []
+        sheet_has_sell = any(
+            str(line.get("action") or "").upper() in {"SELL", "TRIM"}
+            for line in sheet_lines
+            if isinstance(line, dict)
+        )
+        sheet_amount = (
+            sum(
+                float(line.get("notional_usd") or 0.0)
+                for line in sheet_lines
+                if isinstance(line, dict)
+                and str(line.get("action") or "").upper() in {"BUY", "ADD"}
+            )
+            if is_order_sheet
+            else None
+        )
         items.append(
             InboxItem(
                 id=f"note:{v.id}",
-                kind="note",
-                title=v.summary or "Something to look at",
-                why_now=_trim(_plain(v.rationale_md)) or "Argosy flagged this while watching your portfolio.",
+                kind="order_sheet" if is_order_sheet else "note",
+                title=(
+                    f"One current trade plan · {len(sheet_lines)} actions"
+                    if is_order_sheet
+                    else (v.summary or "Something to look at")
+                ),
+                why_now=_trim(_plain(v.rationale_md))
+                or "Argosy flagged this while watching your portfolio.",
                 primary_action=primary,
                 secondary_actions=secondary,
                 body=body,
+                amount_usd=sheet_amount,
                 expires_at=v.expires_at or None,
                 source_refs=[SourceRef("action_proposal", str(v.id))],
                 signals={
@@ -337,6 +371,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                     "is_cash_note": _CASH_NOTE_HINT in kind_lc,
                     "decision_required": decision_required,
                     "multi_option": multi,
+                    "action": "sell" if sheet_has_sell else "buy",
                 },
             )
         )
@@ -402,7 +437,9 @@ def _adapt_plan_tasks(db: Session, user_id: str, today: date) -> list[InboxItem]
     return items
 
 
-def _cash_buy_list(db: Session, user_id: str, excess_usd: float, today: date) -> list[dict[str, Any]] | None:
+def _cash_buy_list(
+    db: Session, user_id: str, excess_usd: float, today: date
+) -> list[dict[str, Any]] | None:
     """The proactive cash directive's buy list — delegated to the ONE canonical
     composition point (``period_directive.build_buy_list``) so the inbox, the
     period-directive card, and ``/deploy-cash`` never diverge. Returns ``None`` on
@@ -461,13 +498,15 @@ def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[Inbo
     from argosy.state.models import Proposal as ProposalRow
 
     open_decon = db.execute(
-        select(ProposalRow.id).where(
+        select(ProposalRow.id)
+        .where(
             ProposalRow.user_id == user_id,
             ProposalRow.ticker == "NVDA",
             ProposalRow.action == "sell",
             ProposalRow.status.in_(("draft", "cooling", "awaiting_human", "approved")),
             ProposalRow.rationale_summary.like(f"%{DECON_TRANCHE_MARKER}%"),
-        ).limit(1)
+        )
+        .limit(1)
     ).first()
     if open_decon is not None:
         return []
@@ -523,16 +562,33 @@ _ADAPTERS = {
 # ---------------------------------------------------------------------------
 
 
-def _dedupe(items: list[InboxItem]) -> tuple[list[InboxItem], list[InboxItem]]:
+def _dedupe(
+    db: Session, user_id: str, items: list[InboxItem]
+) -> tuple[list[InboxItem], list[InboxItem]]:
     """Drop overlapping needs so the user sees ONE decision, not two.
 
     Today's only overlap: the dedicated cash-deployment item subsumes any
     "cash piling up" note. Returns ``(kept, dropped)``.
     """
+    from argosy.services.current_order_sheet import load_current_order_sheet
+
     has_cash_item = any(i.kind == "cash_deploy" for i in items)
+    current_sheet = load_current_order_sheet(db, user_id)
     kept: list[InboxItem] = []
     dropped: list[InboxItem] = []
     for it in items:
+        trade_ref = next(
+            (ref for ref in it.source_refs if ref.source == "trade_proposal"),
+            None,
+        )
+        if current_sheet is not None and trade_ref is not None:
+            try:
+                proposal_id = int(trade_ref.ref_id)
+            except ValueError:
+                proposal_id = -1
+            if proposal_id not in current_sheet.materialized_proposal_ids:
+                dropped.append(it)
+                continue
         if has_cash_item and it.kind == "note" and it.signals.get("is_cash_note"):
             dropped.append(it)
         else:
@@ -564,20 +620,27 @@ def build_inbox(
             _log.exception("inbox.adapter_failed", extra={"adapter": name, "user_id": user_id})
             dropped.append({"id": f"<adapter:{name}>", "reason": "source_error", "kind": name})
 
-    deduped, dedup_dropped = _dedupe(raw)
+    deduped, dedup_dropped = _dedupe(db, user_id, raw)
     for d in dedup_dropped:
-        dropped.append({"id": d.id, "reason": "deduped_into_cash_deploy", "kind": d.kind})
+        reason = (
+            "superseded_by_current_order_sheet"
+            if d.kind in {"trade", "discovery_buy", "switch"}
+            else "deduped_into_cash_deploy"
+        )
+        dropped.append({"id": d.id, "reason": reason, "kind": d.kind})
 
     surfaced, suppressed = rank_items(deduped, policy)
     for s in suppressed:
         dropped.append({"id": s.id, "reason": "below_materiality", "kind": s.kind})
 
     # Quiet-state liveness signals (all positive-framed).
-    open_approvals = sum(1 for i in surfaced if i.kind == "trade")
+    open_approvals = sum(1 for i in surfaced if i.kind in {"trade", "order_sheet"})
     cash_within_band = not any(i.kind == "cash_deploy" for i in surfaced)
     no_overdue = not any(i.bucket == PriorityBucket.OVERDUE_BLOCKING for i in surfaced)
     future_due = sorted(
-        i.due_at for i in surfaced if i.kind == "plan_task" and i.due_at and i.due_at >= today.isoformat()
+        i.due_at
+        for i in surfaced
+        if i.kind == "plan_task" and i.due_at and i.due_at >= today.isoformat()
     )
     liveness = InboxLiveness(
         last_checked=_utcnow_iso(),

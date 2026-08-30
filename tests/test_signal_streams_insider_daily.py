@@ -16,6 +16,8 @@ from argosy.services.signal_streams.insider import (
     InsiderClusterConfig,
     InsiderClusterStream,
     InsiderMarketSnapshot,
+    _LocalEvent,
+    _stage_new_event_idempotently,
     latest_completed_sec_day,
 )
 from argosy.services.signal_streams.pipeline import process_nominations
@@ -137,6 +139,64 @@ def ledger(tmp_path):
         yield engine, factory
     finally:
         engine.dispose()
+
+
+def test_event_replay_is_an_atomic_refresh_not_a_unique_failure(ledger) -> None:
+    _engine, factory = ledger
+    event_day = date(2026, 7, 7)
+    first_seen = datetime(2026, 7, 8, 12, tzinfo=UTC)
+    replay_seen = datetime(2026, 7, 8, 13, tzinfo=UTC)
+    original = _LocalEvent(
+        event_key="sec-form4:shared:non_derivative:0",
+        event_group_key="sec-form4:shared",
+        ticker="ACME",
+        event_at=event_day,
+        available_at=event_day,
+        payload_json='{"revision":1}',
+        source_urls_json="[]",
+        active=1,
+        evaluation_pending=3,
+    )
+    replay = _LocalEvent(
+        event_key=original.event_key,
+        event_group_key=original.event_group_key,
+        ticker=original.ticker,
+        event_at=original.event_at,
+        available_at=original.available_at,
+        payload_json='{"revision":2}',
+        source_urls_json='["https://www.sec.gov/example"]',
+        active=1,
+        evaluation_pending=0,
+    )
+
+    with factory() as session:
+        _stage_new_event_idempotently(
+            session,
+            user_id="ariel",
+            stream="insider_cluster",
+            event=original,
+            observed_at=first_seen,
+        )
+        session.commit()
+    with factory() as session:
+        _stage_new_event_idempotently(
+            session,
+            user_id="ariel",
+            stream="insider_cluster",
+            event=replay,
+            observed_at=replay_seen,
+        )
+        session.commit()
+
+    with factory() as session:
+        rows = session.query(SignalStreamEvent).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.payload_json == replay.payload_json
+        assert row.source_urls_json == replay.source_urls_json
+        assert row.evaluation_pending == 0
+        assert row.first_seen_at == first_seen.replace(tzinfo=None)
+        assert row.last_seen_at == replay_seen.replace(tzinfo=None)
 
 
 def test_daily_pull_config_is_exactly_one_day() -> None:

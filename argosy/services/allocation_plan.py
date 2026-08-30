@@ -124,15 +124,16 @@ HIGH_GROWTH_DEFAULT_SIGMA = 0.35
 # relabel must keep legacy keys working. ``normalize_override_labels`` migrates
 # legacy keys to the current label; an explicit current-label entry wins over a
 # legacy alias on collision.
-# 2026-07-06 relabel: "US growth tilt (ex-NVDA)" → "Global quality growth
-# (ex-NVDA-dense)". The sleeve's primary is IWQU (iShares Edge MSCI World
-# Quality Factor) — a WORLD quality-factor fund, ~33% ex-US and NOT literally
-# ex-NVDA (~6.45% NVDA at the 2026-07 holdings refresh). The old label
-# overstated both the US-ness and the NVDA exclusion (v65 blind-review finding).
+# 2026-08-25 relabel: the sleeve's primary is IWQU (iShares Edge MSCI World
+# Quality Factor), so describe what it is rather than implying an NVDA exclusion.
+# A diversified fund may own NVDA and still materially dilute the portfolio's
+# single-name exposure; concentration is judged at whole-portfolio look-through.
 US_GROWTH_LEGACY_LABEL = "US growth tilt (ex-NVDA)"
-GLOBAL_QUALITY_GROWTH_LABEL = "Global quality growth (ex-NVDA-dense)"
+GLOBAL_QUALITY_EX_NVDA_DENSE_LEGACY_LABEL = "Global quality growth (ex-NVDA-dense)"
+GLOBAL_QUALITY_GROWTH_LABEL = "Global quality factor"
 SLEEVE_LABEL_ALIASES: dict[str, str] = {
     US_GROWTH_LEGACY_LABEL: GLOBAL_QUALITY_GROWTH_LABEL,
+    GLOBAL_QUALITY_EX_NVDA_DENSE_LEGACY_LABEL: GLOBAL_QUALITY_GROWTH_LABEL,
 }
 
 CASH_LABEL = "Cash & T-bills (incl. ILS tranche)"
@@ -358,16 +359,16 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
                     "instrument in the plan on a book deconcentrating from NVDA; the old "
                     "open item ('no UCITS true-ex-NVDA growth ETF exists') is closed by "
                     "accepting a quality-growth FACTOR engine instead of a growth index. "
-                    "IWQU is 5.11% NVDA (justETF IE00BP3QZ601, 2026-05-29) — at the "
-                    "client's <=~5% target, ~-63% vs R1GR — and its mega-cap-AI top-3 "
+                    "IWQU was 5.11% NVDA (justETF IE00BP3QZ601, 2026-05-29), "
+                    "~-63% below R1GR — and its mega-cap-AI top-3 "
                     "(MSFT 5.76 + AAPL 5.58 + NVDA 5.11 = ~16.4%) is far below R1GR's "
                     "~36%. Honest trade-offs recorded: (a) WORLD quality — ~33% of the "
                     "sleeve is ex-US and overlaps the International sleeve (directionally "
                     "aligned with de-concentrating a ~92%-US book; manage via look-through); "
-                    "(b) 5.11% NVDA is at the tolerance edge and quality indices rebalance — "
-                    "re-pull holdings before execution. HOLDINGS REFRESH 2026-07: NVDA is "
+                    "(b) quality indices rebalance, so re-pull holdings before execution. "
+                    "HOLDINGS REFRESH 2026-07: NVDA is "
                     "now IWQU's #1 holding at ~6.45% (stockanalysis.com / iShares product "
-                    "page, 2026-07) — ABOVE the ~5% target edge; the look-through table "
+                    "page, 2026-07); the look-through table "
                     "models it at 0.065 conservative-high (LOOKTHROUGH_VERSION 4) and the "
                     "13% NVDA look-through cap is verified against that number. "
                     "Durable-zero-NVDA alternatives "
@@ -398,8 +399,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
             "sleeve. Still bounded below NVDA-stacking territory — NVDA already "
             "supplies concentrated high-beta tech at the cap, so growth is held "
             "below the point where correlated tech beta re-adds the factor risk the "
-            "deconcentration sheds. The '(ex-NVDA-dense)' suffix is stripped by the "
-            "sigma-mapper's exclusion regex, so the label maps to "
+            "deconcentration sheds. The sleeve is risk-modeled as "
             "world_quality_equity, not the 0.45 single-stock class."
         ),
         dissent=(
@@ -922,7 +922,8 @@ def build_target_allocation(
                     "written justification), sourced GLOBALLY (US/EU/ISR/anywhere) and "
                     "deliberately NOT estate-gated. Accepted per-name loss is 100%, so "
                     "defensibility never boosts rank; rank and deploy fill order are "
-                    "asymmetry-first ((upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2) — the instrument "
+                    "asymmetry-first (upside plausibility relative to downside risk, "
+                    "using the mandate's explicit evidence classes — the instrument "
                     "weights ARE the asymmetry rank). Safe maybe-2x compounders belong "
                     "in the core/growth sleeves, not here. Held as a fixed strategic "
                     "weight; its sourced sigma feeds the FI solver so the book's "
@@ -1143,6 +1144,7 @@ __all__ = [
     "TargetAllocation",
     "NVDA_TARGET_PCT",
     "GLOBAL_QUALITY_GROWTH_LABEL",
+    "GLOBAL_QUALITY_EX_NVDA_DENSE_LEGACY_LABEL",
     "US_GROWTH_LEGACY_LABEL",
     "SLEEVE_LABEL_ALIASES",
     "CASH_LABEL",

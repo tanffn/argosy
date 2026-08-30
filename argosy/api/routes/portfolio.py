@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
@@ -61,29 +61,31 @@ def _warm_derived_cache(user_id: str) -> None:
         derived_cache.warm_async(user_id)
     except Exception as exc:  # noqa: BLE001 — warming must never break ingest
         _log.warning(
-            "portfolio_snapshot.warm_failed", user_id=user_id, error=str(exc),
+            "portfolio_snapshot.warm_failed",
+            user_id=user_id,
+            error=str(exc),
         )
 
 
 class PositionDTO(BaseModel):
     location: str
     currency: str
-    asset_type: str            # raw/normalized source Type (drives is-cash / is-real-estate logic)
-    type_label: str = ""       # canonical "structure · exposure" from the §20.4 reference (display)
+    asset_type: str  # raw/normalized source Type (drives is-cash / is-real-estate logic)
+    type_label: str = ""  # canonical "structure · exposure" from the §20.4 reference (display)
     # Plan-sleeve association — same mapping as allocation-breakdown buckets.
     sleeve: str = ""
     # Block H — stored blurbs from instrument_plan_classes (hover card).
     what_it_is: str = ""
     why_held: str = ""
     classification_source: str = ""  # plan | fleet | owner | "" (unmapped/cash)
-    name: str = ""             # plain-English instrument name (the cryptic-ticker description line)
+    name: str = ""  # plain-English instrument name (the cryptic-ticker description line)
     details: str
     symbol: str
     shares: float | None
     current_price: float | None
     usd_value_k: float | None
     estate_safe: bool | None = None  # True=non-US-situs, False=US-situs, None=n/a (cash)
-    classified: bool = True    # False = not in the instrument reference (fail-loud: needs curation)
+    classified: bool = True  # False = not in the instrument reference (fail-loud: needs curation)
     # True = this row's PRICE/mark is soft-stale (last-known close published
     # without a live reprice — weekend/holiday/transient quote miss). The value
     # is shown but a consumer must NOT treat it as HIGH-confidence current money
@@ -107,6 +109,11 @@ class PortfolioSnapshotDTO(BaseModel):
     allocations: list[AllocationDTO]
     source_path: str | None
     parse_warnings: list[str]
+    # Quote/FX refresh diagnostics are not parser failures.  They are split so
+    # the UI can say "using prior marks" once instead of presenting dozens of
+    # successful holdings as malformed rows.
+    market_data_warnings: list[str] = Field(default_factory=list)
+    data_notices: list[str] = Field(default_factory=list)
     # Fail-loud: held symbols with a real ticker that the §20.4 instrument
     # reference doesn't know — so their Type / sector / ESTATE-SAFETY are
     # un-curated (a US-domiciled holding would otherwise be silently
@@ -267,7 +274,8 @@ def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapsh
         _log.warning(
             "portfolio: %d held symbol(s) not in the instrument reference — "
             "Type/sector/estate-safety un-curated: %s",
-            len(classification_warnings), ", ".join(sorted(set(classification_warnings))),
+            len(classification_warnings),
+            ", ".join(sorted(set(classification_warnings))),
         )
     allocations: list[AllocationDTO] = []
     for a in snap.allocations:
@@ -279,6 +287,32 @@ def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapsh
                 delta_k=a.delta_k,
             )
         )
+    raw_warnings = list(snap.parse_warnings or [])
+    market_prefixes = (
+        "fx_miss:",
+        "fx_suspect:",
+        "reprice_miss:",
+        "cash_overdraft:",
+    )
+    notice_prefixes = (
+        "SYMBOL_RENAME ",
+        "fill-applied:",
+        "closed_loop_expectations:",
+        "BOOK_RESTORE ",
+    )
+    market_data_warnings = [
+        warning for warning in raw_warnings if warning.startswith(market_prefixes)
+    ]
+    data_notices = [
+        warning for warning in raw_warnings if warning.startswith(notice_prefixes)
+    ]
+    parse_warnings = [
+        warning
+        for warning in raw_warnings
+        if not warning.startswith(market_prefixes)
+        and not warning.startswith(notice_prefixes)
+        and not warning.startswith("BOOK_DEGRADED:")
+    ]
     return PortfolioSnapshotDTO(
         snapshot_date=snap.snapshot_date.isoformat() if snap.snapshot_date else None,
         fx_usd_nis=snap.fx_usd_nis,
@@ -287,7 +321,9 @@ def _snapshot_to_dto(snap, doc=None, classification_map=None) -> PortfolioSnapsh
         positions=positions,
         allocations=allocations,
         source_path=snap.source_path,
-        parse_warnings=snap.parse_warnings,
+        parse_warnings=parse_warnings,
+        market_data_warnings=market_data_warnings,
+        data_notices=data_notices,
         classification_warnings=classification_warnings,
         accounts_covered=list(getattr(snap, "accounts_covered", None) or []),
         accounts_carried=list(getattr(snap, "accounts_carried", None) or []),
@@ -308,18 +344,34 @@ def _apply_total_book_to_snap(snap, db: Session, user_id: str):
     from argosy.services.holding_books import load_total_book
 
     raw = [
-        (p.model_dump() if hasattr(p, "model_dump") else dict(p))
-        for p in (snap.positions or [])
+        (p.model_dump() if hasattr(p, "model_dump") else dict(p)) for p in (snap.positions or [])
     ]
     book = load_total_book(
-        db, user_id, raw, snapshot_date=getattr(snap, "snapshot_date", None),
+        db,
+        user_id,
+        raw,
+        snapshot_date=getattr(snap, "snapshot_date", None),
     )
     rebuilt: list[PortfolioPosition] = []
+    repriced_symbols: set[str] = set()
     for d in book.total:
+        if d.get("repriced"):
+            symbol = str(d.get("symbol") or "").strip().upper()
+            if symbol:
+                repriced_symbols.add(symbol)
         known = {f for f in PortfolioPosition.model_fields}
         payload = {k: v for k, v in d.items() if k in known}
         rebuilt.append(PortfolioPosition(**payload))
     snap.positions = rebuilt
+    if repriced_symbols:
+        healed_warnings: list[str] = []
+        for warning in list(snap.parse_warnings or []):
+            if warning.startswith("reprice_miss:"):
+                warned_symbol = warning.split(":", 2)[1].strip().upper()
+                if warned_symbol in repriced_symbols:
+                    continue
+            healed_warnings.append(warning)
+        snap.parse_warnings = healed_warnings
     snap.book_degraded = bool(book.degraded)
     snap.degrade_reason = book.degrade_reason
     if book.degraded and book.degrade_reason:
@@ -441,7 +493,8 @@ def get_portfolio_snapshot(
     except Exception as exc:  # noqa: BLE001 - defensive
         _log.warning(
             "portfolio_snapshot.db_lookup_failed",
-            user_id=user_id, error=str(exc),
+            user_id=user_id,
+            error=str(exc),
         )
         row = None
     if row is not None:
@@ -452,7 +505,9 @@ def get_portfolio_snapshot(
         except Exception as exc:  # noqa: BLE001 - defensive
             _log.warning(
                 "portfolio_snapshot.db_hydrate_failed",
-                user_id=user_id, row_id=row.id, error=str(exc),
+                user_id=user_id,
+                row_id=row.id,
+                error=str(exc),
             )
             # Fall through to filesystem walk.
 
@@ -484,14 +539,18 @@ def get_portfolio_snapshot(
     except SnapshotIngestRejected as exc:
         _log.warning(
             "portfolio_snapshot.ingest_rejected_on_get",
-            user_id=user_id, code=exc.code, detail=exc.detail,
+            user_id=user_id,
+            code=exc.code,
+            detail=exc.detail,
         )
         # Prefer an existing DB row over serving a rejected filesystem TSV.
         row = get_latest_snapshot_row(db, user_id)
         if row is not None:
             snap = _apply_total_book_to_snap(row_to_snapshot(row), db, user_id)
             return _project_canonical_allocations(
-                _snapshot_to_dto(snap), db, user_id,
+                _snapshot_to_dto(snap),
+                db,
+                user_id,
             )
         return _project_canonical_allocations(
             PortfolioSnapshotDTO(
@@ -503,8 +562,7 @@ def get_portfolio_snapshot(
                 allocations=[],
                 source_path=None,
                 parse_warnings=[
-                    f"INGEST REJECTED ({exc.code}): {exc.detail} — "
-                    "refusing to serve untrusted TSV"
+                    f"INGEST REJECTED ({exc.code}): {exc.detail} — refusing to serve untrusted TSV"
                 ],
             ),
             db,
@@ -513,7 +571,8 @@ def get_portfolio_snapshot(
     except Exception as exc:  # noqa: BLE001 - defensive
         _log.warning(
             "portfolio_snapshot.write_through_failed",
-            user_id=user_id, error=str(exc),
+            user_id=user_id,
+            error=str(exc),
         )
     snap = _apply_total_book_to_snap(snap, db, user_id)
     return _project_canonical_allocations(_snapshot_to_dto(snap), db, user_id)
@@ -580,7 +639,8 @@ class UploadSnapshotResponse(BaseModel):
 
 
 _TSV_FILENAME_RE = re.compile(
-    r"Family Finances Status\s*-\s*(\d{2})\s*([A-Za-z]{3})", re.IGNORECASE,
+    r"Family Finances Status\s*-\s*(\d{2})\s*([A-Za-z]{3})",
+    re.IGNORECASE,
 )
 
 
@@ -639,26 +699,29 @@ def upload_snapshot(
     """
     if allow_stale or allow_catastrophic_drop:
         import hmac as _hmac
+
         settings = get_settings()
         expected = settings.admin_token
         if not expected:
             raise HTTPException(
-                status_code=401, detail={"error": "admin_token_unconfigured"},
+                status_code=401,
+                detail={"error": "admin_token_unconfigured"},
             )
         if not x_argosy_admin:
             raise HTTPException(
-                status_code=401, detail={"error": "admin_token_required"},
+                status_code=401,
+                detail={"error": "admin_token_required"},
             )
         if not _hmac.compare_digest(x_argosy_admin, expected):
             raise HTTPException(
-                status_code=401, detail={"error": "admin_token_invalid"},
+                status_code=401,
+                detail={"error": "admin_token_invalid"},
             )
         if not (override_reason or "").strip():
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "override_reason is required when allow_stale or "
-                    "allow_catastrophic_drop is set"
+                    "override_reason is required when allow_stale or allow_catastrophic_drop is set"
                 ),
             )
 
@@ -666,18 +729,24 @@ def upload_snapshot(
     sha = hashlib.sha256(contents).hexdigest()
 
     from argosy.services.portfolio_ingest.xls_osh_pair import (
-        handle_xls_upload,
         is_leumi_portfolio_xls,
     )
+
     if is_leumi_portfolio_xls(contents):
         return _handle_xls_branch(
-            db=db, user_id=user_id, contents=contents,
-            fire_detector=fire_detector, sha=sha,
+            db=db,
+            user_id=user_id,
+            contents=contents,
+            fire_detector=fire_detector,
+            sha=sha,
         )
 
     import tempfile
+
     with tempfile.NamedTemporaryFile(
-        mode="wb", suffix=".tsv", delete=False,
+        mode="wb",
+        suffix=".tsv",
+        delete=False,
     ) as tmp:
         tmp.write(contents)
         tmp_path = Path(tmp.name)
@@ -705,9 +774,12 @@ def upload_snapshot(
             snap = parse_portfolio_tsv(tmp_path)
         except Exception as exc:  # noqa: BLE001
             return UploadSnapshotResponse(
-                tsv_persisted=False, persisted_path=None,
+                tsv_persisted=False,
+                persisted_path=None,
                 snapshot_date=None,
-                detect_status="skipped", event=None, plan=None,
+                detect_status="skipped",
+                event=None,
+                plan=None,
                 detail=f"parse_portfolio_tsv raised: {exc}",
                 sha256=sha,
             )
@@ -730,9 +802,7 @@ def upload_snapshot(
             return UploadSnapshotResponse(
                 tsv_persisted=False,
                 persisted_path=None,
-                snapshot_date=(
-                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
-                ),
+                snapshot_date=(snap.snapshot_date.isoformat() if snap.snapshot_date else None),
                 detect_status="skipped",
                 event=None,
                 plan=None,
@@ -743,7 +813,9 @@ def upload_snapshot(
         actor = "admin-token" if (allow_stale or allow_catastrophic_drop) else "upload"
         try:
             written = write_through_if_changed(
-                db, user_id=user_id, snapshot=snap,
+                db,
+                user_id=user_id,
+                snapshot=snap,
                 commit=False,
                 allow_stale=allow_stale,
                 allow_catastrophic_drop=allow_catastrophic_drop,
@@ -761,17 +833,18 @@ def upload_snapshot(
                 pass
             _log.warning(
                 "portfolio_snapshot.ingest_rejected",
-                user_id=user_id, code=exc.code, detail=exc.detail,
-                actor=actor, override_reason=override_reason or None,
+                user_id=user_id,
+                code=exc.code,
+                detail=exc.detail,
+                actor=actor,
+                override_reason=override_reason or None,
                 allow_stale=allow_stale,
                 allow_catastrophic_drop=allow_catastrophic_drop,
             )
             return UploadSnapshotResponse(
                 tsv_persisted=False,
                 persisted_path=None,
-                snapshot_date=(
-                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
-                ),
+                snapshot_date=(snap.snapshot_date.isoformat() if snap.snapshot_date else None),
                 detect_status="skipped",
                 event=None,
                 plan=None,
@@ -789,14 +862,13 @@ def upload_snapshot(
                 pass
             _log.warning(
                 "portfolio_snapshot.write_through_failed",
-                user_id=user_id, error=str(exc),
+                user_id=user_id,
+                error=str(exc),
             )
             return UploadSnapshotResponse(
                 tsv_persisted=False,
                 persisted_path=None,
-                snapshot_date=(
-                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
-                ),
+                snapshot_date=(snap.snapshot_date.isoformat() if snap.snapshot_date else None),
                 detect_status="skipped",
                 event=None,
                 plan=None,
@@ -831,15 +903,12 @@ def upload_snapshot(
             return UploadSnapshotResponse(
                 tsv_persisted=False,
                 persisted_path=None,
-                snapshot_date=(
-                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
-                ),
+                snapshot_date=(snap.snapshot_date.isoformat() if snap.snapshot_date else None),
                 detect_status="skipped",
                 event=None,
                 plan=None,
                 detail=(
-                    f"filesystem finalize failed — DB rolled back, "
-                    f"refusing to claim success: {exc}"
+                    f"filesystem finalize failed — DB rolled back, refusing to claim success: {exc}"
                 ),
                 sha256=sha,
             )
@@ -864,9 +933,7 @@ def upload_snapshot(
             return UploadSnapshotResponse(
                 tsv_persisted=False,
                 persisted_path=None,
-                snapshot_date=(
-                    snap.snapshot_date.isoformat() if snap.snapshot_date else None
-                ),
+                snapshot_date=(snap.snapshot_date.isoformat() if snap.snapshot_date else None),
                 detect_status="skipped",
                 event=None,
                 plan=None,
@@ -887,8 +954,10 @@ def upload_snapshot(
             _warm_derived_cache(user_id)
         _log.info(
             "portfolio_snapshot.uploaded",
-            user_id=user_id, path=str(target_path),
-            sha=sha[:8], size=len(contents),
+            user_id=user_id,
+            path=str(target_path),
+            sha=sha[:8],
+            size=len(contents),
             allow_stale=allow_stale,
             allow_catastrophic_drop=allow_catastrophic_drop,
             actor=actor,
@@ -896,23 +965,27 @@ def upload_snapshot(
         )
 
         _det = run_windfall_detection_on_snapshot(
-            db, user_id=user_id, target_path=target_path, fire=fire_detector,
+            db,
+            user_id=user_id,
+            target_path=target_path,
+            fire=fire_detector,
         )
         event_payload, plan_payload, detect_status = (
-            _det.event, _det.plan, _det.detect_status,
+            _det.event,
+            _det.plan,
+            _det.detect_status,
         )
 
         return UploadSnapshotResponse(
             tsv_persisted=True,
             persisted_path=str(target_path),
-            snapshot_date=(
-                snap.snapshot_date.isoformat() if snap.snapshot_date else None
-            ),
+            snapshot_date=(snap.snapshot_date.isoformat() if snap.snapshot_date else None),
             detect_status=detect_status,
             event=event_payload,
             plan=plan_payload,
             detail=(
-                None if not (allow_stale or allow_catastrophic_drop)
+                None
+                if not (allow_stale or allow_catastrophic_drop)
                 else (
                     "INGEST_OVERRIDE "
                     f"actor={actor} "
@@ -956,7 +1029,8 @@ def close_unmanaged_account(
     from argosy.services.holding_books import retire_unmanaged_account
 
     result = retire_unmanaged_account(
-        db, user_id,
+        db,
+        user_id,
         account_location=account_location,
         reason=reason,
         actor="admin-token",
@@ -988,7 +1062,8 @@ def _handle_xls_branch(
     except Exception as exc:  # noqa: BLE001
         _log.warning(
             "portfolio_snapshot.xls_handler_failed",
-            user_id=user_id, error=str(exc),
+            user_id=user_id,
+            error=str(exc),
         )
         return UploadSnapshotResponse(
             tsv_persisted=False,
@@ -1006,8 +1081,7 @@ def _handle_xls_branch(
             tsv_persisted=False,
             persisted_path=None,
             snapshot_date=(
-                resolution.snapshot_date.isoformat()
-                if resolution.snapshot_date else None
+                resolution.snapshot_date.isoformat() if resolution.snapshot_date else None
             ),
             detect_status="pending_pair",
             event=None,
@@ -1024,12 +1098,10 @@ def _handle_xls_branch(
         return UploadSnapshotResponse(
             tsv_persisted=resolution.resolved_tsv_path is not None,
             persisted_path=(
-                str(resolution.resolved_tsv_path)
-                if resolution.resolved_tsv_path else None
+                str(resolution.resolved_tsv_path) if resolution.resolved_tsv_path else None
             ),
             snapshot_date=(
-                resolution.snapshot_date.isoformat()
-                if resolution.snapshot_date else None
+                resolution.snapshot_date.isoformat() if resolution.snapshot_date else None
             ),
             detect_status="skipped",
             event=None,
@@ -1044,17 +1116,17 @@ def _handle_xls_branch(
     # is identical regardless of which path produced the snapshot).
     target_path = resolution.resolved_tsv_path
     _det = run_windfall_detection_on_snapshot(
-        db, user_id=user_id, target_path=target_path, fire=fire_detector,
+        db,
+        user_id=user_id,
+        target_path=target_path,
+        fire=fire_detector,
     )
     event_payload, plan_payload, detect_status = _det.event, _det.plan, _det.detect_status
 
     return UploadSnapshotResponse(
         tsv_persisted=True,
         persisted_path=str(target_path) if target_path else None,
-        snapshot_date=(
-            resolution.snapshot_date.isoformat()
-            if resolution.snapshot_date else None
-        ),
+        snapshot_date=(resolution.snapshot_date.isoformat() if resolution.snapshot_date else None),
         detect_status=detect_status,
         event=event_payload,
         plan=plan_payload,
@@ -1097,14 +1169,14 @@ def generate_tsv(
 
     snapshot_root = _resolve_snapshot_root()
     result = generate_family_finances_tsv(
-        db, user_id=user_id, snapshot_root=snapshot_root,
+        db,
+        user_id=user_id,
+        snapshot_root=snapshot_root,
     )
     return GenerateTsvResponse(
         tsv_persisted=result.tsv_persisted,
         persisted_path=str(result.persisted_path) if result.persisted_path else None,
-        snapshot_date=(
-            result.snapshot_date.isoformat() if result.snapshot_date else None
-        ),
+        snapshot_date=(result.snapshot_date.isoformat() if result.snapshot_date else None),
         leumi_nis_cash=result.leumi_nis_cash,
         leumi_usd_cash=result.leumi_usd_cash,
         warnings=result.warnings,
@@ -1119,6 +1191,7 @@ class UnallocatedCashProposalDTO(BaseModel):
     consume it without a separate transform. None response means no
     overage detected (current cash is within plan-target tolerance).
     """
+
     detected_at: str
     snapshot_date: str | None
     current_cash_k_usd: float
@@ -1157,8 +1230,11 @@ def get_unallocated_cash_proposal(
     from argosy.services.unallocated_cash_detector import (
         detect_unallocated_cash_overage,
     )
+
     event = detect_unallocated_cash_overage(
-        db, user_id=user_id, overage_ratio=overage_ratio,
+        db,
+        user_id=user_id,
+        overage_ratio=overage_ratio,
     )
     if event is None:
         return None
@@ -1204,11 +1280,15 @@ class HighPotentialSleeveDTO(BaseModel):
 )
 def get_high_potential_sleeve(
     cash_usd: float = Query(
-        250_000.0, ge=0.0, le=100_000_000.0,
+        250_000.0,
+        ge=0.0,
+        le=100_000_000.0,
         description="Cash being redeployed; the sleeve is sleeve_pct of this.",
     ),
     sleeve_pct: float = Query(
-        5.0, ge=0.0, le=25.0,
+        5.0,
+        ge=0.0,
+        le=25.0,
         description="High-potential share of the redeployed cash (default 5%).",
     ),
     live_radar: bool = Query(
@@ -1220,7 +1300,9 @@ def get_high_potential_sleeve(
         ),
     ),
     radar_names: int = Query(
-        4, ge=1, le=10,
+        4,
+        ge=1,
+        le=10,
         description="How many radar single-names to include when live_radar.",
     ),
 ) -> HighPotentialSleeveDTO:
@@ -1282,8 +1364,7 @@ def get_high_potential_sleeve(
         note=(
             "Advisor first-pass seeds, conviction-weighted; the agent fleet "
             "validates + final-sizes on the next synthesis. UCITS thematic core "
-            "is non-US-situs; single-name carve-out adds estate-tax exposure."
-            + radar_note
+            "is non-US-situs; single-name carve-out adds estate-tax exposure." + radar_note
         ),
     )
 
@@ -1318,7 +1399,9 @@ class TrendRadarDTO(BaseModel):
 def get_trend_radar(
     limit: int = Query(15, ge=1, le=50),
     cap_max_b: float = Query(
-        8.0, ge=0.5, le=500.0,
+        8.0,
+        ge=0.5,
+        le=500.0,
         description="Max market cap in $B for the satellite band (default 8).",
     ),
 ) -> TrendRadarDTO:
@@ -1331,10 +1414,15 @@ def get_trend_radar(
     return TrendRadarDTO(
         shortlist=[
             TrendCandidateDTO(
-                ticker=c.ticker, name=c.name, score=c.score,
-                families=list(c.families), reasons=list(c.reasons),
-                price=c.price, market_cap=c.market_cap,
-                dollar_volume=c.dollar_volume, pct_change=c.pct_change,
+                ticker=c.ticker,
+                name=c.name,
+                score=c.score,
+                families=list(c.families),
+                reasons=list(c.reasons),
+                price=c.price,
+                market_cap=c.market_cap,
+                dollar_volume=c.dollar_volume,
+                pct_change=c.pct_change,
             )
             for c in scan.shortlist
         ],
@@ -1407,10 +1495,7 @@ def get_speculative_monitor(
 
     syms = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     if not syms:
-        syms = [
-            c.ticker for c in _SEED_CANDIDATES
-            if c.vehicle == "single_name" and c.held_today
-        ]
+        syms = [c.ticker for c in _SEED_CANDIDATES if c.vehicle == "single_name" and c.held_today]
     # v1: entry unknown → anchor stops from today; peak tracked over ~90d.
     entry_date = date.today() - timedelta(days=90)
     watch = [WatchEntry(ticker=s, entry_price=0.0, entry_date=entry_date) for s in syms]
@@ -1516,6 +1601,7 @@ def refresh_rsu_vests(
 
 # --- Live current-allocation vs plan-target, by class, with drill-down -----
 
+
 class HoldingRowDTO(BaseModel):
     symbol: str
     name: str
@@ -1552,28 +1638,34 @@ def get_allocation_breakdown(
     """LIVE current allocation (from the snapshot holdings, grouped by class)
     vs the canonical plan's class targets, with the per-symbol drill-down. This
     is the real 'current vs plan target' — not the plan glide's modelled anchor."""
+    from argosy.services import derived_cache
     from argosy.services.allocation_breakdown import build_allocation_breakdown
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
-    from argosy.services import derived_cache
 
     def _compute() -> AllocationBreakdownDTO:
         row = get_latest_snapshot_row(db, user_id)
         if row is None:
-            return AllocationBreakdownDTO(rows=[], total_value_k=0.0,
-                                          note="No portfolio snapshot found.")
+            return AllocationBreakdownDTO(
+                rows=[], total_value_k=0.0, note="No portfolio snapshot found."
+            )
         snap = _apply_total_book_to_snap(row_to_snapshot(row), db, user_id)
         pv = get_current_plan(db, user_id)
         doc = load_plan_target_allocation(pv) if pv is not None else None
         from argosy.services.instrument_plan_class import load_classification_map
+
         cmap = load_classification_map(db, user_id)
         rows = build_allocation_breakdown(
-            snap, doc, exclude_nvda=exclude_nvda, classification_map=cmap,
+            snap,
+            doc,
+            exclude_nvda=exclude_nvda,
+            classification_map=cmap,
         )
-        note = ("Current = your live holdings grouped by asset class; target = the "
-                "canonical plan's class targets. Click a class to see its symbols. "
-                + ("" if doc is not None
-                   else "No current plan — targets shown blank."))
+        note = (
+            "Current = your live holdings grouped by asset class; target = the "
+            "canonical plan's class targets. Click a class to see its symbols. "
+            + ("" if doc is not None else "No current plan — targets shown blank.")
+        )
         if getattr(snap, "book_degraded", False):
             reason = getattr(snap, "degrade_reason", None) or "total book degraded"
             note = f"BOOK DEGRADED — valuation unavailable ({reason}). " + note
@@ -1598,21 +1690,31 @@ def get_allocation_breakdown(
             exclude_nvda,
             classification_fingerprint(db, user_id),
         )
-    return derived_cache.get_or_compute(
-        "portfolio.allocation-breakdown", version, _compute
-    )
+    return derived_cache.get_or_compute("portfolio.allocation-breakdown", version, _compute)
 
 
-def _allocation_breakdown_dto(rows, note: str) -> "AllocationBreakdownDTO":
+def _allocation_breakdown_dto(rows, note: str) -> AllocationBreakdownDTO:
     return AllocationBreakdownDTO(
-        rows=[CategoryBreakdownDTO(
-            label=r.label, current_pct=r.current_pct, target_pct=r.target_pct,
-            current_value_k=r.current_value_k,
-            holdings=[HoldingRowDTO(symbol=h.symbol, name=h.name,
-                      value_k=h.value_k, pct=h.pct, account=h.account,
-                      estate_safe=h.estate_safe)
-                      for h in r.holdings],
-        ) for r in rows],
+        rows=[
+            CategoryBreakdownDTO(
+                label=r.label,
+                current_pct=r.current_pct,
+                target_pct=r.target_pct,
+                current_value_k=r.current_value_k,
+                holdings=[
+                    HoldingRowDTO(
+                        symbol=h.symbol,
+                        name=h.name,
+                        value_k=h.value_k,
+                        pct=h.pct,
+                        account=h.account,
+                        estate_safe=h.estate_safe,
+                    )
+                    for h in r.holdings
+                ],
+            )
+            for r in rows
+        ],
         total_value_k=round(sum(r.current_value_k for r in rows), 2),
         note=note,
     )
@@ -1673,7 +1775,11 @@ def list_instrument_classes(
     plan_labels = _plan_symbol_labels(doc)
     cmap = load_classification_map(db, user_id)
     plan_classes = sorted(
-        {getattr(c, "label", "") for c in (getattr(doc, "classes", None) or []) if getattr(c, "label", "")}
+        {
+            getattr(c, "label", "")
+            for c in (getattr(doc, "classes", None) or [])
+            if getattr(c, "label", "")
+        }
     )
     held: set[str] = set()
     row = get_latest_snapshot_row(db, user_id)
@@ -1707,7 +1813,9 @@ def list_instrument_classes(
         classification_map=cmap,
     )
     return InstrumentClassListDTO(
-        rows=rows_out, unmapped_held=unmapped, plan_classes=plan_classes,
+        rows=rows_out,
+        unmapped_held=unmapped,
+        plan_classes=plan_classes,
     )
 
 
@@ -1784,6 +1892,7 @@ def seed_instrument_classes(
 
 # --- Real-estate net equity (net worth, separate from the investable book) --
 
+
 class RealEstatePaymentDTO(BaseModel):
     payment_date: str | None
     invoice_no: str | None
@@ -1808,7 +1917,7 @@ class PropertyEquityDTO(BaseModel):
     vat_paid_local: float | None = None
     payments: list[RealEstatePaymentDTO] | None = None
     # Present only when the property has a durable override (impairment/write-off).
-    status: str | None = None                     # bust | sold | impaired
+    status: str | None = None  # bust | sold | impaired
     recovery_expected_local: float | None = None  # contingent — NOT in net worth
     recovery_confidence: str | None = None
     note: str | None = None
@@ -1849,8 +1958,9 @@ def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
 
     row = get_latest_snapshot_row(db, user_id)
     if row is None:
-        return RealEstateEquityDTO(properties=[], total_net_usd_k=0.0,
-                                   note="No portfolio snapshot found.")
+        return RealEstateEquityDTO(
+            properties=[], total_net_usd_k=0.0, note="No portfolio snapshot found."
+        )
     snap = row_to_snapshot(row)
 
     # Canonical payment ledger: where a property has recorded payments, the
@@ -1869,7 +1979,9 @@ def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
         if (getattr(r, "role", "") or "").strip().lower() == "home"
     }
     ledgers = load_property_ledgers(
-        db, user_id=user_id, total_price_by_property=price_by_prop,
+        db,
+        user_id=user_id,
+        total_price_by_property=price_by_prop,
         currency_by_property=ccy_by_prop,
     )
     # Build the override, but fail loud rather than silently misapply: skip a
@@ -1881,15 +1993,18 @@ def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
         snap_ccy = ccy_by_prop.get(key)
         if snap_ccy and (lg.currency or "").upper() != snap_ccy:
             ledger_warnings.setdefault(key, []).append(
-                f"ledger ignored: currency {lg.currency} ≠ snapshot {snap_ccy}")
+                f"ledger ignored: currency {lg.currency} ≠ snapshot {snap_ccy}"
+            )
             continue
         if lg.remaining_local is None:
             ledger_warnings.setdefault(key, []).append(
-                "ledger ignored: no contract price (missing Home row)")
+                "ledger ignored: no contract price (missing Home row)"
+            )
             continue
         if lg.overpaid_local > 0:
             ledger_warnings.setdefault(key, []).append(
-                f"payments exceed contract price by {lg.overpaid_local:.0f} — check for double-count")
+                f"payments exceed contract price by {lg.overpaid_local:.0f} — check for double-count"
+            )
         loan_override[key] = lg.remaining_local
 
     # Durable per-property overrides (impairment / write-off, e.g. a developer-
@@ -1898,16 +2013,18 @@ def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
     # recovery that is deliberately NOT added to net worth.
     overrides = load_real_estate_overrides(db, user_id=user_id)
     value_override = {
-        k: o.current_value_local for k, o in overrides.items()
-        if o.current_value_local is not None
+        k: o.current_value_local for k, o in overrides.items() if o.current_value_local is not None
     }
     for k, o in overrides.items():
         if o.loan_local is not None:
             loan_override[k] = o.loan_local
 
     eq = compute_real_estate_equity(
-        snap.real_estate, fx_usd_nis=snap.fx_usd_nis, fx_usd_eur=snap.fx_usd_eur,
-        loan_override=loan_override, value_override=value_override,
+        snap.real_estate,
+        fx_usd_nis=snap.fx_usd_nis,
+        fx_usd_eur=snap.fx_usd_eur,
+        loan_override=loan_override,
+        value_override=value_override,
     )
     props: list[PropertyEquityDTO] = []
     for p in eq.properties:
@@ -1917,30 +2034,45 @@ def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
         if lg is not None and lg.has_entries:
             paid = lg.paid_net_local
             vat_paid = lg.vat_paid_local
-            payments = [RealEstatePaymentDTO(
-                payment_date=e.payment_date.isoformat() if e.payment_date else None,
-                invoice_no=e.invoice_no, amount_net_local=e.amount_net_local,
-                vat_local=e.vat_local, kind=e.kind, description=e.description,
-            ) for e in lg.entries]
+            payments = [
+                RealEstatePaymentDTO(
+                    payment_date=e.payment_date.isoformat() if e.payment_date else None,
+                    invoice_no=e.invoice_no,
+                    amount_net_local=e.amount_net_local,
+                    vat_local=e.vat_local,
+                    kind=e.kind,
+                    description=e.description,
+                )
+                for e in lg.entries
+            ]
         ovr = overrides.get(p.name)
-        props.append(PropertyEquityDTO(
-            name=p.name, currency=p.currency, home_local=p.home_local,
-            loan_local=p.loan_local, net_local=p.net_local,
-            net_usd_k=p.net_usd_k,
-            warnings=list(p.warnings) + ledger_warnings.get(p.name, []),
-            paid_to_date_local=paid, vat_paid_local=vat_paid, payments=payments,
-            status=ovr.status if ovr else None,
-            recovery_expected_local=ovr.recovery_expected_local if ovr else None,
-            recovery_confidence=ovr.recovery_confidence if ovr else None,
-            note=ovr.note if ovr else None,
-        ))
+        props.append(
+            PropertyEquityDTO(
+                name=p.name,
+                currency=p.currency,
+                home_local=p.home_local,
+                loan_local=p.loan_local,
+                net_local=p.net_local,
+                net_usd_k=p.net_usd_k,
+                warnings=list(p.warnings) + ledger_warnings.get(p.name, []),
+                paid_to_date_local=paid,
+                vat_paid_local=vat_paid,
+                payments=payments,
+                status=ovr.status if ovr else None,
+                recovery_expected_local=ovr.recovery_expected_local if ovr else None,
+                recovery_confidence=ovr.recovery_confidence if ovr else None,
+                note=ovr.note if ovr else None,
+            )
+        )
     return RealEstateEquityDTO(
         properties=props,
         total_net_usd_k=eq.total_net_usd_k,
-        note=("Net equity = current value − outstanding loan, converted to USD. "
-              "Where payments are tracked, the remaining-to-pay is computed from "
-              "the payment ledger (survives re-imports). Net-worth context; not "
-              "part of the investable allocation target."),
+        note=(
+            "Net equity = current value − outstanding loan, converted to USD. "
+            "Where payments are tracked, the remaining-to-pay is computed from "
+            "the payment ledger (survives re-imports). Net-worth context; not "
+            "part of the investable allocation target."
+        ),
     )
 
 
@@ -1948,6 +2080,7 @@ def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
 # 'Plan target' here is the canonical, glide-aware TargetAllocationDoc — never
 # the TSV spreadsheet (the headline bug this slice fixes). The wire DTOs and the
 # candidate->DTO mapping live in argosy.services.contracts (Phase 0).
+
 
 class AllocationTasksDTO(BaseModel):
     mode: str
@@ -1986,13 +2119,15 @@ def _load_current_doc_and_holdings(user_id: str, db: Session | None = None):
 
     # Legacy fallback for callers that don't have a request session.
     try:
-        from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
+
+        from argosy.state.db import create_sync_engine
 
         url = str(get_settings().database_url).replace("+aiosqlite", "")
         factory = sessionmaker(
-            bind=create_engine(url, connect_args={"check_same_thread": False}),
-            expire_on_commit=False)
+            bind=create_sync_engine(url),
+            expire_on_commit=False,
+        )
         with factory() as own_db:
             return _from_session(own_db)
     except Exception:  # noqa: BLE001
@@ -2016,19 +2151,25 @@ def get_allocation_tasks(
 
     doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
     if doc is None:
-        return AllocationTasksDTO(mode=mode, cash_usd=cash_usd, candidates=[],
-                                  note="No current canonical plan — accept a plan first.")
+        return AllocationTasksDTO(
+            mode=mode,
+            cash_usd=cash_usd,
+            candidates=[],
+            note="No current canonical plan — accept a plan first.",
+        )
     deploy_cash = cash_usd or snap_cash
     try:
-        cands = compute_allocation(doc, holdings, AllocationMode(mode),
-                                   cash_usd=deploy_cash)
+        cands = compute_allocation(doc, holdings, AllocationMode(mode), cash_usd=deploy_cash)
     except ValueError as exc:
         # Fail loud: a non-conserving / malformed plan must surface, never
         # silently produce a mis-sized allocation.
         _log.warning("allocation-tasks could not size plan: %s", exc)
         return AllocationTasksDTO(
-            mode=mode, cash_usd=deploy_cash, candidates=[],
-            note=f"Could not size allocation from the current plan: {exc}")
+            mode=mode,
+            cash_usd=deploy_cash,
+            candidates=[],
+            note=f"Could not size allocation from the current plan: {exc}",
+        )
 
     executable_tasks = None
     agent_note = ""
@@ -2042,24 +2183,28 @@ def get_allocation_tasks(
             from argosy.agents import allocation_agent as _aa
 
             verdicts, market_context = _allocation_agent_context(user_id)
-            tasks = _aa.order_and_explain(cands, verdicts=verdicts,
-                                          market_context=market_context,
-                                          user_id=user_id)
+            tasks = _aa.order_and_explain(
+                cands, verdicts=verdicts, market_context=market_context, user_id=user_id
+            )
             executable_tasks = [task_to_dto(t) for t in tasks]
         except Exception as exc:  # noqa: BLE001 — agent pass is additive
             _log.warning("allocation-tasks agent pass failed: %s", exc)
             executable_tasks = None
-            agent_note = (" (agent ordering unavailable this run; showing the "
-                          "deterministic candidates only.)")
+            agent_note = (
+                " (agent ordering unavailable this run; showing the deterministic candidates only.)"
+            )
 
     return AllocationTasksDTO(
-        mode=mode, cash_usd=deploy_cash,
+        mode=mode,
+        cash_usd=deploy_cash,
         candidates=[candidate_to_dto(c) for c in cands],
         executable_tasks=executable_tasks,
-        note=("Plan-bound (canonical TargetAllocationDoc, glide-aware). Amounts "
-              "deterministic; legs advisory (account/currency best-effort) and "
-              "tax shown as advisory only. The agent (Slice 1b) orders + "
-              "explains these." + agent_note),
+        note=(
+            "Plan-bound (canonical TargetAllocationDoc, glide-aware). Amounts "
+            "deterministic; legs advisory (account/currency best-effort) and "
+            "tax shown as advisory only. The agent (Slice 1b) orders + "
+            "explains these." + agent_note
+        ),
     )
 
 
@@ -2069,7 +2214,9 @@ def get_deploy_cash(
     user_id: str = Query("ariel"),
     live: bool = Query(False),
     sleeve_pct: float = Query(
-        5.0, ge=0.0, le=25.0,
+        5.0,
+        ge=0.0,
+        le=25.0,
         description=(
             "High-potential ('moonshot') share of the deploy amount carved off "
             "the top and routed to the high-risk tier (default 5%)."
@@ -2095,6 +2242,20 @@ def get_deploy_cash(
             "Requires the deployment_fleet_review_enabled master switch."
         ),
     ),
+    include_order_sheet: bool = Query(
+        False,
+        description=(
+            "Resolve live per-line facts and return the canonical quantity-bearing "
+            "order sheet. Missing facts, portfolio coverage, or conflicting voices "
+            "produce an explicit invalid/unavailable artifact, never a prose fallback."
+        ),
+    ),
+    allow_sells: bool = Query(
+        True,
+        description="Permit an after-tax sell/trim to fund a higher-conviction buy.",
+    ),
+    horizon_years_min: int = Query(1, ge=1, le=30),
+    horizon_years_max: int = Query(5, ge=1, le=30),
     db: Session = Depends(get_db),
 ) -> DeploymentPlanDTO:
     """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
@@ -2127,30 +2288,39 @@ def get_deploy_cash(
         # than getting a stale/zero rate). Best-effort — last-known rate remains.
         try:
             from argosy.services.fx import refresh_if_stale
+
             refresh_if_stale(db, currencies=("USD",), max_stale_days=1)
         except Exception as exc:  # noqa: BLE001 — never break deploy on FX refresh
             _log.warning("deploy_cash.fx_refresh_failed", error=str(exc)[:120])
         from argosy.services.deployment_market_context import (
             assemble_deployment_market_context,
         )
+
         ctx = assemble_deployment_market_context(db)
 
     # USD/ILS for the household operating floor (shekel-denominated). Best
     # effort: on failure the floor is skipped and the plan SAYS SO in a caveat
     # rather than guessing a rate and under-reserving the family's expense cash.
     _usd_ils: float | None = None
-    _inferred = cash_usd is None   # balance-derived, so the floor applies
+    _inferred = cash_usd is None  # balance-derived, so the floor applies
     try:
         from argosy.services.fx import rate as _fx_rate
+
         _usd_ils = float(_fx_rate(db, "USD", "ILS", _date.today()))
     except Exception as exc:  # noqa: BLE001 — never break deploy on FX
         _log.warning("deploy_cash.usd_ils_unavailable", error=str(exc)[:120])
 
     plan = assemble_deployment_plan(
-        doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
-        market_context=ctx, sleeve_pct=sleeve_pct,
-        use_high_potential=use_high_potential, user_id=user_id,
-        usd_ils=_usd_ils, cash_is_inferred=_inferred,
+        doc=doc,
+        holdings=holdings,
+        deploy_amount_usd=amount,
+        as_of=_date.today(),
+        market_context=ctx,
+        sleeve_pct=sleeve_pct,
+        use_high_potential=use_high_potential,
+        user_id=user_id,
+        usd_ils=_usd_ils,
+        cash_is_inferred=_inferred,
     )
     dto = deployment_plan_to_dto(plan, market_context=ctx)
 
@@ -2171,16 +2341,13 @@ def get_deploy_cash(
                 derive_cash_funding(
                     row_to_snapshot(_fund_row),
                     float(plan.deploy_amount_usd),
-                    discovery_reserve_usd=float(
-                        getattr(plan, "discovery_reserve_usd", 0.0) or 0.0
-                    ),
+                    discovery_reserve_usd=float(getattr(plan, "discovery_reserve_usd", 0.0) or 0.0),
                 )
             )
         dto.funding = _funding_dto
     except Exception as exc:  # noqa: BLE001 — additive; never break the route
         _funding_dto = None
-        _log.warning("deploy_cash.funding_failed", user_id=user_id,
-                     error=str(exc)[:200])
+        _log.warning("deploy_cash.funding_failed", user_id=user_id, error=str(exc)[:200])
 
     # Shadow research preflight (deterministic; behind the kill switch). Annotates
     # the response with per-candidate status/reason (look-through cap, reserve,
@@ -2212,11 +2379,17 @@ def get_deploy_cash(
             # `fleet_review=true` call is phase 2 (the fleet adjudicates below).
             _fleet_on = get_settings().deployment_fleet_review_enabled
             from argosy.services.instrument_plan_class import load_classification_map
+
             _cmap = load_classification_map(db, user_id)
             result = run_preflight_for_plan(
-                plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
-                deployable_usd=amount, snapshot_prices=snapshot_prices,
-                fleet_available=_fleet_on, snapshot=_snap_obj,
+                plan,
+                doc=doc,
+                holdings_usd=holdings,
+                cash_usd=snap_cash,
+                deployable_usd=amount,
+                snapshot_prices=snapshot_prices,
+                fleet_available=_fleet_on,
+                snapshot=_snap_obj,
                 classification_map=_cmap,
             )
 
@@ -2228,16 +2401,21 @@ def get_deploy_cash(
             from argosy.services.deployment_funnel.from_plan import (
                 redirect_overflow_to_diversifiers,
             )
-            _plan2, _redirect_note = redirect_overflow_to_diversifiers(
-                plan, result, doc
-            )
+
+            _plan2, _redirect_note = redirect_overflow_to_diversifiers(plan, result, doc)
             if _redirect_note:
                 from dataclasses import replace as _dcr
+
                 plan = _dcr(_plan2, caveats=tuple(_plan2.caveats) + (_redirect_note,))
                 result = run_preflight_for_plan(
-                    plan, doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
-                    deployable_usd=amount, snapshot_prices=snapshot_prices,
-                    fleet_available=_fleet_on, snapshot=_snap_obj,
+                    plan,
+                    doc=doc,
+                    holdings_usd=holdings,
+                    cash_usd=snap_cash,
+                    deployable_usd=amount,
+                    snapshot_prices=snapshot_prices,
+                    fleet_available=_fleet_on,
+                    snapshot=_snap_obj,
                     classification_map=_cmap,
                 )
 
@@ -2260,15 +2438,16 @@ def get_deploy_cash(
                     )
 
                     _gi = build_gate_inputs(
-                        doc=doc, holdings_usd=holdings, cash_usd=snap_cash,
+                        doc=doc,
+                        holdings_usd=holdings,
+                        cash_usd=snap_cash,
                     )
                     _plan_menu = tuple(
                         {
                             "sleeve": c.label,
                             "target_pct": float(getattr(c, "target_pct", 0.0) or 0.0),
                             "tickers": [
-                                getattr(i, "symbol", None)
-                                for i in getattr(c, "instruments", [])
+                                getattr(i, "symbol", None) for i in getattr(c, "instruments", [])
                             ],
                         }
                         for c in doc.classes
@@ -2284,8 +2463,9 @@ def get_deploy_cash(
                             f"{_gi.nvda_cap_pct:.0f}%; prime directive is earliest "
                             "safe retirement (do not over-hold on caution alone)."
                         ),
-                        market_note=(ctx.summary if ctx is not None
-                                     and hasattr(ctx, "summary") else ""),
+                        market_note=(
+                            ctx.summary if ctx is not None and hasattr(ctx, "summary") else ""
+                        ),
                     )
                     # Phase 2 is a SINGLE fleet call: the affirmative disposition
                     # ("what to do with the full amount") — computed from the
@@ -2298,13 +2478,16 @@ def get_deploy_cash(
                     # dollar. The bounded per-line adjudicator (fleet_review
                     # .adjudicate_*) stays available for a future low-volume use.
                     _disposition = recommend_disposition_sync(
-                        result.enriched, context=_dep_ctx,
-                        deployable_usd=amount, user_id=user_id,
+                        result.enriched,
+                        context=_dep_ctx,
+                        deployable_usd=amount,
+                        user_id=user_id,
                     )
                 except Exception as exc:  # noqa: BLE001 — fail-open; keep held
                     _log.warning(
                         "deploy_cash.fleet_review_failed",
-                        user_id=user_id, error=str(exc),
+                        user_id=user_id,
+                        error=str(exc),
                     )
 
             # Non-shadow: re-rank the actual buy list from the verdict (drop
@@ -2315,17 +2498,18 @@ def get_deploy_cash(
                 from argosy.services.deployment_funnel.sizer import size_deployment
 
                 sized = size_deployment(list(result.enriched), deployable_usd=amount)
-                dto = deployment_plan_to_dto(
-                    rerank_plan(plan, sized), market_context=ctx
-                )
+                dto = deployment_plan_to_dto(rerank_plan(plan, sized), market_context=ctx)
                 dto.funding = _funding_dto  # rebuild must not drop the table
             dto.preflight = preflight_result_to_dto(result)
             if _disposition is not None:
                 from argosy.services.contracts import disposition_to_dto
+
                 dto.disposition = disposition_to_dto(_disposition)
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(
-                "deploy_cash.preflight_failed", user_id=user_id, error=str(exc),
+                "deploy_cash.preflight_failed",
+                user_id=user_id,
+                error=str(exc),
             )
 
     # Fleet-authors / determinism-verifies pivot (behind deployment_author_enabled):
@@ -2333,7 +2517,27 @@ def get_deploy_cash(
     # accepted proposal `dto.authored` is the primary recommendation; on
     # rejected/unavailable it is marked degraded and the deterministic `tiers` above
     # are the labelled fallback. Fully additive — never breaks the fast GET path.
-    if doc is not None and amount and amount > 0 and get_settings().deployment_author_enabled:
+    _has_actionable_recommendations = False
+    if doc is not None and allow_sells and float(amount or 0.0) <= 0:
+        try:
+            from argosy.services.current_recommendations import (
+                load_actionable_recommendations,
+            )
+
+            _has_actionable_recommendations = bool(
+                load_actionable_recommendations(db, user_id=user_id)
+            )
+        except Exception as exc:  # noqa: BLE001 - explicit false on read failure
+            _log.warning(
+                "deploy_cash.current_recommendations_failed",
+                user_id=user_id,
+                error=str(exc)[:120],
+            )
+    if (
+        doc is not None
+        and (float(amount or 0.0) > 0 or _has_actionable_recommendations)
+        and get_settings().deployment_author_enabled
+    ):
         try:
             from argosy.services.allocation_author.packet_assembly import (
                 assemble_author_packet,
@@ -2346,12 +2550,217 @@ def get_deploy_cash(
             # so the proactive push and the on-demand pull feed the author the
             # same holistic view. See allocation_author/packet_assembly.py.
             packet = assemble_author_packet(
-                db, user_id=user_id, doc=doc, holdings_usd=holdings,
-                cash_usd=snap_cash, deployable_usd=amount,
+                db,
+                user_id=user_id,
+                doc=doc,
+                holdings_usd=holdings,
+                cash_usd=float(amount),
+                deployable_usd=amount,
+                additional_user_constraints=(
+                    "SELLS ARE FORBIDDEN for this run; allocate only the stated new cash."
+                    if not allow_sells
+                    else "After-tax sells may fund a higher-conviction switch when justified."
+                ),
             )
-            outcome = authored_allocation(packet, user_id=user_id)
+            packet["allow_sells"] = allow_sells
+            packet["horizon_years"] = [horizon_years_min, horizon_years_max]
+            # Resolve authored funding sells against the same live quote/tax result
+            # later used by the order sheet.  Cache by exact gross amount so a
+            # revision and final projection cannot drift onto different prices.
+            _sale_resolutions = {}
+            _sale_execution_facts = {}
+            _review_execution_facts = {}
+
+            def _resolve_sale(symbol: str, gross_usd: float):
+                from argosy.services.order_sheet_facts import collect_execution_facts
+                from argosy.services.sale_tax_facts import resolve_authoritative_sale
+
+                _key = (symbol.strip().upper(), round(float(gross_usd), 2))
+                if _key in _sale_resolutions:
+                    return _sale_resolutions[_key]
+                _facts, _failures = collect_execution_facts([_key[0]], doc=doc)
+                if _failures or _key[0] not in _facts:
+                    raise ValueError(
+                        f"{_key[0]} live sale facts unavailable: "
+                        + "; ".join(_failures.values())
+                    )
+                _sale_execution_facts[_key[0]] = _facts[_key[0]]
+                _resolved = resolve_authoritative_sale(
+                    db,
+                    user_id=user_id,
+                    symbol=_key[0],
+                    gross_proceeds_usd=_key[1],
+                    current_price_usd=_facts[_key[0]].evidence.price_usd,
+                )
+                _sale_resolutions[_key] = _resolved
+                return _resolved
+
+            from argosy.services.allocation_author.verifier import (
+                GateFailure as _GateFailure,
+            )
+            from argosy.services.allocation_author.verifier import (
+                GateReport as _GateReport,
+            )
+            from argosy.services.allocation_author.verifier import (
+                GateStatus as _GateStatus,
+            )
+            from argosy.services.allocation_author.verifier import (
+                verify_allocation_proposal as _verify_allocation_proposal,
+            )
+
+            _team = None
+            _team_history = []
+
+            def _verify_with_team(proposal, pkt):
+                """Run arithmetic first, then bounce stop-level judgment
+                objections to the same author for one coherent voice."""
+                nonlocal _team
+                report = _verify_allocation_proposal(
+                    proposal,
+                    pkt,
+                    sale_resolver=_resolve_sale,
+                )
+                if report.status != _GateStatus.ACCEPT:
+                    return report
+                from argosy.services.deploy_decision_team import (
+                    run_deploy_decision_team,
+                )
+
+                # Give blind reviewers current incorporation/situs evidence for
+                # every proposed name. Static reference coverage is incomplete for
+                # newly selected/discovered symbols; missing wiring must not be
+                # mistaken for a judgment that the name is unsafe.
+                from argosy.services.order_sheet_facts import (
+                    collect_execution_facts,
+                )
+
+                proposed_symbols = {
+                    buy.symbol.strip().upper() for buy in (proposal.buys or [])
+                }
+                missing_review_facts = sorted(
+                    proposed_symbols - set(_review_execution_facts)
+                )
+                if missing_review_facts:
+                    live_facts, _ = collect_execution_facts(
+                        missing_review_facts,
+                        doc=doc,
+                    )
+                    _review_execution_facts.update(live_facts)
+                team_packet = {**pkt}
+                instrument_facts = [
+                    dict(item) for item in (pkt.get("instrument_facts") or [])
+                ]
+                facts_by_symbol = {
+                    str(item.get("symbol", "")).upper(): item
+                    for item in instrument_facts
+                }
+                for symbol in sorted(proposed_symbols):
+                    execution = _review_execution_facts.get(symbol)
+                    if execution is None:
+                        continue
+                    evidence = execution.evidence
+                    row = facts_by_symbol.setdefault(symbol, {"symbol": symbol})
+                    row.update(
+                        {
+                            "incorporation_country": evidence.incorporation_country,
+                            "domicile": evidence.incorporation_country,
+                            "live_price_usd": evidence.price_usd,
+                            "market_cap_usd": evidence.market_cap_usd,
+                            "facts_as_of": evidence.price_as_of.isoformat(),
+                        }
+                    )
+                    if execution.estate_situs != "unknown":
+                        row["us_situs"] = execution.estate_situs == "US"
+                team_packet["instrument_facts"] = list(facts_by_symbol.values())
+
+                _team = run_deploy_decision_team(
+                    team_packet,
+                    proposal,
+                    user_id=user_id,
+                )
+                _team_history.append(_team)
+                if _team.degraded:
+                    return _GateReport(
+                        status=_GateStatus.BLOCK,
+                        failures=[
+                            _GateFailure(
+                                code="team_review_incomplete",
+                                detail=(
+                                    "Deployment review incomplete: "
+                                    f"{_team.reviewers_ran}/"
+                                    f"{_team.reviewers_expected} independent "
+                                    "lenses returned valid judgments. Refusing "
+                                    "to validate with a missing voice."
+                                ),
+                                severity="block",
+                            )
+                        ],
+                    )
+                if not _team.material_flagged:
+                    return report
+                failures = []
+                persistent_disagreement = len(_team_history) >= 2
+                for item in _team.material_flagged:
+                    concerns = []
+                    for objection in item.get("objections", []):
+                        if (
+                            objection.get("impact", "advisory_only") == "advisory_only"
+                            and objection.get("severity") != "block"
+                        ):
+                            continue
+                        recommendation = ""
+                        if objection.get("recommended_amount_usd") is not None:
+                            recommendation += (
+                                f" recommended amount "
+                                f"${float(objection['recommended_amount_usd']):,.0f}"
+                            )
+                        if objection.get("recommended_ticker"):
+                            recommendation += (
+                                f" recommended ticker {objection['recommended_ticker']}"
+                            )
+                        concerns.append(
+                            f"[{objection.get('impact')}] "
+                            f"{objection.get('concern', '')}{recommendation}"
+                        )
+                    failures.append(
+                        _GateFailure(
+                            code=(
+                                "team_disagreement_unresolved"
+                                if persistent_disagreement
+                                else "team_judgment_objection"
+                            ),
+                            detail=(
+                                (
+                                    f"{item['symbol']} still has a material team "
+                                    "disagreement after re-review; the run must stop: "
+                                    if persistent_disagreement
+                                    else f"{item['symbol']} must be re-authored: "
+                                )
+                                + " | ".join(concerns)
+                            ),
+                            severity=(
+                                "block" if persistent_disagreement else "revision"
+                            ),
+                        )
+                    )
+                return _GateReport(
+                    status=(
+                        _GateStatus.BLOCK
+                        if persistent_disagreement
+                        else _GateStatus.REVISION_REQUIRED
+                    ),
+                    failures=failures,
+                )
+
+            outcome = authored_allocation(
+                packet,
+                user_id=user_id,
+                verify=_verify_with_team,
+                max_revisions=get_settings().deployment_author_max_revisions,
+            )
             dto.authored = authored_outcome_to_dto(
-                outcome, held_symbols={s.upper() for s in holdings},
+                outcome,
+                held_symbols={s.upper() for s in holdings},
             )
             # The estate HEADLINE must describe the allocation the client will
             # actually act on: when the author's proposal is ACCEPTED, recompute
@@ -2359,53 +2768,50 @@ def get_deploy_cash(
             # instrument-reference facts, conservative for uncurated) instead of
             # the legacy deterministic `tiers` list. The tiers-based number
             # stays only when there is no accepted authored allocation.
-            if dto.authored is not None and dto.authored.status == "accepted" \
-                    and dto.authored.buys:
+            if dto.authored is not None and dto.authored.status == "accepted" and dto.authored.buys:
                 try:
                     from argosy.services.deployment_advisor import (
                         authored_estate_exposure,
                     )
+
                     _exp, _sanc = authored_estate_exposure(dto.authored.buys, doc)
                     dto.us_situs_exposed_usd = _exp
                     dto.us_situs_sanctioned_usd = _sanc
                 except Exception as exc:  # noqa: BLE001 — keep tiers-based number
                     _log.warning(
-                        "deploy_cash.authored_estate_failed", error=str(exc)[:120],
+                        "deploy_cash.authored_estate_failed",
+                        error=str(exc)[:120],
                     )
             # The decision TEAM reviews the author's proposal by JUDGMENT (blind
-            # reviewers re-derive from raw facts and object) — the R1GR-class catch,
-            # no gate. Additive + best-effort: it annotates, never changes the buys.
+            # reviewers re-derive from raw facts and object). Blocking objections
+            # bounce to the author; advisory notes annotate the accepted voice.
             _proposal = getattr(outcome, "proposal", None)
-            if _proposal is not None and getattr(_proposal, "buys", None):
+            if _proposal is not None and (
+                getattr(_proposal, "buys", None)
+                or getattr(_proposal, "sells", None)
+                or _team is not None
+            ):
                 try:
                     from argosy.services.contracts import (
-                        TeamFlaggedBuyDTO, TeamObjectionDTO, TeamReviewDTO,
+                        TeamFlaggedBuyDTO,
+                        TeamObjectionDTO,
+                        TeamReviewDTO,
                     )
-                    from argosy.services.deploy_decision_team import (
-                        run_deploy_decision_team,
-                    )
-                    _team = run_deploy_decision_team(packet, _proposal, user_id=user_id)
-                    try:
+                    if _team is None:
                         from argosy.services.deploy_decision_team import (
-                            supersede_cleared_flags,
-                            write_team_flag_proposals,
+                            run_deploy_decision_team,
                         )
-                        if _team.flagged:
-                            # A flagged buy is the client's decision — surface it
-                            # in the inbox (refresh-in-place per symbol), don't
-                            # just ride the DTO.
-                            write_team_flag_proposals(db, user_id, _team)
-                        # A flag the team re-reviewed and CLEARED this run must
-                        # disappear from the client's checklist (resolved items
-                        # never punt back to the client).
-                        supersede_cleared_flags(
-                            db, user_id, _team,
-                            reviewed_symbols={b.symbol for b in (_proposal.buys or [])},
+
+                        _team = run_deploy_decision_team(
+                            packet,
+                            _proposal,
+                            user_id=user_id,
                         )
-                    except Exception as exc:  # noqa: BLE001 — sink is additive
-                        _log.warning(
-                            "deploy_cash.team_flag_sink_failed", error=str(exc)[:120],
-                        )
+                        _team_history.append(_team)
+                    # This GET is diagnostic/compositional and must not create
+                    # separate inbox actions. It returns the complete team result
+                    # below; only the canonical daily workflow publishes a
+                    # unified client-facing artifact.
                     dto.team_review = TeamReviewDTO(
                         reviewers_ran=_team.reviewers_ran,
                         reviewers_expected=_team.reviewers_expected,
@@ -2413,7 +2819,9 @@ def get_deploy_cash(
                         approved=[b.symbol for b in _team.approved],
                         flagged=[
                             TeamFlaggedBuyDTO(
-                                symbol=f["symbol"], amount_usd=f["amount_usd"],
+                                symbol=f["symbol"],
+                                amount_usd=f["amount_usd"],
+                                proposed=f.get("proposed", True),
                                 objections=[TeamObjectionDTO(**o) for o in f["objections"]],
                             )
                             for f in _team.flagged
@@ -2421,17 +2829,215 @@ def get_deploy_cash(
                     )
                 except Exception as exc:  # noqa: BLE001 — team review is additive
                     _log.warning("deploy_cash.team_review_failed", error=str(exc)[:120])
+
+            # The author chose the instruments above. This optional projection
+            # adds only live facts, quantities, full-book NO-ACTION coverage and
+            # conflict/arithmetic validation; it never substitutes a ticker.
+            if include_order_sheet and outcome.status == "accepted" and _proposal is not None:
+                from argosy.services.contracts import OrderSheetArtifactDTO
+
+                if _team is not None and getattr(_team, "material_flagged", None):
+                    dto.order_sheet = OrderSheetArtifactDTO(
+                        status="invalid",
+                        failures=[
+                            "deploy decision team has unresolved objections: "
+                            + ", ".join(
+                                sorted(f["symbol"] for f in _team.material_flagged)
+                            )
+                        ],
+                    )
+                else:
+                    try:
+                        from sqlalchemy import func as _func
+                        from sqlalchemy import select as _select
+
+                        from argosy.services.deploy_decision_team import (
+                            build_review_resolution,
+                        )
+                        from argosy.services.order_sheet_builder import build_order_sheet
+                        from argosy.services.order_sheet_facts import (
+                            collect_execution_facts,
+                        )
+                        from argosy.services.order_sheet_state import (
+                            build_no_action_lines,
+                            load_portfolio_voices,
+                        )
+                        from argosy.state.models import ScanState
+
+                        _symbols = [b.symbol for b in (_proposal.buys or [])] + [
+                            s.symbol for s in (_proposal.sells or [])
+                        ]
+                        _symbols_to_fetch = [
+                            s
+                            for s in _symbols
+                            if s.upper() not in _sale_execution_facts
+                            and s.upper() not in _review_execution_facts
+                        ]
+                        _facts, _fact_failures = collect_execution_facts(
+                            _symbols_to_fetch,
+                            doc=doc,
+                        )
+                        _facts.update(_review_execution_facts)
+                        _facts.update(_sale_execution_facts)
+                        if _fact_failures:
+                            dto.order_sheet = OrderSheetArtifactDTO(
+                                status="unavailable",
+                                failures=[
+                                    f"{s}: {reason}" for s, reason in sorted(_fact_failures.items())
+                                ],
+                            )
+                        else:
+                            _portfolio_symbols = {s.upper() for s in holdings}
+                            _voices = load_portfolio_voices(
+                                db,
+                                user_id=user_id,
+                                portfolio_symbols=_portfolio_symbols,
+                            )
+                            _acted = {s.upper() for s in _symbols}
+                            _no_action = build_no_action_lines(
+                                holdings_usd=holdings,
+                                acted_symbols=_acted,
+                                voices_by_symbol=_voices,
+                            )
+                            _discovered = set(
+                                db.execute(
+                                    _select(ScanState.ticker).where(
+                                        ScanState.user_id == user_id,
+                                        ScanState.status == "active",
+                                        _func.coalesce(
+                                            ScanState.last_fleet_at,
+                                            ScanState.last_estimated_at,
+                                            ScanState.last_seen_at,
+                                        )
+                                        >= datetime.now(UTC) - timedelta(days=3),
+                                    )
+                                )
+                                .scalars()
+                                .all()
+                            )
+                            _resolved_sales = {
+                                s.symbol.upper(): _resolve_sale(s.symbol, s.amount_usd)
+                                for s in (_proposal.sells or [])
+                            }
+                            _built = build_order_sheet(
+                                _proposal,
+                                user_id=user_id,
+                                new_cash_usd=float(amount),
+                                holdings_usd=holdings,
+                                book_usd=sum(float(v) for v in holdings.values()),
+                                facts_by_symbol=_facts,
+                                no_action=_no_action,
+                                discovered_symbols=_discovered,
+                                voices_by_symbol=_voices,
+                                sale_resolutions=_resolved_sales,
+                                staged_sell_policies=packet.get(
+                                    "staged_sell_policies"
+                                ),
+                                horizon_years=(horizon_years_min, horizon_years_max),
+                                review_resolution=build_review_resolution(_team_history),
+                            )
+                            dto.order_sheet = OrderSheetArtifactDTO(
+                                status=("validated" if _built.validation.valid else "invalid"),
+                                sheet=_built.sheet,
+                                validation=_built.validation,
+                                failures=[
+                                    f"{f.code}: {f.detail}" for f in _built.validation.failures
+                                ],
+                            )
+                    except Exception as exc:  # noqa: BLE001 - fail explicit
+                        dto.order_sheet = OrderSheetArtifactDTO(
+                            status="unavailable",
+                            failures=[f"order-sheet construction failed: {exc}"],
+                        )
+            if include_order_sheet and dto.order_sheet is None:
+                from argosy.services.contracts import OrderSheetArtifactDTO
+
+                _author_failures = []
+                if getattr(outcome, "report", None) is not None:
+                    _author_failures = [
+                        f"{failure.code}: {failure.detail}"
+                        for failure in (outcome.report.failures or [])
+                    ]
+                dto.order_sheet = OrderSheetArtifactDTO(
+                    status=(
+                        "invalid" if outcome.status == "rejected" else "unavailable"
+                    ),
+                    failures=(
+                        [f"deployment author status is {outcome.status}"]
+                        + _author_failures
+                    ),
+                )
         except Exception as exc:  # noqa: BLE001 — additive; never break the route
             _log.warning(
-                "deploy_cash.author_failed", user_id=user_id, error=str(exc),
+                "deploy_cash.author_failed",
+                user_id=user_id,
+                error=str(exc),
             )
     return dto
+
+
+class MaterializeOrderSheetRequest(BaseModel):
+    sheet: dict
+    funding_account_id: str = Field(min_length=1)
+    sell_accounts_by_symbol: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/deploy-cash/order-sheet/materialize")
+def materialize_validated_order_sheet(
+    body: MaterializeOrderSheetRequest,
+    db: Session = Depends(get_db),
+    _admin: None = Depends(require_admin_token),
+) -> dict:
+    """Put a validated sheet into the existing approval/execution/fill spine."""
+
+    from argosy.services.order_sheet import OrderSheet
+    from argosy.services.order_sheet_materializer import (
+        materialize_order_sheet,
+        order_sheet_fingerprint,
+    )
+
+    sheet = OrderSheet.model_validate(body.sheet)
+    try:
+        rows = materialize_order_sheet(
+            db,
+            sheet,
+            funding_account_id=body.funding_account_id,
+            sell_accounts_by_symbol=body.sell_accounts_by_symbol,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "status": "awaiting_human",
+        "order_sheet_fingerprint": order_sheet_fingerprint(sheet),
+        "proposal_ids": [row.id for row in rows],
+    }
+
+
+@router.get("/deploy-cash/order-sheet/{fingerprint}/audit")
+def get_order_sheet_audit(
+    fingerprint: str,
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> dict:
+    from argosy.services.order_sheet_audit import audit_order_sheet
+
+    return audit_order_sheet(
+        db,
+        user_id=user_id,
+        fingerprint=fingerprint,
+    ).model_dump(mode="json")
 
 
 # --- Combined high-potential discovery surface (Slice 2) -------------------
 # A NEW DTO + endpoints (codex #12): the existing $-based high-potential-sleeve
 # endpoint/card stay until consumers migrate. This surface is CONVICTION-only
 # (no dollar sizing) — fleet-graded picks + the cheap estimator shortlist.
+
 
 class DiscoveryPickDTO(BaseModel):
     ticker: str
@@ -2454,9 +3060,7 @@ def _attach_pick_provenance(
         return picks
     from argosy.services.verdict_registry import provenance_for_subjects
 
-    prov_map = provenance_for_subjects(
-        db, user_id=user_id, subjects=[p.ticker for p in picks]
-    )
+    prov_map = provenance_for_subjects(db, user_id=user_id, subjects=[p.ticker for p in picks])
     out: list[DiscoveryPickDTO] = []
     for p in picks:
         prov = prov_map.get((p.ticker or "").upper())
@@ -2593,9 +3197,7 @@ def _enabled_signal_stream_keys(config) -> set[str]:
         return set()
     fields = getattr(type(config), "model_fields", None)
     if fields is None:
-        fields = {
-            key for key in vars(config) if key != "enabled"
-        } or {"gov_contracts"}
+        fields = {key for key in vars(config) if key != "enabled"} or {"gov_contracts"}
     keys: set[str] = set()
     for key in fields:
         if key == "enabled":
@@ -2609,12 +3211,8 @@ def _enabled_signal_stream_keys(config) -> set[str]:
 def _configured_signal_stream_keys(config) -> set[str]:
     fields = getattr(type(config), "model_fields", None)
     if fields is None:
-        fields = {
-            key for key in vars(config) if key != "enabled"
-        } or {"gov_contracts"}
-    return {
-        key for key in fields if key != "enabled"
-    }
+        fields = {key for key in vars(config) if key != "enabled"} or {"gov_contracts"}
+    return {key for key in fields if key != "enabled"}
 
 
 def _discovery_source_ref(value: str) -> tuple[str, str] | None:
@@ -2696,43 +3294,50 @@ def _discovery_pick(blob: str | None) -> DiscoveryPickDTO | None:
 
 def _load_discovery_transparency(user_id: str):
     """Persisted source/stage/candidate trace. Never performs a live scan."""
-    from sqlalchemy import create_engine, func, select
+    from sqlalchemy import func, select
     from sqlalchemy.orm import sessionmaker
 
     from argosy.config import load_signal_streams_config
+    from argosy.state.db import create_sync_engine
     from argosy.state.models import Proposal, ScanState
 
     url = str(get_settings().database_url).replace("+aiosqlite", "")
-    factory = sessionmaker(bind=create_engine(
-        url, connect_args={"check_same_thread": False}))
+    factory = sessionmaker(bind=create_sync_engine(url))
     signal_config = load_signal_streams_config(user_id)
     configured_signal_keys = _configured_signal_stream_keys(signal_config)
     enabled_signal_keys = _enabled_signal_stream_keys(signal_config)
     signal_scorecards: dict[str, dict[str, object]] = {}
     with factory() as db:
-        rows = list(db.execute(select(ScanState).where(
-            ScanState.user_id == user_id,
-        )).scalars())
+        rows = list(
+            db.execute(
+                select(ScanState).where(
+                    ScanState.user_id == user_id,
+                )
+            ).scalars()
+        )
         tickers = {row.ticker.upper() for row in rows}
         proposals = []
         if tickers:
-            proposals = list(db.execute(
-                select(Proposal).where(
-                    Proposal.user_id == user_id,
-                    func.upper(Proposal.ticker).in_(tickers),
-                ).order_by(
-                    Proposal.created_at.desc(),
-                    Proposal.id.desc(),
-                )
-            ).scalars())
+            proposals = list(
+                db.execute(
+                    select(Proposal)
+                    .where(
+                        Proposal.user_id == user_id,
+                        func.upper(Proposal.ticker).in_(tickers),
+                    )
+                    .order_by(
+                        Proposal.created_at.desc(),
+                        Proposal.id.desc(),
+                    )
+                ).scalars()
+            )
         if enabled_signal_keys:
             from argosy.services.predictions.reliability import (
                 signal_source_scorecard,
             )
 
             signal_scorecards = {
-                key: signal_source_scorecard(db, user_id, key)
-                for key in enabled_signal_keys
+                key: signal_source_scorecard(db, user_id, key) for key in enabled_signal_keys
             }
 
     latest_proposal_by_ticker = {}
@@ -2744,9 +3349,7 @@ def _load_discovery_transparency(user_id: str):
     source_tickers: dict[tuple[str, str], dict[str, set[str]]] = {
         (
             key,
-            _DISCOVERY_SOURCE_LABELS.get(
-                key, key.replace("_", " ").capitalize()
-            ),
+            _DISCOVERY_SOURCE_LABELS.get(key, key.replace("_", " ").capitalize()),
         ): {
             "active": set(),
             "quarantined": set(),
@@ -2769,10 +3372,7 @@ def _load_discovery_transparency(user_id: str):
         refs = _discovery_sources_for_row(row)
         is_active = row.status == "active"
         for ref in refs:
-            if (
-                ref[0] in configured_signal_keys
-                and ref[0] not in enabled_signal_keys
-            ):
+            if ref[0] in configured_signal_keys and ref[0] not in enabled_signal_keys:
                 continue
             counts = source_tickers.setdefault(
                 ref,
@@ -2799,18 +3399,20 @@ def _load_discovery_transparency(user_id: str):
                 decision_run_id=proposal.decision_run_id,
                 created_at=proposal.created_at.isoformat(),
             )
-        candidates.append(DiscoveryCandidateDTO(
-            ticker=row.ticker,
-            status=row.status,
-            rank=row.rank,
-            radar_score=row.last_score,
-            source_keys=[key for key, _label in refs],
-            source_labels=[label for _key, label in refs],
-            quarantine_reason=row.quarantine_reason or "",
-            estimator=estimate,
-            fleet=pick,
-            latest_trade_proposal=proposal_dto,
-        ))
+        candidates.append(
+            DiscoveryCandidateDTO(
+                ticker=row.ticker,
+                status=row.status,
+                rank=row.rank,
+                radar_score=row.last_score,
+                source_keys=[key for key, _label in refs],
+                source_labels=[label for _key, label in refs],
+                quarantine_reason=row.quarantine_reason or "",
+                estimator=estimate,
+                fleet=pick,
+                latest_trade_proposal=proposal_dto,
+            )
+        )
 
     sources = []
     for (key, label), status_tickers in sorted(
@@ -2818,15 +3420,17 @@ def _load_discovery_transparency(user_id: str):
         key=lambda item: item[0][0],
     ):
         tracked_tickers = set().union(*status_tickers.values())
-        sources.append(DiscoverySourceDTO(
-            key=key,
-            label=label,
-            tracked_count=len(tracked_tickers),
-            active_count=len(status_tickers["active"]),
-            quarantined_count=len(status_tickers["quarantined"]),
-            dropped_stale_count=len(status_tickers["dropped"]),
-            scorecard=signal_scorecards.get(key),
-        ))
+        sources.append(
+            DiscoverySourceDTO(
+                key=key,
+                label=label,
+                tracked_count=len(tracked_tickers),
+                active_count=len(status_tickers["active"]),
+                quarantined_count=len(status_tickers["quarantined"]),
+                dropped_stale_count=len(status_tickers["dropped"]),
+                scorecard=signal_scorecards.get(key),
+            )
+        )
     statuses = [row.status for row in rows]
     stages = DiscoveryStagesDTO(
         tracked=len(rows),
@@ -2850,25 +3454,32 @@ def _load_discovery_state(user_id: str):
     ``active`` rows (dropped/quarantined are filtered, codex #8). Returns domain
     objects (FleetPick / EstimatorVerdict); the route maps them to DTOs.
     Best-effort."""
-    from sqlalchemy import create_engine, select
+    from sqlalchemy import select
     from sqlalchemy.orm import sessionmaker
 
     from argosy.services.high_potential_funnel import (
         _pick_from_json,
         _verdict_from_json,
     )
+    from argosy.state.db import create_sync_engine
     from argosy.state.models import ScanState
 
     url = str(get_settings().database_url).replace("+aiosqlite", "")
-    factory = sessionmaker(bind=create_engine(
-        url, connect_args={"check_same_thread": False}))
+    factory = sessionmaker(bind=create_sync_engine(url))
     picks = []
     estimated = []
     last: str | None = None
     with factory() as db:
-        rows = db.execute(select(ScanState).where(
-            ScanState.user_id == user_id, ScanState.status == "active",
-        )).scalars().all()
+        rows = (
+            db.execute(
+                select(ScanState).where(
+                    ScanState.user_id == user_id,
+                    ScanState.status == "active",
+                )
+            )
+            .scalars()
+            .all()
+        )
         for r in rows:
             if r.last_radar_at is not None:
                 iso = r.last_radar_at.isoformat()
@@ -2911,11 +3522,22 @@ def get_discovery(
     )
     return DiscoveryDTO(
         picks=pick_dtos,
-        estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
-                   conviction=v.conviction, sentiment=v.sentiment,
-                   one_line=v.one_line) for v in estimated],
-        last_refreshed_at=last, note=_DISCOVERY_NOTE,
-        sources=sources, stages=stages, candidates=candidates)
+        estimated=[
+            DiscoveryEstimateDTO(
+                ticker=v.ticker,
+                go=v.go,
+                conviction=v.conviction,
+                sentiment=v.sentiment,
+                one_line=v.one_line,
+            )
+            for v in estimated
+        ],
+        last_refreshed_at=last,
+        note=_DISCOVERY_NOTE,
+        sources=sources,
+        stages=stages,
+        candidates=candidates,
+    )
 
 
 @router.post("/discovery/refresh", response_model=DiscoveryDTO)
@@ -2946,11 +3568,21 @@ async def refresh_discovery(
     )
     return DiscoveryDTO(
         picks=pick_dtos,
-        estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
-                   conviction=v.conviction, sentiment=v.sentiment,
-                   one_line=v.one_line) for v in result.estimated],
-        last_refreshed_at=result.last_refreshed_at, note=_DISCOVERY_NOTE,
-        sources=sources, stages=stages, candidates=candidates,
+        estimated=[
+            DiscoveryEstimateDTO(
+                ticker=v.ticker,
+                go=v.go,
+                conviction=v.conviction,
+                sentiment=v.sentiment,
+                one_line=v.one_line,
+            )
+            for v in result.estimated
+        ],
+        last_refreshed_at=result.last_refreshed_at,
+        note=_DISCOVERY_NOTE,
+        sources=sources,
+        stages=stages,
+        candidates=candidates,
     )
 
 
@@ -2973,7 +3605,9 @@ def post_rebalance_review(
     )
 
     review, written = run_holistic_rebalance_review(
-        user_id, db, write_proposal=write_proposal,
+        user_id,
+        db,
+        write_proposal=write_proposal,
     )
     return {"review": review.to_dict(), "proposal_written": written}
 

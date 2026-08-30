@@ -2,14 +2,21 @@
 fail-open. No live LLM — review_fn injected."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+import pytest
+
+from argosy.agents.base import ModelCall
 from argosy.agents.deployment_reviewer import (
     DeploymentReviewerAgent,
     DeploymentReviewOutput,
     ReviewObjection,
 )
-from argosy.services.deploy_decision_team import run_deploy_decision_team
+from argosy.services.deploy_decision_team import (
+    build_review_resolution,
+    run_deploy_decision_team,
+)
 
 
 def _buy(sym, amt, sleeve=""):
@@ -26,6 +33,12 @@ def _packet():
         "instrument_facts": [{"symbol": "R1GR", "us_weight": 1.0}, {"symbol": "EXUS", "us_weight": 0.0}],
         "plan_menu": [{"sleeve": "US growth", "target_pct": 11.0, "current_pct": 4.0}],
         "holdings": {"NVDA": 2_296_000.0},
+        "tax_lot_coverage": {
+            "TSLA": {
+                "available": False,
+                "meaning": "cost basis missing; after-tax proceeds cannot be verified",
+            }
+        },
     }
 
 
@@ -37,8 +50,199 @@ def test_reviewer_prompt_is_blind_and_lensed():
     )
     assert "YOUR LENS is concentration" in system
     assert "you have NOT seen its reasoning" in system   # blind
+    assert "constituent presence" in system
+    assert "before/after portfolio exposure" in system
+    assert "direction-of-change arithmetic" in system
+    assert "DILUTES that concentration" in system
+    assert "6.5%-NVDA world ETF materially" in system
+    assert "PLAN MENU is authoritative" in system
+    assert "replacing 0%-NVDA cash" in system
+    assert "never a veto merely" in system
     assert "BUY R1GR $18,000" in user
     assert "reason withheld" in user                      # no author rationale leaks in
+    assert "cost basis missing" in user
+    assert "do not demand a fabricated executable sale" in system
+
+
+def test_candidate_reviewer_judges_zero_one_or_split_without_false_floor():
+    agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+    packet = dict(_packet())
+    packet["discovery_candidates"] = [
+        {
+            "ticker": ticker,
+            "rank": rank,
+            "score": 77.0,
+            "fresh_as_of": "2026-08-28T00:00:00+00:00",
+            "fleet": {
+                "verdict": "BUY",
+                "conviction": "MED",
+                "thesis_md": "Evidence-backed 5x convexity with a dated catalyst.",
+            },
+        }
+        for ticker, rank in (("GLUE", 1), ("QURE", 2))
+    ]
+    system, user = DeploymentReviewerAgent.build_prompt(
+        agent, lens="candidate_selection", packet=packet, buys=[]
+    )
+    blob = system.lower()
+    assert "none, one, or multiple" in blob
+    assert "sub-1% position is not disqualified" in blob
+    assert "prefer a split" in blob
+    assert "position-size floor" in blob
+    assert "issuer funding" in blob
+    assert "never investor deployable cash" in blob
+    assert "do not originate a new sale solely" in blob
+    assert "new deployable cash: $0" in user
+    assert "GLUE" in user and "QURE" in user
+
+
+def test_review_team_sees_blind_sells_and_verified_funding_without_rationale():
+    captured = {}
+
+    def review(lens, packet, buys, **_kwargs):
+        captured.update(packet)
+        return DeploymentReviewOutput(lens=lens, objections=[])
+
+    proposal = SimpleNamespace(
+        buys=[_buy("ABCL", 8_000, "moonshot")],
+        sells=[SimpleNamespace(symbol="TSLA", amount_usd=10_000, reason="secret")],
+        candidate_comparisons=[SimpleNamespace(
+            ticker="ANNX",
+            selection="NOT_SELECTED",
+            recommended_position_usd=0,
+            why="secret comparative rationale",
+        )],
+        cash_to_deploy=8_000,
+        cash_to_reserve=0,
+    )
+    packet = {**_packet(), "deployable_usd": 0.0}
+    decision = run_deploy_decision_team(
+        packet, proposal, lenses=("candidate_selection",), review_fn=review
+    )
+    assert decision.all_clear
+    assert captured["proposed_sells"] == [
+        {"symbol": "TSLA", "amount_usd": 10_000.0}
+    ]
+    assert captured["review_funding"]["verified_net_sell_proceeds_usd"] == 8_000.0
+    assert captured["author_candidate_dispositions"] == [{
+        "ticker": "ANNX",
+        "selection": "NOT_SELECTED",
+        "recommended_position_usd": 0,
+    }]
+    assert "secret" not in str(captured)
+
+
+def test_team_carries_unique_plan_sleeve_across_blind_review_seam():
+    captured_buys = []
+
+    def review(lens, packet, buys, **_kwargs):
+        captured_buys.extend(buys)
+        return DeploymentReviewOutput(lens=lens, objections=[])
+
+    packet = {
+        **_packet(),
+        "plan_menu": [
+            {"sleeve": "US broad-market core", "tickers": ["CSPX"]},
+            {"sleeve": "Dividend-quality income", "tickers": ["FUSA"]},
+        ],
+    }
+    proposal = _proposal(_buy("CSPX", 150_000), _buy("FUSA", 29_000))
+
+    decision = run_deploy_decision_team(
+        packet,
+        proposal,
+        lenses=("diversification",),
+        review_fn=review,
+    )
+
+    assert decision.all_clear
+    assert [row["sleeve"] for row in captured_buys] == [
+        "US broad-market core",
+        "Dividend-quality income",
+    ]
+    assert [buy.sleeve for buy in proposal.buys] == [
+        "US broad-market core",
+        "Dividend-quality income",
+    ]
+
+
+def test_reviewer_sees_candidate_disposition_receipt_but_not_reasoning():
+    agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+    packet = dict(_packet())
+    packet["author_candidate_dispositions"] = [{
+        "ticker": "ABCL",
+        "selection": "NOT_SELECTED",
+        "recommended_position_usd": 0,
+    }]
+    system, user = DeploymentReviewerAgent.build_prompt(
+        agent,
+        lens="candidate_selection",
+        packet=packet,
+        buys=[],
+    )
+
+    assert "AUTHOR CANDIDATE DISPOSITIONS" in user
+    assert "ABCL: NOT_SELECTED" in user
+    assert "reason withheld" in user
+    assert "Tax-lot availability is not verified net sale proceeds" in system
+
+
+def test_sizing_reviewer_rederives_probability_aware_amount_blind():
+    agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+    system, user = DeploymentReviewerAgent.build_prompt(
+        agent,
+        lens="sizing",
+        packet=_packet(),
+        buys=[{"symbol": "GLUE", "amount_usd": 26_000, "sleeve": "moonshot"}],
+    )
+    blob = system.lower()
+    assert "economic-wipeout probability" in blob
+    assert "probability-weighted payoff" in blob
+    assert "10x possibility is not conviction" in blob
+    assert "small existing tracking positions are not sizing precedents" in blob
+    assert "changes_amount" in blob
+    assert "recommended_amount_usd" in blob
+    assert "BUY GLUE $26,000" in user
+
+
+def test_reviewer_schema_normalizes_plain_language_severity():
+    warning = ReviewObjection(
+        ticker="IWQU", concern="worth surfacing", severity="warning"
+    )
+    blocker = ReviewObjection(
+        ticker="R1GR", concern="unsound", severity="blocking"
+    )
+    assert warning.severity == "warn"
+    assert blocker.severity == "block"
+
+
+@pytest.mark.real_seam
+def test_real_reviewer_agent_dispatch_parses_objection(monkeypatch):
+    """Exercise BaseAgent.run; only the external model call is replaced."""
+    payload = {
+        "lens": "concentration",
+        "objections": [{
+            "ticker": "R1GR",
+            "concern": "The before/after exposure arithmetic does not improve the book.",
+            "severity": "block",
+        }],
+        "overall_note": "One material objection.",
+    }
+
+    async def fake_call(self, *, system, user, **kwargs):
+        assert "reason withheld" in user and "not seen its reasoning" in system.lower()
+        return ModelCall(
+            text=json.dumps(payload), tokens_in=10, tokens_out=10, model="test-model"
+        )
+
+    monkeypatch.setattr(DeploymentReviewerAgent, "_call_model", fake_call)
+    report = DeploymentReviewerAgent(user_id="ariel").run_sync(
+        lens="concentration",
+        packet=_packet(),
+        buys=[{"symbol": "R1GR", "amount_usd": 18_000, "sleeve": "US growth"}],
+    )
+    assert isinstance(report.output, DeploymentReviewOutput)
+    assert report.output.objections[0].severity == "block"
 
 
 def test_team_flags_objected_buys_and_approves_the_rest():
@@ -62,7 +266,7 @@ def test_team_flags_objected_buys_and_approves_the_rest():
     assert decision.reviewers_ran == 3 and not decision.degraded
 
 
-def test_team_is_fail_open_when_a_reviewer_dies():
+def test_team_records_degradation_when_a_reviewer_dies():
     def _review(lens, packet, buys, *, user_id="ariel"):
         if lens == "diversification":
             raise RuntimeError("claude.exe timeout")
@@ -73,10 +277,111 @@ def test_team_is_fail_open_when_a_reviewer_dies():
         lenses=("concentration", "diversification", "prudence"),
         review_fn=_review,
     )
-    # the dead reviewer is skipped, the trade is NOT blocked, and degradation is flagged
+    # The team result captures fewer eyes; the money-path caller stops on degraded.
     assert decision.reviewers_ran == 2 and decision.reviewers_expected == 3
     assert decision.degraded is True
     assert decision.all_clear and [b.symbol for b in decision.approved] == ["EXUS"]
+
+
+def test_warn_only_buy_remains_approved_but_auditable():
+    proposal = _proposal(_buy("IWQU", 22000))
+
+    def _review(lens, packet, buys, **kwargs):
+        objections = []
+        if lens == "diversification":
+            objections = [ReviewObjection(
+                ticker="IWQU", concern="compare a role-equivalent fund", severity="warn"
+            )]
+        return DeploymentReviewOutput(lens=lens, objections=objections)
+
+    decision = run_deploy_decision_team({}, proposal, review_fn=_review)
+    assert [b.symbol for b in decision.approved] == ["IWQU"]
+    assert decision.all_clear
+    assert decision.flagged[0]["objections"][0]["severity"] == "warn"
+
+
+def test_glue_warn_that_changes_amount_forces_reconciliation():
+    """Regression: the live fleet said $8-10k, not $26k, but `warn` shipped."""
+    proposal = _proposal(_buy("GLUE", 26_000, "moonshot"))
+
+    def _review(lens, packet, buys, **kwargs):
+        objections = []
+        if lens == "sizing":
+            objections = [ReviewObjection(
+                ticker="GLUE",
+                concern="A starter preserves convexity with less capital at risk.",
+                severity="warn",
+                impact="changes_amount",
+                recommended_amount_usd=10_000,
+            )]
+        return DeploymentReviewOutput(lens=lens, objections=objections)
+
+    decision = run_deploy_decision_team({}, proposal, review_fn=_review)
+    assert not decision.all_clear
+    assert decision.approved == []
+    objection = decision.material_flagged[0]["objections"][0]
+    assert objection["impact"] == "changes_amount"
+    assert objection["recommended_amount_usd"] == 10_000
+
+
+def test_omitted_candidate_objection_is_not_orphaned():
+    """A reviewer can require adding a finalist absent from proposal.buys."""
+    proposal = _proposal(_buy("CSPX", 40_000, "US core"))
+
+    def _review(lens, packet, buys, **kwargs):
+        objections = []
+        if lens == "candidate_selection":
+            objections = [ReviewObjection(
+                ticker="ABCL",
+                concern="The omitted finalist deserves a funded slot.",
+                severity="block",
+                impact="adds_omitted_candidate",
+                recommended_amount_usd=12_000,
+            )]
+        return DeploymentReviewOutput(lens=lens, objections=objections)
+
+    decision = run_deploy_decision_team({}, proposal, review_fn=_review)
+    assert not decision.all_clear
+    assert [b.symbol for b in decision.approved] == ["CSPX"]
+    flagged = decision.material_flagged[0]
+    assert flagged["symbol"] == "ABCL"
+    assert flagged["amount_usd"] == 0
+    assert flagged["proposed"] is False
+
+
+def test_review_resolution_preserves_dissent_and_the_re_review_outcome():
+    first = run_deploy_decision_team(
+        {},
+        _proposal(_buy("GLUE", 26_000, "moonshot")),
+        lenses=("sizing",),
+        review_fn=lambda lens, packet, buys, **kwargs: DeploymentReviewOutput(
+            lens=lens,
+            objections=[ReviewObjection(
+                ticker="GLUE",
+                concern="The probability distribution warrants a smaller starter.",
+                severity="warn",
+                impact="changes_amount",
+                recommended_amount_usd=10_000,
+            )],
+        ),
+    )
+    second = run_deploy_decision_team(
+        {},
+        _proposal(_buy("GLUE", 10_000, "moonshot")),
+        lenses=("sizing",),
+        review_fn=lambda lens, packet, buys, **kwargs: DeploymentReviewOutput(
+            lens=lens, objections=[]
+        ),
+    )
+
+    resolution = build_review_resolution([first, second])
+
+    assert resolution is not None
+    assert resolution.one_voice is True
+    assert resolution.rounds == 2
+    assert resolution.objections[0].status == "resolved_by_re_review"
+    assert resolution.objections[0].proposed_amount_usd == 26_000
+    assert resolution.objections[0].recommended_amount_usd == 10_000
 
 
 def test_team_decision_maps_to_dto():
@@ -162,14 +467,14 @@ def test_write_team_flag_proposals_survives_the_real_schema(alembic_engine_at_he
             )
         ).fetchone()
         assert first is not None and "$16,000" in first[1]
-        # Second write same symbol (today's run, NEW amount + objections) →
+        # Second blocking write same symbol (today's run, NEW amount + objections) →
         # dedup collision REFRESHES the open row IN PLACE — the inbox must
         # never show yesterday's stale amount for a buy that no longer exists.
         decision2 = TeamDecision(flagged=[{
             "symbol": "R1GR", "amount_usd": 13000.0,
             "objections": [{"lens": "diversification",
                             "concern": "fake diversifier — mega-cap clone",
-                            "severity": "warn"}],
+                            "severity": "block"}],
         }])
         assert write_team_flag_proposals(s, "ariel", decision2) == 1
         rows = s.execute(
@@ -183,7 +488,7 @@ def test_write_team_flag_proposals_survives_the_real_schema(alembic_engine_at_he
     row = rows[0]
     assert row[0] == first[0]                          # row id kept
     assert row[1] == "deploy_team_flag" and row[3] == "open"
-    assert row[2] == "info"                            # worst objection now warn
+    assert row[2] == "warning"                         # stop-level objection
     assert "$13,000" in row[4] and "$16,000" not in row[4]   # amount refreshed
     assert "fake diversifier" in row[5]                # objections refreshed
 
@@ -202,9 +507,8 @@ def test_write_stock_decision_proposal_survives_the_real_schema(alembic_engine_a
         assert row is not None and row.id is not None
 
 
-def test_supersede_cleared_flags_closes_rereviewed_symbols(alembic_engine_at_head):
-    """A flag the team re-reviewed and CLEARED must disappear from the client's
-    checklist; flags for symbols NOT reviewed this run stay open."""
+def test_supersede_cleared_flags_keeps_only_current_blocks(alembic_engine_at_head):
+    """The inbox mirrors current blocks, not stale or advisory objections."""
     from sqlalchemy.orm import Session
 
     from argosy.services.deploy_decision_team import (
@@ -213,24 +517,37 @@ def test_supersede_cleared_flags_closes_rereviewed_symbols(alembic_engine_at_hea
         write_team_flag_proposals,
     )
 
-    def _flag(sym, amt):
+    def _flag(sym, amt, severity="block"):
         return {"symbol": sym, "amount_usd": amt,
-                "objections": [{"lens": "prudence", "concern": "x", "severity": "warn"}]}
+                "objections": [{"lens": "prudence", "concern": "x", "severity": severity}]}
 
     with Session(alembic_engine_at_head) as s:
-        # Yesterday: SPMV and XOLD flagged.
+        # Yesterday: SPMV and XOLD had stop-level flags.
         write_team_flag_proposals(s, "ariel", TeamDecision(flagged=[_flag("SPMV", 20000), _flag("XOLD", 9000)]))
-        # Today: SPMV re-reviewed and cleared (approved); XOLD not in the proposal.
-        today = TeamDecision(flagged=[_flag("CSPX", 42000)])
+        # Today: CSPX has only an advisory note; SPMV cleared and XOLD was dropped.
+        today = TeamDecision(flagged=[_flag("CSPX", 42000, "warn")])
         write_team_flag_proposals(s, "ariel", today)
         n = supersede_cleared_flags(s, "ariel", today, reviewed_symbols={"SPMV", "CSPX", "EXUS"})
-        assert n == 1
+        assert n == 2
         rows = dict(s.execute(__import__("sqlalchemy").text(
             "SELECT dedup_key, status FROM action_proposals WHERE kind='deploy_team_flag'"
         )).fetchall())
         assert rows["deploy_team_flag:ariel:SPMV"] == "superseded"   # cleared this run
-        assert rows["deploy_team_flag:ariel:XOLD"] == "open"          # not re-reviewed
-        assert rows["deploy_team_flag:ariel:CSPX"] == "open"          # still flagged
+        assert rows["deploy_team_flag:ariel:XOLD"] == "superseded"    # dropped from final run
+        assert "deploy_team_flag:ariel:CSPX" not in rows               # advisory only
+
+
+def test_warn_only_team_flag_does_not_create_inbox_action():
+    from argosy.services.deploy_decision_team import TeamDecision, write_team_flag_proposals
+
+    class _ExplodingDb:
+        def add(self, row): raise AssertionError("advisory must not become an action")
+
+    warn = TeamDecision(flagged=[{
+        "symbol": "IWQU", "amount_usd": 22000,
+        "objections": [{"lens": "diversification", "concern": "note", "severity": "warn"}],
+    }])
+    assert write_team_flag_proposals(_ExplodingDb(), "ariel", warn) == 0
 
 
 def test_write_team_flag_proposals_nothing_flagged_is_a_noop():

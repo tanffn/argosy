@@ -7,6 +7,7 @@ interface HealthResponse {
   db: "ok" | "error";
   version: string;
   git_sha: string;
+  decision_contract_sha: string;
   started_at: string;
 }
 
@@ -58,10 +59,14 @@ export function VersionBadge() {
   return (
     <span
       className={`font-mono ${dbOk ? "" : "text-error"}`}
-      title={`Started ${startedAt.toLocaleString()}\nDB ${info.db}\nGit ${info.git_sha}`}
+      title={`Started ${startedAt.toLocaleString()}\nDB ${info.db}\nGit ${info.git_sha}\nDecision contract ${info.decision_contract_sha}`}
     >
       Argosy v{info.version} ·{" "}
-      <span className="text-foreground/80">{info.git_sha}</span> · started{" "}
+      <span className="text-foreground/80">{info.git_sha}</span> · decision{" "}
+      <span className="text-foreground/80">
+        {info.decision_contract_sha.slice(0, 8)}
+      </span>{" "}
+      · started{" "}
       {startedRel}
       {dbBadge}
     </span>

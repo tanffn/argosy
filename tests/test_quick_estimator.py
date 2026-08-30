@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import argosy.agents.quick_estimator as qe
 from argosy.agents.base import ModelCall
 from argosy.services.contracts import EstimatorVerdict
@@ -33,6 +35,7 @@ def test_estimator_defaults_to_sonnet():
     assert agent.require_citations is False
 
 
+@pytest.mark.real_seam
 def test_estimate_returns_verdict(monkeypatch):
     _stub(monkeypatch, {"PLTR": {
         "ticker": "PLTR", "go": True, "conviction": "HIGH",

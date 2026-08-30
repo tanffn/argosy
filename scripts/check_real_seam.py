@@ -109,20 +109,38 @@ def _load_allowlist() -> dict[str, str]:
     return out
 
 
+def _git_output(args: list[str]) -> str:
+    """Run Git for scope discovery and fail closed on any error."""
+    command = [
+        "git",
+        "-c",
+        f"safe.directory={REPO_ROOT.as_posix()}",
+        *args,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Git is unavailable; changed-file scope is unknown") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"Git scope discovery failed: {detail}") from exc
+    return result.stdout
+
+
 def _changed_python_files() -> list[Path]:
     """Working-tree changed + staged + untracked .py files under argosy/."""
     out: set[Path] = set()
     for args in (
-        ["git", "diff", "--name-only", "HEAD"],
-        ["git", "ls-files", "--others", "--exclude-standard"],
+        ["diff", "--name-only", "HEAD"],
+        ["ls-files", "--others", "--exclude-standard"],
     ):
-        try:
-            res = subprocess.run(
-                args, cwd=REPO_ROOT, capture_output=True, text=True, check=True
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-        for line in res.stdout.splitlines():
+        for line in _git_output(args).splitlines():
             line = line.strip()
             if not line.endswith(".py"):
                 continue
@@ -223,7 +241,12 @@ def main() -> int:
         files = _all_python_files()
         scope = "whole argosy/ tree"
     else:
-        files = _changed_python_files()
+        try:
+            files = _changed_python_files()
+        except RuntimeError as exc:
+            print("REAL-SEAM COVERAGE CHECK FAILED", file=sys.stderr)
+            print(str(exc), file=sys.stderr)
+            return 2
         scope = "changed/untracked files vs HEAD"
 
     gaps, ok = check(files)

@@ -7,9 +7,18 @@ The acceptance test IS the failure that motivated the pivot: a proposal that tre
 FWRA (~62% US) as ex-US diversification, or that skips the known NVDA-sale CGT
 reserve, must be bounced for revision — not silently accepted.
 """
+
 from __future__ import annotations
 
-from argosy.services.allocation_author.proposal import AllocationProposal, Buy, Sell
+from datetime import UTC, date, datetime
+
+from argosy.services.allocation_author.proposal import (
+    AllocationProposal,
+    AuthoredOrderIntent,
+    Buy,
+    Sell,
+)
+from argosy.services.order_sheet import CandidateComparison, OutcomeScenario
 from argosy.services.allocation_author.verifier import GateStatus, verify_allocation_proposal
 
 
@@ -18,21 +27,102 @@ def _packet(**over):
         "deployable_usd": 180_000.0,
         "holdings": {"SCHD": 264_000.0, "NVDA": 2_296_000.0},
         "known_symbols": {"FUSA", "SPMV", "EXUS", "FWRA", "CSPX", "SCHD", "NVDA", "VEUR"},
+        "sale_tax_inputs": {
+            "NVDA": {
+                "current_price_usd": 100,
+                "lots": [
+                    {
+                        "lot_id": "nvda-1",
+                        "quantity": 1000,
+                        "cost_basis_usd": 50_000,
+                    }
+                ],
+                "policy": {
+                    "effective_tax_rate": 0.25,
+                    "method": "verified Israeli CGT",
+                    "authoritative": True,
+                    "source": "verified lot/FX tax layer",
+                },
+                "friction_usd": 0,
+                "as_of": "2026-08-25T12:00:00Z",
+            }
+        },
     }
     p.update(over)
     return p
+
+
+def _intent(thesis_type="diversifier", upside=2) -> AuthoredOrderIntent:
+    kwargs = {}
+    if str(thesis_type).lower().endswith("convexity"):
+        kwargs = {
+            "outcome_scenarios": [
+                OutcomeScenario(label="wipeout", probability_pct=30, terminal_multiple=0.1, terminal_date=date(2030, 8, 26), rationale="Thesis fails."),
+                OutcomeScenario(label="base", probability_pct=40, terminal_multiple=1, terminal_date=date(2030, 8, 26), rationale="Mixed outcome."),
+                OutcomeScenario(label="bull", probability_pct=20, terminal_multiple=3, terminal_date=date(2030, 8, 26), rationale="One success."),
+                OutcomeScenario(label="moonshot", probability_pct=10, terminal_multiple=10, terminal_date=date(2030, 8, 26), rationale="Multiple successes."),
+            ],
+            "probability_confidence": "LOW",
+            "probability_basis": "Clinical base rates and current evidence.",
+        }
+    return AuthoredOrderIntent(
+        thesis="Fill the governing sleeve gap.",
+        thesis_type=thesis_type,
+        falsifier="The instrument no longer supplies the intended exposure.",
+        catalyst_description="Next scheduled portfolio review",
+        catalyst_date="2027-01-31",
+        expectation="The allocation gap closes.",
+        expectation_due_date="2027-02-28",
+        success_measure="sleeve moves toward target without a risk breach",
+        expected_upside_multiple=upside,
+        **kwargs,
+    )
+
+
+def test_convexity_intent_without_probabilities_requires_revision():
+    intent = _intent("convexity", 10).model_copy(
+        update={"outcome_scenarios": [], "probability_confidence": None, "probability_basis": None}
+    )
+    proposal = AllocationProposal(
+        cash_to_deploy=50_000,
+        cash_to_reserve=130_000,
+        buys=[Buy(symbol="GLUE", amount_usd=50_000, claimed_us_weight=1.0, order_intent=intent)],
+        sells=[],
+        rationale="Probability model omitted.",
+    )
+    report = verify_allocation_proposal(proposal, _packet(known_symbols={"GLUE"}))
+    codes = {f.code for f in report.failures}
+    assert "convexity_probabilities_missing" in codes
+    assert "probability_basis_missing" in codes
 
 
 def _ok_proposal():
     # Deploys the full net-of-tax amount into a TRUE ex-US fund (EXUS us≈0) + a
     # low-vol sleeve. No tax reserve — CGT is paid from the sale that realizes it.
     return AllocationProposal(
-        cash_to_deploy=180_000.0, cash_to_reserve=0.0,
-        buys=[Buy(symbol="EXUS", amount_usd=130_000.0, sleeve="International developed (ex-US)",
-                  justification="true ex-US diversification", claimed_us_weight=0.0),
-              Buy(symbol="SPMV", amount_usd=50_000.0, sleeve="US low-volatility",
-                  justification="uncovered low-vol factor", claimed_us_weight=1.0)],
-        sells=[], holds=[], rationale="diversify ex-US",
+        cash_to_deploy=180_000.0,
+        cash_to_reserve=0.0,
+        buys=[
+            Buy(
+                symbol="EXUS",
+                amount_usd=130_000.0,
+                sleeve="International developed (ex-US)",
+                justification="true ex-US diversification",
+                claimed_us_weight=0.0,
+                order_intent=_intent(),
+            ),
+            Buy(
+                symbol="SPMV",
+                amount_usd=50_000.0,
+                sleeve="US low-volatility",
+                justification="uncovered low-vol factor",
+                claimed_us_weight=1.0,
+                order_intent=_intent(),
+            ),
+        ],
+        sells=[],
+        holds=[],
+        rationale="diversify ex-US",
     )
 
 
@@ -41,15 +131,192 @@ def test_clean_proposal_accepts():
     assert r.status == GateStatus.ACCEPT, r.failures
 
 
+def _discovery_row(ticker: str, rank: int, score: float) -> dict:
+    return {
+        "ticker": ticker,
+        "rank": rank,
+        "score": score,
+        "fresh_as_of": "2026-08-26T06:00:00+00:00",
+        "fleet": {"verdict": "BUY", "conviction": "MED", "thesis_md": f"{ticker} thesis"},
+    }
+
+
+def _candidate_comparison(ticker: str, rank: int, score: float, selected: bool):
+    return CandidateComparison(
+        ticker=ticker,
+        selection="SELECTED" if selected else "NOT_SELECTED",
+        radar_rank=rank,
+        radar_score=score,
+        research_verdict="BUY",
+        research_conviction="MED",
+        evidence_fresh_as_of=datetime(2026, 8, 26, 6, tzinfo=UTC),
+        key_advantage=f"{ticker} advantage",
+        key_risk=f"{ticker} risk",
+        why=f"{ticker} {'won' if selected else 'lost'} the comparative judgment.",
+        outcome_scenarios=[
+            OutcomeScenario(label="wipeout", probability_pct=30, terminal_multiple=0.1, terminal_date=date(2030, 8, 26), rationale="Thesis fails."),
+            OutcomeScenario(label="base", probability_pct=50, terminal_multiple=1, terminal_date=date(2030, 8, 26), rationale="Mixed outcome."),
+            OutcomeScenario(label="upside", probability_pct=20, terminal_multiple=5, terminal_date=date(2030, 8, 26), rationale="Thesis succeeds."),
+        ],
+        probability_confidence="LOW",
+        probability_basis="Equal-basis industry rates and current evidence.",
+        recommended_position_usd=130_000 if selected else 0,
+        smaller_position_usd=65_000 if selected else None,
+        why_not_smaller="The upside would not materially affect the portfolio." if selected else None,
+        larger_position_usd=200_000 if selected else 20_000,
+        why_not_larger="The evidence does not warrant that much capital.",
+        split_considered=True,
+        split_why="Independent failure modes were compared before choosing one allocation.",
+        sizing_why="Selected amount matches the order." if selected else "No independently warranted slot this run.",
+    )
+
+
+def test_discovery_buy_requires_explicit_comparison_with_every_buy_finalist():
+    packet = _packet(
+        discovery_candidates=[
+            _discovery_row("EXUS", 26, 76.9),
+            _discovery_row("REPL", 16, 77.5),
+            _discovery_row("QURE", 17, 77.5),
+        ]
+    )
+    report = verify_allocation_proposal(_ok_proposal(), packet)
+    assert "candidate_comparison_missing" in {f.code for f in report.failures}
+
+
+def test_discovery_comparison_records_winner_losers_and_raw_grades():
+    packet = _packet(
+        discovery_candidates=[
+            _discovery_row("EXUS", 26, 76.9),
+            _discovery_row("REPL", 16, 77.5),
+            _discovery_row("QURE", 17, 77.5),
+        ]
+    )
+    proposal = _ok_proposal().model_copy(update={
+        "candidate_comparisons": [
+            _candidate_comparison("EXUS", 26, 76.9, True),
+            _candidate_comparison("REPL", 16, 77.5, False),
+            _candidate_comparison("QURE", 17, 77.5, False),
+        ]
+    })
+    report = verify_allocation_proposal(proposal, packet)
+    comparison_failures = {
+        f.code for f in report.failures if f.code.startswith("candidate_")
+    }
+    assert comparison_failures == set(), report.failures
+
+
+def test_every_discovery_finalist_requires_equal_basis_probabilities_and_sizing():
+    packet = _packet(discovery_candidates=[_discovery_row("EXUS", 26, 76.9)])
+    incomplete = _candidate_comparison("EXUS", 26, 76.9, True).model_copy(
+        update={
+            "outcome_scenarios": [],
+            "probability_confidence": None,
+            "probability_basis": None,
+            "recommended_position_usd": 10_000,
+            "sizing_why": None,
+        }
+    )
+    proposal = _ok_proposal().model_copy(update={"candidate_comparisons": [incomplete]})
+    codes = {f.code for f in verify_allocation_proposal(proposal, packet).failures}
+    assert "candidate_probabilities_missing" in codes
+    assert "candidate_probability_basis_missing" in codes
+    assert "candidate_sizing_missing" in codes
+
+    mismatched = _candidate_comparison("EXUS", 26, 76.9, True).model_copy(
+        update={
+            "recommended_position_usd": 10_000,
+            "smaller_position_usd": 5_000,
+            "larger_position_usd": 20_000,
+        }
+    )
+    proposal = _ok_proposal().model_copy(update={"candidate_comparisons": [mismatched]})
+    codes = {f.code for f in verify_allocation_proposal(proposal, packet).failures}
+    assert "candidate_sizing_order_mismatch" in codes
+
+
+def test_sub_one_percent_nonconvex_buy_is_bounced_inside_author_loop():
+    proposal = AllocationProposal(
+        cash_to_deploy=180_000.0,
+        buys=[
+            Buy(
+                symbol="FUSA",
+                amount_usd=10_000.0,
+                claimed_us_weight=1.0,
+                order_intent=_intent("income", 2),
+            ),
+            Buy(
+                symbol="EXUS",
+                amount_usd=170_000.0,
+                claimed_us_weight=0.0,
+                order_intent=_intent(),
+            ),
+        ],
+        rationale="Allocate without economically immaterial fragments.",
+    )
+    report = verify_allocation_proposal(proposal, _packet())
+    assert report.status == GateStatus.REVISION_REQUIRED
+    assert "small_position_without_convexity" in {f.code for f in report.failures}
+    assert "small_position_insufficient_asymmetry" in {f.code for f in report.failures}
+
+
+def test_sub_one_percent_order_is_allowed_when_existing_position_exceeds_floor():
+    packet = _packet(
+        holdings={"FUSA": 30_000.0, "NVDA": 2_296_000.0},
+        known_symbols={"FUSA", "NVDA"},
+    )
+    proposal = AllocationProposal(
+        cash_to_deploy=180_000.0,
+        buys=[
+            Buy(
+                symbol="FUSA",
+                amount_usd=180_000.0,
+                claimed_us_weight=1.0,
+                order_intent=_intent("income", 2),
+            )
+        ],
+        rationale="Top up an existing material position.",
+    )
+    report = verify_allocation_proposal(proposal, packet)
+    assert report.status == GateStatus.ACCEPT, report.failures
+
+
+def test_exus_words_in_a_negated_justification_do_not_override_numeric_fact():
+    proposal = AllocationProposal(
+        cash_to_deploy=180_000.0,
+        buys=[
+            Buy(
+                symbol="CSPX",
+                amount_usd=180_000.0,
+                sleeve="US core equity",
+                justification="fills US core rather than the ex-US sleeve",
+                claimed_us_weight=1.0,
+                order_intent=_intent(),
+            )
+        ],
+        rationale="Fill the structured US-core gap.",
+    )
+    report = verify_allocation_proposal(proposal, _packet())
+    assert report.status == GateStatus.ACCEPT, report.failures
+
+
 def test_fwra_treated_as_exus_is_bounced():
     """The exact failure: buying FWRA and calling it ex-US, when the registry knows
     FWRA is ~62% US. Must be REVISION_REQUIRED, not accepted."""
     p = AllocationProposal(
-        cash_to_deploy=180_000.0, cash_to_reserve=0.0,
-        buys=[Buy(symbol="FWRA", amount_usd=180_000.0,
-                  sleeve="International developed (ex-US)",
-                  justification="ex-US diversification", claimed_us_weight=0.0)],
-        sells=[], holds=[], rationale="x",
+        cash_to_deploy=180_000.0,
+        cash_to_reserve=0.0,
+        buys=[
+            Buy(
+                symbol="FWRA",
+                amount_usd=180_000.0,
+                sleeve="International developed (ex-US)",
+                justification="ex-US diversification",
+                claimed_us_weight=0.0,
+            )
+        ],
+        sells=[],
+        holds=[],
+        rationale="x",
     )
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.REVISION_REQUIRED
@@ -64,19 +331,30 @@ def test_conservation_failure_is_bounced():
 
 
 def test_sell_exceeding_holdings_is_blocked():
-    p = _ok_proposal().model_copy(update={
-        "sells": [Sell(symbol="SCHD", amount_usd=500_000.0, reason="migrate")],
-    })
+    p = _ok_proposal().model_copy(
+        update={
+            "sells": [Sell(symbol="SCHD", amount_usd=500_000.0, reason="migrate")],
+        }
+    )
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.BLOCK
     assert any("SCHD" in f.detail for f in r.failures)
 
 
 def test_invented_ticker_is_blocked():
-    p = _ok_proposal().model_copy(update={
-        "buys": [Buy(symbol="ZZZZ", amount_usd=80_000.0, sleeve="?", justification="?",
-                     claimed_us_weight=0.0)],
-    })
+    p = _ok_proposal().model_copy(
+        update={
+            "buys": [
+                Buy(
+                    symbol="ZZZZ",
+                    amount_usd=80_000.0,
+                    sleeve="?",
+                    justification="?",
+                    claimed_us_weight=0.0,
+                )
+            ],
+        }
+    )
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.BLOCK
     assert any("ZZZZ" in f.detail for f in r.failures)
@@ -86,6 +364,7 @@ def test_schema_forbids_negative_money():
     """Defense-in-depth: the schema itself rejects a negative reserve/deploy/amount."""
     import pytest
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError):
         AllocationProposal(cash_to_deploy=80_000.0, cash_to_reserve=-100.0)
 
@@ -95,10 +374,20 @@ def test_negative_reserve_balancing_overdeploy_is_blocked():
     equality checks. Built via model_construct to simulate a schema bypass — the
     verifier must BLOCK it regardless (it's the authoritative money gate)."""
     p = AllocationProposal.model_construct(
-        cash_to_deploy=180_100.0, cash_to_reserve=-100.0,
-        buys=[Buy.model_construct(symbol="EXUS", amount_usd=180_100.0, sleeve="ex-US",
-                                  justification="", claimed_us_weight=0.0)],
-        sells=[], holds=[], rationale="",
+        cash_to_deploy=180_100.0,
+        cash_to_reserve=-100.0,
+        buys=[
+            Buy.model_construct(
+                symbol="EXUS",
+                amount_usd=180_100.0,
+                sleeve="ex-US",
+                justification="",
+                claimed_us_weight=0.0,
+            )
+        ],
+        sells=[],
+        holds=[],
+        rationale="",
     )
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.BLOCK
@@ -107,10 +396,19 @@ def test_negative_reserve_balancing_overdeploy_is_blocked():
 
 def test_missing_claimed_us_weight_is_bounced():
     """A buy with no claimed_us_weight can't be cross-checked — must be REVISION."""
-    p = _ok_proposal().model_copy(update={
-        "buys": [Buy(symbol="EXUS", amount_usd=80_000.0, sleeve="ex-US",
-                     justification="", claimed_us_weight=None)],
-    })
+    p = _ok_proposal().model_copy(
+        update={
+            "buys": [
+                Buy(
+                    symbol="EXUS",
+                    amount_usd=80_000.0,
+                    sleeve="ex-US",
+                    justification="",
+                    claimed_us_weight=None,
+                )
+            ],
+        }
+    )
     r = verify_allocation_proposal(p, _packet())
     assert r.status == GateStatus.REVISION_REQUIRED
     assert any(f.code == "missing_us_weight" for f in r.failures)
@@ -122,17 +420,33 @@ def test_fwra_evasion_via_neutral_sleeve_still_caught():
     supplying a false 0.0 trips lookthrough_claim. Either way it can't pass ACCEPT."""
     omitted = AllocationProposal(
         cash_to_deploy=180_000.0,
-        buys=[Buy(symbol="FWRA", amount_usd=180_000.0, sleeve="Global diversifier",
-                  justification="adds non-NVDA breadth", claimed_us_weight=None)],
+        buys=[
+            Buy(
+                symbol="FWRA",
+                amount_usd=180_000.0,
+                sleeve="Global diversifier",
+                justification="adds non-NVDA breadth",
+                claimed_us_weight=None,
+            )
+        ],
     )
     r1 = verify_allocation_proposal(omitted, _packet())
     assert r1.status == GateStatus.REVISION_REQUIRED
     assert any(f.code == "missing_us_weight" for f in r1.failures)
 
-    false_claim = omitted.model_copy(update={
-        "buys": [Buy(symbol="FWRA", amount_usd=80_000.0, sleeve="Global diversifier",
-                     justification="adds non-NVDA breadth", claimed_us_weight=0.0)],
-    })
+    false_claim = omitted.model_copy(
+        update={
+            "buys": [
+                Buy(
+                    symbol="FWRA",
+                    amount_usd=80_000.0,
+                    sleeve="Global diversifier",
+                    justification="adds non-NVDA breadth",
+                    claimed_us_weight=0.0,
+                )
+            ],
+        }
+    )
     r2 = verify_allocation_proposal(false_claim, _packet())
     assert r2.status == GateStatus.REVISION_REQUIRED
     assert any(f.code == "lookthrough_claim" for f in r2.failures)
@@ -141,23 +455,41 @@ def test_fwra_evasion_via_neutral_sleeve_still_caught():
 def test_sell_proceeds_credited_to_conservation():
     """A deconcentration sell adds to the funds allocated: deploy+reserve must equal
     deployable + proceeds. Redeploying the proceeds balances; ignoring them fails."""
-    # deployable 180k + sell 50k = 230k available; deploy all 230k.
+    # $50k gross on $25k selected basis -> $6.25k tax -> $43.75k net.
+    # deployable 180k + net sell 43.75k = 223.75k available.
     ok = AllocationProposal(
-        cash_to_deploy=230_000.0,
-        buys=[Buy(symbol="EXUS", amount_usd=230_000.0, sleeve="ex-US",
-                  claimed_us_weight=0.0)],
-        sells=[Sell(symbol="NVDA", amount_usd=50_000.0, reason="deconcentrate")],
+        cash_to_deploy=223_750.0,
+        buys=[
+            Buy(
+                symbol="EXUS",
+                amount_usd=223_750.0,
+                sleeve="ex-US",
+                claimed_us_weight=0.0,
+                order_intent=_intent(),
+            )
+        ],
+        sells=[
+            Sell(
+                symbol="NVDA",
+                amount_usd=50_000.0,
+                reason="deconcentrate",
+                order_intent=_intent("compounder"),
+            )
+        ],
         rationale="trim NVDA and redeploy the proceeds plus cash into ex-US",
     )
     r_ok = verify_allocation_proposal(ok, _packet())
     assert r_ok.status == GateStatus.ACCEPT, r_ok.failures
 
     # Same sell but only the original 180k is placed → 50k proceeds vanish.
-    leak = ok.model_copy(update={
-        "cash_to_deploy": 180_000.0,
-        "buys": [Buy(symbol="EXUS", amount_usd=180_000.0, sleeve="ex-US",
-                     claimed_us_weight=0.0)],
-    })
+    leak = ok.model_copy(
+        update={
+            "cash_to_deploy": 180_000.0,
+            "buys": [
+                Buy(symbol="EXUS", amount_usd=180_000.0, sleeve="ex-US", claimed_us_weight=0.0)
+            ],
+        }
+    )
     r_leak = verify_allocation_proposal(leak, _packet())
     assert r_leak.status == GateStatus.REVISION_REQUIRED
     assert any(f.code == "conservation" for f in r_leak.failures)
@@ -196,8 +528,9 @@ def test_empty_known_symbols_fails_closed():
 _MOONSHOT_SLEEVE_LABEL = "High-growth / high-potential"
 
 
-def _moonshot_packet(target_pct=8.0, book_usd=4_150_000.0, tickers=("RGTI", "ACHR"),
-                      deployable_usd=50_000.0, **over):
+def _moonshot_packet(
+    target_pct=8.0, book_usd=4_150_000.0, tickers=("RGTI", "ACHR"), deployable_usd=50_000.0, **over
+):
     """A packet with a moonshot plan_menu entry carrying the X10 mandate, plus a
     core US-equity entry with NO mandate (RKT lives only there)."""
     p = _packet(
@@ -231,11 +564,16 @@ def _moonshot_buy(symbol="RGTI", amount_usd=50_000.0, disclosed=True):
         "US-situs single name and adds to the NRA estate-tax base (up to 40% "
         "marginal above the $60K exemption) described in "
         "domain_knowledge/tax/us/estate_tax_nonresidents.md"
-        if disclosed else
-        "the strongest x10-asymmetry candidate in the moonshot sleeve"
+        if disclosed
+        else "the strongest x10-asymmetry candidate in the moonshot sleeve"
     )
-    return Buy(symbol=symbol, amount_usd=amount_usd, sleeve="",
-               justification=justification, claimed_us_weight=1.0)
+    return Buy(
+        symbol=symbol,
+        amount_usd=amount_usd,
+        sleeve="",
+        justification=justification,
+        claimed_us_weight=1.0,
+    )
 
 
 def _c4_buy(symbol, amount_usd, cls):
@@ -247,8 +585,16 @@ def _c4_buy(symbol, amount_usd, cls):
     elif cls is False:
         cls = "FUNDED_OPTIONALITY"
     label = cls
+    intent = _intent("convexity", 10).model_copy(
+        update={
+            "downside_class": cls,
+            "acknowledges_us_situs_estate_cost": True,
+        }
+    )
     return Buy(
-        symbol=symbol, amount_usd=amount_usd, sleeve="",
+        symbol=symbol,
+        amount_usd=amount_usd,
+        sleeve="",
         justification=(
             f"x10 moonshot sleeve. {label}: class evidence stated. It is a US-situs "
             "single name and adds to the NRA estate-tax base (up to 40% marginal "
@@ -256,27 +602,23 @@ def _c4_buy(symbol, amount_usd, cls):
             "domain_knowledge/tax/us/estate_tax_nonresidents.md"
         ),
         claimed_us_weight=1.0,
+        order_intent=intent,
     )
 
 
 def test_moonshot_us_situs_buy_with_disclosure_accepts():
-    """Composition note (2026-08-21, mandate (c4)): this was ONE unlabelled $50k
-    buy, which now correctly trips (c4) -- an undeclared floor scores as NO floor,
-    so a single unlabelled name makes the tranche 100% unfloored. Recomposed as a
-    compliant pair (unfloored $10k of $50k = 20%, under both the one-third and the
-    half-of-largest-floored ceilings) so this test keeps exercising what it was
-    written for -- plan-menu sleeve attribution, the estate disclosure, and the
-    derived US-situs cap -- not the composition rule. The FLOORED/UNFLOORED labels
-    are FIXTURE VALUES exercising arithmetic, not claims about the real companies."""
     """US-situs RGTI, attributed to the moonshot sleeve via the plan menu (NOT via
     Buy.sleeve, which is deliberately left blank here to prove attribution doesn't
     depend on it), sized under the derived cap, with the estate disclosure -> ACCEPT."""
     packet = _moonshot_packet()
     # Derived cap: 40% x (8.0% x $4.15M) = 40% x $332,000 = $132,800. $50k buy fits.
     p = AllocationProposal(
-        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
-        buys=[_c4_buy("ACHR", 40_000.0, True), _c4_buy("RGTI", 10_000.0, False)],
-        sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
+        cash_to_deploy=50_000.0,
+        cash_to_reserve=0.0,
+        buys=[_c4_buy("RGTI", 50_000.0, "FUNDED_OPTIONALITY")],
+        sells=[],
+        holds=[],
+        rationale="fund the moonshot sleeve's asymmetry-first pick",
     )
     r = verify_allocation_proposal(p, packet)
     assert r.status == GateStatus.ACCEPT, r.failures
@@ -288,9 +630,12 @@ def test_moonshot_us_situs_buy_without_disclosure_is_revision():
     and not a silent ACCEPT."""
     packet = _moonshot_packet()
     p = AllocationProposal(
-        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        cash_to_deploy=50_000.0,
+        cash_to_reserve=0.0,
         buys=[_moonshot_buy(amount_usd=50_000.0, disclosed=False)],
-        sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
+        sells=[],
+        holds=[],
+        rationale="fund the moonshot sleeve's asymmetry-first pick",
     )
     r = verify_allocation_proposal(p, packet)
     assert r.status == GateStatus.REVISION_REQUIRED
@@ -302,10 +647,20 @@ def test_core_sleeve_us_situs_buy_still_blocked():
     (no X10 mandate) -> the carve-out must NOT apply; still BLOCKED, same as today."""
     packet = _moonshot_packet()
     p = AllocationProposal(
-        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
-        buys=[Buy(symbol="RKT", amount_usd=50_000.0, sleeve="US equity (core)",
-                  justification="core US financials pick", claimed_us_weight=1.0)],
-        sells=[], holds=[], rationale="fill the core US-equity gap",
+        cash_to_deploy=50_000.0,
+        cash_to_reserve=0.0,
+        buys=[
+            Buy(
+                symbol="RKT",
+                amount_usd=50_000.0,
+                sleeve="US equity (core)",
+                justification="core US financials pick",
+                claimed_us_weight=1.0,
+            )
+        ],
+        sells=[],
+        holds=[],
+        rationale="fill the core US-equity gap",
     )
     r = verify_allocation_proposal(p, packet)
     assert r.status == GateStatus.BLOCK
@@ -318,10 +673,15 @@ def test_moonshot_sleeve_us_situs_total_over_cap_is_revision():
     each individual buy discloses the estate consequence correctly."""
     packet = _moonshot_packet(tickers=("RGTI", "ACHR"), deployable_usd=200_000.0)
     p = AllocationProposal(
-        cash_to_deploy=200_000.0, cash_to_reserve=0.0,
-        buys=[_moonshot_buy(symbol="RGTI", amount_usd=120_000.0),
-              _moonshot_buy(symbol="ACHR", amount_usd=80_000.0)],
-        sells=[], holds=[], rationale="load up the moonshot sleeve's top two picks",
+        cash_to_deploy=200_000.0,
+        cash_to_reserve=0.0,
+        buys=[
+            _moonshot_buy(symbol="RGTI", amount_usd=120_000.0),
+            _moonshot_buy(symbol="ACHR", amount_usd=80_000.0),
+        ],
+        sells=[],
+        holds=[],
+        rationale="load up the moonshot sleeve's top two picks",
     )
     r = verify_allocation_proposal(p, packet)
     assert r.status == GateStatus.REVISION_REQUIRED
@@ -335,9 +695,12 @@ def test_ambiguous_sleeve_attribution_fails_closed_as_core():
     plausibly hold."""
     packet = _packet(known_symbols={"RGTI"})  # no plan_menu, no nvda/book info
     p = AllocationProposal(
-        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
+        cash_to_deploy=50_000.0,
+        cash_to_reserve=0.0,
         buys=[_moonshot_buy(amount_usd=50_000.0)],
-        sells=[], holds=[], rationale="fund the moonshot sleeve's asymmetry-first pick",
+        sells=[],
+        holds=[],
+        rationale="fund the moonshot sleeve's asymmetry-first pick",
     )
     r = verify_allocation_proposal(p, packet)
     assert r.status == GateStatus.BLOCK
@@ -349,21 +712,27 @@ def test_nvda_still_sanctioned_inside_moonshot_packet():
     carve-out didn't change NVDA's existing exemption."""
     packet = _moonshot_packet()
     p = AllocationProposal(
-        cash_to_deploy=50_000.0, cash_to_reserve=0.0,
-        buys=[Buy(symbol="NVDA", amount_usd=50_000.0, sleeve="",
-                  justification="add to the sanctioned NVDA sleeve", claimed_us_weight=1.0)],
-        sells=[], holds=[], rationale="top up NVDA",
+        cash_to_deploy=50_000.0,
+        cash_to_reserve=0.0,
+        buys=[
+            Buy(
+                symbol="NVDA",
+                amount_usd=50_000.0,
+                sleeve="",
+                justification="add to the sanctioned NVDA sleeve",
+                claimed_us_weight=1.0,
+            )
+        ],
+        sells=[],
+        holds=[],
+        rationale="top up NVDA",
     )
     r = verify_allocation_proposal(p, packet)
     assert not any(f.code == "us_situs" for f in r.failures)
     assert not any(f.code.startswith("moonshot_") for f in r.failures)
 
 
-# --- Mandate (c4): unfloored growth stories take a SMALLER cut ------------------
-# Ariel's 2026-08-21 ruling. These pin the ARITHMETIC only -- whether a FLOORED
-# label is TRUE is a judgement call for the blind re-deriver, never for this gate.
-# The live 2026-08-21 run (RXRX/TEM floored, RGTI/OKLO unfloored) is the ACCEPT
-# case, so a regression that breaks a compliant real plan is caught here.
+# --- Mandate (c4): composition is reviewed judgment, not a numeric gate --------
 
 _C4_TICKERS = ("RXRX", "TEM", "RGTI", "OKLO")
 
@@ -375,56 +744,24 @@ def _c4_packet(**over):
 def _c4_codes(buys):
     total = round(sum(b.amount_usd for b in buys), 2)
     p = AllocationProposal(
-        cash_to_deploy=total, cash_to_reserve=0.0, buys=buys,
-        sells=[], holds=[], rationale="fund the moonshot sleeve",
+        cash_to_deploy=total,
+        cash_to_reserve=0.0,
+        buys=buys,
+        sells=[],
+        holds=[],
+        rationale="fund the moonshot sleeve",
     )
     res = verify_allocation_proposal(p, _c4_packet())
     return {f.code for f in res.failures}
 
 
-def test_c4_real_2026_08_21_sleeve_passes():
-    """The sleeve the live run actually produced: unfloored $3,300 of $10,000
-    (under the $3,333 one-third cap) and each unfloored under half of RXRX's
-    $3,500. Compliant -> neither (c4) code fires."""
-    codes = _c4_codes([
-        _c4_buy("RXRX", 3_500.0, True), _c4_buy("TEM", 3_200.0, True),
-        _c4_buy("RGTI", 1_700.0, False), _c4_buy("OKLO", 1_600.0, False),
-    ])
-    assert "moonshot_c4_unfloored_share" not in codes
-    assert "moonshot_c4_unfloored_name_size" not in codes
-
-
-def test_c4_unfloored_share_over_one_third_is_flagged():
-    """Push the unfloored pair to $4,000 of $10,700 (37%) -> over the one-third
-    ceiling. This is the drift the prose could not prevent."""
-    codes = _c4_codes([
-        _c4_buy("RXRX", 3_500.0, True), _c4_buy("TEM", 3_200.0, True),
-        _c4_buy("RGTI", 2_000.0, False), _c4_buy("OKLO", 2_000.0, False),
-    ])
-    assert "moonshot_c4_unfloored_share" in codes
-
-
-def test_c4_single_unfloored_over_half_of_largest_floored_is_flagged():
-    """RGTI at $1,900 exceeds half of RXRX's $3,500 (=$1,750), even though the
-    combined unfloored share stays under one third."""
-    codes = _c4_codes([
-        _c4_buy("RXRX", 3_500.0, True), _c4_buy("TEM", 3_200.0, True),
-        _c4_buy("RGTI", 1_900.0, False), _c4_buy("OKLO", 500.0, False),
-    ])
-    assert "moonshot_c4_unfloored_name_size" in codes
-
-
-def test_c4_unlabelled_name_counts_as_unfloored():
-    """Mandate (c2): an undeclared floor is scored as NO floor. Here EVERY name is
-    unlabelled, so the whole sleeve reads unfloored and blows the one-third cap --
-    the author cannot dodge (c4) by simply omitting the label."""
-    plain = [
-        Buy(symbol=s, amount_usd=a, sleeve="",
-            justification=("x10 moonshot sleeve pick. US-situs single name adding to "
-                           "the NRA estate-tax base (40% marginal above the $60K "
-                           "exemption) per "
-                           "domain_knowledge/tax/us/estate_tax_nonresidents.md"),
-            claimed_us_weight=1.0)
-        for s, a in (("RXRX", 3_500.0), ("TEM", 3_200.0), ("RGTI", 1_700.0), ("OKLO", 1_600.0))
-    ]
-    assert "moonshot_c4_unfloored_share" in _c4_codes(plain)
+def test_c4_funded_optionality_split_is_not_rejected_by_a_fixed_ratio():
+    """The team judges whether the split is sound; deterministic verification only
+    enforces funding, eligibility, estate arithmetic, and declared intent."""
+    codes = _c4_codes(
+        [
+            _c4_buy("RXRX", 20_000.0, "FUNDED_OPTIONALITY"),
+            _c4_buy("TEM", 20_000.0, "FUNDED_OPTIONALITY"),
+        ]
+    )
+    assert not any(code.startswith("moonshot_c4_") for code in codes)

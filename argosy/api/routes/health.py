@@ -18,8 +18,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from argosy.api.build_info import GIT_SHA, STARTED_AT, VERSION
+from argosy.agent_settings import load_agent_settings
+from argosy.api.build_info import DECISION_CONTRACT_SHA, GIT_SHA, STARTED_AT, VERSION
 from argosy.config import get_settings
+from argosy.orchestrator.cost_guard import CostGuard
 from argosy.state.db import get_engine
 
 router = APIRouter()
@@ -30,7 +32,11 @@ class HealthResponse(BaseModel):
     db: Literal["ok", "error"]
     version: str
     git_sha: str
+    decision_contract_sha: str
     started_at: str  # ISO 8601 UTC
+    cost_guard_mode: Literal["enforced", "developer_unlimited"]
+    cost_monthly_budget_usd: float
+    cost_monthly_spend_usd: float
 
 
 class DbSizeResponse(BaseModel):
@@ -56,7 +62,7 @@ def _format_bytes(n: int) -> str:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
+async def health(user_id: str = "ariel") -> HealthResponse:
     db_status: Literal["ok", "error"] = "ok"
     try:
         engine = get_engine()
@@ -66,12 +72,21 @@ async def health() -> HealthResponse:
         db_status = "error"
 
     overall: Literal["ok", "error"] = "ok" if db_status == "ok" else "error"
+    agent_settings = load_agent_settings(user_id)
+    guard = CostGuard(user_id=user_id, settings=agent_settings)
+    spend_usd = await guard.monthly_spend_usd()
     return HealthResponse(
         status=overall,
         db=db_status,
         version=VERSION,
         git_sha=GIT_SHA,
+        decision_contract_sha=DECISION_CONTRACT_SHA,
         started_at=STARTED_AT.isoformat(),
+        cost_guard_mode=(
+            "developer_unlimited" if guard.developer_mode else "enforced"
+        ),
+        cost_monthly_budget_usd=float(agent_settings.cost.monthly_budget_usd),
+        cost_monthly_spend_usd=round(spend_usd, 3),
     )
 
 

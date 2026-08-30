@@ -128,6 +128,7 @@ class Proposal(BaseModel):
     time_in_force: Literal["DAY", "GTC", "IOC", "FOK"] = "DAY"
     tier: Literal["T0", "T1", "T2", "T3"]
     account_class: Literal["main", "limited"] = "main"
+    account_id: str = ""
     status: ProposalStatus = ProposalStatus.DRAFT
     rationale_summary: str = ""
     expected_impact: ExpectedImpact = Field(default_factory=ExpectedImpact)

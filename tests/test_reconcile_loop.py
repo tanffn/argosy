@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 
@@ -10,12 +13,16 @@ from argosy.execution.reconcile import ReconcileLoop, _OrderSnapshot
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AuditLog,
-    Fill as FillRow,
     PendingOrder,
-    Proposal as ProposalRow,
+    Prediction,
     User,
 )
-
+from argosy.state.models import (
+    Fill as FillRow,
+)
+from argosy.state.models import (
+    Proposal as ProposalRow,
+)
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -48,6 +55,7 @@ async def _seed(*, user_id: str = "ariel") -> tuple[int, int]:
             proposal_id=proposal.id,
             broker="ibkr",
             broker_order_id="brkr-1",
+            account_id="ibkr_main",
             status="submitted",
         )
         session.add(pending)
@@ -74,6 +82,7 @@ class MockAdapter:
 
 
 @pytest.mark.asyncio
+@pytest.mark.real_seam
 async def test_reconcile_filled_writes_fill_row(engine: None) -> None:
     pid, _ = await _seed()
     fill = FillModel(
@@ -130,6 +139,102 @@ async def test_reconcile_partial_keeps_status_partial(engine: None) -> None:
         fills = (await session.execute(select(FillRow))).scalars().all()
         assert len(fills) == 1
         assert fills[0].quantity == 4
+
+
+@pytest.mark.asyncio
+async def test_reconcile_repeated_partial_fill_is_idempotent(engine: None) -> None:
+    pid, _ = await _seed()
+    partial_fill = FillModel(
+        proposal_id=pid,
+        broker="ibkr",
+        broker_order_id="brkr-1",
+        external_fill_id="exec-1",
+        account_id="ibkr_main",
+        ticker="AAPL",
+        action="buy",
+        quantity=4,
+        price=180.0,
+    )
+    adapter = MockAdapter(_OrderSnapshot(status="partial", fills=[partial_fill]))
+    loop = ReconcileLoop(adapter_factory=lambda b: adapter)
+    first = await loop.tick()
+    second = await loop.tick()
+
+    assert first["fills_recorded"] == 1
+    assert second["fills_deduped"] == 1
+    async with db_mod.get_session() as session:
+        fills = (await session.execute(select(FillRow))).scalars().all()
+        assert len(fills) == 1
+        assert fills[0].external_fill_id == "exec-1"
+        assert fills[0].account_id == "ibkr_main"
+
+
+@pytest.mark.asyncio
+async def test_filled_without_execution_details_stays_pollable(engine: None) -> None:
+    _, po_id = await _seed()
+    loop = ReconcileLoop(
+        adapter_factory=lambda b: MockAdapter(
+            _OrderSnapshot(status="filled", fills=[], reason="details lagging")
+        )
+    )
+    summary = await loop.tick()
+    async with db_mod.get_session() as session:
+        po = await session.get(PendingOrder, po_id)
+        assert po.status == "submitted"
+        fills = (await session.execute(select(FillRow))).scalars().all()
+        assert fills == []
+    assert summary["errors"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fill_vwap_reanchors_order_sheet_prediction(engine: None) -> None:
+    pid, _ = await _seed()
+    authored_at = datetime(2026, 8, 1, tzinfo=UTC)
+    filled_at = datetime(2026, 8, 25, 14, 0, tzinfo=UTC)
+    async with db_mod.get_session() as session:
+        session.add(
+            Prediction(
+                user_id="ariel",
+                source="signal_stream:order_sheet",
+                source_ref=json.dumps({"proposal_id": pid}),
+                ticker="AAPL",
+                direction="long",
+                entry_price=175.0,
+                timeframe_days=90,
+                event_at=authored_at,
+                evaluation_due_at=authored_at + timedelta(days=90),
+                evaluation_method="order_sheet_due_date_v1",
+                archived=0,
+                provenance_weights_applied=0,
+            )
+        )
+        await session.commit()
+    fill = FillModel(
+        broker="ibkr",
+        broker_order_id="brkr-1",
+        external_fill_id="exec-vwap-1",
+        account_id="ibkr_main",
+        ticker="AAPL",
+        action="buy",
+        quantity=10,
+        price=180.25,
+        commission=1.0,
+        filled_at=filled_at,
+    )
+    await ReconcileLoop(
+        adapter_factory=lambda b: MockAdapter(
+            _OrderSnapshot(status="filled", fills=[fill])
+        )
+    ).tick()
+    async with db_mod.get_session() as session:
+        prediction = (
+            await session.execute(select(Prediction))
+        ).scalars().one()
+        assert float(prediction.entry_price) == pytest.approx(180.25)
+        assert prediction.event_at == filled_at.replace(tzinfo=None)
+        telemetry = json.loads(prediction.source_ref)["fill_telemetry"]
+        assert telemetry["quantity"] == 10
+        assert telemetry["external_fill_ids"] == ["exec-vwap-1"]
 
 
 @pytest.mark.asyncio

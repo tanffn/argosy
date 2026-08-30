@@ -4121,6 +4121,12 @@ def post_draft_accept(
     pv.role = "current"
     pv.accepted_at = now
     pv.accepted_by_user_id = user_id
+    # Promotion resolves the lifecycle state.  Keeping ``-fm-rejected`` on a
+    # user-accepted current plan makes the state observer treat historical
+    # review metadata as a present-tense blocking authority.
+    from argosy.quality.promote_gate import relabel_on_promote
+
+    pv.version_label = relabel_on_promote(pv.version_label or "")
     # A promoted plan must not keep a "-draft-" label: /plan renders
     # "Active: <version_label>", and a current plan named
     # "refinement-draft-…" reads as an unpromoted draft.

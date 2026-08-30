@@ -916,6 +916,31 @@ def test_post_draft_accept_promotes_to_current(app_with_draft):
         sess.close()
 
 
+@pytest.mark.real_seam
+def test_post_draft_accept_removes_rejected_lifecycle_label(app_with_draft):
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+        draft.version_label = "synth-2026-08-24-1949-fm-rejected"
+        draft_id = draft.id
+        sess.commit()
+    finally:
+        sess.close()
+
+    response = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/accept?user_id=ariel&override_leakage=true"
+    )
+    assert response.status_code == 200, response.text
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        current = sess.get(PlanVersion, draft_id)
+        assert current.role == "current"
+        assert current.version_label == "synth-2026-08-24-1949"
+    finally:
+        sess.close()
+
+
 def test_post_draft_accept_blocked_on_artifact_leakage(app_with_draft):
     """A draft whose assembled artifact still contains unrendered placeholders /
     leaked emission scaffolding must NOT promote on a plain /accept — fail-closed

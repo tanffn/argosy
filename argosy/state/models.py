@@ -817,6 +817,12 @@ class Proposal(Base):
     time_in_force: Mapped[str] = mapped_column(String(8), nullable=False, default="DAY")
     tier: Mapped[str] = mapped_column(String(4), nullable=False, index=True)
     account_class: Mapped[str] = mapped_column(String(16), nullable=False, default="main")
+    # Exact custody/execution account.  Without this, main-account orders
+    # silently defaulted to IBKR even when the position/cash lived at Leumi or
+    # Schwab.  Migration 0106 backfills legacy rows with an empty value.
+    account_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
     rationale_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     expected_impact_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1024,6 +1030,14 @@ class Fill(Base):
     )
     broker: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     broker_order_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    # Broker-native execution id (IBKR execId, etc.). Non-empty values are
+    # unique per user+broker so a repeatedly-polled partial fill is idempotent.
+    external_fill_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default="", index=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default="", index=True
+    )
     ticker: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(8), nullable=False)
     quantity: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
@@ -1041,6 +1055,18 @@ class Fill(Base):
     # FK) to keep the SQLite ADD COLUMN migration simple, mirroring
     # proposals.plan_version_id. Migration: alembic 0101.
     verdict_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+    __table_args__ = (
+        Index(
+            "uq_fills_broker_execution",
+            "user_id",
+            "broker",
+            "external_fill_id",
+            unique=True,
+            sqlite_where=_sa_text("external_fill_id <> ''"),
+            postgresql_where=_sa_text("external_fill_id <> ''"),
+        ),
+    )
 
 
 class PendingOrder(Base):
@@ -1062,6 +1088,9 @@ class PendingOrder(Base):
     )
     broker: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     broker_order_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    account_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default="", index=True
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="submitted", index=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -2320,6 +2349,67 @@ class LifeEventMigrationLog(Base):
     )
 
 
+class EarningsCoverageReceipt(Base):
+    """One durable provider check per held ticker and calendar day.
+
+    A successful empty response is evidence that the calendar was checked; an
+    absent row is not. Event details stay JSON because providers expose
+    different EPS fields, while the common latest/next timestamps remain
+    queryable for routing and UI coverage proof.
+    """
+
+    __tablename__ = "earnings_coverage_receipts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    check_date: Mapped[date] = mapped_column(Date, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    events_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    latest_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ok', 'empty', 'error')",
+            name="ck_earnings_coverage_receipts_status",
+        ),
+        CheckConstraint(
+            "json_valid(events_json)",
+            name="ck_earnings_coverage_receipts_events_json",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "ticker",
+            "provider",
+            "check_date",
+            name="uq_earnings_coverage_daily_check",
+        ),
+        Index(
+            "ix_earnings_coverage_user_checked",
+            "user_id",
+            "checked_at",
+        ),
+    )
+
+
 class NewsSignal(Base):
     """Daily-automation pipeline record — one row per ingested item.
 
@@ -2369,6 +2459,23 @@ class NewsSignal(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "source IN ('discord', 'rss', 'macro_feed', 'yf_earnings', "
+            "'sec_filing')",
+            name="ck_news_signals_source",
+        ),
+        CheckConstraint(
+            "sentiment IN ('positive', 'neutral', 'negative')",
+            name="ck_news_signals_sentiment",
+        ),
+        CheckConstraint(
+            "source_trust IN ('high', 'medium', 'low')",
+            name="ck_news_signals_trust",
+        ),
+        CheckConstraint(
+            "materiality IS NULL OR materiality IN ('high', 'medium', 'low')",
+            name="ck_news_signals_materiality",
+        ),
         Index(
             "ix_news_signals_source_ref",
             "source",

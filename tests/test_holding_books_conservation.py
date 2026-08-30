@@ -71,6 +71,32 @@ def test_finding2_no_carried_date_falls_back_to_feed_date():
     assert str(p["valued_as_of"]).startswith("2026-08-08")
 
 
+def test_physical_real_estate_does_not_require_a_daily_market_quote():
+    failures: list[str] = []
+    rows = merge_total_book_positions(
+        [
+            {
+                "symbol": "-",
+                "location": "Aborad",
+                "asset_type": "Real estate",
+                "details": "Real estate",
+                "shares": 3,
+                "usd_value_k": 69.0,
+                "valued_as_of": "2026-08-01",
+                "observed_as_of": "2026-08-01",
+            }
+        ],
+        today=date(2026, 8, 27),
+        quote_fn=lambda *_args, **_kwargs: None,
+        reprice_failures=failures,
+    )
+
+    assert failures == []
+    assert rows[0]["usd_value_k"] == 69.0
+    assert rows[0]["managed"] is False
+    assert rows[0]["excluded_from_sleeve_math"] is True
+
+
 # --- Sol BLOCK re-review fixes (2026-08-09) --------------------------------
 
 

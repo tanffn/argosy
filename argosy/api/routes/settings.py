@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from argosy.agent_settings import AgentSettings, load_agent_settings, save_agent_settings
 from argosy.execution.audit import record_audit_event
 from argosy.logging import get_logger
-from argosy.orchestrator.cost_guard import get_cost_guard
+from argosy.orchestrator.cost_guard import get_cost_guard, reset_cost_guard
 
 _log = get_logger("argosy.api.settings")
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -63,6 +63,9 @@ async def patch_settings(req: PatchRequest = Body(...)) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"validation error: {exc}") from exc
     save_agent_settings(req.user_id, new_settings)
+    # The guard is process-scoped; make persisted budget/developer-mode changes
+    # effective immediately rather than waiting for a backend restart.
+    reset_cost_guard()
     return new_settings.model_dump(mode="json")
 
 

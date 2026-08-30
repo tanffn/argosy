@@ -18,9 +18,8 @@ writes its unlock rows and after overnight quotes settle.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -54,42 +53,25 @@ def verdict_trigger_sweep_metadata() -> JobMetadata:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _default_session_factory() -> sessionmaker:
-    import sqlalchemy as sa
-
     from argosy.state import db as db_mod
 
     url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
-    engine = sa.create_engine(url, connect_args={"check_same_thread": False})
+    engine = db_mod.create_sync_engine(url)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def _default_quote_fn(session: Session) -> QuoteFn:
-    """kv_cache-backed last price (``quote:{SYMBOL}``), same source the daily
-    unlock loop reads. Returns ``None`` on any miss/parse failure so the trigger
-    is UNEVALUABLE rather than falsely not-tripped."""
+    """Fresh cache/Yahoo price, shared with the daily unlock loop."""
 
     def _lookup(subject: str) -> float | None:
         try:
-            from sqlalchemy import text
+            from argosy.services.verdict_trigger_quotes import fetch_trigger_quotes
 
-            raw = session.execute(
-                text(
-                    "SELECT value FROM kv_cache WHERE key = :k "
-                    "ORDER BY id DESC LIMIT 1"
-                ),
-                {"k": f"quote:{subject.upper()}"},
-            ).scalar()
-            if raw is None:
-                return None
-            payload = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(payload, dict):
-                return None
-            px = payload.get("price") or payload.get("last") or payload.get("close")
-            return float(px) if px is not None else None
+            return fetch_trigger_quotes(session, [subject]).get(subject.upper())
         except Exception as exc:  # noqa: BLE001 — a lookup error is UNEVALUABLE
             _log.warning(
                 "verdict_trigger_sweep.quote_lookup_failed",
@@ -137,7 +119,7 @@ class VerdictTriggerSweepLoop(CadenceLoop):
     ) -> dict[str, Any]:
         run_at = (now or self._now_fn)()
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=timezone.utc)
+            run_at = run_at.replace(tzinfo=UTC)
         import asyncio
 
         summary = await asyncio.to_thread(self._run_sync, run_at=run_at)

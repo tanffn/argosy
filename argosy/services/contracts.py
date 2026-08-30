@@ -21,6 +21,7 @@ All value objects are frozen dataclasses (the repo convention for pure value
 objects, e.g. ``ProposalDelta``); pydantic wire DTOs for the API surface live at
 the bottom of the module.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,27 +29,30 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from argosy.services.order_sheet import OrderSheet, SheetValidation
+
 CONTRACTS_SCHEMA_VERSION = 1
 
 
 # --- allocation value objects (Slice 1a output / 1b input) -----------------
 
+
 @dataclass(frozen=True)
 class AllocationLeg:
-    side: str                 # "BUY" | "SELL"
+    side: str  # "BUY" | "SELL"
     symbol: str
     account_id: str
     currency: str
     notional_usd: float
-    funding_source: str       # "cash" | "trim_proceeds"
+    funding_source: str  # "cash" | "trim_proceeds"
     quantity: float | None = None
 
 
 @dataclass(frozen=True)
 class AllocationCandidate:
-    kind: str                 # "BUY" | "TRIM" | "SWAP"
+    kind: str  # "BUY" | "TRIM" | "SWAP"
     legs: tuple[AllocationLeg, ...]
-    horizon: str              # "now" | "this_quarter" | "later"
+    horizon: str  # "now" | "this_quarter" | "later"
     est_tax_nis: float | None = None
     surtax_split_suggested: bool = False
     rationale: str = ""
@@ -64,6 +68,7 @@ class AllocationCandidate:
 
 # --- allocation agent output (Slice 1b) ------------------------------------
 
+
 @dataclass(frozen=True)
 class ExecutableTask:
     seq: int
@@ -77,14 +82,15 @@ class ExecutableTask:
 
 # --- discovery funnel value objects (Slice 2) ------------------------------
 
+
 @dataclass(frozen=True)
 class EstimatorVerdict:
     """Cheap Sonnet triage screen for a single radar ticker."""
 
     ticker: str
     go: bool
-    conviction: str           # "HIGH" | "MED" | "LOW"
-    sentiment: float          # -1.0 .. 1.0
+    conviction: str  # "HIGH" | "MED" | "LOW"
+    sentiment: float  # -1.0 .. 1.0
     one_line: str
 
 
@@ -93,9 +99,9 @@ class FleetPick:
     """A radar ticker that survived to a full Opus fleet grading."""
 
     ticker: str
-    conviction: str           # "HIGH" | "MED" | "LOW"
+    conviction: str  # "HIGH" | "MED" | "LOW"
     thesis_md: str
-    verdict: str              # "BUY" | "WATCH" | "PASS"
+    verdict: str  # "BUY" | "WATCH" | "PASS"
     cites: tuple[str, ...] = ()
 
 
@@ -112,7 +118,7 @@ class ScanState:
     last_score: float
     estimator: EstimatorVerdict | None = None
     fleet: FleetPick | None = None
-    status: str = "active"            # "active" | "quarantined" | "dropped"
+    status: str = "active"  # "active" | "quarantined" | "dropped"
     rank: int | None = None
     quarantine_reason: str = ""
     radar_fingerprint: str = ""
@@ -123,6 +129,7 @@ class ScanState:
 
 
 # --- canonical candidate identity ------------------------------------------
+
 
 def candidate_fingerprint(c: AllocationCandidate) -> tuple:
     """The identity of a candidate — kind + the material numeric fields
@@ -137,18 +144,28 @@ def candidate_fingerprint(c: AllocationCandidate) -> tuple:
         c.kind,
         round(c.est_tax_nis, 2) if c.est_tax_nis is not None else None,
         bool(c.surtax_split_suggested),
-        tuple(sorted(
-            (l.side, l.symbol, l.account_id, l.currency, l.funding_source,
-             round(l.notional_usd, 2),
-             # total-orderable quantity key: (is_none, value) — None and float
-             # legs must sort without a TypeError while staying distinguishable
-             # (codex 1b r2).
-             (l.quantity is None, round(l.quantity, 6) if l.quantity is not None else 0.0))
-            for l in c.legs)),
+        tuple(
+            sorted(
+                (
+                    l.side,
+                    l.symbol,
+                    l.account_id,
+                    l.currency,
+                    l.funding_source,
+                    round(l.notional_usd, 2),
+                    # total-orderable quantity key: (is_none, value) — None and float
+                    # legs must sort without a TypeError while staying distinguishable
+                    # (codex 1b r2).
+                    (l.quantity is None, round(l.quantity, 6) if l.quantity is not None else 0.0),
+                )
+                for l in c.legs
+            )
+        ),
     )
 
 
 # --- versioned serialization -----------------------------------------------
+
 
 def serialize_candidate(c: AllocationCandidate) -> dict[str, Any]:
     """A version-stamped plain-dict form of a candidate (for persistence / wire)."""
@@ -162,9 +179,13 @@ def serialize_candidate(c: AllocationCandidate) -> dict[str, Any]:
         "cites": list(c.cites),
         "legs": [
             {
-                "side": l.side, "symbol": l.symbol, "account_id": l.account_id,
-                "currency": l.currency, "notional_usd": l.notional_usd,
-                "funding_source": l.funding_source, "quantity": l.quantity,
+                "side": l.side,
+                "symbol": l.symbol,
+                "account_id": l.account_id,
+                "currency": l.currency,
+                "notional_usd": l.notional_usd,
+                "funding_source": l.funding_source,
+                "quantity": l.quantity,
             }
             for l in c.legs
         ],
@@ -177,17 +198,24 @@ def deserialize_candidate(blob: dict[str, Any]) -> AllocationCandidate:
     if ver > CONTRACTS_SCHEMA_VERSION:
         raise ValueError(
             f"candidate schema_version {ver} is newer than this build "
-            f"({CONTRACTS_SCHEMA_VERSION}); refusing to mis-read it")
+            f"({CONTRACTS_SCHEMA_VERSION}); refusing to mis-read it"
+        )
     legs = tuple(
         AllocationLeg(
-            side=l["side"], symbol=l["symbol"], account_id=l["account_id"],
-            currency=l["currency"], notional_usd=l["notional_usd"],
-            funding_source=l["funding_source"], quantity=l.get("quantity"),
+            side=l["side"],
+            symbol=l["symbol"],
+            account_id=l["account_id"],
+            currency=l["currency"],
+            notional_usd=l["notional_usd"],
+            funding_source=l["funding_source"],
+            quantity=l.get("quantity"),
         )
         for l in blob.get("legs", [])
     )
     return AllocationCandidate(
-        kind=blob["kind"], legs=legs, horizon=blob["horizon"],
+        kind=blob["kind"],
+        legs=legs,
+        horizon=blob["horizon"],
         est_tax_nis=blob.get("est_tax_nis"),
         surtax_split_suggested=blob.get("surtax_split_suggested", False),
         rationale=blob.get("rationale", ""),
@@ -196,6 +224,7 @@ def deserialize_candidate(blob: dict[str, Any]) -> AllocationCandidate:
 
 
 # --- pydantic wire DTOs (API surface) --------------------------------------
+
 
 class AllocationLegDTO(BaseModel):
     side: str
@@ -220,14 +249,21 @@ class AllocationCandidateDTO(BaseModel):
 def candidate_to_dto(c: AllocationCandidate) -> AllocationCandidateDTO:
     """Map a domain candidate onto its wire DTO (the one place this mapping lives)."""
     return AllocationCandidateDTO(
-        kind=c.kind, horizon=c.horizon, est_tax_nis=c.est_tax_nis,
-        surtax_split_suggested=c.surtax_split_suggested, rationale=c.rationale,
+        kind=c.kind,
+        horizon=c.horizon,
+        est_tax_nis=c.est_tax_nis,
+        surtax_split_suggested=c.surtax_split_suggested,
+        rationale=c.rationale,
         cites=list(c.cites),
         legs=[
             AllocationLegDTO(
-                side=l.side, symbol=l.symbol, account_id=l.account_id,
-                currency=l.currency, notional_usd=l.notional_usd,
-                funding_source=l.funding_source, quantity=l.quantity,
+                side=l.side,
+                symbol=l.symbol,
+                account_id=l.account_id,
+                currency=l.currency,
+                notional_usd=l.notional_usd,
+                funding_source=l.funding_source,
+                quantity=l.quantity,
             )
             for l in c.legs
         ],
@@ -247,8 +283,12 @@ class ExecutableTaskDTO(BaseModel):
 def task_to_dto(t: ExecutableTask) -> ExecutableTaskDTO:
     """Map a domain ExecutableTask onto its wire DTO."""
     return ExecutableTaskDTO(
-        seq=t.seq, candidate=candidate_to_dto(t.candidate), horizon=t.horizon,
-        pace=t.pace, pace_rationale=t.pace_rationale, rationale=t.rationale,
+        seq=t.seq,
+        candidate=candidate_to_dto(t.candidate),
+        horizon=t.horizon,
+        pace=t.pace,
+        pace_rationale=t.pace_rationale,
+        rationale=t.rationale,
         cites=list(t.cites),
     )
 
@@ -292,7 +332,7 @@ class DeploymentTierDTO(BaseModel):
 
 class DataFreshnessDTO(BaseModel):
     field: str
-    fetched_at: str          # ISO-8601 string
+    fetched_at: str  # ISO-8601 string
     age_seconds: float
     source: str
     is_stale: bool
@@ -359,14 +399,14 @@ def market_context_to_dto(ctx) -> DeploymentMarketContextDTO:
 
 class CandidateFlagDTO(BaseModel):
     kind: str
-    materiality: str                  # "high" | "medium" | "low"
+    materiality: str  # "high" | "medium" | "low"
     fact: str
     detail: dict = {}
 
 
 class PreflightCandidateDTO(BaseModel):
     symbol: str
-    status: str                       # CandidateStatus value (fail-safe fallback)
+    status: str  # CandidateStatus value (fail-safe fallback)
     reason: str
     effective_nvda_usd: float
     news_sentiment: str | None = None
@@ -399,7 +439,7 @@ class PreflightDTO(BaseModel):
 
 
 class DispositionItemDTO(BaseModel):
-    action: str          # deploy | hold_cash | deconcentrate_first | raise_plan_change
+    action: str  # deploy | hold_cash | deconcentrate_first | raise_plan_change
     target: str
     amount_usd: float
     reason: str
@@ -415,13 +455,15 @@ class DeploymentDispositionDTO(BaseModel):
     confidence: str | None = None
 
 
-def disposition_to_dto(d) -> "DeploymentDispositionDTO":
+def disposition_to_dto(d) -> DeploymentDispositionDTO:
     return DeploymentDispositionDTO(
         summary=d.summary,
         items=[
             DispositionItemDTO(
-                action=str(i.action), target=i.target,
-                amount_usd=float(i.amount_usd), reason=i.reason,
+                action=str(i.action),
+                target=i.target,
+                amount_usd=float(i.amount_usd),
+                reason=i.reason,
             )
             for i in d.items
         ],
@@ -444,6 +486,10 @@ class AuthoredSellDTO(BaseModel):
     symbol: str
     amount_usd: float
     reason: str = ""
+    execution_style: str = "single"
+    execute_by: str | None = None
+    next_review_date: str | None = None
+    tranche_reason: str = ""
 
 
 class GateFailureDTO(BaseModel):
@@ -479,7 +525,7 @@ def authored_outcome_to_dto(
     *,
     extra_notes: list[str] | None = None,
     held_symbols: set[str] | None = None,
-) -> "AuthoredAllocationDTO":
+) -> AuthoredAllocationDTO:
     """Map an ``AuthorOutcome`` (accepted/rejected/unavailable) to the DTO the UI
     renders. On a non-accepted outcome ``degraded`` is set so the caller's
     deterministic ``tiers`` are surfaced as the labelled fallback. ``held_symbols``
@@ -504,14 +550,27 @@ def authored_outcome_to_dto(
         dto.cash_to_reserve = float(p.cash_to_reserve)
         dto.buys = [
             AuthoredBuyDTO(
-                symbol=b.symbol, amount_usd=float(b.amount_usd), sleeve=b.sleeve,
-                justification=b.justification, claimed_us_weight=b.claimed_us_weight,
+                symbol=b.symbol,
+                amount_usd=float(b.amount_usd),
+                sleeve=b.sleeve,
+                justification=b.justification,
+                claimed_us_weight=b.claimed_us_weight,
                 is_new=b.symbol.upper() not in _held,
             )
             for b in p.buys
         ]
         dto.sells = [
-            AuthoredSellDTO(symbol=s.symbol, amount_usd=float(s.amount_usd), reason=s.reason)
+            AuthoredSellDTO(
+                symbol=s.symbol,
+                amount_usd=float(s.amount_usd),
+                reason=s.reason,
+                execution_style=s.execution_style,
+                execute_by=s.execute_by.isoformat() if s.execute_by else None,
+                next_review_date=(
+                    s.next_review_date.isoformat() if s.next_review_date else None
+                ),
+                tranche_reason=s.tranche_reason,
+            )
             for s in p.sells
         ]
         dto.holds = list(p.holds)
@@ -519,9 +578,8 @@ def authored_outcome_to_dto(
     if degraded:
         _why = {
             "rejected": "the author could not produce a proposal that passed the "
-                        "deterministic verifier within the allowed revisions",
-            "unavailable": "the author was unavailable (timeout / circuit-open / "
-                           "no backend)",
+            "deterministic verifier within the allowed revisions",
+            "unavailable": "the author was unavailable (timeout / circuit-open / no backend)",
         }.get(outcome.status, outcome.status)
         dto.notes.append(
             f"Showing the deterministic engine's allocation (labelled degraded): {_why}."
@@ -535,11 +593,15 @@ class TeamObjectionDTO(BaseModel):
     lens: str
     concern: str
     severity: str  # "block" | "warn"
+    impact: str = "advisory_only"
+    recommended_amount_usd: float | None = None
+    recommended_ticker: str | None = None
 
 
 class TeamFlaggedBuyDTO(BaseModel):
     symbol: str
     amount_usd: float
+    proposed: bool = True
     objections: list[TeamObjectionDTO] = []
 
 
@@ -582,11 +644,23 @@ class FundingBreakdownDTO(BaseModel):
     note: str = ""
 
 
+class OrderSheetArtifactDTO(BaseModel):
+    """The executable artifact, or explicit reasons it could not validate."""
+
+    status: Literal["validated", "invalid", "unavailable"]
+    sheet: OrderSheet | None = None
+    validation: SheetValidation | None = None
+    failures: list[str] = []
+
+
 def funding_breakdown_to_dto(fb) -> FundingBreakdownDTO:
     return FundingBreakdownDTO(
-        rows=[FundingRowDTO(account=r.account, currency=r.currency,
-                            balance=r.balance, usd_equiv=r.usd_equiv)
-              for r in fb.rows],
+        rows=[
+            FundingRowDTO(
+                account=r.account, currency=r.currency, balance=r.balance, usd_equiv=r.usd_equiv
+            )
+            for r in fb.rows
+        ],
         total_usd=fb.total_usd,
         required_actions=list(fb.required_actions),
         note=fb.note,
@@ -629,6 +703,9 @@ class DeploymentPlanDTO(BaseModel):
     # Item D — dry-powder earmark excluded from deployable cash (0 when absent).
     discovery_reserve_usd: float = 0.0
     cash_total_usd: float | None = None
+    # First-class, quantity-bearing artifact. Present only when explicitly
+    # requested because it requires live per-line fact collection.
+    order_sheet: OrderSheetArtifactDTO | None = None
 
 
 def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
@@ -643,32 +720,47 @@ def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
         operating_floor_usd=getattr(plan, "operating_floor_usd", 0.0),
         market_context_age=plan.market_context_age,
         market_context=ctx_dto,
-        tiers=[DeploymentTierDTO(
-            name=t.name, cap_pct=t.cap_pct, total_usd=t.total_usd,
-            lines=[DeploymentLineDTO(
-                symbol=l.symbol, type=l.type, amount_usd=l.amount_usd, timing=l.timing,
-                is_new=l.is_new, tier=l.tier, horizon=l.horizon,
-                estate=EstateTagDTO(domicile=l.estate.domicile, status=l.estate.status,
-                                    note=l.estate.note),
-                cap_note=l.cap_note, net_of_tax_caveat=l.net_of_tax_caveat,
-                rationale=l.rationale, cites=list(l.cites), held_value_usd=l.held_value_usd,
-                pace_rationale=l.pace_rationale,
-                commission_usd=getattr(l, "commission_usd", 0.0),
-                commission_bps=getattr(l, "commission_bps", 0.0),
-                commission_below_breakeven=getattr(
-                    l, "commission_below_breakeven", False),
-                commission_note=getattr(l, "commission_note", ""),
-            ) for l in t.lines],
-        ) for t in plan.tiers],
-        caveats=list(plan.caveats), note=plan.note,
-        discovery_reserve_usd=float(
-            getattr(plan, "discovery_reserve_usd", 0.0) or 0.0
-        ),
+        tiers=[
+            DeploymentTierDTO(
+                name=t.name,
+                cap_pct=t.cap_pct,
+                total_usd=t.total_usd,
+                lines=[
+                    DeploymentLineDTO(
+                        symbol=l.symbol,
+                        type=l.type,
+                        amount_usd=l.amount_usd,
+                        timing=l.timing,
+                        is_new=l.is_new,
+                        tier=l.tier,
+                        horizon=l.horizon,
+                        estate=EstateTagDTO(
+                            domicile=l.estate.domicile, status=l.estate.status, note=l.estate.note
+                        ),
+                        cap_note=l.cap_note,
+                        net_of_tax_caveat=l.net_of_tax_caveat,
+                        rationale=l.rationale,
+                        cites=list(l.cites),
+                        held_value_usd=l.held_value_usd,
+                        pace_rationale=l.pace_rationale,
+                        commission_usd=getattr(l, "commission_usd", 0.0),
+                        commission_bps=getattr(l, "commission_bps", 0.0),
+                        commission_below_breakeven=getattr(l, "commission_below_breakeven", False),
+                        commission_note=getattr(l, "commission_note", ""),
+                    )
+                    for l in t.lines
+                ],
+            )
+            for t in plan.tiers
+        ],
+        caveats=list(plan.caveats),
+        note=plan.note,
+        discovery_reserve_usd=float(getattr(plan, "discovery_reserve_usd", 0.0) or 0.0),
         cash_total_usd=getattr(plan, "cash_total_usd", None),
     )
 
 
-def preflight_result_to_dto(result) -> "PreflightDTO":
+def preflight_result_to_dto(result) -> PreflightDTO:
     """Project a deployment_funnel PreflightResult into the wire DTO."""
     return PreflightDTO(
         deployable_usd=result.deployable_usd,
@@ -684,8 +776,10 @@ def preflight_result_to_dto(result) -> "PreflightDTO":
                 pct_below_ath=e.history.pct_below_ath,
                 flags=[
                     CandidateFlagDTO(
-                        kind=f.kind, materiality=f.materiality,
-                        fact=f.fact, detail=f.detail,
+                        kind=f.kind,
+                        materiality=f.materiality,
+                        fact=f.fact,
+                        detail=f.detail,
                     )
                     for f in getattr(e, "flags", ())
                 ],
@@ -733,5 +827,6 @@ __all__ = [
     "deployment_plan_to_dto",
     "FundingRowDTO",
     "FundingBreakdownDTO",
+    "OrderSheetArtifactDTO",
     "funding_breakdown_to_dto",
 ]

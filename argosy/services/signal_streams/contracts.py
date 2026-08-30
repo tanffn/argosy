@@ -1,7 +1,6 @@
 """Government-contract early-signal stream backed by USAspending."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -17,6 +16,7 @@ from urllib.parse import quote
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from argosy.async_bridge import run_async_from_sync
 from argosy.logging import get_logger
 from argosy.services.signal_streams.base import SignalNomination
 from argosy.state.models import RecipientResolution
@@ -234,7 +234,11 @@ class _RecipientResolutionOutput(BaseModel):
 
 
 def _default_llm_choice(
-    recipient: str, candidates: dict[str, str]
+    recipient: str,
+    candidates: dict[str, str],
+    *,
+    user_id: str,
+    session: Session,
 ) -> str | None:
     """Ask an LLM to choose only among pre-filtered plausible candidates."""
     from argosy.agents.base import BaseAgent
@@ -256,8 +260,15 @@ def _default_llm_choice(
                 f"RECIPIENT: {kwargs['recipient']}\nCANDIDATES:\n{choices}",
             )
 
-    report = _ResolverAgent(user_id="system").run_sync(
+    report = _ResolverAgent(user_id=user_id).run_sync(
         recipient=recipient, candidates=candidates
+    )
+    from argosy.services.agent_report_persistence import stage_agent_report
+
+    stage_agent_report(
+        session,
+        report,
+        decision_id="signal-recipient",
     )
     chosen = report.output.ticker
     return chosen if chosen in candidates else None
@@ -275,9 +286,11 @@ class RecipientResolver:
         automatic_match_cutoff: float = 0.92,
         agent_error_ttl: timedelta = timedelta(hours=24),
         clock: Callable[[], datetime] | None = None,
+        user_id: str = "ariel",
     ) -> None:
         self.public_companies = public_companies or dict(_PUBLIC_CONTRACTORS)
-        self.llm_choice = llm_choice or _default_llm_choice
+        self.llm_choice = llm_choice
+        self.user_id = user_id
         self.fuzzy_cutoff = fuzzy_cutoff
         self.automatic_match_cutoff = automatic_match_cutoff
         if agent_error_ttl <= timedelta(0):
@@ -349,7 +362,18 @@ class RecipientResolver:
                     method = "fuzzy"
                 else:
                     try:
-                        chosen = self.llm_choice(recipient_name, candidates)
+                        if self.llm_choice is None:
+                            chosen = _default_llm_choice(
+                                recipient_name,
+                                candidates,
+                                user_id=self.user_id,
+                                session=session,
+                            )
+                        else:
+                            chosen = self.llm_choice(
+                                recipient_name,
+                                candidates,
+                            )
                         if chosen in candidates:
                             ticker = chosen
                             method = "llm"
@@ -440,7 +464,9 @@ class ArgosyMarketSnapshotProvider:
         fundamentals = gatherer(
             [ticker], with_yfinance_fallback=True
         ).get(ticker, {})
-        market = asyncio.run(adapter.get_quote_with_fundamentals(ticker))
+        market = run_async_from_sync(
+            lambda: adapter.get_quote_with_fundamentals(ticker)
+        )
         revenue = fundamentals.get("revenue_ttm")
         return MarketSnapshot(
             price=(
@@ -483,6 +509,7 @@ class GovContractsStream:
         max_page_attempts: int = 3,
         page_retry_backoff: tuple[float, ...] = (0.25, 0.75),
         sleep: Callable[[float], None] = time.sleep,
+        user_id: str = "ariel",
     ) -> None:
         if max_page_attempts <= 0:
             raise ValueError("max_page_attempts must be positive")
@@ -491,7 +518,8 @@ class GovContractsStream:
         self.config = config or GovContractsConfig()
         self.fetch_json = fetch_json
         self.resolver = resolver or RecipientResolver(
-            agent_error_ttl=timedelta(hours=self.config.agent_error_ttl_hours)
+            agent_error_ttl=timedelta(hours=self.config.agent_error_ttl_hours),
+            user_id=user_id,
         )
         self.market_snapshot = market_snapshot or ArgosyMarketSnapshotProvider()
         self.today = today

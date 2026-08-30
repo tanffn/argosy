@@ -59,7 +59,9 @@ class AnalyzedSignalIn(BaseModel):
     """
 
     signal_id: int
-    source: Literal["discord", "rss", "macro_feed"]
+    source: Literal[
+        "discord", "rss", "macro_feed", "yf_earnings", "sec_filing"
+    ]
     source_trust: Literal["high", "medium", "low"]
     received_at: datetime
     parsed_tickers: list[str] = Field(default_factory=list)

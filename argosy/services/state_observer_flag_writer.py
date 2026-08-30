@@ -104,7 +104,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from argosy.state.models import MonitorFlag
+from argosy.state.models import ActionProposal, MonitorFlag
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from sqlalchemy.orm import Session
@@ -577,7 +577,12 @@ def write_observer_flags(
                 kept_dedup_keys=run_dedup_keys,
                 now=now,
             )
-            if superseded_count:
+            closed_proposals = _supersede_proposals_with_inactive_source_flags(
+                session,
+                user_id=user_id,
+                now=now,
+            )
+            if superseded_count or closed_proposals:
                 session.commit()
         except Exception:  # noqa: BLE001 — never break the batch
             try:
@@ -955,6 +960,31 @@ def _supersede_stale_producer_flags(
     return int(result.rowcount or 0)
 
 
+def _supersede_proposals_with_inactive_source_flags(
+    session: "Session",
+    *,
+    user_id: str,
+    now: datetime,
+) -> int:
+    """Close open inbox items when their exact monitor source is no longer live."""
+    inactive_flag_ids = select(MonitorFlag.id).where(
+        MonitorFlag.user_id == user_id,
+        MonitorFlag.status != "active",
+    )
+    result = session.execute(
+        update(ActionProposal)
+        .where(ActionProposal.user_id == user_id)
+        .where(ActionProposal.status == "open")
+        .where(ActionProposal.source_flag_id.in_(inactive_flag_ids))
+        .values(
+            status="superseded",
+            decided_at=now,
+            decided_by_user_note="source monitor flag is no longer active",
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def supersede_plan_assumption_flags(
     session: "Session",
     user_id: str,
@@ -1001,7 +1031,12 @@ def supersede_plan_assumption_flags(
                     continue
             r.status = "superseded"
             superseded += 1
-        if superseded and commit:
+        _supersede_proposals_with_inactive_source_flags(
+            session,
+            user_id=user_id,
+            now=datetime.now(timezone.utc),
+        )
+        if commit:
             session.commit()
         return superseded
     except Exception:  # noqa: BLE001 — must never break the /accept flow
@@ -1246,4 +1281,5 @@ __all__ = [
     "write_observer_flags",
     "supersede_plan_assumption_flags",
     "_supersede_stale_producer_flags",
+    "_supersede_proposals_with_inactive_source_flags",
 ]

@@ -745,6 +745,44 @@ def test_stage2_fires_on_volatility_trigger(session_factory) -> None:
     assert gate["pending_unanalyzed"] == 1
 
 
+def test_stage2_fires_for_pending_earnings_evidence(session_factory) -> None:
+    """Calendar/SEC writers run before news_daily and must wake the analyst."""
+    with session_factory() as session:
+        session.add(NewsSignal(
+            source="sec_filing",
+            source_ref="https://sec.example/filing",
+            received_at=datetime.now(UTC),
+            parsed_tickers='["NVDA"]',
+            event_keywords='["earnings"]',
+            sentiment="negative",
+            source_trust="high",
+            evidence_excerpt="NVDA cut guidance.",
+            raw_text="NVDA cut guidance.",
+        ))
+        session.commit()
+    analyst_called = False
+
+    def fake_analyst(session, **kwargs):
+        nonlocal analyst_called
+        analyst_called = True
+        return _ok_analyst_result()
+
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _no_new_ingest_result(),
+        analyst_fn=fake_analyst,
+        agent_factory=lambda: MagicMock(),
+        price_move_fn=lambda ts: {},
+        tickers=["NVDA"],
+    )
+    result = asyncio.run(job.tick())
+
+    assert analyst_called is True
+    assert result["stage2_gate"]["reasons"] == [
+        "pending_earnings_evidence"
+    ]
+
+
 def test_volatility_below_threshold_stays_quiet(session_factory) -> None:
     """A sub-threshold move is NOT a trigger — quiet day."""
     _seed_unanalyzed_signal(session_factory)

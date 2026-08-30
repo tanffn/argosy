@@ -9,12 +9,12 @@ inside the orchestrator via their own flags.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from argosy.logging import get_logger
+from argosy.orchestrator.cost_guard import get_cost_guard
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.jobs.registry import JobMetadata
 
@@ -62,18 +62,29 @@ class DecisionFunnelLoop(CadenceLoop):
         )
         self.user_id = user_id
         self._run_fn = run_fn
-        self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self.last_output_summary: dict[str, Any] | None = None
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
         from argosy.config import get_settings
+
+        if await get_cost_guard(
+            user_id=self.user_id
+        ).should_pause_non_routine(loop_name=self.name):
+            summary = {"status": "paused", "reason": "cost_cap"}
+            self.last_output_summary = summary
+            log.info(
+                "decision_funnel.cost_guard_paused",
+                user_id=self.user_id,
+            )
+            return summary
 
         settings = get_settings()
         run_at = (now or self._now_fn)()
         if callable(run_at):  # tolerate either a callable or a value
             run_at = run_at()
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=timezone.utc)
+            run_at = run_at.replace(tzinfo=UTC)
 
         # Master kill switch: no-op (skipped) when disabled.
         if not getattr(settings, "decision_funnel_enabled", False):

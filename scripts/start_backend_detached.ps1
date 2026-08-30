@@ -24,12 +24,14 @@ if (-not $env:ARGOSY_HOME) { $env:ARGOSY_HOME = $Root }
 # Idempotency guard: a second supervisor must never stack on a running one
 # (observed 2026-07-13: two full supervisor+uvicorn stacks fighting over the
 # port). Also makes the logon-startup registration safe to fire when the
-# backend was already started by hand.
+# backend was already started by hand. A live supervisor owns recovery even
+# while its child is briefly between restarts; starting another during that
+# gap creates two schedulers that race the same jobs and database.
 #
 # Match is anchored to THIS repo's run_backend_service.py — a foreign
-# checkout's supervisor must not satisfy the guard. Also probe the target
-# port: a dead/zombie CommandLine match with nothing listening is not
-# "already running".
+# checkout's supervisor must not satisfy the guard. The port probe only
+# distinguishes "serving" from "recovering" for diagnostics; neither state
+# permits a second supervisor.
 $SupervisorScript = Join-Path $Root "scripts\run_backend_service.py"
 $SupervisorScriptNorm = [System.IO.Path]::GetFullPath($SupervisorScript)
 $existing = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
@@ -38,24 +40,31 @@ $existing = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
         $_.CommandLine -match 'run_backend_service\.py' -and
         $_.CommandLine.IndexOf($SupervisorScriptNorm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
     })
-if ($existing.Count -gt 0) {
-    $portBusy = $false
+$portBusy = $false
+try {
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($listener) { $portBusy = $true }
+} catch {
+    $probe = [System.Net.Sockets.TcpClient]::new()
     try {
-        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-        if ($listener) { $portBusy = $true }
-    } catch {
-        # Get-NetTCPConnection may be unavailable; fall back to Test-NetConnection.
-        try {
-            $portBusy = (Test-NetConnection -ComputerName $HostAddr -Port $Port -WarningAction SilentlyContinue).TcpTestSucceeded
-        } catch {
-            $portBusy = $false
-        }
+        $portBusy = $probe.ConnectAsync($HostAddr, $Port).Wait(1000) -and $probe.Connected
+    } finally {
+        $probe.Dispose()
     }
+}
+if ($existing.Count -gt 0) {
     if ($portBusy) {
         Write-Host "Backend supervisor already running (PID $($existing[0].ProcessId)) on port $Port - nothing to do."
-        exit 0
+    } else {
+        Write-Host "Backend supervisor already running (PID $($existing[0].ProcessId)); child is recovering on port $Port - nothing to do."
     }
-    Write-Host "Found stale supervisor PID $($existing[0].ProcessId) but port $Port is free - starting a fresh one."
+    exit 0
+} elseif ($portBusy) {
+    # A manual/foreign listener must not make the supervisor crash-loop and
+    # permanently give up. The recurring logon task retries after that listener
+    # exits, at which point this script starts the supervised stack.
+    Write-Error "Port $Port is already occupied by a non-supervised process; refusing to stack another backend."
+    exit 2
 }
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
@@ -79,6 +88,20 @@ $Args = @(
 )
 
 Write-Host "Starting detached backend supervisor → $SupervisorOut"
+# Some managed launchers inject both ``Path`` and ``PATH``. Windows treats
+# names case-insensitively, but PowerShell 5's Start-Process builds a
+# case-insensitive dictionary and throws on the duplicate before spawning.
+# Preserve the effective value and normalize the process environment to one
+# canonical key.
+$PathKeys = @([Environment]::GetEnvironmentVariables('Process').Keys |
+    Where-Object { $_.ToString().Equals('path', [StringComparison]::OrdinalIgnoreCase) })
+if ($PathKeys.Count -gt 1) {
+    $EffectivePath = $env:Path
+    foreach ($PathKey in $PathKeys) {
+        [Environment]::SetEnvironmentVariable($PathKey.ToString(), $null, 'Process')
+    }
+    [Environment]::SetEnvironmentVariable('Path', $EffectivePath, 'Process')
+}
 $proc = Start-Process -FilePath $Python `
     -ArgumentList $Args `
     -WorkingDirectory $Root `

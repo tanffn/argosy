@@ -20,6 +20,9 @@ and DERIVES the close status from it:
   convention: N upstream fetches failed this tick).
 * ``errors`` — a **non-empty** list/tuple of error entries. An empty
   ``[]`` is the healthy sentinel and is ignored.
+* ``error`` — a non-empty top-level scalar or container. Several cadence
+  loops deliberately catch an exception so the scheduler stays alive and
+  return ``{"error": "..."}``; that is a failed tick, not a green run.
 * any of the count keys in :data:`_FAILURE_COUNT_KEYS` — int ``> 0``
   (``failures`` / ``failed`` / ``failure_count`` / ``error_count`` /
   ``failed_streams`` / ``streams_failed`` / ``failed_count``).
@@ -120,6 +123,13 @@ def derive_run_status(summary: Any) -> tuple[str, str | None]:
     errors = summary.get("errors")
     if isinstance(errors, (list, tuple)) and len(errors) > 0:
         return FAILURE_STATUS, f"errors[{len(errors)}]"
+
+    # 3a. A caught exception reported as one top-level error.  Keep the
+    # predicate shape-aware so the common healthy sentinels (None, "", [], {})
+    # remain green.
+    error = summary.get("error")
+    if error not in (None, "", [], {}, ()):
+        return FAILURE_STATUS, "summary.error is non-empty"
 
     # 5. Per-item mappings — any failed child degrades the whole tick.
     streams = summary.get("streams")

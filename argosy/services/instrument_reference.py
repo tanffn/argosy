@@ -16,7 +16,8 @@ never provider-dependent. Add a row when a new instrument enters the book.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace as _replace
+from dataclasses import dataclass
+from dataclasses import replace as _replace
 
 # --- Canonical vocabularies -------------------------------------------------
 
@@ -161,6 +162,10 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "SCHD": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND, REGION_US),
     "FUSA": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND, REGION_US),
     "VTV": InstrumentRef(ASSET_EQUITY, SECTOR_VALUE, REGION_US),
+    # Current-book US-domiciled factor / sector ETFs. AVUV's registrant is the
+    # Delaware American Century ETF Trust; VHT is Vanguard Health Care ETF.
+    "AVUV": InstrumentRef(ASSET_EQUITY, SECTOR_VALUE, REGION_US),
+    "VHT": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US),
     # Global quality-factor UCITS (iShares Edge MSCI World Quality — IWQU.L).
     "IWQU": InstrumentRef(ASSET_EQUITY, SECTOR_GROWTH, REGION_GLOBAL),
     # Global / developed-world broad-index ETFs.
@@ -185,6 +190,9 @@ _REFERENCE: dict[str, InstrumentRef] = {
     # the EUR share class of the iShares Dev-Markets Property Yield ETF (sibling
     # of IWDP), NOT a dividend-equity fund (codex review).
     "O": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_US, STRUCT_REIT),
+    "REET": InstrumentRef(
+        ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_GLOBAL, STRUCT_ETF,
+    ),
     "IWDP": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_GLOBAL),
     "DPYA": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_GLOBAL),
     # Cash equivalents — SGOV/IB01 are 0-3m / 0-1y T-bill ETFs treated as cash;
@@ -213,7 +221,7 @@ _NAME_KEYWORD_FALLBACK: tuple[tuple[str, InstrumentRef], ...] = (
 _US_SITUS_TICKERS: frozenset[str] = frozenset({
     "NVDA", "AMD", "GOOG", "GOOGL", "AMZN", "META", "TSLA", "SOFI", "RKT",
     "BRK/B", "BRK.B", "BMY", "VOO", "VTI", "SCHD", "SCHG", "SPMO", "VTV",
-    "QQQM", "SGOV", "O", "IBIT",
+    "QQQM", "SGOV", "O", "REET", "IBIT", "AVUV", "VHT",
     "NKE", "CRM", "NOW", "SPCX",
     # High-growth sleeve: US-incorporated names, incl. MELI (Delaware-inc,
     # NASDAQ-listed — US-SITUS despite LatAm economics). NU (Cayman) and
@@ -370,6 +378,8 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "FUSA": "Fidelity US Quality Income (UCITS)",
     "DPYA": "iShares Dev Markets Property Yield (UCITS)",
     "VTV": "Vanguard Value ETF",
+    "AVUV": "Avantis U.S. Small Cap Value ETF",
+    "VHT": "Vanguard Health Care ETF",
     "IWQU": "iShares Edge MSCI World Quality (UCITS)",
     "EXUS": "World ex-US equity (UCITS)",
     "FWRA": "Invesco FTSE All-World (UCITS)",
@@ -380,6 +390,7 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     'ת"א-200': "TASE TA-200 Broad Index (Israeli ETF)",
     "IUHC": "iShares S&P 500 Health Care (UCITS)",
     "O": "Realty Income",
+    "REET": "iShares Global REIT ETF",
     "IWDP": "iShares Dev Markets Property Yield (UCITS)",
     "SGOV": "iShares 0-3 Month Treasury Bond ETF",
     "IB01": "iShares Treasury Bond 0-1yr (UCITS)",

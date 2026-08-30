@@ -17,21 +17,32 @@ the IBKRAdapter at runtime.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Callable
+import hashlib
+import json
+from collections.abc import Callable
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 
 from argosy.adapters.brokers.types import Fill as FillModel
+from argosy.adapters.brokers.types import OrderSnapshot
 from argosy.execution.audit import record_audit_event
 from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.state import db as db_mod
 from argosy.state.models import (
     Fill as FillRow,
+)
+from argosy.state.models import (
     PendingOrder,
-    Proposal as ProposalRow,
     ProposalHistory,
+)
+from argosy.state.models import (
+    Proposal as ProposalRow,
+)
+from argosy.state.models import (
     Verdict as VerdictRow,
 )
 
@@ -39,7 +50,14 @@ _log = get_logger("argosy.execution.reconcile")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    """Normalize SQLite-naive and broker-aware timestamps for comparison."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 # Statuses we still poll
@@ -66,22 +84,32 @@ class ReconcileLoop(CadenceLoop):
         self.user_id = user_id
         self.adapter_factory = adapter_factory or _default_factory
 
-    async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
+    async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict[str, int]:
         moment = (now or _utcnow)()
+        summary = {
+            "pending": 0,
+            "fills_recorded": 0,
+            "fills_deduped": 0,
+            "terminal": 0,
+            "errors": 0,
+        }
         async with db_mod.get_session() as session:
             stmt = select(PendingOrder).where(
                 PendingOrder.user_id == self.user_id,
                 PendingOrder.status.in_(list(_OPEN_STATUSES)),
             )
             pending_rows = (await session.execute(stmt)).scalars().all()
+            summary["pending"] = len(pending_rows)
 
             for po in pending_rows:
                 adapter = self.adapter_factory(po.broker)
                 if adapter is None:
+                    summary["errors"] += 1
                     continue
                 try:
                     snapshot = await _query_order(adapter, po)
                 except Exception as exc:
+                    summary["errors"] += 1
                     _log.exception("reconcile.query_failed", po_id=po.id)
                     po.last_polled_at = moment
                     await record_audit_event(
@@ -98,58 +126,38 @@ class ReconcileLoop(CadenceLoop):
                 if snapshot is None:
                     continue
 
-                # Persist new fills.
+                # Persist new fills idempotently. A broker repeats prior partial
+                # executions on every poll; only new execution ids become rows.
                 for f in snapshot.fills:
-                    # Seam 4: link the fill back to the verdict that recommended
-                    # it. Best-effort — resolution NEVER fails the fill write.
-                    # Belt-and-suspenders: even if the resolver itself raised
-                    # (it shouldn't), the fill is still written with NULL.
-                    try:
-                        verdict_id = await _resolve_verdict_id(
-                            session,
-                            user_id=self.user_id,
-                            proposal_id=po.proposal_id,
-                            ticker=f.ticker,
-                        )
-                    except Exception:  # noqa: BLE001
-                        _log.warning("reconcile.verdict_resolve_raised", exc_info=True)
-                        verdict_id = None
-                    session.add(
-                        FillRow(
-                            user_id=self.user_id,
-                            proposal_id=po.proposal_id,
-                            verdict_id=verdict_id,
-                            broker=po.broker,
-                            broker_order_id=po.broker_order_id,
-                            ticker=f.ticker,
-                            action=f.action,
-                            quantity=f.quantity,
-                            price=f.price,
-                            commission=f.commission,
-                            filled_at=f.filled_at,
-                            paper=False,
-                        )
-                    )
-                    await record_audit_event(
+                    inserted = await persist_broker_fill(
+                        session,
                         user_id=self.user_id,
-                        event_type="fill.received",
-                        entity_type="proposal",
-                        entity_id=str(po.proposal_id),
-                        payload={
-                            "broker": po.broker,
-                            "broker_order_id": po.broker_order_id,
-                            "ticker": f.ticker,
-                            "action": f.action,
-                            "quantity": f.quantity,
-                            "price": f.price,
-                            "commission": f.commission,
-                        },
-                        session=session,
+                        proposal_id=po.proposal_id,
+                        account_id=po.account_id,
+                        fill=f,
                     )
+                    summary["fills_recorded" if inserted else "fills_deduped"] += 1
 
                 if snapshot.status in ("filled", "partial", "cancelled", "rejected"):
+                    if snapshot.status == "filled" and not snapshot.fills:
+                        summary["errors"] += 1
+                        await record_audit_event(
+                            user_id=self.user_id,
+                            event_type="reconcile.fill_details_missing",
+                            entity_type="pending_order",
+                            entity_id=str(po.id),
+                            payload={
+                                "broker": po.broker,
+                                "broker_order_id": po.broker_order_id,
+                                "reason": snapshot.reason,
+                            },
+                            session=session,
+                        )
+                        continue
                     po.status = snapshot.status
                     po.updated_at = moment
+                    if snapshot.status in ("filled", "cancelled", "rejected"):
+                        summary["terminal"] += 1
 
                     if snapshot.status in ("cancelled", "rejected"):
                         # Append a history breadcrumb. Proposal stays
@@ -182,6 +190,7 @@ class ReconcileLoop(CadenceLoop):
                         )
 
             await session.commit()
+        return summary
 
 
 # ----------------------------------------------------------------------
@@ -189,21 +198,10 @@ class ReconcileLoop(CadenceLoop):
 # ----------------------------------------------------------------------
 
 
-class _OrderSnapshot:
-    __slots__ = ("status", "fills", "reason")
-
-    def __init__(
-        self,
-        status: str,
-        fills: list[FillModel],
-        reason: str = "",
-    ) -> None:
-        self.status = status
-        self.fills = fills
-        self.reason = reason
+_OrderSnapshot = OrderSnapshot
 
 
-async def _query_order(adapter: Any, po: PendingOrder) -> _OrderSnapshot | None:
+async def _query_order(adapter: Any, po: PendingOrder) -> OrderSnapshot | None:
     """Ask the adapter for an order snapshot.
 
     The Protocol doesn't define a "get one order" method (open_orders is
@@ -213,16 +211,28 @@ async def _query_order(adapter: Any, po: PendingOrder) -> _OrderSnapshot | None:
     """
     custom = getattr(adapter, "get_order_snapshot", None)
     if callable(custom):
-        return await _maybe_async(custom(po.broker_order_id))
+        try:
+            return await _maybe_async(
+                custom(po.broker_order_id, account_id=po.account_id)
+            )
+        except TypeError:
+            return await _maybe_async(custom(po.broker_order_id))
 
-    open_orders = adapter.get_open_orders("limited") if hasattr(adapter, "get_open_orders") else []
+    if not po.account_id:
+        return OrderSnapshot(
+            status="unknown", fills=[], reason="pending order has no account_id"
+        )
+    open_orders = adapter.get_open_orders(po.account_id) if hasattr(adapter, "get_open_orders") else []
     found = next(
         (o for o in (open_orders or []) if o.broker_order_id == po.broker_order_id),
         None,
     )
     if found is None:
-        # Order no longer open — assume filled.
-        return _OrderSnapshot(status="filled", fills=[], reason="absent from open orders")
+        # Absence from the open list is not proof of a fill: the order may be
+        # cancelled, rejected, expired, or outside the current broker session.
+        return OrderSnapshot(
+            status="unknown", fills=[], reason="absent from open orders"
+        )
     if found.filled_quantity and found.filled_quantity < found.quantity:
         return _OrderSnapshot(status="partial", fills=[], reason="partial fill in progress")
     return None
@@ -235,6 +245,177 @@ async def _maybe_async(maybe_coro: Any) -> Any:
     if inspect.iscoroutine(maybe_coro):
         return await maybe_coro
     return maybe_coro
+
+
+def _fill_identity(fill: FillModel) -> str:
+    if fill.external_fill_id:
+        return fill.external_fill_id
+    raw = "|".join(
+        (
+            fill.broker,
+            fill.broker_order_id,
+            fill.ticker.upper(),
+            fill.action.lower(),
+            f"{float(fill.quantity):.8f}",
+            f"{float(fill.price):.8f}",
+            fill.filled_at.isoformat(),
+        )
+    )
+    return "derived:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+async def persist_broker_fill(
+    session: Any,
+    *,
+    user_id: str,
+    proposal_id: int | None,
+    account_id: str,
+    fill: FillModel,
+) -> bool:
+    """Persist one live execution exactly once with audit/verdict lineage."""
+    identity = _fill_identity(fill)
+    existing = (
+        await session.execute(
+            select(FillRow.id).where(
+                FillRow.user_id == user_id,
+                FillRow.broker == fill.broker,
+                FillRow.external_fill_id == identity,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return False
+    try:
+        verdict_id = await _resolve_verdict_id(
+            session,
+            user_id=user_id,
+            proposal_id=proposal_id,
+            ticker=fill.ticker,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("reconcile.verdict_resolve_raised", exc_info=True)
+        verdict_id = None
+    resolved_account = account_id or fill.account_id
+    row = FillRow(
+        user_id=user_id,
+        proposal_id=proposal_id,
+        verdict_id=verdict_id,
+        broker=fill.broker,
+        broker_order_id=fill.broker_order_id,
+        external_fill_id=identity,
+        account_id=resolved_account,
+        ticker=fill.ticker,
+        action=fill.action,
+        quantity=fill.quantity,
+        price=fill.price,
+        commission=fill.commission,
+        filled_at=fill.filled_at,
+        paper=False,
+    )
+    session.add(row)
+    await session.flush()
+    prediction_synced = await _sync_order_sheet_prediction_entry(
+        session, user_id=user_id, proposal_id=proposal_id
+    )
+    await record_audit_event(
+        user_id=user_id,
+        event_type="fill.received",
+        entity_type="proposal",
+        entity_id=str(proposal_id or ""),
+        payload={
+            "broker": fill.broker,
+            "broker_order_id": fill.broker_order_id,
+            "external_fill_id": identity,
+            "account_id": resolved_account,
+            "ticker": fill.ticker,
+            "action": fill.action,
+            "quantity": fill.quantity,
+            "price": fill.price,
+            "commission": fill.commission,
+            "prediction_entry_synced": prediction_synced,
+        },
+        session=session,
+    )
+    return True
+
+
+async def _sync_order_sheet_prediction_entry(
+    session: Any,
+    *,
+    user_id: str,
+    proposal_id: int | None,
+) -> bool:
+    """Replace quote-time prediction entry with actual fill VWAP.
+
+    This is the operational bridge from fill telemetry to due-date outcome
+    scoring. It never mutates an already-evaluated prediction.
+    """
+    if proposal_id is None:
+        return False
+    from argosy.state.models import Prediction, PredictionOutcome
+
+    predictions = (
+        await session.execute(
+            select(Prediction).where(
+                Prediction.user_id == user_id,
+                Prediction.source == "signal_stream:order_sheet",
+            )
+        )
+    ).scalars().all()
+    prediction = None
+    source_ref: dict[str, Any] = {}
+    for candidate in predictions:
+        try:
+            parsed = json.loads(candidate.source_ref or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and parsed.get("proposal_id") == proposal_id:
+            prediction = candidate
+            source_ref = parsed
+            break
+    if prediction is None:
+        return False
+    has_outcome = (
+        await session.execute(
+            select(PredictionOutcome.id)
+            .where(PredictionOutcome.prediction_id == prediction.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if has_outcome is not None:
+        return False
+    fills = (
+        await session.execute(
+            select(FillRow).where(
+                FillRow.user_id == user_id,
+                FillRow.proposal_id == proposal_id,
+                FillRow.paper.is_(False),
+            )
+        )
+    ).scalars().all()
+    if not fills:
+        return False
+    total_qty = sum(float(row.quantity) for row in fills)
+    if total_qty <= 0:
+        return False
+    vwap = sum(float(row.quantity) * float(row.price) for row in fills) / total_qty
+    first_fill = min(_aware_utc(row.filled_at) for row in fills)
+    last_fill = max(_aware_utc(row.filled_at) for row in fills)
+    total_commission = sum(float(row.commission) for row in fills)
+    prediction.entry_price = Decimal(str(round(vwap, 4)))
+    prediction.event_at = first_fill
+    source_ref["fill_telemetry"] = {
+        "quantity": round(total_qty, 8),
+        "vwap": round(vwap, 4),
+        "commission": round(total_commission, 4),
+        "first_fill_at": first_fill.isoformat(),
+        "last_fill_at": last_fill.isoformat(),
+        "external_fill_ids": sorted(
+            row.external_fill_id for row in fills if row.external_fill_id
+        ),
+    }
+    prediction.source_ref = json.dumps(source_ref, sort_keys=True)
+    return True
 
 
 # ----------------------------------------------------------------------
@@ -338,4 +519,9 @@ def _default_factory(broker: str) -> Any:
     return None
 
 
-__all__ = ["ReconcileLoop", "fills_for_verdict", "verdict_for_fill"]
+__all__ = [
+    "ReconcileLoop",
+    "fills_for_verdict",
+    "persist_broker_fill",
+    "verdict_for_fill",
+]

@@ -18,11 +18,14 @@ adapter over this core.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC
+from typing import Any
 
 from argosy.agents.stock_decision import (
     StockDecisionOutput,
     decide_stock,
+    evidence_field_is_usable,
     is_actionable,
 )
 from argosy.logging import get_logger
@@ -94,7 +97,7 @@ _ELEVATING_FLAG_KINDS = ("thesis_monitor_weakened", "thesis_monitor_broken")
 
 
 def load_elevated_thesis_flags(
-    db: Any, user_id: str, *, now: "Any | None" = None
+    db: Any, user_id: str, *, now: Any | None = None
 ) -> dict[str, dict[str, str]]:
     """Active, unexpired ``thesis_monitor_weakened`` / ``thesis_monitor_broken``
     monitor flags keyed by TICKER (uppercased, from the flag payload — the
@@ -107,10 +110,10 @@ def load_elevated_thesis_flags(
     review degrades to plain size triage rather than aborting.
     """
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     out: dict[str, dict[str, str]] = {}
     try:
         from sqlalchemy import and_, select
@@ -136,7 +139,7 @@ def load_elevated_thesis_flags(
         if exp is not None:
             try:
                 if exp.tzinfo is None:
-                    exp = exp.replace(tzinfo=timezone.utc)
+                    exp = exp.replace(tzinfo=UTC)
                 if exp < now:
                     continue
             except Exception:  # noqa: BLE001
@@ -179,9 +182,22 @@ def verify_verdict(
     """
     if not is_actionable(v.verdict):
         return True
-    redo = decide(v.ticker, context="independent blind re-review", bundle=bundle, user_id=user_id)
-    orig = v.verdict.upper()
-    again = (redo.verdict or "").upper()
+    redo = decide(
+        v.ticker,
+        context="independent blind re-review",
+        bundle=bundle,
+        user_id=user_id,
+    )
+    return _verdicts_align(v, redo)
+
+
+def _verdicts_align(
+    original: StockDecisionOutput,
+    rederived: StockDecisionOutput,
+) -> bool:
+    """Whether two independently derived verdicts agree directionally."""
+    orig = original.verdict.upper()
+    again = (rederived.verdict or "").upper()
     if orig in _REDUCE_VERDICTS:
         return again in _REDUCE_VERDICTS
     if orig == "BUY":
@@ -193,13 +209,13 @@ def write_stock_decision_proposal(db: Any, user_id: str, v: StockDecisionOutput)
     """Persist an actionable verdict as an open ActionProposal (the inbox 'note'
     sink). Idempotent per (user, ticker) via dedup_key; a collision is swallowed."""
     import json
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy.exc import IntegrityError
 
     from argosy.state.models import ActionProposal
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     evidence = "\n".join(f"- {e}" for e in (v.evidence or []))
     gaps = ", ".join(v.data_gaps or [])
     rationale = v.reason + (f"\n\nEvidence:\n{evidence}" if evidence else "")
@@ -220,6 +236,29 @@ def write_stock_decision_proposal(db: Any, user_id: str, v: StockDecisionOutput)
         dedup_key=f"stock_decision:{user_id}:{v.ticker.upper()}",
         execution_state="proposed",
     )
+    # Dedup protects the UI from duplicate cards; it must not freeze the first
+    # rationale forever. A fresh confirmed review updates that one open row.
+    if hasattr(db, "execute"):
+        from sqlalchemy import select
+
+        existing = db.execute(select(ActionProposal).where(
+            ActionProposal.user_id == user_id,
+            ActionProposal.dedup_key == row.dedup_key,
+            ActionProposal.status == "open",
+        )).scalar_one_or_none()
+        if existing is not None:
+            for field in (
+                "summary",
+                "rationale_md",
+                "suggested_payload",
+                "severity",
+                "surfaced_at",
+                "expires_at",
+            ):
+                setattr(existing, field, getattr(row, field))
+            existing.execution_state = "proposed"
+            db.commit()
+            return existing
     db.add(row)
     try:
         db.commit()
@@ -237,6 +276,32 @@ def write_stock_decision_proposal(db: Any, user_id: str, v: StockDecisionOutput)
         return None
 
 
+def supersede_stock_decision_proposal(
+    db: Any,
+    user_id: str,
+    ticker: str,
+) -> None:
+    """Retire a stale open action when a newer reasoned HOLD supersedes it."""
+    if db is None or not hasattr(db, "execute"):
+        return
+    from sqlalchemy import select
+
+    from argosy.state.models import ActionProposal
+
+    row = db.execute(select(ActionProposal).where(
+        ActionProposal.user_id == user_id,
+        ActionProposal.dedup_key == (
+            f"stock_decision:{user_id}:{ticker.strip().upper()}"
+        ),
+        ActionProposal.status == "open",
+    )).scalar_one_or_none()
+    if row is None:
+        return
+    row.status = "superseded"
+    row.execution_state = "dismissed"
+    db.commit()
+
+
 def record_holding_review(
     db: Any,
     user_id: str,
@@ -245,7 +310,10 @@ def record_holding_review(
     position_usd: float | None,
     elevated_by_flag: bool,
     outcome: str,
-    reviewed_at: "Any | None" = None,
+    reviewed_at: Any | None = None,
+    verification: StockDecisionOutput | None = None,
+    portfolio_weight_pct: float | None = None,
+    portfolio_total_usd: float | None = None,
 ) -> None:
     """Persist one queryable ``holding_reviews`` audit row for a verdict
     ("nothing hidden — reviewed means a queryable row"). Best-effort: an audit
@@ -253,7 +321,7 @@ def record_holding_review(
     if db is None:
         return
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     try:
         from argosy.state.models import HoldingReview
@@ -261,13 +329,26 @@ def record_holding_review(
         db.add(HoldingReview(
             user_id=user_id,
             symbol=(v.ticker or "").upper(),
-            reviewed_at=reviewed_at or datetime.now(timezone.utc),
+            reviewed_at=reviewed_at or datetime.now(UTC),
             verdict=(v.verdict or "").upper(),
             confidence=str(v.confidence or "") or None,
             reason=(v.reason or ""),
             evidence_json=json.dumps({
                 "evidence": list(v.evidence or []),
                 "data_gaps": list(v.data_gaps or []),
+                "portfolio_weight_pct": portfolio_weight_pct,
+                "portfolio_total_usd": portfolio_total_usd,
+                "verification": (
+                    {
+                        "verdict": verification.verdict,
+                        "confidence": verification.confidence,
+                        "reason": verification.reason,
+                        "evidence": list(verification.evidence or []),
+                        "data_gaps": list(verification.data_gaps or []),
+                    }
+                    if verification is not None
+                    else None
+                ),
             }),
             position_usd=position_usd,
             elevated_by_flag=bool(elevated_by_flag),
@@ -285,7 +366,7 @@ def record_holding_review(
         )
 
 
-def load_x10_sleeve_symbols(db: Any, user_id: str) -> "frozenset[str]":
+def load_x10_sleeve_symbols(db: Any, user_id: str) -> frozenset[str]:
     """Symbols of the current plan's high-growth / x10 (moonshot) sleeve.
 
     These positions are deliberately SMALL (TEM/OKLO at ~$4.8k) — the exact
@@ -325,10 +406,10 @@ def run_holdings_review(
     fetchers: dict[str, Fetcher] | None = None,
     decide: Callable[..., StockDecisionOutput] = decide_stock,
     sink: Callable[[StockDecisionOutput], Any] | None = None,
-    verify: "Callable[[StockDecisionOutput, dict], bool] | None | bool" = None,
+    verify: Callable[[StockDecisionOutput, dict], bool] | None | bool = None,
     elevated_flags: dict[str, dict[str, str]] | None = None,
-    always_review: "frozenset[str] | set[str] | None" = None,
-    record: "Callable[..., None] | None | bool" = None,
+    always_review: frozenset[str] | set[str] | None = None,
+    record: Callable[..., None] | None | bool = None,
 ) -> dict[str, Any]:
     """Review the book per-name and act: triage to material positions, fetch fresh
     data, decide, blind-verify actionable verdicts, and write ONLY the confirmed
@@ -354,10 +435,37 @@ def run_holdings_review(
     when ``db`` is None), a callable overrides it, ``False`` disables it.
     Outcomes: proposed / held_unverified / hold / dedup_skipped.
     """
+    routed_to_fund_review: list[str] = []
+    portfolio_cash_usd = 0.0
     if holdings is None:
         from argosy.api.routes.portfolio import _load_current_doc_and_holdings
+        from argosy.services.instrument_reference import STRUCT_STOCK, lookup
 
         _doc, holdings, _cash = _load_current_doc_and_holdings(user_id)
+        portfolio_cash_usd = max(0.0, float(_cash or 0.0))
+        all_holdings = dict(holdings or {})
+        # This service is the single-company reviewer.  Collective vehicles
+        # have a dedicated reviewer (and a scheduled all-holdings coverage
+        # sweep) that asks the relevant mandate / domicile / fee / overlap
+        # questions.  Sending an index-fund display identity such as
+        # ``MSCI WORLD`` through Yahoo company fundamentals only creates slow,
+        # meaningless ABSTAINs.  Route by canonical instrument structure; keep
+        # unknown symbols on this path so an unclassified real holding remains
+        # fail-loud instead of silently disappearing.
+        stock_holdings: dict[str, float] = {}
+        for symbol, value in (holdings or {}).items():
+            ref = lookup(symbol)
+            if ref is not None and ref.structure != STRUCT_STOCK:
+                routed_to_fund_review.append(symbol.upper())
+                continue
+            stock_holdings[symbol] = value
+        holdings = stock_holdings
+    else:
+        all_holdings = dict(holdings)
+    portfolio_total_usd = (
+        sum(max(0.0, float(value or 0.0)) for value in all_holdings.values())
+        + portfolio_cash_usd
+    )
     if fetchers is None:
         from argosy.services.stock_decision.fetchers import default_fetchers
 
@@ -365,9 +473,21 @@ def run_holdings_review(
     if sink is None:
         def sink(v: StockDecisionOutput) -> Any:
             return write_stock_decision_proposal(db, user_id, v)
+    verification_outputs: dict[str, StockDecisionOutput] = {}
+    verification_contexts: dict[str, str] = {}
     if verify is None:
         def verify(v: StockDecisionOutput, bundle: dict[str, Any]) -> bool:
-            return verify_verdict(v, bundle=bundle, decide=decide, user_id=user_id)
+            redo = decide(
+                v.ticker,
+                context=(
+                    verification_contexts.get(v.ticker.upper(), "")
+                    + "; role=independent blind re-review"
+                ).strip("; "),
+                bundle=bundle,
+                user_id=user_id,
+            )
+            verification_outputs[v.ticker.upper()] = redo
+            return _verdicts_align(v, redo)
     if elevated_flags is None:
         elevated_flags = (
             load_elevated_thesis_flags(db, user_id) if db is not None else {}
@@ -388,12 +508,36 @@ def run_holdings_review(
     actionable = 0
     held_unverified = 0
     elevated: list[str] = []
+    evidence_coverage = {
+        field: 0
+        for field in (
+            "news",
+            "earnings_calendar",
+            "earnings_filing",
+            "fundamentals",
+            "sentiment",
+            "price",
+            "thesis",
+            "tax",
+        )
+    }
+    evidence_providers: dict[str, int] = {}
     for ticker, usd in (holdings or {}).items():
         flag = elevated_flags.get(ticker.upper())
         floored = ticker.upper() in (always_review or frozenset())
         if flag is None and not floored and float(usd) < min_position_usd:
             continue  # tiering: skip immaterial positions (no expensive research)
+        weight_pct = (
+            100.0 * float(usd) / portfolio_total_usd
+            if portfolio_total_usd > 0
+            else None
+        )
         context = f"held ${float(usd):,.0f}"
+        if weight_pct is not None:
+            context += (
+                f"; {weight_pct:.2f}% of whole portfolio"
+                f" (${portfolio_total_usd:,.0f}, including cash and funds)"
+            )
         if flag is None and floored and float(usd) < min_position_usd:
             # Plan x10-sleeve member: small by design, reviewed regardless of
             # size — the position IS the thesis bet, not noise.
@@ -411,9 +555,26 @@ def run_holdings_review(
                 f" — {flag.get('summary') or '(no rationale recorded)'}"
             )
         bundle = research_bundle(ticker, fetchers=fetchers)
+        for field in evidence_coverage:
+            value = bundle.get(field)
+            if not evidence_field_is_usable(value):
+                continue
+            evidence_coverage[field] += 1
+            text = str(value)
+            if text.startswith("source="):
+                provider = text.partition(";")[0].removeprefix("source=").strip()
+                if provider:
+                    key = f"{field}:{provider}"
+                    evidence_providers[key] = evidence_providers.get(key, 0) + 1
         v = decide(ticker, context=context, bundle=bundle, user_id=user_id)
+        verification_contexts[ticker.upper()] = context
         verdicts.append(v)
-        _audit = dict(position_usd=float(usd), elevated_by_flag=flag is not None)
+        _audit = dict(
+            position_usd=float(usd),
+            elevated_by_flag=flag is not None,
+            portfolio_weight_pct=weight_pct,
+            portfolio_total_usd=portfolio_total_usd,
+        )
         if (v.verdict or "").upper() == "ABSTAIN":
             log.info(
                 "stock_decision.abstained",
@@ -423,15 +584,18 @@ def run_holdings_review(
             continue
         if not is_actionable(v.verdict):
             log.info("stock_decision.hold", ticker=v.ticker, reason=(v.reason or "")[:120])
+            supersede_stock_decision_proposal(db, user_id, v.ticker)
             record(v, outcome="hold", **_audit)
             continue
         actionable += 1
         # Fail-closed: a consequential trade must survive a blind re-derivation.
         if verify is not False and not verify(v, bundle):
+            _audit["verification"] = verification_outputs.get(v.ticker.upper())
             held_unverified += 1
             log.info("stock_decision.held_unverified", ticker=v.ticker, verdict=v.verdict)
             record(v, outcome="held_unverified", **_audit)
             continue
+        _audit["verification"] = verification_outputs.get(v.ticker.upper())
         outcome = "dedup_skipped"
         try:
             if sink(v) is not None:
@@ -452,6 +616,10 @@ def run_holdings_review(
             1 for v in verdicts if (v.verdict or "").upper() != "ABSTAIN"
         ),
         "elevated": elevated,
+        "evidence_coverage": evidence_coverage,
+        "evidence_providers": evidence_providers,
+        "routed_to_fund_review": sorted(routed_to_fund_review),
+        "portfolio_total_usd": portfolio_total_usd,
         "verdicts": verdicts,
     }
 
@@ -461,4 +629,5 @@ __all__ = [
     "run_holdings_review", "write_stock_decision_proposal",
     "load_elevated_thesis_flags", "record_holding_review",
     "load_x10_sleeve_symbols",
+    "supersede_stock_decision_proposal",
 ]

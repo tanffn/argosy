@@ -229,8 +229,6 @@ def _build_default_session_factory() -> sessionmaker:
     """
     global _DEFAULT_SESSION_FACTORY
 
-    import sqlalchemy as sa
-
     from argosy.config import get_settings
 
     settings = get_settings()
@@ -242,9 +240,9 @@ def _build_default_session_factory() -> sessionmaker:
             return cached_factory
 
     sync_url = f"sqlite:///{db_file}"
-    engine = sa.create_engine(
-        sync_url, connect_args={"check_same_thread": False}
-    )
+    from argosy.state.db import create_sync_engine
+
+    engine = create_sync_engine(sync_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     _DEFAULT_SESSION_FACTORY = (db_file, factory)
     return factory
@@ -465,8 +463,21 @@ class NewsDailyJob(CadenceLoop):
                     .where(NewsSignal.analyzed_at.is_(None))
                 ).scalar_one()
             )
-            fire = (stage1_result.persisted or 0) > 0
-            reasons: list[str] = ["new_signals"] if fire else []
+            pending_earnings_evidence = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(NewsSignal)
+                    .where(
+                        NewsSignal.analyzed_at.is_(None),
+                        NewsSignal.source.in_(("yf_earnings", "sec_filing")),
+                    )
+                ).scalar_one()
+            )
+            new_signals = (stage1_result.persisted or 0) > 0
+            fire = new_signals or pending_earnings_evidence > 0
+            reasons: list[str] = ["new_signals"] if new_signals else []
+            if pending_earnings_evidence > 0:
+                reasons.append("pending_earnings_evidence")
             vol_moves: dict[str, float] = {}
             if not fire and single_stocks:
                 threshold = self._volatility_move_pct

@@ -4,7 +4,7 @@ topic: israel_national_insurance_and_health_tax
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual
-last_verified: 2026-08-15
+last_verified: 2026-08-28
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
@@ -18,13 +18,13 @@ sources:
     retrieved: 2026-08-10
     tier: 2
   - url: https://www.malam-payroll.com/national-insurance-updates-for-2026/
-    retrieved: 2026-08-07
+    retrieved: 2026-08-28
     tier: 2
   - url: https://jobcalc.co.il/blog/national-insurance-guide-2026/
     retrieved: 2026-06-02
     tier: 2
   - url: https://taxsummaries.pwc.com/israel/individual/other-taxes
-    retrieved: 2026-08-15
+    retrieved: 2026-08-28
     tier: 1
   - url: https://www.btl.gov.il/English%20Homepage/Insurance/Ratesandamount/Pages/forSalaried.aspx
     retrieved: 2026-07-12

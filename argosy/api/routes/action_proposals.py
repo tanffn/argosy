@@ -39,7 +39,7 @@ from datetime import date
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db
@@ -48,11 +48,11 @@ from argosy.services.action_proposals import (
     ProposalNotFoundError,
     accept_action_proposal,
     defer_action_proposal,
+    get_action_proposal,
     list_open_action_proposals,
     reject_action_proposal,
     to_view,
 )
-
 
 _log = logging.getLogger(__name__)
 
@@ -113,6 +113,7 @@ class AcceptRequest(BaseModel):
     user_id: str = "ariel"
     custom_payload: dict[str, Any] | None = None
     choice_key: str | None = None
+    funding_account_id: str | None = None
 
 
 class DeferRequest(BaseModel):
@@ -137,6 +138,9 @@ class RejectRequest(BaseModel):
 class ActionProposalActionResponse(BaseModel):
     status: Literal["ok"]
     proposal: ActionProposalDTO
+    materialization_status: str | None = None
+    materialized_proposal_ids: list[int] = Field(default_factory=list)
+    funding_account_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +235,17 @@ def accept_action(
     db: Session = Depends(get_db),
 ) -> ActionProposalActionResponse:
     try:
+        source_row = get_action_proposal(db, proposal_id, user_id=body.user_id)
+        from argosy.services.action_order_sheet_acceptance import (
+            materialize_action_order_sheet,
+        )
+
+        materialized, resolved_account = materialize_action_order_sheet(
+            db,
+            source_row,
+            payload_override=body.custom_payload,
+            funding_account_id=body.funding_account_id,
+        )
         row = accept_action_proposal(
             db,
             proposal_id,
@@ -243,9 +258,18 @@ def accept_action(
     except InvalidProposalStateError as exc:
         raise _resolve_conflict(exc) from exc
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     view = to_view(row)
-    return ActionProposalActionResponse(status="ok", proposal=_view_to_dto(view))
+    return ActionProposalActionResponse(
+        status="ok",
+        proposal=_view_to_dto(view),
+        materialization_status=(
+            "approved_for_execution" if materialized else None
+        ),
+        materialized_proposal_ids=[int(item.id) for item in materialized],
+        funding_account_id=resolved_account,
+    )
 
 
 @router.post(

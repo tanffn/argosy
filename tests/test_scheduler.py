@@ -182,6 +182,25 @@ def test_phase7_loops_registered_by_default(engine: None) -> None:
     assert "hour" not in scheduler._loops  # type: ignore[attr-defined]
 
 
+def test_primary_decision_chain_runs_under_cli_scheduler(engine: None) -> None:
+    """The API and ``argosy run`` must not boot different Argosy products."""
+
+    from argosy.agent_settings import AgentSettings
+
+    scheduler = Scheduler(user_id="ariel", settings=AgentSettings())
+    scheduler.register_default_loops()
+    for name in (
+        "snapshot_refresh",
+        "discovery_funnel",
+        "holdings_review",
+        "decision_funnel",
+        "period_directive_daily",
+        "reconcile",
+        "predictions_evaluator",
+    ):
+        assert name in scheduler._loops  # type: ignore[attr-defined]
+
+
 def test_phase7_loops_disabled_individually(engine: None) -> None:
     """Each Phase 7 loop honors its own `cadences.<name>.enabled` flag."""
     from argosy.agent_settings import AgentSettings, CadencesBlock

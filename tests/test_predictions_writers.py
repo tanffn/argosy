@@ -142,6 +142,7 @@ def _due_at_aware(row: Prediction) -> datetime:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_seam
 def test_write_discord_prediction_inserts_clean_row(sync_session):
     """Writer inserts a Prediction with the expected column values."""
     row = write_discord_prediction(

@@ -14,8 +14,8 @@ Override:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 
@@ -28,7 +28,7 @@ _log = get_logger("argosy.cost_guard")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # Loops that are exempt from the pause (SDD §14.7 — "non-routine cadences").
@@ -76,6 +76,11 @@ class CostGuard:
             return False
         return self.clock() < self._override_until
 
+    @property
+    def developer_mode(self) -> bool:
+        """Whether the persisted development-only budget bypass is active."""
+        return bool(self.settings.cost.developer_mode)
+
     # ------------------------------------------------------------------
     # Pause check
     # ------------------------------------------------------------------
@@ -88,6 +93,8 @@ class CostGuard:
         the spend check.
         """
         if loop_name in ROUTINE_LOOPS:
+            return False
+        if self.developer_mode:
             return False
         if self._override_active():
             return False

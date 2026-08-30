@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from argosy.services.allocation_plan import (
+    GLOBAL_QUALITY_EX_NVDA_DENSE_LEGACY_LABEL,
     GLOBAL_QUALITY_GROWTH_LABEL,
     NVDA_TARGET_PCT,
     US_GROWTH_LEGACY_LABEL,
@@ -102,6 +103,14 @@ class TestSingleSleeveOverride:
         )
         result = {c.label: c.target_pct for c in alloc.classes}
         assert US_GROWTH_LEGACY_LABEL not in result
+        assert result[GLOBAL_QUALITY_GROWTH_LABEL] == pytest.approx(8.0, abs=1e-9)
+
+    def test_previous_quality_label_override_key_is_migrated(self) -> None:
+        alloc = build_target_allocation(
+            authored_overrides={GLOBAL_QUALITY_EX_NVDA_DENSE_LEGACY_LABEL: 8.0}
+        )
+        result = {c.label: c.target_pct for c in alloc.classes}
+        assert GLOBAL_QUALITY_EX_NVDA_DENSE_LEGACY_LABEL not in result
         assert result[GLOBAL_QUALITY_GROWTH_LABEL] == pytest.approx(8.0, abs=1e-9)
 
     def test_current_label_wins_over_legacy_alias_on_collision(self) -> None:

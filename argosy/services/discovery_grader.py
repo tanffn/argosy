@@ -20,8 +20,7 @@ grade); this module grades exactly one.
 from __future__ import annotations
 
 import hashlib
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -33,6 +32,7 @@ from argosy.decisions.per_ticker_analysts import (
     run_per_ticker_analysts,
 )
 from argosy.logging import get_logger
+from argosy.services.agent_report_persistence import persist_agent_report_async
 from argosy.services.contracts import FleetPick
 
 log = get_logger(__name__)
@@ -73,7 +73,8 @@ class DiscoveryGraderAgent(BaseAgent[FleetGradeOutput]):
             "not an executable order.\n\n"
             f"{X10_SLEEVE_MANDATE}\n\n"
             "Produce: conviction = the ASYMMETRY grade (HIGH/MED/LOW — "
-            "(upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2) under the cap-math + floor tests; "
+            "upside plausibility relative to downside risk under the cap-math and "
+            "explicit downside-class evidence tests; "
             "defensibility / quality / profitability must NOT boost it); a "
             "verdict (BUY = passes the cap-math test with a plausible x10 path "
             "and is worth a sleeve position, WATCH = track, PASS = fails the "
@@ -109,7 +110,7 @@ async def _close_decision_run(*, decision_run_id: int, status: str) -> None:
         row = await session.get(DecisionRun, decision_run_id)
         if row is not None:
             row.status = status
-            row.finished_at = datetime.now(timezone.utc)
+            row.finished_at = datetime.now(UTC)
             await session.commit()
 
 
@@ -145,8 +146,13 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
     # must close the run blocked, never leave it 'running'.
     try:
         agent = DiscoveryGraderAgent(user_id=user_id)
-        out: FleetGradeOutput = (await agent.run(
-            ticker=ticker, analyst_reports=list(result.reports))).output
+        report = await agent.run(
+            ticker=ticker,
+            analyst_reports=list(result.reports),
+            decision_id=str(run_id),
+        )
+        await persist_agent_report_async(report, decision_id=str(run_id))
+        out: FleetGradeOutput = report.output
     except Exception:
         await _close_decision_run(decision_run_id=run_id, status="blocked")
         raise

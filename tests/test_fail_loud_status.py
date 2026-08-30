@@ -50,6 +50,8 @@ from argosy.state.models import CadenceState, JobRun
         {"counts": {"ticks": 3}},
         {"status": "ok"},
         {"errors": []},  # empty list is the healthy sentinel
+        {"error": None},
+        {"error": ""},
         {"adapter_errors": 0},
         {"streams": {"a": {"status": "ok"}, "b": {"status": "ok"}}},
         {"attempted": 5, "succeeded": 5},
@@ -71,6 +73,7 @@ def test_contract_ok_cases(summary) -> None:
         {"status": "degraded"},
         {"adapter_errors": 2},
         {"errors": ["boom", "bang"]},
+        {"error": "database is locked"},
         {"failure_count": 1},
         {"failed_streams": 3},
         {"streams": {"a": {"status": "error"}, "b": {"status": "ok"}}},
@@ -85,6 +88,36 @@ def test_contract_failure_cases(summary) -> None:
     assert status == FAILURE_STATUS
     assert reason  # non-empty human string
     assert summary_signals_failure(summary) is True
+
+
+def test_verdict_trigger_factory_uses_shared_sqlite_reliability_seam(
+    monkeypatch,
+) -> None:
+    """The loop that actually lost a live cycle must not build a bare engine."""
+    import sqlalchemy as sa
+
+    from argosy.orchestrator.loops.verdict_trigger_daily import (
+        _default_session_factory,
+    )
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        db_mod,
+        "get_engine",
+        lambda: type("AsyncEngineStub", (), {"url": "sqlite+aiosqlite:///argosy.db"})(),
+    )
+    monkeypatch.setattr(
+        db_mod,
+        "create_sync_engine",
+        lambda url: calls.append(url) or engine,
+    )
+    try:
+        factory = _default_session_factory()
+        assert calls == ["sqlite:///argosy.db"]
+        assert factory.kw["bind"] is engine
+    finally:
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------

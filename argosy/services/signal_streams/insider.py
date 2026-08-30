@@ -9,7 +9,6 @@ threshold cluster is non-zero while stronger clusters retain headroom.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -20,12 +19,14 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from argosy.adapters.data.sec_form4_adapter import (
     SecForm4Adapter,
     _is_us_federal_holiday,
 )
 from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+from argosy.async_bridge import run_async_from_sync
 from argosy.logging import get_logger
 from argosy.services.signal_streams.base import SignalNomination
 from argosy.state.models import SignalStreamEvent
@@ -178,6 +179,61 @@ class _LocalEvent:
         if not isinstance(value, dict):
             raise ValueError("signal event payload must be a JSON object")
         return value
+
+
+def _stage_new_event_idempotently(
+    session: Any,
+    *,
+    user_id: str,
+    stream: str,
+    event: _LocalEvent,
+    observed_at: datetime,
+) -> None:
+    """Insert or refresh an event without a read-then-insert race.
+
+    Signal scans can be replayed by a replacement backend while an older run
+    is finishing. The event identity is already enforced by the database, so
+    SQLite's atomic upsert keeps the original first-seen time while refreshing
+    the event state and last-seen time.
+    """
+    values = {
+        "user_id": user_id,
+        "stream": stream,
+        "event_key": event.event_key,
+        "event_group_key": event.event_group_key,
+        "ticker": event.ticker,
+        "event_at": event.event_at,
+        "available_at": event.available_at,
+        "payload_json": event.payload_json,
+        "source_urls_json": event.source_urls_json,
+        "active": event.active,
+        "evaluation_pending": event.evaluation_pending,
+        "first_seen_at": observed_at,
+        "last_seen_at": observed_at,
+    }
+    bind = session.get_bind()
+    if bind.dialect.name != "sqlite":
+        session.add(SignalStreamEvent(**values))
+        return
+
+    statement = sqlite_insert(SignalStreamEvent).values(**values)
+    excluded = statement.excluded
+    session.execute(
+        statement.on_conflict_do_update(
+            index_elements=["user_id", "stream", "event_key"],
+            set_={
+                "event_group_key": excluded.event_group_key,
+                "ticker": excluded.ticker,
+                "event_at": excluded.event_at,
+                "available_at": excluded.available_at,
+                "payload_json": excluded.payload_json,
+                "source_urls_json": excluded.source_urls_json,
+                "active": excluded.active,
+                "evaluation_pending": excluded.evaluation_pending,
+                "last_seen_at": excluded.last_seen_at,
+            },
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -1547,7 +1603,9 @@ class YFinanceInsiderMarketProvider:
 
     def __call__(self, ticker: str) -> InsiderMarketSnapshot:
         adapter = self._adapter or YFinanceAdapter()
-        payload = asyncio.run(adapter.get_quote_with_fundamentals(ticker))
+        payload = run_async_from_sync(
+            lambda: adapter.get_quote_with_fundamentals(ticker)
+        )
         return InsiderMarketSnapshot(
             price=payload.get("price"),
             market_cap=payload.get("market_cap"),
@@ -1624,8 +1682,8 @@ class InsiderClusterStream:
             for row in existing_rows
         }
 
-        fetched_rows = asyncio.run(
-            self.sec_adapter.get_form4_for_date_range(
+        fetched_rows = run_async_from_sync(
+            lambda: self.sec_adapter.get_form4_for_date_range(
                 pull_start,
                 through,
             )
@@ -1907,22 +1965,12 @@ class InsiderClusterStream:
             for event_key, event in working.items():
                 row = existing_by_key.get(event_key)
                 if row is None:
-                    session.add(
-                        SignalStreamEvent(
-                            user_id=self.user_id,
-                            stream=self.name,
-                            event_key=event.event_key,
-                            event_group_key=event.event_group_key,
-                            ticker=event.ticker,
-                            event_at=event.event_at,
-                            available_at=event.available_at,
-                            payload_json=event.payload_json,
-                            source_urls_json=event.source_urls_json,
-                            active=event.active,
-                            evaluation_pending=event.evaluation_pending,
-                            first_seen_at=observed_at,
-                            last_seen_at=observed_at,
-                        )
+                    _stage_new_event_idempotently(
+                        session,
+                        user_id=self.user_id,
+                        stream=self.name,
+                        event=event,
+                        observed_at=observed_at,
                     )
                     continue
                 desired = (

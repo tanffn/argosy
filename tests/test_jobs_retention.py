@@ -26,7 +26,7 @@ Test command::
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -34,17 +34,18 @@ from sqlalchemy import select
 from argosy.orchestrator.loops.job_runs_retention import (
     JobRunsRetentionLoop,
     job_runs_retention_metadata,
+    reap_prior_process_decision_runs,
+    reap_prior_process_job_runs,
 )
 from argosy.state import db as db_mod
-from argosy.state.models import JobRun
-
+from argosy.state.models import DecisionRun, JobRun, User
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-_FROZEN_NOW = datetime(2026, 5, 29, 3, 30, 0, tzinfo=timezone.utc)
+_FROZEN_NOW = datetime(2026, 5, 29, 3, 30, 0, tzinfo=UTC)
 
 
 def _make_loop(
@@ -123,6 +124,7 @@ async def _get_row(row_id: int) -> JobRun | None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.real_seam
 async def test_retention_deletes_ok_older_than_30d(engine: None) -> None:
     """An ``ok`` row finished 31d ago is pruned."""
     loop = _make_loop()
@@ -220,6 +222,71 @@ async def test_retention_does_not_delete_skipped_or_cancelled(
 # ---------------------------------------------------------------------------
 # Pass 2 — reap stale running rows
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_reap_closes_even_recent_prior_process_rows(engine: None) -> None:
+    """At startup there can be no current-process job yet, so age is irrelevant."""
+    recent_id = await _insert_row(
+        job_name="discovery_funnel",
+        status="running",
+        idempotency_key="prior-process-recent",
+        started_at=_FROZEN_NOW - timedelta(minutes=1),
+        finished_at=None,
+    )
+    ok_id = await _insert_row(
+        job_name="completed",
+        status="ok",
+        idempotency_key="already-complete",
+        started_at=_FROZEN_NOW - timedelta(minutes=2),
+        finished_at=_FROZEN_NOW - timedelta(minutes=1),
+    )
+
+    assert await reap_prior_process_job_runs(now=_FROZEN_NOW) == 1
+    recent = await _get_row(recent_id)
+    assert recent is not None
+    assert recent.status == "cancelled"
+    assert recent.error_message == "reaped: prior backend process exited"
+    assert recent.finished_at is not None
+    assert await _get_status(ok_id) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_startup_reap_fails_even_recent_prior_decision_runs(
+    engine: None,
+) -> None:
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel", plan="free"))
+        orphan = DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            decision_kind="plan_revision",
+            status="running",
+            started_at=_FROZEN_NOW - timedelta(seconds=10),
+        )
+        complete = DecisionRun(
+            user_id="ariel",
+            ticker="IONQ",
+            decision_kind="trade_proposal",
+            status="completed",
+            started_at=_FROZEN_NOW - timedelta(minutes=2),
+            finished_at=_FROZEN_NOW - timedelta(minutes=1),
+        )
+        session.add_all([orphan, complete])
+        await session.commit()
+        orphan_id = orphan.id
+        complete_id = complete.id
+
+    assert await reap_prior_process_decision_runs(now=_FROZEN_NOW) == 1
+    async with db_mod.get_session() as session:
+        orphan = await session.get(DecisionRun, orphan_id)
+        complete = await session.get(DecisionRun, complete_id)
+        assert orphan is not None
+        assert orphan.status == "failed"
+        assert orphan.finished_at is not None
+        assert "prior_backend_process_exit" in (orphan.notes_json or "")
+        assert complete is not None
+        assert complete.status == "completed"
 
 
 @pytest.mark.asyncio

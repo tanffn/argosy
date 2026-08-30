@@ -278,7 +278,7 @@ def _overwrite_horizon_targets_from_canonical(
     NO SILENT CAPS: exact-label matching means a class whose authored
     and canonical labels have drifted apart (e.g. authored "Global
     quality growth (screened to avoid NVDA-heavy names)" vs canonical
-    "Global quality growth (ex-NVDA-dense)" on plan 109) is never
+    "Global quality factor" on plan 109) is never
     corrected — and, deliberately, never fuzzy-matched either (see
     above). That non-correction must not look like full coverage, so
     a second pass logs the gap in BOTH directions:

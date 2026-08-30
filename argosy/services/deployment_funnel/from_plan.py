@@ -3,10 +3,9 @@ and holdings into a deterministic preflight run. This is the glue Task 7 wires
 into `GET /api/portfolio/deploy-cash` behind the kill switch."""
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Iterable
 
+from argosy.async_bridge import run_async_from_sync
 from argosy.services.contracts import AllocationCandidate, AllocationLeg
 from argosy.services.deployment_funnel.contracts import PreflightResult
 from argosy.services.deployment_funnel.gates import GateInputs
@@ -14,7 +13,6 @@ from argosy.services.deployment_funnel.look_through import effective_nvda_usd
 from argosy.services.deployment_funnel.preflight import run_preflight
 from argosy.services.deployment_funnel.reserve import (
     CASH_LIKE_SYMBOLS,
-    existing_cash_like_usd,
     reserve_shortfall_usd,
 )
 
@@ -112,8 +110,15 @@ class SnapshotOrLiveProvider:
             from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
             adapter = YFinanceAdapter()
+            # Portfolio class-share symbols use a slash (BRK/B); Yahoo requires
+            # a dash (BRK-B). Sending the slash creates a broken URL path and
+            # silently removed price evidence from the holdings review.
+            yahoo_symbol = symbol.replace("/", "-")
             for suffix in self._YF_QUOTE_SUFFIXES:
-                q = asyncio.run(adapter.get_quote(f"{symbol}{suffix}"))
+                candidate = f"{yahoo_symbol}{suffix}"
+                q = run_async_from_sync(
+                    lambda candidate=candidate: adapter.get_quote(candidate)
+                )
                 p = float(getattr(q, "price", None)) if q is not None and getattr(q, "price", None) is not None else None
                 if p is not None:
                     price = p

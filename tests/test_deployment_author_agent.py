@@ -3,6 +3,11 @@ prompt renders the load-bearing facts + the verifier feedback on a revision; the
 live call is exercised via the reliability wrapper + flow tests (no LLM here)."""
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from argosy.agents.base import ModelCall
 from argosy.agents.deployment_author import DeploymentAuthorAgent
 from argosy.services.allocation_author.proposal import AllocationProposal
 from argosy.services.allocation_author.verifier import GateFailure
@@ -30,6 +35,26 @@ def _packet():
              "source": "MSCI World ex-USA", "confidence": "verified"},
         ],
         "policy_signals": {"nvda_policy_sell": {"due": False}},
+        "decision_calibration": {
+            "order_sheet": {
+                "scored_predictions": 4,
+                "hit_rate": 0.5,
+                "sample_size_warning": True,
+                "is_stale": False,
+            },
+            "sources": [{
+                "source": "internal_per_position_thesis",
+                "scored": 20,
+                "hit_rate": 0.4,
+                "mean_pnl_pct": -0.02,
+                "sample_size_warning": False,
+                "is_stale": False,
+            }],
+            "recent_verdict_outcomes": [{
+                "ticker": "SCHD", "verdict": "SELL", "grade": "miss",
+                "price_move_pct": 3.0,
+            }],
+        },
         "user_constraints": "earliest safe retirement; reduce NVDA toward cap",
     }
 
@@ -39,6 +64,36 @@ def test_agent_config():
     assert a.agent_role == "deployment_author"
     assert a.output_model is AllocationProposal
     assert a.require_citations is False
+
+
+@pytest.mark.real_seam
+def test_real_agent_dispatch_parses_authored_proposal(monkeypatch):
+    """Exercise BaseAgent.run; only the external model call is replaced."""
+    payload = {
+        "cash_to_deploy": 180_000,
+        "cash_to_reserve": 0,
+        "buys": [{
+            "symbol": "EXUS",
+            "amount_usd": 180_000,
+            "sleeve": "Ex-US developed",
+            "justification": "Fill the largest verified plan gap.",
+            "claimed_us_weight": 0,
+        }],
+        "sells": [],
+        "holds": ["NVDA", "SCHD"],
+        "rationale": "One funded list.",
+    }
+
+    async def fake_call(self, *, system, user, **kwargs):
+        assert "EXUS" in user and "deployment" in system.lower()
+        return ModelCall(
+            text=json.dumps(payload), tokens_in=10, tokens_out=10, model="test-model"
+        )
+
+    monkeypatch.setattr(DeploymentAuthorAgent, "_call_model", fake_call)
+    report = DeploymentAuthorAgent(user_id="ariel").run_sync(packet=_packet())
+    assert isinstance(report.output, AllocationProposal)
+    assert report.output.buys[0].symbol == "EXUS"
 
 
 def test_prompt_carries_the_judgment_calls():
@@ -60,6 +115,107 @@ def test_prompt_carries_the_judgment_calls():
     # plan-fit from within: per-sleeve gap shown + instruction to fill under-target first
     assert "gap" in blob and "under-target" in blob
     assert "12.3" in user  # the ex-US sleeve's supplied gap
+    # Closed-loop calibration reaches the author as context, not a hard gate.
+    assert "outcome calibration" in blob
+    assert "schd sell: miss" in blob
+    assert "uncalibrated" in blob
+    assert "not a mechanical gate" in blob
+
+
+def test_prompt_treats_sub_one_percent_moonshots_as_convexity_not_a_floor():
+    system, _ = DeploymentAuthorAgent(user_id="ariel").build_prompt(packet=_packet())
+    blob = system.lower()
+    assert "zero, one, or multiple moonshot names" in blob
+    assert "reject one merely because" in blob
+    assert "below 1%" in blob
+    assert ">=5x" in blob
+    assert "splitting the sleeve" in blob
+    assert "position-size floor" in blob
+    assert "not as a command to touch every" in blob
+    assert "moonshot sleeve may use us-situs" in blob
+    assert "fmv-at-death" in blob
+    assert "probability-aware convexity sizing" in blob
+    assert "outcome_scenarios" in blob
+    assert "probabilities must sum to 100" in blob
+    assert "possible 10x with no probability is not a sizing case" in blob
+
+
+def test_prompt_requires_comparison_of_same_grade_discovery_finalists():
+    packet = _packet()
+    packet["discovery_candidates"] = [
+        {
+            "ticker": ticker,
+            "rank": rank,
+            "score": score,
+            "fresh_as_of": "2026-08-26T06:00:00+00:00",
+            "fleet": {
+                "verdict": "BUY",
+                "conviction": "MED",
+                "thesis_md": f"{ticker} has a distinct evidence-backed thesis.",
+            },
+        }
+        for ticker, rank, score in (
+            ("GLUE", 26, 76.9), ("REPL", 16, 77.5), ("QURE", 17, 77.5)
+        )
+    ]
+    system, user = DeploymentAuthorAgent(user_id="ariel").build_prompt(packet=packet)
+    blob = system + "\n" + user
+    assert "DISCOVERY FINALISTS REQUIRING EXPLICIT" in blob
+    assert all(ticker in blob for ticker in ("GLUE", "REPL", "QURE"))
+    assert "candidate_comparisons" in system
+    assert "Coarse BUY/MED grades are not a tie-breaker" in system
+    assert "recommended_position_usd" in system
+    assert "same horizon" in system
+    assert "$10k-vs-$26k explicit" in system
+    assert "smaller_position_usd" in system and "larger_position_usd" in system
+    assert "split_considered" in system and "split_why" in system
+    assert "QUALITATIVE ONLY" in system
+    assert "explicitly reconcile that reversal" in system
+    assert "Do not merely assert" in system
+    assert all(
+        field in system
+        for field in (
+            "`ticker`",
+            "`selection`",
+            "`evidence_fresh_as_of`",
+            "`key_advantage`",
+            "`key_risk`",
+            "`why`",
+        )
+    )
+
+
+def test_candidate_comparison_accepts_fleet_aliases_without_losing_requirements():
+    proposal = AllocationProposal.model_validate({
+        "cash_to_deploy": 0,
+        "candidate_comparisons": [{
+            "symbol": "REPL",
+            "status": "rejected",
+            "rank": 16,
+            "score": 77.5,
+            "verdict": "BUY",
+            "conviction": "MED",
+            "fresh_as_of": "2026-08-26T06:00:00+00:00",
+            "advantage": "Commercial-stage platform evidence.",
+            "risk": "Short runway and dilution risk.",
+            "rationale": "Not selected because the catalyst-adjusted payoff lost comparatively.",
+        }],
+    })
+    row = proposal.candidate_comparisons[0]
+    assert row.ticker == "REPL"
+    assert row.selection == "NOT_SELECTED"
+    assert row.radar_rank == 16
+    assert row.evidence_fresh_as_of.isoformat() == "2026-08-26T06:00:00+00:00"
+
+
+def test_order_rows_accept_ticker_alias_from_fleet_json():
+    proposal = AllocationProposal.model_validate({
+        "cash_to_deploy": 10_000,
+        "buys": [{"ticker": "CSPX", "amount_usd": 10_000}],
+        "sells": [{"ticker": "NVDA", "amount_usd": 0}],
+    })
+    assert proposal.buys[0].symbol == "CSPX"
+    assert proposal.sells[0].symbol == "NVDA"
 
 
 def test_revision_prompt_includes_verifier_failures():

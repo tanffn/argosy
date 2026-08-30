@@ -1,7 +1,7 @@
 ---
 topic: Household members — residence, citizenship, and what they imply
 jurisdiction: household
-last_verified: 2026-08-23
+last_verified: 2026-08-28
 next_refresh_due: 2027-08-23
 sources:
   - source: Ariel, directly, in conversation 2026-08-23

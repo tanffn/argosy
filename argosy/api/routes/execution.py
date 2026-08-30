@@ -25,20 +25,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from argosy.api.events import publish_event
+from argosy.api.routes.plan import get_db
 from argosy.billing.entitlements import Entitlements, feature_required_tier
 from argosy.channels.email import EmailApprovalLink, EmailSettings
 from argosy.decisions.proposals import IllegalTransitionError
 from argosy.execution.router import ExecutionRouter
 from argosy.logging import get_logger
+from argosy.services.plan_proposal_diff import load_plan_targets
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AuditLog,
+)
+from argosy.state.models import (
     Fill as FillRow,
+)
+from argosy.state.models import (
     Lot as LotRow,
 )
-from argosy.api.routes.plan import get_db
-from argosy.services.plan_proposal_diff import load_plan_targets
-
 
 _log = get_logger("argosy.api.execution")
 router = APIRouter(tags=["execution"])
@@ -96,6 +99,8 @@ class FillItem(BaseModel):
     proposal_id: int | None
     broker: str
     broker_order_id: str
+    external_fill_id: str
+    account_id: str
     ticker: str
     action: str
     quantity: float
@@ -108,6 +113,29 @@ class FillItem(BaseModel):
 class FillsResponse(BaseModel):
     rows: list[FillItem]
     total: int
+
+
+class ManualFillRequest(BaseModel):
+    user_id: str = "ariel"
+    broker_order_id: str
+    external_fill_id: str
+    quantity: float
+    price: float
+    commission: float = 0.0
+    filled_at: datetime | None = None
+
+
+class ManualFillResponse(BaseModel):
+    fill_id: int
+    created: bool
+    proposal_id: int
+    proposal_status: str
+    pending_order_id: int
+    pending_status: str
+    broker: str
+    account_id: str
+    filled_quantity: float
+    target_quantity: float
 
 
 class AuditItem(BaseModel):
@@ -309,6 +337,8 @@ async def list_fills(
                     proposal_id=r.proposal_id,
                     broker=r.broker,
                     broker_order_id=r.broker_order_id,
+                    external_fill_id=r.external_fill_id,
+                    account_id=r.account_id,
                     ticker=r.ticker,
                     action=r.action,
                     quantity=float(r.quantity),
@@ -321,6 +351,42 @@ async def list_fills(
             ],
             total=int(total),
         )
+
+
+@router.post(
+    "/proposals/{proposal_id}/manual-fill",
+    response_model=ManualFillResponse,
+)
+async def capture_manual_fill(
+    proposal_id: int,
+    body: ManualFillRequest,
+) -> ManualFillResponse:
+    """Record a broker-confirmed fill for a read-only Schwab/Leumi account."""
+    from argosy.execution.manual_fills import record_manual_fill
+
+    async with db_mod.get_session(user_id=body.user_id) as session:
+        try:
+            result = await record_manual_fill(
+                session,
+                user_id=body.user_id,
+                proposal_id=proposal_id,
+                broker_order_id=body.broker_order_id,
+                external_fill_id=body.external_fill_id,
+                quantity=body.quantity,
+                price=body.price,
+                commission=body.commission,
+                filled_at=body.filled_at,
+            )
+        except LookupError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ManualFillResponse(**result.__dict__)
 
 
 @router.get("/audit", response_model=AuditResponse)

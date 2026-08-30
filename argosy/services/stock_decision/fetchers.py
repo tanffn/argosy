@@ -22,6 +22,7 @@ sync-safe; keep this cache-using until then — do not bypass the cache.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -39,6 +40,8 @@ _last_finnhub_call_at = 0.0
 # Shared adapter — one client for the process (resolves key once).
 _adapter_lock = threading.Lock()
 _shared_adapter: Any | None = None
+_yfinance_adapter_lock = threading.Lock()
+_shared_yfinance_adapter_instance: Any | None = None
 
 # Process-local TTL mirror (avoids hammering SQLite on every ticker in a job).
 _mem_cache: dict[str, tuple[float, Any]] = {}
@@ -57,6 +60,17 @@ def _shared_finnhub_adapter() -> Any:
 
             _shared_adapter = FinnhubAdapter()
         return _shared_adapter
+
+
+def _shared_yfinance_adapter() -> Any:
+    """One lazily-created Yahoo adapter for synchronous review fetches."""
+    global _shared_yfinance_adapter_instance
+    with _yfinance_adapter_lock:
+        if _shared_yfinance_adapter_instance is None:
+            from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+
+            _shared_yfinance_adapter_instance = YFinanceAdapter()
+        return _shared_yfinance_adapter_instance
 
 
 def _throttle_finnhub() -> None:
@@ -220,8 +234,129 @@ def _cached_finnhub_fetch(
     return payload
 
 
+def _cached_yfinance_fetch(
+    *,
+    cache_key: str,
+    ttl_seconds: int,
+    outcome_name: str,
+    target: str,
+    fetch: Callable[[], Any],
+) -> Any:
+    """Sync Yahoo cache path for the worker-thread holdings review."""
+    mem_key = f"yfinance:{cache_key}"
+    mem = _mem_get(mem_key)
+    if mem is not None:
+        return mem
+    db_hit = _sync_kv_get("yfinance", cache_key)
+    if db_hit is not None:
+        _mem_set(mem_key, db_hit, ttl_seconds)
+        return db_hit
+
+    from argosy.services.adapter_outcomes import track_adapter_call
+
+    with track_adapter_call(outcome_name, target=target) as outcome:
+        payload = fetch()
+        try:
+            outcome.set_payload_size_bytes(
+                len(json.dumps(payload, default=str)) if payload is not None else 0
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    _mem_set(mem_key, payload, ttl_seconds)
+    try:
+        _sync_kv_put("yfinance", cache_key, payload, ttl_seconds=ttl_seconds)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
+def _yahoo_news(ticker: str, *, max_items: int) -> str | None:
+    """Yahoo company-news fallback, preserving source and publication time."""
+    from argosy.adapters.data.symbols import to_yahoo_symbol
+
+    yf_symbol = to_yahoo_symbol(ticker)
+
+    def _fetch() -> list[Any]:
+        client = _shared_yfinance_adapter()._resolve_client()
+        instrument = client.Ticker(yf_symbol)
+        getter = getattr(instrument, "get_news", None)
+        if callable(getter):
+            try:
+                return list(getter(count=max_items, tab="news") or [])
+            except TypeError:
+                return list(getter() or [])
+        return list(getattr(instrument, "news", None) or [])
+
+    raw = _cached_yfinance_fetch(
+        cache_key=f"company_news:{yf_symbol}",
+        ttl_seconds=60 * 15,
+        outcome_name="yfinance_news",
+        target=ticker,
+        fetch=_fetch,
+    )
+    rendered: list[str] = []
+    for item in list(raw or [])[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content") if isinstance(item.get("content"), dict) else item
+        title = str(content.get("title") or content.get("headline") or "").strip()
+        if not title:
+            continue
+        published = content.get("pubDate") or item.get("providerPublishTime")
+        if isinstance(published, (int, float)):
+            published = datetime.fromtimestamp(published, tz=timezone.utc).date().isoformat()
+        suffix = f" [{published}]" if published else ""
+        rendered.append(f"{title}{suffix}")
+    if not rendered:
+        return None
+    return "source=yfinance; " + "; ".join(rendered)
+
+
+def _yahoo_fundamentals(ticker: str) -> str | None:
+    """Yahoo fundamentals fallback used when Finnhub is absent/unavailable."""
+    from argosy.adapters.data.symbols import to_yahoo_symbol
+
+    yf_symbol = to_yahoo_symbol(ticker)
+
+    def _fetch() -> dict[str, Any]:
+        client = _shared_yfinance_adapter()._resolve_client()
+        instrument = client.Ticker(yf_symbol)
+        info = getattr(instrument, "info", None) or {}
+        return info if isinstance(info, dict) else {}
+
+    info = _cached_yfinance_fetch(
+        cache_key=f"review_fundamentals:{yf_symbol}",
+        ttl_seconds=60 * 60,
+        outcome_name="yfinance_review_fundamentals",
+        target=ticker,
+        fetch=_fetch,
+    )
+    if not isinstance(info, dict) or not info:
+        return None
+    parts: list[str] = []
+    for label, key in (
+        ("PE(TTM)", "trailingPE"),
+        ("forwardPE", "forwardPE"),
+        ("mktCap", "marketCap"),
+        ("revGrowth", "revenueGrowth"),
+        ("earningsGrowth", "earningsGrowth"),
+        ("profitMargin", "profitMargins"),
+        ("beta", "beta"),
+        ("dividendYield", "dividendYield"),
+    ):
+        value = info.get(key)
+        if value is not None:
+            parts.append(f"{label}={value}")
+    if not parts:
+        return None
+    return (
+        f"source=yfinance; as_of={_utcnow().date().isoformat()}; "
+        + "; ".join(parts)
+    )
+
+
 def news_fetcher(ticker: str, *, lookback_days: int = 14, max_items: int = 5) -> str | None:
-    """Recent company-news headlines for ``ticker`` via finnhub (sync, cached)."""
+    """Recent company news: Finnhub primary, Yahoo fallback (sync, cached)."""
     try:
         today = date.today()
         start = today - timedelta(days=lookback_days)
@@ -242,20 +377,30 @@ def news_fetcher(ticker: str, *, lookback_days: int = 14, max_items: int = 5) ->
             fetch=_fetch,
         )
         if not raw:
-            return None
+            return _yahoo_news(ticker, max_items=max_items)
         heads = [
             (item.get("headline") or "").strip()
             for item in raw[:max_items]
             if isinstance(item, dict) and item.get("headline")
         ]
-        return "; ".join(h for h in heads if h) or None
+        rendered = "; ".join(h for h in heads if h)
+        return f"source=finnhub; {rendered}" if rendered else _yahoo_news(
+            ticker, max_items=max_items
+        )
     except Exception as exc:  # noqa: BLE001 — best-effort; absent field is fine
         log.info("stock_decision.news_fetch_miss", ticker=ticker, err=str(exc)[:160])
-        return None
+        try:
+            return _yahoo_news(ticker, max_items=max_items)
+        except Exception as fallback_exc:  # noqa: BLE001
+            log.info(
+                "stock_decision.news_fallback_miss",
+                ticker=ticker, err=str(fallback_exc)[:160],
+            )
+            return None
 
 
 def fundamentals_fetcher(ticker: str) -> str | None:
-    """Compact fundamentals snapshot via finnhub basic financials (sync, cached)."""
+    """Compact fundamentals: Finnhub primary, Yahoo fallback (sync, cached)."""
     try:
         from argosy.adapters.data.symbols import to_finnhub_symbol
 
@@ -276,7 +421,7 @@ def fundamentals_fetcher(ticker: str) -> str | None:
         )
         metric = raw.get("metric") if isinstance(raw, dict) else None
         if not isinstance(metric, dict) or not metric:
-            return None
+            return _yahoo_fundamentals(ticker)
         parts = []
         for label, key in (
             ("PE(TTM)", "peTTM"),
@@ -289,13 +434,24 @@ def fundamentals_fetcher(ticker: str) -> str | None:
             v = metric.get(key)
             if v is not None:
                 parts.append(f"{label}={v}")
-        return "; ".join(parts) if parts else None
+        return (
+            f"source=finnhub; {'; '.join(parts)}"
+            if parts
+            else _yahoo_fundamentals(ticker)
+        )
     except Exception as exc:  # noqa: BLE001
         log.info(
             "stock_decision.fundamentals_fetch_miss",
             ticker=ticker, err=str(exc)[:160],
         )
-        return None
+        try:
+            return _yahoo_fundamentals(ticker)
+        except Exception as fallback_exc:  # noqa: BLE001
+            log.info(
+                "stock_decision.fundamentals_fallback_miss",
+                ticker=ticker, err=str(fallback_exc)[:160],
+            )
+            return None
 
 
 def sentiment_fetcher(ticker: str) -> str | None:
@@ -491,14 +647,225 @@ def make_thesis_fetcher(db: Any, user_id: str) -> Callable[[str], "str | None"]:
     return _fetch
 
 
+def make_earnings_calendar_fetcher(
+    db: Any,
+    user_id: str,
+) -> Callable[[str], "str | None"]:
+    """Return the latest durable per-ticker earnings check for verdict input."""
+    from sqlalchemy import select
+
+    from argosy.state.models import EarningsCoverageReceipt
+
+    def _fetch(ticker: str) -> str | None:
+        if db is None:
+            return None
+        row = db.execute(
+            select(EarningsCoverageReceipt)
+            .where(
+                EarningsCoverageReceipt.user_id == user_id,
+                EarningsCoverageReceipt.ticker == ticker.strip().upper(),
+                EarningsCoverageReceipt.provider == "yfinance",
+            )
+            .order_by(
+                EarningsCoverageReceipt.checked_at.desc(),
+                EarningsCoverageReceipt.id.desc(),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        parts = [
+            "source=yfinance_earnings_calendar",
+            f"checked_at={row.checked_at.isoformat()}",
+            f"status={row.status}",
+            f"source_url={row.source_url}",
+        ]
+        if row.latest_reported_at is not None:
+            parts.append(
+                f"latest_reported_at={row.latest_reported_at.isoformat()}"
+            )
+        if row.next_scheduled_at is not None:
+            parts.append(
+                f"next_scheduled_at={row.next_scheduled_at.isoformat()}"
+            )
+        if row.error_message:
+            parts.append(f"error={row.error_message[:240]}")
+        if row.events_json and row.events_json != "[]":
+            parts.append(f"events={row.events_json[:2400]}")
+        return "; ".join(parts)
+
+    return _fetch
+
+
+def make_earnings_filing_fetcher(
+    db: Any,
+    user_id: str,
+) -> Callable[[str], "str | None"]:
+    """Return the latest durable primary SEC results-filing receipt."""
+    from sqlalchemy import select
+
+    from argosy.state.models import EarningsCoverageReceipt
+
+    def _fetch(ticker: str) -> str | None:
+        if db is None:
+            return None
+        row = db.execute(
+            select(EarningsCoverageReceipt)
+            .where(
+                EarningsCoverageReceipt.user_id == user_id,
+                EarningsCoverageReceipt.ticker == ticker.strip().upper(),
+                EarningsCoverageReceipt.provider == "sec_edgar",
+            )
+            .order_by(
+                EarningsCoverageReceipt.checked_at.desc(),
+                EarningsCoverageReceipt.id.desc(),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        parts = [
+            "source=sec_edgar_primary_filing",
+            f"checked_at={row.checked_at.isoformat()}",
+            f"status={row.status}",
+            f"source_url={row.source_url}",
+        ]
+        if row.latest_reported_at is not None:
+            parts.append(f"latest_filing_at={row.latest_reported_at.isoformat()}")
+        if row.error_message:
+            parts.append(f"error={row.error_message[:240]}")
+        if row.events_json and row.events_json != "[]":
+            parts.append(f"filings={row.events_json[:4000]}")
+        return "; ".join(parts)
+
+    return _fetch
+
+
+def make_tax_context_fetcher(
+    db: Any,
+    user_id: str,
+    *,
+    price_context: Callable[[str], str | None] | None = None,
+) -> Callable[[str], "str | None"]:
+    """Return authoritative sale-tax context when Argosy actually has it.
+
+    NVDA uses the ingested Section-102/ESPP simulation and its canonical
+    revaluation engine. Generic broker lots are described honestly and are not
+    called actionable when basis is zero/missing.
+    """
+    from sqlalchemy import select
+
+    from argosy.state.models import Lot
+
+    def _fetch(ticker: str) -> str | None:
+        if db is None:
+            return None
+        symbol = ticker.strip().upper()
+        if symbol == "NVDA":
+            from argosy.services.tax_simulation_ingest import (
+                eligible_shares,
+                eligibility_schedule,
+                realization_tax_summary,
+            )
+
+            price_text = (price_context or price_fetcher)(symbol) or ""
+            price_match = re.search(
+                r"\blast(?:\s+price\s+|=)([0-9]+(?:\.[0-9]+)?)",
+                price_text,
+            )
+            current_price = float(price_match.group(1)) if price_match else None
+            aggregate = realization_tax_summary(
+                db,
+                user_id,
+                current_nvda_price_usd=current_price,
+            )
+            if aggregate is None:
+                return None
+            eligible = eligible_shares(db, user_id, eligible=True) or 0.0
+            breaking = eligible_shares(db, user_id, eligible=False) or 0.0
+            schedule_by_date: dict[str, float] = {}
+            for tranche in eligibility_schedule(db, user_id):
+                key = tranche.eligible_date.isoformat()
+                schedule_by_date[key] = schedule_by_date.get(key, 0.0) + tranche.shares
+            next_dates = ",".join(
+                f"{when}:{shares:.0f}sh"
+                for when, shares in sorted(schedule_by_date.items())[:3]
+            ) or "none"
+            effective_rate = (
+                aggregate.embedded_tax_at_revalue_usd
+                / aggregate.gross_at_revalue_usd
+                if aggregate.gross_at_revalue_usd > 0
+                else 0.0
+            )
+            return (
+                "source=authoritative_section_102_tax_engine; "
+                f"simulation_date={aggregate.simulation_date}; "
+                f"price_basis={'current' if aggregate.uses_current_price else 'simulation'}; "
+                f"mark_usd={aggregate.revalue_price_usd:.2f}; "
+                f"covered_shares={aggregate.total_shares:.0f}; "
+                f"eligible_now_shares={eligible:.0f}; "
+                f"breaking_now_shares={breaking:.0f}; "
+                f"full_position_gross_usd={aggregate.gross_at_revalue_usd:.2f}; "
+                f"full_position_tax_usd={aggregate.embedded_tax_at_revalue_usd:.2f}; "
+                f"full_position_net_usd={aggregate.net_at_revalue_usd:.2f}; "
+                f"effective_tax_on_gross={effective_rate:.6f}; "
+                f"incomplete_shares={aggregate.incomplete_lot_shares:.0f}; "
+                f"next_eligibility={next_dates}; "
+                "exact partial-sale sizing must call resolve_authoritative_sale"
+            )
+
+        lots = db.execute(
+            select(Lot).where(
+                Lot.user_id == user_id,
+                Lot.ticker == symbol,
+            )
+        ).scalars().all()
+        if not lots:
+            return None
+        quantity = sum(float(row.quantity or 0.0) for row in lots)
+        basis = sum(float(row.cost_basis_usd or 0.0) for row in lots)
+        complete = bool(lots) and all(
+            float(row.quantity or 0.0) > 0
+            and float(row.cost_basis_usd or 0.0) > 0
+            for row in lots
+        )
+        return (
+            "source=broker_tax_lots; "
+            f"status={'authoritative' if complete else 'incomplete'}; "
+            f"lot_count={len(lots)}; covered_shares={quantity:.4f}; "
+            f"cost_basis_usd={basis:.2f}; "
+            + (
+                "exact partial sale can use canonical HIFO after-tax resolver"
+                if complete
+                else "zero/missing basis prevents actionable after-tax proceeds"
+            )
+        )
+
+    return _fetch
+
+
 def default_fetchers(db: Any, user_id: str) -> dict[str, Callable[[str], "str | None"]]:
     """The live fetcher registry for a holdings review / candidate decision."""
+    price_evidence: dict[str, str | None] = {}
+
+    def _price(ticker: str) -> str | None:
+        value = price_fetcher(ticker)
+        price_evidence[ticker.strip().upper()] = value
+        return value
+
     return {
         "news": news_fetcher,
+        "earnings_calendar": make_earnings_calendar_fetcher(db, user_id),
+        "earnings_filing": make_earnings_filing_fetcher(db, user_id),
         "fundamentals": fundamentals_fetcher,
         "sentiment": sentiment_fetcher,
-        "price": price_fetcher,
+        "price": _price,
         "thesis": make_thesis_fetcher(db, user_id),
+        "tax": make_tax_context_fetcher(
+            db,
+            user_id,
+            price_context=lambda ticker: price_evidence.get(ticker.strip().upper()),
+        ),
     }
 
 
@@ -508,6 +875,9 @@ __all__ = [
     "fundamentals_fetcher",
     "sentiment_fetcher",
     "make_thesis_fetcher",
+    "make_earnings_calendar_fetcher",
+    "make_earnings_filing_fetcher",
+    "make_tax_context_fetcher",
     "default_fetchers",
     "render_instrument_monitoring_meta",
 ]

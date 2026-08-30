@@ -26,7 +26,6 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.logging import get_logger
@@ -151,9 +150,9 @@ class PlanWatcherLoop(CadenceLoop):
         def _run() -> int:
             settings = get_settings()
             sync_url = settings.database_url.replace("+aiosqlite", "")
-            engine = sa.create_engine(
-                sync_url, connect_args={"check_same_thread": False}
-            )
+            from argosy.state.db import create_sync_engine
+
+            engine = create_sync_engine(sync_url)
             SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
             sess = SessionLocal()
             try:

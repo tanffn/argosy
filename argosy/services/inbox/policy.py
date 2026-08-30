@@ -97,7 +97,7 @@ def assign_bucket(item: InboxItem, policy: InboxPolicy = DEFAULT_POLICY) -> Prio
         # TODAY / DUE_SOON / UPCOMING are all dated plan commitments.
         return PriorityBucket.PLAN_COMMITMENT
 
-    if kind in ("trade", "discovery_buy", "switch"):
+    if kind in ("trade", "order_sheet", "discovery_buy", "switch"):
         expiring = sig.get("expiring_in_days")
         if expiring is not None and expiring <= policy.expiring_soon_days:
             return PriorityBucket.OVERDUE_BLOCKING
@@ -217,6 +217,8 @@ def rank_reason(item: InboxItem, bucket: PriorityBucket) -> str:
         return "Idle cash above your plan target."
 
     if bucket == PriorityBucket.OPPORTUNITY:
+        if item.kind == "order_sheet":
+            return f"One validated trade plan is waiting for your decision{amount_clause}."
         if item.kind == "note" and sig.get("decision_required"):
             return f"Waiting on your decision — accepting changes your plan{amount_clause}."
         conviction = str(sig.get("conviction", "")).upper()

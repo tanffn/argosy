@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from argosy.agents.stock_decision import (
     StockDecisionAgent,
     StockDecisionOutput,
+    bundle_has_sufficient_evidence,
     decide_stock,
+    evidence_field_is_usable,
     is_actionable,
 )
 
@@ -38,6 +40,12 @@ def test_prompt_marks_absent_bundle_fields():
     )
     assert "Recent news: legal headwinds" in user
     assert "Fundamentals: (not available)" in user  # absent field named explicitly
+
+
+def test_empty_provider_receipt_does_not_masquerade_as_research_evidence():
+    empty = "source=sec_edgar_primary_filing; checked_at=now; status=empty"
+    assert evidence_field_is_usable(empty) is False
+    assert bundle_has_sufficient_evidence({"earnings_filing": empty}) is False
 
 
 def test_decide_stock_uses_injected_agent():

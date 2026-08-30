@@ -1,18 +1,76 @@
 """Block H — instrument→plan-class mapping precedence + no US-broad dump."""
 from __future__ import annotations
 
+import json
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+from sqlalchemy.orm import Session
+
+from argosy.agents.base import ModelCall
+from argosy.agents.instrument_plan_classifier import InstrumentPlanClassifierAgent
 from argosy.services.allocation_breakdown import build_allocation_breakdown
 from argosy.services.instrument_plan_class import (
     CASH_LABEL,
-    UNMAPPED_LABEL,
-    ClassificationEntry,
     SOURCE_FLEET,
     SOURCE_OWNER,
-    SOURCE_PLAN,
+    UNMAPPED_LABEL,
+    ClassificationEntry,
+    classify_unmapped_held,
+    load_classification_map,
+    owner_reassign,
     resolve_sleeve_label,
 )
+from argosy.state.models import PlanVersion, PortfolioSnapshotRow, User
+
+
+@pytest.mark.real_seam
+def test_real_classifier_agent_dispatch_parses_complete_batch(monkeypatch):
+    """Exercise BaseAgent.run; replace only the external model call."""
+
+    async def fake_call(self, *, system, user, **kwargs):
+        assert "CURRENT PLAN CLASSES" in user
+        assert "every instrument" in system
+        return ModelCall(
+            text=json.dumps({
+                "decisions": [{
+                    "symbol": "CMPS",
+                    "plan_class_label": "High-growth / high-potential",
+                    "confidence": "HIGH",
+                    "what_it_is": "A clinical-stage biotechnology company.",
+                    "why_held": "A bounded single-name convexity position.",
+                }]
+            }),
+            tokens_in=10,
+            tokens_out=10,
+            model="test-model",
+        )
+
+    monkeypatch.setattr(InstrumentPlanClassifierAgent, "_call_model", fake_call)
+    report = InstrumentPlanClassifierAgent(user_id="ariel").run_sync(
+        plan_classes=[{"label": "High-growth / high-potential"}],
+        instruments=[{"symbol": "CMPS", "asset_type": "Equity"}],
+    )
+    assert report.output.decisions[0].symbol == "CMPS"
+    assert report.output.decisions[0].plan_class_label == "High-growth / high-potential"
+
+
+@pytest.mark.real_seam
+def test_owner_reassignment_survives_real_migrated_schema(alembic_engine_at_head):
+    with Session(alembic_engine_at_head) as session:
+        owner_reassign(
+            session,
+            "ariel",
+            "IWQU",
+            "Global quality factor",
+            why_held="Owner-approved diversified factor exposure.",
+        )
+        session.commit()
+        loaded = load_classification_map(session, "ariel")
+
+    assert loaded["IWQU"].source == SOURCE_OWNER
+    assert loaded["IWQU"].plan_class_label == "Global quality factor"
 
 
 def _entry(label: str, source: str) -> ClassificationEntry:
@@ -75,6 +133,113 @@ def test_cash_structural_shortcut():
     assert resolve_sleeve_label("-", asset_type="Cash").startswith("Cash")
 
 
+@pytest.mark.real_seam
+def test_fleet_batch_automatically_classifies_unmapped_held_symbol(
+    alembic_engine_at_head,
+):
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc,
+        AllocationInstrument,
+        GlideWaypoint,
+        TargetAllocationDoc,
+    )
+
+    doc = TargetAllocationDoc(
+        schema_version=1,
+        anchor_sigma=0.3,
+        blended_sigma=0.3,
+        nvda_cap_pct=13.0,
+        fi_pct=0.0,
+        provenance="test",
+        classes=[
+            AllocationClassDoc(
+                label="High-growth / high-potential",
+                snapshot_category="Individual Stocks",
+                sigma_class="high_growth_basket",
+                target_pct=100.0,
+                instruments=[
+                    AllocationInstrument(
+                        symbol="ACHR",
+                        role="primary",
+                        weight_within_class_pct=100.0,
+                        domicile="US",
+                    )
+                ],
+                rationale="Bounded convex moonshot sleeve.",
+            )
+        ],
+        glide=[
+            GlideWaypoint(
+                quarter=0,
+                date=date(2026, 8, 27),
+                composition_pct_by_class={"High-growth / high-potential": 100.0},
+            )
+        ],
+    )
+
+    def classifier(*, plan_classes, instruments):
+        assert {row["symbol"] for row in instruments} == {"CMPS"}
+        assert plan_classes[0]["label"] == "High-growth / high-potential"
+        return SimpleNamespace(decisions=[SimpleNamespace(
+            symbol="CMPS",
+            plan_class_label="High-growth / high-potential",
+            confidence="HIGH",
+            what_it_is="Compass Pathways, a clinical-stage biotechnology company.",
+            why_held="A bounded single-name convexity position in the moonshot sleeve.",
+        )])
+
+    with Session(alembic_engine_at_head) as session:
+        session.merge(User(id="ariel"))
+        session.add(PlanVersion(
+            user_id="ariel",
+            version_label="current-test",
+            source_path="test",
+            raw_markdown="test",
+            role="current",
+            target_allocation_json=doc.model_dump_json(),
+        ))
+        session.add(PortfolioSnapshotRow(
+            user_id="ariel",
+            snapshot_date=date(2026, 8, 27),
+            imported_at=datetime.now(timezone.utc),
+            source_path="test",
+            positions_json=json.dumps([{
+                "location": "Schwab",
+                "currency": "USD",
+                "asset_type": "Equity",
+                "details": "Compass Pathways",
+                "symbol": "CMPS",
+                "shares": 1500.0,
+                "current_price": 14.0,
+                "current_value_local": 21000.0,
+                "usd_value_k": 21.0,
+            }]),
+            allocations_json="[]",
+            nvda_sales_json="[]",
+            real_estate_json="[]",
+            pensions_json="[]",
+            totals_json=json.dumps({"total_usd_value_k": 21.0}),
+            parse_warnings_json="[]",
+        ))
+        session.commit()
+
+        result = classify_unmapped_held(
+            session,
+            "ariel",
+            classifier=classifier,
+        )
+        loaded = load_classification_map(session, "ariel")
+
+    assert result == {
+        "classified": 1,
+        "unmapped": [],
+        "reason": "fleet_batch",
+        "mode": "injected",
+    }
+    assert loaded["CMPS"].source == SOURCE_FLEET
+    assert loaded["CMPS"].plan_class_label == "High-growth / high-potential"
+
+
 def test_ibta_plan_first_cash():
     """Acceptance correction: IBTA stays wherever the plan puts it."""
     plan = {"IBTA": CASH_LABEL}
@@ -109,8 +274,12 @@ def test_breakdown_uses_map_not_asset_type_dump():
         ),
     }
     from datetime import date
+
     from argosy.services.target_allocation_doc import (
-        AllocationClassDoc, AllocationInstrument, GlideWaypoint, TargetAllocationDoc,
+        AllocationClassDoc,
+        AllocationInstrument,
+        GlideWaypoint,
+        TargetAllocationDoc,
     )
 
     def cls(label, sym, pct):

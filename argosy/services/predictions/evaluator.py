@@ -794,11 +794,13 @@ def _compute_outcome(
         "fixed_lookahead_7d",
         "fixed_lookahead_30d",
         "fixed_lookahead_180d",
+        "order_sheet_due_date_v1",
     ):
         windows = {
             "fixed_lookahead_7d": 7,
             "fixed_lookahead_30d": 30,
             "fixed_lookahead_180d": 180,
+            "order_sheet_due_date_v1": int(prediction.timeframe_days or 1),
         }
         return _score_fixed_lookahead(
             prediction,

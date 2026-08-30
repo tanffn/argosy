@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.logging import get_logger
+from argosy.orchestrator.cost_guard import get_cost_guard
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.jobs.registry import JobMetadata
 from argosy.services.signal_streams.base import SignalStream
@@ -45,14 +46,10 @@ def signal_streams_daily_metadata() -> JobMetadata:
 
 
 def _default_session_factory() -> sessionmaker:
-    import sqlalchemy as sa
-
     from argosy.state import db as db_mod
 
     url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
-    engine = sa.create_engine(
-        url, connect_args={"check_same_thread": False}
-    )
+    engine = db_mod.create_sync_engine(url)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -67,6 +64,7 @@ def _default_streams(user_id: str) -> list[SignalStream]:
     if gov.enabled:
         streams.append(
             GovContractsStream(
+                user_id=user_id,
                 config=GovContractsConfig(
                     materiality_threshold=gov.materiality_threshold,
                     lookback_days=gov.lookback_days,
@@ -295,6 +293,14 @@ class SignalStreamsDailyLoop(CadenceLoop):
     async def tick(
         self, *, now: Callable[[], datetime] | None = None
     ) -> dict[str, Any]:
+        if await get_cost_guard(
+            user_id=self.user_id
+        ).should_pause_non_routine(loop_name=self.name):
+            _log.info(
+                "signal_streams_daily.cost_guard_paused",
+                user_id=self.user_id,
+            )
+            return {"status": "paused", "reason": "cost_cap"}
         now_dt = (now or (lambda: datetime.now(UTC)))()
         if now_dt.tzinfo is None:
             now_dt = now_dt.replace(tzinfo=UTC)

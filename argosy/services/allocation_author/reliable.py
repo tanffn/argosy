@@ -29,13 +29,18 @@ from __future__ import annotations
 import concurrent.futures as _cf
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from argosy.logging import get_logger
 from argosy.services.allocation_author.flow import AuthorOutcome, run_allocation_author
 from argosy.services.allocation_author.proposal import AllocationProposal
-from argosy.services.allocation_author.verifier import GateReport, verify_allocation_proposal
+from argosy.services.allocation_author.verifier import (
+    GateReport,
+    GateStatus,
+    verify_allocation_proposal,
+)
 from argosy.services.fleet_reliability import (
     CircuitBreaker,
     _kill_claude_children,
@@ -50,7 +55,10 @@ class AuthorTimeout(RuntimeError):
 
 @dataclass
 class ReliabilityConfig:
-    hard_timeout_s: float = 150.0        # per-attempt wall clock (not FM's 900s)
+    # Includes one schema-correction turn. Live author calls are ~90s each, so
+    # 150s killed valid corrections before they could finish; still bounded far
+    # below the old 900s soft timeout.
+    hard_timeout_s: float = 240.0
     retries: int = 1                     # extra attempts on transient failure (fresh process)
     breaker_fail_threshold: int = 3
     breaker_cooldown_s: float = 300.0
@@ -83,7 +91,18 @@ def packet_hash(packet: dict[str, Any]) -> str:
 
 
 def _invoke_agent(agent: Any, packet: dict[str, Any], feedback: list | None) -> AllocationProposal:
-    report = agent.run_sync(packet=packet, feedback=feedback)
+    decision_id = f"deploy-{packet_hash(packet)[:24]}"
+    report = agent.run_sync(
+        packet=packet,
+        feedback=feedback,
+        decision_id=decision_id,
+    )
+    from argosy.agents.base import AgentReport
+
+    if isinstance(report, AgentReport):
+        from argosy.services.agent_report_persistence import persist_agent_report_sync
+
+        persist_agent_report_sync(report, decision_id=decision_id)
     return report.output
 
 
@@ -159,20 +178,46 @@ def authored_allocation(
 
     key = packet_hash(packet)
     cached = cache.get(key)
+    cached_feedback: list = []
     if cached is not None:
         _log.info("deployment_author.cache_hit")
-        return AuthorOutcome(status="accepted", proposal=cached,
-                             report=verify(cached, packet), attempts=0)
+        cached_report = verify(cached, packet)
+        if cached_report.status == GateStatus.ACCEPT:
+            return AuthorOutcome(
+                status="accepted", proposal=cached, report=cached_report, attempts=0
+            )
+        # A cache hit is never an approval. Reviewers and policy can change while
+        # the raw packet remains byte-identical; send today's objections to a
+        # fresh author pass and replace the stale entry only after reconciliation.
+        cached_feedback = list(cached_report.failures or [])
+        cache.pop(key, None)
+        _log.info(
+            "deployment_author.cache_rejected_by_current_review",
+            failures=len(cached_feedback),
+        )
 
     def reliable_author_fn(pkt: dict[str, Any], feedback: list | None) -> AllocationProposal | None:
         if not breaker.allow():
             _log.warning("deployment_author.circuit_open_short_circuit")
             return None  # → flow: unavailable → degraded fallback
         last_exc: Exception | None = None
+        effective_feedback = list(cached_feedback)
+        seen = {
+            (getattr(item, "code", ""), getattr(item, "detail", str(item)))
+            for item in effective_feedback
+        }
+        for item in feedback or []:
+            key = (getattr(item, "code", ""), getattr(item, "detail", str(item)))
+            if key not in seen:
+                effective_feedback.append(item)
+                seen.add(key)
         for attempt in range(cfg.retries + 1):
             try:
                 proposal = run_author(
-                    factory, pkt, feedback, hard_timeout_s=cfg.hard_timeout_s
+                    factory,
+                    pkt,
+                    effective_feedback or None,
+                    hard_timeout_s=cfg.hard_timeout_s,
                 )
                 breaker.record_success()
                 return proposal

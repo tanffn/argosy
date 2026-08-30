@@ -28,6 +28,25 @@ def test_blank_type_us_etf_resolves_by_ticker():
     assert ref.region == REGION_US
 
 
+def test_current_us_factor_and_sector_funds_are_collective_and_estate_exposed():
+    from argosy.services.instrument_reference import estate_safe_for
+
+    for ticker, sector in (("AVUV", "Value"), ("VHT", "Healthcare")):
+        ref = lookup(ticker)
+        assert ref is not None
+        assert ref.structure == "ETF"
+        assert ref.sector == sector
+        assert ref.region == REGION_US
+        assert estate_safe_for(ticker) is False
+
+    reet = lookup("REET")
+    assert reet is not None
+    assert reet.structure == "ETF"
+    assert reet.asset_class == "Real Estate"
+    assert reet.region != REGION_US  # global exposure, US-domiciled wrapper
+    assert estate_safe_for("REET") is False
+
+
 def test_tase_ticker_is_israel():
     ref = lookup('מחקה ת"א-200', 'ATF מחקה ת"א-200')
     assert ref is not None

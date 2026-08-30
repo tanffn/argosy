@@ -107,6 +107,12 @@ class LotTaxAggregate:
     # net_proceeds_usd, or breaking lots with no ordinary_income_usd for revaluation).
     # Non-zero → tax figures cover FEWER shares than total_shares; confidence degrades.
     incomplete_lot_shares: float = 0.0
+    # Explicit selected-lot economics at the revalued price. Section-102 mixes
+    # ordinary and capital income, so a single mental-model CGT rate is not an
+    # auditable substitute for these components.
+    cost_basis_at_revalue_usd: float = 0.0
+    capital_income_at_revalue_usd: float = 0.0
+    ordinary_income_at_revalue_usd: float = 0.0
 
 
 def is_tax_simulation_workbook(path: str) -> bool:
@@ -287,6 +293,9 @@ class _ScaledLot:
     #: "no tax-sim report ingested" — a message that hid a crash behind
     #: apparently-absent data.
     capital_income_usd: float | None
+    # Per-share paid/grant basis; unlike income totals this is carried, not
+    # multiplied by the partial-lot fraction.
+    cost_basis_usd: float | None
     eligible: bool
 
 
@@ -328,6 +337,7 @@ def _cap_group_shares(lots: list, *, eligible: bool, max_shares: float | None) -
                 capital_income_usd=(
                     lot.capital_income_usd * frac if lot.capital_income_usd is not None else None
                 ),
+                cost_basis_usd=lot.cost_basis_usd,
                 eligible=eligible,
             ))
             remaining = 0.0
@@ -360,6 +370,7 @@ def _relabel_for_as_of(lots: list, as_of: date) -> list:
                 # Carried, not scaled: relabelling changes only the eligibility
                 # flag, never the lot's size or its income split.
                 capital_income_usd=lot.capital_income_usd,
+                cost_basis_usd=lot.cost_basis_usd,
                 eligible=eligible,
             ))
     return out
@@ -485,6 +496,18 @@ def realization_tax_summary(
     gross_at_sim = sum(l.shares * sim_price for l in complete_lots)
     net_at_sim = sum(l.net_proceeds_usd for l in complete_lots)
     embedded_tax_at_sim = gross_at_sim - net_at_sim
+    selected_cost_basis = sum(
+        float(getattr(lot, "cost_basis_usd", 0.0) or 0.0) * float(lot.shares)
+        for lot in complete_lots
+    )
+    capital_income_at_sim = sum(
+        float(getattr(lot, "capital_income_usd", 0.0) or 0.0)
+        for lot in complete_lots
+    )
+    ordinary_income_at_sim = sum(
+        float(getattr(lot, "ordinary_income_usd", 0.0) or 0.0)
+        for lot in complete_lots
+    )
 
     # Revaluation
     rev_price = current_nvda_price_usd if (
@@ -507,6 +530,9 @@ def realization_tax_summary(
             embedded_tax_at_revalue_usd=embedded_tax_at_sim,
             uses_current_price=False,
             incomplete_lot_shares=incomplete_lot_shares,
+            cost_basis_at_revalue_usd=selected_cost_basis,
+            capital_income_at_revalue_usd=capital_income_at_sim,
+            ordinary_income_at_revalue_usd=ordinary_income_at_sim,
         )
 
     # Revalue each COMPLETE lot at the current price.
@@ -517,6 +543,9 @@ def realization_tax_summary(
     delta_price = rev_price - sim_price
     revalue_embedded_tax = 0.0
     revalue_shares = 0.0  # shares where we could compute the revalued tax
+    revalue_cost_basis = 0.0
+    revalue_capital_income = 0.0
+    revalue_ordinary_income = 0.0
     for lot in complete_lots:
         lot_gross_sim = lot.shares * sim_price
         lot_tax_sim = lot_gross_sim - lot.net_proceeds_usd
@@ -555,6 +584,11 @@ def realization_tax_summary(
             )
             revalue_embedded_tax += lot_tax_rev
             revalue_shares += lot.shares
+            revalue_cost_basis += float(
+                getattr(lot, "cost_basis_usd", 0.0) or 0.0
+            ) * float(lot.shares)
+            revalue_capital_income += lot_capital_rev
+            revalue_ordinary_income += lot_ordinary_income
         else:
             # Breaking lot: the simulation's NI + income-tax stack was computed on the
             # ordinary income = (sale_price − cost_basis) × shares.  This DOES scale
@@ -575,6 +609,10 @@ def realization_tax_summary(
                 lot_tax_rev = r_effective * ordinary_rev
                 revalue_embedded_tax += lot_tax_rev
                 revalue_shares += lot.shares
+                revalue_cost_basis += float(
+                    getattr(lot, "cost_basis_usd", 0.0) or 0.0
+                ) * float(lot.shares)
+                revalue_ordinary_income += ordinary_rev
             else:
                 # Blocker 3: no ordinary income recorded — REFUSE this lot rather than
                 # falling back to the old implied-rate-on-gross formula, which understates
@@ -601,4 +639,7 @@ def realization_tax_summary(
         embedded_tax_at_revalue_usd=revalue_embedded_tax,
         uses_current_price=True,
         incomplete_lot_shares=incomplete_lot_shares,
+        cost_basis_at_revalue_usd=revalue_cost_basis,
+        capital_income_at_revalue_usd=revalue_capital_income,
+        ordinary_income_at_revalue_usd=revalue_ordinary_income,
     )

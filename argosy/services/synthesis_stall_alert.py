@@ -20,8 +20,8 @@ from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
 from argosy.services.synthesis_liveness import (
-    configured_stale_minutes,
     _as_utc,
+    configured_stale_minutes,
 )
 from argosy.state.models import ActionProposal, DecisionPhase, DecisionRun, MonitorFlag
 
@@ -136,17 +136,17 @@ def _persist_stall_alert(
         )
     ).scalar_one_or_none()
     if existing_flag is None:
-        session.add(
-            MonitorFlag(
-                user_id=user_id,
-                kind=STALL_KIND,
-                severity="critical",
-                payload=json.dumps(payload),
-                dedup_key=dedup,
-                status="active",
-                surfaced_at=now_dt,
-            )
+        existing_flag = MonitorFlag(
+            user_id=user_id,
+            kind=STALL_KIND,
+            severity="critical",
+            payload=json.dumps(payload),
+            dedup_key=dedup,
+            status="active",
+            surfaced_at=now_dt,
         )
+        session.add(existing_flag)
+        session.flush()
     else:
         existing_flag.payload = json.dumps(payload)
         existing_flag.surfaced_at = now_dt
@@ -162,6 +162,7 @@ def _persist_stall_alert(
         session.add(
             ActionProposal(
                 user_id=user_id,
+                source_flag_id=existing_flag.id,
                 summary=summary,
                 rationale_md=rationale,
                 suggested_payload=json.dumps(payload),
@@ -181,6 +182,52 @@ def _persist_stall_alert(
         existing_prop.surfaced_at = now_dt
 
     session.flush()
+
+
+def close_resolved_stall_alerts(
+    session: Session,
+    *,
+    user_id: str,
+    now: datetime | None = None,
+) -> list[int]:
+    """Close stall alerts once their decision run is no longer running."""
+    moment = _as_utc(now or datetime.now(UTC))
+    flags = list(
+        session.execute(
+            select(MonitorFlag).where(
+                MonitorFlag.user_id == user_id,
+                MonitorFlag.kind == STALL_KIND,
+                MonitorFlag.status == "active",
+            )
+        ).scalars()
+    )
+    closed_run_ids: list[int] = []
+    for flag in flags:
+        try:
+            run_id = int(json.loads(flag.payload or "{}").get("decision_run_id"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        run = session.get(DecisionRun, run_id)
+        if run is not None and run.status == "running":
+            continue
+        flag.status = "superseded"
+        dedup = STALL_DEDUP.format(user_id=user_id, decision_run_id=run_id)
+        proposals = list(
+            session.execute(
+                select(ActionProposal).where(
+                    ActionProposal.user_id == user_id,
+                    ActionProposal.dedup_key == dedup,
+                    ActionProposal.status == "open",
+                )
+            ).scalars()
+        )
+        for proposal in proposals:
+            proposal.status = "superseded"
+            proposal.decided_at = moment
+            proposal.decided_by_user_note = "synthesis run is no longer running"
+        closed_run_ids.append(run_id)
+    session.flush()
+    return closed_run_ids
 
 
 def write_stall_alerts(
@@ -208,6 +255,7 @@ def write_stall_alerts(
     the log channel), not what persisted — the log line is the alert.
     """
     now_dt = _as_utc(now or datetime.now(UTC))
+    close_resolved_stall_alerts(session, user_id=user_id, now=now_dt)
     stalled = find_stalled_runs(
         session, user_id=user_id, now=now_dt, alert_minutes=alert_minutes,
     )
@@ -262,6 +310,7 @@ def scan_and_alert(
 __all__ = [
     "STALL_KIND",
     "configured_alert_minutes",
+    "close_resolved_stall_alerts",
     "find_stalled_runs",
     "scan_and_alert",
     "write_stall_alerts",

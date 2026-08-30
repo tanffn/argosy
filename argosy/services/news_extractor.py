@@ -100,6 +100,8 @@ _DEFAULT_TRUST: dict[str, Literal["high", "medium", "low"]] = {
     "macro_feed": "high",
     "rss": "medium",
     "discord": "medium",
+    "yf_earnings": "medium",
+    "sec_filing": "high",
 }
 
 # DB CHECK constraint: length(evidence_excerpt) <= 280. We trim at
@@ -122,7 +124,9 @@ class ExtractedSignal:
     Stage 2 analyst in commit #14.
     """
 
-    source: Literal["discord", "rss", "macro_feed"]
+    source: Literal[
+        "discord", "rss", "macro_feed", "yf_earnings", "sec_filing"
+    ]
     source_ref: str
     received_at: datetime
     parsed_tickers: list[str]
@@ -140,7 +144,9 @@ class ExtractedSignal:
 
 def extract(
     *,
-    source: Literal["discord", "rss", "macro_feed"],
+    source: Literal[
+        "discord", "rss", "macro_feed", "yf_earnings", "sec_filing"
+    ],
     source_ref: str,
     raw_text: str,
     received_at: datetime,

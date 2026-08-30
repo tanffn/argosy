@@ -915,6 +915,14 @@ def _position_mark_date(pos: Mapping[str, Any] | dict[str, Any]) -> Any:
     return pos.get("valued_as_of") or pos.get("observed_as_of")
 
 
+def _is_physical_real_estate(pos: Mapping[str, Any] | dict[str, Any]) -> bool:
+    """Physical property is owner-valued, not a security needing daily quotes."""
+
+    asset_type = str(pos.get("asset_type") or "").strip().lower()
+    symbol = _symbol_of(pos)
+    return "real estate" in asset_type and symbol in {"", "-"}
+
+
 def merge_total_book_positions(
     snapshot_positions: Sequence[Any] | None,
     *,
@@ -976,6 +984,13 @@ def merge_total_book_positions(
         soft_ok = tier == "soft"
         at = str(pos.get("asset_type") or "").lower()
         sym = _symbol_of(pos)
+        if _is_physical_real_estate(pos):
+            owner_valued = dict(pos)
+            owner_valued["managed"] = False
+            owner_valued["excluded_from_sleeve_math"] = True
+            owner_valued["mark_stale"] = False
+            refreshed.append(owner_valued)
+            continue
         # Cash / unpriceable / shareless rows: cannot live-reprice. Keep the
         # quantity-shaped row but never pretend the mark is fresh.
         from argosy.services.snapshot_refresh import _PRICEABLE_SYMBOL_RE

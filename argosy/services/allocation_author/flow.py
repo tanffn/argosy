@@ -16,8 +16,9 @@ Injectable ``author_fn`` / ``verify`` so the whole loop is testable without a li
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from argosy.logging import get_logger
 from argosy.services.allocation_author.proposal import AllocationProposal
@@ -67,8 +68,32 @@ def run_allocation_author(
         if report.status == GateStatus.ACCEPT:
             return AuthorOutcome(status="accepted", proposal=proposal,
                                  report=report, attempts=attempts)
-        # BLOCK or REVISION_REQUIRED: relay the reasons and let the author revise.
-        feedback = report.failures
+        if report.status == GateStatus.BLOCK:
+            # BLOCK is a terminal safety/judgment outcome, not another request
+            # for the author to try different prose.  Treating it like
+            # REVISION_REQUIRED previously let an incomplete review or a
+            # persistent team disagreement consume every remaining LLM round.
+            return AuthorOutcome(
+                status="rejected",
+                proposal=proposal,
+                report=report,
+                attempts=attempts,
+            )
+        # REVISION_REQUIRED: retain the full run-scoped objection history.
+        # Replacing feedback here let a later arithmetic miss erase an earlier
+        # judgment objection, so the author could reintroduce the rejected buy on
+        # its final revision. Deduplicate exact repeats while preserving order.
+        accumulated = list(feedback or [])
+        seen = {
+            (getattr(item, "code", ""), getattr(item, "detail", str(item)))
+            for item in accumulated
+        }
+        for failure in report.failures:
+            key = (failure.code, failure.detail)
+            if key not in seen:
+                accumulated.append(failure)
+                seen.add(key)
+        feedback = accumulated
 
     return AuthorOutcome(status="rejected", proposal=proposal, report=last, attempts=attempts)
 

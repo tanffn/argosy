@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 from sqlalchemy import select
 
-from argosy.adapters.brokers.types import ExecutionResult, ProposedOrder
+from argosy.adapters.brokers.types import ExecutionResult, Fill, ProposedOrder
 from argosy.execution.audit import write_paper_fill
 from argosy.execution.router import ExecutionRouter
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AuditLog,
-    Fill as FillRow,
     PendingOrder,
-    Proposal as ProposalRow,
     User,
 )
-
+from argosy.state.models import (
+    Fill as FillRow,
+)
+from argosy.state.models import (
+    Proposal as ProposalRow,
+)
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -49,6 +54,7 @@ async def _seed_user_and_proposal(
             limit_price=limit_price,
             tier=tier,
             account_class=account_class,
+            account_id="ibkr_argonaut" if account_class == "limited" else "ibkr_main",
             status=status,
             rationale_summary="test proposal",
             expected_impact_json="{}",
@@ -68,9 +74,16 @@ async def _seed_user_and_proposal(
 class MockBroker:
     name = "ibkr"
 
-    def __init__(self, *, paper_result: bool = True, live_status: str = "submitted") -> None:
+    def __init__(
+        self,
+        *,
+        paper_result: bool = True,
+        live_status: str = "submitted",
+        fills: list[Fill] | None = None,
+    ) -> None:
         self.paper_result = paper_result
         self.live_status = live_status
+        self.fills = fills or []
         self.placed: list[ProposedOrder] = []
 
     def get_positions(self, account_id):  # pragma: no cover - unused
@@ -106,6 +119,7 @@ class MockBroker:
             broker=self.name,
             broker_order_id="broker-123",
             paper=False,
+            fills=self.fills,
         )
 
     async def cancel_order(self, order_id):  # pragma: no cover - unused
@@ -120,6 +134,7 @@ class MockBroker:
 
 
 @pytest.mark.asyncio
+@pytest.mark.real_seam
 async def test_router_paper_path_writes_paper_fill_and_advances(engine: None) -> None:
     pid = await _seed_user_and_proposal()
     mock = MockBroker()
@@ -169,9 +184,44 @@ async def test_router_live_path_creates_pending_and_advances(engine: None) -> No
         pending = (await session.execute(select(PendingOrder))).scalars().all()
         assert len(pending) == 1
         assert pending[0].broker_order_id == "broker-123"
+        assert pending[0].account_id == "ibkr_main"
+        assert mock.placed[0].account_id == "ibkr_main"
         # No paper fill written
         fills = (await session.execute(select(FillRow))).scalars().all()
         assert len(fills) == 0
+
+
+@pytest.mark.asyncio
+async def test_router_persists_synchronous_live_fill(engine: None) -> None:
+    from argosy.agent_settings import AgentSettings, ExecutionBlock
+
+    pid = await _seed_user_and_proposal()
+    fill = Fill(
+        broker="ibkr",
+        broker_order_id="broker-123",
+        external_fill_id="exec-now-1",
+        account_id="ibkr_main",
+        ticker="AAPL",
+        action="buy",
+        quantity=10,
+        price=99.5,
+        commission=1.0,
+    )
+    mock = MockBroker(live_status="filled", fills=[fill])
+    router = ExecutionRouter(
+        user_id="ariel",
+        settings=AgentSettings(execution=ExecutionBlock(default_mode="live")),
+        adapter_factories={"ibkr": lambda: mock},
+    )
+    result = await router.execute(pid, cash_available_usd=100_000.0)
+    assert result.status == "filled"
+    async with db_mod.get_session() as session:
+        fills = (await session.execute(select(FillRow))).scalars().all()
+        assert len(fills) == 1
+        assert fills[0].external_fill_id == "exec-now-1"
+        assert fills[0].account_id == "ibkr_main"
+        pending = (await session.execute(select(PendingOrder))).scalars().one()
+        assert pending.status == "filled"
 
 
 @pytest.mark.asyncio
@@ -211,8 +261,8 @@ async def test_router_preflight_hard_fail_keeps_approved(engine: None) -> None:
 @pytest.mark.asyncio
 async def test_router_omitted_cash_resolves_from_snapshot(engine: None) -> None:
     """When the UI omits cash_available_usd, load it from the latest snapshot."""
-    from datetime import datetime, timezone
     import json
+    from datetime import datetime
 
     from argosy.state.models import PortfolioSnapshotRow
 
@@ -222,7 +272,7 @@ async def test_router_omitted_cash_resolves_from_snapshot(engine: None) -> None:
             PortfolioSnapshotRow(
                 user_id="ariel",
                 snapshot_date=None,
-                imported_at=datetime.now(timezone.utc),
+                imported_at=datetime.now(UTC),
                 source_path="test",
                 positions_json="[]",
                 allocations_json="[]",

@@ -34,6 +34,7 @@ from argosy.services.signal_streams.contracts import (
 )
 from argosy.services.signal_streams.pipeline import process_nominations
 from argosy.services.trend_radar import ScanResult
+from argosy.state.models import AgentReport as AgentReportRow
 from argosy.state.models import (
     Base,
     MonitorFlag,
@@ -353,6 +354,44 @@ def test_llm_resolver_can_only_choose_from_plausible_public_candidates(
     )
     assert resolver.resolve(db_session, "General Dynamics Systems") is None
     assert seen and "AAPL" not in seen
+
+
+@pytest.mark.real_seam
+def test_default_llm_resolver_stages_agent_telemetry_in_stream_transaction(
+    db_session,
+    monkeypatch,
+) -> None:
+    from argosy.agents.base import BaseAgent, ModelCall
+
+    async def fake_call(self, *, system, user, **kwargs):
+        return ModelCall(
+            text=json.dumps(
+                {"ticker": "GD", "rationale": "closest supplied candidate"}
+            ),
+            tokens_in=3,
+            tokens_out=20,
+            model="claude-opus-5",
+        )
+
+    monkeypatch.setattr(BaseAgent, "_call_model", fake_call)
+    resolver = RecipientResolver(
+        public_companies={
+            "GD": "General Dynamics Corporation",
+            "GDYN": "General Dynamics Software",
+        },
+        fuzzy_cutoff=0.45,
+        automatic_match_cutoff=0.99,
+        user_id="ariel",
+    )
+
+    assert resolver.resolve(db_session, "General Dynamics Systems") == "GD"
+    db_session.commit()
+
+    row = db_session.query(AgentReportRow).one()
+    assert row.user_id == "ariel"
+    assert row.agent_role == "signal_recipient_resolver"
+    assert row.decision_id == "signal-recipient"
+    assert float(row.cost_usd) > 0
 
 
 def test_resolver_output_allows_omitted_ticker_as_unresolved() -> None:
@@ -1478,11 +1517,21 @@ def test_predictions_loop_runs_reevaluation_before_retention_in_same_session(
 
 def test_signal_streams_daily_is_cron_registered_and_isolates_stream_failures(
     tmp_path,
+    monkeypatch,
 ) -> None:
-    from argosy.orchestrator.loops.signal_streams_daily import (
-        SignalStreamsDailyLoop,
-        signal_streams_daily_metadata,
+    from argosy.orchestrator.loops import signal_streams_daily as daily_mod
+
+    class NoPauseGuard:
+        async def should_pause_non_routine(self, *, loop_name=None):
+            return False
+
+    monkeypatch.setattr(
+        daily_mod,
+        "get_cost_guard",
+        lambda **_kwargs: NoPauseGuard(),
     )
+    SignalStreamsDailyLoop = daily_mod.SignalStreamsDailyLoop
+    signal_streams_daily_metadata = daily_mod.signal_streams_daily_metadata
 
     class BrokenStream:
         name = "broken"

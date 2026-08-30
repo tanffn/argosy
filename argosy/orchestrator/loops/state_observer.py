@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -90,7 +90,7 @@ def state_observer_metadata() -> JobMetadata:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # Module-level sync session factory cache — mirrors news_daily.py's
@@ -258,7 +258,7 @@ class StateObserverLoop(CadenceLoop):
 
         run_at = (now or self._now_fn)()
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=timezone.utc)
+            run_at = run_at.replace(tzinfo=UTC)
 
         _log.info(
             "state_observer.tick.start",
@@ -365,6 +365,19 @@ class StateObserverLoop(CadenceLoop):
                 snapshot_date=snapshot_date,
                 source_versions=source_versions,
             )
+            from argosy.agents.base import AgentReport
+            from argosy.services.agent_report_persistence import (
+                stage_agent_report,
+            )
+
+            if isinstance(report, AgentReport):
+                stage_agent_report(
+                    session,
+                    report,
+                    decision_id=(
+                        f"state-observer:{snapshot_date.isoformat()}"
+                    ),
+                )
             candidates = list(
                 getattr(getattr(report, "output", None), "flag_candidates", [])
                 or []
@@ -424,7 +437,7 @@ class StateObserverLoop(CadenceLoop):
         if last_at is None:
             return None
         if last_at.tzinfo is None:
-            last_at = last_at.replace(tzinfo=timezone.utc)
+            last_at = last_at.replace(tzinfo=UTC)
         delta = run_at - last_at
         if delta < timedelta(minutes=self._min_run_interval_minutes):
             _log.info(
@@ -496,10 +509,11 @@ class StateObserverLoop(CadenceLoop):
         We just persisted ``snapshot_id`` for ``self.user_id`` — the
         "prior" snapshot is the next-newest row that ISN'T this one.
         """
-        from argosy.state.models import StateSnapshot
         import json
 
         import sqlalchemy as sa
+
+        from argosy.state.models import StateSnapshot
 
         stmt = (
             sa.select(StateSnapshot)

@@ -17,7 +17,6 @@ from argosy.orchestrator.loops.quarterly import QuarterlyLoop
 from argosy.state import db as db_mod
 from argosy.state.models import AuditLog, PlanVersion, User
 
-
 _CANNED = {
     "plan_label": "Test Plan",
     "snapshot_label": "quarterly:test",
@@ -41,6 +40,7 @@ def _mock_factory():
 
 
 @pytest.mark.asyncio
+@pytest.mark.real_seam
 async def test_quarterly_emits_prompts_and_records_audit(engine: None) -> None:
     events._reset_for_tests()
     reset_cost_guard()

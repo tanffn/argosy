@@ -50,6 +50,41 @@ def test_stall_writes_flag_and_inbox(session):
         user_id="ariel", status="open",
     ).one()
     assert "stall" in prop.summary.lower()
+    assert prop.source_flag_id == flag.id
+
+
+@pytest.mark.real_seam
+def test_resolved_run_closes_stall_flag_and_inbox(session):
+    run = DecisionRun(
+        user_id="ariel",
+        ticker="PLAN",
+        decision_kind="plan_revision",
+        started_at=NOW - timedelta(hours=2),
+        status="running",
+    )
+    session.add(run)
+    session.commit()
+    assert write_stall_alerts(
+        session, user_id="ariel", now=NOW, alert_minutes=20
+    ) == [run.id]
+    session.commit()
+
+    run.status = "failed"
+    run.finished_at = NOW
+    session.commit()
+    assert write_stall_alerts(
+        session,
+        user_id="ariel",
+        now=NOW + timedelta(minutes=1),
+        alert_minutes=20,
+    ) == []
+    session.commit()
+
+    flag = session.query(MonitorFlag).filter_by(user_id="ariel").one()
+    proposal = session.query(ActionProposal).filter_by(user_id="ariel").one()
+    assert flag.status == "superseded"
+    assert proposal.status == "superseded"
+    assert proposal.decided_by_user_note == "synthesis run is no longer running"
 
 
 def test_fresh_run_not_alerted(session):

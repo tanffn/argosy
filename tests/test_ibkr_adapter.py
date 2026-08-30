@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -37,6 +38,7 @@ class _FakeIB:
     def __init__(self) -> None:
         self.connected = False
         self.placed: list[tuple[Any, Any]] = []
+        self._trades: list[Any] = []
         self.cancelled: list[str] = []
 
     def isConnected(self) -> bool:
@@ -54,7 +56,14 @@ class _FakeIB:
         if not getattr(order, "orderId", None):
             order.orderId = 42
         self.placed.append((contract, order))
+        self._trades.append(trade)
         return trade
+
+    def trades(self) -> list[Any]:
+        return self._trades
+
+    def fills(self) -> list[Any]:
+        return [fill for trade in self._trades for fill in trade.fills]
 
     def cancelOrder(self, order_id: str) -> None:
         self.cancelled.append(order_id)
@@ -197,6 +206,44 @@ async def test_live_mode_calls_placeOrder(engine: None) -> None:
     assert ib_order.totalQuantity == 5
     assert ib_order.orderType == "MKT"
     assert ib_order.orderRef == "live-1"
+
+
+@pytest.mark.asyncio
+async def test_order_snapshot_returns_execution_identity(engine: None) -> None:
+    fake = _fake_module()
+    adapter = IBKRAdapter(user_id="ariel")
+    adapter._ib_module_factory = lambda: fake
+    order = ProposedOrder(
+        account_id="ibkr_main",
+        ticker="AAPL",
+        action="buy",
+        quantity=2,
+        client_order_id="snap-1",
+        user_id="ariel",
+    )
+    result = await adapter.place_order(order, paper=False)
+    trade = adapter._ib._trades[0]
+    trade.orderStatus.status = "Filled"
+    trade.orderStatus.filled = 2
+    trade.fills = [
+        types.SimpleNamespace(
+            execution=types.SimpleNamespace(
+                execId="exec-42", orderId=int(result.broker_order_id),
+                acctNumber="ibkr_main", side="BOT", shares=2, price=201.25,
+            ),
+            contract=trade.contract,
+            commissionReport=types.SimpleNamespace(commission=0.75),
+            time=datetime(2026, 8, 25, 14, 0, tzinfo=timezone.utc),
+        )
+    ]
+    snapshot = await adapter.get_order_snapshot(
+        result.broker_order_id, account_id="ibkr_main"
+    )
+    assert snapshot.status == "filled"
+    assert len(snapshot.fills) == 1
+    assert snapshot.fills[0].external_fill_id == "exec-42"
+    assert snapshot.fills[0].account_id == "ibkr_main"
+    assert snapshot.fills[0].ticker == "AAPL"
 
 
 @pytest.mark.asyncio

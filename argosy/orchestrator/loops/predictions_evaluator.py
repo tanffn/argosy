@@ -133,11 +133,9 @@ def _build_default_session_factory() -> sessionmaker:
         if cached_url == sync_url:
             return cached_factory
 
-    import sqlalchemy as sa
+    from argosy.state.db import create_sync_engine
 
-    sync_engine = sa.create_engine(
-        sync_url, connect_args={"check_same_thread": False}
-    )
+    sync_engine = create_sync_engine(sync_url)
     factory = sessionmaker(bind=sync_engine, expire_on_commit=False)
     _DEFAULT_SESSION_FACTORY = (sync_url, factory)
     return factory
@@ -221,6 +219,13 @@ class PredictionsEvaluatorLoop(CadenceLoop):
         factory = self._resolve_session_factory()
         session: Session = factory()
         try:
+            from argosy.services.predictions.writers import (
+                ensure_deep_verdict_prediction_horizons,
+                ensure_surfaced_order_sheet_predictions,
+            )
+
+            verdict_clock_summary = ensure_deep_verdict_prediction_horizons(session)
+            order_sheet_clock_summary = ensure_surfaced_order_sheet_predictions(session)
             ev_summary: EvaluatorSummary = run_evaluator_batch(
                 session,
                 now=now_dt,
@@ -246,6 +251,8 @@ class PredictionsEvaluatorLoop(CadenceLoop):
             session.close()
 
         return {
+            "verdict_clocks": verdict_clock_summary,
+            "order_sheet_clocks": order_sheet_clock_summary,
             "evaluator": ev_summary.to_dict(),
             "reevaluation": reeval_summary.to_dict(),
             "retention": ret_summary.to_dict(),

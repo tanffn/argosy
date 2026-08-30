@@ -31,8 +31,9 @@ Test command:
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -40,8 +41,12 @@ import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
 from argosy.agent_settings import AgentSettings
-from argosy.agents.base import ConfidenceBand
-from argosy.agents.state_observer import FlagCandidate, StateObserverOutput
+from argosy.agents.base import ConfidenceBand, ModelCall
+from argosy.agents.state_observer import (
+    FlagCandidate,
+    StateObserverAgent,
+    StateObserverOutput,
+)
 from argosy.orchestrator.loops.base import LoopSchedule
 from argosy.orchestrator.loops.state_observer import (
     MIN_RUN_INTERVAL_MINUTES,
@@ -50,7 +55,6 @@ from argosy.orchestrator.loops.state_observer import (
     state_observer_metadata,
 )
 from argosy.state.models import Base, MonitorFlag, StateSnapshot, User
-
 
 USER = "ariel"
 
@@ -109,7 +113,7 @@ def sync_session_factory(tmp_path):
 
 
 def _now() -> datetime:
-    return datetime(2026, 5, 29, 17, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 5, 29, 17, 0, 0, tzinfo=UTC)
 
 
 def _make_state_collected() -> dict[str, Any]:
@@ -227,10 +231,10 @@ def _make_loop(
     - write_fn delegates to the real ``write_observer_flags`` (so
       ``monitor_flags`` rows actually land).
     """
-    from argosy.services.state_snapshot import persist_state_snapshot
     from argosy.services.state_observer_flag_writer import (
         write_observer_flags,
     )
+    from argosy.services.state_snapshot import persist_state_snapshot
 
     def _collect(session, user_id, *, as_of=None, trigger_reason="manual"):
         # Return a fresh dict each call so persist_state_snapshot's
@@ -257,6 +261,47 @@ def _make_loop(
         now_fn=now_fn or _now,
         min_run_interval_minutes=min_run_interval_minutes,
     )
+
+
+@pytest.mark.real_seam
+@pytest.mark.asyncio
+async def test_real_agent_dispatch_persists_snapshot_and_flag(
+    monkeypatch, sync_session_factory,
+) -> None:
+    """Use the real loop and agent; replace only the external LLM call."""
+    payload = {
+        "flag_candidates": [{
+            "severity": "warning",
+            "primary_field": "macro.fx_usd_nis_spot",
+            "related_fields": [],
+            "rationale_md": "The observed drift materially changes plan purchasing power.",
+            "inferred_kind": "fx_observation",
+            "deviation_bucket": "large",
+            "mitigation_hint": "Review the plan assumptions.",
+            "confidence": "HIGH",
+        }],
+        "overall_assessment": "One material drift.",
+        "confidence": "HIGH",
+        "cited_sources": ["macro.fx_usd_nis_spot"],
+    }
+
+    async def fake_call(self, *, system, user, **kwargs):
+        assert "macro.fx_usd_nis_spot" in user
+        return ModelCall(
+            text=json.dumps(payload), tokens_in=10, tokens_out=10, model="test-model"
+        )
+
+    monkeypatch.setattr(StateObserverAgent, "_call_model", fake_call)
+    loop = _make_loop(
+        session_factory=sync_session_factory,
+        agent=StateObserverAgent(user_id=USER),
+    )
+    summary = await loop.tick(force=True)
+
+    with sync_session_factory() as session:
+        assert session.query(StateSnapshot).count() == 1
+        assert session.query(MonitorFlag).count() == 1
+    assert summary["candidates_emitted"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +419,7 @@ def test_tick_happy_path_two_candidates(sync_session_factory) -> None:
 def test_cool_off_skips_second_tick_within_window(sync_session_factory) -> None:
     """A second tick() inside the cool-off window returns
     ``skipped_reason='cool_off'`` and writes no new rows."""
-    first_call_at = datetime(2026, 5, 29, 17, 0, 0, tzinfo=timezone.utc)
+    first_call_at = datetime(2026, 5, 29, 17, 0, 0, tzinfo=UTC)
     # Second call is 10 minutes later — well inside the 6h default.
     second_call_at = first_call_at + timedelta(minutes=10)
 
@@ -420,7 +465,7 @@ def test_cool_off_skips_second_tick_within_window(sync_session_factory) -> None:
 
 def test_force_bypasses_cool_off(sync_session_factory) -> None:
     """``force=True`` runs the pipeline even inside the cool-off window."""
-    first_call_at = datetime(2026, 5, 29, 17, 0, 0, tzinfo=timezone.utc)
+    first_call_at = datetime(2026, 5, 29, 17, 0, 0, tzinfo=UTC)
     # Second call is 5 minutes later — clearly inside any reasonable
     # cool-off — and uses a DIFFERENT snapshot_date so persistence
     # doesn't violate the (user_id, snapshot_date) UNIQUE constraint.
@@ -449,10 +494,10 @@ def test_force_bypasses_cool_off(sync_session_factory) -> None:
         )
         return data
 
-    from argosy.services.state_snapshot import persist_state_snapshot
     from argosy.services.state_observer_flag_writer import (
         write_observer_flags,
     )
+    from argosy.services.state_snapshot import persist_state_snapshot
 
     def _diff(current, plan_baseline, prior_snapshot, **_kwargs):
         return {"vs_plan": [{"path": "macro.fx_usd_nis_spot"}], "vs_prior": []}
@@ -503,7 +548,7 @@ def test_same_day_double_run_upserts_snapshot(sync_session_factory) -> None:
     Same-day re-run must now UPSERT the day's row (later run wins) —
     the pipeline completes, one snapshot row exists, and its id is
     stable across the two runs."""
-    first_call_at = datetime(2026, 5, 29, 10, 0, 0, tzinfo=timezone.utc)
+    first_call_at = datetime(2026, 5, 29, 10, 0, 0, tzinfo=UTC)
     # 7h later — OUTSIDE the 6h cool-off, same calendar day: the exact
     # catch-up + scheduled-run shape that crashed in production.
     second_call_at = first_call_at + timedelta(hours=7)
@@ -569,8 +614,8 @@ def test_run_state_observer_now_uses_injected_loop(
 def test_run_state_observer_now_force_flag(sync_session_factory) -> None:
     """``force=True`` propagates through the convenience wrapper."""
     times = iter([
-        datetime(2026, 5, 29, 17, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 5, 29, 17, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 5, 29, 17, 0, 0, tzinfo=UTC),
+        datetime(2026, 5, 29, 17, 5, 0, tzinfo=UTC),
     ])
     agent = _FakeAgent(candidates=[
         _make_candidate(primary_field="macro.fx_usd_nis_spot"),
@@ -585,10 +630,10 @@ def test_run_state_observer_now_force_flag(sync_session_factory) -> None:
         )
         return data
 
-    from argosy.services.state_snapshot import persist_state_snapshot
     from argosy.services.state_observer_flag_writer import (
         write_observer_flags,
     )
+    from argosy.services.state_snapshot import persist_state_snapshot
 
     def _diff(current, plan_baseline, prior_snapshot, **_kwargs):
         return {"vs_plan": [{"path": "macro.fx_usd_nis_spot"}], "vs_prior": []}

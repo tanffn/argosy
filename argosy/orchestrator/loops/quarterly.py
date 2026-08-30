@@ -13,8 +13,8 @@ as the weekly review). The other two are user-facing prompts only.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from sqlalchemy import desc, select
 
@@ -31,7 +31,7 @@ _log = get_logger("argosy.loops.quarterly")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class QuarterlyLoop(CadenceLoop):
@@ -101,6 +101,14 @@ class QuarterlyLoop(CadenceLoop):
                     snapshot_summary="(quarterly drift check)",
                     user_context_yaml="",
                     domain_kb_files={},
+                )
+                from argosy.services.agent_report_persistence import (
+                    persist_agent_report_async,
+                )
+
+                await persist_agent_report_async(
+                    report,
+                    decision_id=f"quarterly-critique:{plan.id}",
                 )
                 async with db_mod.get_session() as session:
                     session.add(

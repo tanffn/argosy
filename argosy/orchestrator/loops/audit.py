@@ -3,9 +3,10 @@
 Runs weekly (default Sun 19:00). Invokes `AuditAgent` to review the
 last week's `agent_reports` rows and surface systematic patterns
 (consistently low-confidence outputs, tier-vs-fund-manager rejections,
-etc.). Output persists as a new `AuditReport` row referenced from
-`agent_reports`; findings are emitted via the `audit.findings` WebSocket
-event so the dashboard can surface a "needs attention" badge.
+etc.). Output persists as an `agent_reports` row with its structured
+`AuditReport` payload in `agent_reports_blobs`; findings are emitted via the
+`audit.findings` WebSocket event so the dashboard can surface a
+"needs attention" badge.
 
 The loop is deliberately thin: gather the last week of agent_reports →
 invoke `AuditAgent` → persist + emit. No auto-action.
@@ -13,9 +14,10 @@ invoke `AuditAgent` → persist + emit. No auto-action.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import desc, select
 
@@ -52,7 +54,7 @@ class AuditLoop(CadenceLoop):
         enabled: bool = True,
         user_id: str = "ariel",
         audit_agent_factory: Callable[[], AuditAgent] | None = None,
-        gather_inputs: Callable[[str], "AuditInputs | Any"] | None = None,
+        gather_inputs: Callable[[str], AuditInputs | Any] | None = None,
         window_days: int = 7,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
@@ -61,13 +63,13 @@ class AuditLoop(CadenceLoop):
         self._audit_factory = audit_agent_factory or (lambda: AuditAgent(user_id=user_id))
         self._gather = gather_inputs or _default_gather_inputs
 
-    async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
+    async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict[str, Any]:
         run_at = (now or _utcnow)()
 
         # Cost-cap pause: audit is non-routine; skip when budget breached.
-        if get_cost_guard().should_pause_non_routine():
+        if await get_cost_guard().should_pause_non_routine(loop_name=self.name):
             _log.info("audit.cost_cap_paused", user_id=self.user_id)
-            return
+            return {"status": "paused", "reason": "cost_cap"}
 
         inputs = await _maybe_async(self._gather(self.user_id))
         if not isinstance(inputs, AuditInputs):  # pragma: no cover - defensive
@@ -81,13 +83,21 @@ class AuditLoop(CadenceLoop):
                 window_start=inputs.window_start.isoformat(),
                 window_end=inputs.window_end.isoformat(),
             )
-            return
+            return {"status": "skipped", "reason": "no_reports"}
 
         agent = self._audit_factory()
         report = await agent.run(
-            window_start=inputs.window_start.isoformat(),
-            window_end=inputs.window_end.isoformat(),
-            reports=inputs.reports_json,
+            week_start=inputs.window_start.date().isoformat(),
+            week_end=inputs.window_end.date().isoformat(),
+            runs_summary=inputs.reports_json,
+        )
+        from argosy.services.agent_report_persistence import (
+            persist_agent_report_async,
+        )
+
+        await persist_agent_report_async(
+            report,
+            decision_id=f"audit:{run_at.date().isoformat()}",
         )
 
         findings = getattr(report.output, "findings", []) or []
@@ -109,10 +119,11 @@ class AuditLoop(CadenceLoop):
             )
         except Exception:  # pragma: no cover - defensive
             _log.exception("audit.publish_failed")
+        return {"status": "ok", "findings_count": len(findings)}
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _maybe_async(value: Any) -> Any:

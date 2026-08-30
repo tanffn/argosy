@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -37,9 +38,7 @@ _MD_STRIP_RE = re.compile(r"\*\*|__|`|^#{1,6}\s+", re.MULTILINE)
 def _verdict_line(rationale: str, n: int = 170) -> str:
     """The fleet's own verdict sentence, plain-text, one line."""
     text = _MD_STRIP_RE.sub("", rationale or "")
-    m = re.search(
-        r"Verdict:\s*(.+?)(?:(?<=[a-z0-9])\.\s|\n|$)", text, re.DOTALL | re.IGNORECASE
-    )
+    m = re.search(r"Verdict:\s*(.+?)(?:(?<=[a-z0-9])\.\s|\n|$)", text, re.DOTALL | re.IGNORECASE)
     line = (m.group(1) if m else text).strip()
     line = " ".join(line.split())
     return line if len(line) <= n else line[: n - 1].rstrip() + "…"
@@ -51,16 +50,192 @@ def _latest_snapshot(db: Session, user_id: str):
     return db.execute(
         select(PortfolioSnapshotRow)
         .where(PortfolioSnapshotRow.user_id == user_id)
-        .order_by(PortfolioSnapshotRow.imported_at.desc(), PortfolioSnapshotRow.id.desc())  # canonical head ordering (imported_at DESC, id DESC) — matches get_latest_snapshot_row; a bare id.desc() could pick a backfill/restore row over the true head (Sol BLOCK-6)
+        .order_by(
+            PortfolioSnapshotRow.imported_at.desc(), PortfolioSnapshotRow.id.desc()
+        )  # canonical head ordering (imported_at DESC, id DESC) — matches get_latest_snapshot_row; a bare id.desc() could pick a backfill/restore row over the true head (Sol BLOCK-6)
         .limit(1)
     ).scalar_one_or_none()
+
+
+def _build_current_sheet_plan(db: Session, user_id: str, current, *, today=None):
+    """Project the validated unified sheet into the established table shape."""
+
+    snapshot = _latest_snapshot(db, user_id)
+    if snapshot is None:
+        return None
+    try:
+        positions = json.loads(snapshot.positions_json or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(positions, list):
+        return None
+    book_usd = sum(float(p.get("usd_value_k") or 0.0) for p in positions) * 1000.0
+    held: dict[str, float] = {}
+    for position in positions:
+        symbol = str(position.get("symbol") or "").strip().upper()
+        if symbol:
+            held[symbol] = (
+                held.get(symbol, 0.0) + float(position.get("usd_value_k") or 0.0) * 1000.0
+            )
+
+    def pct(value: float) -> float | None:
+        return round(value / book_usd * 100.0, 2) if book_usd else None
+
+    funding = current.sheet.funding
+    post_funding_book_usd = max(
+        0.0,
+        book_usd
+        + float(funding.new_cash_usd)
+        - float(funding.sell_tax_usd)
+        - float(funding.sell_costs_usd),
+    )
+
+    def candidate_payload(comparison) -> dict[str, Any]:
+        payload = comparison.model_dump(mode="json")
+        amount = comparison.recommended_position_usd
+        weighted = comparison.probability_weighted_multiple
+        payload["capital_at_risk_pct"] = (
+            amount / post_funding_book_usd * 100.0
+            if amount is not None and post_funding_book_usd > 0
+            else None
+        )
+        payload["expected_portfolio_contribution_pct"] = (
+            (weighted - 1.0) * amount / post_funding_book_usd * 100.0
+            if amount is not None and weighted is not None and post_funding_book_usd > 0
+            else None
+        )
+        return payload
+
+    candidate_payloads = [
+        candidate_payload(comparison)
+        for comparison in current.sheet.candidate_comparisons
+    ]
+
+    lines: list[dict[str, Any]] = []
+    sells_usd = 0.0
+    buys_usd = 0.0
+    for authored in current.sheet.lines:
+        action = authored.action.value
+        is_sell = action in {"SELL", "TRIM"}
+        amount = float(authored.notional_usd)
+        current_usd = held.get(authored.symbol, 0.0)
+        after_usd = max(current_usd - amount, 0.0) if is_sell else current_usd + amount
+        if is_sell:
+            sells_usd += amount
+        else:
+            buys_usd += amount
+        lines.append(
+            {
+                "item_id": f"order-sheet:{current.fingerprint}:{authored.symbol}",
+                "label": authored.symbol,
+                "action": "sell" if is_sell else "buy",
+                "current_usd": round(current_usd),
+                "current_pct": pct(current_usd),
+                "after_usd": round(after_usd),
+                "after_pct": pct(after_usd),
+                "delta_usd": round(-amount if is_sell else amount),
+                "why": authored.thesis,
+                "outcome_scenarios": [
+                    scenario.model_dump(mode="json")
+                    for scenario in authored.outcome_scenarios
+                ],
+                "probability_confidence": authored.probability_confidence,
+                "probability_basis": authored.probability_basis,
+                "probability_weighted_multiple": authored.probability_weighted_multiple,
+                "scenario_terminal_date": authored.scenario_terminal_date,
+                "scenario_horizon_years": authored.scenario_horizon_years,
+                "annualized_expected_return_pct": authored.annualized_expected_return_pct,
+                "after_tax_expected_multiple": authored.after_tax_expected_multiple,
+                "after_tax_annualized_expected_return_pct": authored.after_tax_annualized_expected_return_pct,
+                "median_terminal_multiple": authored.median_terminal_multiple,
+                "probability_of_loss_pct": authored.probability_of_loss_pct,
+                "probability_of_near_wipeout_pct": authored.probability_of_near_wipeout_pct,
+                "tax_assumption": authored.tax_assumption,
+                "expected_portfolio_contribution_pct": authored.expected_portfolio_contribution_pct,
+                "capital_at_risk_pct": authored.capital_at_risk_pct,
+                "staged_execution": (
+                    authored.staged_execution.model_dump(mode="json")
+                    if authored.staged_execution is not None
+                    else None
+                ),
+                "candidate_comparisons": (
+                    candidate_payloads
+                    if authored.stance_source == "discovery"
+                    else []
+                ),
+                "candidate_comparison_status": (
+                    "complete"
+                    if authored.stance_source == "discovery"
+                    and any(
+                        comparison.ticker == authored.symbol
+                        and comparison.selection == "SELECTED"
+                        for comparison in current.sheet.candidate_comparisons
+                    )
+                    else (
+                        "missing"
+                        if authored.stance_source == "discovery"
+                        else "not_applicable"
+                    )
+                ),
+            }
+        )
+
+    validation_label = (
+        "Current validated order sheet"
+        if current.validation.valid
+        else "Current order sheet — approval blocked"
+    )
+    group = {
+        "label": validation_label,
+        "target_pct": None,
+        "target_usd": None,
+        "current_usd": round(sum(held.get(line.symbol, 0.0) for line in current.sheet.lines)),
+        "after_usd": round(sum(line["after_usd"] for line in lines)),
+        "why": (
+            f"One conflict-checked list for ${funding.new_cash_usd:,.0f} of new cash; "
+            "it replaces older unexecuted suggestions while active."
+            if current.validation.valid
+            else (
+                f"This is the one current ${funding.new_cash_usd:,.0f} list, but approval "
+                "is blocked until its validation failures are repaired. Older suggestions "
+                "remain suppressed."
+            )
+        ),
+        "lines": lines,
+    }
+    return {
+        "as_of": str(snapshot.snapshot_date or ""),
+        "book_total_usd": round(book_usd),
+        "lines": lines,
+        "groups": [group],
+        "source": "order_sheet",
+        "approval_blocked": not current.validation.valid,
+        "candidate_comparisons": candidate_payloads,
+        "review_resolution": (
+            current.sheet.review_resolution.model_dump(mode="json")
+            if current.sheet.review_resolution is not None
+            else None
+        ),
+        "fingerprint": current.fingerprint,
+        "new_cash_usd": float(funding.new_cash_usd),
+        "totals": {
+            "sells_usd": round(sells_usd),
+            "buys_usd": round(buys_usd),
+            "net_to_cash_usd": round(funding.available_to_buy_usd - buys_usd),
+        },
+    }
 
 
 def build_trade_plan(
     db: Session, user_id: str, *, today: "date | None" = None
 ) -> dict[str, Any] | None:
     """The overview table, or ``None`` when no trade decision is open."""
+    from argosy.services.current_order_sheet import load_current_order_sheet
     from argosy.state.models import ActionProposal, Proposal
+
+    current_sheet = load_current_order_sheet(db, user_id)
+    if current_sheet is not None:
+        return _build_current_sheet_plan(db, user_id, current_sheet, today=today)
 
     # Cooling proposals (user-deferred / scheduled resurfaces, e.g. a sell
     # parked for a pending evaluation) ARE part of "how will my portfolio
@@ -163,11 +338,15 @@ def build_trade_plan(
     buys_usd = 0.0
     for r in rows:
         sym = (r.ticker or "").upper()
-        h = held.get(sym) or held.get(sym.replace(".", "/")) or {
-            "usd": 0.0,
-            "shares": 0.0,
-            "price": 0.0,
-        }
+        h = (
+            held.get(sym)
+            or held.get(sym.replace(".", "/"))
+            or {
+                "usd": 0.0,
+                "shares": 0.0,
+                "price": 0.0,
+            }
+        )
         if (r.size_units or "") == "shares":
             amount = float(r.size_shares_or_currency or 0.0) * (
                 h["price"] or (h["usd"] / h["shares"] if h["shares"] else 0.0)
@@ -214,9 +393,7 @@ def build_trade_plan(
         from argosy.state.models import PlanVersion
 
         pv = db.execute(
-            select(PlanVersion).where(
-                PlanVersion.user_id == user_id, PlanVersion.role == "current"
-            )
+            select(PlanVersion).where(PlanVersion.user_id == user_id, PlanVersion.role == "current")
         ).scalar_one_or_none()
         cash_cls = None
         if pv is not None and pv.target_allocation_json:
@@ -236,23 +413,17 @@ def build_trade_plan(
         dest = None
         if rd is not None:
             try:
-                dest = (
-                    json.loads(rd.suggested_payload or "{}").get("destination", {})
-                ).get("symbol")
+                dest = (json.loads(rd.suggested_payload or "{}").get("destination", {})).get(
+                    "symbol"
+                )
             except (ValueError, AttributeError):
                 dest = None
         if cash_cls is not None and dest:
             label = cash_cls.get("label") or "Cash & T-bills"
-            target_pct = float(
-                overrides.get(label, cash_cls.get("target_pct") or 0.0)
-            )
+            target_pct = float(overrides.get(label, cash_cls.get("target_pct") or 0.0))
             target_usd = book_usd * target_pct / 100.0
             park = next(
-                (
-                    i.get("symbol")
-                    for i in (cash_cls.get("instruments") or [])
-                    if i.get("symbol")
-                ),
+                (i.get("symbol") for i in (cash_cls.get("instruments") or []) if i.get("symbol")),
                 None,
             )
             raw_after = cash_current + net
@@ -265,9 +436,7 @@ def build_trade_plan(
                     for i in (cls.get("instruments") or [])
                 ):
                     dest_label = cls.get("label")
-                    dest_target_pct = float(
-                        overrides.get(dest_label, cls.get("target_pct") or 0.0)
-                    )
+                    dest_target_pct = float(overrides.get(dest_label, cls.get("target_pct") or 0.0))
                     break
             if park and park_buy > 0:
                 park_held = held.get(park, {"usd": 0.0})["usd"]
@@ -394,9 +563,7 @@ def build_trade_plan(
         }
     )
     if dest_line is not None:
-        dest_target_usd = (
-            round(book_usd * dest_target_pct / 100.0) if dest_target_pct else None
-        )
+        dest_target_usd = round(book_usd * dest_target_pct / 100.0) if dest_target_pct else None
         groups.append(
             {
                 "label": dest_label or dest_line["label"],

@@ -452,6 +452,173 @@ def test_trade_plan_absent_without_open_trades(db):
     assert feed.to_dict()["trade_plan"] is None
 
 
+def test_current_order_sheet_owns_trade_plan_and_suppresses_legacy_rows(db):
+    """One validated sheet replaces, rather than joins, stale proposal cards."""
+    import json as _json
+
+    from argosy.services.order_sheet import (
+        CandidateComparison,
+        OutcomeScenario,
+        ReviewObjectionRecord,
+        ReviewResolution,
+    )
+    from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+    from argosy.state.models import PortfolioSnapshotRow
+    from tests.test_order_sheet_materializer import _sheet
+
+    base_sheet = _sheet()
+    sheet = base_sheet.model_copy(update={
+        "candidate_comparisons": [CandidateComparison(
+            ticker="REPL",
+            selection="NOT_SELECTED",
+            radar_rank=16,
+            radar_score=77.5,
+            research_verdict="BUY",
+            research_conviction="MED",
+            evidence_fresh_as_of=_NOW,
+            key_advantage="Commercial-stage platform evidence.",
+            key_risk="Short runway and dilution risk.",
+            why="Deferred after comparison with the funded alternatives.",
+            outcome_scenarios=[
+                OutcomeScenario(label="wipeout", probability_pct=30, terminal_multiple=0.1, terminal_date=date(2030, 8, 26), rationale="Thesis fails."),
+                OutcomeScenario(label="base", probability_pct=50, terminal_multiple=1, terminal_date=date(2030, 8, 26), rationale="Mixed outcome."),
+                OutcomeScenario(label="upside", probability_pct=20, terminal_multiple=5, terminal_date=date(2030, 8, 26), rationale="Thesis succeeds."),
+            ],
+            probability_confidence="LOW",
+            probability_basis="Equal-basis industry rates and current evidence.",
+            recommended_position_usd=0,
+            larger_position_usd=10_000,
+            why_not_larger="The evidence does not warrant a funded position now.",
+            split_considered=True,
+            split_why="A split would leave every position economically immaterial.",
+            sizing_why="No warranted allocation in this constrained run.",
+        )],
+        "review_resolution": ReviewResolution(
+            rounds=2,
+            reviewers_ran=5,
+            reviewers_expected=5,
+            one_voice=True,
+            summary="5/5 reviewers completed; one sizing dissent was resolved.",
+            objections=[ReviewObjectionRecord(
+                round=1,
+                lens="sizing",
+                ticker="EXUS",
+                concern="Use a smaller amount.",
+                severity="warn",
+                impact="changes_amount",
+                proposed_amount_usd=20_000,
+                recommended_amount_usd=10_000,
+                status="resolved_by_re_review",
+            )],
+        ),
+    })
+    db.add(
+        PortfolioSnapshotRow(
+            user_id="ariel",
+            snapshot_date=_TODAY,
+            imported_at=_NOW,
+            positions_json=_json.dumps(
+                [
+                    {
+                        "symbol": "EXUS",
+                        "shares": 100.0,
+                        "current_price": 50.0,
+                        "usd_value_k": 5.0,
+                        "asset_type": "ETF",
+                    },
+                    {
+                        "symbol": "-",
+                        "usd_value_k": 20.0,
+                        "asset_type": "Cash",
+                        "location": "leumi",
+                        "currency": "USD",
+                    },
+                ]
+            ),
+            totals_json=_json.dumps({"total_usd_value_k": 25.0}),
+        )
+    )
+    db.commit()
+    old = _trade(db, ticker="SOFI", action="buy", status="awaiting_human")
+    _note(
+        db,
+        kind="allocate",
+        dedup_key="period_directive:ariel",
+        severity="info",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+        suggested_payload=_json.dumps(
+            {
+                "artifact_type": "validated_order_sheet",
+                "validation_status": "validated",
+                "order_sheet_fingerprint": order_sheet_fingerprint(sheet),
+                "order_sheet": sheet.model_dump(mode="json"),
+            }
+        ),
+    )
+
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+
+    assert [item for item in feed.items if item.kind == "order_sheet"]
+    assert not [item for item in feed.items if item.id == f"trade:{old.id}"]
+    assert feed.trade_plan is not None
+    assert feed.trade_plan["source"] == "order_sheet"
+    assert feed.trade_plan["candidate_comparisons"][0]["ticker"] == "REPL"
+    assert feed.trade_plan["candidate_comparisons"][0]["selection"] == "NOT_SELECTED"
+    assert feed.trade_plan["candidate_comparisons"][0]["recommended_position_usd"] == 0
+    assert feed.trade_plan["candidate_comparisons"][0]["probability_weighted_multiple"] == 1.53
+    assert feed.trade_plan["candidate_comparisons"][0]["capital_at_risk_pct"] == 0
+    assert feed.trade_plan["review_resolution"]["one_voice"] is True
+    assert feed.trade_plan["review_resolution"]["objections"][0]["status"] == "resolved_by_re_review"
+    assert [(line["label"], line["delta_usd"]) for line in feed.trade_plan["lines"]] == [
+        ("EXUS", 10_000)
+    ]
+    assert any(
+        row["id"] == f"trade:{old.id}"
+        and row["reason"] == "superseded_by_current_order_sheet"
+        for row in feed.dropped
+    )
+
+
+def test_new_validator_failure_does_not_resurrect_legacy_trade_rows(db):
+    """A blocked current artifact remains the display-precedence boundary."""
+    import json as _json
+
+    from argosy.services.current_order_sheet import load_current_order_sheet
+    from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+    from tests.test_order_sheet_materializer import _sheet
+
+    base = _sheet()
+    discovery_line = base.lines[0].model_copy(update={"stance_source": "discovery"})
+    blocked = base.model_copy(update={"lines": [discovery_line]})
+    old = _trade(db, ticker="SOFI", action="buy", status="awaiting_human")
+    _note(
+        db,
+        kind="allocate",
+        dedup_key="period_directive:ariel",
+        severity="info",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+        suggested_payload=_json.dumps(
+            {
+                "artifact_type": "validated_order_sheet",
+                "validation_status": "validated",
+                "order_sheet_fingerprint": order_sheet_fingerprint(blocked),
+                "order_sheet": blocked.model_dump(mode="json"),
+            }
+        ),
+    )
+
+    current = load_current_order_sheet(db, "ariel")
+    assert current is not None
+    assert current.validation.valid is False
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not [item for item in feed.items if item.id == f"trade:{old.id}"]
+    assert any(
+        row["id"] == f"trade:{old.id}"
+        and row["reason"] == "superseded_by_current_order_sheet"
+        for row in feed.dropped
+    )
+
+
 def test_debug_dict_exposes_signals_and_dropped(db):
     _note(db, summary="info note", severity="info")
     feed = build_inbox(db, user_id="ariel", today=_TODAY)

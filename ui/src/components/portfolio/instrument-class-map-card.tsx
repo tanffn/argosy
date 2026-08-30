@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { api, type InstrumentClassListDTO } from "@/lib/api";
@@ -22,7 +22,7 @@ export function InstrumentClassMapCard({ userId = "ariel" }: { userId?: string }
   /** Draft class picks keyed by symbol — apply only on CONFIRM. */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     api
       .instrumentClasses(userId)
       .then((d) => {
@@ -35,11 +35,11 @@ export function InstrumentClassMapCard({ userId = "ariel" }: { userId?: string }
       .catch((e: unknown) =>
         setError(e instanceof Error ? e.message : String(e)),
       );
-  };
+  }, [userId]);
 
   useEffect(() => {
     refresh();
-  }, [userId]);
+  }, [refresh]);
 
   async function seed() {
     setBusy(true);
@@ -82,7 +82,7 @@ export function InstrumentClassMapCard({ userId = "ariel" }: { userId?: string }
     : !data
       ? "…"
       : unmapped.length > 0
-        ? `${unmapped.length} unassigned`
+        ? `${unmapped.length} awaiting fleet`
         : "all assigned";
 
   return (
@@ -93,8 +93,8 @@ export function InstrumentClassMapCard({ userId = "ariel" }: { userId?: string }
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
-              Unassigned held symbols only. Owner edits outrank fleet; plan
-              instruments always win at resolve.
+              Held symbols awaiting automatic fleet classification. The daily
+              review retries them; owner edits remain available as an override.
             </p>
             <button
               type="button"

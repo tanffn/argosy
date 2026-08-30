@@ -6,7 +6,8 @@ no LLM, no live DB (the ``session`` fixture is an isolated tmp SQLite at head).
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+import json
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -19,7 +20,7 @@ from argosy.services.verdict_triggers import (
     fire_tripped_triggers,
     sweep_and_fire,
 )
-from argosy.state.models import ActionProposal, User, Verdict
+from argosy.state.models import ActionProposal, KvCacheEntry, User, Verdict
 
 
 def _fired_markers(session):
@@ -42,7 +43,7 @@ def _verdict_id(session, subject):
         .id
     )
 
-NOW = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -79,6 +80,70 @@ class _RecordingDecide:
             {"subject": subject, "cited": cited_new_facts, "reason": reason}
         )
         return {"status": "reevaluated", "subject": subject}
+
+
+def test_trigger_quote_loader_matches_real_migrated_kv_schema(session):
+    """Regression: kv_cache has payload_json + composite PK, never value/id."""
+    from argosy.services.verdict_trigger_quotes import fetch_trigger_quotes
+
+    session.add(KvCacheEntry(
+        provider="yfinance",
+        key="quote:IONQ",
+        payload_json=json.dumps({"price": 42.05}),
+        retrieved_at=NOW,
+        expires_at=NOW + timedelta(hours=1),
+        payload_hash="test",
+    ))
+    session.commit()
+    assert fetch_trigger_quotes(
+        session, ["ionq"], now=NOW, live=False
+    ) == {"IONQ": 42.05}
+
+
+def test_trigger_quote_loader_uses_only_valid_yfinance_prices(session):
+    """A same-key UI/vendor payload or non-positive price cannot trip a trade."""
+    rows = [
+        ("other-provider", "quote:IONQ", {"price": 999.0}),
+        ("yfinance", "quote:ZERO", {"price": 0}),
+    ]
+    for provider, key, payload in rows:
+        session.add(KvCacheEntry(
+            provider=provider,
+            key=key,
+            payload_json=json.dumps(payload),
+            retrieved_at=NOW,
+            expires_at=NOW + timedelta(hours=1),
+            payload_hash="test",
+        ))
+    session.commit()
+
+    from argosy.services.verdict_trigger_quotes import fetch_trigger_quotes
+
+    assert fetch_trigger_quotes(
+        session, ["IONQ", "ZERO"], now=NOW, live=False
+    ) == {}
+
+
+def test_both_trigger_loops_read_the_shared_real_schema_loader(session):
+    from argosy.orchestrator.loops.verdict_trigger_daily import (
+        _fetch_quotes_for_subjects,
+    )
+    from argosy.orchestrator.loops.verdict_trigger_sweep import _default_quote_fn
+
+    live_now = datetime.now(UTC)
+    session.add(KvCacheEntry(
+        provider="yfinance",
+        key="quote:NVDA",
+        payload_json=json.dumps({"price": 208.48}),
+        retrieved_at=live_now,
+        expires_at=live_now + timedelta(hours=1),
+        payload_hash="test",
+    ))
+    session.commit()
+    assert _fetch_quotes_for_subjects(
+        session, user_id="ariel", subjects=["NVDA"]
+    ) == {"NVDA": 208.48}
+    assert _default_quote_fn(session)("NVDA") == 208.48
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +470,7 @@ def test_dated_event_honors_now_date_across_tz_boundary(session):
     [res] = evaluate_standing_verdict_triggers(session, "ariel", now=tz_now)
     assert res.tripped and not res.unevaluable
     # Sanity: the UTC instant is Aug 9 — proving now.date() (not UTC) is used.
-    assert tz_now.astimezone(timezone.utc).date() == date(2026, 8, 9)
+    assert tz_now.astimezone(UTC).date() == date(2026, 8, 9)
 
 
 def test_session_construction_failure_is_caught(session):

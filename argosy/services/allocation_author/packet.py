@@ -15,7 +15,8 @@ them into the packet consumed by both ``DeploymentAuthorAgent`` and
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from argosy.services.allocation_author.instrument_facts import lookup_facts
 from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
@@ -42,6 +43,9 @@ def build_decision_packet(
     user_constraints: str = "",
     extra_known_symbols: set[str] | None = None,
     candidate_research: dict[str, str] | None = None,
+    discovery_candidates: list[dict[str, Any]] | None = None,
+    current_recommendations: list[dict[str, Any]] | None = None,
+    decision_calibration: dict[str, Any] | None = None,
     facts_lookup: Callable[[str], Any] = lookup_facts,
 ) -> dict[str, Any]:
     """Shape the raw deploy inputs into the author/verifier decision packet.
@@ -83,7 +87,15 @@ def build_decision_packet(
     # (from build_allocation_breakdown, look-through aware). Carrying the gap lets
     # the author fill the most under-target sleeves from real numbers — plan-fit
     # authored FROM WITHIN, not enforced by a deterministic gate.
-    cur_by = {str(k): float(v) for k, v in (current_pct_by_sleeve or {}).items()}
+    # Persisted plan docs can legitimately predate a sleeve relabel. Normalize at
+    # the decision boundary so a stale display key cannot recreate a false mandate
+    # for the live author/reviewers; durable override migration uses the same map.
+    from argosy.services.allocation_plan import normalize_sleeve_label
+
+    cur_by = {
+        normalize_sleeve_label(str(k)): float(v)
+        for k, v in (current_pct_by_sleeve or {}).items()
+    }
     plan_menu: list[dict[str, Any]] = []
     menu_symbols: set[str] = set()
     for c in getattr(doc, "classes", []) or []:
@@ -96,7 +108,7 @@ def build_decision_packet(
             tickers.append(sym)
             menu_symbols.add(sym.upper())
             domiciles.append((getattr(inst, "domicile", "") or "").strip())
-        label = getattr(c, "label", "")
+        label = normalize_sleeve_label(getattr(c, "label", ""))
         target_pct = float(getattr(c, "target_pct", 0.0) or 0.0)
         entry = {
             "sleeve": label,
@@ -178,6 +190,16 @@ def build_decision_packet(
         "candidate_research": {
             str(k): str(v) for k, v in (candidate_research or {}).items() if v
         },
+        # Search-origin names are a first-class input, separate from both the
+        # holdings book and static plan menu. Upstream admits only fresh rows.
+        "discovery_candidates": list(discovery_candidates or []),
+        # Fresh portfolio/market verdicts that already reached the durable
+        # proposal spine.  They are inputs for reconciliation into one order
+        # sheet, never independently executable instructions at this layer.
+        "current_recommendations": list(current_recommendations or []),
+        # Evaluated prior calls inform LLM confidence and self-critique. They
+        # are context, never a deterministic ticker gate.
+        "decision_calibration": dict(decision_calibration or {}),
         "user_constraints": user_constraints or "",
     }
     if discovery_excl > 0:

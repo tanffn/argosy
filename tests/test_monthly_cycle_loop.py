@@ -14,8 +14,13 @@ from argosy.orchestrator.cost_guard import reset_cost_guard
 from argosy.orchestrator.loops.base import LoopSchedule
 from argosy.orchestrator.loops.monthly_cycle import MonthlyCycleLoop
 from argosy.state import db as db_mod
-from argosy.state.models import AuditLog, PlanCritique, PlanVersion, User
-
+from argosy.state.models import (
+    AgentReport,
+    AuditLog,
+    PlanCritique,
+    PlanVersion,
+    User,
+)
 
 _CANNED = {
     "plan_label": "Test Plan",
@@ -40,6 +45,7 @@ def _mock_factory():
 
 
 @pytest.mark.asyncio
+@pytest.mark.real_seam
 async def test_monthly_cycle_persists_critique_and_audit(engine: None) -> None:
     reset_cost_guard()
 
@@ -65,6 +71,9 @@ async def test_monthly_cycle_persists_critique_and_audit(engine: None) -> None:
     async def fake_buys(_uid: str) -> dict[str, Any]:
         return {"template": "flat", "items": []}
 
+    async def no_synthesis() -> None:
+        return None
+
     loop = MonthlyCycleLoop(
         schedule=LoopSchedule(cron="0 8 1 * *"),
         user_id="ariel",
@@ -72,6 +81,7 @@ async def test_monthly_cycle_persists_critique_and_audit(engine: None) -> None:
         statement_reconcile=fake_reconcile,
         rsu_vest_pull=fake_rsu,
         buy_template_generator=fake_buys,
+        plan_synthesis_trigger=no_synthesis,
     )
     await loop.tick()
 
@@ -82,8 +92,12 @@ async def test_monthly_cycle_persists_critique_and_audit(engine: None) -> None:
                 select(AuditLog).where(AuditLog.event_type == "monthly_cycle.completed")
             )
         ).scalars().all()
+        reports = (await session.execute(select(AgentReport))).scalars().all()
     assert len(critiques) == 1
     assert len(audits) == 1
+    assert len(reports) == 1
+    assert reports[0].agent_role == "plan_critique"
+    assert reports[0].decision_id == "monthly-critique:1"
 
 
 @pytest.mark.asyncio
@@ -100,10 +114,14 @@ async def test_monthly_cycle_skips_critique_when_no_plan(
         session.add(User(id="ariel"))
         await session.commit()
 
+    async def no_synthesis() -> None:
+        return None
+
     loop = MonthlyCycleLoop(
         schedule=LoopSchedule(cron="0 8 1 * *"),
         user_id="ariel",
         plan_critique_factory=_mock_factory,
+        plan_synthesis_trigger=no_synthesis,
     )
     await loop.tick()
 
@@ -133,6 +151,7 @@ async def test_monthly_cycle_skips_critique_when_no_plan(
 @pytest.fixture
 def session_with_baseline(alembic_engine_at_head):
     from sqlalchemy.orm import sessionmaker
+
     from argosy.state.models import PlanVersion, User
 
     SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)

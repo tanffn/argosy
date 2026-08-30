@@ -99,13 +99,19 @@ def get_position_theses(
 
     try:
         dtos = project_thesis_dtos(db, user_id, plan_version=pv, snapshot=snapshot)
+        from argosy.services.current_order_sheet import (
+            load_current_order_sheet,
+            overlay_position_theses,
+        )
+
+        current_sheet = load_current_order_sheet(db, user_id)
+        if current_sheet is not None and current_sheet.validation.valid:
+            dtos = overlay_position_theses(dtos, current_sheet)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 - defensive
         logger.exception("stance projection failed")
-        raise HTTPException(
-            status_code=500, detail=f"thesis derivation failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"thesis derivation failed: {exc}") from exc
     return [PositionThesisDTO(**d) for d in dtos]
 
 

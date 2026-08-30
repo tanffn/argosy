@@ -26,6 +26,7 @@ from typing import Any, Literal, Optional
 # without a contract change).
 InboxKind = Literal[
     "trade",
+    "order_sheet",
     "cash_deploy",
     "plan_task",
     "note",

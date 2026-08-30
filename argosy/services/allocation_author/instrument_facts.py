@@ -37,7 +37,18 @@ _FACTS: dict[str, InstrumentFacts] = {
     "XZEW": InstrumentFacts("XZEW", 1.0, "S&P 500 equal-weight", "verified"),
     "SPMV": InstrumentFacts("SPMV", 1.0, "S&P 500 minimum-volatility", "verified"),
     "FUSA": InstrumentFacts("FUSA", 1.0, "US quality income", "verified"),
+    "IWQU": InstrumentFacts(
+        "IWQU",
+        0.67,
+        "MSCI World Sector Neutral Quality / iShares IWQU holdings refresh 2026-07",
+        "verified",
+    ),
     "SCHD": InstrumentFacts("SCHD", 1.0, "US dividend (Dow Jones US Dividend 100)", "verified"),
+    "AVUV": InstrumentFacts("AVUV", 1.0, "Avantis AVUV official factsheet", "verified"),
+    "VHT": InstrumentFacts("VHT", 1.0, "Vanguard VHT official profile", "verified"),
+    "REET": InstrumentFacts(
+        "REET", 0.7307, "iShares REET geography, 2026-08-19", "verified",
+    ),
     "NVDA": InstrumentFacts("NVDA", 1.0, "single US name", "verified"),
 }
 

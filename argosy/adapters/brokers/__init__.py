@@ -19,6 +19,7 @@ from argosy.adapters.brokers.types import (
     Fill,
     Lot,
     OpenOrder,
+    OrderSnapshot,
     Position,
     ProposedOrder,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "Fill",
     "Lot",
     "OpenOrder",
+    "OrderSnapshot",
     "Position",
     "ProposedOrder",
 ]

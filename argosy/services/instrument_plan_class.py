@@ -61,22 +61,22 @@ _DETERMINISTIC_FLEET_SEED: dict[str, tuple[str, str, str]] = {
         "Real-assets sleeve — estate-safe listed property.",
     ),
     "CNDX": (
-        "Global quality growth (ex-NVDA-dense)",
+        "Global quality factor",
         "iShares NASDAQ-100 UCITS ETF.",
         "Growth/momentum sleeve exposure (UCITS).",
     ),
     "QQQM": (
-        "Global quality growth (ex-NVDA-dense)",
+        "Global quality factor",
         "Invesco NASDAQ-100 ETF (US-domiciled).",
         "Growth sleeve exposure; prefer UCITS CNDX for new cash when migrating.",
     ),
     "SCHG": (
-        "Global quality growth (ex-NVDA-dense)",
+        "Global quality factor",
         "Schwab US Large-Cap Growth ETF.",
         "Growth sleeve exposure (US-domiciled).",
     ),
     "SPMO": (
-        "Global quality growth (ex-NVDA-dense)",
+        "Global quality factor",
         "Invesco S&P 500 Momentum ETF.",
         "Momentum factor within the growth sleeve.",
     ),
@@ -399,6 +399,216 @@ def seed_all(
     return {"plan": n_plan, "fleet_deterministic": n_fleet}
 
 
+def classify_unmapped_held(
+    session: Session,
+    user_id: str,
+    *,
+    classifier=None,
+    model_override: str | None = None,
+    commit: bool = True,
+) -> dict[str, object]:
+    """Fleet-classify every currently held symbol missing a plan-class row.
+
+    One batch LLM call authors the judgment.  This function only supplies raw
+    plan/instrument facts, verifies exact class membership and persists valid
+    rows.  A partial/invalid response remains visible in ``unmapped`` rather
+    than being silently dumped into a generic sleeve.
+    """
+    from argosy.services.allocation_breakdown import _plan_symbol_labels
+    from argosy.services.instrument_reference import lookup, name_for
+    from argosy.services.portfolio_snapshot_store import (
+        get_latest_snapshot_row,
+        row_to_snapshot,
+    )
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.models import PositionStance
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(session, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    if doc is None:
+        return {"classified": 0, "unmapped": [], "reason": "no_current_plan"}
+    snapshot_row = get_latest_snapshot_row(session, user_id)
+    if snapshot_row is None:
+        return {"classified": 0, "unmapped": [], "reason": "no_snapshot"}
+
+    plan_labels = _plan_symbol_labels(doc)
+    cmap = load_classification_map(session, user_id)
+    positions = list(getattr(row_to_snapshot(snapshot_row), "positions", []) or [])
+    held = {
+        (getattr(position, "symbol", "") or "").strip().upper(): position
+        for position in positions
+        if (getattr(position, "symbol", "") or "").strip()
+        not in {"-", "—"}
+    }
+    missing = list_unmapped_held(
+        held_symbols=set(held),
+        plan_symbol_labels=plan_labels,
+        classification_map=cmap,
+    )
+    if not missing:
+        return {"classified": 0, "unmapped": [], "reason": "complete"}
+
+    stance_rows = session.execute(
+        select(PositionStance).where(
+            PositionStance.user_id == user_id,
+            PositionStance.symbol.in_(missing),
+        )
+    ).scalars().all()
+    stance_by_symbol = {row.symbol.upper(): row for row in stance_rows}
+    plan_classes = [
+        {
+            "label": str(getattr(cls, "label", "")),
+            "snapshot_category": str(getattr(cls, "snapshot_category", "")),
+            "sigma_class": str(getattr(cls, "sigma_class", "")),
+            "target_pct": float(getattr(cls, "target_pct", 0.0) or 0.0),
+            "rationale": str(getattr(cls, "rationale", "") or "")[:900],
+            "instruments": [
+                str(getattr(inst, "symbol", "") or "")
+                for inst in (getattr(cls, "instruments", []) or [])
+            ],
+        }
+        for cls in (getattr(doc, "classes", []) or [])
+        if str(getattr(cls, "label", "") or "").strip()
+    ]
+    instruments: list[dict[str, object]] = []
+    for symbol in missing:
+        position = held[symbol]
+        ref = lookup(symbol, getattr(position, "details", "") or "")
+        stance = stance_by_symbol.get(symbol)
+        instruments.append(
+            {
+                "symbol": symbol,
+                "name": name_for(symbol, getattr(position, "details", "") or ""),
+                "asset_type": str(getattr(position, "asset_type", "") or ""),
+                "details": str(getattr(position, "details", "") or "")[:500],
+                "usd_value": round(float(getattr(position, "usd_value_k", 0.0) or 0.0) * 1000, 2),
+                "reference": (
+                    {
+                        "asset_class": ref.asset_class,
+                        "sector": ref.sector,
+                        "region": ref.region,
+                        "structure": ref.structure,
+                        "estate_safe": ref.estate_safe,
+                    }
+                    if ref is not None
+                    else None
+                ),
+                "stance": (
+                    {
+                        "stance": stance.stance,
+                        "source": stance.stance_source,
+                        "plan_verdict": stance.plan_verdict,
+                        "review_verdict": stance.review_verdict,
+                    }
+                    if stance is not None
+                    else None
+                ),
+            }
+        )
+
+    if classifier is None:
+        from argosy.agents.instrument_plan_classifier import (
+            InstrumentPlanClassifierAgent,
+        )
+        from argosy.services.fleet_reliability import (
+            INSTRUMENT_CLASSIFIER_CONFIG,
+            INSTRUMENT_CLASSIFIER_FALLBACK_CONFIG,
+            call_reliably_sync,
+        )
+
+        decision_id = f"instrument-classification:{snapshot_row.id}"
+
+        def _attempt(model: str | None = None):
+            return InstrumentPlanClassifierAgent(
+                user_id=user_id,
+                model=model,
+            ).run_sync(
+                plan_classes=plan_classes,
+                instruments=instruments,
+                decision_id=decision_id,
+            )
+
+        classification_mode = "opus_primary"
+        if model_override:
+            report = call_reliably_sync(
+                lambda: _attempt(model_override),
+                scope="instrument_plan_classifier_override",
+                config=INSTRUMENT_CLASSIFIER_FALLBACK_CONFIG,
+            )
+            classification_mode = f"model_override:{model_override}"
+        else:
+            try:
+                report = call_reliably_sync(
+                    _attempt,
+                    scope="instrument_plan_classifier",
+                    config=INSTRUMENT_CLASSIFIER_CONFIG,
+                )
+            except Exception as primary_exc:  # noqa: BLE001 - explicit degraded model
+            # The daily loop must not remain permanently incomplete when Opus's
+            # CLI is in the known exit-1/hang state. Sonnet still authors the
+            # judgment; determinism does not choose a sleeve. The persisted
+            # AgentReport/model and returned mode make the degradation visible.
+                from argosy.logging import get_logger
+                from argosy.services.fleet_reliability import is_transient_fleet_error
+
+                if not is_transient_fleet_error(primary_exc):
+                    raise
+
+                get_logger(__name__).warning(
+                    "instrument_classification.opus_unavailable",
+                    error=str(primary_exc)[:200],
+                    fallback_model="claude-sonnet-4-6",
+                )
+                report = call_reliably_sync(
+                    lambda: _attempt("claude-sonnet-4-6"),
+                    scope="instrument_plan_classifier_fallback",
+                    config=INSTRUMENT_CLASSIFIER_FALLBACK_CONFIG,
+                )
+                classification_mode = "sonnet_fallback"
+        from argosy.services.agent_report_persistence import stage_agent_report
+
+        stage_agent_report(
+            session,
+            report,
+            decision_id=decision_id,
+        )
+        output = report.output
+    else:
+        output = classifier(plan_classes=plan_classes, instruments=instruments)
+        classification_mode = "injected"
+
+    allowed = {str(row["label"]) for row in plan_classes}
+    requested = set(missing)
+    classified: set[str] = set()
+    for decision in getattr(output, "decisions", []) or []:
+        symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
+        label = str(getattr(decision, "plan_class_label", "") or "").strip()
+        if symbol not in requested or symbol in classified or label not in allowed:
+            continue
+        _upsert_row(
+            session,
+            user_id=user_id,
+            symbol=symbol,
+            plan_class_label=label,
+            source=SOURCE_FLEET,
+            confidence=str(getattr(decision, "confidence", "LOW") or "LOW"),
+            what_it_is=str(getattr(decision, "what_it_is", "") or "")[:500],
+            why_held=str(getattr(decision, "why_held", "") or "")[:1000],
+        )
+        classified.add(symbol)
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    return {
+        "classified": len(classified),
+        "unmapped": sorted(requested - classified),
+        "reason": "fleet_batch",
+        "mode": classification_mode,
+    }
+
+
 __all__ = [
     "UNMAPPED_LABEL",
     "CASH_LABEL",
@@ -414,4 +624,5 @@ __all__ = [
     "owner_reassign",
     "list_unmapped_held",
     "seed_all",
+    "classify_unmapped_held",
 ]

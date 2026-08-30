@@ -118,6 +118,19 @@ CONSULT_ANALYST_CONFIG = FleetRetryConfig()
 #: 240s is generous headroom while still killing a genuine hang.
 DEPLOY_REVIEWER_CONFIG = FleetRetryConfig(hard_timeout_s=240.0)
 
+# One batch classification call over the unmapped held set.  It is automatic
+# daily work, so a hung CLI must not stall the holdings-review cadence. One
+# fresh retry spans a transient burst without turning a single classification
+# job into an unbounded queue.
+INSTRUMENT_CLASSIFIER_CONFIG = FleetRetryConfig(
+    retries=1,
+    hard_timeout_s=240.0,
+)
+INSTRUMENT_CLASSIFIER_FALLBACK_CONFIG = FleetRetryConfig(
+    retries=0,
+    hard_timeout_s=180.0,
+)
+
 
 # The exit-1 fingerprint, mirrored from BaseAgent's in-call detector: word-bounded
 # so "exit code 137" never matches; the parenthesized form is exact-string.
@@ -274,6 +287,8 @@ def call_reliably_sync(
 __all__ = [
     "CONSULT_ANALYST_CONFIG",
     "DEPLOY_REVIEWER_CONFIG",
+    "INSTRUMENT_CLASSIFIER_CONFIG",
+    "INSTRUMENT_CLASSIFIER_FALLBACK_CONFIG",
     "CircuitBreaker",
     "FleetCallTimeout",
     "FleetCallUnavailable",

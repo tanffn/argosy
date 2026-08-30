@@ -11,6 +11,8 @@ the honest placeholder.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import argosy.services.stock_decision.fetchers as fetchers_mod
@@ -134,3 +136,65 @@ def test_fetcher_degrades_when_no_plan(monkeypatch):
     )
     fetch = make_thesis_fetcher(db=object(), user_id="ariel")
     assert fetch("TEM") is None
+
+
+def test_news_and_fundamentals_fall_back_to_yahoo_without_finnhub(monkeypatch):
+    """A missing optional Finnhub key must not empty the whole review bundle."""
+    class _MissingFinnhub:
+        def _resolve_client(self):
+            raise RuntimeError("FINNHUB_API_KEY missing")
+
+    class _YahooTicker:
+        info = {
+            "marketCap": 123_000_000,
+            "trailingPE": 18.5,
+            "revenueGrowth": 0.21,
+        }
+
+        def get_news(self, **kwargs):
+            return [{
+                "content": {
+                    "title": "Company raises guidance",
+                    "pubDate": "2026-08-25T09:00:00Z",
+                }
+            }]
+
+    class _YahooClient:
+        def Ticker(self, symbol):
+            assert symbol == "AAA"
+            return _YahooTicker()
+
+    class _YahooAdapter:
+        def _resolve_client(self):
+            return _YahooClient()
+
+    monkeypatch.setattr(fetchers_mod, "_shared_adapter", _MissingFinnhub())
+    monkeypatch.setattr(
+        fetchers_mod, "_shared_yfinance_adapter_instance", _YahooAdapter()
+    )
+    monkeypatch.setattr(fetchers_mod, "_sync_kv_get", lambda *a, **k: None)
+    monkeypatch.setattr(fetchers_mod, "_sync_kv_put", lambda *a, **k: None)
+    fetchers_mod._mem_cache.clear()
+
+    news = fetchers_mod.news_fetcher("AAA")
+    fundamentals = fetchers_mod.fundamentals_fetcher("AAA")
+
+    assert news is not None and news.startswith("source=yfinance;")
+    assert "raises guidance" in news
+    assert fundamentals is not None and fundamentals.startswith("source=yfinance;")
+    assert "mktCap=123000000" in fundamentals
+    assert "revGrowth=0.21" in fundamentals
+
+
+@pytest.mark.real_seam
+def test_sync_cache_round_trip_uses_real_migrated_schema(
+    monkeypatch, alembic_engine_at_head,
+):
+    """Exercise the fetcher's actual sync ORM writer and reader."""
+    monkeypatch.setattr(
+        "argosy.config.get_settings",
+        lambda: SimpleNamespace(database_url=str(alembic_engine_at_head.url)),
+    )
+    payload = {"headline": "verified cache seam", "market_cap": 123_000_000}
+    fetchers_mod._sync_kv_put("stock_decision_test", "AAA", payload, ttl_seconds=60)
+    assert fetchers_mod._sync_kv_get("stock_decision_test", "AAA") == payload

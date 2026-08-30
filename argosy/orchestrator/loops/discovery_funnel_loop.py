@@ -9,10 +9,11 @@ so only new/changed names are re-researched.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import datetime
 
 from argosy.logging import get_logger
+from argosy.orchestrator.cost_guard import get_cost_guard
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.high_potential_funnel import run_funnel
 
@@ -46,6 +47,14 @@ class DiscoveryFunnelLoop(CadenceLoop):
         self.user_id = user_id
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
+        if await get_cost_guard(
+            user_id=self.user_id
+        ).should_pause_non_routine(loop_name=self.name):
+            _log.info(
+                "discovery_funnel.cost_guard_paused",
+                user_id=self.user_id,
+            )
+            return {"status": "paused", "reason": "cost_cap"}
         try:
             result = await run_funnel(self.user_id, force=False)
         except Exception as exc:  # noqa: BLE001 — failure isolation (codex #10)

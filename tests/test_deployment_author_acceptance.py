@@ -15,7 +15,11 @@ bounced feedback — no LLM, no subprocess."""
 from __future__ import annotations
 
 from argosy.services.allocation_author.packet import build_decision_packet
-from argosy.services.allocation_author.proposal import AllocationProposal, Buy
+from argosy.services.allocation_author.proposal import (
+    AllocationProposal,
+    AuthoredOrderIntent,
+    Buy,
+)
 from argosy.services.allocation_author.reliable import CircuitBreaker, authored_allocation
 from argosy.services.allocation_author.verifier import (
     GateStatus,
@@ -45,6 +49,20 @@ class _Doc:
         self.classes = classes
 
 
+def _intent() -> AuthoredOrderIntent:
+    return AuthoredOrderIntent(
+        thesis="Fill the governing sleeve gap.",
+        thesis_type="diversifier",
+        falsifier="The instrument stops providing the intended exposure.",
+        catalyst_description="Next scheduled portfolio review",
+        catalyst_date="2027-01-31",
+        expectation="The sleeve gap narrows.",
+        expectation_due_date="2027-02-28",
+        success_measure="sleeve moves toward target without a risk breach",
+        expected_upside_multiple=2,
+    )
+
+
 def _packet():
     doc = _Doc(classes=[
         _Cls("Ex-US developed", 15.0, "ex_us", [_Inst("EXUS")]),
@@ -65,7 +83,8 @@ def _bad_fwra_as_exus():
     return AllocationProposal(
         cash_to_deploy=180_000.0,
         buys=[Buy(symbol="FWRA", amount_usd=180_000.0, sleeve="ex-US",
-                  claimed_us_weight=0.0, justification="international diversification")],
+                  claimed_us_weight=0.0, justification="international diversification",
+                  order_intent=_intent())],
     )
 
 
@@ -76,9 +95,11 @@ def _good():
     return AllocationProposal(
         cash_to_deploy=180_000.0,
         buys=[Buy(symbol="EXUS", amount_usd=130_000.0, sleeve="ex-US developed",
-                  claimed_us_weight=0.0, justification="genuine ex-US (MSCI World ex-USA)"),
+                  claimed_us_weight=0.0, justification="genuine ex-US (MSCI World ex-USA)",
+                  order_intent=_intent()),
               Buy(symbol="SPMV", amount_usd=50_000.0, sleeve="US low-vol",
-                  claimed_us_weight=1.0, justification="estate-safe UCITS low-vol")],
+                  claimed_us_weight=1.0, justification="estate-safe UCITS low-vol",
+                  order_intent=_intent())],
         rationale="Deployed to genuine ex-US + estate-safe sleeves rather than adding "
                   "US-heavy all-world exposure to an already-concentrated book.",
     )
@@ -123,3 +144,33 @@ def test_accepted_allocation_passes_a_blind_reverify():
     report = verify_allocation_proposal(_good(), pkt)
     assert report.status == GateStatus.ACCEPT
     assert report.failures == []
+
+
+def test_cached_proposal_rejected_by_current_review_is_reauthored():
+    """Regression: a cache hit used to return status=accepted regardless of report."""
+    pkt = _packet()
+    cache = {
+        __import__(
+            "argosy.services.allocation_author.reliable",
+            fromlist=["packet_hash"],
+        ).packet_hash(pkt): _bad_fwra_as_exus()
+    }
+    seen_feedback = []
+
+    def run_author(agent_factory, packet, feedback, *, hard_timeout_s):
+        seen_feedback.extend(feedback or [])
+        return _good()
+
+    out = authored_allocation(
+        pkt,
+        user_id="ariel",
+        run_author=run_author,
+        breaker=CircuitBreaker(),
+        cache=cache,
+    )
+
+    assert out.status == "accepted"
+    assert out.attempts == 1
+    assert out.proposal == _good()
+    assert any("FWRA" in failure.detail for failure in seen_feedback)
+    assert next(iter(cache.values())) == _good()

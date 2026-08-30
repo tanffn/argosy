@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC
+
 import pytest
 
-from argosy.agents.thesis_monitor import HoldingThesisAssessment, ThesisMonitorReport
+from argosy.agents.base import ModelCall
+from argosy.agents.thesis_monitor import (
+    HoldingThesisAssessment,
+    ThesisMonitorAgent,
+    ThesisMonitorReport,
+)
 from argosy.orchestrator.loops.thesis_monitor import ThesisMonitorLoop, _price_summary
 
 
@@ -20,6 +28,15 @@ def test_price_summary_reduces_eod_bars() -> None:
 
 
 class _FakeSession:
+    def add(self, row) -> None:
+        pass
+
+    def commit(self) -> None:
+        pass
+
+    def rollback(self) -> None:
+        pass
+
     def close(self) -> None:
         pass
 
@@ -52,6 +69,52 @@ def _loop(*, holdings, assessments, write_calls):
         agent_factory=lambda: _FakeAgent(assessments),
         write_fn=_write_fn,
     )
+
+
+@pytest.mark.real_seam
+@pytest.mark.asyncio
+async def test_real_agent_dispatch_flows_through_loop(monkeypatch) -> None:
+    """Use the real loop and agent; replace only the external LLM call."""
+    payload = {
+        "assessments": [{
+            "ticker": "O",
+            "thesis_status": "broken",
+            "severity": "critical",
+            "rationale_md": "The dividend was suspended.",
+            "signals": ["dividend suspension"],
+            "suggested_action": "reassess_thesis",
+            "confidence": "HIGH",
+            "cited_sources": ["feed/O"],
+        }],
+        "overall_summary": "One thesis-level change.",
+        "confidence": "HIGH",
+        "cited_sources": ["feed/O"],
+    }
+
+    async def fake_call(self, *, system, user, **kwargs):
+        assert "feed/O" in user and "thesis" in system.lower()
+        return ModelCall(
+            text=json.dumps(payload), tokens_in=10, tokens_out=10, model="test-model"
+        )
+
+    monkeypatch.setattr(ThesisMonitorAgent, "_call_model", fake_call)
+    writes: list[str] = []
+
+    def write_fn(session, user_id, assessment, *, now):
+        writes.append(assessment.ticker)
+        return len(writes)
+
+    loop = ThesisMonitorLoop(
+        user_id="ariel",
+        session_factory=lambda: _FakeSession(),
+        holdings_fn=lambda *_a, **_k: [{"ticker": "O", "weight_pct": 3.0}],
+        gather_fn=lambda h, *, now: {**h, "news": [], "insider": []},
+        agent_factory=lambda: ThesisMonitorAgent(user_id="ariel"),
+        write_fn=write_fn,
+    )
+    summary = await loop.tick()
+    assert summary["escalated"] == 1
+    assert writes == ["O"]
 
 
 @pytest.mark.asyncio
@@ -139,11 +202,11 @@ def _sqlite_session(tmp_path, name="tm.db"):
 
 def _watchlist_row(ticker, *, status="open", payload_extra=None, now=None):
     import json
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from argosy.state.models import ActionProposal
 
-    now = now or datetime(2026, 7, 8, tzinfo=timezone.utc)
+    now = now or datetime(2026, 7, 8, tzinfo=UTC)
     payload = {"ticker": ticker, "watch_kind": "catalyst", **(payload_extra or {})}
     return ActionProposal(
         user_id="ariel",
@@ -220,14 +283,14 @@ def test_load_open_watchlist_notes_reads_open_rows_only(tmp_path) -> None:
 
 
 def test_refresh_watchlist_rows_for_ticker_keeps_row_alive(tmp_path) -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from argosy.orchestrator.loops.thesis_monitor import (
         refresh_watchlist_rows_for_ticker,
     )
     from argosy.state.models import ActionProposal
 
-    now = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 8, tzinfo=UTC)
     db, _ = _sqlite_session(tmp_path, "refresh.db")
     db.add_all([
         _watchlist_row("TEM", now=now),
@@ -242,7 +305,7 @@ def test_refresh_watchlist_rows_for_ticker_keeps_row_alive(tmp_path) -> None:
     tem_open, other_open, tem_closed = rows
 
     def _utc(dt):
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
     assert _utc(tem_open.surfaced_at) == now                       # refreshed
     assert _utc(tem_open.expires_at) >= now + timedelta(days=6)    # expiry floored

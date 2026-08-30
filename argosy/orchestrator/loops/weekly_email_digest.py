@@ -109,8 +109,6 @@ def _build_default_session_factory() -> sessionmaker:
     """
     global _DEFAULT_SESSION_FACTORY
 
-    import sqlalchemy as sa
-
     from argosy.config import get_settings
 
     settings = get_settings()
@@ -122,7 +120,9 @@ def _build_default_session_factory() -> sessionmaker:
             return cached_factory
 
     sync_url = f"sqlite:///{db_file}"
-    engine = sa.create_engine(sync_url, connect_args={"check_same_thread": False})
+    from argosy.state.db import create_sync_engine
+
+    engine = create_sync_engine(sync_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     _DEFAULT_SESSION_FACTORY = (db_file, factory)
     return factory

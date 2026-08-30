@@ -187,7 +187,7 @@ class Settings(BaseSettings):
     #   - decision_funnel_enabled: master switch. When False the loop no-ops.
     #     Default ON — per the "nothing hidden" doctrine (SDD §1.6) the funnel is
     #     exposed and running in beta, not gated off; disable per-tenant if needed.
-    #   - decision_funnel_shadow: when True (DEFAULT), the funnel is CALIBRATING —
+    #   - decision_funnel_shadow: when True, the funnel is CALIBRATING —
     #     it records graded decisions + full trace and EXPOSES them beta-labelled
     #     (view-first via the inbox + /api/decisions/funnel/calibration), but does
     #     not act on the client's behalf. Not hidden. Flip to False to let its
@@ -200,7 +200,10 @@ class Settings(BaseSettings):
     #     OFF. Discretionary Buy/Sell/Trim is ALWAYS propose-and-ask regardless.
     # Read via ARGOSY_DECISION_FUNNEL_ENABLED / _SHADOW / _STAGE3 / _AUTOACT.
     decision_funnel_enabled: bool = Field(default=True)
-    decision_funnel_shadow: bool = Field(default=True)
+    # Argosy's primary product is actionable portfolio decisions. Shadow remains
+    # an explicit environment override, not the default that silently suppresses
+    # every otherwise-qualified discovery.
+    decision_funnel_shadow: bool = Field(default=False)
     decision_funnel_stage3: bool = Field(default=True)
     decision_funnel_autoact: bool = Field(default=False)
     # Discord signal listener. OFF (2026-07-07): reconnect bug (~150 supervisor
@@ -265,6 +268,20 @@ class Settings(BaseSettings):
     # production-preferred path. The reliability wrapper hardens whichever
     # backend is active (hard timeout + process-tree kill on claude_code).
     deployment_author_backend: str | None = Field(default=None)
+    # Total corrective passes after the initial proposal. Feedback accumulates
+    # across the run, so two passes cover a judgment correction plus a later
+    # arithmetic repair. Persistent plan/team conflict then fails fast instead
+    # of spending more model calls on the same unresolved input contradiction.
+    # Shared bounded loop covers both structural/schema repair and independent
+    # investment-judgment reconciliation. Two revisions let a schema correction
+    # consume the only pass available for a later sizing/candidate dissent.
+    deployment_author_max_revisions: int = Field(default=4, ge=0, le=6)
+    # Optional exact custody account for automatic order-sheet materialization.
+    # The daily cash loop always authors and stores a validated first-class sheet;
+    # when this is set (for example ``schwab_rsu``), it also creates the existing
+    # awaiting-human executable Proposal rows. Empty means stop after the sheet
+    # and ask for an account rather than guessing where cash sits.
+    order_sheet_funding_account_id: str | None = Field(default=None)
 
     # Critique reconcile loop (2026-07-07) — after a weekly / on-demand plan
     # critique lands, RED findings (and notable YELLOWs) trigger ONE closer

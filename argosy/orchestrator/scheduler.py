@@ -191,6 +191,21 @@ class Scheduler:
             )
         )
 
+        # Canonical daily decision chain.  These used to be registered only by
+        # the FastAPI startup module, so ``argosy run`` omitted portfolio refresh,
+        # holdings verdicts, the decision funnel and the final allocation push.
+        # Keeping them in the scheduler's default set makes both boot paths run
+        # the same product loop (08:00 -> 17:30 -> 18:30 -> 19:00 IDT).
+        from argosy.orchestrator.loops.decision_funnel_loop import DecisionFunnelLoop
+        from argosy.services.jobs.holdings_review import HoldingsReviewJob
+        from argosy.services.jobs.period_directive_daily import PeriodDirectiveDailyJob
+        from argosy.services.jobs.snapshot_refresh_job import SnapshotRefreshJob
+
+        self.register_loop(SnapshotRefreshJob(enabled=True, user_id=self.user_id))
+        self.register_loop(HoldingsReviewJob(enabled=True, user_id=self.user_id))
+        self.register_loop(DecisionFunnelLoop(enabled=True, user_id=self.user_id))
+        self.register_loop(PeriodDirectiveDailyJob(enabled=True, user_id=self.user_id))
+
         # Daily FX refresh — keep USD/NIS fresh for ALL consumers (retirement MC,
         # dashboards, TSV), not just the on-demand deploy/directive path. Always-on
         # like the monitors; cheap + failure-isolated.

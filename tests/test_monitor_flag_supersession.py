@@ -23,7 +23,7 @@ from argosy.services.state_observer_flag_writer import (
     supersede_plan_assumption_flags,
     write_observer_flags,
 )
-from argosy.state.models import Base, MonitorFlag, User
+from argosy.state.models import ActionProposal, Base, MonitorFlag, User
 
 USER = "ariel"
 SNAPSHOT_ID = 17
@@ -243,7 +243,7 @@ def test_plan_promotion_supersedes_stale_plan_assumption(sync_session):
     """A plan-assumption flag about a NON-current plan label is superseded
     on promotion; one about the current label survives."""
     # Stale flag (references the old rejected draft).
-    sync_session.add(MonitorFlag(
+    stale_flag = MonitorFlag(
         user_id=USER, kind="state_observer_plan_assumption_observation",
         severity="critical",
         payload='{"primary_field": "plan_inputs.plan_version_label", '
@@ -251,7 +251,22 @@ def test_plan_promotion_supersedes_stale_plan_assumption(sync_session):
         surfaced_at=_now(1),
         dedup_key="v1|state_observer|ariel|plan_assumption_observation|x|large",
         status="active",
-    ))
+    )
+    sync_session.add(stale_flag)
+    sync_session.flush()
+    stale_proposal = ActionProposal(
+        user_id=USER,
+        source_flag_id=stale_flag.id,
+        summary="stale source",
+        rationale_md="stale source",
+        suggested_payload="{}",
+        severity="warning",
+        expires_at=_now(5),
+        status="open",
+        kind="note_only",
+        execution_state="proposed",
+    )
+    sync_session.add(stale_proposal)
     # A current-plan observation that should survive.
     sync_session.add(MonitorFlag(
         user_id=USER, kind="state_observer_plan_assumption_observation",
@@ -271,3 +286,6 @@ def test_plan_promotion_supersedes_stale_plan_assumption(sync_session):
     active = _active_rows(sync_session)
     assert len(active) == 1
     assert "synth-2026-06-20-1852" in active[0].payload
+    sync_session.refresh(stale_proposal)
+    assert stale_proposal.status == "superseded"
+    assert stale_proposal.decided_by_user_note == "source monitor flag is no longer active"

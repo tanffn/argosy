@@ -19,7 +19,6 @@ from argosy.orchestrator.loops.weekly_review import (
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion, User
 
-
 _CRITIQUE_CANNED = {
     "plan_label": "Test Plan",
     "snapshot_label": "weekly_review:test",
@@ -63,6 +62,7 @@ def _gather(_user_id: str) -> WeeklyReviewInputs:
     )
 
 
+@pytest.mark.real_seam
 @pytest.mark.asyncio
 async def test_weekly_review_persists_critique_and_emits_event(engine: None) -> None:
     events._reset_for_tests()

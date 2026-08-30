@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -357,6 +357,8 @@ def _insert_prediction(
     entry_prices_json: str | None = None,
     provenance_weights_applied: bool = False,
     preserve_long_horizon: bool = False,
+    evaluation_method_override: str | None = None,
+    evaluation_due_at_override: datetime | None = None,
 ) -> Prediction:
     """INSERT one prediction row with per-source idempotency.
 
@@ -384,6 +386,10 @@ def _insert_prediction(
     )
     event_at_aware = _ensure_aware(event_at)
     evaluation_due_at = event_at_aware + timedelta(days=window_days)
+    if evaluation_method_override is not None:
+        method = evaluation_method_override
+    if evaluation_due_at_override is not None:
+        evaluation_due_at = _ensure_aware(evaluation_due_at_override)
 
     row = Prediction(
         user_id=user_id,
@@ -469,6 +475,166 @@ def _insert_prediction(
         # the caller's outer try/except captures it.
         raise
     return row
+
+
+def write_order_sheet_prediction(
+    session: Session,
+    user_id: str,
+    *,
+    fingerprint: str,
+    proposal_id: int,
+    ticker: str,
+    action: str,
+    event_at: datetime,
+    due_at: datetime,
+    entry_price: Decimal | float,
+    expectation: str,
+    success_measure: str,
+    stance_source: str,
+) -> Prediction:
+    """Put an executable order's authored expectation on the calibration clock."""
+
+    direction = "long" if action.upper() in ("BUY", "ADD") else "short"
+    timeframe_days = max(1, (_ensure_aware(due_at) - _ensure_aware(event_at)).days)
+    return _insert_prediction(
+        session,
+        user_id,
+        source="signal_stream:order_sheet",
+        source_ref={
+            "order_sheet_fingerprint": fingerprint,
+            "proposal_id": proposal_id,
+            "action": action.upper(),
+            "expectation": expectation,
+            "success_measure": success_measure,
+            "stance_source": stance_source,
+        },
+        message_id=f"v1|predictions|order_sheet|{fingerprint}.{ticker.upper()}",
+        ticker=ticker.upper(),
+        direction=direction,
+        event_at=event_at,
+        entry_price=entry_price,
+        timeframe_days=timeframe_days,
+        evaluation_method_override="order_sheet_due_date_v1",
+        evaluation_due_at_override=due_at,
+    )
+
+
+def write_order_sheet_predictions(
+    session: Session,
+    user_id: str,
+    **kwargs: Any,
+) -> tuple[Prediction, Prediction]:
+    """Track a surfaced order recommendation whether or not it is accepted.
+
+    The authored expectation keeps its exact due date. A second independent
+    six-month clock makes accepted, declined, expired, and ignored advice
+    comparable in the same long-horizon calibration cohort.
+    """
+
+    authored = write_order_sheet_prediction(session, user_id, **kwargs)
+    event_at = kwargs["event_at"]
+    fingerprint = kwargs["fingerprint"]
+    ticker = str(kwargs["ticker"]).upper()
+    action = str(kwargs["action"]).upper()
+    direction = "long" if action in ("BUY", "ADD") else "short"
+    thesis = _insert_prediction(
+        session,
+        user_id,
+        source="signal_stream:order_sheet",
+        source_ref={
+            "order_sheet_fingerprint": fingerprint,
+            "proposal_id": kwargs["proposal_id"],
+            "action": action,
+            "expectation": kwargs["expectation"],
+            "success_measure": kwargs["success_measure"],
+            "stance_source": kwargs["stance_source"],
+            "horizon_days": 180,
+        },
+        message_id=(
+            f"v1|predictions|order_sheet|{fingerprint}.{ticker}|180d"
+        ),
+        ticker=ticker,
+        direction=direction,
+        event_at=event_at,
+        entry_price=kwargs["entry_price"],
+        timeframe_days=180,
+        preserve_long_horizon=True,
+    )
+    return authored, thesis
+
+
+def ensure_surfaced_order_sheet_predictions(
+    session: Session,
+    *,
+    user_id: str | None = None,
+) -> dict[str, int]:
+    """Repair clocks for every persisted trade plan, including ignored plans."""
+
+    from argosy.services.order_sheet import OrderSheet
+    from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+    from argosy.state.models import ActionProposal
+
+    stmt = select(ActionProposal).where(ActionProposal.kind == "allocate")
+    if user_id is not None:
+        stmt = stmt.where(ActionProposal.user_id == user_id)
+    proposals = session.execute(stmt.order_by(ActionProposal.id)).scalars().all()
+    before = len(session.execute(
+        select(Prediction.id).where(
+            Prediction.source == "signal_stream:order_sheet",
+            *((Prediction.user_id == user_id,) if user_id is not None else ()),
+        )
+    ).scalars().all())
+    sheets = 0
+    lines = 0
+    for proposal in proposals:
+        try:
+            payload = json.loads(proposal.suggested_payload or "{}")
+            raw_sheet = payload.get("order_sheet")
+            if not isinstance(raw_sheet, dict):
+                continue
+            sheet = OrderSheet.model_validate(raw_sheet)
+            fingerprint = str(
+                payload.get("order_sheet_fingerprint")
+                or order_sheet_fingerprint(sheet)
+            )
+            sheets += 1
+            for line in sheet.lines:
+                write_order_sheet_predictions(
+                    session,
+                    proposal.user_id,
+                    fingerprint=fingerprint,
+                    proposal_id=int(proposal.id),
+                    ticker=line.symbol,
+                    action=line.action.value,
+                    event_at=sheet.generated_at,
+                    due_at=datetime.combine(
+                        line.expectation.due_date,
+                        time(23, 59, 59),
+                        tzinfo=timezone.utc,
+                    ),
+                    entry_price=line.evidence.price_usd,
+                    expectation=line.expectation.statement,
+                    success_measure=line.expectation.success_measure,
+                    stance_source=line.stance_source,
+                )
+                lines += 1
+        except Exception as exc:  # noqa: BLE001 - continue repairing other plans
+            logger.warning(
+                "predictions.order_sheet_repair.skipped proposal=%s: %s",
+                proposal.id,
+                str(exc)[:160],
+            )
+    after = len(session.execute(
+        select(Prediction.id).where(
+            Prediction.source == "signal_stream:order_sheet",
+            *((Prediction.user_id == user_id,) if user_id is not None else ()),
+        )
+    ).scalars().all())
+    return {
+        "sheets": sheets,
+        "lines": lines,
+        "predictions_created": max(0, after - before),
+    }
 
 
 def write_signal_stream_predictions(
@@ -1180,6 +1346,139 @@ def write_deep_decision_verdict_prediction(
     )
 
 
+def write_deep_decision_verdict_predictions(
+    session: Session,
+    user_id: str,
+    **kwargs: Any,
+) -> tuple[Prediction, Prediction] | tuple[()]:
+    """Put a settled verdict on both tactical and thesis calibration clocks.
+
+    The first row preserves the original 30-day contract and dedup key.  The
+    second row is an independent 180-day counterfactual.  Neither depends on
+    whether the user accepts or executes the related proposal.
+    """
+
+    tactical = write_deep_decision_verdict_prediction(session, user_id, **kwargs)
+    if tactical is None:
+        return ()
+    verdict_id = kwargs.get("verdict_id")
+    ref = _verdict_source_ref_for_horizon(
+        verdict_id=verdict_id,
+        ticker=str(tactical.ticker or ""),
+        verdict=str(kwargs.get("verdict") or "").strip().upper(),
+        horizon_days=180,
+    )
+    thesis = _insert_prediction(
+        session,
+        user_id,
+        source=DEEP_DECISION_VERDICT_SOURCE,
+        source_ref=ref,
+        message_id=(
+            f"{deep_decision_verdict_message_id(verdict_id=verdict_id)}|180d"
+        ),
+        ticker=tactical.ticker,
+        direction=tactical.direction,
+        event_at=kwargs["event_at"],
+        entry_price=kwargs.get("entry_price"),
+        target_price=tactical.target_price,
+        stop_price=tactical.stop_price,
+        timeframe_days=180,
+        preserve_long_horizon=True,
+    )
+    return tactical, thesis
+
+
+def _verdict_source_ref_for_horizon(
+    *, verdict_id: int | str, ticker: str, verdict: str, horizon_days: int
+) -> dict[str, Any]:
+    return {
+        "verdict_id": verdict_id,
+        "subject": ticker,
+        "verdict": verdict,
+        "kind": "deep_decision_verdict",
+        "horizon_days": horizon_days,
+    }
+
+
+def ensure_deep_verdict_prediction_horizons(
+    session: Session,
+    *,
+    user_id: str | None = None,
+) -> dict[str, int]:
+    """Idempotently repair the counterfactual clocks for settled verdicts.
+
+    This is intentionally a scheduler seam, not a one-off migration: if the
+    fire-on-settle bridge ever misses, the next evaluator pass repairs it.  It
+    also backfills pre-bridge verdicts.  Execution/acceptance status is never a
+    condition for writing either horizon.
+    """
+
+    from argosy.state.models import Verdict
+
+    stmt = select(Verdict).where(Verdict.settled.is_(True))
+    if user_id is not None:
+        stmt = stmt.where(Verdict.user_id == user_id)
+    verdicts = session.execute(stmt.order_by(Verdict.id)).scalars().all()
+    before = session.execute(
+        select(Prediction.id).where(
+            Prediction.source == DEEP_DECISION_VERDICT_SOURCE,
+            *(
+                (Prediction.user_id == user_id,)
+                if user_id is not None
+                else ()
+            ),
+        )
+    ).scalars().all()
+    attempted = 0
+    for row in verdicts:
+        verdict = (row.verdict or "").strip().upper()
+        if verdict not in _VERDICT_TO_DIRECTION:
+            continue
+        try:
+            triggers = json.loads(row.revisit_triggers_json or "[]")
+        except (TypeError, ValueError):
+            triggers = []
+        existing = session.execute(
+            select(Prediction)
+            .where(
+                Prediction.user_id == row.user_id,
+                Prediction.source == DEEP_DECISION_VERDICT_SOURCE,
+                Prediction.source_ref.like(f'%"verdict_id": {int(row.id)}%'),
+            )
+            .order_by(Prediction.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        entry_price = existing.entry_price if existing is not None else None
+        stop_price = existing.stop_price if existing is not None else None
+        write_deep_decision_verdict_predictions(
+            session,
+            row.user_id,
+            verdict_id=row.id,
+            subject=row.subject,
+            verdict=verdict,
+            event_at=row.created_at,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            revisit_triggers=triggers if isinstance(triggers, list) else [],
+        )
+        attempted += 1
+    after = session.execute(
+        select(Prediction.id).where(
+            Prediction.source == DEEP_DECISION_VERDICT_SOURCE,
+            *(
+                (Prediction.user_id == user_id,)
+                if user_id is not None
+                else ()
+            ),
+        )
+    ).scalars().all()
+    return {
+        "settled_verdicts": len(verdicts),
+        "eligible_verdicts": attempted,
+        "predictions_created": max(0, len(after) - len(before)),
+    }
+
+
 def emit_verdict_prediction_best_effort(
     *,
     user_id: str,
@@ -1217,7 +1516,7 @@ def emit_verdict_prediction_best_effort(
                 bind=engine, expire_on_commit=False
             )
         session = session_factory()
-        row = write_deep_decision_verdict_prediction(
+        rows = write_deep_decision_verdict_predictions(
             session,
             user_id,
             verdict_id=verdict_id,
@@ -1230,7 +1529,7 @@ def emit_verdict_prediction_best_effort(
             timeframe_days=timeframe_days,
         )
         session.commit()
-        return row
+        return rows[0] if rows else None
     except Exception as exc:  # noqa: BLE001 — bridge must NEVER break the flow
         logger.warning(
             "predictions.verdict_bridge.emit_failed: %s", str(exc)[:200]
@@ -1259,7 +1558,10 @@ __all__ = [
     "DEEP_DECISION_VERDICT_SOURCE",
     "deep_decision_verdict_message_id",
     "emit_verdict_prediction_best_effort",
+    "ensure_deep_verdict_prediction_horizons",
+    "ensure_surfaced_order_sheet_predictions",
     "write_deep_decision_verdict_prediction",
+    "write_deep_decision_verdict_predictions",
     "DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT",
     "DEFAULT_TIMEFRAME_DAYS_DISCORD",
     "DEFAULT_TIMEFRAME_DAYS_MONITOR",
@@ -1274,6 +1576,8 @@ __all__ = [
     "write_monitor_flag_prediction",
     "write_news_signal_prediction",
     "write_per_position_thesis_prediction",
+    "write_order_sheet_prediction",
+    "write_order_sheet_predictions",
     "write_state_observer_prediction",
     "write_signal_stream_predictions",
 ]

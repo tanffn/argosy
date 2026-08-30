@@ -8,7 +8,7 @@ settle, before the 15:30 signal streams / 16:00 discovery funnel).
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -42,54 +42,21 @@ def verdict_trigger_daily_metadata() -> JobMetadata:
 
 
 def _default_session_factory() -> sessionmaker:
-    import sqlalchemy as sa
-
     from argosy.state import db as db_mod
 
     url = str(db_mod.get_engine().url).replace("+aiosqlite", "")
-    engine = sa.create_engine(url, connect_args={"check_same_thread": False})
+    engine = db_mod.create_sync_engine(url)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def _fetch_quotes_for_subjects(
     session: Session, *, user_id: str, subjects: list[str]
 ) -> dict[str, float]:
-    """Best-effort last prices from kv_cache / latest snapshot — never raises."""
-    quotes: dict[str, float] = {}
-    if not subjects:
-        return quotes
-    try:
-        from sqlalchemy import text
+    """Fresh cache/Yahoo prices; ``user_id`` remains for seam compatibility."""
+    del user_id
+    from argosy.services.verdict_trigger_quotes import fetch_trigger_quotes
 
-        # Prefer kv_cache quote keys written by price feeds: quote:{SYMBOL}
-        for sym in subjects:
-            row = session.execute(
-                text(
-                    "SELECT value FROM kv_cache WHERE key = :k "
-                    "ORDER BY id DESC LIMIT 1"
-                ),
-                {"k": f"quote:{sym}"},
-            ).scalar()
-            if row is None:
-                continue
-            try:
-                import json
-
-                payload = json.loads(row) if isinstance(row, str) else row
-                px = (
-                    payload.get("price")
-                    or payload.get("last")
-                    or payload.get("close")
-                    if isinstance(payload, dict)
-                    else None
-                )
-                if px is not None:
-                    quotes[sym] = float(px)
-            except (TypeError, ValueError, AttributeError):
-                continue
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("verdict_trigger.quote_fetch_failed", error=str(exc)[:200])
-    return quotes
+    return fetch_trigger_quotes(session, subjects)
 
 
 class VerdictTriggerDailyLoop(CadenceLoop):
@@ -147,8 +114,13 @@ class VerdictTriggerDailyLoop(CadenceLoop):
             # keyword-only args. Bridge here so BOTH work (live-smoke
             # 2026-07-12: the default path had never been exercised).
             if self._quotes_fn is _fetch_quotes_for_subjects:
-                quotes = _fetch_quotes_for_subjects(
-                    sess, user_id=self.user_id, subjects=subjects
+                import asyncio
+
+                quotes = await asyncio.to_thread(
+                    _fetch_quotes_for_subjects,
+                    sess,
+                    user_id=self.user_id,
+                    subjects=subjects,
                 )
             else:
                 quotes = self._quotes_fn(sess, self.user_id, subjects)

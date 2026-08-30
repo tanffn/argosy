@@ -34,6 +34,7 @@ from argosy.adapters.brokers.types import (
     Fill,
     Lot,
     OpenOrder,
+    OrderSnapshot,
     Position,
     ProposedOrder,
 )
@@ -308,6 +309,104 @@ class IBKRAdapter:
             )
         return out
 
+    async def get_order_snapshot(
+        self, broker_order_id: str, *, account_id: str = ""
+    ) -> OrderSnapshot:
+        """Return completed/partial IBKR executions for reconciliation.
+
+        ``openOrders`` alone cannot distinguish filled from cancelled. IBKR's
+        trade/fill collections carry the execution ids required for durable,
+        idempotent fill telemetry.
+        """
+        if not account_id:
+            return OrderSnapshot(
+                status="unknown", fills=[], reason="IBKR account_id is missing"
+            )
+        ib = await self.connect(account_id)
+        wanted = str(broker_order_id)
+        trades = list(ib.trades() if hasattr(ib, "trades") else [])
+        trade = next(
+            (
+                row
+                for row in trades
+                if str(getattr(getattr(row, "order", None), "orderId", ""))
+                == wanted
+            ),
+            None,
+        )
+
+        raw_fills = list(getattr(trade, "fills", None) or []) if trade else []
+        if not raw_fills and hasattr(ib, "fills"):
+            raw_fills = [
+                row
+                for row in (ib.fills() or [])
+                if str(getattr(getattr(row, "execution", None), "orderId", ""))
+                == wanted
+            ]
+        fills = [
+            parsed
+            for raw in raw_fills
+            if (parsed := self._parse_execution_fill(raw, wanted, account_id))
+            is not None
+        ]
+        if trade is None:
+            if fills:
+                return OrderSnapshot(
+                    status="filled", fills=fills, reason="IBKR execution history"
+                )
+            return OrderSnapshot(
+                status="unknown", fills=[], reason="order absent from IBKR trade history"
+            )
+
+        order_status = getattr(trade, "orderStatus", None)
+        raw_status = str(getattr(order_status, "status", "") or "")
+        status_key = raw_status.lower().replace(" ", "")
+        if status_key == "filled":
+            # Do not close the pending row until execution details are visible.
+            status = "filled" if fills else "working"
+        elif status_key in {"cancelled", "apicancelled"}:
+            status = "cancelled"
+        elif status_key in {"inactive", "rejected"}:
+            status = "rejected"
+        elif float(getattr(order_status, "filled", 0) or 0) > 0:
+            status = "partial"
+        elif status_key == "presubmitted":
+            status = "presubmitted"
+        elif status_key in {"submitted", "pendingsubmit", "pendingcancel"}:
+            status = "submitted"
+        else:
+            status = "working"
+        return OrderSnapshot(status=status, fills=fills, reason=raw_status)
+
+    def _parse_execution_fill(
+        self, raw_fill: Any, broker_order_id: str, account_id: str
+    ) -> Fill | None:
+        execution = getattr(raw_fill, "execution", None)
+        if execution is None:
+            return None
+        contract = getattr(raw_fill, "contract", None)
+        side = str(getattr(execution, "side", "") or "").upper()
+        action = "sell" if side in {"SLD", "SELL"} else "buy"
+        filled_at = getattr(raw_fill, "time", None)
+        kwargs: dict[str, Any] = {}
+        if filled_at is not None:
+            kwargs["filled_at"] = filled_at
+        return Fill(
+            broker=self.name,
+            broker_order_id=broker_order_id,
+            external_fill_id=str(getattr(execution, "execId", "") or ""),
+            account_id=str(getattr(execution, "acctNumber", "") or account_id),
+            ticker=str(getattr(contract, "symbol", "") or ""),
+            action=action,
+            quantity=float(getattr(execution, "shares", 0) or 0),
+            price=float(getattr(execution, "price", 0) or 0),
+            commission=float(
+                getattr(getattr(raw_fill, "commissionReport", None), "commission", 0)
+                or 0
+            ),
+            **kwargs,
+        )
+
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
@@ -400,24 +499,10 @@ class IBKRAdapter:
         # Synchronous fills, if any (rare; mostly arrive via reconcile).
         fills: list[Fill] = []
         for raw_fill in getattr(trade, "fills", []) or []:
-            execution = getattr(raw_fill, "execution", None)
-            if execution is None:
-                continue
-            fills.append(
-                Fill(
-                    proposal_id=order.proposal_id,
-                    broker=self.name,
-                    broker_order_id=order_id,
-                    ticker=order.ticker,
-                    action=order.action,
-                    quantity=float(getattr(execution, "shares", 0) or 0),
-                    price=float(getattr(execution, "price", 0) or 0),
-                    commission=float(
-                        getattr(getattr(raw_fill, "commissionReport", None), "commission", 0)
-                        or 0
-                    ),
-                )
-            )
+            parsed = self._parse_execution_fill(raw_fill, order_id, order.account_id)
+            if parsed is not None:
+                parsed.proposal_id = order.proposal_id
+                fills.append(parsed)
 
         return ExecutionResult(
             status="filled" if status.lower() == "filled" else "submitted",

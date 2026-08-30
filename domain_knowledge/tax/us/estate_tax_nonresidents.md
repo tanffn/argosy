@@ -1,17 +1,17 @@
 ---
 topic: us_estate_tax_nonresidents
 jurisdiction: us
-last_verified: 2026-08-15
+last_verified: 2026-08-28
 next_refresh_due: 2026-12-31
 sources:
   - url: https://www.irs.gov/individuals/international-taxpayers/some-nonresidents-with-us-assets-must-file-estate-tax-returns
-    retrieved: 2026-08-15
+    retrieved: 2026-08-28
     tier: 1
   - url: https://www.irs.gov/forms-pubs/about-form-706-na
-    retrieved: 2026-08-15
+    retrieved: 2026-08-28
     tier: 1
   - url: https://www.irs.gov/pub/irs-pdf/i706na.pdf
-    retrieved: 2026-08-15
+    retrieved: 2026-08-28
     tier: 1
 ---
 

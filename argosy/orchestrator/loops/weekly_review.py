@@ -14,15 +14,17 @@ them.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import desc, select
 
 from argosy.agents.plan_critique import PlanCritiqueAgent, PlanCritiqueReport
 from argosy.api.events import publish_event
 from argosy.logging import get_logger
+from argosy.orchestrator.cost_guard import get_cost_guard
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion
@@ -57,7 +59,7 @@ class WeeklyReviewLoop(CadenceLoop):
         enabled: bool = True,
         user_id: str = "ariel",
         plan_critique_factory: Callable[[], PlanCritiqueAgent] | None = None,
-        gather_inputs: Callable[[str], "WeeklyReviewInputs | Any"] | None = None,
+        gather_inputs: Callable[[str], WeeklyReviewInputs | Any] | None = None,
         reconcile_fn: Callable[..., Any] | None = None,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
@@ -74,6 +76,11 @@ class WeeklyReviewLoop(CadenceLoop):
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
         run_at = (now or _utcnow)()
+        if await get_cost_guard(
+            user_id=self.user_id
+        ).should_pause_non_routine(loop_name=self.name):
+            _log.info("weekly_review.cost_guard_paused", user_id=self.user_id)
+            return
         inputs = await self._maybe_async(self._gather(self.user_id))
         if not isinstance(inputs, WeeklyReviewInputs):
             raise TypeError(
@@ -92,6 +99,18 @@ class WeeklyReviewLoop(CadenceLoop):
             snapshot_summary=inputs.snapshot_summary,
             user_context_yaml="",
             domain_kb_files={},
+        )
+        from argosy.services.agent_report_persistence import (
+            persist_agent_report_async,
+        )
+
+        await persist_agent_report_async(
+            report,
+            decision_id=(
+                f"weekly-review:{inputs.plan_version_id}"
+                if inputs.plan_version_id is not None
+                else f"weekly-review:{run_at.date().isoformat()}"
+            ),
         )
         out: PlanCritiqueReport = report.output  # type: ignore[assignment]
 
@@ -161,7 +180,7 @@ class WeeklyReviewLoop(CadenceLoop):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _reconcile_enabled() -> bool:

@@ -355,6 +355,10 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # whole pivot exists to make smart (a plain LLM prompt beat the old
     # deterministic water-fill). One call, not a debate fleet.
     "deployment_author": "claude-opus-5",
+    # Batch portfolio-role classification for every currently-unmapped held
+    # instrument.  A wrong sleeve distorts allocation gaps and downstream money
+    # decisions, so this remains an Opus judgment role rather than a lookup gate.
+    "instrument_plan_classifier": "claude-opus-5",
     # Critique-reconcile closer (2026-07-07) — routes each weekly-critique
     # RED/notable-YELLOW finding to its closer path (prose edit vs
     # requires-re-synthesis vs data refresh vs needs-user vs dispute).
@@ -441,7 +445,15 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # Deployment author (fleet-authors pivot) — high effort: one pass must
     # weigh concentration look-through, tax reserve, domicile, and plan-fit
     # holistically (the reasoning that beat the deterministic engine).
-    "deployment_author":       "high",
+    # Live production calls at high adaptive effort exceeded the author's
+    # 150-second money-path SLA twice, while the same Opus backend answered a
+    # minimal call in seconds. Keep the capable model, but bound its thinking;
+    # the deterministic verifier remains the arithmetic and safety floor.
+    "deployment_author":       "low",
+    # Three blind reviewers run concurrently on the interactive money path.
+    # Their task is narrow objection classification, not open-ended synthesis.
+    "deployment_reviewer":     "low",
+    "instrument_plan_classifier": "high",
     # Alpha-report analyst — long-form Discord posts (Meet Kevin
     # Morning Brief style). High thinking lets the LLM weigh tone,
     # per-ticker conviction, structural picks, cautions, and index
@@ -605,6 +617,7 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # AllocationProposal (a handful of buys/sells + reserves + rationale).
     # 16K is generous headroom and keeps adaptive thinking under the cap.
     "deployment_author": 16000,
+    "instrument_plan_classifier": 16000,
     # Alpha-report analyst — output is a structured analysis with up to
     # ~20 ticker_signals + ~10 structural_picks + summary + cautions +
     # index_targets. 12K is a generous ceiling for typical reports

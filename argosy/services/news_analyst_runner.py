@@ -375,10 +375,14 @@ def _decode_json_list(raw: str | None) -> list[str]:
     return [str(x) for x in decoded]
 
 
-def _coerce_source_literal(value: Any) -> Literal["discord", "rss", "macro_feed"]:
+def _coerce_source_literal(
+    value: Any,
+) -> Literal["discord", "rss", "macro_feed", "yf_earnings", "sec_filing"]:
     """Narrow a string to the source Literal; defaults to ``rss`` on a
     bad value (defensive — the DB CHECK constraint should prevent it)."""
-    if value in ("discord", "rss", "macro_feed"):
+    if value in (
+        "discord", "rss", "macro_feed", "yf_earnings", "sec_filing"
+    ):
         return value  # type: ignore[return-value]
     return "rss"
 

@@ -36,6 +36,12 @@ Two complementary maintenance passes run inside one tick:
    the §1.7 matrix's "close-path failed" case for short ticks that
    should have closed within seconds.
 
+At backend startup, :func:`reap_prior_process_job_runs` performs an immediate
+third reconciliation before the scheduler starts. Under the single-backend
+service model, every pre-existing ``running`` cadence receipt belongs to the
+terminated process, so it is closed immediately rather than displayed as live
+until the conservative 24-hour maintenance window expires.
+
 Idempotent: a second tick in the same day finds no work and is a
 no-op (DELETE / UPDATE against an empty result set). The cron is
 ``30 3 * * *`` (03:30 Asia/Jerusalem daily) — 30 minutes after the
@@ -55,7 +61,7 @@ only prunes / marks existing ones).
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, update
@@ -64,7 +70,7 @@ from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.jobs.registry import JobMetadata
 from argosy.state import db as db_mod
-from argosy.state.models import JobRun
+from argosy.state.models import DecisionRun, JobRun
 
 _log = get_logger("argosy.loops.job_runs_retention")
 
@@ -80,7 +86,65 @@ _DEFAULT_STALE_RUNNING_HOURS = 24
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
+
+
+async def reap_prior_process_job_runs(
+    *, now: datetime | None = None,
+) -> int:
+    """Close cadence receipts abandoned by a backend process restart.
+
+    This runs during application startup *before* the scheduler starts. Under
+    Argosy's single-backend service model, no receipt owned by the new process
+    can exist yet, so every pre-existing ``running`` row belongs to the
+    terminated process and must not remain falsely active for 24 hours.
+    """
+    finished_at = now or _utcnow()
+    if finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=UTC)
+    async with db_mod.get_session() as session:
+        result = await session.execute(
+            update(JobRun)
+            .where(JobRun.status == "running")
+            .values(
+                status="cancelled",
+                error_message="reaped: prior backend process exited",
+                finished_at=finished_at,
+            )
+        )
+        count = int(result.rowcount or 0)
+        await session.commit()
+    return count
+
+
+async def reap_prior_process_decision_runs(
+    *, now: datetime | None = None,
+) -> int:
+    """Fail decision runs abandoned by the terminated backend process.
+
+    Startup happens before any new decision can be opened. Therefore every
+    pre-existing ``running`` row is an orphan regardless of age; retaining a
+    four-hour grace period only creates a false live state after a recent
+    crash or test-process escape.
+    """
+    finished_at = now or _utcnow()
+    if finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=UTC)
+    async with db_mod.get_session() as session:
+        result = await session.execute(
+            update(DecisionRun)
+            .where(DecisionRun.status == "running")
+            .values(
+                status="failed",
+                finished_at=finished_at,
+                notes_json=(
+                    '{"orphaned_by":"prior_backend_process_exit"}'
+                ),
+            )
+        )
+        count = int(result.rowcount or 0)
+        await session.commit()
+    return count
 
 
 def job_runs_retention_metadata() -> JobMetadata:
@@ -98,7 +162,8 @@ def job_runs_retention_metadata() -> JobMetadata:
             "Daily prune of job_runs: deletes status='ok' rows older "
             "than retention_days_ok (default 30d); reaps stale "
             "status='running' rows older than stale_running_hours "
-            "(default 24h) to status='cancelled'. Status='error' rows "
+            "(default 24h) to status='cancelled'; startup also closes "
+            "prior-process running rows immediately. Status='error' rows "
             "are kept forever."
         ),
         long_running=False,
@@ -182,7 +247,7 @@ class JobRunsRetentionLoop(CadenceLoop):
         # the clock advances mid-tick.
         now_dt = (now or self._now_fn)()
         if now_dt.tzinfo is None:
-            now_dt = now_dt.replace(tzinfo=timezone.utc)
+            now_dt = now_dt.replace(tzinfo=UTC)
         delete_cutoff = now_dt - timedelta(days=self._retention_days_ok)
         reap_cutoff = now_dt - timedelta(hours=self._stale_running_hours)
 
@@ -276,4 +341,6 @@ class JobRunsRetentionLoop(CadenceLoop):
 __all__ = [
     "JobRunsRetentionLoop",
     "job_runs_retention_metadata",
+    "reap_prior_process_decision_runs",
+    "reap_prior_process_job_runs",
 ]

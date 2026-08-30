@@ -297,6 +297,10 @@ export interface PortfolioSnapshotDTO {
   allocations: PortfolioAllocation[];
   source_path: string | null;
   parse_warnings: string[];
+  /** Quote/FX refresh misses; prior marks are carried, not parse failures. */
+  market_data_warnings?: string[];
+  /** Non-error import/audit notes such as a normalized symbol name. */
+  data_notices?: string[];
   /** Held symbols not in the instrument reference (fail-loud: need curation). */
   classification_warnings: string[];
   /** Accounts the latest feed actually mentioned (coverage ≠ emptiness). */
@@ -790,6 +794,10 @@ export interface AuthoredSellDTO {
   symbol: string;
   amount_usd: number;
   reason: string;
+  execution_style: "single" | "staged_tranche" | string;
+  execute_by: string | null;
+  next_review_date: string | null;
+  tranche_reason: string;
 }
 
 /** A determinism-verifier failure on the authored proposal. */
@@ -2156,6 +2164,7 @@ export interface FunnelRunDetail extends FunnelRunSummary {
 // ----------------------------------------------------------------------
 export type InboxKind =
   | "trade"
+  | "order_sheet"
   | "cash_deploy"
   | "plan_task"
   | "note"
@@ -2213,6 +2222,241 @@ export interface TradePlanLineDTO {
   after_pct: number | null;
   delta_usd: number;
   why: string;
+  outcome_scenarios?: Array<{
+    label: string;
+    probability_pct: number;
+    terminal_multiple: number;
+    terminal_date?: string | null;
+    rationale: string;
+  }>;
+  probability_confidence?: "LOW" | "MED" | "HIGH" | null;
+  probability_basis?: string | null;
+  probability_weighted_multiple?: number | null;
+  scenario_terminal_date?: string | null;
+  scenario_horizon_years?: number | null;
+  annualized_expected_return_pct?: number | null;
+  after_tax_expected_multiple?: number | null;
+  after_tax_annualized_expected_return_pct?: number | null;
+  median_terminal_multiple?: number | null;
+  probability_of_loss_pct?: number | null;
+  probability_of_near_wipeout_pct?: number | null;
+  tax_assumption?: string | null;
+  expected_portfolio_contribution_pct?: number | null;
+  capital_at_risk_pct?: number | null;
+  candidate_comparisons?: CandidateComparisonDTO[];
+  candidate_comparison_status?: "complete" | "missing" | "not_applicable";
+  staged_execution?: {
+    style: "staged_tranche";
+    execute_by: string;
+    next_review_date: string;
+    tranche_reason: string;
+    maximum_current_tranche_usd: number;
+    remaining_glide_quarters: number;
+    next_waypoint_date: string;
+    next_waypoint_weight_pct: number | null;
+    shares_to_sell_by_next_waypoint: number;
+    glide_base_shares_to_sell_by_next_waypoint: number;
+    tax_denominator_adjustment_shares: number;
+    estimated_post_trade_weight_pct: number | null;
+    weight_metric: "direct_nvda";
+    estimated_post_trade_direct_nvda_weight_pct: number | null;
+    estimated_post_trade_effective_nvda_weight_pct: number | null;
+    clips: Array<{
+      sequence: number;
+      target_date: string;
+      shares: number;
+      executable_now: boolean;
+      requires_reprice_and_reapproval: boolean;
+    }>;
+    reassess_after_fill: boolean;
+  } | null;
+}
+
+export interface RecommendationScorecardDTO {
+  as_of: string;
+  horizons: Record<"30d" | "180d", {
+    scheduled: number;
+    graded: number;
+    wins: number;
+    misses: number;
+    neutral: number;
+    win_rate: number | null;
+    avg_signed_pnl_pct: number | null;
+  }>;
+  recent: Array<{
+    prediction_id: number;
+    verdict_id: number;
+    proposal_id: number | null;
+    ticker: string;
+    action: string;
+    recommended_at: string;
+    horizon_days: 30 | 180;
+    due_at: string;
+    disposition: string;
+    proposal_status: string | null;
+    outcome_kind: string | null;
+    grade: "win" | "miss" | "neutral" | "pending";
+    signed_pnl_pct: number | null;
+    ticker_move_pct: number | null;
+    evaluated_at: string | null;
+  }>;
+  surfaced_order_sheets?: {
+    horizons: Record<"30d" | "180d", {
+      scheduled: number;
+      graded: number;
+      wins: number;
+      misses: number;
+      neutral: number;
+      win_rate: number | null;
+      avg_signed_pnl_pct: number | null;
+    }>;
+    recent: Array<{
+      prediction_id: number;
+      proposal_id: number | null;
+      ticker: string;
+      action: string;
+      recommended_at: string;
+      horizon_days: 30 | 180;
+      due_at: string;
+      disposition: string;
+      proposal_status: string | null;
+      outcome_kind: string | null;
+      grade: "win" | "miss" | "neutral" | "pending";
+      signed_pnl_pct: number | null;
+      ticker_move_pct: number | null;
+      evaluated_at: string | null;
+    }>;
+  };
+  radar_opportunities?: {
+    scheduled_180d: number;
+    graded_180d: number;
+    winners_180d: number;
+    recommended_winners_180d: number;
+    missed_winners_180d: number;
+    recent_missed_winners: Array<{
+      prediction_id: number;
+      ticker: string;
+      observed_at: string;
+      due_at: string;
+      recommended: boolean;
+      grade: "win" | "miss" | "neutral" | "pending";
+      outcome_kind: string | null;
+      ticker_move_pct: number | null;
+    }>;
+  };
+  coverage: {
+    actionable_verdicts: number;
+    with_any_forecast: number;
+    with_30d_forecast: number;
+    with_180d_forecast: number;
+    autonomous_proposals: number;
+    legacy_proposals_without_verdict_link: number;
+    eligible_radar_names?: number;
+    radar_names_with_180d_clock?: number;
+    radar_clock_coverage_pct?: number | null;
+    radar_clock_status?: "empty" | "partial" | "complete";
+    radar_names_missing_180d_clock?: string[];
+    universe_recall_status: string;
+    universe_recall_reason: string;
+  };
+}
+
+export interface NewsCoverageDTO {
+  as_of: string;
+  lookback_days: number;
+  summary: {
+    held_single_stocks: number;
+    with_recent_news: number;
+    with_earnings_signal: number;
+    with_recent_review: number;
+    with_calendar_check: number;
+    calendar_check_errors: number;
+    with_primary_filing_check: number;
+    primary_filing_errors: number;
+    with_recent_primary_filing: number;
+    with_primary_filing_evidence: number;
+    recent_events_awaiting_review: number;
+    full_earnings_call_coverage: boolean;
+    coverage_gap: string;
+  };
+  jobs: Record<string, {
+    status: string;
+    started_at: string;
+    finished_at: string | null;
+    error: string | null;
+  } | null>;
+  holdings: Array<{
+    ticker: string;
+    latest_news_at: string | null;
+    latest_news_source: string | null;
+    latest_news_sentiment: string | null;
+    latest_earnings_signal_at: string | null;
+    earnings_calendar_checked_at: string | null;
+    earnings_calendar_status: "ok" | "empty" | "error" | "missing";
+    earnings_calendar_source_url: string | null;
+    latest_reported_earnings_at: string | null;
+    next_scheduled_earnings_at: string | null;
+    earnings_calendar_error: string | null;
+    sec_filing_checked_at: string | null;
+    sec_filing_status: "ok" | "empty" | "error" | "missing";
+    sec_filing_source_url: string | null;
+    latest_sec_filing_at: string | null;
+    sec_filing_error: string | null;
+    earnings_review_gap: string | null;
+    latest_review_at: string | null;
+    latest_review_verdict: string | null;
+    latest_review_outcome: string | null;
+    latest_review_reason: string | null;
+    verification_verdict: string | null;
+    verification_reason: string | null;
+    position_usd: number | null;
+    portfolio_weight_pct: number | null;
+    portfolio_total_usd: number | null;
+    tax_lots_available: boolean;
+    execution_blocker: string | null;
+  }>;
+}
+
+export interface CandidateComparisonDTO {
+  ticker: string;
+  selection: "SELECTED" | "NOT_SELECTED";
+  radar_rank: number | null;
+  radar_score: number | null;
+  research_verdict: string | null;
+  research_conviction: string | null;
+  evidence_fresh_as_of: string;
+  key_advantage: string;
+  key_risk: string;
+  why: string;
+  outcome_scenarios?: Array<{
+    label: string;
+    probability_pct: number;
+    terminal_multiple: number;
+    terminal_date?: string | null;
+    rationale: string;
+  }>;
+  probability_confidence?: "LOW" | "MED" | "HIGH" | null;
+  probability_basis?: string | null;
+  probability_weighted_multiple?: number | null;
+  scenario_terminal_date?: string | null;
+  scenario_horizon_years?: number | null;
+  annualized_expected_return_pct?: number | null;
+  after_tax_expected_multiple?: number | null;
+  after_tax_annualized_expected_return_pct?: number | null;
+  median_terminal_multiple?: number | null;
+  probability_of_loss_pct?: number | null;
+  probability_of_near_wipeout_pct?: number | null;
+  tax_assumption?: string | null;
+  recommended_position_usd?: number | null;
+  sizing_why?: string | null;
+  smaller_position_usd?: number | null;
+  why_not_smaller?: string | null;
+  larger_position_usd?: number | null;
+  why_not_larger?: string | null;
+  split_considered?: boolean | null;
+  split_why?: string | null;
+  capital_at_risk_pct?: number | null;
+  expected_portfolio_contribution_pct?: number | null;
 }
 
 export interface TradePlanGroupDTO {
@@ -2225,12 +2469,45 @@ export interface TradePlanGroupDTO {
   lines: TradePlanLineDTO[];
 }
 
+export interface ReviewObjectionDTO {
+  round: number;
+  lens: string;
+  ticker: string;
+  concern: string;
+  severity: "block" | "warn";
+  impact:
+    | "advisory_only"
+    | "changes_amount"
+    | "changes_ticker"
+    | "adds_omitted_candidate"
+    | "rejects_trade";
+  proposed_amount_usd: number;
+  recommended_amount_usd: number | null;
+  recommended_ticker: string | null;
+  status: "advisory" | "resolved_by_re_review" | "unresolved";
+}
+
+export interface ReviewResolutionDTO {
+  rounds: number;
+  reviewers_ran: number;
+  reviewers_expected: number;
+  one_voice: boolean;
+  summary: string;
+  objections: ReviewObjectionDTO[];
+}
+
 export interface TradePlanDTO {
   as_of: string;
   book_total_usd: number;
   lines: TradePlanLineDTO[];
   groups?: TradePlanGroupDTO[];
   totals: { sells_usd: number; buys_usd: number; net_to_cash_usd: number };
+  source?: "order_sheet" | "legacy_proposals";
+  fingerprint?: string;
+  new_cash_usd?: number;
+  approval_blocked?: boolean;
+  candidate_comparisons?: CandidateComparisonDTO[];
+  review_resolution?: ReviewResolutionDTO | null;
 }
 
 export interface InboxFeedDTO {
@@ -2963,6 +3240,18 @@ export const api = {
     postJSON<ExecuteResponse>(`/api/proposals/${id}/execute`, {
       user_id: userId,
     }),
+  proposalManualFill: (
+    id: number,
+    body: {
+      user_id: string;
+      broker_order_id: string;
+      external_fill_id: string;
+      quantity: number;
+      price: number;
+      commission: number;
+      filled_at?: string | null;
+    },
+  ) => postJSON<ManualFillResponse>(`/api/proposals/${id}/manual-fill`, body),
   fillsList: (userId: string, proposalId?: number) => {
     const qs = new URLSearchParams({ user_id: userId });
     if (proposalId !== undefined) qs.set("proposal_id", String(proposalId));
@@ -4089,6 +4378,7 @@ export const api = {
       userId?: string;
       customPayload?: Record<string, unknown>;
       choiceKey?: string;
+      fundingAccountId?: string;
     },
   ): Promise<ActionProposalActionResponse> =>
     postJSON<ActionProposalActionResponse>(
@@ -4097,8 +4387,25 @@ export const api = {
         user_id: opts?.userId ?? "ariel",
         custom_payload: opts?.customPayload ?? null,
         choice_key: opts?.choiceKey ?? null,
+        funding_account_id: opts?.fundingAccountId || null,
       },
     ),
+  recommendationScorecard: (
+    userId: string = "ariel",
+  ): Promise<RecommendationScorecardDTO> =>
+    getJSON<RecommendationScorecardDTO>(
+      `/api/decisions/recommendation-scorecard?user_id=${encodeURIComponent(userId)}`,
+    ),
+  newsCoverage: (userId: string = "ariel"): Promise<NewsCoverageDTO> =>
+    getJSON<NewsCoverageDTO>(
+      `/api/decisions/news-coverage?user_id=${encodeURIComponent(userId)}`,
+    ),
+  e2eProof: (userId: string) =>
+    getJSON<E2EProofDTO>(
+      `/api/e2e-proof?user_id=${encodeURIComponent(userId)}`,
+    ),
+  runE2EProof: (body: E2ERunRequest) =>
+    postJSON<E2EProofDTO>("/api/e2e-proof/run", body),
   deferActionProposal: (
     id: number,
     deferUntilDate: string | null,
@@ -5691,4 +5998,169 @@ export interface ActionProposalListResponse {
 export interface ActionProposalActionResponse {
   status: "ok";
   proposal: ActionProposalDTO;
+  materialization_status: string | null;
+  materialized_proposal_ids: number[];
+  funding_account_id: string | null;
+}
+
+export interface ManualFillResponse {
+  fill_id: number;
+  created: boolean;
+  proposal_id: number;
+  proposal_status: string;
+  pending_order_id: number;
+  pending_status: string;
+  broker: string;
+  account_id: string;
+  filled_quantity: number;
+  target_quantity: number;
+}
+
+export interface E2ERunRequest {
+  user_id: string;
+  cash_usd: number;
+  allow_sells: boolean;
+  horizon_years_min: number;
+  horizon_years_max: number;
+}
+
+export interface E2ECheckDTO {
+  key: string;
+  label: string;
+  passed: boolean;
+}
+
+export interface E2EOrderLineDTO {
+  authored: {
+    symbol: string;
+    action: string;
+    shares: number;
+    notional_usd: number;
+    authored_notional_usd?: number | null;
+    quantity_increment: number;
+    venue: string;
+    thesis: string;
+    thesis_type: string;
+    falsifier: string;
+    catalyst: { description: string; due_date: string };
+    expectation: { statement: string; due_date: string; success_measure: string };
+    evidence: {
+      price_usd: number;
+      price_as_of: string;
+      price_source: string;
+      market_cap_usd: number | null;
+      incorporation_country: string | null;
+    };
+    stance_source: string;
+    post_trade_weight_pct: number;
+    tax?: {
+      gross_proceeds_usd: number;
+      estimated_tax_usd: number;
+      net_proceeds_usd: number;
+      cost_basis_usd?: number | null;
+      capital_income_usd?: number | null;
+      ordinary_income_usd?: number | null;
+      evidence_as_of?: string | null;
+      evidence_expires_on?: string | null;
+    } | null;
+    staged_execution?: {
+      style: "staged_tranche";
+      execute_by: string;
+      next_review_date: string;
+      tranche_reason: string;
+      maximum_current_tranche_usd: number;
+      remaining_glide_quarters: number;
+      next_waypoint_date: string;
+      next_waypoint_weight_pct: number | null;
+      shares_to_sell_by_next_waypoint: number;
+      glide_base_shares_to_sell_by_next_waypoint: number;
+      tax_denominator_adjustment_shares: number;
+      estimated_post_trade_weight_pct: number | null;
+      weight_metric: "direct_nvda";
+      estimated_post_trade_direct_nvda_weight_pct: number | null;
+      estimated_post_trade_effective_nvda_weight_pct: number | null;
+      clips: Array<{
+        sequence: number;
+        target_date: string;
+        shares: number;
+        executable_now: boolean;
+        requires_reprice_and_reapproval: boolean;
+      }>;
+      reassess_after_fill: boolean;
+    } | null;
+    constraint_costs: Array<{
+      constraint: string;
+      estimated_cost_usd: number;
+      basis_value_usd: number;
+      valuation_basis: string;
+    }>;
+  };
+  proposal: {
+    id: number;
+    status: string;
+    account_id: string;
+    limit_price: number;
+    target_quantity: number;
+  } | null;
+  execution: {
+    pending_status: string | null;
+    broker: string | null;
+    broker_order_id: string | null;
+    filled_quantity: number;
+    fill_count: number;
+    vwap: number | null;
+    commission_usd: number;
+    complete: boolean;
+    manual_fill_allowed: boolean;
+  };
+  calibration: {
+    prediction_id: number;
+    due_at: string;
+    entry_price: number;
+    status: string;
+    outcomes: Array<{ kind: string; pnl_pct: number | null; evaluated_at: string }>;
+  } | null;
+}
+
+export interface E2EProofDTO {
+  user_id: string;
+  stage: string;
+  headline: string;
+  known_accounts: string[];
+  artifact: {
+    action_proposal_id: number;
+    status: string;
+    execution_state: string;
+    generated_at: string;
+    surfaced_at: string;
+    expires_at: string;
+    fingerprint: string;
+    funding: {
+      new_cash_usd: number;
+      gross_sell_proceeds_usd: number;
+      sell_tax_usd: number;
+      sell_costs_usd: number;
+      reserve_usd: number;
+      rounding_residual_usd: number;
+      available_to_buy_usd: number;
+    };
+    rationale: string;
+    horizon_years: number[];
+    validation: { valid: boolean; failures: Array<{ code: string; detail: string }> };
+    team_telemetry: {
+      decision_ids: string[];
+      total_cost_usd: number;
+      reports: Array<{
+        id: number;
+        role: string;
+        model: string;
+        cost_usd: number;
+        created_at: string;
+      }>;
+    };
+  } | null;
+  checks: E2ECheckDTO[];
+  lines: E2EOrderLineDTO[];
+  no_action: Array<{ symbol: string; verdict: string; reason: string }>;
+  self_audit: string[];
 }

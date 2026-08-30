@@ -142,6 +142,35 @@ def test_portfolio_snapshot_route_serves_db_row_when_present(client_with_db):
     assert symbols == {"NVDA", "SCHD"}
 
 
+def test_portfolio_route_does_not_label_refresh_diagnostics_as_parse_errors(
+    client_with_db,
+):
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        s.add(User(id="ariel", plan="free"))
+        s.commit()
+        row_id = _seed_snapshot_row(s, snapshot_date=date.today())
+        row = s.get(PortfolioSnapshotRow, row_id)
+        row.parse_warnings_json = json.dumps(
+            [
+                "fx_miss:usd_nis",
+                "reprice_miss:SCHD",
+                "SYMBOL_RENAME old='OLD' new='NEW' account=leumi shares=1",
+            ]
+        )
+        s.commit()
+
+    res = client_with_db.get("/api/portfolio/snapshot?user_id=ariel")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["parse_warnings"] == []
+    assert body["market_data_warnings"] == [
+        "fx_miss:usd_nis",
+        "reprice_miss:SCHD",
+    ]
+    assert len(body["data_notices"]) == 1
+
+
 def test_portfolio_snapshot_route_falls_back_to_filesystem_when_db_empty(
     client_with_db, tmp_path, monkeypatch,
 ):

@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -65,7 +65,7 @@ def thesis_monitor_metadata() -> JobMetadata:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ def refresh_watchlist_rows_for_ticker(
             exp = getattr(r, "expires_at", None)
             floor = now + timedelta(days=_FLAG_TTL_DAYS)
             if exp is not None and exp.tzinfo is None:
-                exp = exp.replace(tzinfo=timezone.utc)
+                exp = exp.replace(tzinfo=UTC)
             if exp is None or exp < floor:
                 r.expires_at = floor
             refreshed += 1
@@ -446,7 +446,7 @@ class ThesisMonitorLoop(CadenceLoop):
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
         run_at = (now or self._now_fn)()
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=timezone.utc)
+            run_at = run_at.replace(tzinfo=UTC)
         summary = await asyncio.to_thread(self._run_sync, run_at=run_at)
         self.last_output_summary = summary
         log.info("thesis_monitor.tick.done", user_id=self.user_id, **summary)
@@ -497,6 +497,18 @@ class ThesisMonitorLoop(CadenceLoop):
                 except Exception as exc:  # noqa: BLE001 — one holding never sinks the batch
                     session.rollback()
                     summary["errors"].append(f"{getattr(a,'ticker','?')}: {exc}")
+            from argosy.agents.base import AgentReport
+            from argosy.services.agent_report_persistence import (
+                stage_agent_report,
+            )
+
+            if isinstance(report, AgentReport):
+                stage_agent_report(
+                    session,
+                    report,
+                    decision_id=f"thesis-monitor:{run_at.date().isoformat()}",
+                )
+                session.commit()
             return summary
         finally:
             session.close()

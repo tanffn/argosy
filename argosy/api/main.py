@@ -26,13 +26,17 @@ import asyncio
 import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketState
 
 from argosy import __version__
 from argosy.api.events import subscribe
+from argosy.api.routes.action_proposals import (
+    router as action_proposals_router,
+)
 from argosy.api.routes.advisor import router as advisor_router
 from argosy.api.routes.agent_activity import router as agent_activity_router
+from argosy.api.routes.allocation import router as allocation_router
 from argosy.api.routes.argonaut import router as argonaut_router
 from argosy.api.routes.branding import router as branding_router
 from argosy.api.routes.config import router as config_router
@@ -40,36 +44,35 @@ from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
 from argosy.api.routes.decisions_tree import router as decisions_tree_router
 from argosy.api.routes.domain_kb import router as domain_kb_router
+from argosy.api.routes.e2e_proof import router as e2e_proof_router
 from argosy.api.routes.execution import router as execution_router
 from argosy.api.routes.files import router as files_router
 from argosy.api.routes.fleet_self_review import router as fleet_self_review_router
+from argosy.api.routes.fm_objection_dialogue import (
+    router as fm_objection_dialogue_router,
+)
 from argosy.api.routes.health import router as health_router
+from argosy.api.routes.inbox import router as inbox_router
 from argosy.api.routes.intake import router as intake_router
 from argosy.api.routes.internal import router as internal_router
+from argosy.api.routes.life_events import router as life_events_router
 from argosy.api.routes.onboarding import router as onboarding_router
+from argosy.api.routes.period_directive import router as period_directive_router
 from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.plan_objection_state import (
     router as plan_objection_state_router,
 )
-from argosy.api.routes.fm_objection_dialogue import (
-    router as fm_objection_dialogue_router,
-)
 from argosy.api.routes.portfolio import router as portfolio_router
-from argosy.api.routes.wealth_dashboard import router as wealth_dashboard_router
 from argosy.api.routes.positions import router as positions_router
-from argosy.api.routes.allocation import router as allocation_router
-from argosy.api.routes.life_events import router as life_events_router
-from argosy.api.routes.action_proposals import (
-    router as action_proposals_router,
-)
 from argosy.api.routes.proposals import router as proposals_router
-from argosy.api.routes.inbox import router as inbox_router
-from argosy.api.routes.period_directive import router as period_directive_router
 from argosy.api.routes.security import router as security_router
 from argosy.api.routes.settings import (
     cost_guard_router,
+)
+from argosy.api.routes.settings import (
     router as settings_router,
 )
+from argosy.api.routes.wealth_dashboard import router as wealth_dashboard_router
 from argosy.config import get_settings
 from argosy.logging import configure_logging, get_logger
 
@@ -151,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(proposals_router, prefix=api_prefix)
     # The action inbox — server-owned ranked feed projected by the /inbox page.
     app.include_router(inbox_router, prefix=api_prefix)
+    app.include_router(e2e_proof_router, prefix=api_prefix)
     app.include_router(period_directive_router, prefix=api_prefix)
     # Generic Accept/Defer for allocation-action proposals (sprint commit
     # #6b). Mounts at /api/proposals/allocation/* — sibling to the
@@ -234,36 +238,21 @@ def create_app() -> FastAPI:
     # a restart already sees the cleaned state.
     @app.on_event("startup")
     async def _orphan_sweep_at_startup() -> None:
-        from datetime import datetime, timedelta, timezone
-
-        from sqlalchemy import update
-
-        from argosy.state import db as db_mod
-        from argosy.state.models import DecisionRun
-
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
-            # Compare on naive UTC (SQLite stores naive; new rows persist
-            # tz-aware UTC but DateTime column strips on read).
-            cutoff_naive = cutoff.replace(tzinfo=None)
-            async with db_mod.get_session() as session:
-                result = await session.execute(
-                    update(DecisionRun)
-                    .where(DecisionRun.status == "running")
-                    .where(DecisionRun.started_at < cutoff_naive)
-                    .values(
-                        status="failed",
-                        finished_at=datetime.now(timezone.utc),
-                        notes_json='{"orphaned_by": "uvicorn_restart", "cutoff_hours": 4}',
-                    )
+            from argosy.orchestrator.loops.job_runs_retention import (
+                reap_prior_process_decision_runs,
+                reap_prior_process_job_runs,
+            )
+
+            reaped_decisions = await reap_prior_process_decision_runs()
+            if reaped_decisions:
+                log.info(
+                    "orphan_sweep.decision_runs_swept",
+                    count=reaped_decisions,
                 )
-                await session.commit()
-                if result.rowcount:
-                    log.info(
-                        "orphan_sweep.swept",
-                        count=result.rowcount,
-                        cutoff_iso=cutoff.isoformat(),
-                    )
+            reaped_jobs = await reap_prior_process_job_runs()
+            if reaped_jobs:
+                log.info("orphan_sweep.job_runs_swept", count=reaped_jobs)
         except Exception as exc:  # noqa: BLE001 — must NEVER block startup
             log.warning("orphan_sweep.failed", error=str(exc))
 
@@ -462,11 +451,11 @@ def create_app() -> FastAPI:
             if not get_settings().discord_listener_enabled:
                 log.info("discord_listener.disabled_by_config")
                 raise ImportError("discord listener disabled by config")
+            from argosy.services.discord_listener import load_creds
             from argosy.services.jobs.discord_listener_job import (
                 DiscordListenerJob,
                 discord_listener_metadata,
             )
-            from argosy.services.discord_listener import load_creds
 
             # Try-load creds — None when ~/.argosy/discord_creds.json
             # is missing; raises ValueError when malformed. We log the
@@ -502,6 +491,36 @@ def create_app() -> FastAPI:
             news_job = NewsDailyJob()
             scheduler.register_loop(news_job)
             registry.register(job=news_job, metadata=news_daily_metadata())
+        except ImportError:
+            pass
+
+        try:
+            from argosy.services.jobs.earnings_calendar_daily import (
+                EarningsCalendarDailyJob,
+                earnings_calendar_daily_metadata,
+            )
+
+            earnings_job = EarningsCalendarDailyJob()
+            scheduler.register_loop(earnings_job)
+            registry.register(
+                job=earnings_job,
+                metadata=earnings_calendar_daily_metadata(),
+            )
+        except ImportError:
+            pass
+
+        try:
+            from argosy.services.jobs.sec_earnings_daily import (
+                SecEarningsDailyJob,
+                sec_earnings_daily_metadata,
+            )
+
+            sec_earnings_job = SecEarningsDailyJob()
+            scheduler.register_loop(sec_earnings_job)
+            registry.register(
+                job=sec_earnings_job,
+                metadata=sec_earnings_daily_metadata(),
+            )
         except ImportError:
             pass
 
@@ -1069,7 +1088,7 @@ def create_app() -> FastAPI:
         if task is not None:
             try:
                 await asyncio.wait_for(task, timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning(
                     "scheduler.shutdown_join_timeout",
                     timeout_s=5.0,

@@ -42,14 +42,14 @@ Rules (fail-safe, never fabricate):
 
 from __future__ import annotations
 
-import asyncio
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Callable
 
 from sqlalchemy.orm import Session
 
+from argosy.async_bridge import run_async_from_sync
 from argosy.ingest.tsv import PortfolioPosition, PortfolioSnapshot
 from argosy.logging import get_logger
 from argosy.services.portfolio_snapshot_store import (
@@ -193,12 +193,15 @@ def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | Non
     yf_symbol = symbol.strip().upper().replace("/", "-").replace(".", "-")
     adapter = YFinanceAdapter()
     for suffix in _hinted_suffixes(details, currency):
+        candidate = f"{yf_symbol}{suffix}"
         try:
-            q = asyncio.run(adapter.get_quote(f"{yf_symbol}{suffix}"))
+            q = run_async_from_sync(
+                lambda candidate=candidate: adapter.get_quote(candidate)
+            )
         except Exception as exc:  # noqa: BLE001 — best-effort per listing
             _log.info(
                 "snapshot_refresh.quote_error",
-                symbol=f"{yf_symbol}{suffix}",
+                symbol=candidate,
                 err=str(exc),
             )
             continue
@@ -208,7 +211,7 @@ def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | Non
         if not _currencies_agree(currency, getattr(q, "currency", None)):
             _log.info(
                 "snapshot_refresh.quote_currency_mismatch",
-                symbol=f"{yf_symbol}{suffix}",
+                symbol=candidate,
                 position_currency=currency,
                 quote_currency=getattr(q, "currency", None),
             )
@@ -269,7 +272,8 @@ def default_fx_fn() -> dict[str, float | None]:
         from argosy.adapters.data.boi_adapter import BoiAdapter
         from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
-        payload = asyncio.run(BoiAdapter(yf=YFinanceAdapter()).get_usd_nis())
+        adapter = BoiAdapter(yf=YFinanceAdapter())
+        payload = run_async_from_sync(adapter.get_usd_nis)
         rate = payload.get("rate")
         out["usd_nis"] = float(rate) if rate else None
     except Exception as exc:  # noqa: BLE001 — carry the stored rate
@@ -277,7 +281,8 @@ def default_fx_fn() -> dict[str, float | None]:
     try:
         from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
-        q = asyncio.run(YFinanceAdapter().get_quote("EURUSD=X"))
+        adapter = YFinanceAdapter()
+        q = run_async_from_sync(lambda: adapter.get_quote("EURUSD=X"))
         price = getattr(q, "price", None)
         out["usd_eur"] = (1.0 / float(price)) if price else None
     except Exception as exc:  # noqa: BLE001 — carry the stored rate

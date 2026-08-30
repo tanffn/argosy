@@ -507,7 +507,7 @@ def _nvda_glide_weights(plan_version: Any | None) -> list[tuple[date, float]] | 
 
     The NVDA class is identified STRUCTURALLY — the class whose
     ``instruments`` include the NVDA symbol — never by label substring
-    ("Global quality growth (ex-NVDA-dense)" also mentions NVDA).
+    (legacy growth-sleeve labels also mentioned NVDA).
     Returns ``[(waypoint_date, weight_pct), ...]`` sorted by date, or
     ``None`` when the plan carries no glide doc / no NVDA class.
     """

@@ -18,11 +18,14 @@ async def test_health_returns_ok(client: AsyncClient) -> None:
     assert body["status"] == "ok"
     assert body["db"] == "ok"
     assert body["version"] == __version__
+    assert body["cost_guard_mode"] in ("enforced", "developer_unlimited")
+    assert isinstance(body["cost_monthly_budget_usd"], float | int)
+    assert isinstance(body["cost_monthly_spend_usd"], float | int)
 
 
 @pytest.mark.asyncio
-async def test_health_includes_git_sha_and_started_at(client: AsyncClient) -> None:
-    """Build info: git_sha + started_at populated by argosy.api.build_info."""
+async def test_health_includes_source_identity_and_started_at(client: AsyncClient) -> None:
+    """Build info identifies both committed and actual decision source."""
     resp = await client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
@@ -31,6 +34,11 @@ async def test_health_includes_git_sha_and_started_at(client: AsyncClient) -> No
     # Either a real short SHA (hex chars) or the documented "unknown" fallback.
     assert isinstance(body["git_sha"], str)
     assert body["git_sha"] == "unknown" or re.match(r"^[0-9a-f]{4,40}$", body["git_sha"])
+
+    assert isinstance(body["decision_contract_sha"], str)
+    assert body["decision_contract_sha"] == "unknown" or re.match(
+        r"^[0-9a-f]{12}$", body["decision_contract_sha"]
+    )
 
     assert "started_at" in body
     # ISO 8601 with timezone — sanity check the prefix and presence of T.

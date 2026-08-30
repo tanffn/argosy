@@ -961,6 +961,46 @@ async def get_funnel_calibration(user_id: str = Query("ariel")) -> dict[str, Any
     )
 
 
+@router.get("/recommendation-scorecard")
+async def get_recommendation_scorecard(
+    user_id: str = Query("ariel"),
+    recent_limit: int = Query(40, ge=1, le=200),
+) -> dict[str, Any]:
+    """Counterfactual win/miss ledger for recommendations, bought or not."""
+
+    from argosy.services.recommendation_scorecard import (
+        build_recommendation_scorecard,
+    )
+
+    async with db_mod.get_session(user_id) as session:
+        return await session.run_sync(
+            lambda sync_session: build_recommendation_scorecard(
+                sync_session,
+                user_id=user_id,
+                recent_limit=recent_limit,
+            )
+        )
+
+
+@router.get("/news-coverage")
+async def get_news_coverage(
+    user_id: str = Query("ariel"),
+    lookback_days: int = Query(10, ge=1, le=90),
+) -> dict[str, Any]:
+    """Held-position news/earnings monitoring receipts and explicit gaps."""
+
+    from argosy.services.news_coverage import build_news_coverage
+
+    async with db_mod.get_session(user_id) as session:
+        return await session.run_sync(
+            lambda sync_session: build_news_coverage(
+                sync_session,
+                user_id=user_id,
+                lookback_days=lookback_days,
+            )
+        )
+
+
 @router.get("/funnel/runs/{run_id}")
 async def get_funnel_run(
     run_id: int, user_id: str = Query("ariel")

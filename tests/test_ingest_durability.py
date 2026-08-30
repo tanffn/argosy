@@ -172,6 +172,7 @@ def test_changed_position_currency_is_not_a_noop(session):
     ) is False
 
 
+@pytest.mark.real_seam
 def test_partial_feed_carries_the_uncovered_account_instead_of_erasing_it(session):
     """The Jul-13 incident, as a test: a Leumi-only feed must not erase schwab.
 

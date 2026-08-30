@@ -105,6 +105,8 @@ class Fill(BaseModel):
     proposal_id: int | None = None
     broker: str
     broker_order_id: str
+    external_fill_id: str = ""
+    account_id: str = ""
     ticker: str
     action: Literal["buy", "sell"]
     quantity: float
@@ -112,6 +114,17 @@ class Fill(BaseModel):
     commission: float = 0.0
     filled_at: datetime = Field(default_factory=_utcnow)
     paper: bool = False
+
+
+class OrderSnapshot(BaseModel):
+    """Current broker truth for one submitted order."""
+
+    status: Literal[
+        "submitted", "working", "presubmitted", "partial", "filled",
+        "cancelled", "rejected", "unknown",
+    ]
+    fills: list[Fill] = Field(default_factory=list)
+    reason: str = ""
 
 
 class ExecutionResult(BaseModel):
@@ -156,6 +169,7 @@ __all__ = [
     "Fill",
     "Lot",
     "OpenOrder",
+    "OrderSnapshot",
     "Position",
     "ProposedOrder",
 ]

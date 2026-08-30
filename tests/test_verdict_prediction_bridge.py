@@ -27,9 +27,10 @@ from argosy.services.predictions.evaluator import Bar, run_evaluator_batch
 from argosy.services.predictions.writers import (
     DEEP_DECISION_VERDICT_SOURCE,
     emit_verdict_prediction_best_effort,
+    ensure_deep_verdict_prediction_horizons,
     write_deep_decision_verdict_prediction,
 )
-from argosy.state.models import Prediction, PredictionOutcome, User
+from argosy.state.models import Prediction, PredictionOutcome, User, Verdict
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +392,37 @@ def test_best_effort_wrapper_uses_injected_factory(session_factory):
         session_factory=session_factory,
     )
     assert pred is not None
-    assert _count_preds(session_factory) == 1
+    assert _count_preds(session_factory) == 2
+    s = session_factory()
+    try:
+        rows = s.query(Prediction).order_by(Prediction.evaluation_due_at).all()
+        assert [row.timeframe_days for row in rows] == [30, 180]
+        assert rows[1].evaluation_method in {"fixed_lookahead_180d", "target_stop"}
+        assert '"horizon_days": 180' in rows[1].source_ref
+    finally:
+        s.close()
+
+
+def test_daily_repair_backfills_both_clocks_without_execution(session_factory):
+    s = session_factory()
+    try:
+        verdict = Verdict(
+            user_id="ariel", subject="GLUE", verdict="BUY", conviction="MED",
+            settled=True, created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        s.add(verdict)
+        s.commit()
+        first = ensure_deep_verdict_prediction_horizons(s, user_id="ariel")
+        s.commit()
+        second = ensure_deep_verdict_prediction_horizons(s, user_id="ariel")
+        s.commit()
+        rows = s.query(Prediction).order_by(Prediction.timeframe_days).all()
+    finally:
+        s.close()
+
+    assert first["predictions_created"] == 2
+    assert second["predictions_created"] == 0
+    assert [row.timeframe_days for row in rows] == [30, 180]
 
 
 # ---------------------------------------------------------------------------

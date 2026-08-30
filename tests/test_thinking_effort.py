@@ -144,7 +144,13 @@ def test_default_thinking_effort_per_role():
             f"{role!r} should default to 'medium' effort"
         )
 
-    chat_low = {"intake", "household_categorizer", "watchlist"}
+    chat_low = {
+        "intake",
+        "household_categorizer",
+        "watchlist",
+        "deployment_author",
+        "deployment_reviewer",
+    }
     for role in chat_low:
         assert DEFAULT_THINKING_EFFORT_BY_ROLE[role] == "low", (
             f"{role!r} should default to 'low' effort"

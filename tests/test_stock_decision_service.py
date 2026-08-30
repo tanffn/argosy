@@ -2,6 +2,8 @@
 HOLD-stays-silent filter. No live LLM/network — fetchers + decide injected."""
 from __future__ import annotations
 
+from datetime import UTC
+
 from argosy.agents.stock_decision import StockDecisionOutput
 from argosy.services.stock_decision import (
     actionable_verdicts,
@@ -82,6 +84,71 @@ def test_run_holdings_review_writes_only_actionable(monkeypatch):
     assert summary["reviewed"] == 2
     assert summary["actionable"] == 1
     assert written == ["RKT"]
+    assert summary["evidence_coverage"]["news"] == 2
+
+
+def test_default_book_routes_collective_vehicles_away_from_stock_reviewer(monkeypatch):
+    """The live-book path must not ask company-fundamental questions of ETFs.
+
+    Explicit ``holdings=`` remains an injectable low-level seam, while the
+    automatic book load performs the production routing.
+    """
+    from argosy.api.routes import portfolio
+
+    monkeypatch.setattr(
+        portfolio,
+        "_load_current_doc_and_holdings",
+        lambda user_id: (None, {"GOOG": 20_000.0, "IWQU": 15_000.0,
+                                "MSCI WORLD": 10_000.0}, 0.0),
+    )
+    researched = []
+
+    summary = run_holdings_review(
+        db=None,
+        user_id="ariel",
+        fetchers={"news": lambda ticker: f"news:{ticker}"},
+        decide=_decide_recorder(researched),
+        sink=lambda verdict: None,
+        verify=False,
+        record=False,
+    )
+
+    assert researched == ["GOOG"]
+    assert summary["routed_to_fund_review"] == ["IWQU", "MSCI WORLD"]
+    assert summary["portfolio_total_usd"] == 45_000.0
+
+
+def test_reviewers_receive_whole_book_weight_and_audit_it():
+    contexts = []
+    recorded = []
+
+    def _decide(ticker, *, context, bundle, user_id="ariel"):
+        contexts.append(context)
+        return StockDecisionOutput(
+            ticker=ticker,
+            verdict="TRIM" if len(contexts) == 1 else "HOLD",
+            confidence="MED",
+            reason="review",
+        )
+
+    summary = run_holdings_review(
+        db=None,
+        user_id="ariel",
+        holdings={"AAA": 25_000.0, "BBB": 75_000.0},
+        fetchers={"news": lambda ticker: "evidence"},
+        decide=_decide,
+        always_review=frozenset(),
+        elevated_flags={},
+        sink=lambda verdict: object(),
+        record=lambda verdict, **audit: recorded.append(audit),
+    )
+
+    assert "25.00% of whole portfolio ($100,000" in contexts[0]
+    assert "25.00% of whole portfolio ($100,000" in contexts[1]
+    assert "role=independent blind re-review" in contexts[1]
+    assert recorded[0]["portfolio_weight_pct"] == 25.0
+    assert recorded[0]["portfolio_total_usd"] == 100_000.0
+    assert summary["portfolio_total_usd"] == 100_000.0
 
 
 def test_verify_verdict_blind_rederivation_gate():
@@ -121,6 +188,42 @@ def test_run_holdings_review_holds_unverified_trades():
     assert summary["written"] == 0
     assert summary["held_unverified"] == 1
     assert written == []
+
+
+def test_default_verifier_records_the_disagreeing_second_voice():
+    calls = 0
+    recorded = []
+
+    def _decide(ticker, *, context, bundle, user_id="ariel"):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return StockDecisionOutput(
+                ticker=ticker,
+                verdict="TRIM",
+                confidence="MED",
+                reason="margin broke",
+            )
+        return StockDecisionOutput(
+            ticker=ticker,
+            verdict="HOLD",
+            confidence="MED",
+            reason="insufficient primary evidence to reduce",
+        )
+
+    summary = run_holdings_review(
+        db=None,
+        user_id="ariel",
+        holdings={"RKT": 42_000.0},
+        fetchers={"news": lambda ticker: "fresh headline"},
+        decide=_decide,
+        sink=lambda verdict: object(),
+        record=lambda verdict, **kwargs: recorded.append(kwargs),
+    )
+
+    assert summary["held_unverified"] == 1
+    assert recorded[0]["verification"].verdict == "HOLD"
+    assert "insufficient primary evidence" in recorded[0]["verification"].reason
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +308,7 @@ def test_load_elevated_thesis_flags_reads_active_unexpired_only(tmp_path):
     """Loader keys ACTIVE, unexpired thesis_monitor_* flags by payload ticker and
     ignores expired / acknowledged / other-kind rows; 'broken' wins over 'weakened'."""
     import json
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import sqlalchemy as sa
     from sqlalchemy.orm import sessionmaker
@@ -217,7 +320,7 @@ def test_load_elevated_thesis_flags_reads_active_unexpired_only(tmp_path):
     )
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine, expire_on_commit=False)()
-    now = datetime(2026, 7, 6, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 6, tzinfo=UTC)
     db.add(User(id="ariel", plan="free"))
 
     def _flag(kind, ticker, status, *, expires=None, acked=None, row_status="active",
@@ -281,6 +384,34 @@ def test_write_stock_decision_proposal_builds_actionproposal():
     assert "-27% YTD" in row.rationale_md and "fundamentals" in row.rationale_md
 
 
+def test_stock_decision_alert_updates_then_new_hold_supersedes_it(tmp_path):
+    from argosy.services.stock_decision.service import (
+        supersede_stock_decision_proposal,
+    )
+    from argosy.state.models import ActionProposal
+
+    db = _sqlite_session(tmp_path, "proposal-lifecycle.db")
+    first = StockDecisionOutput(
+        ticker="TSLA", verdict="TRIM", confidence="MED", reason="old reason",
+    )
+    second = StockDecisionOutput(
+        ticker="TSLA", verdict="SELL", confidence="HIGH", reason="fresh reason",
+    )
+    row = write_stock_decision_proposal(db, "ariel", first)
+    updated = write_stock_decision_proposal(db, "ariel", second)
+
+    assert updated.id == row.id
+    assert db.query(ActionProposal).count() == 1
+    assert "fresh reason" in updated.rationale_md
+    assert updated.status == "open"
+
+    supersede_stock_decision_proposal(db, "ariel", "TSLA")
+    db.refresh(updated)
+    assert updated.status == "superseded"
+    assert updated.execution_state == "dismissed"
+    db.close()
+
+
 # ---------------------------------------------------------------------------
 # 2026-07-08 tracking-state audit FIX 3 — every verdict is a queryable row,
 # held_unverified is honest, and the x10 sleeve is the triage FLOOR.
@@ -300,6 +431,43 @@ def _sqlite_session(tmp_path, name="reviews.db"):
     db.add(User(id="ariel", plan="free"))
     db.commit()
     return db
+
+
+def test_tax_context_fetcher_connects_authoritative_nvda_simulation(
+    tmp_path, monkeypatch,
+):
+    from argosy.services.stock_decision import fetchers
+    from argosy.state.models import TaxSimulationLot
+
+    db = _sqlite_session(tmp_path, "tax-context.db")
+    db.add(TaxSimulationLot(
+        user_id="ariel",
+        simulation_date="18/06/2026",
+        plan_type="RSU",
+        shares=100,
+        holding_period="OK",
+        eligible=True,
+        grant_id="grant-1",
+        grant_date="01/01/2020",
+        purchase_date="",
+        sale_price_usd=100,
+        cost_basis_usd=20,
+        capital_income_usd=8_000,
+        ordinary_income_usd=2_000,
+        net_proceeds_usd=7_000,
+    ))
+    db.commit()
+    monkeypatch.setattr(fetchers, "price_fetcher", lambda ticker: "source=test; last=110")
+
+    value = fetchers.make_tax_context_fetcher(db, "ariel")("NVDA")
+
+    assert value is not None
+    assert value.startswith("source=authoritative_section_102_tax_engine")
+    assert "covered_shares=100" in value
+    assert "eligible_now_shares=100" in value
+    assert "incomplete_shares=0" in value
+    assert "resolve_authoritative_sale" in value
+    db.close()
 
 
 def test_every_verdict_records_an_audit_row_with_outcome():
@@ -386,6 +554,14 @@ def test_record_holding_review_writes_queryable_row(tmp_path):
     record_holding_review(
         db, "ariel", v, position_usd=4_800.0, elevated_by_flag=True,
         outcome="held_unverified",
+        portfolio_weight_pct=0.48,
+        portfolio_total_usd=1_000_000.0,
+        verification=StockDecisionOutput(
+            ticker="TEM",
+            verdict="HOLD",
+            confidence="MED",
+            reason="second pass disagreed",
+        ),
     )
     row = db.query(HoldingReview).one()
     assert row.symbol == "TEM"
@@ -396,6 +572,10 @@ def test_record_holding_review_writes_queryable_row(tmp_path):
     ev = json.loads(row.evidence_json)
     assert ev["evidence"] == ["trial delayed"]
     assert ev["data_gaps"] == ["fundamentals"]
+    assert ev["verification"]["verdict"] == "HOLD"
+    assert ev["verification"]["reason"] == "second pass disagreed"
+    assert ev["portfolio_weight_pct"] == 0.48
+    assert ev["portfolio_total_usd"] == 1_000_000.0
     db.close()
 
 

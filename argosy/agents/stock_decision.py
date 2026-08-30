@@ -54,7 +54,11 @@ def is_decision(verdict: str) -> bool:
 # Fresh market-research fields. Thesis/plan stance alone is not enough to
 # decide; a bare last price is also insufficient (Aug-2026 empty-bundle wave).
 _RESEARCH_EVIDENCE_FIELDS: tuple[str, ...] = (
-    "news", "fundamentals", "sentiment",
+    "news",
+    "earnings_calendar",
+    "earnings_filing",
+    "fundamentals",
+    "sentiment",
 )
 
 # Placeholders that look truthy but carry no usable content (must not open the gate).
@@ -63,6 +67,8 @@ _UNUSABLE_EVIDENCE_MARKERS: tuple[str, ...] = (
     "not available",
     "(empty)",
     "no data",
+    "status=empty",
+    "status=error",
 )
 
 
@@ -99,7 +105,16 @@ def abstain_insufficient_evidence(
     """First-class abstention when no research evidence was fetched."""
     present = sorted(k for k, v in (bundle or {}).items() if v)
     gaps = [
-        f for f in ("price", "fundamentals", "news", "sentiment", "thesis")
+        f for f in (
+            "price",
+            "fundamentals",
+            "news",
+            "earnings_calendar",
+            "earnings_filing",
+            "sentiment",
+            "thesis",
+            "tax",
+        )
         if not (bundle or {}).get(f)
     ]
     reason = (
@@ -122,8 +137,11 @@ _BUNDLE_FIELDS: tuple[tuple[str, str], ...] = (
     ("price", "Price / technical"),
     ("fundamentals", "Fundamentals"),
     ("news", "Recent news"),
+    ("earnings_calendar", "Earnings calendar / reported EPS"),
+    ("earnings_filing", "Primary SEC earnings filing"),
     ("sentiment", "Sentiment"),
     ("thesis", "Plan thesis / prior notes"),
+    ("tax", "Authoritative lot / after-tax sale context"),
 )
 
 
@@ -165,6 +183,17 @@ class StockDecisionAgent(BaseAgent[StockDecisionOutput]):
             "it in data_gaps and LOWER your confidence accordingly.\n"
             "Fill `reason` (why this verdict) and `evidence` (the specific fetched "
             "data points that drove it). Be decisive and terse."
+            " Tax context controls whether a reduction can be sized and funded; "
+            "never claim it is missing when the bundle supplies an authoritative "
+            "tax engine. Do not invent a size: exact order sizing remains a "
+            "whole-portfolio deployment decision. Position size must still shape "
+            "the VERB: below roughly 1% of the whole book, a TRIM is usually "
+            "economically meaningless unless the remaining sliver retains a "
+            "distinct convex payoff and the released capital is material after "
+            "tax/friction. For a sub-1% weak thesis, explicitly choose and explain "
+            "HOLD versus full SELL; do not mechanically shave it. Conversely, "
+            "underweight alone is never a BUY thesis. Apply this criterion to all "
+            "symbols, not as a ticker-specific rule."
         )
         user = (
             f"TICKER: {ticker}\n"

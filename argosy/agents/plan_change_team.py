@@ -253,7 +253,7 @@ class DiversifierAdjudicatorAgent(BaseAgent[DiversifierAdjudication]):
 # The permanent ~5% high-growth sleeve is re-sourced under the BINDING x10
 # asymmetry mandate (high_potential_sleeve.X10_SLEEVE_MANDATE): cap-math test,
 # accepted per-name loss = 100% (defensibility never boosts rank), rank =
-# (upside x plausibility) / DOWNSIDE (a countable floor RAISES rank — mandate c/c2),
+# upside plausibility relative to downside risk under explicit evidence classes,
 # weights = the deploy fill order. The author
 # re-grades the current names and may source new candidates (WebSearch); the
 # blind reviewer re-derives independently; divergence is compared IN CODE and
@@ -264,12 +264,9 @@ class MoonshotName(BaseModel):
     action: str = "KEEP"          # KEEP | ADD | EXIT
     weight_pct: float = Field(default=0.0, ge=0.0, le=100.0)  # of the sleeve; 0 for EXIT
     cap_math: str = ""            # one line: cap today -> plausible outcome -> multiple
-    downside_math: str = ""       # one line: the FLOOR — price/book, net cash vs
-                                  # cap, or revenue at a defensible multiple; or an
-                                  # explicit "no floor". Mandate (c2): undeclared
-                                  # == none, and unfloored never outranks floored
-                                  # at equal upside. Without this the rank is
-                                  # variance, not asymmetry.
+    downside_math: str = ""       # one line: ASSET_BACKED, EARNING_POWER, or
+                                  # FUNDED_OPTIONALITY, followed by the current
+                                  # quantitative evidence required by the mandate.
     disposition: str = ""         # for EXIT: what to do with any existing fill
 
 
@@ -289,11 +286,11 @@ _MOONSHOT_OUTPUT_SPEC = (
     "held or migrated on a scheduled rebalance — never a forced sell); every "
     "name's cap_math is ONE line with real numbers: market cap today -> "
     "plausible 5-10y outcome -> implied multiple; and every name's "
-    "downside_math is ONE line with real numbers naming the FLOOR "
-    "(price/book, net cash vs market cap, or revenue at a defensible "
-    "multiple) or the literal words 'no floor'. A name whose downside_math "
-    "is blank is scored as HAVING NO FLOOR and must rank below any floored "
-    "name of equal upside. 6-10 surviving names. No prose outside the JSON."
+    "downside_math is ONE line beginning with exactly ASSET_BACKED, "
+    "EARNING_POWER, or FUNDED_OPTIONALITY and then the class-specific current "
+    "numbers required by the mandate. An unclassified name is treated as "
+    "FUNDED_OPTIONALITY for risk review. 6-10 surviving names. No prose outside "
+    "the JSON."
 )
 
 
@@ -390,8 +387,8 @@ class MoonshotSleeveBlindReviewerAgent(BaseAgent[MoonshotSleeveComposition]):
 
 SLEEVE_CLASSES = ("ASSET_BACKED", "EARNING_POWER", "FUNDED_OPTIONALITY")
 
-# Mandate (c2): an UNCLASSIFIED name is scored as FUNDED_OPTIONALITY -- the
-# smallest cut -- so vagueness can never buy a larger allocation. The legacy
+# Mandate (c2): an UNCLASSIFIED name is scored as FUNDED_OPTIONALITY for risk
+# review, so vagueness cannot imply stronger evidence. The legacy
 # FLOORED/UNFLOORED labels also land here on purpose: "floored" was the
 # discredited concept (agents reported operating viability as downside
 # protection), so a name still carrying it must be re-authored under the
@@ -402,9 +399,6 @@ def _floor_class(name) -> str:
         if c in up:
             return c
     return "FUNDED_OPTIONALITY"
-    if "FLOORED" in up:
-        return "FLOORED"
-    return "UNFLOORED"
 
 
 def moonshot_divergences(
@@ -418,7 +412,7 @@ def moonshot_divergences(
     reviewer never adjudicates its own agreement.
 
     Compares three things: INCLUSION, WEIGHT, and -- added 2026-08-21 -- the
-    FLOOR CLASSIFICATION. The first two alone would have MISSED the failure that
+    DOWNSIDE EVIDENCE CLASS. The first two alone would have MISSED the failure that
     motivated this: on 2026-08-21 the author called RXRX floored on "real revenue"
     ($55M at 34x sales, negative gross profit) and OKLO unfloored despite the
     largest cash cushion of the four. That is a mis-LABEL, not a mis-weight, and

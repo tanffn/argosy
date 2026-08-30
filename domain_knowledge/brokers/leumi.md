@@ -1,7 +1,7 @@
 ---
 topic: leumi_securities_tariff
 jurisdiction: israel
-last_verified: 2026-08-22
+last_verified: 2026-08-28
 next_refresh_due: 2026-10-15
 sources:
   - url: file://Resources/2026/Leumi/bank_charges_ID/ShowMailPDF (3).pdf

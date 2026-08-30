@@ -16,6 +16,8 @@ import {
   type DiscoveryCandidateDTO,
   type DiscoveryDTO,
   type DiscoverySourceDTO,
+  type NewsCoverageDTO,
+  type RecommendationScorecardDTO,
 } from "@/lib/api";
 import { VerdictProvenanceStrip } from "@/components/verdict-provenance";
 
@@ -80,6 +82,135 @@ function SourceScorecardDetails({ source }: { source: DiscoverySourceDTO }) {
         {scorecard.kill_reason && (
           <div className="text-warning">{scorecard.kill_reason}</div>
         )}
+      </div>
+    </details>
+  );
+}
+
+function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO }) {
+  const tactical = data.horizons["30d"];
+  const thesis = data.horizons["180d"];
+  const recent = data.recent.filter((row) => row.horizon_days === 180).slice(0, 8);
+  const surfaced = (data.surfaced_order_sheets?.recent ?? [])
+    .filter((row) => row.horizon_days === 180)
+    .slice(0, 8);
+  const surfacedThesis = data.surfaced_order_sheets?.horizons["180d"];
+  return (
+    <details className="rounded border border-border/60 px-3 py-2 text-xs">
+      <summary className="cursor-pointer font-medium">
+        Our recommendations — bought or not
+      </summary>
+      <div className="mt-2 space-y-2 text-muted-foreground">
+        <div className="grid gap-1 sm:grid-cols-2">
+          <div>
+            30-day: {tactical.graded}/{tactical.scheduled} graded · {tactical.wins} wins · {tactical.misses} misses · win {fmtRate(tactical.win_rate)}
+          </div>
+          <div>
+            6-month: {thesis.graded}/{thesis.scheduled} graded · {thesis.wins} wins · {thesis.misses} misses · win {fmtRate(thesis.win_rate)}
+          </div>
+        </div>
+        <div>
+          Forecast coverage: {data.coverage.with_30d_forecast}/{data.coverage.actionable_verdicts} at 30 days · {data.coverage.with_180d_forecast}/{data.coverage.actionable_verdicts} at 6 months
+        </div>
+        {surfacedThesis && (
+          <div>
+            Shown in trade plans, whether accepted or ignored: {surfacedThesis.graded}/{surfacedThesis.scheduled} six-month calls graded; {surfacedThesis.wins} wins; {surfacedThesis.misses} misses
+          </div>
+        )}
+        {surfaced.length > 0 && (
+          <div className="overflow-x-auto">
+            <div className="mb-1 font-medium text-foreground/80">Trade-plan calls</div>
+            <table className="w-full text-left text-[11px]">
+              <thead><tr><th className="pr-3">Call</th><th className="pr-3">You did</th><th className="pr-3">Due</th><th>Result</th></tr></thead>
+              <tbody>
+                {surfaced.map((row) => (
+                  <tr key={row.prediction_id}>
+                    <td className="pr-3">{row.action} {row.ticker}</td>
+                    <td className="pr-3">{plainStatus(row.disposition)}</td>
+                    <td className="pr-3">{new Date(row.due_at).toLocaleDateString()}</td>
+                    <td>{plainStatus(row.grade)}{row.ticker_move_pct !== null ? `; ${row.ticker_move_pct >= 0 ? "+" : ""}${row.ticker_move_pct.toFixed(1)}%` : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {recent.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[11px]">
+              <thead><tr><th className="pr-3">Call</th><th className="pr-3">You did</th><th className="pr-3">Due</th><th>Result</th></tr></thead>
+              <tbody>
+                {recent.map((row) => (
+                  <tr key={row.prediction_id}>
+                    <td className="pr-3">{row.action} {row.ticker}</td>
+                    <td className="pr-3">{plainStatus(row.disposition)}</td>
+                    <td className="pr-3">{new Date(row.due_at).toLocaleDateString()}</td>
+                    <td>{plainStatus(row.grade)}{row.ticker_move_pct !== null ? ` · ${row.ticker_move_pct >= 0 ? "+" : ""}${row.ticker_move_pct.toFixed(1)}%` : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {data.radar_opportunities && (
+          <div>
+            Radar opportunities at 6 months: {data.radar_opportunities.graded_180d}/{data.radar_opportunities.scheduled_180d} graded; {data.radar_opportunities.winners_180d} winners; {data.radar_opportunities.missed_winners_180d} were on radar but not recommended.
+          </div>
+        )}
+        {data.coverage.eligible_radar_names !== undefined && (
+          <div className={data.coverage.radar_clock_status === "partial" ? "text-warning" : ""}>
+            Radar clock coverage: {data.coverage.radar_names_with_180d_clock ?? 0}/{data.coverage.eligible_radar_names} currently eligible names have a six-month outcome clock
+            {data.coverage.radar_clock_coverage_pct !== null && data.coverage.radar_clock_coverage_pct !== undefined
+              ? ` (${data.coverage.radar_clock_coverage_pct.toFixed(1)}%)`
+              : ""}.
+            {data.coverage.radar_clock_status === "partial" && (data.coverage.radar_names_missing_180d_clock?.length ?? 0) > 0
+              ? ` Missing: ${data.coverage.radar_names_missing_180d_clock!.join(", ")}.`
+              : ""}
+          </div>
+        )}
+        {data.coverage.universe_recall_status !== "available" && (
+          <div className="text-warning">Full-market recall: {data.coverage.universe_recall_reason}</div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function NewsCoverage({ data }: { data: NewsCoverageDTO }) {
+  const s = data.summary;
+  const disputed = data.holdings.filter((row) => row.latest_review_outcome === "held_unverified");
+  return (
+    <details className="rounded border border-border/60 px-3 py-2 text-xs">
+      <summary className="cursor-pointer font-medium">News and earnings coverage</summary>
+      <div className="mt-2 space-y-1 text-muted-foreground">
+        <div>
+          Recent news: {s.with_recent_news}/{s.held_single_stocks} held stocks · earnings-related signals: {s.with_earnings_signal}/{s.held_single_stocks} · fresh verdict reviews: {s.with_recent_review}/{s.held_single_stocks}
+        </div>
+        <div className={s.with_calendar_check < s.held_single_stocks ? "text-warning" : ""}>
+          Earnings calendar checked: {s.with_calendar_check}/{s.held_single_stocks} held stocks · provider errors: {s.calendar_check_errors} · reported events awaiting a newer verdict: {s.recent_events_awaiting_review}
+        </div>
+        <div className={s.with_primary_filing_check < s.held_single_stocks ? "text-warning" : ""}>
+          Primary SEC evidence: {s.with_primary_filing_evidence}/{s.held_single_stocks} held stocks · checks completed: {s.with_primary_filing_check}/{s.held_single_stocks} · provider errors: {s.primary_filing_errors} · genuinely recent filings: {s.with_recent_primary_filing}
+        </div>
+        <div>
+          Jobs: earnings calendar {data.jobs.earnings_calendar_daily?.status ?? "missing"} · SEC filings {data.jobs.sec_earnings_daily?.status ?? "missing"} · news {data.jobs.news_daily?.status ?? "missing"} · holdings review {data.jobs.holdings_review?.status ?? "missing"}
+        </div>
+        {!s.full_earnings_call_coverage && (
+          <div className="text-warning">Not full call coverage: calendar and primary SEC filing receipts are recorded, but issuer call transcripts are not connected yet.</div>
+        )}
+        {data.holdings.filter((row) => row.earnings_review_gap).map((row) => (
+          <div key={`earnings-${row.ticker}`} className="text-warning">
+            {row.ticker}: {row.earnings_review_gap}
+          </div>
+        ))}
+        {disputed.map((row) => (
+          <div key={row.ticker} className="text-warning">
+            <div>{row.ticker}: {row.latest_review_verdict} disputed by verification — sent to unified reconciliation.</div>
+            {row.latest_review_reason && <div className="ml-3 text-muted-foreground">Why: {row.latest_review_reason}</div>}
+            {row.verification_verdict && <div className="ml-3">Second reviewer: {row.verification_verdict}{row.verification_reason ? ` — ${row.verification_reason}` : ""}</div>}
+            {row.execution_blocker && <div className="ml-3">Blocked: {row.execution_blocker}</div>}
+          </div>
+        ))}
       </div>
     </details>
   );
@@ -164,6 +295,8 @@ function CandidateDetails({
  */
 export function DiscoveryCard() {
   const [data, setData] = useState<DiscoveryDTO | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendationScorecardDTO | null>(null);
+  const [newsCoverage, setNewsCoverage] = useState<NewsCoverageDTO | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -173,6 +306,12 @@ export function DiscoveryCard() {
       .portfolioDiscovery()
       .then(setData)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    if (typeof api.recommendationScorecard === "function") {
+      api.recommendationScorecard("ariel").then(setRecommendations).catch(() => null);
+    }
+    if (typeof api.newsCoverage === "function") {
+      api.newsCoverage("ariel").then(setNewsCoverage).catch(() => null);
+    }
   }, []);
 
   const refresh = () => {
@@ -272,6 +411,8 @@ export function DiscoveryCard() {
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
+        {recommendations && <RecommendationScorecard data={recommendations} />}
+        {newsCoverage && <NewsCoverage data={newsCoverage} />}
         {error && (
           <div className="text-xs text-destructive">Discovery failed: {error}</div>
         )}

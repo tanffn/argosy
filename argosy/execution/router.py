@@ -98,10 +98,10 @@ class ExecutionRouter:
             a manual-entry instruction)
           - account_class == "main"  + Leumi      → "leumi_tsv" (read-only)
 
-        The hint is read from `proposal.account_id` if present (e.g.
-        "schwab_main", "leumi_main", "ibkr_main", "ibkr_argonaut") or
-        falls back to "ibkr" for backwards compatibility with proposals
-        created before account_id was always set.
+        The route is read from ``proposal.account_id`` (for example
+        ``schwab_main``, ``leumi_main`` or ``ibkr_argonaut``). Legacy main
+        proposals without it stop explicitly; silently choosing IBKR can place
+        an otherwise valid order in the wrong custody account.
         """
         if proposal.account_class == "limited":
             return "ibkr"
@@ -111,7 +111,12 @@ class ExecutionRouter:
             return "schwab_csv"
         if account_id.startswith("leumi"):
             return "leumi_tsv"
-        return "ibkr"
+        if account_id.startswith("ibkr"):
+            return "ibkr"
+        raise ValueError(
+            "main-account proposal has no recognized account_id; refusing "
+            "the historical silent IBKR fallback"
+        )
 
     def get_adapter(self, broker: str) -> BrokerAdapter:
         if broker in self.adapter_factories:
@@ -444,9 +449,14 @@ class ExecutionRouter:
             mode = self.settings.execution.default_mode
             broker_name = self.resolve_broker(proposal)
             adapter = self.get_adapter(broker_name)
+            execution_account_id = (proposal.account_id or "").strip()
+            if not execution_account_id and proposal.account_class == "limited":
+                execution_account_id = (
+                    self.settings.limited_account.account_id or "argonaut"
+                )
 
             order = ProposedOrder(
-                account_id=proposal.account_class,
+                account_id=execution_account_id,
                 ticker=proposal.ticker,
                 action=proposal.action,  # type: ignore[arg-type]
                 order_type=proposal.order_type,  # type: ignore[arg-type]
@@ -481,13 +491,30 @@ class ExecutionRouter:
                     note="PaperFill via execution router",
                 )
             elif result.status == "submitted" or result.status == "filled":
-                # Live: register pending_orders, advance proposal.
+                # Live: persist any synchronous executions immediately, then
+                # register the broker order for idempotent follow-up polling.
+                from argosy.execution.reconcile import persist_broker_fill
+
+                for fill in result.fills:
+                    await persist_broker_fill(
+                        session,
+                        user_id=self.user_id,
+                        proposal_id=proposal.id,
+                        account_id=execution_account_id,
+                        fill=fill,
+                    )
+                pending_status = result.status
+                if result.status == "filled" and not result.fills:
+                    # A terminal label without execution details is not fill
+                    # telemetry. Keep it pollable until details arrive.
+                    pending_status = "submitted"
                 pending = PendingOrder(
                     user_id=self.user_id,
                     proposal_id=proposal.id,
                     broker=result.broker,
                     broker_order_id=result.broker_order_id,
-                    status=result.status,
+                    account_id=execution_account_id,
+                    status=pending_status,
                 )
                 session.add(pending)
                 await self._transition(

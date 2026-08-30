@@ -31,6 +31,7 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { InboxItemCard } from "@/components/inbox/InboxItemCard";
 import { InboxDeferDialog } from "@/components/inbox/InboxDeferDialog";
 import { TradePlanTable } from "@/components/inbox/TradePlanTable";
+import { ArgosyRunCard } from "@/components/inbox/ArgosyRunCard";
 import { QuietState } from "@/components/inbox/QuietState";
 import { FunnelTransparencyCard } from "@/components/proposals/funnel-transparency-card";
 import { DeployCashCard } from "@/components/proposals/DeployCashCard";
@@ -271,13 +272,20 @@ export default function InboxPage() {
   const OBSERVATION_BUCKET = 6;
   // All buy/sell decisions live under ONE "Trade plan" section (overview
   // table + detail cards), whatever priority bucket ranked them.
-  const TRADE_KINDS = useMemo(() => new Set(["trade", "discovery_buy", "switch"]), []);
+  const TRADE_KINDS = useMemo(
+    () => new Set(["trade", "order_sheet", "discovery_buy", "switch"]),
+    [],
+  );
   const tradeItems = useMemo(
     () =>
       items.filter(
         (i) => TRADE_KINDS.has(i.kind) && (i.bucket ?? 99) < OBSERVATION_BUCKET,
       ),
     [items, TRADE_KINDS],
+  );
+  const tradeDetailItems = useMemo(
+    () => tradeItems.filter((item) => item.kind !== "order_sheet"),
+    [tradeItems],
   );
   const actionable = useMemo(
     () =>
@@ -320,9 +328,12 @@ export default function InboxPage() {
             </span>
           </div>
           {feed.trade_plan && <TradePlanTable plan={feed.trade_plan} />}
-          {tradeItems.length > 0 && (
+          {feed.trade_plan?.source === "order_sheet" && (
+            <ArgosyRunCard userId={USER_ID} compact />
+          )}
+          {tradeDetailItems.length > 0 && (
             <ul className="flex flex-col gap-3">
-              {tradeItems.map((it) => (
+              {tradeDetailItems.map((it) => (
                 <li key={it.id}>
                   <InboxItemCard
                     item={it}

@@ -1,14 +1,16 @@
 """The x10-ASYMMETRY sleeve mandate (Ariel, 2026-07-06) — binding criterion for
 the permanent ~5% high-growth / moonshot sleeve: cap-math x10 test, accepted
 per-name loss = 100% (a SIZING rule), rank = (upside x plausibility) / DOWNSIDE
-with a written floor, growth stories eligible at a smaller cut, deploy fill
-order = asymmetry-first.
+with explicit downside-class evidence and portfolio-level sizing judgment,
+deploy fill order = asymmetry-first.
 
 These tests pin the mandate into every surface that grades, ranks, sizes, or
 fills the sleeve, so a future tranche can't quietly revert to safety-first
 (the failure that sent the first live tranche into $70-120B maybe-2x names).
 """
 from __future__ import annotations
+
+import pytest
 
 from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
 
@@ -33,16 +35,18 @@ def test_mandate_encodes_all_four_clauses():
     assert "VIABILITY EVIDENCE, not floors" in m
     assert "CUSHION STATISTIC" in m          # net cash is not an asset floor
     assert "NCAV" in m                       # the real Graham test, not P/TB < 1
-    # (c2) unclassified fails closed to the SMALLEST cut
-    assert "UNCLASSIFIED name is scored as" in m and "FUNDED_OPTIONALITY" in m
+    # (c2) unclassified fails closed to funded-optionality risk review
+    assert "UNCLASSIFIED name is treated as" in m and "FUNDED_OPTIONALITY" in m
     # (c3) SNDK, classified correctly and with the corrections that cost two passes
     assert "SanDisk" in m and "0.91x" in m
     assert "0.72x BOOK" not in m                       # the original false claim
     assert "1.58x TANGIBLE book" in m and "GOODWILL" in m
     assert "NONCASH goodwill impairment" in m
     assert "SNDK was EARNING_POWER" in m
-    # (c4) growth stories eligible, smaller cut (Ariel)
-    assert "SMALLEST cut" in m and "HALF the weight" in m and "ONE " in m
+    # (c4) sizing remains a team judgment rather than a fixed ratio
+    assert "SIZING BY PORTFOLIO JUDGMENT" in m
+    assert "zero, one, or multiple" in m and "A split is preferred" in m
+    assert "fixed fraction" in m and "100% loss" in m
     # (c5) the honesty clause -- base rates, not a promise
     assert "Bessembinder" in m and "0.8%" in m
     assert "32.5%" in m and "Bounded downside is a MYTH" in m
@@ -145,6 +149,7 @@ def test_deployment_author_prompt_renders_sleeve_mandate():
 
 # --- plan-change team: re-sourcing agents embed the mandate + blind review ----
 
+@pytest.mark.real_seam
 def test_moonshot_author_and_reviewer_prompts_carry_mandate():
     from argosy.agents.plan_change_team import (
         MoonshotSleeveAuthorAgent,

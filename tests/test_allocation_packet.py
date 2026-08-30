@@ -60,6 +60,29 @@ def test_plan_menu_structured_with_domicile():
     assert menu["Ex-US developed"]["domiciles"] == ["IE"]
 
 
+def test_persisted_legacy_quality_label_is_normalized_for_live_reviewers():
+    doc = _Doc(
+        classes=[
+            _Cls(
+                "Global quality growth (ex-NVDA-dense)",
+                13.0,
+                "world_quality_equity",
+                [_Inst("IWQU", "IE")],
+            )
+        ]
+    )
+    packet = build_decision_packet(
+        doc=doc,
+        holdings_usd={"IWQU": 20_000.0},
+        deployable_usd=120_000.0,
+        current_pct_by_sleeve={
+            "Global quality growth (ex-NVDA-dense)": 0.5,
+        },
+    )
+    assert packet["plan_menu"][0]["sleeve"] == "Global quality factor"
+    assert packet["plan_menu"][0]["current_pct"] == 0.5
+
+
 def test_nvda_concentration_derived():
     pkt = build_decision_packet(
         doc=_doc(),
@@ -118,3 +141,15 @@ def test_policy_signals_and_constraints_pass_through():
     )
     assert pkt["policy_signals"]["nvda_policy_sell"]["due"] is True
     assert "retirement" in pkt["user_constraints"]
+
+
+def test_decision_calibration_passes_through_as_judgment_context():
+    calibration = {
+        "order_sheet": {"scored_predictions": 12, "hit_rate": 0.58},
+        "recent_verdict_outcomes": [{"ticker": "NVDA", "grade": "miss"}],
+    }
+    pkt = build_decision_packet(
+        doc=_doc(), holdings_usd={}, deployable_usd=1000.0,
+        decision_calibration=calibration,
+    )
+    assert pkt["decision_calibration"] == calibration

@@ -26,8 +26,6 @@ def _build_default_session_factory() -> sessionmaker:
     no side effects; rebuilds if the db_file changes across test reloads)."""
     global _DEFAULT_SESSION_FACTORY
 
-    import sqlalchemy as sa
-
     from argosy.config import get_settings
 
     db_file = str(get_settings().db_file)
@@ -36,9 +34,9 @@ def _build_default_session_factory() -> sessionmaker:
         if cached_key == db_file:
             return cached_factory
 
-    engine = sa.create_engine(
-        f"sqlite:///{db_file}", connect_args={"check_same_thread": False}
-    )
+    from argosy.state.db import create_sync_engine
+
+    engine = create_sync_engine(f"sqlite:///{db_file}")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     _DEFAULT_SESSION_FACTORY = (db_file, factory)
     return factory

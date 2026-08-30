@@ -30,7 +30,8 @@ def _prompt_for(research):
     packet = {
         "deployable_usd": 1000.0, "nvda": {}, "reserve": {}, "plan_menu": [],
         "instrument_facts": [], "holdings": {}, "policy_signals": {},
-        "candidate_research": research, "user_constraints": "",
+        "candidate_research": research, "discovery_candidates": [],
+        "user_constraints": "",
     }
     return DeploymentAuthorAgent.build_prompt(agent, packet=packet)[1]  # user prompt
 
@@ -44,3 +45,50 @@ def test_author_prompt_renders_research_when_present():
 def test_author_prompt_omits_research_section_when_empty():
     user = _prompt_for({})
     assert "FRESH PER-CANDIDATE RESEARCH" not in user
+
+
+def test_fresh_search_candidates_are_separate_from_plan_and_eligible():
+    discovery = [
+        {
+            "ticker": "RGTI",
+            "search_source": "trend_scan_state",
+            "score": 88.0,
+            "rank": 1,
+            "fresh_as_of": "2026-08-25T12:00:00+00:00",
+        }
+    ]
+    pkt = build_decision_packet(
+        doc=_doc(),
+        holdings_usd={},
+        deployable_usd=1000.0,
+        extra_known_symbols={"RGTI"},
+        discovery_candidates=discovery,
+    )
+    assert pkt["discovery_candidates"] == discovery
+    assert "RGTI" in pkt["known_symbols"]
+
+
+def test_author_prompt_allows_fresh_discovery_but_rejects_underweight_as_thesis():
+    agent = DeploymentAuthorAgent.__new__(DeploymentAuthorAgent)
+    packet = {
+        "deployable_usd": 1000.0,
+        "nvda": {},
+        "reserve": {},
+        "plan_menu": [],
+        "instrument_facts": [],
+        "holdings": {},
+        "policy_signals": {},
+        "candidate_research": {},
+        "discovery_candidates": [
+            {
+                "ticker": "RGTI",
+                "score": 88.0,
+                "rank": 1,
+                "fresh_as_of": "2026-08-25T12:00:00+00:00",
+            }
+        ],
+        "user_constraints": "",
+    }
+    user = DeploymentAuthorAgent.build_prompt(agent, packet=packet)[1]
+    assert "RGTI: search score 88.0" in user
+    assert "Underweight is NOT a thesis" in user
