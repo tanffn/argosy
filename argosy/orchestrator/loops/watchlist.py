@@ -53,9 +53,7 @@ class WatchlistLoop(CadenceLoop):
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
-        self._agent_factory = watchlist_agent_factory or (
-            lambda: WatchlistAgent(user_id=user_id)
-        )
+        self._agent_factory = watchlist_agent_factory or (lambda: WatchlistAgent(user_id=user_id))
         self._gather = gather_inputs or _default_gather_inputs
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict[str, Any]:
@@ -68,9 +66,7 @@ class WatchlistLoop(CadenceLoop):
 
         inputs = await _maybe_async(self._gather(self.user_id))
         if not isinstance(inputs, WatchlistInputs):  # pragma: no cover
-            raise TypeError(
-                f"gather_inputs must return WatchlistInputs, got {type(inputs)!r}"
-            )
+            raise TypeError(f"gather_inputs must return WatchlistInputs, got {type(inputs)!r}")
 
         agent = self._agent_factory()
         report = await agent.run(
@@ -139,6 +135,7 @@ async def _default_gather_inputs(user_id: str) -> WatchlistInputs:
 
     from argosy.state import db as db_mod
     from argosy.state.models import (
+        ActionProposal,
         AgentReport,
         AgentReportBlob,
         PortfolioSnapshotRow,
@@ -182,11 +179,13 @@ async def _default_gather_inputs(user_id: str) -> WatchlistInputs:
                     Proposal.user_id == user_id,
                     Proposal.status == "awaiting_human",
                     Proposal.shadow == 0,
-                    Proposal.source.in_((
-                        "decision_funnel",
-                        "portfolio_review",
-                        "verdict_trigger_sweep",
-                    )),
+                    Proposal.source.in_(
+                        (
+                            "decision_funnel",
+                            "portfolio_review",
+                            "verdict_trigger_sweep",
+                        )
+                    ),
                 )
             )
         ).all()
@@ -199,14 +198,43 @@ async def _default_gather_inputs(user_id: str) -> WatchlistInputs:
             elif action == "sell":
                 reduce.add(symbol)
 
-        scan_rows = (
-            await session.execute(
-                select(ScanState).where(
-                    ScanState.user_id == user_id,
-                    ScanState.status == "active",
+        # Explicit WATCH dispositions from research ingests are persisted as
+        # quiet set_watchlist rows. They are authoritative watch candidates
+        # even when the discovery radar later evicts its transient ScanState.
+        watch_rows = (
+            (
+                await session.execute(
+                    select(ActionProposal.suggested_payload).where(
+                        ActionProposal.user_id == user_id,
+                        ActionProposal.kind == "set_watchlist",
+                        ActionProposal.status == "open",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
+        for raw_payload in watch_rows:
+            try:
+                payload = json.loads(raw_payload or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            symbol = str(payload.get("ticker") or "").strip().upper()
+            if symbol:
+                candidates.add(symbol)
+
+        scan_rows = (
+            (
+                await session.execute(
+                    select(ScanState).where(
+                        ScanState.user_id == user_id,
+                        ScanState.status == "active",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         cutoff = datetime.now(UTC).timestamp() - 7 * 86400
         for row in scan_rows:
             seen = row.last_fleet_at or row.last_estimated_at or row.last_seen_at

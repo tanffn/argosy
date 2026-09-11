@@ -5428,6 +5428,158 @@ class InstrumentClassification(Base):
 
 
 # ---------------------------------------------------------------------------
+# Migration 0116 — YouTube influencer inputs and claim calibration.
+# ---------------------------------------------------------------------------
+
+
+class YouTubeChannel(Base):
+    """A user-managed YouTube source consumed by the discovery pipeline."""
+
+    __tablename__ = "youtube_channels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    youtube_channel_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    channel_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    enabled: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=_sa_text("1")
+    )
+    last_seen_video_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_seen_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "youtube_channel_id", name="uq_youtube_channel_user"),
+        CheckConstraint("enabled IN (0, 1)", name="ck_youtube_channels_enabled"),
+        Index("ix_youtube_channels_user_enabled", "user_id", "enabled"),
+    )
+
+
+class YouTubeVideo(Base):
+    """One transcript/fleet run retained for an influencer source."""
+
+    __tablename__ = "youtube_videos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    channel_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("youtube_channels.id", ondelete="SET NULL"), nullable=True
+    )
+    youtube_video_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transcript_file_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("user_files.id", ondelete="SET NULL"), nullable=True
+    )
+    analysis_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    artifact_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    tickers_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    recommendations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    analyzed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "youtube_video_id", name="uq_youtube_video_user"),
+        CheckConstraint("json_valid(tickers_json)", name="ck_youtube_videos_tickers_json"),
+        CheckConstraint(
+            "json_valid(recommendations_json)", name="ck_youtube_videos_recommendations_json"
+        ),
+        Index("ix_youtube_videos_channel_analyzed", "channel_id", "analyzed_at"),
+    )
+
+
+class YouTubeClaim(Base):
+    """A timestamped, attributable claim retained for later scoring."""
+
+    __tablename__ = "youtube_claims"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("youtube_videos.id", ondelete="CASCADE"), nullable=False
+    )
+    claim_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    timestamp: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    claim_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    named_entities_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    tickers_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    is_market_outlook: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=_sa_text("0")
+    )
+    direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    horizon_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluation_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("video_id", "claim_key", name="uq_youtube_claim_video_key"),
+        CheckConstraint("json_valid(named_entities_json)", name="ck_youtube_claim_entities_json"),
+        CheckConstraint("json_valid(tickers_json)", name="ck_youtube_claim_tickers_json"),
+        CheckConstraint("is_market_outlook IN (0, 1)", name="ck_youtube_claim_market_bool"),
+        CheckConstraint(
+            "status IN ('open', 'evaluated', 'unscored')", name="ck_youtube_claim_status"
+        ),
+        Index("ix_youtube_claims_due", "status", "evaluation_due_at"),
+    )
+
+
+class YouTubeClaimEvaluation(Base):
+    """Versioned assessment used to calibrate each channel over time."""
+
+    __tablename__ = "youtube_claim_evaluations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    claim_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("youtube_claims.id", ondelete="CASCADE"), nullable=False
+    )
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    subject_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    excess_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evaluator_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("claim_id", "evaluator_version", name="uq_youtube_claim_eval_version"),
+        CheckConstraint(
+            "verdict IN ('correct', 'partially_correct', 'incorrect', 'inconclusive')",
+            name="ck_youtube_claim_eval_verdict",
+        ),
+        CheckConstraint("json_valid(evidence_json)", name="ck_youtube_claim_eval_evidence_json"),
+        Index("ix_youtube_claim_evaluations_evaluated", "evaluated_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # DB-level immutability triggers for the three append-only decision records
 # (Sol Phase-2 defect 3). Attached as DDL so BOTH ``create_all`` (tests) AND the
 # alembic 0099 migration (prod) install identical BEFORE UPDATE / BEFORE DELETE

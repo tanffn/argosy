@@ -284,6 +284,27 @@ uv run argosy ingest plan "<path-to-Jacobs_Wealth_Plan.md>" --version-label v2.0
 
 `argosy ingest tsv` prints a summary and reports parse warnings; it does **not** write positions to the DB in Phase 1 (the holdings table arrives in Phase 2).
 
+### Fetch and analyze a YouTube transcript
+
+Pass a full YouTube URL or its 11-character video ID. Fetching uses
+`youtube-transcript-api` first and falls back to `yt-dlp`; repeat `--language`
+to set a preference order.
+
+```bash
+# Captions only; catalogs a timestamped Markdown transcript in Argosy Files.
+uv run argosy youtube fetch "https://youtu.be/G6xFyw49OgA" --language en
+
+# Read-only four-agent analysis: claims, skeptic, portfolio relevance, synthesis.
+uv run argosy youtube analyze "https://youtu.be/G6xFyw49OgA" --language en
+```
+
+The analysis persists the four agent reports and writes Markdown + JSON under
+`logs/youtube/`. It is research input only: the command does not create a trade
+proposal or insert the video's assertions into trusted market feeds. Use
+`--no-save` for an ephemeral run, `--json` for structured output, or
+`youtube fetch --stdout` to print the full transcript. To retain YouTube's
+exact subtitle file, use `youtube fetch <url> --backend yt-dlp --format vtt`.
+
 ### Run the intake interview
 
 ```bash

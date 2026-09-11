@@ -28,6 +28,7 @@ from argosy.cli.run import run
 from argosy.cli.secrets import app as secrets_app
 from argosy.cli.security import app as security_app
 from argosy.cli.synthesis import app as synthesis_app
+from argosy.cli.youtube import app as youtube_app
 
 app = typer.Typer(
     name="argosy",
@@ -65,6 +66,8 @@ app.add_typer(diagnose_app, name="diagnose",
               help="Environment diagnostics: adapter health, key resolution.")
 app.add_typer(synthesis_app, name="synthesis",
               help="Plan-synthesis operator commands (forensic-trail replay).")
+app.add_typer(youtube_app, name="youtube",
+              help="Fetch YouTube transcripts and run a read-only analysis fleet.")
 
 
 def main() -> None:  # pragma: no cover

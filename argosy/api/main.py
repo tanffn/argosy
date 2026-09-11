@@ -196,6 +196,10 @@ def create_app() -> FastAPI:
     app.include_router(settings_router, prefix=api_prefix)
     app.include_router(cost_guard_router)
 
+    # User-managed research feeds and their speaker calibration scorecards.
+    from argosy.api.routes.youtube_sources import router as youtube_sources_router
+    app.include_router(youtube_sources_router, prefix=api_prefix)
+
     # Provenance Wave A — user-files catalog list/stream surface.
     app.include_router(files_router, prefix=api_prefix)
 

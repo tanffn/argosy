@@ -174,6 +174,17 @@ class Scheduler:
             SignalStreamsDailyLoop(enabled=True, user_id=self.user_id)
         )
 
+        # User-managed YouTube sources are checked before the other discovery
+        # inputs. Each new video runs through the transcript research fleet and
+        # the normal WATCH/BUY ingest router.
+        from argosy.orchestrator.loops.youtube_subscriptions import (
+            YouTubeSubscriptionsLoop,
+        )
+
+        self.register_loop(
+            YouTubeSubscriptionsLoop(enabled=True, user_id=self.user_id)
+        )
+
         # Discovery funnel — a SEPARATE daily loop (codex #10): heavier
         # radar->estimator->fleet pass with its own cadence + failure isolation,
         # kept apart from the cheap speculative monitor. Smart refresh.

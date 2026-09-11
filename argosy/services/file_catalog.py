@@ -73,6 +73,9 @@ _ALLOWED_SOURCES = frozenset({
     # through `catalog_upload` before parsing (SDD §17.1: no ingest path may
     # bypass the catalog).
     "payslip_ingest",
+    # Captions fetched on an explicit user request.  They are external source
+    # material consumed by the read-only YouTube research fleet.
+    "youtube_transcript",
 })
 
 # Allowed values for the `kind` column. Cataloging-side classification
