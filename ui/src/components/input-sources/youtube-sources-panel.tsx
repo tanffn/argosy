@@ -2,6 +2,7 @@
 
 import { AlertCircle, CheckCircle2, Loader2, Play, Plus, RefreshCw, Youtube } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState, type ReactNode } from "react";
+import { api } from "@/lib/api";
 
 interface SourceStats {
   videos_ingested: number;
@@ -104,10 +105,8 @@ export function YouTubeSourcesPanel() {
   async function syncNow() {
     setWorking("sync"); setMessage("Checking enabled channels. New videos can take several minutes to analyze.");
     try {
-      const response = await fetch("/api/jobs/youtube_subscriptions/run-now", { method: "POST" });
-      if (!response.ok) throw new Error("Source sync failed");
-      const result = await response.json();
-      setMessage(`Shared research job ${result.job_run_id} started. Deferred videos stay queued within the daily budget.`);
+      const result = await api.jobs.runNow("youtube_subscriptions");
+      setMessage(`Research job ${result.job_run_id} returned. Check Jobs for its outcome. Deferred videos stay queued.`);
       await load();
     } catch (error) { setMessage(error instanceof Error ? error.message : "Source sync failed"); }
     finally { setWorking(null); }

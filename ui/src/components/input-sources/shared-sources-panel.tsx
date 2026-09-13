@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { api } from "@/lib/api";
 
 interface ResearchSource {
   id: number; name: string; kind: string; reference: string; enabled: boolean;
@@ -65,8 +66,9 @@ export function SharedSourcesPanel() {
       <div><h2 className="text-lg font-semibold">Shared research sources</h2>
         <p className="text-sm text-muted-foreground mt-1">Checked daily at 14:00 Israel time. Up to three fleet analyses across all feeds per day, with at most one per source. Deferred items stay queued.</p></div>
       <button disabled={busy} onClick={() => void act(async () => {
-        const data = await request("/api/jobs/youtube_subscriptions/run-now", { method: "POST" });
-        setMessage(`Research job ${data.job_run_id} started. Refresh to see progress.`);
+        setMessage("Research is running. This can take several minutes; progress is available in Jobs.");
+        const data = await api.jobs.runNow("youtube_subscriptions");
+        setMessage(`Research job ${data.job_run_id} returned. Check Jobs for its outcome and refresh these statistics.`);
       })} className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50">Sync and analyze</button>
     </div>
     <form onSubmit={add} className="grid gap-3 sm:grid-cols-2">
