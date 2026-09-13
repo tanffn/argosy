@@ -501,6 +501,23 @@ class ThesisMonitorLoop(CadenceLoop):
             from argosy.services.agent_report_persistence import (
                 stage_agent_report,
             )
+            from argosy.services.research_inputs import render_research_inputs
+            for bundle in bundles:
+                try:
+                    bundle["research_inputs"] = render_research_inputs(
+                        session, user_id=self.user_id, ticker=bundle["ticker"], now=run_at,
+                    )
+                except Exception as exc:
+                    log.warning("thesis_monitor.research_inputs_unavailable", error=str(exc)[:160])
+                    bundle.setdefault("feed_errors", []).append("external research ledger unavailable")
+            summary["research_inputs_coverage"] = sum(bool(b.get("research_inputs")) for b in bundles)
+            summary["evidence_coverage"] = {
+                field: sum(bool(b.get(field)) for b in bundles)
+                for field in ("news", "price", "insider")
+            }
+            summary["errors"].extend(
+                f"{b.get('ticker')}: {error}" for b in bundles for error in b.get("feed_errors", [])
+            )
 
             if isinstance(report, AgentReport):
                 stage_agent_report(

@@ -275,6 +275,7 @@ async def run_funnel(
         "shadow": shadow, "stage3_enabled": stage3_enabled,
         "stage1_routed": 0, "stage1_dropped": 0, "stage1_audit": 0,
         "stage2_go": 0, "stage2_stop": 0,
+        "error_count": 0, "errors": [],
         "stage3_proposed": 0, "stage3_blocked": 0, "stage3_skipped": 0,
         "surfaced": 0,
     }
@@ -312,6 +313,21 @@ async def run_funnel(
             book=book, market_read=market, ips=ips, signals=signals,
             last_review_by_ticker=last_review, policy=policy, day=day, now=now,
         )
+        # Shared research requests enter preliminary triage once. A source claim
+        # cannot bypass the full decision team's existing approval/risk gates.
+        from argosy.services.research_catalog import pending_candidates
+        from sqlalchemy import inspect as _research_inspect
+        if _research_inspect(s.connection()).has_table("research_review_requests"):
+            research = pending_candidates(s, user_id=user_id,
+                held_tickers={h.ticker.upper() for h in book}, now=now)
+            existing = {c.subject.upper(): c for c in routing.routed}
+            for candidate in research:
+                if candidate.subject in existing:
+                    existing[candidate.subject].extra.update(candidate.extra)
+                else:
+                    routing.routed.append(candidate)
+            research_symbols = {c.subject for c in research}
+            routing.dropped[:] = [d for d in routing.dropped if d.subject not in research_symbols]
         # Discovery-driven NEW-name candidates: the high-potential funnel's
         # HIGH-conviction BUY picks enter the same flow as held names (new kinds
         # slot in without a contract change). Skipped for names already held.
@@ -320,9 +336,12 @@ async def run_funnel(
             discovery = load_discovery_candidates(
                 s, user_id=user_id, held_tickers=held_tickers, policy=policy,
             )
-            routing.routed.extend(discovery)
+            already_routed = {c.subject.upper() for c in routing.routed}
+            routing.routed.extend(c for c in discovery if c.subject.upper() not in already_routed)
         except Exception as exc:  # noqa: BLE001 — discovery is additive; never abort the run
             _log.warning("decision_funnel.discovery_load_failed", error=str(exc)[:200])
+            totals["error_count"] += 1
+            totals["errors"].append(f"discovery: {str(exc)[:300]}")
         for cand in routing.routed:
             record_stage_row(
                 s, run_id=run_id, stage="stage1", subject=cand.subject,
@@ -364,6 +383,8 @@ async def run_funnel(
                 user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001
+            totals["error_count"] += 1
+            totals["errors"].append(f"triage {cand.subject}: {str(exc)[:600]}")
             with sf() as s2:
                 record_stage_row(
                     s2, run_id=run_id, stage="stage2", subject=cand.subject,
@@ -372,6 +393,8 @@ async def run_funnel(
                 )
             continue
         with sf() as s2:
+            from argosy.services.research_catalog import record_triage
+            record_triage(s2, cand, outcome, user_id=user_id, now=now)
             record_stage_row(
                 s2, run_id=run_id, stage="stage2", subject=cand.subject,
                 subject_type=cand.subject_type,
@@ -400,7 +423,7 @@ async def run_funnel(
         for cand, _t in survivors:
             # Held names AND discovery new-name picks get a deep BUY/SELL/HOLD
             # decision; sleeve-level reviews defer to the plan refresh (P3).
-            if cand.subject_type not in ("holding", "discovery"):
+            if cand.subject_type not in ("holding", "discovery", "research"):
                 with sf() as s3:
                     record_stage_row(
                         s3, run_id=run_id, stage="stage3", subject=cand.subject,
@@ -425,6 +448,7 @@ async def run_funnel(
                 "weight_pct": weight_by.get(subj),
                 "cap_pct": cap_by.get(subj),
                 "book": weight_by,
+                "research_requests": sorted(cand.extra.get("research_request_ids", [])),
             }
             prompt_hash = f"fleet:T2:{policy.version}:{day}:{subj}"
             # Dedup PRE-CHECK (codex BLOCKER 5): if an immutable snapshot for
@@ -461,12 +485,19 @@ async def run_funnel(
                 "expires_at": default_expiry(now),
                 "funnel_run_id": run_id,
             }
+            if cand.extra.get("research_sources"):
+                funnel_meta["cited_new_facts"] = [
+                    f"Attributed claim requiring corroboration: {source['reason']} (source {source['url']})"
+                    for source in cand.extra["research_sources"]
+                ]
             try:
                 dd = await deep_decision_fn(
                     user_id=user_id, ticker=cand.subject, account_class="main",
                     funnel_meta=funnel_meta, subject_type=cand.subject_type,
                 )
             except Exception as exc:  # noqa: BLE001 — never abort the run
+                totals["error_count"] += 1
+                totals["errors"].append(f"deep decision {cand.subject}: {str(exc)[:600]}")
                 with sf() as s3:
                     record_stage_row(
                         s3, run_id=run_id, stage="stage3", subject=cand.subject,
@@ -477,6 +508,24 @@ async def run_funnel(
                 _log.warning("decision_funnel.deep_raised", ticker=subj, error=str(exc)[:200])
                 continue
 
+            if dd.status in ("error", "quorum_failed"):
+                # A failed fleet is neither a HOLD nor a completed review.
+                # Do not create a cooldown snapshot that would prevent retry.
+                totals["error_count"] += 1
+                totals["errors"].append(f"deep decision {cand.subject}: {dd.blocked_reason or dd.status}")
+                with sf() as s3:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="stage3", subject=cand.subject,
+                        subject_type=cand.subject_type, decision="deep_decision_error",
+                        reason=dd.blocked_reason or dd.status, signal_or_rule=cand.primary_signal,
+                    )
+                continue
+
+            # A proposal only exists when the fleet APPROVED *and* persisted one
+            from argosy.services.research_catalog import record_review_result
+            with sf() as research_session:
+                record_review_result(research_session, cand, dd, user_id=user_id, now=now)
+                research_session.commit()
             # A proposal only exists when the fleet APPROVED *and* persisted one
             # (codex BLOCKER 4: don't treat approved-without-proposal as proposed).
             proposed = dd.status == "approved" and dd.proposal_id is not None
@@ -549,7 +598,8 @@ async def run_funnel(
                     policy_version=policy.version, policy=policy.to_dict(),
                     model_name=_FLEET_MODEL, prompt_template_hash=prompt_hash,
                     model_inputs={"decision_run_id": dd.decision_run_id, "fleet_tier": "T2"},
-                    source_refs=market.source_refs,
+                    source_refs=market.source_refs + [{"kind": "research", "id": source["id"], "url": source["url"]}
+                                                     for source in cand.extra.get("research_sources", [])],
                     why_not_act=(dd.blocked_reason if not proposed else None),
                     decision_run_id=dd.decision_run_id, proposal_id=dd.proposal_id,
                     human_action_state=("proposed" if proposed else "superseded"),
@@ -626,9 +676,13 @@ async def run_funnel(
         raise
 
     # ---- close ----
+    # A failed candidate is not an investment NO-ACTION verdict. Preserve
+    # partial progress, but propagate incompleteness to both trace and jobs.
+    totals["status"] = "error" if totals["error_count"] else "ok"
     with sf() as sc:
         close_run(
-            sc, run_id=run_id, status="ok", totals=totals,
+            sc, run_id=run_id, status=totals["status"], totals=totals,
+            error_message="; ".join(totals["errors"])[:2000] or None,
             macro_read=market_dict, finished_at=_utcnow(),
         )
     _log.info("decision_funnel.run_done", user_id=user_id, run_id=run_id, **{

@@ -128,6 +128,8 @@ class ThesisMonitorAgent(BaseAgent[ThesisMonitorReport]):
         )
 
         feed_blocks: list[str] = []
+        from argosy.services.research_inputs import GUIDANCE
+        system += "\n" + GUIDANCE + "\nExternal research excerpts require independent corroboration before a thesis is marked broken.\n"
         tickers: list[str] = []
         for b in bundles:
             t = str(b.get("ticker") or "").upper()
@@ -170,6 +172,10 @@ def _render_feed_body(bundle: dict[str, Any]) -> str:
     parts: list[str] = [
         f"PLAN THESIS / ROLE: {plan_thesis}",
     ]
+    if bundle.get("feed_errors"):
+        parts.append("UNAVAILABLE EVIDENCE (not evidence of no events): " + _scrub("; ".join(bundle["feed_errors"])))
+    if bundle.get("research_inputs"):
+        parts.append("ATTRIBUTED EXTERNAL RESEARCH: " + _scrub(bundle["research_inputs"]))
     # Open watchlist items (set_watchlist proposals) carry a recorded catalyst /
     # review anchor — surfaced so the agent judges whether the catalyst fired.
     watchlist = _scrub(bundle.get("watchlist")).strip()

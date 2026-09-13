@@ -846,6 +846,7 @@ def make_tax_context_fetcher(
 
 def default_fetchers(db: Any, user_id: str) -> dict[str, Callable[[str], "str | None"]]:
     """The live fetcher registry for a holdings review / candidate decision."""
+    from argosy.services.research_inputs import render_research_inputs
     price_evidence: dict[str, str | None] = {}
 
     def _price(ticker: str) -> str | None:
@@ -854,6 +855,7 @@ def default_fetchers(db: Any, user_id: str) -> dict[str, Callable[[str], "str | 
         return value
 
     return {
+        "research_inputs": lambda ticker: render_research_inputs(db, user_id=user_id, ticker=ticker),
         "news": news_fetcher,
         "earnings_calendar": make_earnings_calendar_fetcher(db, user_id),
         "earnings_filing": make_earnings_filing_fetcher(db, user_id),

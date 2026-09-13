@@ -85,24 +85,17 @@ def route_ingest_recommendations(
 
         rationale = str(_value(raw, "rationale", "")).strip()
         next_step = str(_value(raw, "next_step", "")).strip()
-        confidence = _confidence(_value(raw, "confidence", "LOW"))
-        citation = source_url or f"{source_kind}:{source_id}"
         evidence = {
             "stream": f"ingest_{source_key}",
             "source_kind": source_kind,
+            "research_mandate": "general" if source_kind in {"research", "youtube"} else None,
             "source_id": source_id,
             "source_url": source_url,
             "disposition": disposition,
             "rationale": rationale,
             "next_step": next_step,
             "observed_at": observed_at.isoformat(),
-        }
-        pick = {
-            "ticker": ticker,
-            "conviction": confidence,
-            "verdict": disposition.upper(),
-            "thesis_md": rationale,
-            "cites": [citation],
+            "confidence": _confidence(_value(raw, "confidence", "LOW")),
         }
         row = session.get(ScanState, {"user_id": user_id, "ticker": ticker})
         if row is None:
@@ -111,12 +104,14 @@ def route_ingest_recommendations(
             row.radar_fingerprint = (
                 f"s=0|f=ingest_{source_key}|stream=ingest_{source_key}|event={source_id}"
             )
-            row.nomination_evidence_json = json.dumps(evidence, default=str)
-            row.fleet_json = json.dumps(pick, default=str)
-        row.status = "active"
-        row.quarantine_reason = ""
+            row.status = "active"
+        if row.status == "dropped":
+            row.status = "active"
+        # A source mention is nomination evidence, never an estimator or fleet
+        # verdict. Keep genuine review timestamps and quarantine untouched.
+        # The funnel fingerprints the source event before deciding what to rerun.
+        row.nomination_evidence_json = json.dumps(evidence, default=str)
         row.last_seen_at = observed_at
-        row.last_fleet_at = observed_at
         row.updated_at = observed_at
         session.flush()
         session.commit()

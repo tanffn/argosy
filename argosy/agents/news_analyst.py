@@ -85,6 +85,7 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
         tickers: list[str],
         news_payload: dict[str, list[dict[str, Any]]],
         time_window_label: str = "overnight",
+        research_inputs: dict[str, str] | None = None,
     ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
@@ -148,7 +149,22 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
         # inline (no source body to attach for them).
         sources: list[tuple[str, str]] = []
         roster_lines: list[str] = []
+        from argosy.services.research_inputs import GUIDANCE, load_research_inputs
+        from argosy.logging import get_logger
+
+        system += "\n" + GUIDANCE + "\n"
         for t in tickers:
+            try:
+                research = (research_inputs.get(t) if research_inputs is not None
+                            else load_research_inputs(user_id=self.user_id, ticker=t))
+            except Exception as exc:
+                get_logger(__name__).warning("news.research_inputs_unavailable", ticker=t, error=str(exc)[:160])
+                roster_lines.append(f"- {t}: external research ledger unavailable; report this evidence gap")
+            else:
+                if research:
+                    research_id = f"research_inputs/{t}"
+                    sources.append((research_id, research))
+                    roster_lines.append(f"- {t}: attributed research and market context in `{research_id}`")
             items = news_payload.get(t, [])
             if not items:
                 roster_lines.append(f"- {t}: (no headlines for this ticker in window)")

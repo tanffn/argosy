@@ -134,6 +134,7 @@ def abstain_insufficient_evidence(
 
 
 _BUNDLE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("research_inputs", "Attributed external research (requires corroboration)"),
     ("price", "Price / technical"),
     ("fundamentals", "Fundamentals"),
     ("news", "Recent news"),
@@ -163,6 +164,7 @@ class StockDecisionAgent(BaseAgent[StockDecisionOutput]):
     require_citations = False
 
     def build_prompt(self, *, ticker: str, context: str, bundle: dict[str, Any]):
+        from argosy.services.research_inputs import GUIDANCE
         system = (
             "You are Argosy's per-stock decision analyst for a long-hold, "
             "Israeli-resident (non-US-person) investor. Given ONE holding or "
@@ -195,6 +197,7 @@ class StockDecisionAgent(BaseAgent[StockDecisionOutput]):
             "underweight alone is never a BUY thesis. Apply this criterion to all "
             "symbols, not as a ticker-specific rule."
         )
+        system += "\n" + GUIDANCE + "\nCite original URLs and source IDs for external claims used in your evidence.\n"
         user = (
             f"TICKER: {ticker}\n"
             f"POSITION CONTEXT: {context}\n\n"

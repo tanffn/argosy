@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -26,6 +27,7 @@ log = get_logger(__name__)
 
 ESTIMATE_TTL = timedelta(hours=24)
 FLEET_TTL = timedelta(days=3)
+FLEET_RESEARCH_CONTRACT = "dated-news-and-explicit-limitations-v1"
 TOP_K_TO_FLEET = 5
 _CONVICTION_RANK = {"HIGH": 3, "MED": 2, "LOW": 1}
 
@@ -81,6 +83,19 @@ def _load_external_candidates(user_id: str) -> list[TrendCandidate]:
     for row in _external_rows(user_id, "active"):
         try:
             payload = json.loads(row.nomination_evidence_json)
+            if not isinstance(payload, dict):
+                raise ValueError("nomination must be an object")
+        except (TypeError, ValueError):
+            log.warning("high_potential_funnel.external_evidence_invalid", ticker=row.ticker)
+            continue
+        # Market/provider/numeric errors are NOT malformed-source omissions.
+        # Keep this outside schema tolerance so the registered run fails loudly.
+        if payload.get("research_mandate") == "general":
+            continue  # Shared research requests use the general decision funnel.
+        if str(payload.get("stream") or "").startswith("ingest_"):
+            out.append(_ingest_candidate(row, payload))
+            continue
+        try:
             evidence = payload["evidence"]
             price = evidence.get("price")
             avg_volume = evidence.get("average_volume")
@@ -116,6 +131,66 @@ def _load_external_candidates(user_id: str) -> list[TrendCandidate]:
                 ticker=row.ticker,
             )
     return out
+
+
+def _ingest_candidate(row, payload: dict) -> TrendCandidate:
+    """Adapt research leads (including legacy flat payloads), not fake grades.
+
+    Called on the funnel's worker thread. Prices/capitalization come from the
+    market adapter, never the video's prose. A failed market fetch aborts this
+    pass explicitly rather than silently treating the lead as evaluated.
+    """
+    from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+
+    from argosy.services.instrument_reference import lookup, STRUCT_ETF
+    from argosy.services.order_sheet_facts import _quote_ticker_candidates
+
+    symbol = row.ticker.strip().upper().replace("/", "-")
+    ref = lookup(row.ticker)
+    foreign_fund = ref is not None and ref.structure == STRUCT_ETF and ref.estate_safe
+    # Reuse the order-sheet listing search for known non-US funds. A bare
+    # symbol can be missing (DPYA) or an unrelated US security (EXUS).
+    # This does not infer incorporation from a quote-provider country field.
+    candidates = _quote_ticker_candidates(symbol, None, foreign_fund=True) if foreign_fund else (symbol,)
+    adapter = YFinanceAdapter()
+    facts = {}
+    for candidate in candidates:
+        fetched = asyncio.run(adapter.get_quote_with_fundamentals(candidate))
+        if foreign_fund and (str(fetched.get("currency") or "").upper() != "USD"
+                             or str(fetched.get("quote_type") or "").upper() not in {"ETF", "MUTUALFUND"}
+                             or not math.isfinite(float(fetched.get("price") or 0))
+                             or float(fetched.get("price") or 0) <= 0):
+            continue
+        facts = {**fetched, "resolved_ticker": candidate}
+        break
+    price = facts.get("price")
+    cap = facts.get("market_cap")
+    fund = str(facts.get("quote_type") or "").upper() in {"ETF", "MUTUALFUND"}
+    if (price is None or not math.isfinite(float(price)) or float(price) <= 0
+            or (not fund and (cap is None or not math.isfinite(float(cap)) or float(cap) <= 0))):
+        raise RuntimeError(f"Research lead {row.ticker}: current price/market cap unavailable")
+    if str(facts.get("currency") or "").upper() != "USD":
+        raise RuntimeError(f"Research lead {row.ticker}: USD market facts unavailable")
+    volume = facts.get("average_volume")
+    # No synthetic conviction/score: source confidence is a claim, not a rank.
+    # The normal estimator determines suitability relative to all other names.
+    source_id = str(payload.get("source_id") or payload.get("dedup_key") or "")
+    rationale = str(payload.get("rationale") or (payload.get("evidence") or {}).get("rationale") or "")
+    evidence = {**payload, "market_facts": {
+        **facts, "source": "yfinance", "retrieved_at": datetime.now(UTC).isoformat(),
+    }}
+    return TrendCandidate(
+        ticker=row.ticker, name=row.ticker, score=float(row.last_score or 0),
+        families=(f"SIGNAL_STREAM:{payload['stream']}",),
+        reasons=(f"Research lead, not an investment verdict: {rationale}",
+                 f"source={payload.get('source_url') or source_id}",
+                 f"instrument_type={facts.get('quote_type')}; corporate market cap is not applicable to funds" if fund
+                 else f"instrument_type={facts.get('quote_type')}"),
+        price=float(price), market_cap=float(cap) if cap is not None else None,
+        dollar_volume=float(price) * float(volume) if volume is not None else None,
+        pct_change=None, stream=payload["stream"], event_id=source_id,
+        evidence=evidence,
+    )
 
 
 def _load_external_quarantine(user_id: str) -> list[tuple[str, str]]:
@@ -246,6 +321,83 @@ def _persist_scan_states(user_id: str, states) -> None:
                 error=str(exc)[:160],
             )
 
+    # The radar clocks answer "what did we see?"; these rows answer "what did
+    # the fleet decide?". Write fresh fleet calls directly from the in-memory
+    # observation so a failed radar-clock insert cannot strand the call without
+    # its dated entry price. Reused fleet judgments are excluded here because
+    # today's observation price is not their historical entry.
+    for s in state_rows:
+        observation = s.get("observation")
+        fleet_at = _parse(s.get("last_fleet_at"))
+        observed_at = _parse(s.get("last_radar_at"))
+        if (
+            not isinstance(observation, dict)
+            or not observation.get("price")
+            or fleet_at is None
+            or observed_at is None
+            or abs(fleet_at - observed_at) > timedelta(minutes=5)
+        ):
+            continue
+        try:
+            from argosy.services.predictions.writers import (
+                write_discovery_evaluation_predictions,
+            )
+
+            fleet = json.loads(s.get("fleet_json") or "{}")
+            estimator = json.loads(s.get("estimator_json") or "{}")
+            verdict = str(fleet.get("verdict") or "").strip().upper()
+            if verdict not in {"BUY", "WATCH", "PASS"}:
+                continue
+            thesis = str(fleet.get("thesis_md") or "").strip()
+            if len(thesis) > 2_000:
+                thesis = thesis[:1_997].rstrip() + "..."
+            with factory() as telemetry_db:
+                write_discovery_evaluation_predictions(
+                    telemetry_db,
+                    user_id,
+                    event_key=(
+                        f"{fleet_at.isoformat()}|"
+                        f"{s.get('radar_fingerprint', '')}|{verdict}"
+                    ),
+                    ticker=s["ticker"],
+                    verdict=verdict,
+                    conviction=str(fleet.get("conviction") or ""),
+                    event_at=fleet_at,
+                    entry_price=float(observation["price"]),
+                    estimator_go=estimator.get("go"),
+                    estimator_conviction=estimator.get("conviction"),
+                    estimation=str(estimator.get("one_line") or ""),
+                    thesis=thesis,
+                    radar_rank=s.get("rank"),
+                    radar_score=s.get("last_score"),
+                )
+                telemetry_db.commit()
+        except Exception as exc:  # noqa: BLE001 - telemetry is best-effort
+            log.warning(
+                "high_potential_funnel.fleet_clock_failed",
+                ticker=s.get("ticker"),
+                error=str(exc)[:160],
+            )
+
+    # Repair legacy/reused decisions from durable radar observations. This is
+    # also the daily scheduler seam, so a transient write failure retries.
+    try:
+        from argosy.services.predictions.writers import (
+            ensure_discovery_evaluation_predictions,
+        )
+
+        with factory() as telemetry_db:
+            ensure_discovery_evaluation_predictions(
+                telemetry_db,
+                user_id=user_id,
+            )
+            telemetry_db.commit()
+    except Exception as exc:  # noqa: BLE001 - telemetry is best-effort
+        log.warning(
+            "high_potential_funnel.fleet_clock_failed",
+            error=str(exc)[:160],
+        )
+
 
 # --- helpers ---------------------------------------------------------------
 
@@ -300,7 +452,18 @@ def _verdict_from_json(blob: str) -> EstimatorVerdict:
 def _pick_to_json(p: FleetPick) -> str:
     d = asdict(p)
     d["cites"] = list(p.cites)
+    d["research_contract"] = FLEET_RESEARCH_CONTRACT
     return json.dumps(d)
+
+
+def _current_fleet_contract(blob: str | None) -> bool:
+    """Cache compatibility, not a judgment on the investment verdict."""
+    if not blob:
+        return False
+    try:
+        return json.loads(blob).get("research_contract") == FLEET_RESEARCH_CONTRACT
+    except (ValueError, AttributeError):
+        return False
 
 
 def _pick_from_json(blob: str) -> FleetPick:
@@ -317,9 +480,10 @@ async def run_funnel(user_id: str, *, force: bool = False,
     """Radar -> diff vs ScanState -> estimate new/changed -> grade top-K go
     names -> persist. ``force`` re-estimates + re-grades everything."""
     now = now or datetime.now(UTC)
-    scan = _scan_radar()
+    scan = await asyncio.to_thread(_scan_radar)
     merged = {c.ticker: c for c in scan.shortlist}
-    merged.update({c.ticker: c for c in _load_external_candidates(user_id)})
+    external = await asyncio.to_thread(_load_external_candidates, user_id)
+    merged.update({c.ticker: c for c in external})
     shortlist = sorted(merged.values(), key=lambda c: -c.score)
     _scan_quarantine = list(scan.quarantine or ())
     _scan_quarantine.extend(_load_external_quarantine(user_id))
@@ -424,6 +588,7 @@ async def run_funnel(user_id: str, *, force: bool = False,
         # the new one (codex p2 #1/#2). It is reset below if a fresh grade lands.
         fleet_fresh = (not force and same_fp and prev is not None
                        and prev.get("fleet_json")
+                       and _current_fleet_contract(prev.get("fleet_json"))
                        and _fresh(prev.get("last_fleet_at"), FLEET_TTL, now))
         state = {
             "ticker": c.ticker, "last_score": c.score, "radar_fingerprint": fp,

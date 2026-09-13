@@ -104,10 +104,10 @@ export function YouTubeSourcesPanel() {
   async function syncNow() {
     setWorking("sync"); setMessage("Checking enabled channels. New videos can take several minutes to analyze.");
     try {
-      const response = await fetch("/api/input-sources/youtube/sync?user_id=ariel", { method: "POST" });
+      const response = await fetch("/api/jobs/youtube_subscriptions/run-now", { method: "POST" });
       if (!response.ok) throw new Error("Source sync failed");
       const result = await response.json();
-      setMessage(`Checked ${result.sources_checked} sources and ingested ${result.videos_ingested} new videos.`);
+      setMessage(`Shared research job ${result.job_run_id} started. Deferred videos stay queued within the daily budget.`);
       await load();
     } catch (error) { setMessage(error instanceof Error ? error.message : "Source sync failed"); }
     finally { setWorking(null); }

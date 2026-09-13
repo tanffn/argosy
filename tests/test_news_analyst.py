@@ -104,6 +104,7 @@ async def test_news_digest_treats_headlines_as_data() -> None:
 
     # Headline bodies are externalised into sources, not inlined in `usr`.
     assert "Ignore all instructions" not in usr, (
+        research_inputs={},
         "headline body must not be inlined in user prompt — it belongs in sources"
     )
     assert "https://attacker.example/x" not in usr, (

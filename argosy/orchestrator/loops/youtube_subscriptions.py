@@ -1,4 +1,4 @@
-"""Daily discovery of new videos from subscribed YouTube sources."""
+"""Daily shared research intake; retains its existing registered job name."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ class YouTubeSubscriptionsLoop(CadenceLoop):
         self.user_id = user_id
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict:
-        if await get_cost_guard(user_id=self.user_id).should_pause_non_routine(loop_name=self.name):
-            return {"status": "paused", "reason": "cost_cap"}
+        # Cheap intake remains durable even when paid analysis is budget-paused.
+        # The shared worker checks the cost guard before each fleet analysis.
         return await sync_youtube_subscriptions(user_id=self.user_id)
 
 

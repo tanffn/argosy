@@ -24,6 +24,27 @@ from argosy.state.models import (
 NOW = datetime(2026, 6, 22, 18, 30, tzinfo=timezone.utc)
 
 
+@pytest.mark.asyncio
+async def test_failed_triage_is_incomplete_not_successful_no_action(sf):
+    from argosy.services.jobs.summary_status import derive_run_status
+
+    def failed(*args, **kwargs):
+        raise RuntimeError("remote managed settings could not be loaded")
+
+    out = await run_funnel(
+        "ariel", now=NOW, session_factory=sf, triage_fn=failed,
+        settings=SimpleNamespace(decision_funnel_shadow=True, decision_funnel_stage3=True),
+    )
+    assert out["stage1_routed"] > 0
+    assert out["error_count"] == out["stage1_routed"]
+    assert out["stage2_stop"] == 0
+    assert derive_run_status(out)[0] == "error"
+    with sf() as session:
+        run = session.execute(sa.select(FunnelRun)).scalar_one()
+        assert run.status == "error"
+        assert "managed settings" in run.error_message
+
+
 @pytest.fixture
 def sf():
     # StaticPool so every Session() shares ONE in-memory DB.
@@ -60,6 +81,25 @@ def _triage_go(candidate, **kwargs):
         rationale="material", model="claude-sonnet-4-6", prompt_hash="h",
         tokens_in=100, tokens_out=20, cost_usd=0.01,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["exception", "quorum_failed", "error"])
+async def test_failed_deep_decision_is_retryable_not_a_cooldown_snapshot(sf, failure_mode):
+    async def failed(**kwargs):
+        if failure_mode == "exception":
+            raise RuntimeError("runtime unavailable")
+        return DeepDecisionOutcome(ticker=kwargs["ticker"], status=failure_mode, blocked_reason="runtime unavailable")
+
+    out = await run_funnel(
+        "ariel", now=NOW, session_factory=sf, triage_fn=_triage_go,
+        deep_decision_fn=failed,
+        settings=SimpleNamespace(decision_funnel_shadow=True, decision_funnel_stage3=True),
+    )
+    assert out["stage2_go"] > 0
+    assert out["status"] == "error"
+    with sf() as session:
+        assert session.execute(sa.select(sa.func.count()).select_from(DecisionSnapshot)).scalar_one() == 0
 
 
 @pytest.mark.asyncio

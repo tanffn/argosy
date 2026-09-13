@@ -53,6 +53,8 @@ def resolve_youtube_metadata(reference: str) -> YouTubeMetadata:
         "skip_download": True,
         "extract_flat": True,
         "playlist_items": "1",
+        "socket_timeout": 20,
+        "retries": 1,
     }
     with YoutubeDL(options) as downloader:
         info = downloader.extract_info(reference, download=False)
@@ -118,9 +120,7 @@ def subscribe_youtube_source(reference: str, *, user_id: str = "ariel") -> dict[
             source.channel_name = metadata.channel_name
             source.channel_url = metadata.channel_url
             source.enabled = 1
-            if metadata.video_id is not None:
-                source.last_seen_video_id = metadata.video_id
-                source.last_seen_published_at = metadata.published_at
+            # Re-enabling or idempotently subscribing must not skip unseen uploads.
         session.commit()
         session.refresh(source)
         return _source_row(session, source)
@@ -214,19 +214,27 @@ def persist_youtube_analysis(payload: dict[str, Any], *, user_id: str = "ariel")
         row.analyzed_at = datetime.now(UTC)
         row.cost_usd = float(payload.get("cost_usd") or 0.0)
         session.flush()
-        session.query(YouTubeClaim).filter(YouTubeClaim.video_id == row.id).delete()
+        # Re-analysis must not erase the claim/evaluation history.
+        existing_claims = session.scalars(select(YouTubeClaim).where(YouTubeClaim.video_id == row.id)).all()
+        existing_statements = {c.statement for c in existing_claims}
+        existing_keys = {c.claim_key for c in existing_claims}
+        def unique_claim_key(key, statement):
+            from hashlib import sha256
+            return key if key not in existing_keys else key[:45] + ":" + sha256(statement.encode()).hexdigest()[:12]
         calls_by_statement = {
             str(c.get("statement")): c for c in claims_data.get("speaker_calls", [])
         }
         for index, claim in enumerate(claims_data.get("claims", []), 1):
             statement = str(claim.get("statement") or "")
+            if statement in existing_statements:
+                continue
             call = calls_by_statement.get(statement, {})
             entities = [str(item) for item in claim.get("named_entities", [])]
             claim_tickers = sorted(set(tickers).intersection({_ticker(item) for item in entities}))
             session.add(
                 YouTubeClaim(
                     video_id=row.id,
-                    claim_key=str(claim.get("claim_id") or f"C{index}"),
+                    claim_key=unique_claim_key(str(claim.get("claim_id") or f"C{index}"), statement),
                     timestamp=claim.get("timestamp"),
                     claim_type=str(claim.get("claim_type") or "opinion"),
                     statement=statement,
@@ -244,10 +252,12 @@ def persist_youtube_analysis(payload: dict[str, Any], *, user_id: str = "ariel")
                 )
             )
         for index, claim in enumerate(claims_data.get("market_outlook_claims", []), 1):
+            if str(claim.get("statement") or "") in existing_statements:
+                continue
             session.add(
                 YouTubeClaim(
                     video_id=row.id,
-                    claim_key=f"M{index}",
+                    claim_key=unique_claim_key(f"M{index}", str(claim.get("statement") or "")),
                     timestamp=claim.get("timestamp"),
                     claim_type="market_outlook",
                     statement=str(claim.get("statement") or ""),
@@ -259,7 +269,10 @@ def persist_youtube_analysis(payload: dict[str, Any], *, user_id: str = "ariel")
                 )
             )
         session.commit()
-        return row.id
+        video_row_id = row.id
+    from argosy.services.research_catalog import index_youtube
+    index_youtube(payload, user_id=user_id, database_url=str(session.get_bind().url))
+    return video_row_id
 
 
 def backfill_youtube_artifacts(*, user_id: str = "ariel") -> dict[str, int]:
@@ -279,28 +292,11 @@ def backfill_youtube_artifacts(*, user_id: str = "ariel") -> dict[str, int]:
 async def sync_youtube_subscriptions(
     *, user_id: str = "ariel", max_videos_per_source: int = 2
 ) -> dict[str, Any]:
-    sources = list_youtube_sources(user_id=user_id)["sources"]
-    summary: dict[str, Any] = {"sources_checked": 0, "videos_ingested": 0, "failures": []}
-    for source_data in sources:
-        if not source_data["enabled"]:
-            continue
-        summary["sources_checked"] += 1
-        source_id = int(source_data["id"])
-        try:
-            feed = await asyncio.to_thread(_fetch_feed, source_data["youtube_channel_id"])
-            unseen = _unseen(feed, source_data.get("last_seen_video_id"))[:max_videos_per_source]
-            for item in reversed(unseen):
-                from argosy.services.youtube_analysis import analyze_youtube
+    from argosy.services.research_worker import queue_youtube, sync_research
+    queued = await queue_youtube(user_id=user_id)
+    result = await sync_research(user_id=user_id)
+    return {**result, "youtube": queued, "failures": queued["failures"] + result["failures"]}
 
-                if not await asyncio.to_thread(_video_ingested, user_id, item["video_id"]):
-                    await analyze_youtube(item["video_id"], user_id=user_id, save=True)
-                    summary["videos_ingested"] += 1
-            newest = feed[0] if feed else None
-            _update_poll(source_id, user_id, newest, None)
-        except Exception as exc:
-            _update_poll(source_id, user_id, None, str(exc)[:1000])
-            summary["failures"].append({"source_id": source_id, "error": str(exc)})
-    return summary
 
 
 def _source_row(session: Session, source: YouTubeChannel) -> dict[str, Any]:
@@ -390,7 +386,8 @@ def _fetch_feed(channel_id: str) -> list[dict[str, Any]]:
         video_id = entry.findtext("yt:videoId", default="", namespaces=_ATOM)
         published = entry.findtext("atom:published", default="", namespaces=_ATOM)
         if video_id:
-            result.append({"video_id": video_id, "published_at": published})
+            result.append({"video_id": video_id, "published_at": published,
+                           "title": entry.findtext("atom:title", default="", namespaces=_ATOM)})
     return result
 
 

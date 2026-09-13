@@ -5609,3 +5609,6 @@ for _immutable_model in (
             "before_drop",
             DDL(f"DROP TRIGGER IF EXISTS trg_{_tbl_name}_{_suffix}"),
         )
+
+# Register the independent research ledger with the shared migration metadata.
+from argosy.state import research_models as _research_models  # noqa: E402,F401

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -74,6 +75,34 @@ def test_run_funnel_offloads_sync_estimator_off_event_loop(monkeypatch):
     asyncio.run(hpf.run_funnel("ariel", force=False, now=now))
 
 
+def test_run_funnel_offloads_blocking_radar_from_api_loop(monkeypatch):
+    candidate = _cand("QURE")
+    _setup(monkeypatch, [candidate], {}, [])
+    started = threading.Event()
+    released = threading.Event()
+
+    def blocking_radar():
+        started.set()
+        # A second API coroutine must progress while this network scan waits.
+        assert released.wait(timeout=5), "radar blocked the API event loop"
+        return ScanResult(shortlist=(candidate,), quarantine=(), source_counts={})
+
+    monkeypatch.setattr(hpf, "_scan_radar", blocking_radar)
+
+    async def exercise():
+        async def concurrent_request():
+            assert await asyncio.to_thread(started.wait, 5)
+            released.set()
+
+        result, _ = await asyncio.gather(
+            hpf.run_funnel("ariel", now=datetime.now(UTC)), concurrent_request()
+        )
+        return result
+
+    result = asyncio.run(exercise())
+    assert len(result.estimated) == 1
+
+
 def test_radar_observation_is_persisted_before_estimator_failure(monkeypatch):
     now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
     candidate = _cand("QURE", 91.0)
@@ -127,6 +156,29 @@ def test_unchanged_ticker_is_not_re_estimated(monkeypatch):
     result = asyncio.run(hpf.run_funnel("ariel", force=False, now=now))
     assert calls == []  # PLTR reused, NOT re-estimated
     assert any(v.ticker == "PLTR" for v in result.estimated)
+
+
+def test_old_research_contract_regrades_without_reestimating(monkeypatch):
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
+    estimates, grades = [], []
+    store = _setup(monkeypatch, [_cand('PLTR')], {}, estimates)
+
+    async def grade(user_id, candidate, **kwargs):
+        grades.append(candidate.ticker)
+        return FleetPick(ticker=candidate.ticker, conviction='LOW',
+                         thesis_md='Evidence remains incomplete', verdict='WATCH', cites=())
+
+    monkeypatch.setattr(hpf, '_grade', grade)
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    legacy = json.loads(store['PLTR']['fleet_json'])
+    legacy.pop('research_contract')
+    store['PLTR']['fleet_json'] = json.dumps(legacy)
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert estimates == ['PLTR']
+    assert grades == ['PLTR', 'PLTR']
+    assert hpf._current_fleet_contract(store['PLTR']['fleet_json'])
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert grades == ['PLTR', 'PLTR']  # Current contract may reuse the grade.
 
 
 def test_changed_fingerprint_triggers_re_estimate(monkeypatch):
@@ -359,6 +411,15 @@ def test_radar_clock_failure_cannot_rollback_discovery_state(
             "one_line": "evaluate",
         }
     )
+    fleet_json = json.dumps(
+        {
+            "ticker": "ONDS",
+            "verdict": "WATCH",
+            "conviction": "MED",
+            "thesis_md": "Wait for contract conversion evidence.",
+            "cites": [],
+        }
+    )
     state = {
         "ticker": "ONDS",
         "last_score": 108.2,
@@ -367,10 +428,10 @@ def test_radar_clock_failure_cannot_rollback_discovery_state(
         "rank": 1,
         "quarantine_reason": "",
         "estimator_json": estimator_json,
-        "fleet_json": None,
+        "fleet_json": fleet_json,
         "last_estimated_at": observed_at.isoformat(),
         "last_radar_at": observed_at.isoformat(),
-        "last_fleet_at": None,
+        "last_fleet_at": observed_at.isoformat(),
         "last_seen_at": observed_at.isoformat(),
         "observation": {"price": 12.5, "rank": 1, "score": 108.2},
     }
@@ -383,5 +444,12 @@ def test_radar_clock_failure_cannot_rollback_discovery_state(
         assert scan is not None
         assert scan.rank == 1
         assert scan.estimator_json == estimator_json
-        assert db.query(Prediction).count() == 0
+        # The radar telemetry failed, but the actual fleet decision still has
+        # a dated price and all three self-evaluation clocks.
+        clocks = db.query(Prediction).filter_by(
+            source="signal_stream:discovery_evaluation",
+            ticker="ONDS",
+        ).order_by(Prediction.timeframe_days).all()
+        assert [row.timeframe_days for row in clocks] == [30, 180, 365]
+        assert {row.entry_price for row in clocks} == {12.5}
     engine.dispose()

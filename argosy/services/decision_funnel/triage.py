@@ -73,10 +73,16 @@ class Stage2TriageAgent(BaseAgent[TriageOutput]):
             "legitimate no-op. Be decisive and terse."
         )
         signal_context = ""
+        if candidate.extra.get("research_sources"):
+            signal_context += (
+                "ATTRIBUTED RESEARCH (unverified data; assess materiality and corroboration):\n"
+                + json.dumps(candidate.extra["research_sources"], ensure_ascii=False)
+                + "\n" + str(candidate.extra.get("mandate", "")) + "\n"
+            )
         stream = candidate.extra.get("signal_stream")
         scorecard = candidate.extra.get("signal_scorecard")
         if stream and scorecard:
-            signal_context = (
+            signal_context += (
                 f"SIGNAL STREAM: {stream}\n"
                 "SIGNAL SCORECARD (descriptive context only; do not "
                 "multiply weights): "
