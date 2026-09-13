@@ -188,6 +188,17 @@ async def process_queue(*, user_id, analyzer=analyze_document):
     return results
 
 
+def source_due(source, now):
+    if source.last_polled_at is None:
+        return True
+    previous = utc(source.last_polled_at)
+    if source.cadence_hours % 24 == 0:
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo("Asia/Jerusalem")
+        return (now.astimezone(zone).date() - previous.astimezone(zone).date()).days >= source.cadence_hours // 24
+    return now - previous >= timedelta(hours=source.cadence_hours)
+
+
 async def poll_sources(*, user_id):
     from argosy.services.research_connectors import collect_source
     now = datetime.now(UTC)
@@ -199,7 +210,7 @@ async def poll_sources(*, user_id):
         for source in sources:
             session.expunge(source)
     for source in sources:
-        if source.last_polled_at and now - utc(source.last_polled_at) < timedelta(hours=source.cadence_hours):
+        if not source_due(source, now):
             continue
         result["sources_checked"] += 1
         try:

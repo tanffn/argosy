@@ -13,7 +13,9 @@ most one per source. Priority, subject keywords and queue age determine order.
 Paid analysis honors the existing cost guard; cheap collection still runs when
 analysis is paused. Failed analyses retry after 24 hours, up to three attempts;
 the UI supports an explicit retry. Expired processing leases can be recovered.
-Cadences are minimum intervals checked by the daily job (not hourly schedules).
+Whole-day cadences use Israel calendar days, so a late manual pull or small
+scheduler timing differences cannot skip the following daily check. Other
+cadences are minimum intervals checked by the daily job (not hourly schedules).
 
 Documents use the existing four-reader research workflow: claims, skeptic,
 portfolio implications and synthesis. Full accessible article text or PDFs are

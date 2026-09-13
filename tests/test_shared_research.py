@@ -199,3 +199,14 @@ def test_replaying_queued_youtube_artifact_reuses_original_item(store, monkeypat
     with store() as db:
         items = db.scalars(select(ResearchItem)).all()
         assert len(items) == 1 and items[0].id == original_id
+
+
+def test_daily_poll_survives_late_manual_pull_and_scheduler_jitter():
+    from argosy.services.research_worker import source_due
+    source = SimpleNamespace(cadence_hours=24, last_polled_at=datetime(2026, 9, 13, 17, 48, tzinfo=UTC))
+    assert source_due(source, datetime(2026, 9, 14, 11, tzinfo=UTC))
+    assert not source_due(source, datetime(2026, 9, 13, 18, tzinfo=UTC))
+    source.last_polled_at = datetime(2026, 9, 13, 11, 0, 30, tzinfo=UTC)
+    assert source_due(source, datetime(2026, 9, 14, 11, tzinfo=UTC))
+    source.cadence_hours = 48
+    assert not source_due(source, datetime(2026, 9, 14, 11, tzinfo=UTC))
