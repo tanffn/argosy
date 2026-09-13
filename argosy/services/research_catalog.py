@@ -298,6 +298,15 @@ def index_youtube(payload, *, user_id, database_url=None):
             ResearchItem.source_id == source.id, ResearchItem.external_id == str(video.get("video_id")),
             ResearchItem.status.in_(["queued", "processing", "failed"])))
         item = pending
+        if item is None and payload.get("run_id"):
+            # Queued uploads use an empty-body ID until the transcript arrives.
+            # Replaying the same artifact must reuse that item, not create a
+            # second version merely because its body is now populated.
+            from sqlalchemy import func
+            item = session.scalar(select(ResearchItem).where(
+                ResearchItem.user_id == user_id, ResearchItem.source_id == source.id,
+                ResearchItem.external_id == str(video.get("video_id")),
+                func.json_extract(ResearchItem.analysis_json, "$.run_id") == payload["run_id"]))
         if item is None:
             item, _ = enqueue(session, source, external_id=str(video.get("video_id")),
                           title=str(video.get("title") or "YouTube research"), url=str(video.get("url") or ""),

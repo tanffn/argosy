@@ -180,3 +180,22 @@ def test_company_names_are_retained_without_invented_tickers(store):
         db.flush()
         claims = db.scalars(select(ResearchClaim)).all()
         assert len(claims) == 2 and all(c.ticker is None for c in claims)
+
+
+def test_replaying_queued_youtube_artifact_reuses_original_item(store, monkeypatch):
+    from argosy.services import research_catalog as catalog
+    monkeypatch.setattr(catalog, 'research_session', lambda *_: store())
+    with store() as db:
+        channel = YouTubeChannel(user_id='a', youtube_channel_id='UCtest', channel_name='Channel', channel_url='https://youtube.com/channel/UCtest', enabled=1)
+        db.add(channel); db.flush()
+        db.add(YouTubeVideo(user_id='a', channel_id=channel.id, youtube_video_id='abcdefghijk', url='https://youtu.be/abcdefghijk', analyzed_at=NOW))
+        source = upsert_source(db, user_id='a', name='Channel', kind='youtube', reference='UCtest')
+        item, _ = enqueue(db, source, external_id='abcdefghijk', title='Queued', url='', body='', now=NOW)
+        original_id = item.id
+        db.commit()
+    analysis = {**payload(), 'run_id': 'youtube:stable-run', 'video': {'video_id': 'abcdefghijk', 'url': 'https://youtu.be/abcdefghijk'}}
+    catalog.index_youtube(analysis, user_id='a')
+    catalog.index_youtube(analysis, user_id='a')
+    with store() as db:
+        items = db.scalars(select(ResearchItem)).all()
+        assert len(items) == 1 and items[0].id == original_id
