@@ -19,13 +19,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import asc, desc, func, select
 
 from argosy.agent_settings import load_agent_settings
 from argosy.agents.base import AgentReport, ConfidenceBand
 from argosy.billing.decorators import requires_feature, requires_within_quota
+from argosy.config import get_settings
 from argosy.decisions.flow import (
     ApprovedProposal,
     BlockedProposal,
@@ -39,6 +40,7 @@ from argosy.decisions.per_ticker_analysts import (
 )
 from argosy.logging import get_logger
 from argosy.services.pending_reevaluation import enqueue_pending_reevaluation
+from argosy.services.transcript_archive import read_bundle_file
 
 _log = get_logger(__name__)
 from argosy.decisions.tiers import Tier, TierContext, apply_override_mode, resolve_tier
@@ -525,14 +527,11 @@ async def get_decision_replay(
         sequence_mmd = None
         if phase.bundle_dir:
             mmd_path = Path(phase.bundle_dir) / "sequence.mmd"
-            if mmd_path.exists():
-                try:
-                    sequence_mmd = mmd_path.read_text(encoding="utf-8")
-                    full_seq_parts.append(
-                        f"%% phase {phase.seq}: {phase.kind}\n{sequence_mmd}"
-                    )
-                except OSError:
-                    sequence_mmd = None
+            try:
+                sequence_mmd = read_bundle_file(Path(get_settings().home) / "transcripts", mmd_path).decode("utf-8")
+                full_seq_parts.append(f"%% phase {phase.seq}: {phase.kind}\n{sequence_mmd}")
+            except (OSError, ValueError):
+                sequence_mmd = None
 
         verdict_obj: dict[str, Any] | None = None
         if phase.verdict_json:
@@ -595,8 +594,8 @@ async def get_phase_transcript(
     decision_run_id: int,
     phase_id: int,
     user_id: str = "ariel",
-) -> FileResponse:
-    """Stream the on-disk transcript.md for one phase."""
+) -> Response:
+    """Read a phase transcript from its recent file or its weekly archive."""
     async with db_mod.get_session() as session:
         phase = (
             await session.execute(
@@ -616,13 +615,15 @@ async def get_phase_transcript(
             status_code=404, detail="phase has no on-disk transcript bundle"
         )
     p = Path(phase.bundle_dir) / "transcript.md"
-    if not p.exists():
+    try:
+        content = read_bundle_file(Path(get_settings().home) / "transcripts", p)
+    except (FileNotFoundError, ValueError):
         raise HTTPException(
             status_code=410, detail="transcript.md missing on disk"
-        )
-    return FileResponse(
-        path=str(p), media_type="text/markdown",
-        filename=f"transcript-run{decision_run_id}-phase{phase_id}.md",
+        ) from None
+    return Response(
+        content=content, media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="transcript-run{decision_run_id}-phase{phase_id}.md"'},
     )
 
 

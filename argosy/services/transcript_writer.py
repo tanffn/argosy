@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from argosy.config import get_settings
 from argosy.logging import get_logger
+from argosy.services.transcript_archive import _plain, transcript_lock
 
 log = get_logger(__name__)
 
@@ -223,7 +224,7 @@ def render_sequence_mmd(
     glance.
     """
     out = ["sequenceDiagram"]
-    out.append(f"    participant U as User")
+    out.append("    participant U as User")
     seen_roles: list[str] = []
     for p in participants:
         if p.agent_role not in seen_roles:
@@ -294,7 +295,8 @@ def write_phase_bundle(
         started_at=started_at,
         uniq_suffix=uniq_suffix,
     )
-    bundle.mkdir(parents=True, exist_ok=True)
+    transcript_root = Path(get_settings().home).absolute() / "transcripts"
+    bundle = _plain(bundle.absolute(), transcript_root)
 
     tldr = render_tldr(verdict, phase_kind)
     transcript = render_transcript(participants, phase_kind)
@@ -314,16 +316,21 @@ def write_phase_bundle(
     )
     full_tldr = header + tldr
 
-    (bundle / "TLDR.md").write_text(full_tldr, encoding="utf-8")
-    (bundle / "transcript.md").write_text(transcript, encoding="utf-8")
-    (bundle / "sequence.mmd").write_text(sequence, encoding="utf-8")
-    if verdict is not None:
-        (bundle / "verdict.json").write_text(
-            json.dumps(verdict.model_dump(), indent=2, default=str),
-            encoding="utf-8",
-        )
-    else:
-        (bundle / "verdict.json").write_text("{}", encoding="utf-8")
+    with transcript_lock(transcript_root):
+        # Archival cannot remove files between this bundle's writes.
+        for filename in ("TLDR.md", "transcript.md", "sequence.mmd", "verdict.json"):
+            _plain(bundle / filename, transcript_root)
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "TLDR.md").write_text(full_tldr, encoding="utf-8")
+        (bundle / "transcript.md").write_text(transcript, encoding="utf-8")
+        (bundle / "sequence.mmd").write_text(sequence, encoding="utf-8")
+        if verdict is not None:
+            (bundle / "verdict.json").write_text(
+                json.dumps(verdict.model_dump(), indent=2, default=str),
+                encoding="utf-8",
+            )
+        else:
+            (bundle / "verdict.json").write_text("{}", encoding="utf-8")
 
     log.info(
         "transcript_writer.bundle_written",

@@ -2141,7 +2141,7 @@ Cache entries record `provider`, `retrieved_at`, `expires_at`, `payload_hash` fo
 
 ### 8.4 Backups
 
-- Daily SQLite snapshot to `${ARGOSY_HOME}/backups/argosy-YYYYMMDD.db` (path is **relative to ARGOSY_HOME by default; configurable to absolute** for off-drive or network-share destinations)
+- Daily verified, gzip-compressed online SQLite snapshot to `${ARGOSY_HOME}/backups/argosy-YYYYMMDD.db.gz` (path is **relative to ARGOSY_HOME by default; configurable to absolute** for off-drive or network-share destinations)
 - Weekly snapshot replicated to a non-Drive cloud or a separate physical disk
 - Retention: 30 daily, 12 weekly, 12 monthly, indefinite annual
 - Quarterly restore drill: restore latest weekly snapshot to a scratch DB and verify queries
@@ -2969,10 +2969,13 @@ Hard rules: secrets never leave the machine in logs, telemetry, or backups. Back
 
 | Asset | Frequency | Destination | Restore drill |
 |---|---|---|---|
-| State DB | Daily full snapshot | `${ARGOSY_HOME}/backups/` (relative; configurable) | Quarterly: restore to scratch DB and verify queries |
+| State DB | Daily verified online snapshot, gzip + SHA256 round-trip | `${ARGOSY_HOME}/backups/` (relative; configurable) | Quarterly: decompress to a new scratch DB, quick_check and verify queries |
 | State DB | Weekly | Off-machine destination (different drive or rsync to NAS/cloud) | Quarterly |
-| `domain_knowledge/` + `configs/` | Daily | git commit + push to private repo | Continuous (git is the backup) |
+| Source + runtime evidence, including local configs | Explicit copy backup | Separate local destination; excludes dependencies, caches, logs, redundant snapshots and git metadata | Restore verified DB plus corresponding evidence; local secrets never enter public git |
+| Phase transcripts | Weekly archival check within daily backup; newest 30 days loose | `transcripts/_archive/<user>/<ISO-year>-W<week>.zip`, also copied in evidence backup | Replay/download endpoints read archived bytes without extraction |
 | Master key | One-time export to user-managed safe store | User's responsibility; printed/stored securely | Only on machine loss |
+
+Online DB backup failures propagate; no unsafe raw-copy fallback. Managed retention counts distinct dates across legacy `.db` and compressed `.db.gz` artifacts. Transcript archival verifies ZIP CRC and byte hashes, durably publishes ZIPs before removing matching originals, and coordinates with writers and transcript backup copying using a shared process lock. Only files older than 30 days by both bundle date and modification time qualify; history remains retained in archives. The copy-backup script preserves destination-only files and uses `db/argosy-consistent.db.gz` as its authoritative DB restore source. A sibling backup is not protection against drive loss. See `docs/operations/workspace-maintenance.md` for restore and maintenance commands.
 
 Disaster recovery: machine loss = restore latest weekly off-machine backup + reload master key from safe store + re-auth brokers. Target RPO: 1 week. Target RTO: 1 day.
 

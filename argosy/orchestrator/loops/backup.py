@@ -1,7 +1,7 @@
 """Daily backup loop (SDD §14.4, Phase 7).
 
 Cron `0 3 * * *` (03:00). Snapshots the SQLite DB to
-`${ARGOSY_HOME}/backups/argosy-YYYYMMDD.db` (or to
+`${ARGOSY_HOME}/backups/argosy-YYYYMMDD.db.gz` (or to
 `agent_settings.backups.backups_dir` when set).
 
 Retention enforcement (default):
@@ -11,36 +11,38 @@ Retention enforcement (default):
   - indefinite annual (Jan 1)
 
 Old files outside retention are deleted.
+Verified online snapshots never fall back to raw-copying a live database.
+The production loop also archives transcripts older than 30 days at most weekly.
 
 Weekly off-machine snapshot path is configurable via
 `agent_settings.backups.offsite_path`; when set, the loop also
-`shutil.copy2`s the day's snapshot to that path (Sundays per SDD §14.4
+byte-verifies and atomically publishes the day's snapshot there (Sundays per SDD §14.4
 "weekly off-machine").
 """
 
 from __future__ import annotations
 
-import os
+import asyncio
 import re
-import shutil
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 from argosy.agent_settings import AgentSettings, load_agent_settings
 from argosy.config import get_settings
 from argosy.execution.audit import record_audit_event
 from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
+from argosy.services.backup_storage import copy_artifact, plain_path
 
 _log = get_logger("argosy.loops.backup")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-_DATE_RE = re.compile(r"argosy-(\d{8})\.db$")
+_DATE_RE = re.compile(r"argosy-(\d{8})\.db(?:\.gz)?$")
 
 
 class BackupLoop(CadenceLoop):
@@ -77,7 +79,7 @@ class BackupLoop(CadenceLoop):
             backup_dir = Path(self.settings.backups.backups_dir).expanduser()
         else:
             backup_dir = cfg.backups_dir
-        backup_dir = backup_dir.resolve()
+        backup_dir = plain_path(backup_dir)
         return db_path, backup_dir
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
@@ -90,14 +92,14 @@ class BackupLoop(CadenceLoop):
 
         backup_dir.mkdir(parents=True, exist_ok=True)
         date_str = moment.strftime("%Y%m%d")
-        target = backup_dir / f"argosy-{date_str}.db"
+        target = backup_dir / f"argosy-{date_str}.db.gz"
 
         try:
-            self._backup_fn(db_path, target)
+            await asyncio.to_thread(self._backup_fn, db_path, target)
         except FileNotFoundError:
             # DB doesn't exist yet (e.g., very first run); record + skip.
             _log.warning("backup.db_missing", db=str(db_path))
-            return
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             _log.exception("backup.failed")
             await record_audit_event(
@@ -107,20 +109,26 @@ class BackupLoop(CadenceLoop):
                 entity_id=str(target),
                 payload={"error": str(exc), "now": moment.isoformat()},
             )
-            return
+            raise
 
         # Off-site copy on Sundays when configured.
         offsite = (self.settings.backups.offsite_path or "").strip()
         if offsite and moment.weekday() == 6:  # Sunday
             try:
-                offsite_dir = Path(offsite).expanduser().resolve()
-                offsite_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, offsite_dir / target.name)
+                offsite_dir = plain_path(Path(offsite).expanduser())
+                await asyncio.to_thread(copy_artifact, target, offsite_dir / target.name)
             except Exception:  # pragma: no cover - defensive
                 _log.exception("backup.offsite_copy_failed")
+                raise
 
         # Retention rotation.
         deleted = self._enforce_retention(backup_dir, moment=moment)
+
+        # Same daily recovery path; archive at most weekly, including catch-up.
+        from argosy.services.transcript_archive import archive_transcripts
+        transcripts = await asyncio.to_thread(
+            archive_transcripts, Path(get_settings().home) / "transcripts", now=moment,
+        ) if self._backup_dir is None else {"status": "custom_backup_path"}
 
         await record_audit_event(
             user_id=self.user_id,
@@ -131,6 +139,7 @@ class BackupLoop(CadenceLoop):
                 "path": str(target),
                 "now": moment.isoformat(),
                 "deleted_count": len(deleted),
+                "transcripts": transcripts,
             },
         )
         _log.info("backup.completed", path=str(target), deleted=len(deleted))
@@ -141,17 +150,18 @@ class BackupLoop(CadenceLoop):
 
     def _enforce_retention(self, backup_dir: Path, *, moment: datetime) -> list[Path]:
         """Apply the SDD retention policy. Returns the list of deleted paths."""
+        backup_dir = plain_path(backup_dir)
         keep_daily = int(self.settings.backups.retention_daily or 0)
         keep_weekly = int(self.settings.backups.retention_weekly or 0)
         keep_monthly = int(self.settings.backups.retention_monthly or 0)
 
         files: list[tuple[datetime, Path]] = []
-        for p in backup_dir.glob("argosy-*.db"):
-            m = _DATE_RE.search(p.name)
+        for p in backup_dir.glob("argosy-*.db*"):
+            m = _DATE_RE.fullmatch(p.name)
             if not m:
                 continue
             try:
-                d = datetime.strptime(m.group(1), "%Y%m%d").replace(tzinfo=timezone.utc)
+                d = datetime.strptime(m.group(1), "%Y%m%d").replace(tzinfo=UTC)
             except ValueError:  # pragma: no cover - defensive
                 continue
             files.append((d, p))
@@ -159,26 +169,22 @@ class BackupLoop(CadenceLoop):
         # Newest first.
         files.sort(key=lambda x: x[0], reverse=True)
 
-        keep: set[Path] = set()
+        dates = sorted({d for d, _ in files}, reverse=True)
+        keep: set[datetime] = set()
         # Daily: latest N
-        for d, p in files[:keep_daily]:
-            keep.add(p)
+        keep.update(dates[:keep_daily])
         # Weekly: latest N Sundays
-        sundays = [(d, p) for d, p in files if d.weekday() == 6]
-        for d, p in sundays[:keep_weekly]:
-            keep.add(p)
+        keep.update([d for d in dates if d.weekday() == 6][:keep_weekly])
         # Monthly: latest N 1st-of-month
-        firsts = [(d, p) for d, p in files if d.day == 1]
-        for d, p in firsts[:keep_monthly]:
-            keep.add(p)
+        keep.update([d for d in dates if d.day == 1][:keep_monthly])
         # Annual: every Jan 1, indefinite
-        for d, p in files:
+        for d, _p in files:
             if d.month == 1 and d.day == 1:
-                keep.add(p)
+                keep.add(d)
 
         deleted: list[Path] = []
         for d, p in files:
-            if p in keep:
+            if d in keep:
                 continue
             try:
                 p.unlink()
@@ -189,21 +195,9 @@ class BackupLoop(CadenceLoop):
 
 
 def _default_backup_fn(src: Path, dst: Path) -> None:
-    """Default backup: SQLite `.backup` API; falls back to `shutil.copy2`."""
-    if not src.exists():
-        raise FileNotFoundError(str(src))
-    try:
-        import sqlite3
-
-        # Note: must use the sync sqlite3 module, NOT aiosqlite, because
-        # `.backup()` is a blocking native operation. We accept the brief
-        # block here (DB is small) — the loop runs at 03:00 anyway.
-        with sqlite3.connect(str(src)) as src_conn:
-            with sqlite3.connect(str(dst)) as dst_conn:
-                src_conn.backup(dst_conn)
-    except Exception:  # pragma: no cover - defensive fallback
-        _log.warning("backup.sqlite_backup_fallback_to_copy")
-        shutil.copy2(src, dst)
+    """Consistent, compressed, verified snapshot; never fall back to an unsafe copy."""
+    from argosy.services.backup_storage import snapshot
+    snapshot(src, dst)
 
 
 __all__ = ["BackupLoop"]

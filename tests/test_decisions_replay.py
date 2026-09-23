@@ -196,8 +196,9 @@ def test_replay_phases_ordered_by_seq(client_with_db, _seed):
     assert seqs == [1, 2, 3]
 
 
+@pytest.mark.parametrize('archived', [False, True])
 def test_phase_transcript_endpoint_streams_when_present(
-    client_with_db, _seed, tmp_path, monkeypatch,
+    client_with_db, _seed, tmp_path, monkeypatch, archived,
 ):
     """The transcript.md stream returns the on-disk file when bundle_dir is set."""
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
@@ -229,11 +230,21 @@ def test_phase_transcript_endpoint_streams_when_present(
         agent_report_ids=[], verdict=v,
     ))
 
+    if archived:
+        from datetime import UTC, timedelta
+
+        from argosy.services.transcript_archive import archive_transcripts
+        result = archive_transcripts(tmp_path / 'transcripts', now=datetime.now(UTC) + timedelta(days=40))
+        assert result['archived_files'] == 4
+
     r = client_with_db.get(
         f"/api/decisions/{run_id}/phases/{phase_id}/transcript?user_id=ariel"
     )
     assert r.status_code == 200
     assert "Transcript" in r.text or "transcript" in r.text.lower()
+    replay = client_with_db.get(f"/api/decisions/{run_id}/replay?user_id=ariel")
+    assert replay.status_code == 200
+    assert 'sequenceDiagram' in replay.json()['sequence_mmd_full']
 
 
 def test_replay_drill_in_works_for_delta_pushback_kind(client_with_db, _seed):

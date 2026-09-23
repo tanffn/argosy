@@ -62,13 +62,15 @@ $ExcludeDirs = @(
     # `backups/` holds ~daily full-DB snapshots (~300 MB each, ~5.5 GB total).
     # Backing up backups into a sibling backup is redundant — the live
     # live data receives a separate verified online SQLite snapshot below.
-    'backups', '.test-*', 'scratchpad', 'tmp_review', '.superpowers', 'codex-tandem'
+    'backups', '.test-*', 'scratchpad', 'tmp_review', '.superpowers', 'codex-tandem',
+    'logs', '.tmp.driveupload', '.tmp.drivedownload', '.stats', 'transcripts'
 )
 # Also skip loose DB snapshot copies in db/ (db/argosy.db.bak-*, .bak_* etc.);
 # the live database is backed up through SQLite, never raw-copied.
 $ExcludeFiles = @('*.bak', '*.bak-*', '*.bak_*', '*.pyc', '*.pyo', '*.swp', '*.swo', 'result.md',
     'argosy.db', 'argosy.db-wal', 'argosy.db-shm', 'argosy.db-journal',
     'argosy-consistent.db', 'argosy-consistent.db-wal', 'argosy-consistent.db-shm', 'argosy-consistent.db-journal',
+    'argosy-consistent.db.gz',
     'argosy.db.SAFETY_*', 'argosy_before_*.db')
 
 $args = @($Source, $Destination, '/E', '/COPY:DAT', '/R:1', '/W:5', '/XJ')
@@ -83,6 +85,13 @@ Write-Host "Destination: $Destination"
 if ($DryRun) { Write-Host "Mode:        DRY-RUN (no files will be copied)" -ForegroundColor Cyan }
 Write-Host ""
 
+if (-not $DryRun) {
+    # Snapshot before copying evidence: subsequently committed records cannot
+    # introduce new references into this database after evidence was copied.
+    & (Join-Path $Source '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'backup_sqlite.py') `
+        (Join-Path $Source 'db\argosy.db') (Join-Path $Destination 'db\argosy-consistent.db.gz')
+    if ($LASTEXITCODE -ne 0) { throw 'Database snapshot failed; backup is incomplete' }
+}
 & robocopy @args
 $ec = $LASTEXITCODE
 
@@ -91,11 +100,9 @@ Write-Host "robocopy exit code: $ec"
 # Robocopy: 0-7 = success variants, 8+ = failure
 if ($ec -lt 8) {
     if (-not $DryRun) {
-        # A raw copy of an active DB + WAL is not a consistent backup. Keep a
-        # separately named authoritative snapshot; old destination files survive.
-        & (Join-Path $Source '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'backup_sqlite.py') `
-            (Join-Path $Source 'db\argosy.db') (Join-Path $Destination 'db\argosy-consistent.db')
-        if ($LASTEXITCODE -ne 0) { throw 'Database snapshot failed; backup is incomplete' }
+        & (Join-Path $Source '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'copy_transcripts.py') `
+            (Join-Path $Source 'transcripts') (Join-Path $Destination 'transcripts')
+        if ($LASTEXITCODE -ne 0) { throw 'Transcript copy failed; backup is incomplete' }
     }
     Write-Host "SUCCESS" -ForegroundColor Green
     exit 0

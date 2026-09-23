@@ -48,7 +48,7 @@ async def test_backup_creates_dated_file_and_audit(tmp_path: Path, engine: None)
     fixed_now = datetime(2026, 5, 4, 3, 0, tzinfo=timezone.utc)  # Monday
     await loop.tick(now=lambda: fixed_now)
 
-    expected = backup_dir / "argosy-20260504.db"
+    expected = backup_dir / "argosy-20260504.db.gz"
     assert expected.is_file()
 
     async with db_mod.get_session() as session:
@@ -101,9 +101,9 @@ async def test_backup_retention_keeps_daily_30_drops_older(
     )
     await loop.tick(now=lambda: base)
 
-    surviving = sorted(p.name for p in backup_dir.glob("argosy-*.db"))
+    surviving = sorted(p.name for p in backup_dir.glob("argosy-*.db*"))
     # Today's file is in there.
-    assert f"argosy-{base.strftime('%Y%m%d')}.db" in surviving
+    assert f"argosy-{base.strftime('%Y%m%d')}.db.gz" in surviving
     # Some old fixtures should have been deleted.
     fixture_names = {p.name for p in fixtures}
     survived_fixtures = [n for n in surviving if n in fixture_names]
