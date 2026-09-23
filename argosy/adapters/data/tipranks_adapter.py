@@ -4,9 +4,9 @@ Source: ``https://www.tipranks.com/stocks/<TICKER>/forecast`` and the
 sibling pages ``.../blogger-opinions`` and ``.../hedge-funds-activity``.
 
 TipRanks aggregates analyst ratings, blogger sentiment, and hedge-fund
-13F-derived signals for individual stocks. Their *free* tier limits
-unauthenticated traffic to ~10 lookups per day per IP. We MUST not fan
-out aggressive parallel calls; tests therefore exercise pure parsing,
+signals for individual stocks. No ten-lookups/day/IP quota is established
+by the sources we accessed. Avoid aggressive parallel calls and verify
+provider access terms; tests therefore exercise pure parsing,
 not bulk request loops.
 
 Methods:

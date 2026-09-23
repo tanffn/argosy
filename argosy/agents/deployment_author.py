@@ -59,6 +59,24 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "long-hold, Israeli-resident (non-US-person) investor. You author the "
             "WHOLE move in one holistic pass, the way an expert advisor would.\n\n"
             f"{PRIME_DIRECTIVE}\n\n"
+            "INDEPENDENT ACTIONS / RESEARCH PENDING: You may publish a freshly authored "
+            "core allocation while a discovery selection remains unresolved. Never simply "
+            "delete disputed lines from an old allocation. Re-derive ALL buys, sells, "
+            "after-tax funding and reserve; the full blind team must review this new move. "
+            "Use pending_research (a list, empty when nothing is pending). Each item has "
+            "tickers (alternatives sharing ONE decision), disagreement, missing_evidence, "
+            "research_question, next_review_date (normally tomorrow), reserved_usd, and "
+            "independence_reason. Reserve is INCLUDED in cash_to_reserve, never extra cash "
+            "or a buy instruction; do not double reserve competing alternatives. Explain "
+            "why core actions remain sound regardless of the research outcome, including "
+            "funding, tax, concentration and opportunity cost. If these are inseparable, "
+            "do not claim independence: the whole run must remain blocked. Pending tickers "
+            "must have no executable line; their comparison is NOT_SELECTED with zero "
+            "recommended position for this run, explicitly research-pending rather than "
+            "rejected on investment merit. Ask a concrete evidence question with a dated "
+            "follow-up, not a request for the client to choose a ticker. A previously "
+            "pending issue and research results appear in allocation_research_tasks; "
+            "resolve from evidence or carry it forward honestly.\n\n"
             "HOW TO REASON (this is why judgment beats a spreadsheet):\n"
             "  - LOOK-THROUGH, not labels. An all-world / global fund is US-HEAVY "
             "(e.g. FWRA is ~62% US) — it is NOT ex-US diversification. Use the "
@@ -78,8 +96,11 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "whole-portfolio look-through, using position size and constituent weight. "
             "A diversified ETF holding some NVDA can materially dilute direct NVDA "
             "exposure; constituent presence or an arbitrary per-fund cutoff is NOT a "
-            "veto. The cash is being deployed, so do not compare a plan-approved broad "
-            "ETF to leaving cash idle. Steer away only when the selected instrument and "
+            "veto. Compare feasible uses of the money: retaining current holdings, "
+            "a suitable diversified core investment, cash/short bonds, and the proposed "
+            "trade, after tax and friction over the same horizon. Cash is an opportunity-"
+            "cost comparator, not an automatic concentration veto against a broad ETF. "
+            "For concentration specifically, steer away only when the selected instrument and "
             "size make the funded plan's aggregate cap infeasible or add concentrated "
             "direct exposure. "
             "Genuine diversifiers (ex-US, EM, bonds, real assets) still earn weight on "
@@ -150,6 +171,14 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "expectation_due_date + success_measure. State expected_upside_multiple "
             "for every sub-1% position; a sub-1% slot is eligible only for a true "
             "convexity thesis with at least a 5x authored upside case. Do not invent "
+            "convexity for an ordinary income/diversifier ETF to satisfy this rule. "
+            "Apply the threshold to the whole resulting position, not the addition. "
+            "There is no requirement to fund every core sleeve in this tranche: "
+            "consolidate into a qualifying held position or defer a sleeve when "
+            "verified funding is insufficient. A reviewer-requested replacement "
+            "must satisfy these same funded sizing constraints; explain infeasible "
+            "feedback and offer a feasible alternative without increasing a staged "
+            "sale ceiling. Do not invent "
             "price, shares, tax, or venue here; the deterministic live-fact layer "
             "adds those after your judgment passes. For every moonshot buy, set "
             "order_intent.downside_class explicitly to ASSET_BACKED, EARNING_POWER, "
@@ -291,9 +320,31 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             or "  (none)"
         )
         research = p.get("candidate_research") or {}
+        system += (
+            "\nPending fund/ETF alternatives are not moonshot stocks. When resolving one, "
+            "use its dated kind=fund_vehicle research result and exact verdict/conviction "
+            "in candidate_comparisons; keep radar rank/score null, match the actual funded "
+            "recommended_position_usd, and explain the portfolio choice. Do not invent "
+            "a 10x or wipeout case for a diversified fund. Research alone is not approval."
+        )
         research_lines = "\n".join(
             f"  - {sym}: {summary}" for sym, summary in sorted(research.items())
         )
+        if any(getattr(item, "code", "") == "core_research_recovery" for item in feedback or []):
+            system += (
+                "\nCURRENT PHASE: INDEPENDENT CORE / PENDING RESEARCH RECOVERY. "
+                "This is no longer a full-sleeve ticker-selection attempt. The team has "
+                "already failed to converge on discovery selection. Do NOT propose another "
+                "moonshot combination or move money into a replacement speculative name. "
+                "Author the independently justified core buys/sells and conserved reserve, "
+                "and explicitly carry the unresolved discovery choice in pending_research "
+                "with a concrete evidence question and next review date. Re-derive every "
+                "amount; do not just delete lines. Pending alternatives share one reserve. "
+                "The full team will freshly review this independent decision. If the core "
+                "cannot safely be separated from shared funding, tax or portfolio risk, "
+                "return research_separation_blocker with the specific reason. Choose one "
+                "of these two outcomes; do not silently drop the pending issue."
+            )
         discovery_lines = "\n".join(
             "  - {ticker}: search score {score}, rank {rank}, fresh {fresh}".format(
                 ticker=row.get("ticker"),
@@ -425,6 +476,9 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "with an honest `claimed_us_weight`; "
             "account for every dollar (deploy + reserve = new cash + verified net sells)."
         )
+        user += "\nOUTSTANDING ALLOCATION RESEARCH (not orders):\n" + json.dumps(
+            packet.get("allocation_research_tasks") or [], default=str,
+        )
         return system, user
 
     @staticmethod
@@ -471,6 +525,32 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
         if not calibration:
             return "  (no graded decision history available; uncalibrated)"
         lines: list[str] = []
+        benchmark = calibration.get("benchmark") or {}
+        if benchmark:
+            beat_rate = benchmark.get("beat_rate")
+            beat_text = (
+                f"{float(beat_rate):.1%}" if beat_rate is not None else "not established"
+            )
+            mean_excess = benchmark.get("mean_excess_return_pct")
+            excess_text = (
+                f"{float(mean_excess):+.1%}" if mean_excess is not None else "n/a"
+            )
+            lines.append(
+                "  - S&P-relative decision evidence: "
+                f"n={int(benchmark.get('compared') or 0)}, "
+                f"beat rate={beat_text}, mean excess={excess_text} vs SPY"
+            )
+            for row in benchmark.get("recent") or []:
+                subject = row.get("subject_return_pct")
+                spy = row.get("benchmark_return_pct")
+                excess = row.get("decision_excess_return_pct")
+                if subject is None or spy is None or excess is None:
+                    continue
+                lines.append(
+                    f"    * {row.get('ticker')} {row.get('recommendation')}: "
+                    f"ticker {float(subject):+.1%}, SPY {float(spy):+.1%}, "
+                    f"decision excess {float(excess):+.1%}"
+                )
         order_sheet = calibration.get("order_sheet") or {}
         if order_sheet:
             hit = order_sheet.get("hit_rate")

@@ -3,6 +3,15 @@ backoff, per-scope breaker, hard timeout + kill (sync), and the consult-analyst
 / deploy-reviewer wirings. No live LLM, no real sleeps."""
 from __future__ import annotations
 
+
+def test_managed_settings_exit_one_is_not_transient():
+    from argosy.services.fleet_reliability import is_transient_fleet_error
+
+    assert not is_transient_fleet_error(RuntimeError(
+        "Command failed with exit code 1 (exit code: 1)\n[claude.exe stderr]\n"
+        "Your organization requires remote managed settings to load"
+    ))
+
 import asyncio
 
 import pytest

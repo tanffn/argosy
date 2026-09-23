@@ -86,6 +86,7 @@ class LeumiImportReport:
     other_rows_carried: int = 0
     snapshot_id: int | None = None
     applied: bool = False
+    cash_carried: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = [
@@ -93,6 +94,7 @@ class LeumiImportReport:
             f"securities       {self.securities} rows, ${self.securities_usd:,.2f}",
         ]
         out += [f"balance {b.currency:<4}     {b.amount:,.2f}" for b in self.balances]
+        out += [f"cash carried     {warning}" for warning in self.cash_carried]
         out += [
             f"Leumi rows       {self.leumi_rows_before} -> {self.leumi_rows_after}",
             f"carried forward  {self.other_rows_carried} non-Leumi rows",
@@ -261,23 +263,45 @@ def import_leumi(
     new_rows = build_leumi_positions(
         portfolio, balances, usd_ils=usd_ils, eur_usd=eur_usd)
 
+    # A holdings export says nothing about cash. Replace only currencies for
+    # which a balance export was supplied; omitted balances retain their own
+    # dates, not the new securities date.
+    supplied_currencies = {b.currency.upper().replace("ILS", "NIS") for b in balances}
+    cash_warnings = []
+    for prior in before:
+        currency = (prior.currency or "").upper().replace("ILS", "NIS")
+        if "cash" not in (prior.asset_type or "").lower() or currency in supplied_currencies:
+            continue
+        observed = prior.observed_as_of or row.snapshot_date
+        valued = prior.valued_as_of or row.snapshot_date
+        carried = prior.model_copy(update={
+            "observed_as_of": observed, "valued_as_of": valued,
+            "carried_forward": True,
+        })
+        new_rows.append(carried)
+        cash_warnings.append(
+            f"Leumi {currency} cash retained from {valued}; no current balance export supplied."
+        )
+
     report = LeumiImportReport(
         as_of=portfolio.as_of, securities=len(portfolio.holdings),
         securities_usd=portfolio.parsed_value_usd, balances=balances,
         leumi_rows_before=len(before), leumi_rows_after=len(new_rows),
         other_rows_carried=len(others),
+        cash_carried=cash_warnings,
     )
     if not apply:
         return report
 
     snap.positions = new_rows          # feed covers Leumi only — merge does the rest
     snap.snapshot_date = portfolio.as_of
+    snap.source_path = str(Path(portfolio_path).resolve())
     # Drop the PRIOR snapshot's parse warnings. snap came from row_to_snapshot,
     # so its warnings describe the previous feed, not this one — carrying them
     # forward resurrects warnings about symbols that no longer exist
     # ("reprice_miss:ATF" survived two snapshots after ATF was renamed) and
     # they then propagate indefinitely. persist_snapshot appends its own.
-    snap.parse_warnings = []
+    snap.parse_warnings = cash_warnings
     written = persist_snapshot(
         session, user_id=user_id, snapshot=snap, actor="leumi_import")
     session.commit()

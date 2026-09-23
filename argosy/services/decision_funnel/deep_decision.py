@@ -14,7 +14,9 @@ result is recorded as an immutable decision snapshot by the orchestrator.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from argosy.decisions.flow import ApprovedProposal, BlockedProposal, DecisionFlow
@@ -26,6 +28,7 @@ from argosy.decisions.per_ticker_analysts import (
 )
 from argosy.decisions.tiers import Tier
 from argosy.logging import get_logger
+from argosy.services.chat_advisor.contracts import ExecutionPolicy
 from argosy.services.decision_funnel.estate_kb import estate_constraints_block
 from argosy.services.decision_funnel.position_context import position_context_block
 from argosy.services.decision_funnel.sleeve_mandate import x10_sleeve_mandate_block
@@ -42,6 +45,7 @@ class DeepDecisionOutcome:
     action: str | None = None
     blocked_reason: str | None = None
     blocked_by: str | None = None
+    news_assessment: dict | None = None
 
 
 async def run_deep_decision(
@@ -56,6 +60,9 @@ async def run_deep_decision(
     funnel_meta: dict | None = None,
     subject_type: str = "holding",
     force: bool = False,
+    execution_policy: ExecutionPolicy | str = ExecutionPolicy.NORMAL,
+    on_run_opened: Callable[[int], Awaitable[None]] | None = None,
+    review_context: str = "",
 ) -> DeepDecisionOutcome:
     """Run the full deep-decision fleet for one ticker. Never raises — returns
     a structured outcome the orchestrator records (incl. quorum / error).
@@ -70,6 +77,8 @@ async def run_deep_decision(
     fleet adjudicates the name against the bounded moonshot sleeve, never as
     a core initiation (time-machine backtest lesson, 2026-07).
     """
+    execution_policy = ExecutionPolicy(execution_policy)
+    news_assessment = None
     # Item B pushback gate — BEFORE analyst fan-out / agent spawn.
     try:
         import sqlalchemy as sa
@@ -96,6 +105,44 @@ async def run_deep_decision(
             )
         finally:
             _sess.close()
+            _sf.kw["bind"].dispose()
+        if review_context:
+            from argosy.services.news_reassessment import assess_news
+
+            standing = _gate.standing
+            snapshot = None if standing is None else {
+                "id": standing.id, "verdict": standing.verdict,
+                "created_at": standing.created_at, "next_validation": standing.next_validation,
+                "reasoning": standing.reasoning_md, "falsifiers": standing.falsifiers_json,
+                "revisit_triggers": standing.revisit_triggers_json,
+            }
+            assessment = await assess_news(user_id=user_id, ticker=ticker,
+                                           standing=snapshot, evidence=review_context)
+            news_assessment = assessment.model_dump(mode="json")
+            news_assessment["standing_verdict_id"] = standing.id if standing is not None else None
+            if assessment.disposition == "unverified":
+                return DeepDecisionOutcome(ticker=ticker, status="error",
+                    blocked_by="news_evidence_unverified", blocked_reason=assessment.rationale,
+                    news_assessment=news_assessment)
+            if assessment.disposition == "reuse":
+                if standing is None:
+                    return DeepDecisionOutcome(ticker=ticker, status="error",
+                        blocked_by="news_review_invalid", blocked_reason="Cannot reuse a missing review.",
+                        news_assessment=news_assessment)
+                return DeepDecisionOutcome(ticker=ticker, status="blocked",
+                    decision_run_id=standing.source_decision_run_id,
+                    blocked_by="verdict_defended", blocked_reason=assessment.rationale,
+                    news_assessment=news_assessment)
+            # The agent re-derived materiality from evidence; do not let token-overlap
+            # matching in the legacy pushback gate veto that research decision.
+            force = True
+            user_constraints += ("\n\nNEWS REASSESSMENT (analyst evidence, NOT household constraints; "
+                                 "verify independently):\n" + json.dumps(news_assessment))
+            from argosy.services.chat_advisor.progress import record_agent_progress
+            await record_agent_progress(agent="news_reassessment", state="completed",
+                detail=("No standing evaluation — deploying full fleet. " if standing is None else
+                        "New evaluation needed — deploying full fleet. ") + assessment.rationale[:180],
+                correlation_id=f"news-review:{ticker}")
         if not force and _gate.defended and _gate.standing is not None:
             _log.info(
                 "decision_funnel.verdict_defended",
@@ -112,6 +159,10 @@ async def run_deep_decision(
             )
     except Exception:  # noqa: BLE001 — gate must not crash stage 3
         _log.exception("decision_funnel.pushback_gate_failed", ticker=ticker)
+        if review_context:
+            return DeepDecisionOutcome(ticker=ticker, status="error", blocked_by="news_review_failed",
+                blocked_reason="Could not complete the news-assessment handoff; no new fleet was started.",
+                news_assessment=news_assessment)
 
     # INPUTS fix (SOFI proposal 1, 2026-07-09): the stage-3 fleet must know the
     # client's CURRENT POSITION in the ticker (shares/value/% book/account —
@@ -159,22 +210,33 @@ async def run_deep_decision(
     # kills the funnel (the deterministic floor below still guards).
     try:
         user_constraints = estate_constraints_block(user_constraints)
+        from argosy.services.knowledge_status import knowledge_advice_context
+        user_constraints += "\n\n" + await knowledge_advice_context(user_id=user_id,
+            paths=["household/members.md", "tax/us/estate_tax_nonresidents.md"])
     except Exception:  # noqa: BLE001 — inputs enrichment must not crash stage 3
         _log.exception("decision_funnel.estate_kb_block_failed", ticker=ticker)
     try:
         pre_opened = await open_decision_run_for_consult(
-            user_id=user_id, ticker=ticker, tier_value=tier.value
+            user_id=user_id, ticker=ticker, tier_value=tier.value,
+            execution_policy=execution_policy.value,
         )
     except Exception as exc:  # noqa: BLE001 — pre-open must not crash the funnel
         _log.warning("decision_funnel.deep_open_error", ticker=ticker, error=str(exc)[:200])
         return DeepDecisionOutcome(
             ticker=ticker, status="error", blocked_reason=str(exc)[:200],
             blocked_by="open_error",
+            news_assessment=news_assessment,
         )
+    from argosy.services.chat_advisor.progress import set_progress_run_id
+
+    set_progress_run_id(pre_opened)
+    if on_run_opened is not None:
+        await on_run_opened(pre_opened)
     try:
         result = await run_per_ticker_analysts(
             user_id=user_id, ticker=ticker, decision_run_id=pre_opened,
             mode=consult_mode,
+            **({"review_context": review_context} if review_context else {}),
         )
     except InsufficientAnalystQuorum as exc:
         await close_decision_run_blocked(
@@ -184,6 +246,7 @@ async def run_deep_decision(
         return DeepDecisionOutcome(
             ticker=ticker, status="quorum_failed", decision_run_id=pre_opened,
             blocked_reason=exc.reason, blocked_by="analyst_quorum",
+            news_assessment=news_assessment,
         )
     except Exception as exc:  # noqa: BLE001
         await close_decision_run_blocked(
@@ -193,6 +256,7 @@ async def run_deep_decision(
         return DeepDecisionOutcome(
             ticker=ticker, status="error", decision_run_id=pre_opened,
             blocked_reason=str(exc)[:200], blocked_by="analysts_error",
+            news_assessment=news_assessment,
         )
 
     flow = DecisionFlow(user_id=user_id)
@@ -208,29 +272,33 @@ async def run_deep_decision(
             persist_input_analysts=False,
             consult_mode=consult_mode,
             funnel_meta=funnel_meta,
+            execution_policy=execution_policy,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("decision_funnel.deep_flow_error", ticker=ticker, error=str(exc)[:200])
         return DeepDecisionOutcome(
             ticker=ticker, status="error", decision_run_id=pre_opened,
             blocked_reason=str(exc)[:200], blocked_by="flow_error",
+            news_assessment=news_assessment,
         )
 
     if isinstance(outcome, ApprovedProposal):
         floor_outcome = await _apply_us_situs_floor(outcome, user_id=user_id)
         if floor_outcome is not None:
-            return floor_outcome
+            return replace(floor_outcome, news_assessment=news_assessment)
         return DeepDecisionOutcome(
             ticker=ticker, status="approved",
             decision_run_id=outcome.decision_run_id,
             proposal_id=outcome.proposal.id,
             action=outcome.proposal.action,
+            news_assessment=news_assessment,
         )
     assert isinstance(outcome, BlockedProposal)
     return DeepDecisionOutcome(
         ticker=ticker, status="blocked",
         decision_run_id=outcome.decision_run_id,
         blocked_reason=outcome.reason, blocked_by=outcome.blocked_by,
+        news_assessment=news_assessment,
     )
 
 

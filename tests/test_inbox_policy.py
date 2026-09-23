@@ -58,6 +58,13 @@ def test_expiring_trade_jumps_to_blocking_regardless_of_action():
     assert assign_bucket(it) == PriorityBucket.OVERDUE_BLOCKING
 
 
+def test_expired_trade_is_history_not_an_urgent_action():
+    for days in (-2, 0):  # same-day expiry must use the exact timestamp signal
+        it = _item("trade", signals={"action": "sell", "expiring_in_days": days, "expired": True})
+        assert assign_bucket(it) == PriorityBucket.OBSERVATION
+        assert "history only" in rank_reason(it, PriorityBucket.OBSERVATION)
+
+
 def test_expiring_far_out_does_not_jump():
     it = _item("trade", signals={"action": "buy", "expiring_in_days": 30})
     assert assign_bucket(it) == PriorityBucket.OPPORTUNITY

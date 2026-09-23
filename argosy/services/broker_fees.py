@@ -39,19 +39,17 @@ __all__ = [
 ]
 
 
-# --- The 20/08/2026 dispute -------------------------------------------------
-# The Leumi benefits letter of 19/07/2026 prints 0.06% for 20/08/2026-31/12/2026
-# with NO minimum line, where the preceding block explicitly carried "minimum
-# $7". The letter's own boilerplate says benefits do not apply to minimum
-# tariffs unless expressly stated, so the literal reading is that the LIST $25
-# minimum returned. We model the conservative ($25) case and say so on every
-# estimate. Do NOT flip this to 7.0 on a banker's verbal assurance — it takes an
-# amended benefits letter. See domain_knowledge/brokers/leumi.md.
+# The former $25-vs-$7 dispute read only page 1. Pages 7–9 of the SAME
+# 19/07/2026 letter explicitly grant 0.06%/$6 (direct upper tier 0.05%/$6)
+# through 30/06/2027. Its greatest-benefit clause resolves the overlap.
+# Independent source-only derivation: knowledge_repair/leumi_source_derivation.
+# Keep the exported name for callers; it no longer asserts an unresolved minimum.
 MINIMUM_DISPUTE_NOTE = (
-    "Minimum is DISPUTED from 2026-08-20: the benefits letter dropped the "
-    "explicit '$7 minimum' line when the rate moved to 0.06%, and its own "
-    "boilerplate says benefits do not cover minimum tariffs unless stated. "
-    "Modelling the conservative $25. Confirm in writing with Leumi."
+    "Leumi letter 2026-07-19, pp.7–9: foreign-securities planning estimate "
+    "0.06% / $6 minimum, valid 2026-07-01 through 2027-06-30, absent later "
+    "amendments. Direct-channel upper portfolio tier may qualify for 0.05%; "
+    "this estimate does not assume current tier eligibility. Separately "
+    "chargeable exchange, broker and transfer expenses are excluded."
 )
 
 LEUMI_MINIMUM_DISPUTE_FROM = date(2026, 8, 20)
@@ -79,22 +77,23 @@ class FeeSchedule:
     source: str = "domain_knowledge/brokers/leumi.md"
 
 
-# Foreign securities via LeumiTrade, deposit 44745210. Minimum reflects the
-# conservative reading of the 20/08/2026 change (see MINIMUM_DISPUTE_NOTE).
+# Foreign securities: lower-tier/direct or banker schedule. No current book
+# value is inferred; this is not the best-price selector for the upper tier.
 LEUMI_FOREIGN = FeeSchedule(
     venue="leumi",
     instrument_class="foreign_securities",
     currency="USD",
     rate=0.0006,
-    minimum=25.0,
+    minimum=6.0,
     maximum=7500.0,
     maximum_pct_of_ticket=0.30,
-    disputed_minimum=7.0,
     dispute_note=MINIMUM_DISPUTE_NOTE,
 )
 
 # Israeli securities / non-linked bonds / TASE tracking funds via LeumiTrade.
-# Undisputed: the ILS 7 minimum is printed explicitly and runs to 31/12/2026.
+# Original row, explicitly valid to 31/12/2026; NOT a best-price selector.
+# A competing 0.06%/ILS9 (upper direct 0.05%/ILS9) row can be cheaper for
+# larger tickets. Callers selecting a schedule must compare complete rows.
 LEUMI_ISRAELI = FeeSchedule(
     venue="leumi",
     instrument_class="israeli_securities",
@@ -173,7 +172,7 @@ def estimate(ticket: float, schedule: FeeSchedule = LEUMI_FOREIGN) -> Commission
         fee, binding = schedule.maximum, "maximum"
 
     fee = round(fee, 2)
-    note = schedule.dispute_note if schedule.disputed_minimum is not None else ""
+    note = schedule.dispute_note
     return CommissionEstimate(
         ticket=round(ticket, 2),
         commission=fee,

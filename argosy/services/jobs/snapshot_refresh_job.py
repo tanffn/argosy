@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -71,7 +71,7 @@ def snapshot_refresh_metadata() -> JobMetadata:
 
 
 class SnapshotRefreshJob(CadenceLoop):
-    """Reprice-the-book loop. Quantities never change; only prices/FX do."""
+    """Recover eligible saved receipts, then reprice the resulting quantities."""
 
     name = "snapshot_refresh"
 
@@ -95,17 +95,24 @@ class SnapshotRefreshJob(CadenceLoop):
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
         self.last_output_summary = None
-        run_at = (now or (lambda: datetime.now(timezone.utc)))()
+        run_at = (now or (lambda: datetime.now(UTC)))()
         _log.info("snapshot_refresh.tick.start", run_at=run_at.isoformat())
 
         def _work() -> dict[str, Any]:
             factory = self._session_factory or _build_default_session_factory()
             session = factory()
             try:
+                from argosy.execution.fill_book import recover_fill_applications
+
+                applications = recover_fill_applications(session, user_id=self.user_id)
                 res = self._refresh_fn(session, user_id=self.user_id)
             finally:
                 session.close()
-            return res.summary() if hasattr(res, "summary") else dict(res or {})
+            summary = res.summary() if hasattr(res, "summary") else dict(res or {})
+            summary["fill_book"] = applications
+            if applications.get("errors"):
+                summary["error_count"] = applications["errors"]
+            return summary
 
         summary = await asyncio.to_thread(_work)
         self.last_output_summary = summary

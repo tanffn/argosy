@@ -35,7 +35,6 @@ import { ArgosyRunCard } from "@/components/inbox/ArgosyRunCard";
 import { QuietState } from "@/components/inbox/QuietState";
 import { FunnelTransparencyCard } from "@/components/proposals/funnel-transparency-card";
 import { DeployCashCard } from "@/components/proposals/DeployCashCard";
-import { YourMoveCard } from "@/components/proposals/YourMoveCard";
 import { FunnelBetaCard } from "@/components/proposals/FunnelBetaCard";
 import { RebalanceReviewCard } from "@/components/proposals/RebalanceReviewCard";
 import { ConsultRunner } from "@/components/consult/consult-runner";
@@ -89,6 +88,15 @@ export default function InboxPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Home links target cards loaded asynchronously, after Next's initial scroll.
+  useEffect(() => {
+    if (!feed || !window.location.hash) return;
+    let id: string;
+    try { id = decodeURIComponent(window.location.hash.slice(1)); } catch { return; }
+    const frame = requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView?.({ block: "start" }));
+    return () => cancelAnimationFrame(frame);
+  }, [feed]);
 
   // Re-fetch on any proposal / fill event so the queue stays live.
   const lastEvt = useWSEvents([
@@ -287,6 +295,10 @@ export default function InboxPage() {
     () => tradeItems.filter((item) => item.kind !== "order_sheet"),
     [tradeItems],
   );
+  const noActionSheet = items.find(
+    (item) => item.kind === "order_sheet" && item.body.no_action_sheet === true
+      && typeof item.body.fingerprint === "string",
+  );
   const actionable = useMemo(
     () =>
       items.filter(
@@ -317,10 +329,14 @@ export default function InboxPage() {
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
 
+      {feed?.issues?.map((issue, index) => (
+        <p key={`${issue.code}:${index}`} role="alert" className="rounded-md border border-warning/40 bg-warning/5 p-3 text-sm text-warning">{issue.message}</p>
+      ))}
+
       {/* Trade plan — every open buy/sell under ONE section: the overview
           table (current | after | why), then the detail cards for zoom-in. */}
-      {feed && !feed.quiet && (tradeItems.length > 0 || feed.trade_plan) && (
-        <section className="flex flex-col gap-3">
+      {feed && (tradeItems.length > 0 || feed.trade_plan || noActionSheet) && (
+        <section id="trade-plan" className="flex flex-col gap-3 scroll-mt-24">
           <div className="flex items-baseline justify-between">
             <h2 className="text-lg font-semibold tracking-tight">Trade plan</h2>
             <span className="text-sm text-muted-foreground">
@@ -328,8 +344,8 @@ export default function InboxPage() {
             </span>
           </div>
           {feed.trade_plan && <TradePlanTable plan={feed.trade_plan} />}
-          {feed.trade_plan?.source === "order_sheet" && (
-            <ArgosyRunCard userId={USER_ID} compact />
+          {(feed.trade_plan?.source === "order_sheet" || noActionSheet) && (
+            <ArgosyRunCard userId={USER_ID} compact noActionFingerprint={feed.trade_plan?.source === "order_sheet" ? undefined : String(noActionSheet!.body.fingerprint)} />
           )}
           {tradeDetailItems.length > 0 && (
             <ul className="flex flex-col gap-3">
@@ -483,10 +499,8 @@ export default function InboxPage() {
         </div>
       </CollapsibleSection>
 
-      {/* Your move this period — the team's assembled directive (buy + glide
-          sell), the proactive lead-in to the deploy tool below. */}
+      {/* Funnel statistics are audit context, never another current trade list. */}
       <div className="scroll-mt-6 flex flex-col gap-4">
-        <YourMoveCard userId={USER_ID} />
         <FunnelBetaCard userId={USER_ID} />
       </div>
 

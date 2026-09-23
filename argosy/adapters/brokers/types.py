@@ -10,14 +10,16 @@ that touch money, not in transport models.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from argosy.execution.settlement import FillSettlement
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ----------------------------------------------------------------------
@@ -114,6 +116,23 @@ class Fill(BaseModel):
     commission: float = 0.0
     filled_at: datetime = Field(default_factory=_utcnow)
     paper: bool = False
+    settlement: FillSettlement | None = None
+    execution_time_confirmed: bool | None = None
+    commission_confirmed: bool = False
+    native_account_id: str | None = None
+    price_currency: str | None = None
+    commission_currency: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_commission_omission(cls, values):
+        if isinstance(values, dict):
+            values = dict(values)
+            if "commission" not in values:
+                values["commission_confirmed"] = False
+            elif "commission_confirmed" not in values:
+                values["commission_confirmed"] = True
+        return values
 
 
 class OrderSnapshot(BaseModel):
@@ -125,6 +144,7 @@ class OrderSnapshot(BaseModel):
     ]
     fills: list[Fill] = Field(default_factory=list)
     reason: str = ""
+    filled_quantity: float | None = None  # Independent broker cumulative count, not a sum of parsed receipts.
 
 
 class ExecutionResult(BaseModel):

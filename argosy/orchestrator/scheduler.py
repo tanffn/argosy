@@ -695,6 +695,9 @@ class Scheduler:
                 pass
             now = self.clock()
             gap = (now - last).total_seconds()
+            # The registered scheduler recovers failed (not just missed) work.
+            # Base scheduler has no durable job audit and deliberately no-ops.
+            await self._recover_failed_jobs()
             if gap <= interval + threshold:
                 last = now
                 continue
@@ -711,6 +714,9 @@ class Scheduler:
             # Refresh AFTER the sweep so a long catch-up isn't itself
             # mistaken for another sleep gap (which would re-sweep).
             last = self.clock()
+
+    async def _recover_failed_jobs(self) -> None:
+        """Extension point for the registry's durable, bounded recovery."""
 
     async def fire_once(self, loop_name: str) -> None:
         """One-shot: fire a registered loop now, regardless of schedule.

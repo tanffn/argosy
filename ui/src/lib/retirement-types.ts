@@ -140,6 +140,8 @@ export interface TaxBreakdownResponse {
   net: ValueWithRationale;
   israeli_tax: ValueWithRationale;
   us_treaty_credit: ValueWithRationale;
+  us_withholding: ValueWithRationale;
+  surtax: ValueWithRationale;
   bituach_leumi_tax: ValueWithRationale;
   effective_rate: ValueWithRationale;
 }

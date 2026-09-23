@@ -49,6 +49,24 @@ from argosy.state.models import Base, NewsSignal
 # vulnerability. The canary test fails loudly in that case.
 RAW_TEXT_CANARY = "RAW_TEXT_CANARY_PROMPT_INJECTION_ATTEMPT"
 
+
+def test_runtime_failure_is_not_relabelled_as_async_nesting(session_factory):
+    from argosy.agents.errors import AgentRunError
+
+    failure = AgentRunError("Your organization requires remote managed settings to load")
+
+    class FailedAnalyst:
+        async def analyze(self, *args, **kwargs):
+            raise failure
+
+    with session_factory() as session:
+        session.add(_make_news_signal(source_ref="outage", raw_text="x", evidence_excerpt="x"))
+        session.commit()
+        with pytest.raises(AgentRunError) as caught:
+            run_news_signal_analysis(session, agent=FailedAnalyst(), user_holdings=[])
+        assert caught.value is failure
+        assert session.execute(sa.select(NewsSignal)).scalar_one().analyzed_at is None
+
 _NOW = datetime(2026, 5, 29, 12, 0, tzinfo=UTC)
 _RECEIVED = datetime(2026, 5, 29, 11, 30, tzinfo=UTC)
 
@@ -244,6 +262,35 @@ def test_runner_analyzes_unanalyzed_rows_and_writes_back(session_factory) -> Non
         assert r2.analyzed_at is not None
         assert r2.analyzed_at.replace(tzinfo=UTC) == _NOW
         assert "FOMC" in (r2.rationale or "")
+
+
+def test_batch_commit_releases_writer_and_preserves_progress_on_later_failure(session_factory):
+    from argosy.agents.errors import AgentRunError
+
+    with session_factory() as session:
+        session.add_all([_make_news_signal(source_ref=f"batch/{i}", raw_text="x", evidence_excerpt="x") for i in range(2)])
+        session.commit()
+
+        class Analyst:
+            calls = 0
+
+            async def analyze(self, signals, **kwargs):
+                self.calls += 1
+                if self.calls == 2:
+                    # A separate writer must be able to commit DURING the
+                    # second model call, before the outer run has finished.
+                    with session_factory() as other:
+                        other.add(_make_news_signal(source_ref="concurrent", raw_text="x", evidence_excerpt="x"))
+                        other.commit()
+                    raise AgentRunError("second batch unavailable")
+                return [AnalyzedSignalOut(signal_id=signals[0].signal_id, materiality="low", recommended_flag=None, rationale="Not material")]
+
+        with pytest.raises(AgentRunError):
+            run_news_signal_analysis(session, agent=Analyst(), user_holdings=[], batch_size=1, commit_batches=True)
+        session.rollback()
+    with session_factory() as check:
+        assert check.scalar(sa.select(sa.func.count()).select_from(NewsSignal).where(NewsSignal.analyzed_at.is_not(None))) == 1
+        assert check.scalar(sa.select(sa.func.count()).select_from(NewsSignal)) == 3
 
 
 def test_raw_text_canary_not_in_prompt(session_factory) -> None:

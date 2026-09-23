@@ -242,10 +242,11 @@ class InboxFeed:
     # One-table overview of every open buy/sell (current | after | why),
     # rendered above the trade cards. ``None`` when no trade is open.
     trade_plan: Optional[dict[str, Any]] = None
+    issues: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def quiet(self) -> bool:
-        return len(self.items) == 0
+        return len(self.items) == 0 and not self.issues
 
     def to_dict(self, *, debug: bool = False) -> dict[str, Any]:
         return {
@@ -253,12 +254,13 @@ class InboxFeed:
                 it.to_debug_dict() if debug else it.to_dict() for it in self.items
             ],
             "quiet": self.quiet,
-            "needs_you_count": len(self.items),
+            "needs_you_count": self.liveness.pending_decisions,
             "liveness": self.liveness.to_dict(),
             "policy_version": self.policy_version,
             "generated_at": self.generated_at,
             "dropped": self.dropped if debug else [],
             "trade_plan": self.trade_plan,
+            "issues": self.issues,
         }
 
 

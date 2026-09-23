@@ -46,7 +46,7 @@ def collect_research_inputs(session, *, user_id: str, ticker: str,
         shared = session.execute(select(ResearchClaim, ResearchItem, ResearchSource)
             .join(ResearchItem, ResearchClaim.item_id == ResearchItem.id)
             .join(ResearchSource, ResearchItem.source_id == ResearchSource.id)
-            .where(ResearchClaim.user_id == user_id, ResearchItem.status == "analyzed",
+            .where(ResearchClaim.user_id == user_id, ResearchItem.status.in_(["analyzed", "analyzed_partial"]),
                    ResearchItem.observed_at <= now, ResearchItem.analyzed_at <= now,
                    func.coalesce(ResearchItem.published_at, ResearchItem.observed_at) >= floor,
                    func.coalesce(ResearchItem.published_at, ResearchItem.observed_at) <= now,
@@ -66,6 +66,7 @@ def collect_research_inputs(session, *, user_id: str, ticker: str,
                           "excerpt": str(payload.get("evidence_excerpt") or "")[:1000],
                           "claim_type": payload.get("claim_type", "claim"),
                           "skeptic_findings": (analysis.get("skeptic") or {}).get("findings", [])[:3],
+                          "capture_coverage": analysis.get("capture"),
                           "verification": "unverified attributed claim; inspect source and skeptic findings"})
     query = (
         select(YouTubeClaim, YouTubeVideo, YouTubeChannel)

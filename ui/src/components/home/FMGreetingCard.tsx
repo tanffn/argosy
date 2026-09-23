@@ -26,6 +26,7 @@ import { useEffect, useState } from "react";
 import { LiveClock } from "@/components/live-clock";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
+import { useHomeRead } from "./use-home-read";
 import {
   api,
   type GreetingCallOutcomeDTO,
@@ -35,14 +36,16 @@ import {
 
 interface Props {
   userId: string;
+  /** Home uses the canonical Inbox for actions, not the legacy greeting queue. */
+  summaryOnly?: boolean;
   /** Called when the client clicks [Full detail →]. */
   onShowFullDetail?: () => void;
   /**
-   * Called once the greeting payload arrives — lets the page share the
+   * Called when the greeting changes (null on unavailable) — lets the page share the
    * canonical greeting (e.g. book.on_plan for the Plan-adherence panel)
    * without a second /api/home/greeting fetch.
    */
-  onLoaded?: (greeting: GreetingDTO) => void;
+  onLoaded?: (greeting: GreetingDTO | null) => void;
 }
 
 /**
@@ -90,29 +93,13 @@ export function formatBookUsd(totalUsd: number | null): string {
   return `$${Math.round(totalUsd / 1_000).toLocaleString()}K`;
 }
 
-export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
-  const [greeting, setGreeting] = useState<GreetingDTO | null>(null);
-  const [failed, setFailed] = useState(false);
+const loadGreeting = (userId: string, signal: AbortSignal) => api.homeGreeting(userId, signal);
 
+export function FMGreetingCard({ userId, summaryOnly = false, onShowFullDetail, onLoaded }: Props) {
+  const { data: greeting, failed, retry } = useHomeRead(loadGreeting, userId);
   useEffect(() => {
-    let cancelled = false;
-    api
-      .homeGreeting(userId)
-      .then((g) => {
-        if (cancelled) return;
-        setGreeting(g);
-        onLoaded?.(g);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // onLoaded is intentionally not a dependency: parents pass inline
-    // callbacks and the fetch must run once per user, not per render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+    onLoaded?.(greeting);
+  }, [greeting, onLoaded]);
 
   if (failed) {
     return (
@@ -120,8 +107,8 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
         <CardContent className="px-5 py-4">
           <GreetingHeader />
           <p className="text-xs text-muted-foreground mt-1">
-            The desk is unreachable right now — this card will recover on
-            the next load.
+            The desk is unreachable right now — the family summary is unavailable.
+            <button onClick={retry} className="ml-2 underline">Retry</button>
           </p>
         </CardContent>
       </Card>
@@ -130,7 +117,7 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
 
   if (!greeting) {
     return (
-      <Card className="border-l-2 border-l-success/60" data-slot="fm-greeting">
+      <Card className="border-l-2 border-l-border" data-slot="fm-greeting">
         <CardContent className="px-5 py-4">
           <GreetingHeader />
           <p className="text-xs text-muted-foreground mt-1">…</p>
@@ -146,11 +133,37 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
       : `I need ${needsCount} things from you:`;
 
   return (
-    <Card className="border-l-2 border-l-success/60" data-slot="fm-greeting">
+    <Card className="border-l-2 border-l-border" data-slot="fm-greeting">
       <CardContent className="px-5 py-4 flex flex-col gap-4">
         {/* Salutation header (logo + clock) + the book line */}
         <div className="flex flex-col gap-1">
           <GreetingHeader name={greeting.greeting_name} />
+          {summaryOnly && <>
+            <h1 className="text-lg font-semibold mt-2">Your family’s financial picture</h1>
+            <p className="text-sm text-muted-foreground">Build your finances toward the earliest safe retirement.</p>
+          </>}
+          {summaryOnly ? (
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="family-summary">
+              <div className="rounded-md border border-border p-3">
+                <h2 className="text-xs text-muted-foreground">Retirement outlook · model estimate</h2>
+                <p className="font-mono text-base mt-1">{greeting.book.fi_line === "FI track: —" ? "Estimate unavailable" : greeting.book.fi_line}</p>
+                <p className="text-xs text-muted-foreground mt-2">Conditional on the model’s inputs and safety assumptions; not a guarantee.</p>
+                <Link href="/retirement#when-can-i-retire" className="text-xs text-info hover:underline">Spending, scenarios and assumptions →</Link>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <h2 className="text-xs text-muted-foreground">Portfolio snapshot</h2>
+                <p className="font-mono text-xl mt-1">{formatBookUsd(greeting.book.total_usd)}</p>
+                <p className="text-xs text-muted-foreground mt-2">{greeting.book.as_of ? `Snapshot dated ${greeting.book.as_of}` : "Snapshot date unavailable"}. Individual prices may be older.</p>
+                <Link href="/portfolio" className="text-xs text-info hover:underline">Holdings and data quality →</Link>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <h2 className="text-xs text-muted-foreground">Reported plan alignment</h2>
+                <p className="text-base mt-1">{greeting.book.on_plan === null ? "Unavailable" : greeting.book.on_plan ? "Within plan bands" : "In transition"}</p>
+                <p className="text-xs text-muted-foreground mt-2">Alignment is not a safety or approval verdict.</p>
+                <details className="mt-2 text-xs"><summary className="cursor-pointer text-info">What needs attention?</summary><p className="mt-2 text-muted-foreground">{greeting.book.on_plan_note || "No explanation recorded."}</p><Link href="/plan" className="text-info underline">Read the current plan →</Link></details>
+              </div>
+            </div>
+          ) : <>
           <p
             className="font-mono text-sm tabular-nums"
             data-testid="book-line"
@@ -163,7 +176,7 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
                 greeting.book.on_plan ? "text-success" : "text-warning"
               }
             >
-              {greeting.book.on_plan ? "on plan" : "in transition"}
+              {greeting.book.on_plan === null ? "alignment unavailable" : greeting.book.on_plan ? "on plan" : "in transition"}
             </span>
             {" · "}
             {greeting.book.fi_line}
@@ -173,10 +186,11 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
               {greeting.book.on_plan_note}
             </p>
           ) : null}
+          </>}
         </div>
 
         {/* ► I need … from you */}
-        {needsCount > 0 ? (
+        {!summaryOnly && needsCount > 0 ? (
           <div className="flex flex-col gap-2" data-testid="needs-you">
             <p className="font-mono text-sm font-semibold">
               <span aria-hidden className="text-warning">
@@ -193,7 +207,7 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
         ) : null}
 
         {/* ► Worth your attention */}
-        {greeting.watching.length > 0 ? (
+        {!summaryOnly && greeting.watching.length > 0 ? (
           <div className="flex flex-col gap-2" data-testid="watching">
             <p className="font-mono text-sm font-semibold">
               <span aria-hidden className="text-info">
@@ -220,7 +234,7 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
         ) : null}
 
         {/* How our calls did — the decision-learning scorecard */}
-        {(greeting.how_our_calls_did?.length ?? 0) > 0 ? (
+        {!summaryOnly && (greeting.how_our_calls_did?.length ?? 0) > 0 ? (
           <div className="flex flex-col gap-2" data-testid="calls-did">
             <p className="font-mono text-sm font-semibold text-muted-foreground">
               How our calls did:
@@ -234,20 +248,26 @@ export function FMGreetingCard({ userId, onShowFullDetail, onLoaded }: Props) {
         ) : null}
 
         {/* Quiet line + next review */}
-        <p
+        {!summaryOnly && <p
           className="text-xs text-muted-foreground font-mono"
           data-testid="quiet-line"
         >
           {greeting.quiet
-            ? "Everything is quiet — nothing needs you."
-            : "Everything else is quiet."}
+            ? "No actions listed in this summary; check analysis status for coverage."
+            : "Check the Inbox for the current action list."}
           {greeting.next_review_local
             ? ` Next scheduled review: ${greeting.next_review_local}.`
             : ""}
-        </p>
+        </p>}
 
         {/* Options row */}
         <div className="flex items-center gap-3 flex-wrap border-t border-border pt-3">
+          <Link
+            href="/overview"
+            className="font-mono text-xs text-info hover:underline"
+          >
+            Explain my plan
+          </Link>
           <Link
             href="/consult"
             className="font-mono text-xs text-info hover:underline"

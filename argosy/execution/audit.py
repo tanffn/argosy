@@ -119,6 +119,13 @@ async def write_paper_fill(
     }
 
     if session is not None:
+        from argosy.services.chat_advisor.execution_policy import (
+            assert_proposal_can_mutate,
+        )
+
+        await assert_proposal_can_mutate(
+            session, proposal_id, operation="paper fill recording"
+        )
         session.add(row)
         await session.flush()
         await record_audit_event(
@@ -131,6 +138,13 @@ async def write_paper_fill(
         )
     else:
         async with db_mod.get_session() as fresh:
+            from argosy.services.chat_advisor.execution_policy import (
+                assert_proposal_can_mutate,
+            )
+
+            await assert_proposal_can_mutate(
+                fresh, proposal_id, operation="paper fill recording"
+            )
             fresh.add(row)
             await fresh.flush()
             await record_audit_event(

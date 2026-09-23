@@ -393,6 +393,7 @@ def build_order_sheet(
         no_action=no_action,
         candidate_comparisons=proposal.candidate_comparisons,
         review_resolution=review_resolution,
+        pending_research=proposal.pending_research,
         rationale=proposal.rationale,
     )
     return BuiltOrderSheet(sheet=sheet, validation=validate_order_sheet(sheet))

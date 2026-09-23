@@ -1700,6 +1700,84 @@ async def test_isolation_disabled_via_config_knob(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_agents_force_toolless_even_when_global_isolation_disabled(monkeypatch):
+    from argosy.services.chat_advisor.conversation import ConversationRouterAgent, GroundedAnswerAgent
+
+    captured = _install_fake_query(monkeypatch)
+    monkeypatch.setattr("argosy.agents.base.get_settings", lambda: _FakeSettings(False))
+    for agent_type in (ConversationRouterAgent, GroundedAnswerAgent):
+        agent = agent_type(user_id="test")
+        await agent._call_via_claude_code_inner(system="s", user="u")
+        opts = captured["options"]
+        assert opts.setting_sources == []
+        assert opts.tools == []
+        assert opts.allowed_tools == []
+        assert opts.mcp_servers == {}
+        assert opts.extra_args == {"strict-mcp-config": None}
+        assert opts.permission_mode == "dontAsk"
+
+
+@pytest.mark.asyncio
+async def test_news_reassessment_is_search_only_with_global_isolation_disabled(monkeypatch):
+    from argosy.services.news_reassessment import NewsReassessmentAgent
+
+    captured = _install_fake_query(monkeypatch)
+    monkeypatch.setattr("argosy.agents.base.get_settings", lambda: _FakeSettings(False))
+    agent = NewsReassessmentAgent(user_id="test")
+    agent.thinking_effort = None
+    agent.thinking_budget = 0
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    opts = captured["options"]
+    assert opts.setting_sources == []
+    assert opts.tools == ["WebSearch"]
+    assert opts.allowed_tools == ["WebSearch"]
+    assert opts.mcp_servers == {}
+    assert opts.extra_args == {"strict-mcp-config": None}
+    assert opts.permission_mode == "dontAsk"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_toolless", [False, True])
+async def test_public_document_capability_is_isolated_and_toolless_wins(monkeypatch, force_toolless):
+    import asyncio
+    from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock
+    from argosy.services.public_document_tool import TOOL_NAME
+    captured = {}
+
+    async def query(*, prompt, options):
+        captured["options"] = options
+        task = None
+        if hasattr(prompt, "__aiter__"):
+            first = asyncio.Event()
+            async def consume():
+                async for _ in prompt:
+                    first.set()
+            task = asyncio.create_task(consume())
+            await first.wait()
+            assert isinstance(await options.can_use_tool(TOOL_NAME, {}, None), PermissionResultAllow)
+            assert isinstance(await options.can_use_tool("Bash", {}, None), PermissionResultDeny)
+        yield AssistantMessage(content=[TextBlock(text='{"text":"ok"}')], model="test")
+        yield _make_result_message()
+        if task:
+            await task
+
+    monkeypatch.setattr("claude_agent_sdk.query", query)
+    monkeypatch.setattr("argosy.agents.base.get_settings", lambda: _FakeSettings(False))
+    agent = _make_agent()
+    agent.claude_code_public_documents = True
+    agent.claude_code_allowed_tools = ("WebSearch", "WebFetch")
+    agent.claude_code_force_toolless = force_toolless
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    opts = captured["options"]
+    assert opts.setting_sources == []
+    assert opts.extra_args == {"strict-mcp-config": None}
+    assert opts.permission_mode == "dontAsk"
+    assert opts.tools == ([] if force_toolless else ["WebSearch", "WebFetch"])
+    assert opts.allowed_tools == ([] if force_toolless else ["WebSearch", "WebFetch", TOOL_NAME])
+    assert set(opts.mcp_servers) == (set() if force_toolless else {"argosy_sources"})
+
+
+@pytest.mark.asyncio
 async def test_allowed_tools_default_empty_and_max_turns_3(monkeypatch):
     """FIX 3 — default claude_code_allowed_tools=() keeps today's
     no-tools, max_turns=3 posture."""
@@ -1709,6 +1787,58 @@ async def test_allowed_tools_default_empty_and_max_turns_3(monkeypatch):
     opts = captured["options"]
     assert opts.allowed_tools == []
     assert opts.max_turns == 3
+
+
+@pytest.mark.asyncio
+async def test_cli_error_result_is_preserved_and_never_retried_as_exit1(monkeypatch):
+    from argosy.agents.errors import AgentRunError
+    result = _make_result_message()
+    result.is_error = True
+    result.subtype = "error_max_turns"
+    result.result = "Reached maximum number of turns (6)"
+    _install_fake_query(monkeypatch, yielded=[result])
+    agent = _make_agent()
+    with pytest.raises(AgentRunError, match="error_max_turns"):
+        await agent._call_via_claude_code_inner(system="s", user="u")
+
+
+@pytest.mark.asyncio
+async def test_role_can_set_tool_turn_budget(monkeypatch):
+    captured = _install_fake_query(monkeypatch)
+    agent = _make_agent()
+    agent.claude_code_max_turns = 12
+    await agent._call_via_claude_code_inner(system="s", user="u")
+    assert captured["options"].max_turns == 12
+
+
+@pytest.mark.asyncio
+async def test_tool_stream_pdfs_use_one_bounded_message(monkeypatch, tmp_path):
+    import asyncio
+    captured = []
+    async def fake(*, prompt, options):
+        async def consume():
+            async for item in prompt:
+                captured.append(item)
+        task = asyncio.create_task(consume())
+        while not captured:
+            await asyncio.sleep(0)
+        from claude_agent_sdk import AssistantMessage, TextBlock
+        yield AssistantMessage(content=[TextBlock(text='{"text":"ok"}')], model="test")
+        yield _make_result_message()
+        await task
+    monkeypatch.setattr("claude_agent_sdk.query", fake)
+    paths = [tmp_path / f"part{i}.pdf" for i in range(3)]
+    for path in paths:
+        path.write_bytes(b"x" * 600_000)
+    agent = _make_agent()
+    agent.claude_code_keep_tool_stream_open = True
+    await agent._call_via_claude_code_inner(system="s", user="u", pdf_attachments=[{"path": p} for p in paths])
+    assert len(captured) == 1
+    assert sum(b["type"] == "document" for b in captured[0]["message"]["content"]) == 3
+    paths[0].write_bytes(b"x" * 4_000_001)
+    from argosy.agents.errors import AgentRunError
+    with pytest.raises(AgentRunError, match="4 MB"):
+        await agent._call_via_claude_code_inner(system="s", user="u", pdf_attachments=[{"path": paths[0]}])
 
 
 @pytest.mark.asyncio

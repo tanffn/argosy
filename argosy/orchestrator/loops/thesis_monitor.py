@@ -166,7 +166,7 @@ def default_gather_feeds(holding: dict[str, Any], *, now: datetime) -> dict[str,
     call is guarded so a feed outage degrades to an empty section rather than
     failing the run."""
     ticker = holding["ticker"]
-    bundle: dict[str, Any] = {**holding, "news": [], "insider": [], "price": {}}
+    bundle: dict[str, Any] = {**holding, "news": [], "insider": [], "price": {}, "feed_errors": []}
     end = now.date()
     news_start = end - timedelta(days=30)
     price_start = end - timedelta(days=400)
@@ -179,19 +179,38 @@ def default_gather_feeds(holding: dict[str, Any], *, now: datetime) -> dict[str,
             ) or []
         except Exception as exc:  # noqa: BLE001 — feed outage is non-fatal
             log.warning("thesis_monitor.feed.news_failed", ticker=ticker, error=str(exc))
+            try:
+                # Reuse the holdings-review fallback, including provider and
+                # publication timestamps. Missing Finnhub is not "no news".
+                from argosy.services.stock_decision.fetchers import _yahoo_news
+                news = _yahoo_news(ticker, max_items=25)
+                if news:
+                    bundle["news"] = [{"headline": news, "source": "yahoo", "summary": ""}]
+                else:
+                    bundle["feed_errors"].append("company news unavailable from Finnhub and Yahoo")
+            except Exception as fallback_exc:
+                log.warning("thesis_monitor.feed.news_fallback_failed", ticker=ticker, error=str(fallback_exc))
+                bundle["feed_errors"].append("company news unavailable from Finnhub and Yahoo")
         try:
             from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
-            eod = await YFinanceAdapter().get_eod_prices([ticker], price_start, end) or {}
-            bundle["price"] = _price_summary(eod.get(ticker, []))
+            from argosy.adapters.data.symbols import to_yahoo_symbol
+            price_symbol = to_yahoo_symbol(ticker)
+            eod = await YFinanceAdapter().get_eod_prices([price_symbol], price_start, end) or {}
+            bundle["price"] = _price_summary(eod.get(price_symbol, []))
+            if not bundle["price"]:
+                bundle["feed_errors"].append("price feed returned no usable bars")
         except Exception as exc:  # noqa: BLE001
             log.warning("thesis_monitor.feed.price_failed", ticker=ticker, error=str(exc))
+            bundle["feed_errors"].append("price feed unavailable")
         try:
             from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
+            from argosy.adapters.data.symbols import to_yahoo_symbol
             bundle["insider"] = await SecForm4Adapter().get_recent_form4_for_ticker(
-                ticker, days=30
+                to_yahoo_symbol(ticker), days=30
             ) or []
         except Exception as exc:  # noqa: BLE001
             log.warning("thesis_monitor.feed.insider_failed", ticker=ticker, error=str(exc))
+            bundle["feed_errors"].append("SEC insider feed unavailable")
 
     try:
         asyncio.run(_gather())
@@ -482,25 +501,6 @@ class ThesisMonitorLoop(CadenceLoop):
                     1 for h in holdings if h.get("watchlist")
                 )
             bundles = [self._gather_fn(h, now=run_at) for h in holdings]
-            agent = self._agent_factory() if self._agent_factory else _default_agent(self.user_id)
-            report = asyncio.run(agent.run(bundles=bundles))
-            assessments = list(getattr(report.output, "assessments", []))
-            summary["assessed"] = len(assessments)
-            for a in assessments:
-                if not _is_actionable(a):
-                    continue
-                summary["escalated"] += 1
-                try:
-                    flag_id = self._write_fn(session, self.user_id, a, now=run_at)
-                    if flag_id is not None:
-                        summary["flags_written"] += 1
-                except Exception as exc:  # noqa: BLE001 — one holding never sinks the batch
-                    session.rollback()
-                    summary["errors"].append(f"{getattr(a,'ticker','?')}: {exc}")
-            from argosy.agents.base import AgentReport
-            from argosy.services.agent_report_persistence import (
-                stage_agent_report,
-            )
             from argosy.services.research_inputs import render_research_inputs
             for bundle in bundles:
                 try:
@@ -517,6 +517,27 @@ class ThesisMonitorLoop(CadenceLoop):
             }
             summary["errors"].extend(
                 f"{b.get('ticker')}: {error}" for b in bundles for error in b.get("feed_errors", [])
+            )
+            agent = self._agent_factory() if self._agent_factory else _default_agent(self.user_id)
+            report = asyncio.run(agent.run(bundles=bundles))
+            assessments = list(getattr(report.output, "assessments", []))
+            summary["assessed"] = len(assessments)
+            missing = sorted({h["ticker"].upper() for h in holdings} - {a.ticker.upper() for a in assessments})
+            summary["errors"].extend(f"{ticker}: model returned no assessment" for ticker in missing)
+            for a in assessments:
+                if not _is_actionable(a):
+                    continue
+                summary["escalated"] += 1
+                try:
+                    flag_id = self._write_fn(session, self.user_id, a, now=run_at)
+                    if flag_id is not None:
+                        summary["flags_written"] += 1
+                except Exception as exc:  # noqa: BLE001 — one holding never sinks the batch
+                    session.rollback()
+                    summary["errors"].append(f"{getattr(a,'ticker','?')}: {exc}")
+            from argosy.agents.base import AgentReport
+            from argosy.services.agent_report_persistence import (
+                stage_agent_report,
             )
 
             if isinstance(report, AgentReport):

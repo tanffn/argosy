@@ -61,7 +61,9 @@ def sync_session(tmp_path, monkeypatch) -> "tuple[Session, sessionmaker]":
     cfg = Config("alembic.ini")
     command.upgrade(cfg, "head")
 
-    engine = sa.create_engine(
+    from argosy.state.db import create_sync_engine
+
+    engine = create_sync_engine(
         sync_url, connect_args={"check_same_thread": False}
     )
     with engine.begin() as conn:
@@ -178,6 +180,7 @@ def test_v2_methods_registered_at_head(sync_session) -> None:
     assert [tuple(r) for r in rows] == [
         ("fixed_lookahead_180d_entry_backfilled", "fixed_lookahead", 2, 1),
         ("fixed_lookahead_30d_entry_backfilled", "fixed_lookahead", 2, 1),
+        ("fixed_lookahead_365d_entry_backfilled", "fixed_lookahead", 2, 1),
         ("fixed_lookahead_7d_entry_backfilled", "fixed_lookahead", 2, 1),
     ]
 
@@ -394,10 +397,9 @@ def test_batch_counters_and_adapter_error_isolation(sync_session) -> None:
 
     # The FAIL row got NO v2 outcome → retried on the next batch.
     retry = find_reevaluation_candidates(session, now=now)
-    assert [p.id for p in retry] == [bad.id]
+    assert {p.id for p in retry} == {bad.id, still.id}
 
-    # An EMPTY-bars row DID get a v2 unparseable row → settled, not
-    # re-picked forever.
+    # EMPTY-bars evidence is retained, but remains retryable on later daily runs.
     empty_v2 = (
         session.execute(
             sa.select(PredictionOutcome).where(
@@ -410,3 +412,81 @@ def test_batch_counters_and_adapter_error_isolation(sync_session) -> None:
         .one()
     )
     assert empty_v2.outcome_kind == "unparseable"
+
+
+def test_unavailable_price_history_recovers_without_rewriting_failed_evidence(sync_session):
+    session, _ = sync_session
+    prediction = _insert_prediction(session)
+    _seed_v1_unparseable(session, prediction)
+    failed = reevaluate_prediction(session, prediction, price_fetcher=_fetcher_returning([]))
+    assert failed.outcome_kind == "unparseable"
+    same_failure = reevaluate_prediction(session, prediction, price_fetcher=_fetcher_returning([]))
+    assert same_failure.id == failed.id
+    recovered = reevaluate_prediction(session, prediction, price_fetcher=_fetcher_returning(_FULL_BARS))
+    assert recovered.id != failed.id
+    assert recovered.evaluation_method == "fixed_lookahead_30d_entry_backfilled_recovered"
+    assert recovered.outcome_kind == "hit_target"
+    assert session.get(PredictionOutcome, failed.id).outcome_kind == "unparseable"
+    assert reevaluate_prediction(session, prediction, price_fetcher=_fetcher_returning([])).id == recovered.id
+    assert prediction.id not in {row.id for row in find_reevaluation_candidates(
+        session, now=datetime(2026, 7, 1, tzinfo=timezone.utc))}
+
+
+def test_recovery_batch_rotates_past_500_permanent_failures(sync_session):
+    session, factory = sync_session
+    for _ in range(500):
+        prediction = _insert_prediction(session, ticker="NO_COVERAGE")
+        _seed_v1_unparseable(session, prediction)
+    recoverable = _insert_prediction(session, ticker="NVDA")
+    _seed_v1_unparseable(session, recoverable)
+    recoverable_id = recoverable.id
+    session.commit()
+    now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    first = run_reevaluation_batch(session, now=now, price_fetcher=_fetcher_returning([]))
+    assert first.candidates == first.still_unparseable == 500
+    session.commit()
+    # A fresh process/session must retain rotation, including for errors.
+    with factory() as next_session:
+        candidates = find_reevaluation_candidates(next_session, now=now + timedelta(days=1))
+        assert candidates[0].id == recoverable_id
+        result = run_reevaluation_batch(next_session, now=now + timedelta(days=1),
+            batch_size=1, price_fetcher=_fetcher_returning(_FULL_BARS))
+        assert result.by_kind == {"hit_target": 1}
+        next_session.commit()
+
+
+def test_operator_recovery_uses_real_cache_without_second_writer(sync_session, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+    from argosy.state import db as db_mod
+
+    session, _ = sync_session
+    prediction = _insert_prediction(session)
+    _seed_v1_unparseable(session, prediction)
+    failed = reevaluate_prediction(session, prediction, price_fetcher=_fetcher_returning([]))
+    failed_id = failed.id
+    session.commit()
+    original = session.execute(sa.text(
+        "SELECT * FROM prediction_outcomes WHERE prediction_id=:pid ORDER BY id"
+    ), {"pid": prediction.id}).all()
+    db_mod.init_engine()
+    rows = [{"Date": b.bar_date.isoformat(), "Open": b.open, "High": b.high,
+             "Low": b.low, "Close": b.close} for b in _FULL_BARS]
+    monkeypatch.setattr(YFinanceAdapter, "_resolve_client", lambda self: SimpleNamespace(
+        Ticker=lambda ticker: SimpleNamespace(history=lambda **kwargs: rows)))
+    try:
+        result = run_reevaluation_batch(session, now=datetime(2026, 7, 1, tzinfo=timezone.utc))
+        session.commit()
+        assert result.adapter_errors == 0
+        assert result.by_kind == {"hit_target": 1}
+        assert session.get(PredictionOutcome, failed_id).outcome_kind == "unparseable"
+        all_rows = session.execute(sa.text(
+            "SELECT * FROM prediction_outcomes WHERE prediction_id=:pid ORDER BY id"
+        ), {"pid": prediction.id}).all()
+        assert all_rows[:len(original)] == original
+        assert len(all_rows) == len(original) + 1
+        from argosy.services.predictions.outcomes import authoritative_outcomes
+        assert authoritative_outcomes(session, [prediction])[prediction.id][1].evaluation_method.endswith("_recovered")
+    finally:
+        asyncio.run(db_mod.dispose_engine())

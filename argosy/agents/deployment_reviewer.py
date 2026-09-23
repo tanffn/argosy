@@ -94,7 +94,17 @@ _LENS_BRIEF: dict[str, str] = {
         "the funding already present in the proposal."
     ),
     "sizing": (
-        "independent sizing of every single-name convexity buy. Re-derive a rough, "
+        "independent sizing of EVERY proposed buy, not only moonshots. Check the "
+        "resulting whole position, not the incremental order: a small addition to "
+        "an already meaningful core position is different from opening a new tiny "
+        "slot. Apply the owner's sub-1% convexity requirement to proposed new or "
+        "still-small positions; an income/diversifier ETF is not a 5x moonshot. "
+        "This mandate includes ordinary ETF positions: diversification within a "
+        "fund does not exempt a tiny portfolio slot. Do not silently reinterpret "
+        "it as a rule applying only to speculative single stocks. "
+        "Do not require every plan sleeve to receive money in this tranche. "
+        "Consolidation, a funded resize, or leaving a sleeve untouched can be the "
+        "right answer. For each single-name convexity buy, re-derive a rough, "
         "honestly uncertain terminal distribution from the raw program stage, market "
         "cap, runway/dilution, catalyst, failure-mode correlation, industry base rates, "
         "and the current book. A headline 10x possibility is not conviction. Judge "
@@ -158,6 +168,7 @@ class DeploymentReviewOutput(BaseModel):
     lens: str
     objections: list[ReviewObjection] = Field(default_factory=list)
     overall_note: str = ""
+    separation_safe: bool = False
 
 
 class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
@@ -195,6 +206,10 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             f"  - {s}: ${v:,.0f}" for s, v in sorted(
                 (packet.get("holdings") or {}).items(), key=lambda kv: -kv[1])
         ) or "  (none)"
+        outstanding_tickers = {
+            ticker for item in packet.get("allocation_research_tasks", [])
+            for ticker in item.get("tickers", [])
+        }
         finalist_lines = "\n".join(
             "  - {ticker}: radar rank {rank}, score {score}, fresh {fresh}; "
             "research {verdict}/{conviction}; thesis={thesis}".format(
@@ -208,6 +223,7 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             )
             for row in (packet.get("discovery_candidates") or [])
             if str((row.get("fleet") or {}).get("verdict") or "").upper() == "BUY"
+            or row.get("ticker") in outstanding_tickers
         ) or "  (none)"
         recommendation_lines = "\n".join(
             "  - {action} {ticker}; verification={verification}; "
@@ -278,11 +294,31 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             "not authorize you to originate a sale. The verified funding figures below "
             "are the complete funding envelope for this review. When recommending an omitted buy, name which verified funding "
             "source changes and keep the revised order set conserved. Also review "
+            "the feasibility of your OWN suggested replacement: use current holdings "
+            "plus the proposed addition and the post-tax portfolio total. Under the "
+            "owner's existing sizing mandate, a resulting sub-1% position needs a "
+            "genuine evidence-backed >=5x convexity case; there is no automatic "
+            "ETF exemption. This mandate includes ETFs as well as single stocks. "
+            "Do not recommend an ordinary "
+            "income/compounder/diversifier fragment or invent a convexity label for "
+            "an ETF. A plan target is not a demand to fund every sleeve now. If the "
+            "available funding cannot produce a qualifying position, recommend a "
+            "feasible consolidation or leave that sleeve for a later tranche, not "
+            "an impossible order or an unauthorized increase in sale size. Full "
+            "exits are not new small investment slots. Also review "
             "proposed SELL/TRIM actions and disputed holding signals under your lens; "
             "do not silently convert an actionable signal into HOLD. Missing cost "
             "basis is a real execution blocker under the required after-tax contract: "
             "surface the blocked signal, but do not demand a fabricated executable "
-            "sale or spend its unknown proceeds. If an action is "
+            "sale or spend its unknown proceeds. Apply the same distinction to the "
+            "raw STAGED SELL POLICY: lot coverage alone does not establish current "
+            "tax-evidence validity, execution timing or permission to sell. Independently "
+            "check its status, failures, evidence expiry and current-tranche ceiling. "
+            "When execution is blocked, identify the evidence repair or review needed; "
+            "do not demand an immediately executable trade funded by blocked proceeds. "
+            "A valid economic trim signal and a temporarily unexecutable tranche can "
+            "coexist. This does not waive concentration risk or approve any future sale. "
+            "If an action is "
             "sound under your lens, say "
             "nothing about it. Be specific and concise: name the ticker and give the "
             "concrete reason in no more than two sentences."
@@ -316,6 +352,44 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             '"recommended_amount_usd": number|null, "recommended_ticker": str|null}], '
             '"overall_note": str}.'
         )
+        import json
+
+        user += "\nRAW STAGED SELL POLICY (independent execution/tax facts, not author reasoning):\n" + json.dumps(
+            packet.get("staged_sell_policies") or {}, default=str,
+        )
+        user += "\nRUN SELL AUTHORITY AND USER CONSTRAINTS:\n" + json.dumps({
+            "allow_sells": packet.get("allow_sells"),
+            "user_constraints": packet.get("user_constraints") or "",
+        }, default=str)
+        system += (
+            "\nINDEPENDENT CORE / PENDING RESEARCH: When proposed_pending_research is "
+            "nonempty, independently assess the ENTIRE revised move and its conserved "
+            "reserve. Set separation_safe=true only if core buys/sells remain justified "
+            "regardless of the pending discovery outcome: no shared funding, tax, "
+            "portfolio safety or opportunity-cost dependency is left unresolved. "
+            "Consider whether the reserved amount preserves a feasible later decision; "
+            "reserve zero is not an excuse to spend away a live alternative. A pending "
+            "ticker is NOT approved or investment-rejected. Do not demand its immediate "
+            "purchase merely because it has a research BUY grade. You MUST still object "
+            "if deferring it makes the core allocation unsound or the reserve insufficient. "
+            "If independence cannot be established, set separation_safe=false and explain "
+            "the shared dependency in a material objection. This is not permission to "
+            "waive an objection, loosen sizing, enlarge a sale, or omit research. "
+            "Re-derive the earlier recovery_review_objections from the raw packet: "
+            "the pending scope must preserve the actual disputed alternatives, "
+            "and a prior portfolio-wide dependency cannot disappear behind an unrelated research item. "
+            "Return separation_safe as a JSON boolean alongside the existing fields."
+        )
+        user += "\nPROPOSED PENDING RESEARCH (scope/reserve only; author reasons withheld):\n" + json.dumps(
+            packet.get("proposed_pending_research") or [], default=str,
+        )
+        user += "\nEARLIER INDEPENDENT OBJECTIONS TO RE-DERIVE (not author rationale):\n" + json.dumps(
+            packet.get("recovery_review_objections") or [], default=str,
+        )
+        user += "\nFOLLOW-UP SOURCE RESEARCH (not the current author's rationale):\n" + json.dumps([
+            {key: item.get(key) for key in ("tickers", "research_question", "research_result", "last_error")}
+            for item in packet.get("allocation_research_tasks", [])
+        ], default=str)
         return system, user
 
 

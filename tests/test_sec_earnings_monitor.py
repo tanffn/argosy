@@ -163,6 +163,39 @@ def test_historical_primary_filing_informs_review_without_fake_fresh_signal(tmp_
     engine.dispose()
 
 
+def test_sec_downloads_do_not_hold_the_database_writer(tmp_path) -> None:
+    engine, factory = _factory(tmp_path)
+    checked_at = datetime(2026, 8, 29, 8, tzinfo=UTC)
+    writers = []
+
+    def fetcher(ticker, *, cutoff):
+        # Another connection must be able to commit during EVERY download,
+        # including after successful and failed earlier ticker fetches.
+        with engine.begin() as other:
+            other.exec_driver_sql('PRAGMA busy_timeout=50')
+            other.execute(sa.insert(User).values(id='writer-' + ticker))
+        writers.append(ticker)
+        if ticker == 'BBB':
+            raise RuntimeError('provider outage')
+        return [_filing(ticker, checked_at)]
+
+    with factory() as session:
+        summary = run_sec_earnings_checks(
+            session, user_id='ariel', tickers=['AAA', 'BBB', 'CCC'],
+            checked_at=checked_at, fetcher=fetcher,
+        )
+        assert writers == ['AAA', 'BBB', 'CCC']
+        assert summary.succeeded == 2
+        assert summary.errors == ({'ticker': 'BBB', 'error': 'provider outage'},)
+        # No hidden commits: the enclosing job owns atomic persistence.
+        session.rollback()
+    with factory() as session:
+        assert session.query(EarningsCoverageReceipt).count() == 0
+        assert session.query(NewsSignal).count() == 0
+        assert session.query(User).count() == 4
+    engine.dispose()
+
+
 def test_same_day_empty_retry_cannot_erase_good_filing_packet(tmp_path) -> None:
     engine, factory = _factory(tmp_path)
     checked_at = datetime(2026, 8, 29, 8, tzinfo=UTC)

@@ -13,6 +13,9 @@ import type { InboxFeedDTO } from "@/lib/api";
 
 const getInbox = vi.fn();
 const proposalReject = vi.fn();
+vi.mock("@/components/inbox/ArgosyRunCard", () => ({
+  ArgosyRunCard: ({ noActionFingerprint }: { noActionFingerprint?: string }) => <div>No-action review status {noActionFingerprint}</div>,
+}));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -34,7 +37,7 @@ vi.mock("@/components/proposals/funnel-transparency-card", () => ({
   FunnelTransparencyCard: () => null,
 }));
 vi.mock("@/components/proposals/DeployCashCard", () => ({ DeployCashCard: () => null }));
-vi.mock("@/components/proposals/YourMoveCard", () => ({ YourMoveCard: () => null }));
+vi.mock("@/components/proposals/YourMoveCard", () => ({ YourMoveCard: () => <div>Legacy quarterly allocation</div> }));
 vi.mock("@/components/proposals/FunnelBetaCard", () => ({ FunnelBetaCard: () => null }));
 vi.mock("@/components/proposals/RebalanceReviewCard", () => ({
   RebalanceReviewCard: () => null,
@@ -113,6 +116,26 @@ describe("inbox 'Dismiss' on a beta funnel trade", () => {
   beforeEach(() => {
     getInbox.mockReset();
     proposalReject.mockReset();
+  });
+
+  it("does not mount a competing legacy allocation even when no current sheet exists", async () => {
+    getInbox.mockResolvedValue(EMPTY_FEED);
+    render(<InboxPage />);
+    await waitFor(() => expect(getInbox).toHaveBeenCalled());
+    expect(screen.queryByText("Legacy quarterly allocation")).not.toBeInTheDocument();
+  });
+
+  it("keeps a no-action review visible when current-money marks are unavailable", async () => {
+    getInbox.mockResolvedValue({
+      ...EMPTY_FEED, quiet: true,
+      items: [{ ...FEED.items[0], id: "note:1", kind: "order_sheet", bucket: 6,
+        primary_action: null, secondary_actions: [], body: { no_action_sheet: true, line_count: 0, fingerprint: "saved-review" } }],
+      issues: [{ code: "trade_plan_unavailable", message: "Current-money marks unavailable" }],
+    });
+    render(<InboxPage />);
+    expect(await screen.findByText("No-action review status saved-review")).toBeInTheDocument();
+    expect(screen.getByText("0 to decide")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Current-money marks unavailable");
   });
 
   it("rejects the proposal and drops the card on refresh", async () => {

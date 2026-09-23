@@ -37,6 +37,7 @@ into the snapshot's ``source_versions``.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -378,6 +379,9 @@ class StateObserverLoop(CadenceLoop):
                         f"state-observer:{snapshot_date.isoformat()}"
                     ),
                 )
+                # A flag-write rollback must not erase the completed model
+                # report (and its audit/cost evidence).
+                session.commit()
             candidates = list(
                 getattr(getattr(report, "output", None), "flag_candidates", [])
                 or []
@@ -393,7 +397,15 @@ class StateObserverLoop(CadenceLoop):
                 now=run_at,
             )
 
+            errors = list(getattr(write_summary, "errors", []) or [])
+            versions = json.loads(snapshot_row.source_versions_json or "{}")
+            versions["observer_completed_at"] = run_at.isoformat() if not errors else None
+            snapshot_row.source_versions_json = json.dumps(versions)
+            session.commit()
+
             return {
+                "error_count": len(errors),
+                "errors": errors,
                 "snapshot_id": snapshot_id,
                 "candidates_emitted": len(candidates),
                 "flags_written": int(
@@ -433,9 +445,13 @@ class StateObserverLoop(CadenceLoop):
         latest = get_latest_state_snapshot(session, self.user_id)
         if latest is None:
             return None
-        last_at = getattr(latest, "created_at", None)
-        if last_at is None:
+        # Persisting a snapshot records an ATTEMPT, not a successful agent +
+        # flag write. Only completion can earn the six-hour cool-off. Legacy
+        # snapshots without a completion receipt are eligible for one refresh.
+        completed = json.loads(latest.source_versions_json or "{}").get("observer_completed_at")
+        if not completed:
             return None
+        last_at = datetime.fromisoformat(completed)
         if last_at.tzinfo is None:
             last_at = last_at.replace(tzinfo=UTC)
         delta = run_at - last_at

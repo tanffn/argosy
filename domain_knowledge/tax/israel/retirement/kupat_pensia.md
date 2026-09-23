@@ -1,116 +1,84 @@
 ---
 topic: israel_kupat_pensia
 jurisdiction: israel
-last_verified: 2026-08-28
+last_verified: 2026-09-13
 next_refresh_due: 2026-12-31
 sources:
-  - url: https://www.gov.il/he/departments/topics/pension_funds
-    retrieved: 1900-01-01
+  - url: https://www.gov.il/BlobFolder/reports/press-income-tax-brackets/he/SalaryDataDetails_tax_bracket_2026.pdf
+    retrieved: 2026-09-12
     tier: 1
-  - url: https://www.btl.gov.il/Insurance/Pages/default.aspx
-    retrieved: 1900-01-01
+    label: "Finance Ministry April-2026 publication pages 4-5: general extension-order contributions from 2017, distinct from public-sector arrangements"
+  - url: https://www.gov.il/BlobFolder/guide/labor-wage/he/workers-rights_working-conditions_pension_Pension2016.pdf
     tier: 1
-  - url: https://www.taxes.gov.il/Pages/default.aspx
-    retrieved: 1900-01-01
+    label: "Original May-2016 extension order, scanned three-page PDF: page 2 sets January-2017 contribution minima; does not replace the earlier coverage/eligibility order"
+  - url: https://www.gov.il/BlobFolder/policy/procedures-270125/he/IncomeTax_procedures-270125.pdf
     tier: 1
-  - url: https://www.kolzchut.org.il/he/%D7%A7%D7%A8%D7%9F_%D7%A4%D7%A0%D7%A1%D7%99%D7%94_%D7%9E%D7%A7%D7%99%D7%A4%D7%94
-    retrieved: 1900-01-01
+    label: "ITA pension exemption guidance; original publication date is 2025"
+  - url: https://www.gov.il/BlobFolder/reports/pension_fund/he/pension_found_2025.pdf
+    tier: 1
+    label: "Civil Service Commission contacts/fees booklet, November-2025 edition; official portal distinctions, not universal coverage rules"
+  - url: https://www.gov.il/BlobFolder/policy/directive-19-2019/he/directive-19-2019.pdf
+    tier: 1
+    label: "Civil Service pension instructions; distinguish civil-service terms from general extension-order rates"
+  - url: https://www.gov.il/BlobFolder/guide/2026-filling-out-form-161d/he/Guides_IncomeTax_filling-out-form-161d-2026.pdf
+    retrieved: 2026-09-12
+    tier: 1
+  - url: https://www.gov.il/BlobFolder/dynamiccollectorresultitem/employers-info-020226-1/he/IncomeTax_employers-info-020226-1.pdf
+    retrieved: 2026-09-12
+    tier: 1
+  - url: https://www.malam-payroll.com/wp-content/uploads/2026/01/loachezer2026.pdf
+    retrieved: 2026-09-12
     tier: 2
+    note: ITA January 2026 booklet mirrored by payroll provider; predates April bracket amendment.
+  - url: https://www.gov.il/BlobFolder/guide/labor-wage/he/workers-rights_working-conditions_pension_H096.pdf
+    retrieved: 2026-09-12
+    tier: 1
+    pdf_pages: [2, 3, 4, 5]
+    label: "Original earlier extension order: coverage, eligibility and existing-insurance distinction, especially sections 3-6; historical contribution table superseded by 2016 amendment. Text extraction loses some numbers; consult attached native PDF."
+  - url: https://www.btl.gov.il/Laws1/00_0103_000000.pdf
+    retrieved: 2026-09-13
+    tier: 1
+    pdf_pages: [9, 10]
+    label: "Original Income Tax Ordinance, section 3(e3): employer pension contributions above applicable limits treated as employment income; selected original pages only."
+  - url: https://www.btl.gov.il/benefits/old_age/Conditions_of_eligibility/gilMezake/Pages/gilPrisha.aspx
+    retrieved: 2026-09-12
+    tier: 1
+  - url: https://www.harel-group.co.il/long-term-savings/pension/funds/harel-pension/maslulei-bituch
+    retrieved: 2026-09-12
+    tier: 1
+    label: "Original issuer description: disability/survivor coverage varies by insurance track and age; not evidence of this household's actual coverage or a substitute for the applicable rulebook. Full June-2025 rulebook exceeded the source-reader size limit."
 ---
 
-# Kupat Pensia (`קרן פנסיה`)
+# Comprehensive pension fund (קרן פנסיה מקיפה חדשה)
 
-A `kupat pensia` (formal Hebrew: `קרן פנסיה מקיפה חדשה` — "new comprehensive pension fund") is the **mandatory salary-deferred** Israeli pension vehicle. Every employed Israeli resident contributes by law from their second month of employment; the employer matches; and a slice of every paycheck routes to severance coverage. Withdrawal is locked until retirement age, and the standard payout is a lifetime annuity rather than a lump sum — which is what makes it different from `kupat gemel`.
+Pension insurance is generally compulsory for eligible employees; a comprehensive fund is one vehicle, not the only permitted arrangement. Start dates depend on existing insurance and employment eligibility, not a universal second month. Applicable employment orders/agreements determine the obligation. This corrected document awaits full re-verification.
 
-> **Verification status:** `last_verified: 1900-01-01`. Domain-refresh agent must verify contribution rates, ceilings, retirement ages, and the default-fund (`קרן פנסיה ברירת מחדל`) regime annually.
+## Contributions and coverage
 
-## How it works
+General minimum contributions are 6% employee, 6.5% employer pension and 6% employer severance; more favourable contracts can differ. Employee contributions can attract limited tax credits, not a blanket deduction of every contribution. Employer contributions above applicable tax ceilings can be imputed as income. Distinguish insured wage, mandatory-contribution wage base, comprehensive-fund deposit cap and tax-benefit ceilings.
 
-| Aspect | Rule |
-|---|---|
-| Mandatory? | Yes — `Pension Compulsory Order` (`צו ההרחבה לפנסיית חובה`) covers every employee. Self-employed have a parallel obligation (`חוק הפנסיה לעצמאים`). |
-| Employee contribution | 6% of monthly salary (verify yearly) — pre-tax up to the wage ceiling |
-| Employer contribution — pension | 6.5% of monthly salary (verify yearly) — to retirement savings |
-| Employer contribution — severance | 6% of monthly salary (verify yearly) — counts toward statutory severance (`פיצויי פיטורין`) on termination |
-| Salary ceiling for the pension wrapper | Indexed to the average wage; jointly capped with `kupat gemel` and executive insurance — see `kupat_gemel.md` |
-| Liquidity | **Locked until retirement age** (currently 67 for men, 65→67 for women under the gradual reform — verify) |
-| Withdrawal at retirement | **Lifetime annuity by default**; partial lump-sum permitted from the portion above the *recognized capital* (`קצבה מזכה`) threshold |
-| Tax on monthly contributions | Employee contribution is pre-tax up to the ceiling; employer contributions are not imputed as income |
-| Tax on annuity at retirement | The annuity is taxable income, but the recognized portion benefits from a 35–67% exemption depending on age and the user's `תקרת קצבה מזכה` allocation |
-| Survivor benefits | **Built-in** — the fund pools longevity and disability risk; widow/widower and orphan annuities continue automatically per the fund rulebook |
+For insurance/provident vehicles that are **not pension funds**, the 2016 order's
+employer contribution includes disability cover securing 75% of determining wage,
+while the savings contribution itself must be at least 5%. Where the required
+disability cost raises the combined amount above 6.5%, the order caps that required
+employer total at 7.5%; more favourable contractual terms remain separate. A 5%
+savings line plus disability premium is therefore not automatically a shortfall.
+Source: original 2016 extension order, page 2, section 3(2).
 
-## Default-fund regime (`קרן פנסיה ברירת מחדל`)
+New comprehensive funds combine savings with disability/survivor cover subject to track, active coverage, eligibility and rulebook. Premiums and management fees are distinct costs. Survivor percentages are not universally 60% spouse / 30% each child; pre-retirement cover and a pensioner's elected survivor annuity differ. NVIDIA employment alone does not establish which vehicle, contributions or coverage the household has.
 
-If an employee doesn't actively elect a pension fund, Israeli regulation routes them to a state-tendered **default fund** at one of a small set of approved providers (the list is re-tendered every few years). Default funds carry capped management fees:
+## Retirement and tax are different tests
 
-- Default-fund management fee on **deposits** (`דמי ניהול מהפקדות`): typically capped near 1.0% (verify).
-- Default-fund management fee on **accumulated balance** (`דמי ניהול מצבירה`): typically capped well below 0.25% (verify).
+- Statutory retirement age is 67 for men; women's gradual reform reaches 65 according to birth date, not 67. Product annuity commencement can be earlier; that does not itself establish tax-exemption eligibility.
+- Qualifying-pension exemption under §9A is subject to eligibility and rights fixation. **Maximum fractions: 57% (2025), 57.5% (2026), 62.5% (2027), 67% (2028 onward)** under the current schedule.
+- Percentages apply to the **qualifying-pension ceiling**, not the entire pension. The 2026 monthly ceiling is ₪9,430; ITA publishes a maximum monthly exemption of ₪5,422. A ₪20,000 monthly annuity is not 57.5% exempt.
+- Exempt severance grants, capital withdrawals and rights-fixation choices can reduce the usable exemption. The legal maximum does not prove this household's entitlement. Never add a fresh exemption pot per account belonging to the same individual.
+- Recognized pension, qualifying pension, minimum-pension conditions and capital commutation are different concepts. Do not turn “recognized capital threshold” into an automatic cash-withdrawal rule. Calculate from actual components and rights-fixation records.
 
-These caps are materially below market rates for actively-elected funds; one of Argosy's plan-critique checks is "is the user paying default-fund fees, or did they elect a fund that's now charging more than the default would?".
+## Account review
 
-## Why it's different from `kupat gemel`
+Use existing statements for both spouses: balances, contributions, insurance, management fees, guarantees, beneficiary choices and dates. Compare fees with a **current written comparable offer** and coverage, not guessed universal default-fund caps. Transfers can alter insurance/guarantees.
 
-A `kupat pensia` and a `kupat gemel` look superficially similar (both are long-term, tax-advantaged retirement vehicles), but the legal and economic structures diverge:
+Pension fund returns are published via **PensiaNet**, not automatically via the GemelNet provident/study-fund feed. A public portal does not establish a working adapter or reconciled private account. Preserve snapshot source/date and compare like-risk tracks rather than one year's relative return alone.
 
-| Feature | `kupat pensia` | `kupat gemel` |
-|---|---|---|
-| Mandatory? | Yes (employees) | No (voluntary or employer-elected) |
-| Survivor / disability pooling | **Yes** — risk pooled across fund members; built into the fund mechanics | No — pure savings vehicle |
-| Withdrawal default | **Annuity** (lifetime monthly payment) | **Lump sum**, unless the user elects an annuity track |
-| Tikun 190 applicability | No — Tikun 190 is a `kupat gemel` mechanism | Yes (after age 60, see `kupat_gemel.md`) |
-| Severance routing | **Yes** — the 6% employer-side severance contribution lives here | No — severance routes to severance-pay vehicles (`pitzuyim`) |
-
-The survivor-pooling distinction is the single biggest reason employees should not blindly consolidate everything into a `kupat gemel` track: doing so loses the longevity-and-disability insurance baked into the pension fund.
-
-## Withdrawal options at retirement
-
-At statutory retirement age, the user has three broad paths:
-
-1. **Annuity** — the default. Convert accumulated balance into a monthly lifetime payment via the fund's actuarial conversion factor. Best for users who want longevity insurance and a stable retirement income.
-2. **Partial lump sum + annuity** — withdraw the portion above the *recognized capital* (`היוון`) threshold as a lump sum (subject to a one-time tax computation), use the remainder for the annuity. Common when the user has a specific large near-retirement spending need (mortgage payoff, real-estate purchase).
-3. **Full lump sum** — only available below the recognized-capital threshold; not generally available for the bulk of an Israeli middle-class user's pension balance.
-
-The `מס הכנסה` rules around `קצבה מזכה` (the lifetime exemption pot allocated across various retirement vehicles) interact with these decisions; cite `domain_knowledge/tax/israel/brackets_2026.md` and the standalone `recognized_pension_exemption.md` (when added) for exact mechanics.
-
-## Surviving-spouse mechanics
-
-This is the feature that most differentiates `kupat pensia` from `kupat gemel`:
-
-- The pension fund pools mortality risk across all members. Members who die early subsidize the longevity of members who outlive the actuarial median.
-- A **surviving-spouse annuity** (`קצבת שאירים`) is built in: on the user's death, the spouse receives a percentage (typically 60%, verify) of the user's pension annuity for the rest of their life.
-- An **orphan annuity** is built in for dependent children (typically 30% per child up to a cap, verify).
-- A **disability annuity** is built in: if the user is declared unable to work before retirement age, a monthly payment kicks in, scaled to accumulated rights.
-
-The cost of these built-in insurance components is folded into the fund's expense ratio — the user doesn't pay a separate premium, but their accumulated balance grows slightly slower than a pure-savings vehicle would have. This is the trade-off the mandatory-pension regime forces.
-
-## The user's situation
-
-- The user is a NVIDIA Israel employee — by mandate, has a `kupat pensia` running every month with both employee and employer contributions.
-- The intake agent should ask for: provider name, balance (NIS), employee contribution rate, employer match, and whether the fund is the **default-fund** (`ברירת מחדל`) variant or actively elected. If actively elected, also capture the management-fee numbers.
-- Plan-critique should flag: management-fee gap vs. the default-fund cap (a "pay 0.5% on accumulation when the default would have charged 0.22%" finding is a YELLOW item, not a buying recommendation but a re-elect-the-default suggestion).
-
-## How agents should use this file
-
-- **Cite this file** for any claim about Israeli mandatory-pension mechanics, surviving-spouse annuities, default-fund fee caps, or annuitization rules.
-- Pair with `kupat_gemel.md` and `keren_hishtalmut.md` when comparing the three pension vehicles.
-- Pair with `national_insurance.md` for the Bituach Leumi pension (a separate state-paid layer).
-- The intake agent should record provider name, balance, contribution rate, and employer match for both spouses.
-- The plan-critique agent should flag: (a) absent contribution data, (b) management-fee gap vs. default-fund caps, (c) consolidation proposals that would lose the survivor-pooling.
-- If `last_verified` is older than 12 months OR is `1900-01-01`, report `confidence=low`.
-
-## Refresh cadence
-
-- **Annual (January)** — contribution rates, retirement ages, and the default-fund tender refresh.
-- **On reform** — the Israeli pension regime is periodically reformed (most recently the 2017 mandatory-pension expansion to self-employed); any reform triggers a full refresh.
-
-## Performance data
-
-The MoF gemelnet portal publishes per-fund 12m / 36m / 60m / YTD returns plus a sector benchmark for every `kupat pensia`. The Argosy adapter is documented in `domain_knowledge/brokers/gemelnet.md`. Snapshots flow into `pension_fund_snapshots` keyed by `fund_type="kupat_pensia"`. When citing a fund's recent performance, query `argosy.state.queries.get_user_pension_snapshots(user_id)` and cite the row's `source_url` (`gemelnet.mof.gov.il/Tsuot/UI/DafMakdim.aspx`).
-
-A 12m relative-to-benchmark gap of more than ~1pp warrants a "consider switching providers" gap entry, with the caveat that a pension fund switch is administratively heavier than a `kupat gemel` switch (the new fund has to honor accumulated rights and the survivor-pooling actuarial position).
-
-## Open issues
-
-- The exact January 2026 contribution rates and ceilings need verification; the figures above use the 2025 vintage as the working number.
-- The default-fund tender list rotates; verify which providers are on the current list before quoting a default-fund fee floor.
-- The recognized-capital (`קצבה מזכה`) exemption interacts with `keren hishtalmut` and `kupat gemel` annuitization in non-obvious ways; cross-reference `tax/israel/brackets_2026.md` before making any annuity-vs-lump-sum recommendation.
+Refresh statutory figures annually, rulebooks when changed and private facts from actual statements. Read `kupat_gemel.md`, `keren_hishtalmut.md`, and `national_insurance.md` for their distinct layers; do not cite an unwritten exemption file.

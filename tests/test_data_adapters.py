@@ -143,6 +143,74 @@ async def test_yfinance_adapter_caches_and_normalizes(engine: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_yfinance_empty_history_is_retryable_including_legacy_cache(engine: None) -> None:
+    key = "eod:AAPL:2026-01-01:2026-01-05:adjusted=provider_default"
+    # Simulate a still-fresh empty response written by the old adapter.
+    await cached_call(kind=CacheKind.PRICES, provider="yfinance", key=key,
+                      ttl_seconds=3600, fetch=lambda: [])
+    responses = iter([[], _FakeYfTicker("AAPL").history("2026-01-01", "2026-01-05")])
+    calls = []
+
+    def history(**kwargs):
+        calls.append(kwargs)
+        return next(responses)
+
+    adapter = YFinanceAdapter(client=SimpleNamespace(
+        Ticker=lambda symbol: SimpleNamespace(history=history)))
+    args = (["AAPL"], date(2026, 1, 1), date(2026, 1, 5))
+    assert (await adapter.get_eod_prices(*args))["AAPL"] == []
+    assert len((await adapter.get_eod_prices(*args))["AAPL"]) == 2
+    assert len((await adapter.get_eod_prices(*args))["AAPL"]) == 2
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_rejected_payload_not_persisted(engine: None) -> None:
+    assert await cached_call(kind=CacheKind.PRICES, provider="testprov", key="empty",
+                             ttl_seconds=3600, fetch=lambda: [], cacheable=bool) == []
+    async with db_mod.get_session() as session:
+        assert (await session.execute(select(KvCacheEntry).where(
+            KvCacheEntry.provider == "testprov", KvCacheEntry.key == "empty"
+        ))).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_transient_cache_works_while_same_database_has_writer(engine: None) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    from argosy.adapters.data.cache import transient_cache_writes
+    from argosy.state.db import create_sync_engine
+
+    sync_engine = create_sync_engine()
+    fake = _FakeYfModule()
+    adapter = YFinanceAdapter(client=fake)
+    try:
+        with Session(sync_engine) as writer, transient_cache_writes():
+            writer.execute(text("UPDATE kv_cache SET payload_json=payload_json"))
+            args = (["AAPL"], date(2026, 1, 1), date(2026, 1, 5))
+            assert len((await adapter.get_eod_prices(*args))["AAPL"]) == 2
+            assert len((await adapter.get_eod_prices(*args))["AAPL"]) == 2
+            assert fake.calls == ["AAPL"]
+            writer.rollback()
+        # No durable write occurred; transient context is now gone.
+        await adapter.get_eod_prices(*args)
+        assert fake.calls == ["AAPL", "AAPL"]
+    finally:
+        sync_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_history_normalizes_class_shares_but_keeps_venue_and_output_identity(engine: None):
+    fake = _FakeYfModule()
+    adapter = YFinanceAdapter(client=fake)
+    out = await adapter.get_eod_prices(["BRK/B", "BRK.B", "CSPX.L"],
+                                       date(2026, 1, 1), date(2026, 1, 5))
+    assert fake.calls == ["BRK-B", "BRK-B", "CSPX.L"]
+    assert set(out) == {"BRK/B", "BRK.B", "CSPX.L"}
+
+
+@pytest.mark.asyncio
 async def test_yfinance_get_quote(engine: None) -> None:
     fake = _FakeYfModule()
     adapter = YFinanceAdapter(client=fake)

@@ -800,6 +800,16 @@ export interface AuthoredSellDTO {
   tranche_reason: string;
 }
 
+/** Short dashboard reads use the UI's existing proxy. A remote browser's
+ * localhost is NOT the Argosy server. Explicit split-host deployments keep
+ * NEXT_PUBLIC_API_URL; long-running agent calls keep their direct transport. */
+function dashboardReadPath(path: string): string {
+  if (typeof window !== "undefined" && !process.env.NEXT_PUBLIC_API_URL) {
+    return new URL(path, window.location.origin).toString();
+  }
+  return path;
+}
+
 /** A determinism-verifier failure on the authored proposal. */
 export interface GateFailureDTO {
   code: string;
@@ -1487,13 +1497,32 @@ export interface FillItem {
   proposal_id: number | null;
   broker: string;
   broker_order_id: string;
+  external_fill_id: string;
+  account_id: string;
   ticker: string;
   action: string;
   quantity: number;
   price: number;
-  commission: number;
+  commission: number | null;
   filled_at: string;
   paper: boolean;
+  execution_time_confirmed: boolean;
+  commission_confirmed: boolean;
+  price_currency: string | null;
+  commission_currency: string | null;
+  native_account_id: string | null;
+  book_status: string;
+  book_reason: string;
+  applied_snapshot_id: number | null;
+  settlement: FillSettlementDTO | null;
+}
+
+export interface FillSettlementDTO {
+  currency: "USD" | "NIS" | "ILS" | "EUR";
+  tax_withheld: string | number;
+  net_cash_delta: string | number;
+  reference: string;
+  listing_symbol?: string | null;
 }
 
 export interface FillsResponse {
@@ -2274,7 +2303,18 @@ export interface TradePlanLineDTO {
 
 export interface RecommendationScorecardDTO {
   as_of: string;
-  horizons: Record<"30d" | "180d", {
+  benchmark?: {
+    symbol: string;
+    version: string;
+    basis: string;
+    compared: number;
+    beats: number;
+    lags: number;
+    ties: number;
+    beat_rate: number | null;
+    avg_excess_return_pct: number | null;
+  };
+  horizons: Record<"30d" | "180d" | "365d", {
     scheduled: number;
     graded: number;
     wins: number;
@@ -2299,9 +2339,40 @@ export interface RecommendationScorecardDTO {
     signed_pnl_pct: number | null;
     ticker_move_pct: number | null;
     evaluated_at: string | null;
+    benchmark_symbol?: string | null;
+    benchmark_return_pct?: number | null;
+    decision_excess_return_pct?: number | null;
   }>;
+  self_evaluations: Array<{
+    prediction_id: number;
+    ticker: string;
+    recommendation: string;
+    conviction: string | null;
+    source: "portfolio_verdict" | "trade_plan" | "discovery" | "legacy_proposal";
+    recommended_at: string;
+    horizon_days: number;
+    evaluation_date: string;
+    entry_price: number | null;
+    target: string;
+    expectation: string;
+    disposition: string;
+    status: "pending" | "evaluated" | "unscorable";
+    grade: "pending" | "win" | "miss" | "neutral" | "missed_opportunity" | "correct_skip" | "inconclusive";
+    outcome_kind: string | null;
+    ticker_move_pct: number | null;
+    signed_pnl_pct: number | null;
+    exit_price: number | null;
+    evaluated_at: string | null;
+    benchmark_symbol?: string | null;
+    benchmark_return_pct?: number | null;
+    subject_return_pct?: number | null;
+    decision_excess_return_pct?: number | null;
+    benchmark_grade?: "beat" | "lag" | "tie" | "pending";
+    report: string;
+  }>;
+  legacy_proposal_evaluations?: RecommendationScorecardDTO["self_evaluations"];
   surfaced_order_sheets?: {
-    horizons: Record<"30d" | "180d", {
+    horizons: Record<"30d" | "180d" | "365d", {
       scheduled: number;
       graded: number;
       wins: number;
@@ -2315,6 +2386,7 @@ export interface RecommendationScorecardDTO {
       proposal_id: number | null;
       ticker: string;
       action: string;
+      notional_usd?: number | null;
       recommended_at: string;
       horizon_days: 30 | 180;
       due_at: string;
@@ -2325,6 +2397,26 @@ export interface RecommendationScorecardDTO {
       signed_pnl_pct: number | null;
       ticker_move_pct: number | null;
       evaluated_at: string | null;
+      benchmark_symbol?: string | null;
+      benchmark_return_pct?: number | null;
+      decision_excess_return_pct?: number | null;
+    }>;
+  };
+  shadow_order_sheets?: {
+    basis: string;
+    evaluated: number;
+    beats: number;
+    lags: number;
+    recent: Array<{
+      proposal_id: number;
+      recommended_at: string;
+      horizon_days: number;
+      allocated_usd: number;
+      line_count: number;
+      weighted_subject_return_pct: number;
+      weighted_benchmark_return_pct: number;
+      weighted_excess_return_pct: number;
+      grade: "beat" | "lag" | "tie";
     }>;
   };
   radar_opportunities?: {
@@ -2349,8 +2441,12 @@ export interface RecommendationScorecardDTO {
     with_any_forecast: number;
     with_30d_forecast: number;
     with_180d_forecast: number;
+    with_365d_forecast: number;
     autonomous_proposals: number;
     legacy_proposals_without_verdict_link: number;
+    legacy_proposals_with_all_clocks?: number;
+    unscorable_evaluations?: number;
+    legacy_proposals_missing_clocks?: Array<{ proposal_id: number; ticker: string; missing_horizons: number[] }>;
     eligible_radar_names?: number;
     radar_names_with_180d_clock?: number;
     radar_clock_coverage_pct?: number | null;
@@ -2359,6 +2455,86 @@ export interface RecommendationScorecardDTO {
     universe_recall_status: string;
     universe_recall_reason: string;
   };
+}
+
+export interface HistoricalReplayDTO {
+  status: "not_run" | "scored" | "invalid";
+  run_id?: string;
+  started_at?: string | null;
+  scored_at?: string | null;
+  separate_from_forward_live: boolean;
+  message: string;
+  evidence_counts?: { synthetic: number; historical: number };
+  lab?: {
+    status: string;
+    run_id?: string;
+    controls_passed: boolean;
+    limitations: string[];
+    outcome_errors?: string[];
+    cases: Array<{
+      case_id: string;
+      synthetic: boolean;
+      action: string | null;
+      confidence: string | null;
+      qualified: boolean;
+      exclusion_reason: string | null;
+      rationale?: string | null;
+      falsifiers?: string[];
+      review_violations?: string[];
+      review_warnings?: string[];
+      grading_mismatches?: Array<{field: string; expected: unknown; actual: unknown}>;
+      market_horizons?: Array<{
+        months: number;
+        status: string;
+        subject_return_pct: number | null;
+        benchmark_return_pct: number | null;
+        excess_return_pp: number | null;
+      }>;
+    }>;
+  } | null;
+  coverage: {
+    packets: number;
+    immutable_receipts: number;
+    replay_ready: number;
+    missing_receipt: number;
+    invalid_receipt?: number;
+    temporal_disqualified: number;
+    executed?: number;
+  };
+  raw_direction?: { correct: number; total: number; rate: number | null };
+  reviewer_certified?: {
+    correct: number;
+    total: number;
+    rate: number | null;
+    disqualified: number;
+  };
+  cases: Array<{
+    case_id: string;
+    category: string;
+    grading: string;
+    action: string;
+    confidence: string;
+    size: number | null;
+    size_units: string | null;
+    rationale_summary: string | null;
+    falsifiers: string[];
+    next_validation_point: string | null;
+    rerating_horizon: string | null;
+    expected_actions: string[];
+    class_score: number | null;
+    in_expected_class: boolean | null;
+    reviewer_qualified: boolean;
+    review_flags: {
+      output_clean: boolean | null;
+      packet_fidelity: boolean | null;
+      workflow_correct: boolean | null;
+      reasoning_grounded_score: number | null;
+    };
+    review_violations: string[];
+    review_warnings?: string[];
+    acted_return_pct: number | null;
+    benchmark_return_pct: number | null;
+  }>;
 }
 
 export interface NewsCoverageDTO {
@@ -2484,7 +2660,7 @@ export interface ReviewObjectionDTO {
   proposed_amount_usd: number;
   recommended_amount_usd: number | null;
   recommended_ticker: string | null;
-  status: "advisory" | "resolved_by_re_review" | "unresolved";
+  status: "advisory" | "resolved_by_re_review" | "unresolved" | "deferred_for_research";
 }
 
 export interface ReviewResolutionDTO {
@@ -2497,6 +2673,18 @@ export interface ReviewResolutionDTO {
 }
 
 export interface TradePlanDTO {
+  pending_research?: {
+    tickers: string[];
+    disagreement: string;
+    missing_evidence: string;
+    research_question: string;
+    next_review_date: string;
+    reserved_usd: number;
+    independence_reason: string;
+    last_error?: string | null;
+    last_researched_at?: string | null;
+  }[];
+  reserve_usd?: number;
   as_of: string;
   book_total_usd: number;
   lines: TradePlanLineDTO[];
@@ -2519,6 +2707,7 @@ export interface InboxFeedDTO {
   generated_at: string;
   dropped: unknown[];
   trade_plan: TradePlanDTO | null;
+  issues?: Array<{ code: string; message: string }>;
 }
 
 // ----------------------------------------------------------------------
@@ -2562,9 +2751,11 @@ export interface GreetingCallOutcomeDTO {
 
 export interface GreetingBookDTO {
   total_usd: number | null;
-  on_plan: boolean;
+  on_plan: boolean | null;
   on_plan_note: string;
   fi_line: string;
+  /** Snapshot date, not the time this page was opened. */
+  as_of?: string | null;
 }
 
 export interface GreetingDTO {
@@ -3248,8 +3439,9 @@ export const api = {
       external_fill_id: string;
       quantity: number;
       price: number;
-      commission: number;
+      commission: number | null;
       filled_at?: string | null;
+      settlement?: FillSettlementDTO | null;
     },
   ) => postJSON<ManualFillResponse>(`/api/proposals/${id}/manual-fill`, body),
   fillsList: (userId: string, proposalId?: number) => {
@@ -4396,6 +4588,8 @@ export const api = {
     getJSON<RecommendationScorecardDTO>(
       `/api/decisions/recommendation-scorecard?user_id=${encodeURIComponent(userId)}`,
     ),
+  historicalReplay: (): Promise<HistoricalReplayDTO> =>
+    getJSON<HistoricalReplayDTO>("/api/decisions/historical-replay"),
   newsCoverage: (userId: string = "ariel"): Promise<NewsCoverageDTO> =>
     getJSON<NewsCoverageDTO>(
       `/api/decisions/news-coverage?user_id=${encodeURIComponent(userId)}`,
@@ -4440,16 +4634,17 @@ export const api = {
       `/api/tax/withholding-check?user_id=${encodeURIComponent(userId)}`,
     ),
   // The action inbox — one ranked, typed feed of what needs the user now.
-  getInbox: (userId: string, debug = false): Promise<InboxFeedDTO> => {
+  getInbox: (userId: string, debug = false, signal?: AbortSignal): Promise<InboxFeedDTO> => {
     const qs = new URLSearchParams({ user_id: userId });
     if (debug) qs.set("debug", "true");
-    return getJSON<InboxFeedDTO>(`/api/inbox?${qs.toString()}`);
+    return getJSON<InboxFeedDTO>(dashboardReadPath(`/api/inbox?${qs.toString()}`), { signal });
   },
   // FM first-greeting — the home page's opening card (how you stand /
   // what I need from you / what I'm watching). Server-side assembly.
-  homeGreeting: (userId: string): Promise<GreetingDTO> =>
+  homeGreeting: (userId: string, signal?: AbortSignal): Promise<GreetingDTO> =>
     getJSON<GreetingDTO>(
-      `/api/home/greeting?user_id=${encodeURIComponent(userId)}`,
+      dashboardReadPath(`/api/home/greeting?user_id=${encodeURIComponent(userId)}`),
+      { signal },
     ),
 };
 
@@ -6014,6 +6209,9 @@ export interface ManualFillResponse {
   account_id: string;
   filled_quantity: number;
   target_quantity: number;
+  book_status: string;
+  book_reason: string;
+  applied_snapshot_id: number | null;
 }
 
 export interface E2ERunRequest {
@@ -6028,6 +6226,7 @@ export interface E2ECheckDTO {
   key: string;
   label: string;
   passed: boolean;
+  applicable?: boolean;
 }
 
 export interface E2EOrderLineDTO {
@@ -6109,7 +6308,7 @@ export interface E2EOrderLineDTO {
     filled_quantity: number;
     fill_count: number;
     vwap: number | null;
-    commission_usd: number;
+    commission_usd: number | null;
     complete: boolean;
     manual_fill_allowed: boolean;
   };

@@ -86,9 +86,154 @@ def test_empty_inbox_is_quiet(db):
     assert feed.quiet is True
     assert feed.items == []
     assert feed.liveness.pending_decisions == 0
+    assert feed.to_dict()["needs_you_count"] == 0
     assert feed.liveness.cash_within_band is True
     assert feed.liveness.no_overdue_tasks is True
     assert feed.policy_version.startswith("inbox-pol-")
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_empty_sheet_is_not_a_human_decision_even_without_live_book(db, valid):
+    import json
+
+    from argosy.services.order_sheet import FundingSummary, OrderSheet
+    from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+    from tests.test_e2e_proof import _directive
+
+    parent = _directive(db)
+    payload = json.loads(parent.suggested_payload)
+    sheet = OrderSheet.model_validate(payload["order_sheet"]).model_copy(update={
+        "lines": [], "portfolio_symbols": [],
+        "funding": FundingSummary(new_cash_usd=0, gross_sell_proceeds_usd=0,
+                                  sell_tax_usd=0, sell_costs_usd=0, reserve_usd=0,
+                                  available_to_buy_usd=0),
+    })
+    payload["order_sheet"] = sheet.model_dump(mode="json")
+    payload["order_sheet_fingerprint"] = order_sheet_fingerprint(sheet) if valid else "corrupt"
+    parent.suggested_payload = json.dumps(payload)
+    db.commit()
+    feed = build_inbox(db, user_id="ariel")
+    item = next(item for item in feed.items if item.kind == "order_sheet")
+    if valid:
+        assert item.primary_action is None and item.secondary_actions == []
+        assert item.bucket == PriorityBucket.OBSERVATION
+        assert item.body["no_action_sheet"] is True
+        assert feed.liveness.pending_decisions == feed.liveness.open_approvals == 0
+    else:
+        assert not item.body.get("no_action_sheet")
+        assert item.bucket != PriorityBucket.OBSERVATION
+    assert feed.trade_plan is None
+    assert feed.issues  # Missing current book is still reported, not hidden.
+
+
+def test_intraday_expiry_uses_same_instant_for_card_and_table(db):
+    row = _trade(db, status="approved", expires_at=_NOW - timedelta(hours=1))
+    feed = build_inbox(db, user_id="ariel", now=_NOW)
+    item = next(item for item in feed.items if item.id == f"trade:{row.id}")
+    assert item.primary_action.intent == "view_reasoning"
+    assert feed.trade_plan is None
+    assert "expired" in feed.issues[0]["message"]
+
+
+def test_superseded_directive_does_not_resurrect_unexpired_materialization(db):
+    _trade(db, source="order_sheet", expires_at=_NOW + timedelta(days=30))
+    _note(db, dedup_key="period_directive:ariel", status="superseded")
+    feed = build_inbox(db, user_id="ariel", now=_NOW)
+    assert feed.trade_plan is None
+    assert any("No active current order sheet" in issue["message"] for issue in feed.issues)
+
+
+def test_current_sheet_cannot_project_a_degraded_book(db, monkeypatch):
+    from types import SimpleNamespace
+    from argosy.services.inbox.trade_plan import _build_current_sheet_plan
+    current = SimpleNamespace(directive=SimpleNamespace(expires_at=None))
+    monkeypatch.setattr("argosy.services.current_book.load_current_book", lambda *a, **kw: SimpleNamespace(snapshot=object(), degraded=True, degrade_reason="stale mark"))
+    issues = []
+    assert _build_current_sheet_plan(db, "ariel", current, now=_NOW, diagnostics=issues) is None
+    assert "stale mark" in issues[0]["message"]
+
+
+def test_accepted_sheet_expiry_is_reported_before_projection(db):
+    from types import SimpleNamespace
+    from argosy.services.inbox.trade_plan import _build_current_sheet_plan
+    current = SimpleNamespace(directive=SimpleNamespace(status="accepted", expires_at=_NOW))
+    issues = []
+    assert _build_current_sheet_plan(db, "ariel", current, now=_NOW, diagnostics=issues) is None
+    assert "expired" in issues[0]["message"]
+
+
+@pytest.mark.parametrize("cash,tax,cost", [(0, 400, 10), (1000, 400, 10), (0, 0, 0)])
+def test_current_sheet_after_weights_use_net_funded_book(db, monkeypatch, cash, tax, cost):
+    from types import SimpleNamespace
+    from argosy.services.inbox.trade_plan import _build_current_sheet_plan
+    from argosy.services.order_sheet import FundingSummary, OrderAction, OrderLine, OrderSheet
+    book = SimpleNamespace(snapshot=SimpleNamespace(snapshot_date=_TODAY),
+        total=[{"symbol": "NVDA", "usd_value_k": 6}, {"symbol": "CSPX", "usd_value_k": 4}])
+    monkeypatch.setattr("argosy.services.inbox.trade_plan._projection_book", lambda *a, **kw: book)
+    line = OrderLine.model_construct(symbol="NVDA", action=OrderAction.TRIM, notional_usd=2000,
+        thesis="Staged trim", stance_source="portfolio_review")
+    funding = FundingSummary(new_cash_usd=cash, gross_sell_proceeds_usd=2000, sell_tax_usd=tax,
+        sell_costs_usd=cost, reserve_usd=0, available_to_buy_usd=cash+2000-tax-cost)
+    sheet = OrderSheet.model_construct(lines=[line], funding=funding)
+    current = SimpleNamespace(sheet=sheet, fingerprint="projection-test",
+        directive=SimpleNamespace(expires_at=None), validation=SimpleNamespace(valid=True))
+    result = _build_current_sheet_plan(db, "ariel", current, now=_NOW)
+    net_book = 10000 + cash - tax - cost
+    assert result["book_total_usd"] == 10000
+    assert result["post_funding_book_total_usd"] == net_book
+    assert result["lines"][0]["current_pct"] == 60
+    assert result["lines"][0]["after_pct"] == round(4000 / net_book * 100, 2)
+
+
+@pytest.mark.parametrize("status", ["approved", "awaiting_human"])
+def test_expired_trade_is_visible_but_cannot_offer_approval_or_execution(db, status):
+    row = _trade(db, status=status, expires_at=_NOW - timedelta(days=1))
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    item = next(item for item in feed.items if item.id == f"trade:{row.id}")
+    assert item.primary_action.intent == "view_reasoning"
+    assert item.secondary_actions == []
+    assert item.body["expiry_reason"]
+    assert item.bucket == PriorityBucket.OBSERVATION
+    assert "history only" in item.rank_reason
+    assert feed.liveness.open_approvals == 0
+    assert feed.liveness.pending_decisions == 0
+    assert feed.trade_plan is None
+    assert any(issue["code"] == "trade_plan_unavailable" for issue in feed.to_dict()["issues"])
+    assert row.status == status  # no mutation or loss of approval history on read
+
+
+def test_daily_tasks_use_accepted_plan_not_pending_draft(db):
+    import json
+    from argosy.state.models import PlanVersion
+    from argosy.services.inbox.service import _adapt_plan_tasks
+
+    def horizon(label):
+        return json.dumps({"horizon": "short", "freshness_expected": "monthly",
+            "status": "minor_revision", "posture": "test", "targets": [], "themes": [],
+            "actions": [{"label": label, "horizon_kind": "dated",
+                "trigger_or_date": _TODAY.isoformat(), "detail": label,
+                "rationale": "test", "cited_sources": []}],
+            "deltas_from_prior": [], "rationale": "", "cited_sources": []})
+    db.add(PlanVersion(user_id="ariel", role="draft", horizon_short_json=horizon("Draft action")))
+    db.commit()
+    assert _adapt_plan_tasks(db, "ariel", _TODAY) == []
+    db.add(PlanVersion(user_id="ariel", role="current", horizon_short_json=horizon("Accepted action")))
+    db.commit()
+    items = _adapt_plan_tasks(db, "ariel", _TODAY)
+    assert [item.title for item in items] == ["Accepted action"]
+
+
+def test_source_failure_is_public_without_debug_and_not_a_quiet_success(db, monkeypatch):
+    from argosy.services.inbox import service
+    def failed(*args):
+        raise RuntimeError("private diagnostic")
+    monkeypatch.setattr(service, "_ADAPTERS", {"portfolio": failed})
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not feed.quiet
+    body = feed.to_dict()
+    assert body["issues"][0]["code"] == "source_error"
+    assert "private diagnostic" not in str(body)
+    assert body["dropped"] == []
 
 
 def test_shadow_proposal_never_surfaces(db):

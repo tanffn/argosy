@@ -15,36 +15,58 @@ from argosy.state.research_models import ResearchSource, ResearchItem
 DAILY_FLEET_LIMIT = 3
 
 
+def reserved_slots(source):
+    """Explicit source capacity, in addition to the shared discovery budget."""
+    value = json.loads(source.config_json or "{}").get("reserved_daily_slots", 0)
+    return min(1, max(0, value)) if type(value) is int else 0
+
+
+def daily_fleet_limit(session, *, user_id):
+    return DAILY_FLEET_LIMIT + sum(reserved_slots(s) for s in session.scalars(
+        select(ResearchSource).where(ResearchSource.user_id == user_id, ResearchSource.enabled.is_(True))))
+
+
 async def queue_youtube(*, user_id):
     from argosy.services.youtube_intelligence import list_youtube_sources, _fetch_feed, _unseen, _update_poll, _parse_iso, _video_ingested
     from argosy.services.research_catalog import upsert_source
     result = {"sources_checked": 0, "queued": 0, "failures": []}
     for source in list_youtube_sources(user_id=user_id)["sources"]:
-        with research_session() as session:
-            mirror = upsert_source(session, user_id=user_id, name=source["channel_name"], kind="youtube",
-                                   reference=source["youtube_channel_id"], enabled=source["enabled"])
-            mirror.enabled = source["enabled"]
-            session.commit()
-        if not source["enabled"]:
-            continue
-        result["sources_checked"] += 1
         try:
+            def mirror_source():
+                with research_session() as session:
+                    mirror = upsert_source(session, user_id=user_id, name=source["channel_name"], kind="youtube",
+                                           reference=source["youtube_channel_id"], enabled=source["enabled"])
+                    mirror.enabled = source["enabled"]
+                    session.commit()
+                    return mirror
+            mirror = await asyncio.to_thread(mirror_source)
+            if not source["enabled"]:
+                continue
+            result["sources_checked"] += 1
             feed = await asyncio.to_thread(_fetch_feed, source["youtube_channel_id"])
             unseen = _unseen(feed, source.get("last_seen_video_id"))
-            with research_session() as session:
-                for item in unseen:
-                    if _video_ingested(user_id, item["video_id"]):
-                        continue
-                    _, created = enqueue(session, mirror, external_id=item["video_id"], title=item.get("title") or item["video_id"],
-                                         url="https://www.youtube.com/watch?v=" + item["video_id"], body="",
-                                         published_at=_parse_iso(item.get("published_at")))
-                    result["queued"] += int(created)
-                session.commit()
+            def persist_uploads():
+                count = 0
+                with research_session() as session:
+                    for item in unseen:
+                        if _video_ingested(user_id, item["video_id"]):
+                            continue
+                        _, created = enqueue(session, mirror, external_id=item["video_id"], title=item.get("title") or item["video_id"],
+                                             url="https://www.youtube.com/watch?v=" + item["video_id"], body="",
+                                             published_at=_parse_iso(item.get("published_at")))
+                        count += int(created)
+                    session.commit()
+                return count
+            result["queued"] += await asyncio.to_thread(persist_uploads)
             # Cursor advances only after every discovered upload is durable.
-            _update_poll(source["id"], user_id, feed[0] if feed else None, None)
+            await asyncio.to_thread(_update_poll, source["id"], user_id, feed[0] if feed else None, None)
         except Exception as exc:
-            _update_poll(source["id"], user_id, None, str(exc)[:1000])
-            result["failures"].append({"source": source["channel_name"], "error": str(exc)[:300]})
+            failure = {"source": source["channel_name"], "error": str(exc)[:300]}
+            try:
+                await asyncio.to_thread(_update_poll, source["id"], user_id, None, str(exc)[:1000])
+            except Exception as receipt_error:
+                failure["poll_receipt_error"] = str(receipt_error)[:300]
+            result["failures"].append(failure)
     return result
 
 
@@ -71,7 +93,7 @@ def claim_next(*, user_id, now=None):
         session.execute(text("BEGIN IMMEDIATE"))
         attempts = session.scalars(select(ResearchItem).where(
             ResearchItem.user_id == user_id, ResearchItem.attempted_at >= start)).all()
-        if len(attempts) >= DAILY_FLEET_LIMIT:
+        if len(attempts) >= daily_fleet_limit(session, user_id=user_id):
             return None
         sources_used = Counter(i.source_id for i in attempts)
         rows = session.execute(select(ResearchItem, ResearchSource).join(ResearchSource).where(
@@ -82,9 +104,17 @@ def claim_next(*, user_id, now=None):
             or_(ResearchItem.next_attempt_at.is_(None), ResearchItem.next_attempt_at <= now),
         )).all()
         eligible = [(i, s) for i, s in rows if sources_used[s.id] == 0]
+        # Reserved sources cannot consume another source's general slots once
+        # the general budget is exhausted. A source still has at most one/day.
+        enabled_sources = session.scalars(select(ResearchSource).where(
+            ResearchSource.user_id == user_id, ResearchSource.enabled.is_(True))).all()
+        reserved_used = sum(min(sources_used[s.id], reserved_slots(s)) for s in enabled_sources)
+        if len(attempts) - reserved_used >= DAILY_FLEET_LIMIT:
+            eligible = [(i, s) for i, s in eligible if reserved_slots(s)]
         if not eligible:
             return None
-        item, source = max(eligible, key=lambda pair: (rank_item(*pair, now=now), -pair[1].id))
+        item, source = max(eligible, key=lambda pair: (rank_item(*pair, now=now), -pair[1].id,
+                                                     utc(pair[0].observed_at)))
         item.status = "processing"
         item.attempts += 1
         item.attempted_at = now
@@ -98,7 +128,10 @@ async def analyze_document(item, *, user_id):
     from argosy.services.youtube_analysis import _portfolio_context
     from argosy.services.agent_report_persistence import persist_agent_report_async
     from argosy.services.research_connectors import expand_document
-    body = item.body if item.url == "" or item.external_id.startswith(("manual:", "13f:")) else await asyncio.to_thread(expand_document, item)
+    body = item.body if item.url == "" or item.external_id.startswith(("manual:", "13f:", "browser:")) else await asyncio.to_thread(expand_document, item)
+    if item.external_id.startswith("browser:"):
+        from argosy.services.alpha_capture import document_context
+        body = await asyncio.to_thread(document_context, item)
     source_id = "research:" + item.id
     body = ("This is a written research document, not necessarily a video. Use timestamp 00:00:00 when no timestamps exist. "
             "Distinguish reported facts, author claims, and verified evidence. Preserve uncertainties. "
@@ -126,10 +159,12 @@ async def analyze_document(item, *, user_id):
         transcript_source_id=source_id, transcript=body,
         claims_source_id=run_id + ":claims", claims_json=model_json(claims.output),
         skeptic_source_id=run_id + ":skeptic", skeptic_json=model_json(skeptic.output),
-        portfolio_source_id=run_id + ":portfolio", portfolio_json=model_json(portfolio.output), decision_id=run_id)
+        portfolio_source_id=run_id + ":portfolio", portfolio_json=model_json(portfolio.output),
+        portfolio_context_source_id=f"argosy:{user_id}:portfolio", portfolio_context=context, decision_id=run_id)
     await persist_agent_report_async(synthesis, decision_id=run_id)
     reports.append(synthesis)
-    return {"_document_body": body, "claims": claims.output.model_dump(mode="json"), "skeptic": skeptic.output.model_dump(mode="json"),
+    return {"_document_body": item.body if item.external_id.startswith("browser:") else body,
+            "claims": claims.output.model_dump(mode="json"), "skeptic": skeptic.output.model_dump(mode="json"),
             "portfolio": portfolio.output.model_dump(mode="json"), "synthesis": synthesis.output.model_dump(mode="json"),
             "cost_usd": sum(float(r.cost_usd) for r in reports)}
 
@@ -179,7 +214,8 @@ async def process_queue(*, user_id, analyzer=analyze_document):
             with research_session() as session:
                 item = session.get(ResearchItem, item_id)
                 # Preserve completed analysis if only downstream routing failed.
-                item.status = "analyzed" if item.analyzed_at else "failed"
+                if not item.analyzed_at:
+                    item.status = "failed"
                 item.error = str(exc)[:2000]
                 item.lease_until = None
                 item.next_attempt_at = datetime.now(UTC) + timedelta(hours=24)
@@ -241,7 +277,7 @@ async def sync_research(*, user_id="ariel"):
     # Retry action delivery from saved analysis without spending on another fleet.
     with research_session() as session:
         repairs = [(i.id, json.loads(i.analysis_json)) for i in session.scalars(select(ResearchItem).where(
-            ResearchItem.user_id == user_id, ResearchItem.status == "analyzed", ResearchItem.error.is_not(None)).limit(20))]
+            ResearchItem.user_id == user_id, ResearchItem.status.in_(["analyzed", "analyzed_partial"]), ResearchItem.error.is_not(None)).limit(20))]
     for item_id, payload in repairs:
         await asyncio.to_thread(_finish, item_id, payload, user_id=user_id)
     polled = await poll_sources(user_id=user_id)

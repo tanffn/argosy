@@ -80,21 +80,24 @@ values:
     source_id: "israeli_tax_authority_pension_exemption_2025"
     as_of_date: "2025-01"
     rationale: |
-      Pension qualifying-income exemption rate under the rights-fixation
-      regime (replaced the older flat 35%). Phasing further by 2027+; the
-      Wave 5 tax engine consumes a year-indexed table, not this single
-      value. This shipped value is the 2025 baseline.
+      2025 maximum fraction of the qualifying-pension ceiling, not the whole
+      annuity and not proof of personal entitlement. Schedule: 52% in 2024,
+      57% in 2025, 57.5% in 2026, 62.5% in 2027, 67% from 2028.
+      Personal grants/capital withdrawals and rights fixation affect use.
     confidence: "high"
 
   tax.us_dividend_treaty_withholding:
-    value: 0.15
+    value: 0.25
     unit: "fraction"
     source_id: "us_israel_tax_treaty"
-    as_of_date: "1995-01"
+    as_of_date: "2026-09-12"
     rationale: |
-      US source dividends to Israeli residents withheld at 15% per treaty.
-      Israeli tax engine applies foreign-tax-credit interaction:
-      israeli_tax_due = max(0, 0.25 * gross - 0.15 * gross_us_withheld).
+      Ordinary US portfolio dividends: eligible Israeli-resident individual
+      with valid W-8BEN, operative treaty Article 12(2)(a) general rate 25%.
+      US cash withholding = 0.25 * US gross. Assumed usable base credit is
+      capped at Israeli base liability; net subtracts US cash withholding
+      plus residual Israeli tax and applicable surtax. Exempt RIC/REIT cases,
+      actual broker rates and personal credit treatment need separate evidence.
     confidence: "high"
 
   # ─── US NRA estate tax ────────────────────────────────────────────────
@@ -104,9 +107,11 @@ values:
     source_id: "us_nra_estate_tax"
     as_of_date: "2024-01"
     rationale: |
-      $60K exemption for non-US-persons holding US-situs assets at death.
-      Federal estate tax rate above the exemption is graduated 18-40%.
-      UCITS-domiciled funds are NOT US-situs and do not count toward this.
+      Legacy key: $60K is the simplified NRA filing/credit-equivalent threshold,
+      NOT a deduction before applying estate brackets. Generally compute tax
+      on the taxable US-situs estate at death-date FMV, then apply the $13K
+      credit and relevant adjustments. Filing threshold includes certain gifts.
+      Foreign corporate shares are generally non-US-situs; check legal structure.
     confidence: "high"
 
   us_estate.nra_warn_threshold_usd:

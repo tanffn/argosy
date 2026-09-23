@@ -41,6 +41,17 @@ def _bundle(ticker, **kw):
     return base
 
 
+def test_prompt_preserves_real_sec_transaction_fields_and_feed_failures():
+    from argosy.agents.thesis_monitor import _render_feed_body
+    rendered = _render_feed_body(_bundle("NVDA", insider=[{
+        "transaction_date": "2026-09-10", "filer_name": "Example Officer", "role": "CFO",
+        "transaction_code": "S", "shares": 10, "value_usd": 2000,
+        "post_transaction_holdings": 9990, "is_10b5_1": True,
+    }], feed_errors=["company news unavailable"]))
+    for text in ("2026-09-10", "Example Officer", "CFO", "code=S", "value=2000", "post_holdings=9990", "10b5_1=True", "UNAVAILABLE EVIDENCE"):
+        assert text in rendered
+
+
 @pytest.mark.asyncio
 async def test_report_shape_and_default_intact() -> None:
     canned = {

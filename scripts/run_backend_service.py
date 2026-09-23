@@ -95,6 +95,7 @@ class BackendServiceSupervisor:
                 env=env,
                 stdout=out_f,
                 stderr=err_f,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except Exception:
             out_f.close()

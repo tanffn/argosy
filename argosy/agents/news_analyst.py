@@ -74,10 +74,12 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
     #: never surfaced the ~55% China tariffs and CELH missed the Texas AG
     #: probe. The analyst may run a few targeted WebSearch queries so the
     #: CAUSAL story (and hence re-entry conditions) is in the digest.
-    #: WebFetch deliberately NOT enabled — search snippets suffice for
-    #: headline materiality, and full-page fetches multiply token cost +
-    #: prompt-injection surface.
-    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch",)
+    #: Bounded primary-document retrieval supports explicit follow-up questions;
+    #: search snippets alone do not verify financing/trial/filing details.
+    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch", "WebFetch")
+    claude_code_max_turns = 10
+    claude_code_keep_tool_stream_open = True
+    claude_code_public_documents = True
 
     def build_prompt(
         self,
@@ -86,6 +88,7 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
         news_payload: dict[str, list[dict[str, Any]]],
         time_window_label: str = "overnight",
         research_inputs: dict[str, str] | None = None,
+        research_question: str = "",
     ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
@@ -123,7 +126,8 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
             "the report.\n"
             "  - `top_line` is one sentence for a dashboard card; lead with "
             "the most material item across all tickers.\n"
-            "  - WEB SEARCH: you have the WebSearch tool. You SHOULD run "
+            "  - ROUTINE WEB SEARCH (only when no targeted research question is supplied): "
+            "you have the WebSearch tool. You SHOULD run "
             "1-3 targeted web searches for MATERIAL recent developments "
             "on the tickers in scope — earnings surprises, regulatory or "
             "legal actions, tariffs / trade policy, M&A, guidance changes "
@@ -153,6 +157,8 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
         from argosy.logging import get_logger
 
         system += "\n" + GUIDANCE + "\n"
+        from argosy.agents.research_guidance import targeted_research_guidance
+        system += targeted_research_guidance(research_question)
         for t in tickers:
             try:
                 research = (research_inputs.get(t) if research_inputs is not None
@@ -171,12 +177,19 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
                 continue
             inner_lines: list[str] = []
             for it in items:
-                title = (it.get("headline") or "").replace("</news>", "")
-                src = it.get("source") or ""
-                url = it.get("url") or ""
+                # Both the Finnhub contract and the normalized Yahoo fallback
+                # reach this consumer. Preserve provenance from either feed.
+                title = (it.get("headline") or it.get("title") or "").replace("</news>", "")
+                src = it.get("source") or it.get("publisher") or ""
+                url = it.get("url") or it.get("link") or ""
+                published = it.get("published")
+                if published is None:
+                    published = it.get("datetime")
                 summary = (it.get("summary") or "").replace("</news>", "")
                 inner_lines.append(
-                    f"- title: {title}\n  source: {src}\n  url: {url}\n  summary: {summary}"
+                    f"- title: {title}\n  source: {src}\n  url: {url}\n"
+                    f"  published (provider value; numeric values are Unix seconds): {published if published is not None else 'unknown'}\n"
+                    f"  summary: {summary}"
                 )
             source_id = f"news/{t}"
             sources.append((source_id, "\n".join(inner_lines)))

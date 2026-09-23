@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import select
 
 from argosy.services.order_sheet import NoActionLine, VoiceVerdict
-from argosy.state.models import PositionStance
+from argosy.state.models import HoldingReview, PositionStance
 
 
 def _aware(value: datetime | None, fallback: datetime) -> datetime:
@@ -81,6 +81,44 @@ def load_portfolio_voices(
                     decision_scope="prior_context",
                 )
             )
+        out[symbol] = voices
+
+    # The stance table is a cached projection, usually refreshed by Portfolio
+    # reads. A scheduled sheet must see a completed holdings review even when
+    # nobody has visited that page since the review/import. Read the durable
+    # source, retaining the plan voice and the review's actual event time.
+    reviews = db.execute(
+        select(HoldingReview).where(
+            HoldingReview.user_id == user_id,
+            HoldingReview.symbol.in_(sorted(symbols)),
+        ).order_by(HoldingReview.reviewed_at.desc(), HoldingReview.id.desc())
+    ).scalars()
+    seen: set[str] = set()
+    for review in reviews:
+        symbol = review.symbol.strip().upper()
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        voices = [v for v in out.get(symbol, [])
+                  if v.source != "review" and not v.source.startswith("review:")]
+        if voices:
+            out[symbol] = voices
+        else:
+            out.pop(symbol, None)
+        # A failed/abstaining/disputed attempt is not a settled HOLD. Do not
+        # fill missing coverage using one, or reach back past it for a pass.
+        if review.outcome not in {"hold", "proposed", "dedup_skipped"}:
+            continue
+        verdict = (review.verdict or "").upper()
+        if verdict not in {"BUY", "ADD", "HOLD", "TRIM", "SELL"}:
+            continue
+        voices.append(VoiceVerdict(
+            source=f"review:{review.outcome}",
+            verdict=verdict,
+            as_of=_aware(review.reviewed_at, now),
+            rationale=review.reason or "portfolio review verdict",
+            decision_scope="prior_context",
+        ))
         out[symbol] = voices
 
     for symbol in symbols - set(out):

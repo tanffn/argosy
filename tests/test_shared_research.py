@@ -148,6 +148,88 @@ async def test_youtube_cursor_only_advances_after_all_uploads_queued(store, monk
     assert (await worker.queue_youtube(user_id='a'))['queued'] == 0
 
 
+@pytest.mark.asyncio
+async def test_youtube_poll_error_write_cannot_abort_other_sources(store, monkeypatch):
+    from argosy.services import research_worker as worker, youtube_intelligence as youtube
+    monkeypatch.setattr(worker, "research_session", store)
+    sources = [dict(id=n, channel_name=f"Channel {n}", youtube_channel_id=f"UC{n}",
+                    enabled=True, last_seen_video_id=None) for n in (1, 2)]
+    monkeypatch.setattr(youtube, "list_youtube_sources", lambda **kw: {"sources": sources})
+    def fetch(channel):
+        if channel == "UC1":
+            raise OSError("getaddrinfo failed")
+        return [dict(video_id="good", title="Stock thesis", published_at=NOW.isoformat())]
+    def record(source_id, *args):
+        if source_id == 1:
+            raise RuntimeError("database is locked")
+    monkeypatch.setattr(youtube, "_fetch_feed", fetch)
+    monkeypatch.setattr(youtube, "_update_poll", record)
+    monkeypatch.setattr(youtube, "_video_ingested", lambda *args: False)
+    result = await worker.queue_youtube(user_id="a")
+    assert result["sources_checked"] == 2 and result["queued"] == 1
+    assert result["failures"] == [{"source": "Channel 1", "error": "getaddrinfo failed",
+                                   "poll_receipt_error": "database is locked"}]
+
+
+@pytest.mark.asyncio
+async def test_youtube_partial_failure_is_not_recorded_as_success(monkeypatch):
+    from argosy.services import research_worker as worker, youtube_intelligence as youtube
+    from argosy.services.jobs.summary_status import derive_run_status
+    async def queue(**kwargs):
+        return {"failures": [{"source": "one", "error": "DNS unavailable"}]}
+    async def sync(**kwargs):
+        return {"failures": [], "analyzed": 1}
+    monkeypatch.setattr(worker, "queue_youtube", queue)
+    monkeypatch.setattr(worker, "sync_research", sync)
+    result = await youtube.sync_youtube_subscriptions(user_id="a")
+    assert derive_run_status(result)[0] == "error"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_public_uploads_cannot_advance_checkpoint(store, monkeypatch):
+    from urllib.error import HTTPError
+
+    import yt_dlp
+    from yt_dlp.extractor.youtube import YoutubeTabIE
+
+    from argosy.services import research_worker as worker, youtube_intelligence as youtube
+
+    channel = "UC" + "a" * 22
+    receipts = []
+    source = dict(id=1, channel_name="Channel", youtube_channel_id=channel,
+                  enabled=True, last_seen_video_id="old00000000")
+    monkeypatch.setattr(worker, "research_session", store)
+    monkeypatch.setattr(youtube, "list_youtube_sources", lambda **kw: {"sources": [source]})
+    monkeypatch.setattr(youtube, "_update_poll", lambda *args: receipts.append(args))
+
+    def unavailable(*args, **kwargs):
+        raise HTTPError("https://www.youtube.com/feeds/videos.xml", 404, "Gone", {}, None)
+
+    class PartialUploads(yt_dlp.YoutubeDL):
+        def extract_info(self, *args, **kwargs):
+            extractor = YoutubeTabIE(self)
+
+            def entries():
+                yield {"id": "new00000000", "title": "First valid upload"}
+                # Use the installed extractor's actual incomplete-data handling,
+                # not an invented exception at Argosy's fetch seam.
+                extractor._extract_response("continuation", {}, check_get_keys="contents")
+
+            return {"channel_id": channel, "entries": entries()}
+
+    monkeypatch.setattr(youtube, "urlopen", unavailable)
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", PartialUploads)
+    monkeypatch.setattr(YoutubeTabIE, "_call_api", lambda *args, **kwargs: {})
+    result = await worker.queue_youtube(user_id="a")
+    assert result["queued"] == 0
+    assert len(result["failures"]) == 1
+    assert "Incomplete data" in result["failures"][0]["error"]
+    assert len(receipts) == 1 and receipts[0][2] is None
+    assert "Incomplete data" in receipts[0][3]
+    with store() as db:
+        assert db.scalars(select(ResearchItem)).all() == []
+
+
 def test_youtube_finish_does_not_deliver_duplicate_recommendations(store, monkeypatch):
     from argosy.services import research_worker as worker, ingest_recommendation_router as router
     monkeypatch.setattr(worker, 'research_session', store)

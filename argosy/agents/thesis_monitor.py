@@ -209,9 +209,13 @@ def _render_feed_body(bundle: dict[str, Any]) -> str:
     insider = bundle.get("insider") or []
     if insider:
         lines = [
-            f"- {_scrub(i.get('filed'))} {_scrub(i.get('filer'))} "
-            f"({_scrub(i.get('relation'))}): code={_scrub(i.get('code'))} "
-            f"shares={_scrub(i.get('shares'))} value={_scrub(i.get('value'))}"
+            f"- {_scrub(i.get('transaction_date', i.get('filed')))} "
+            f"{_scrub(i.get('filer_name', i.get('filer')))} "
+            f"({_scrub(i.get('role', i.get('relation')))}): "
+            f"code={_scrub(i.get('transaction_code', i.get('code')))} "
+            f"shares={_scrub(i.get('shares'))} value={_scrub(i.get('value_usd', i.get('value')))} "
+            f"post_holdings={_scrub(i.get('post_transaction_holdings'))} "
+            f"10b5_1={_scrub(i.get('is_10b5_1'))}"
             for i in insider[:20]
         ]
         parts.append("INSIDER (SEC Form 4):\n" + "\n".join(lines))

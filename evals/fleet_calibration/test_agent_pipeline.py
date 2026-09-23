@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 from copy import deepcopy
@@ -167,6 +168,34 @@ def test_stage_receipt_verifiers_reject_wrong_role_or_schema() -> None:
     wrong_sanitizer = _sanitizer_receipt()
     wrong_sanitizer["stage"] = 99
     assert verify_sanitizer(_packet(), wrong_sanitizer)["ok"] is False
+
+
+def test_calibration_agents_follow_production_model_policy() -> None:
+    from agent_pipeline import (
+        CalibrationClassifierSourcingAgent,
+        CalibrationGradingAgent,
+        CalibrationReviewAgent,
+        CalibrationSanitizerAgent,
+    )
+
+    agents = (
+        CalibrationClassifierSourcingAgent(),
+        CalibrationSanitizerAgent(),
+        CalibrationReviewAgent(),
+        CalibrationGradingAgent(),
+    )
+    assert {agent.model for agent in agents} == {"claude-opus-5"}
+
+
+def test_score_preview_does_not_crash_cp1252_console() -> None:
+    from score import print_console_preview
+
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252")
+    print_console_preview("BUY \u2192 HOLD", stream=console)
+    console.flush()
+
+    assert raw.getvalue().decode("cp1252").splitlines() == ["BUY \\u2192 HOLD"]
 
 
 def test_sanitizer_input_is_blind_to_outcome_but_has_exact_trader_payload() -> None:
@@ -717,15 +746,24 @@ async def test_missing_construction_classifier_receipt_blocks_live_point(
 
 
 def test_synthetic_sanitizer_accepts_not_applicable_protocol_checks() -> None:
-    from agent_pipeline import verify_sanitizer
+    from agent_pipeline import build_sanitizer_input, verify_sanitizer
+    from run_suite import build_constraints
 
     packet = _packet()
     packet["synthetic"] = True
+    packet["rescale_factor"] = None
+    constraints = build_constraints(packet)
+    sanitizer_input = build_sanitizer_input(packet, constraints)
     receipt = _sanitizer_receipt()
     for check in receipt["output"]["checks"][1:]:
         check["verdict"] = "not_applicable"
 
     assert verify_sanitizer(packet, receipt)["ok"] is True
+    assert sanitizer_input["synthetic"] is True
+    assert "FULLY FICTIONAL" in constraints
+    assert "fictional total portfolio NAV" in constraints
+    assert "$10,000" in constraints
+    assert "scaled by an undisclosed constant" not in constraints
 
 
 def test_persisted_replay_loader_uses_latest_duplicate_case(tmp_path: Path) -> None:

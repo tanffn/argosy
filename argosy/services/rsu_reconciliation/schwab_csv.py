@@ -2,7 +2,7 @@
 
 The Schwab Equity Awards Center exports a CSV with a quirky two-tier shape:
 
-  * "Sale" rows carry the gross/net summary of a share sale: ``Date``,
+  * "Sale" rows carry the cash summary of a share sale: ``Date``,
     ``Action='Sale'``, ``Quantity``, ``FeesAndCommissions``, ``Amount``.
   * One or more *RS* sub-rows immediately follow each Sale (``Type='RS'``)
     and break the sale down per-lot/grant: ``Shares``, ``SalePrice``,
@@ -198,11 +198,14 @@ def parse_csv(path: Path) -> SchwabReport:
         nonlocal pending_sale, pending_lots
         if pending_sale is None:
             return
-        gross = pending_sale["gross"]
         fees = pending_sale["fees"]
         total_taxes = sum((Decimal(str(lot.taxes_usd)) for lot in pending_lots),
                           start=Decimal("0"))
-        net = gross - fees - total_taxes
+        # Amount is the broker cash credit AFTER deductions, as corroborated
+        # by the matching Forced Disbursement. Subtracting commissions again
+        # understated net cash. Restore deductions only to derive gross.
+        net = pending_sale["amount"]
+        gross = net + fees + total_taxes
         report.sales.append(SchwabSale(
             date=pending_sale["date"],
             symbol=pending_sale["symbol"],
@@ -305,7 +308,7 @@ def parse_csv(path: Path) -> SchwabReport:
                 "date": _date(row.get("Date")),
                 "symbol": (row.get("Symbol") or "").strip(),
                 "quantity": _int(row.get("Quantity")) or 0,
-                "gross": _money(row.get("Amount")) or Decimal("0"),
+                "amount": _money(row.get("Amount")) or Decimal("0"),
                 "fees": _money(row.get("FeesAndCommissions")) or Decimal("0"),
             }
             pending_lots = []

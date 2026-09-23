@@ -38,15 +38,18 @@ import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.orm import Session
 
 from argosy.ingest.tsv import PortfolioPosition, PortfolioSnapshot
-from argosy.state.models import AuditLog, PortfolioSnapshotRow
+from argosy.logging import get_logger
+from argosy.state.models import AuditLog, PortfolioSnapshotRow, User
+
+log = get_logger("argosy.services.portfolio_snapshot_store")
 
 
 def _record_ingest_audit(
@@ -65,7 +68,7 @@ def _record_ingest_audit(
             entity_type="portfolio_snapshot",
             entity_id=str(entity_id or ""),
             payload_json=json.dumps(payload, default=str),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
     )
 
@@ -80,6 +83,8 @@ def persist_snapshot(
     allow_catastrophic_drop: bool = False,
     actor: str | None = None,
     override_reason: str | None = None,
+    expected_prior_id: int | None = None,
+    require_book_sync: bool = False,
 ) -> PortfolioSnapshotRow:
     """Write one parsed snapshot row. Returns the persisted ORM row.
 
@@ -122,9 +127,30 @@ def persist_snapshot(
             "override_reason for the audit trail",
         )
 
+    # Serialize book writers per tenant (SQLite takes its database writer
+    # lock here). Derived snapshots must still be based on the current book.
+    lock_book_writer(session, user_id)
     latest = get_latest_snapshot_row(session, user_id)
+    if expected_prior_id is not None and (latest is None or latest.id != expected_prior_id):
+        raise ValueError("portfolio changed during derived snapshot calculation; retry from current book")
     incoming_positions = list(snapshot.positions)
     covered = accounts_covered_from_positions(incoming_positions)
+    if not (snapshot.source_path or "").startswith(("fills-applied:", "self-refresh:")):
+        from argosy.state.models import Fill, FillBookApplication
+
+        applied_receipts = session.scalars(select(Fill).join(
+            FillBookApplication, FillBookApplication.fill_id == Fill.id).where(
+            Fill.user_id == user_id, FillBookApplication.applied_snapshot_id.is_not(None),
+        ))
+        for receipt in applied_receipts:
+            if receipt.account_id.strip().lower() not in covered:
+                continue
+            # Unzoned date-only statements may close anywhere UTC-12..UTC+14.
+            # Earliest possible end-of-day is 10:00 UTC on their stated date.
+            earliest_cutoff = datetime.combine(snapshot.snapshot_date, time(10), UTC) if snapshot.snapshot_date else None
+            execution = receipt.filled_at.replace(tzinfo=receipt.filled_at.tzinfo or UTC).astimezone(UTC)
+            if earliest_cutoff is None or execution >= earliest_cutoff:
+                raise ValueError("statement may predate applied executions in this account; reconciliation is required")
 
     try:
         assess_snapshot_ingest(
@@ -273,7 +299,7 @@ def persist_snapshot(
     row = PortfolioSnapshotRow(
         user_id=user_id,
         snapshot_date=snapshot.snapshot_date,
-        imported_at=datetime.now(timezone.utc),
+        imported_at=datetime.now(UTC),
         source_path=snapshot.source_path,
         positions_json=json.dumps(stamped, default=str),
         allocations_json=json.dumps(
@@ -329,6 +355,8 @@ def persist_snapshot(
         valued_as_of=snapshot.snapshot_date,
     )
     if sync_result.get("errors"):
+        if require_book_sync:
+            raise ValueError("durable holding-book synchronization failed: " + str(sync_result["errors"]))
         from argosy.logging import get_logger
         get_logger("argosy.portfolio_snapshot_store").warning(
             "unmanaged_sync_errors", **sync_result,
@@ -574,6 +602,11 @@ def _normalized_position_dicts(
             d["asset_type"] = ref.sector
         raw.append(d)
     return stamp_management_flags(raw, policy_symbols=policy_symbols)
+
+
+def lock_book_writer(session: Session, user_id: str) -> None:
+    """Transaction-scoped writer lock shared by receipts and snapshot writers."""
+    session.execute(update(User).where(User.id == user_id).values(id=User.id))
 
 
 def get_latest_snapshot_row(

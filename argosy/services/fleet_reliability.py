@@ -144,6 +144,13 @@ def is_transient_fleet_error(exc: BaseException) -> bool:
     if isinstance(exc, (FleetCallTimeout, asyncio.TimeoutError, TimeoutError)):
         return True
     text = str(exc)
+    # Exit 1 is a process result, not a diagnosis. The inner SDK runner only
+    # retries EMPTY-stderr exit-1 failures; do not undo that distinction here.
+    if "[claude.exe stderr]" in text or any(marker in text.lower() for marker in (
+        "remote managed settings", "authentication_error", "invalid api key",
+        "not logged in", "unauthorized", "permission denied",
+    )):
+        return False
     return bool(_EXIT1_RE.search(text) or "(exit code: 1)" in text)
 
 

@@ -175,7 +175,9 @@ def close_run(
         row.totals_json = json.dumps(totals, default=str)
     if macro_read is not None:
         row.macro_read_json = json.dumps(macro_read, default=str)
-    if error_message is not None:
+    if status == "ok":
+        row.error_message = None  # a successful retry clears the prior run-level failure
+    elif error_message is not None:
         row.error_message = error_message[:4000]
     session.commit()
     _log.info(

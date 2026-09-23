@@ -1,9 +1,36 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from argosy.services.sale_tax_facts import resolve_authoritative_sale
 
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("price,shares", [(219.6499, 751), (219.6499, 750), (219.64999389648438, 751)])
+def test_cent_rounded_whole_share_notional_is_executable(price, shares):
+    def tax_summary(session, user_id, **kwargs):
+        count = kwargs["max_eligible_shares"] + kwargs["max_breaking_shares"]
+        return SimpleNamespace(total_shares=count, incomplete_lot_shares=0,
+            gross_at_revalue_usd=count * price, embedded_tax_at_revalue_usd=1000,
+            simulation_date="2026-06-18")
+    gross = round(shares * price, 2)
+    result = resolve_authoritative_sale(None, user_id="ariel", symbol="NVDA",
+        gross_proceeds_usd=gross, current_price_usd=price, as_of=NOW,
+        tax_summary_fn=tax_summary, commission_fn=lambda g: SimpleNamespace(
+            commission=25, schedule=SimpleNamespace(source="test")))
+    assert result.eligible, result.failures
+    assert result.quantity == shares
+    assert result.net_fundable_usd == round(gross - 1025, 2)
+
+
+@pytest.mark.parametrize("gross", [100.01, 100.50, 0.001])
+def test_cent_rounding_does_not_allow_fractional_or_zero_share_sales(gross):
+    result = resolve_authoritative_sale(None, user_id="ariel", symbol="NVDA",
+        gross_proceeds_usd=gross, current_price_usd=100, as_of=NOW)
+    assert not result.eligible
+    assert "whole shares" in result.failures[0]
 
 
 def test_nvda_sale_uses_exact_tax_engine_result_and_sourced_commission() -> None:

@@ -488,6 +488,33 @@ def create_app() -> FastAPI:
         except ImportError:
             pass
 
+        # Private advisory chat is separate from passive Discord ingestion.
+        # No credentials or identity binding means no gateway task is started.
+        app.state.discord_advisor_job = None
+        app.state.discord_advisor_startup_error = None
+        try:
+            from argosy.transport.discord_advisor.job import (
+                build_discord_advisor_job,
+                discord_advisor_metadata,
+            )
+
+            advisor_job = build_discord_advisor_job(status_registry=registry)
+            app.state.discord_advisor_job = advisor_job
+            if advisor_job is not None:
+                registry.register(job=advisor_job, metadata=discord_advisor_metadata())
+        except Exception as exc:
+            # Status remains visible without disclosing config values or secrets.
+            app.state.discord_advisor_startup_error = (
+                "Private Discord advisor could not start. Check its local configuration "
+                "and database migration, then restart Argosy."
+            )
+            log.error("discord_advisor.startup_failed", error_type=type(exc).__name__)
+
+        from argosy.services.jobs.alpha_capture_daily import AlphaCaptureDailyJob, alpha_capture_metadata
+        alpha_capture_job = AlphaCaptureDailyJob()
+        scheduler.register_loop(alpha_capture_job)
+        registry.register(job=alpha_capture_job, metadata=alpha_capture_metadata())
+
         try:  # pragma: no cover - lands in commit #7
             from argosy.services.jobs.news_daily import (  # type: ignore[import-not-found]
                 NewsDailyJob,
@@ -680,6 +707,11 @@ def create_app() -> FastAPI:
                 "scheduler.period_directive_daily_register_failed",
                 error_type=type(exc).__name__,
             )
+
+        from argosy.services.jobs.knowledge_recheck import KnowledgeRecheckJob, knowledge_recheck_metadata
+        knowledge_recheck_loop = KnowledgeRecheckJob(user_id="ariel")
+        scheduler.register_loop(knowledge_recheck_loop)
+        registry.register(job=knowledge_recheck_loop, metadata=knowledge_recheck_metadata())
 
         # SnapshotRefreshJob — self-refresh the portfolio snapshot (quantities
         # carried, live reprice + fresh FX, provenance-marked insert). The TSV

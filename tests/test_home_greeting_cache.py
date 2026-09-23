@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
@@ -30,6 +30,12 @@ def db(tmp_path):
     finally:
         s.close()
         engine.dispose()
+
+
+def test_old_seven_day_bake_expires_at_minute_safety_cap(db):
+    hgc._write_bake(db, "ariel", {"stale": True}, now=_NOW, ttl_seconds=7 * 24 * 3600)
+    assert hgc._read_bake(db, "ariel", now=_NOW + timedelta(seconds=59)) == {"stale": True}
+    assert hgc._read_bake(db, "ariel", now=_NOW + timedelta(seconds=60)) is None
 
 
 def test_visit_bakes_and_serves_until_dirty(db, monkeypatch):

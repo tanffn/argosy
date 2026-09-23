@@ -15,7 +15,7 @@ dashboard with a confirm dialog (SDD §10.2 anti-phishing).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,6 +30,7 @@ from argosy.billing.entitlements import Entitlements, feature_required_tier
 from argosy.channels.email import EmailApprovalLink, EmailSettings
 from argosy.decisions.proposals import IllegalTransitionError
 from argosy.execution.router import ExecutionRouter
+from argosy.execution.settlement import FillSettlement
 from argosy.logging import get_logger
 from argosy.services.plan_proposal_diff import load_plan_targets
 from argosy.state import db as db_mod
@@ -105,9 +106,18 @@ class FillItem(BaseModel):
     action: str
     quantity: float
     price: float
-    commission: float
+    commission: float | None
     filled_at: str
     paper: bool
+    execution_time_confirmed: bool = False
+    commission_confirmed: bool = False
+    price_currency: str | None = None
+    commission_currency: str | None = None
+    native_account_id: str | None = None
+    book_status: str = "unassessed"
+    book_reason: str = ""
+    applied_snapshot_id: int | None = None
+    settlement: FillSettlement | None = None
 
 
 class FillsResponse(BaseModel):
@@ -121,8 +131,9 @@ class ManualFillRequest(BaseModel):
     external_fill_id: str
     quantity: float
     price: float
-    commission: float = 0.0
+    commission: float | None = None
     filled_at: datetime | None = None
+    settlement: FillSettlement | None = None
 
 
 class ManualFillResponse(BaseModel):
@@ -136,6 +147,9 @@ class ManualFillResponse(BaseModel):
     account_id: str
     filled_quantity: float
     target_quantity: float
+    book_status: str
+    book_reason: str
+    applied_snapshot_id: int | None
 
 
 class AuditItem(BaseModel):
@@ -328,6 +342,11 @@ async def list_fills(
         rows = (
             await session.execute(stmt.order_by(FillRow.filled_at.desc()).limit(limit).offset(offset))
         ).scalars().all()
+        from argosy.state.models import FillBookApplication
+
+        applications = {a.fill_id: a for a in (await session.scalars(select(FillBookApplication).where(
+            FillBookApplication.user_id == user_id, FillBookApplication.fill_id.in_([r.id for r in rows]),
+        )))}
 
         return FillsResponse(
             rows=[
@@ -343,9 +362,19 @@ async def list_fills(
                     action=r.action,
                     quantity=float(r.quantity),
                     price=float(r.price),
-                    commission=float(r.commission),
-                    filled_at=r.filled_at.isoformat(),
+                    commission=float(r.commission) if r.commission_confirmed else None,
+                    filled_at=r.filled_at.replace(tzinfo=r.filled_at.tzinfo or UTC).astimezone(UTC).isoformat(),
                     paper=bool(r.paper),
+                    execution_time_confirmed=bool(r.execution_time_confirmed),
+                    commission_confirmed=bool(r.commission_confirmed),
+                    price_currency=r.price_currency,
+                    commission_currency=r.commission_currency,
+                    native_account_id=r.native_account_id,
+                    book_status=applications[r.id].status if r.id in applications else "unassessed",
+                    book_reason=applications[r.id].reason if r.id in applications else "",
+                    applied_snapshot_id=applications[r.id].applied_snapshot_id if r.id in applications else None,
+                    settlement=(FillSettlement.model_validate_json(applications[r.id].settlement_json)
+                                if r.id in applications and applications[r.id].settlement_json else None),
                 )
                 for r in rows
             ],
@@ -376,6 +405,7 @@ async def capture_manual_fill(
                 price=body.price,
                 commission=body.commission,
                 filled_at=body.filled_at,
+                settlement=body.settlement,
             )
         except LookupError as exc:
             await session.rollback()

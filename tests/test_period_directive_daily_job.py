@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from argosy.services.allocation_author.proposal import Buy
+from argosy.services.allocation_research import _is_fund
 from argosy.services.jobs.period_directive_daily import (
     PeriodDirectiveDailyJob,
     compose_authored_directive,
@@ -118,7 +119,9 @@ def _accepted(*buys: Buy) -> SimpleNamespace:
             selection="SELECTED",
             radar_rank=index,
             radar_score=80.0,
-            research_verdict="BUY",
+            # Vehicle research supports HOLD/TRIM/SELL; the allocation author
+            # separately chooses to BUY an appropriate fund in this fixture.
+            research_verdict="HOLD" if _is_fund(buy.symbol) else "BUY",
             research_conviction="MED",
             evidence_fresh_as_of=now,
             key_advantage="Best comparative fit for the funded sleeve.",
@@ -387,6 +390,29 @@ def test_triage_skip_when_open_directive_still_accurate(alembic_engine_at_head):
     assert "still accurate" in out2["reason"]
     assert out2["proposal_id"] == out1["proposal_id"]
     assert compose_calls == [100_000.0]  # the fleet fired exactly once
+
+
+def test_failed_research_preserves_current_sheet_without_reauthoring(alembic_engine_at_head):
+    from argosy.services.allocation_research import sync_sheet_research
+    from tests.test_allocation_research import pending
+    with Session(alembic_engine_at_head) as db:
+        out = run_period_directive_daily(db, "ariel", detect_fn=lambda *a, **k: _event(100000),
+            compose_fn=lambda *a, **k: _accepted(Buy(symbol="EXUS", amount_usd=100000)))
+        original = db.get(ActionProposal, out["proposal_id"]).suggested_payload
+        sync_sheet_research(db, SimpleNamespace(user_id="ariel", candidate_comparisons=[],
+            pending_research=[pending(next_review_date=datetime.now(UTC).date())]), "test")
+        db.commit()
+        def fail(*args):
+            raise RuntimeError("provider unavailable")
+        def should_not_compose(*args, **kwargs):
+            raise AssertionError("A failed research attempt must not replace an unchanged validated sheet")
+        retried = run_period_directive_daily(db, "ariel", detect_fn=lambda *a, **k: _event(100000),
+            compose_fn=should_not_compose, research_fn=fail)
+        assert retried["status"] == "degraded" and retried["research"]["failures"]
+        assert retried["proposal_id"] == out["proposal_id"]
+        assert retried["order_sheet_fingerprint"] == out["order_sheet_fingerprint"]
+        assert db.get(ActionProposal, out["proposal_id"]).suggested_payload == original
+        assert retried["materialized_proposal_ids"] == []
 
 
 def test_legacy_prose_directive_is_upgraded_even_when_cash_is_unchanged(
@@ -743,3 +769,29 @@ def test_period_directive_daily_registers_with_its_own_metadata() -> None:
     assert "period_directive_daily" in reg._jobs  # type: ignore[attr-defined]
     md = period_directive_daily_metadata()
     assert md.schedule_cron == "0 19 * * *" and md.long_running is False
+
+
+def test_due_research_triggers_real_daily_composition_without_new_cash(alembic_engine_at_head):
+    from argosy.services.allocation_research import sync_sheet_research
+    from argosy.services.order_sheet import PendingResearch
+    item = PendingResearch(
+        tickers=["AAA"], disagreement="Uncertain endpoint", missing_evidence="Revenue support",
+        research_question="Is revenue supported?", next_review_date=datetime.now(UTC).date(),
+        reserved_usd=0, independence_reason="No new money available",
+    )
+    calls = []
+    with Session(alembic_engine_at_head) as db:
+        sync_sheet_research(db, SimpleNamespace(user_id="ariel", pending_research=[item], candidate_comparisons=[]), "prior")
+        db.commit()
+        def compose(db, *, user_id, excess_usd):
+            calls.append(excess_usd)
+            return None
+        def research(*_):
+            raise RuntimeError("explicit research failure")
+        out = run_period_directive_daily(
+            db, "ariel", detect_fn=lambda *a, **k: None,
+            recommendations_fn=lambda *a, **k: [], compose_fn=compose, research_fn=research,
+        )
+        assert calls == [0.0]  # never spend a prior sheet's hypothetical reserve
+        assert out["degraded"] and out["research"]["failures"]
+        assert out["proposal_id"] is None

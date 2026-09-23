@@ -84,6 +84,42 @@ def _triage_go(candidate, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_daily_news_reaches_deep_review_and_new_event_breaks_dedup(sf):
+    from argosy.state.models import NewsSignal
+    calls = []
+    async def deep(**kwargs):
+        calls.append(kwargs)
+        return DeepDecisionOutcome(ticker=kwargs["ticker"], status="blocked", blocked_reason="reviewed",
+                                   news_assessment={"disposition": "reuse", "rationale": "covered"})
+    async def run():
+        return await run_funnel("ariel", now=NOW, session_factory=sf, triage_fn=_triage_go,
+            deep_decision_fn=deep, settings=SimpleNamespace(decision_funnel_shadow=True, decision_funnel_stage3=True))
+    def add_news(key):
+        with sf() as session:
+            session.add(NewsSignal(source="rss", source_ref=key, received_at=NOW,
+                parsed_tickers='["NVDA"]', sentiment="negative", source_trust="high",
+                evidence_excerpt=key, raw_text="excluded raw text", materiality="high"))
+            session.commit()
+    add_news("First dated event")
+    await run()
+    assert json.loads(calls[0]["review_context"])["evidence"][0]["excerpt"] == "First dated event"
+    evidence = json.loads(calls[0]["review_context"])["evidence"][0]
+    assert evidence["source"] == "rss" and evidence["source_trust"] == "high"
+    assert evidence["source_ref"] == "First dated event" and evidence["received_at"]
+    first_count = len(calls)
+    await run()
+    assert len(calls) == first_count
+    add_news("Second materially different event")
+    await run()
+    assert len(calls) > first_count
+    assert any("Second materially different event" in call.get("review_context", "") for call in calls[first_count:])
+    assert all("review_context" not in call for call in calls if call["ticker"] != "NVDA")
+    with sf() as session:
+        snapshots = session.scalars(sa.select(DecisionSnapshot)).all()
+        assert all(json.loads(row.decision_json)["news_assessment"]["disposition"] == "reuse" for row in snapshots)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_mode", ["exception", "quorum_failed", "error"])
 async def test_failed_deep_decision_is_retryable_not_a_cooldown_snapshot(sf, failure_mode):
     async def failed(**kwargs):

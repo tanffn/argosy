@@ -1,0 +1,262 @@
+{
+  "started": "2026-09-11T11:33:45.793355+00:00",
+  "pipeline_version": 1,
+  "results": [
+    {
+      "case_id": "qbt_synthetic",
+      "alias": "QBT",
+      "category": "synthetic",
+      "grading": "synthetic_winner",
+      "real": "SYNTHETIC winner-shape (no real company)",
+      "freeze_date": null,
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "classifier_receipt_available": false,
+      "classifier_receipt_preflight": {
+        "ok": false,
+        "mismatches": [
+          {
+            "field": "receipt",
+            "actual": "missing"
+          }
+        ]
+      },
+      "packet_snapshot": {
+        "case_id": "qbt_synthetic",
+        "alias": "QBT",
+        "analyst_reports": [
+          {
+            "agent_role": "fundamentals",
+            "report_name": "fundamentals/QBT",
+            "company": "Quantex Biotools (alias QBT)",
+            "as_of": "current",
+            "market_cap_usd_m": 4200,
+            "share_price_usd": 27.8,
+            "balance_sheet": {
+              "cash_and_equivalents_usd_m": 810,
+              "total_debt_usd_m": 2350,
+              "stockholders_equity_usd_m": 390,
+              "annual_interest_expense_usd_m": 168,
+              "note": "levered; maturities refinanced out 4-9 years, covenant headroom thin"
+            },
+            "annual_income_statement": [
+              {
+                "fy": "FY-3",
+                "revenue_usd_m": 5900,
+                "net_income_usd_m": -95
+              },
+              {
+                "fy": "FY-2",
+                "revenue_usd_m": 6100,
+                "revenue_growth_pct": 3.4,
+                "net_income_usd_m": -470
+              },
+              {
+                "fy": "FY-1 (latest full year)",
+                "revenue_usd_m": 4450,
+                "revenue_growth_pct": -27.0,
+                "gross_margin_pct": 29,
+                "net_income_usd_m": -740,
+                "note": "gross margin depressed by write-downs; structural GM nearer ~34%"
+              }
+            ],
+            "latest_quarter": {
+              "which": "Q1, reported ~6 weeks ago",
+              "revenue_usd_m": 940,
+              "revenue_growth_yoy_pct": -18,
+              "gaap_net_income_usd_m": -120,
+              "note": "fourth consecutive quarterly loss; opex cut ~28% over two years"
+            },
+            "valuation": {
+              "ps_trailing": 0.94,
+              "ev_s_trailing": 1.29,
+              "pe_trailing": null,
+              "ebitda": "approximately breakeven",
+              "price_action": "stock -58% over two years but up ~160% off its multi-year low a few months ago"
+            },
+            "confidence": "HIGH"
+          },
+          {
+            "agent_role": "news",
+            "report_name": "news/QBT",
+            "business_description": "Designer of automated laboratory instrumentation and the consumable reagent cartridges they run — the #2 player in both instruments and consumables against a dominant incumbent (~75-85% share in each). Revenue fell by a quarter over four years as it lost placements in clinical labs and collapsed to ~2% share of the hospital-network segment (from ~20% a decade ago). The business is kept alive by an annuity: it is the sole instrument supplier to TWO national reference-lab chains under long-term contracts (~$1.1B/yr, stable). A respected instrumentation engineer became CEO two years ago, cut opex ~28%, refinanced the debt, and bet the company on one platform.",
+            "recent_developments": [
+              "The company is 12-18 months from launching a CLEAN-SHEET analyzer platform; management claims ~40% throughput and cost-per-test advantage vs its current platform in internal validation. If real, first competitive product in a decade; if it slips, the balance sheet leaves little room for another attempt.",
+              "Just signed a ~$380M up-front technology-licensing joint venture in a large overseas market — non-dilutive cash plus a future royalty stream.",
+              "The dominant incumbent's product cadence has visibly slipped — it delayed its own next-generation platform for the second time, the first crack in a decades-long execution record.",
+              "The consumables line attached to upcoming reference-lab contract renewals is growing.",
+              "Sell-side consensus is deeply skeptical: most models assume the new platform gains little share and value the equity primarily on the reference-lab annuity."
+            ],
+            "macro_context": "Core clinical-lab instrument market flat to slightly declining; testing volumes growing steadily; sector inventory correction bottoming.",
+            "confidence": "HIGH"
+          }
+        ],
+        "positions": "No existing position in QBT. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+        "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The company, alias, events, and absolute dollar figures were invented for this test; there is no real company, original figure set, or rescaling factor to recover. Ratios, growth rates, margins, and valuation multiples are internally consistent. Evaluate strictly on the supplied facts and do not attempt to identify a real company.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+        "freeze_date": null,
+        "sources": [],
+        "trader_call": {
+          "debate_outcome": {},
+          "tier": "T2",
+          "mode": "long_hold",
+          "ticker": "QBT"
+        }
+      },
+      "agent_pipeline": {
+        "classifier_data_sourcing": {
+          "stage": 1,
+          "agent_role": "calibration_classifier_sourcing",
+          "status": "missing",
+          "output": {},
+          "verification": {
+            "ok": false,
+            "mismatches": [
+              {
+                "field": "category",
+                "expected": "synthetic",
+                "actual": null
+              },
+              {
+                "field": "grading",
+                "expected": "synthetic_winner",
+                "actual": null
+              },
+              {
+                "field": "output_schema",
+                "expected": "CalibrationClassificationOutput",
+                "actual": "5 validation errors for CalibrationClassificationOutput\ncategory\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ngrading\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfreeze_date\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nclassification_rationale\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsourced_facts\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing"
+              }
+            ]
+          }
+        }
+      },
+      "status": "disqualified_classifier"
+    },
+    {
+      "case_id": "srl_synthetic",
+      "alias": "SRL",
+      "category": "synthetic",
+      "grading": "synthetic_trap",
+      "real": "SYNTHETIC trap-shape (no real company)",
+      "freeze_date": null,
+      "temporal_violations": [],
+      "packet_calendar_years": [],
+      "classifier_receipt_available": false,
+      "classifier_receipt_preflight": {
+        "ok": false,
+        "mismatches": [
+          {
+            "field": "receipt",
+            "actual": "missing"
+          }
+        ]
+      },
+      "packet_snapshot": {
+        "case_id": "srl_synthetic",
+        "alias": "SRL",
+        "analyst_reports": [
+          {
+            "agent_role": "fundamentals",
+            "report_name": "fundamentals/SRL",
+            "company": "Solarium Robotics (alias SRL)",
+            "as_of": "current",
+            "market_cap_usd_m": 5100,
+            "share_price_usd": 41.2,
+            "balance_sheet": {
+              "cash_and_equivalents_usd_m": 1850,
+              "total_debt_usd_m": 0,
+              "note": "cash funds ~4 years of burn at the current rate"
+            },
+            "annual_income_statement": [
+              {
+                "fy": "FY-2",
+                "revenue_usd_m": 410,
+                "revenue_growth_pct": 21.0,
+                "net_income_usd_m": -160
+              },
+              {
+                "fy": "FY-1",
+                "revenue_usd_m": 570,
+                "revenue_growth_pct": 39.0,
+                "gross_margin_pct": 71.2,
+                "operating_income_usd_m": -430,
+                "net_income_usd_m": -415
+              },
+              {
+                "fy": "FY-0 (just ended)",
+                "revenue_usd_m": 610,
+                "revenue_growth_pct": 7.0,
+                "gross_margin_pct": 63.8,
+                "operating_income_usd_m": -640,
+                "net_income_usd_m": -595,
+                "free_cash_flow_usd_m": -420,
+                "note": "net loss ≈ 98% of revenue; gross margin falling"
+              }
+            ],
+            "valuation": {
+              "ps_trailing": 8.4,
+              "ev_s_trailing": 5.3,
+              "pe_trailing": null,
+              "price_action": "stock up ~110% year-to-date on robotics/automation theme enthusiasm; was -75% from its listing-era high before that"
+            },
+            "confidence": "HIGH"
+          },
+          {
+            "agent_role": "news",
+            "report_name": "news/SRL",
+            "business_description": "Vendor of software-orchestrated warehouse robotics ('robotics-as-a-service') for mid-size logistics and retail distribution customers. Founder-CEO is a charismatic serial entrepreneur with one prior billion-dollar exit. The company rebranded two years ago to emphasize 'autonomous AI robotics'. Stock-based compensation runs ~70% of revenue.",
+            "recent_developments": [
+              "Revenue growth collapsed from +39% to +7% in one year, coinciding with a switch from upfront-license to per-pick consumption pricing (management frames the deceleration as a temporary transition artifact).",
+              "A single third-party-logistics joint-venture partner has historically accounted for ~28% of revenue; disclosed 'deployments' definitions have been questioned by analysts.",
+              "A short-seller report this year alleged that a large unbilled receivable from a related-party integrator overstates revenue; the company denies wrongdoing and its auditor signed the accounts.",
+              "Management announced a new 'foundation-model-driven autonomy' product suite; the stock more than doubled year-to-date as investors sought pure-play automation exposure.",
+              "Management withdrew its prior 'non-GAAP profitable by FY-end' target; guidance implies continued heavy losses."
+            ],
+            "macro_context": "Post-tightening de-rating in unprofitable tech, with a violent year-to-date rally in anything automation/AI branded.",
+            "confidence": "HIGH"
+          }
+        ],
+        "positions": "No existing position in SRL. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+        "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The company, alias, events, and absolute dollar figures were invented for this test; there is no real company, original figure set, or rescaling factor to recover. Ratios, growth rates, margins, and valuation multiples are internally consistent. Evaluate strictly on the supplied facts and do not attempt to identify a real company.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+        "freeze_date": null,
+        "sources": [],
+        "trader_call": {
+          "debate_outcome": {},
+          "tier": "T2",
+          "mode": "long_hold",
+          "ticker": "SRL"
+        }
+      },
+      "agent_pipeline": {
+        "classifier_data_sourcing": {
+          "stage": 1,
+          "agent_role": "calibration_classifier_sourcing",
+          "status": "missing",
+          "output": {},
+          "verification": {
+            "ok": false,
+            "mismatches": [
+              {
+                "field": "category",
+                "expected": "synthetic",
+                "actual": null
+              },
+              {
+                "field": "grading",
+                "expected": "synthetic_trap",
+                "actual": null
+              },
+              {
+                "field": "output_schema",
+                "expected": "CalibrationClassificationOutput",
+                "actual": "5 validation errors for CalibrationClassificationOutput\ncategory\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ngrading\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfreeze_date\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nclassification_rationale\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsourced_facts\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing"
+              }
+            ]
+          }
+        }
+      },
+      "status": "disqualified_classifier"
+    }
+  ],
+  "finished": "2026-09-11T11:33:45.801784+00:00"
+}

@@ -32,6 +32,9 @@ import enum
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 
@@ -44,6 +47,32 @@ from argosy.state.models import KvCacheEntry, MacroCache, NewsCache
 _log = get_logger("argosy.adapters.cache")
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class CacheHit:
+    """Admission-time cache hit; preserve its original expiry, do not rewrite."""
+
+    value: Any
+
+_transient_writes: ContextVar[dict | None] = ContextVar("adapter_transient_cache", default=None)
+
+
+@contextmanager
+def transient_cache_writes():
+    """Use a per-operation memory cache for misses, while reading durable hits.
+
+    A caller holding a SQLite write transaction must not wait for another cache
+    connection to write the same database. This context keeps fresh responses
+    available within the operation without a second writer. Cache loss on exit
+    is intentional: authoritative results/evidence are persisted by the caller.
+    """
+    existing = _transient_writes.get()
+    token = _transient_writes.set(existing if existing is not None else {})
+    try:
+        yield
+    finally:
+        _transient_writes.reset(token)
 
 
 class CacheKind(str, enum.Enum):
@@ -109,6 +138,8 @@ async def cached_call(
     ttl_seconds: int,
     fetch: Callable[[], Any] | Callable[[], Awaitable[Any]],
     now: Callable[[], datetime] = _utcnow,
+    cacheable: Callable[[Any], bool] | None = None,
+    miss_handler: Callable | None = None,
 ) -> Any:
     """Return cached payload or call `fetch` and persist the result.
 
@@ -120,58 +151,67 @@ async def cached_call(
         fetch: zero-arg fetcher returning JSON-serializable data (sync or
             async). On cache hit it is NOT called.
         now: clock; tests inject a fixed clock.
+        cacheable: optional payload predicate, applied on both read and write.
+            Rejected cached payloads are misses; rejected fresh payloads are
+            returned without persistence. Existing callers retain their policy.
+        miss_handler: optional async admission handler(fetch, recheck). Recheck
+            returns CacheHit or None; returning a hit preserves original expiry.
 
     Returns:
         The deserialized payload (the same object that `fetch` returned).
     """
     table = _TABLE_BY_KIND[kind]
+    transient = _transient_writes.get()
+    memory_key = (table.__tablename__, provider, key)
+    async def recheck():
+        if transient is not None and ttl_seconds > 0 and memory_key in transient:
+            payload, expires = transient[memory_key]
+            if expires > now() and (cacheable is None or cacheable(payload)):
+                return CacheHit(payload)
+        if ttl_seconds > 0:
+            async with db_mod.get_session() as session:
+                row = (await session.execute(select(table).where(
+                    (table.provider == provider) & (table.key == key)
+                ))).scalar_one_or_none()
+                if row is not None:
+                    expires_at = _aware_utc(row.expires_at)
+                    if expires_at is not None and expires_at > now():
+                        payload = json.loads(row.payload_json)
+                        if cacheable is None or cacheable(payload):
+                            return CacheHit(payload)
+        return None
 
-    if ttl_seconds > 0:
-        async with db_mod.get_session() as session:
-            row = (
-                await session.execute(
-                    select(table).where(
-                        (table.provider == provider) & (table.key == key)
-                    )
-                )
-            ).scalar_one_or_none()
-            if row is not None:
-                expires_at = _aware_utc(row.expires_at)
-                if expires_at is not None and expires_at > now():
-                    return json.loads(row.payload_json)
-
-    fetched = fetch()
+    hit = await recheck()
+    if hit is not None:
+        return hit.value
+    fetched = miss_handler(fetch, recheck) if miss_handler else fetch()
     if hasattr(fetched, "__await__"):
         fetched = await fetched  # type: ignore[assignment]
+    if isinstance(fetched, CacheHit):
+        return fetched.value
+
+    if cacheable is not None and not cacheable(fetched):
+        return fetched
 
     payload_json = json.dumps(fetched, default=str)
     payload_hash = _hash_payload(payload_json)
     expires_at = now() + timedelta(seconds=max(ttl_seconds, 0))
 
+    if transient is not None:
+        transient[memory_key] = (json.loads(payload_json), expires_at)
+        return fetched
+
     async with db_mod.get_session() as session:
-        existing = (
-            await session.execute(
-                select(table).where(
-                    (table.provider == provider) & (table.key == key)
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is None:
-            session.add(
-                table(
-                    provider=provider,
-                    key=key,
-                    payload_json=payload_json,
-                    retrieved_at=now(),
-                    expires_at=expires_at,
-                    payload_hash=payload_hash,
-                )
-            )
+        if session.bind.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert
         else:
-            existing.payload_json = payload_json
-            existing.retrieved_at = now()
-            existing.expires_at = expires_at
-            existing.payload_hash = payload_hash
+            from sqlalchemy.dialects.sqlite import insert
+        values = dict(payload_json=payload_json, retrieved_at=now(),
+                      expires_at=expires_at, payload_hash=payload_hash)
+        statement = insert(table).values(provider=provider, key=key, **values)
+        await session.execute(statement.on_conflict_do_update(
+            index_elements=["provider", "key"], set_=values,
+        ))
         await session.commit()
 
     return fetched

@@ -45,8 +45,20 @@ from argosy.services.predictions.discord_backfill import (
 )
 from argosy.state.models import Base, Prediction, User
 
-
 USER = "ariel"
+
+
+@pytest.fixture(autouse=True)
+def isolated_discord_safety(tmp_path, monkeypatch):
+    from argosy.services.discord_feed_safety import DiscordFeedSafety
+    clock = [1000.0]
+    monkeypatch.setattr(
+        "argosy.services.predictions.discord_backfill.DiscordFeedSafety",
+        lambda token: DiscordFeedSafety(token, directory=tmp_path / "discord-safety", clock=lambda: clock[0]),
+    )
+    return clock
+
+
 CHANNEL_ID = 1234567890
 BOT_TOKEN = "MTk1NDg2NDU0OTQ4OTQ5MTI0.GExample.token_value_padding_xyz"
 
@@ -496,7 +508,7 @@ async def test_idempotency_re_run_dedups_via_writer(sync_session):
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_429_sleeps_then_retries():
+async def test_rate_limit_429_sleeps_then_retries(isolated_discord_safety):
     """Mock a 429 response on the first request; second responds 200.
     The fetcher must sleep ``Retry-After`` then return the second
     response's body.
@@ -505,6 +517,7 @@ async def test_rate_limit_429_sleeps_then_retries():
     sleep_calls: list[float] = []
 
     async def fake_sleep(s: float) -> None:
+        isolated_discord_safety[0] += s
         sleep_calls.append(s)
 
     payload_200 = [
@@ -542,12 +555,12 @@ async def test_rate_limit_429_sleeps_then_retries():
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_sustained_429_raises():
+async def test_rate_limit_sustained_429_raises(isolated_discord_safety):
     """Two 429s in a row → escalate as ``HTTPStatusError`` so the caller
     surfaces the throttle to the operator UI.
     """
     async def fake_sleep(s: float) -> None:  # noqa: ARG001
-        return
+        isolated_discord_safety[0] += s
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

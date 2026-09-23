@@ -36,6 +36,19 @@ def _packet():
         ],
         "policy_signals": {"nvda_policy_sell": {"due": False}},
         "decision_calibration": {
+            "benchmark": {
+                "symbol": "SPY",
+                "compared": 6,
+                "beat_rate": 0.5,
+                "mean_excess_return_pct": -0.01,
+                "recent": [{
+                    "ticker": "GLUE",
+                    "recommendation": "BUY",
+                    "subject_return_pct": 0.12,
+                    "benchmark_return_pct": 0.20,
+                    "decision_excess_return_pct": -0.08,
+                }],
+            },
             "order_sheet": {
                 "scored_predictions": 4,
                 "hit_rate": 0.5,
@@ -66,6 +79,14 @@ def test_agent_config():
     assert a.require_citations is False
 
 
+def test_author_compares_feasible_uses_without_cash_concentration_veto():
+    system, _ = DeploymentAuthorAgent(user_id="ariel").build_prompt(packet=_packet())
+    assert "retaining current holdings" in system
+    assert "after tax and friction over the same horizon" in system
+    assert "not an automatic concentration veto" in system
+    assert "do not compare a plan-approved" not in system
+
+
 @pytest.mark.real_seam
 def test_real_agent_dispatch_parses_authored_proposal(monkeypatch):
     """Exercise BaseAgent.run; only the external model call is replaced."""
@@ -83,7 +104,6 @@ def test_real_agent_dispatch_parses_authored_proposal(monkeypatch):
         "holds": ["NVDA", "SCHD"],
         "rationale": "One funded list.",
     }
-
     async def fake_call(self, *, system, user, **kwargs):
         assert "EXUS" in user and "deployment" in system.lower()
         return ModelCall(
@@ -118,6 +138,8 @@ def test_prompt_carries_the_judgment_calls():
     # Closed-loop calibration reaches the author as context, not a hard gate.
     assert "outcome calibration" in blob
     assert "schd sell: miss" in blob
+    assert "s&p-relative decision evidence" in blob
+    assert "glue buy" in blob and "decision excess -8.0%" in blob
     assert "uncalibrated" in blob
     assert "not a mechanical gate" in blob
 
@@ -232,7 +254,35 @@ def test_revision_prompt_includes_verifier_failures():
     assert "revise" in user.lower() or "correct" in user.lower()
 
 
+def test_author_does_not_implement_infeasible_reviewer_fragment():
+    system, _ = DeploymentAuthorAgent(user_id="ariel").build_prompt(packet=_packet())
+    assert "whole resulting position, not the addition" in system
+    assert "no requirement to fund every core sleeve" in system
+    assert "reviewer-requested replacement must satisfy these same funded sizing constraints" in system
+    assert "without increasing a staged sale ceiling" in system
+
+
 def test_no_feedback_prompt_has_no_revision_block():
     a = DeploymentAuthorAgent(user_id="ariel")
     _, user = a.build_prompt(packet=_packet(), feedback=None)
     assert "previous proposal" not in user.lower()
+
+
+def test_prompt_keeps_staged_sale_policy_and_pending_research_together():
+    packet = _packet()
+    packet["staged_sell_policies"] = {"NVDA": {"max_gross_usd": 50000, "execution_style": "staged_tranche"}}
+    packet["allocation_research_tasks"] = [{"tickers": ["KURA", "TYRA"], "research_question": "Source the endpoint"}]
+    agent = DeploymentAuthorAgent.__new__(DeploymentAuthorAgent)
+    _, prompt = agent.build_prompt(packet=packet)
+    assert "staged_tranche" in prompt
+    assert "Source the endpoint" in prompt
+
+
+def test_recovery_feedback_is_an_explicit_phase_not_optional_ticker_advice():
+    agent = DeploymentAuthorAgent.__new__(DeploymentAuthorAgent)
+    system, _ = agent.build_prompt(packet=_packet(), feedback=[
+        GateFailure("core_research_recovery", "Separate the unresolved choice", "revision"),
+    ])
+    assert "CURRENT PHASE: INDEPENDENT CORE / PENDING RESEARCH RECOVERY" in system
+    assert "Do NOT propose another" in system
+    assert "research_separation_blocker" in system

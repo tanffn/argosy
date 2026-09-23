@@ -49,6 +49,104 @@ from argosy.state import db as db_mod
 from argosy.state.models import CadenceState, JobRun
 
 
+def test_cron_health_uses_missed_slots_not_countdown_to_next_run():
+    from datetime import timedelta
+    from argosy.services.jobs.registry import _scheduled_stale_at
+
+    loop = _OkLoop()
+    loop.schedule = LoopSchedule(cron="30 18 * * 1-5", timezone="UTC")
+    friday = datetime(2026, 9, 18, 18, 35, tzinfo=timezone.utc)
+    assert _scheduled_stale_at(loop, friday) == datetime(2026, 9, 22, 18, 30, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    view = JobView(metadata=_meta(loop.name), last_run_status="ok", last_run_at=now - timedelta(days=3))
+    assert _derive_health(view, stale_at=now + timedelta(hours=1), cadence_seconds=1) == "green"
+    assert _derive_health(view, stale_at=now - timedelta(seconds=1)) == "amber"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effective_skip", [False, True])
+@pytest.mark.parametrize("stored_status,summary", [
+    ("error", {}),
+    ("ok", {"stages": {"prices": {"adapter_errors": 2}}}),
+])
+async def test_job_view_prefers_receipt_over_green_cadence(engine, stored_status, summary, effective_skip):
+    from datetime import timedelta
+
+    loop = _OkLoop()
+    registry, _ = _build_registry_and_scheduler((loop, _meta(loop.name)))
+    now = datetime.now(timezone.utc)
+    run_id = await registry._open_job_run(job_name=loop.name, manual_trigger=True,
+        triggered_by="test", started_at=now - timedelta(minutes=2))
+    await registry._close_job_run(run_id, status=stored_status, output_summary=summary)
+    async with db_mod.get_session() as session:
+        session.add(CadenceState(loop_name=loop.name, last_tick_at=now,
+                                last_status="ok", last_error=None))
+        await session.commit()
+    # A newer contention receipt did not perform successful work.
+    skipped = await registry._open_job_run(job_name=loop.name, manual_trigger=True,
+        triggered_by="test-skip", started_at=now - timedelta(minutes=1))
+    await registry._close_job_run(skipped, status="ok" if effective_skip else "skipped",
+                                 output_summary={"status": "skipped"} if effective_skip else {},
+                                 skip_reason="already_running")
+    view = await registry.get(loop.name)
+    assert view.last_run_status == "error"
+    assert view.last_run_error
+    assert view.health == "red"
+    # A genuine subsequent successful run clears it, without manual reset.
+    await registry.fire_now(loop.name)
+    view = await registry.get(loop.name)
+    assert view.last_run_status == "ok"
+    assert view.last_run_error is None
+    assert view.health == "green"
+
+
+@pytest.mark.asyncio
+async def test_job_view_uses_latest_completion_not_latest_start(engine):
+    from datetime import timedelta
+
+    loop = _OkLoop()
+    registry, _ = _build_registry_and_scheduler((loop, _meta(loop.name)))
+    now = datetime.now(timezone.utc)
+    slow = await registry._open_job_run(job_name=loop.name, manual_trigger=True,
+        triggered_by="slow", started_at=now - timedelta(minutes=3))
+    fast = await registry._open_job_run(job_name=loop.name, manual_trigger=True,
+        triggered_by="fast", started_at=now - timedelta(minutes=2))
+    await registry._close_job_run(fast, status="ok", finished_at=now - timedelta(minutes=1))
+    await registry._close_job_run(slow, status="error", error_message="late failure", finished_at=now)
+    view = await registry.get(loop.name)
+    assert view.last_run_status == "error"
+    assert view.last_run_error == "late failure"
+    assert view.health == "red"
+
+
+@pytest.mark.asyncio
+async def test_job_view_checks_legacy_funnel_stage_evidence(engine):
+    from uuid import uuid4
+    from argosy.state.models import FunnelRun, FunnelStageRow, User
+
+    loop = _OkLoop()
+    loop.name = "decision_funnel"
+    registry, _ = _build_registry_and_scheduler((loop, _meta(loop.name)))
+    now = datetime.now(timezone.utc)
+    async with db_mod.get_session() as session:
+        await session.merge(User(id="ariel", plan="free"))
+        funnel = FunnelRun(user_id="ariel", started_at=now, finished_at=now,
+                          status="ok", shadow=0, trigger="scheduler", idempotency_key=uuid4().hex)
+        session.add(funnel)
+        await session.flush()
+        funnel_id = funnel.id
+        session.add(FunnelStageRow(run_id=funnel_id, stage="stage2", subject="TEST",
+                                  subject_type="discovery", decision="triage_error", reason="outage"))
+        await session.commit()
+    receipt = await registry._open_job_run(job_name=loop.name, manual_trigger=True,
+        triggered_by="test", started_at=now)
+    await registry._close_job_run(receipt, status="ok", output_summary={"run_id": funnel_id})
+    view = await registry.get(loop.name)
+    assert view.last_run_status == "error"
+    assert view.last_run_error
+    assert view.health == "red"
+
+
 # ---------------------------------------------------------------------------
 # Test loops
 # ---------------------------------------------------------------------------

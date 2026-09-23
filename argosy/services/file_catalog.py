@@ -76,6 +76,7 @@ _ALLOWED_SOURCES = frozenset({
     # Captions fetched on an explicit user request.  They are external source
     # material consumed by the read-only YouTube research fleet.
     "youtube_transcript",
+    "browser_capture",
 })
 
 # Allowed values for the `kind` column. Cataloging-side classification

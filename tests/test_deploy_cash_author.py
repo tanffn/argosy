@@ -445,6 +445,93 @@ def test_route_reauthors_material_warn_and_persists_resolution(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_revised_sale_amount_uses_one_run_scoped_quote(monkeypatch):
+    from types import SimpleNamespace
+    _patch_doc(monkeypatch)
+    _enable(monkeypatch)
+    monkeypatch.setattr("argosy.services.allocation_author.packet_assembly.assemble_author_packet", lambda *a, **k: {})
+    quotes = []
+    resolutions = []
+    def quote(symbols, **kwargs):
+        quotes.append(symbols)
+        return {"NVDA": SimpleNamespace(evidence=SimpleNamespace(price_usd=219.6499 + len(quotes)))}, {}
+    monkeypatch.setattr("argosy.services.order_sheet_facts.collect_execution_facts", quote)
+    def tax(*args, **kwargs):
+        resolutions.append((kwargs["gross_proceeds_usd"], kwargs["current_price_usd"]))
+        return SimpleNamespace()
+    monkeypatch.setattr("argosy.services.sale_tax_facts.resolve_authoritative_sale", tax)
+    def arithmetic(proposal, packet, sale_resolver):
+        sale_resolver("NVDA", 10000)
+        sale_resolver("NVDA", 9000)
+        sale_resolver("NVDA", 10000)
+        return GateReport(status=GateStatus.BLOCK)
+    monkeypatch.setattr("argosy.services.allocation_author.verifier.verify_allocation_proposal", arithmetic)
+    def author(packet, **kwargs):
+        kwargs["verify"](AllocationProposal(cash_to_deploy=0), packet)
+        return AuthorOutcome(status="unavailable")
+    monkeypatch.setattr("argosy.services.allocation_author.reliable.authored_allocation", author)
+    response = TestClient(create_app()).get("/api/portfolio/deploy-cash", params={"cash_usd": 180000})
+    assert response.status_code == 200, response.text
+    assert quotes == [["NVDA"]]
+    assert resolutions == [(10000, 220.6499), (9000, 220.6499)]
+    from argosy.config import get_settings
+    get_settings.cache_clear()
+
+
+def test_recovery_phase_requires_pending_or_explicit_blocker(monkeypatch):
+    from argosy.services.deploy_decision_team import TeamDecision
+    from argosy.services.order_sheet import PendingResearch
+    _patch_doc(monkeypatch)
+    _enable(monkeypatch)
+    monkeypatch.setattr(
+        "argosy.services.allocation_author.verifier.verify_allocation_proposal",
+        lambda *a, **kw: GateReport(status=GateStatus.ACCEPT),
+    )
+    rounds = []
+    def review(*args, **kwargs):
+        rounds.append(1)
+        if len(rounds) == 3:
+            assert args[0]["recovery_review_objections"][0]["symbol"] == "AAA"
+        return TeamDecision(reviewers_ran=5, reviewers_expected=5, approved=[], flagged=[{
+            "symbol": "AAA", "objections": [{"impact": "changes_selection", "severity": "warn",
+                "recommended_ticker": "BBB", "concern": "The source evidence does not settle this comparison"}],
+        }])
+    monkeypatch.setattr("argosy.services.deploy_decision_team.run_deploy_decision_team", review)
+    def author(packet, **kwargs):
+        verify = kwargs["verify"]
+        proposal = AllocationProposal(cash_to_deploy=0, cash_to_reserve=180000)
+        assert verify(proposal, packet).status == GateStatus.REVISION_REQUIRED
+        second = verify(proposal, packet)
+        assert second.status == GateStatus.REVISION_REQUIRED
+        assert any(f.code == "core_research_recovery" for f in second.failures)
+        missing = verify(proposal, packet)
+        assert missing.status == GateStatus.BLOCK
+        assert missing.failures[0].code == "core_research_recovery_incomplete"
+        blocker = verify(proposal.model_copy(update={"research_separation_blocker": "Shared sale funding is unsafe"}), packet)
+        assert blocker.status == GateStatus.BLOCK
+        assert "Shared sale funding" in blocker.failures[0].detail
+        assert len(rounds) == 2
+        pending = PendingResearch(tickers=["AAA", "BBB"], disagreement="Evidence unresolved",
+            missing_evidence="Source endpoint", research_question="What supports the endpoint?",
+            next_review_date="2026-12-31", reserved_usd=10000, independence_reason="Separate funded reserve")
+        for tickers in (["UNRELATED"], ["AAA"]):
+            incomplete = verify(proposal.model_copy(update={"pending_research": [pending.model_copy(update={"tickers": tickers})]}), packet)
+            assert incomplete.status == GateStatus.BLOCK
+            assert incomplete.failures[0].code == "core_research_coverage_missing"
+            assert "BBB" in incomplete.failures[0].detail
+        assert len(rounds) == 2
+        still_disputed = verify(proposal.model_copy(update={"pending_research": [pending]}), packet)
+        assert len(rounds) == 3  # Recovery still reaches the full team.
+        assert still_disputed.status == GateStatus.BLOCK  # It cannot override fresh dissent.
+        return AuthorOutcome(status="rejected", proposal=proposal, report=blocker, attempts=3)
+    monkeypatch.setattr("argosy.services.allocation_author.reliable.authored_allocation", author)
+    response = TestClient(create_app()).get("/api/portfolio/deploy-cash", params={"cash_usd": 180000})
+    assert response.status_code == 200, response.text
+    assert len(rounds) == 3
+    from argosy.config import get_settings
+    get_settings.cache_clear()
+
+
 def test_zero_cash_current_recommendations_reach_author_as_sell_funded_switch(
     monkeypatch,
 ):

@@ -204,6 +204,23 @@ async def test_get_fund_returns_unknown_id_raises(engine: None) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('period', ['36m', '60m', 'ytd'])
+async def test_unsupported_period_never_relabels_12m_or_reads_cache(period, monkeypatch):
+    async def forbidden(**kwargs):
+        pytest.fail('unsupported period reached cache/network')
+    monkeypatch.setattr('argosy.adapters.data.gemelnet_adapter.cached_call', forbidden)
+    with pytest.raises(MissingDataSourceError, match='refusing to relabel'):
+        await GemelnetAdapter().get_fund_returns('1234', period=period)
+
+
+@pytest.mark.asyncio
+async def test_wrong_period_cannot_enter_12m_snapshot():
+    from argosy.adapters.data.gemelnet_adapter import persist_pension_snapshot
+    with pytest.raises(ValueError, match='12m columns'):
+        await persist_pension_snapshot(user_id='ariel', fund_returns={'fund_id': '1234', 'period': '60m', 'return_pct': 10})
+
+
+@pytest.mark.asyncio
 async def test_get_fund_returns_invalid_period_raises(engine: None) -> None:
     adapter = GemelnetAdapter(http_client=_FakeHttp(b""))
     with pytest.raises(ValueError):

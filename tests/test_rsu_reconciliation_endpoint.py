@@ -119,7 +119,7 @@ def test_rsu_reconciliation_with_synthetic_csv_pairs_disbursement(
     assert sale["date"] == "2026-04-20"
     assert sale["symbol"] == "NVDA"
     assert sale["quantity_shares"] == 1040
-    assert sale["gross_usd"] == pytest.approx(207538.02)
+    assert sale["gross_usd"] == pytest.approx(207542.50)
     assert sale["fees_usd"] == pytest.approx(4.48)
     assert len(sale["lots"]) == 2
     assert all(lot["holding_period"] == "LONG TERM" for lot in sale["lots"])
@@ -250,9 +250,9 @@ def test_rsu_reconciliation_surfaces_pending_sales_without_disbursement(
     pending = body["pending_sales"][0]
     assert pending["date"] == "2026-05-08"
     assert pending["quantity_shares"] == 600
-    assert pending["gross_usd"] == pytest.approx(121005.00)
-    # net = gross - fees (no employer taxes withheld at lot level here)
-    assert pending["net_usd"] == pytest.approx(121000.00)
+    assert pending["gross_usd"] == pytest.approx(121010.00)
+    # Amount is already net of the five-dollar broker fee.
+    assert pending["net_usd"] == pytest.approx(121005.00)
     # days_since_sale must be >= 0 (today is past 2026-05-08).
     assert pending["days_since_sale"] >= 0
 
@@ -263,7 +263,7 @@ def test_rsu_reconciliation_surfaces_pending_sales_without_disbursement(
     # Summary mirrors the list.
     s = body["summary"]
     assert s["pending_sales_count"] == 1
-    assert s["pending_sales_total_gross_usd"] == pytest.approx(121005.00)
+    assert s["pending_sales_total_gross_usd"] == pytest.approx(121010.00)
 
 
 def test_rsu_reconciliation_without_env_var_returns_warning_and_empty(

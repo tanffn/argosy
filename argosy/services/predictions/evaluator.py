@@ -75,7 +75,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
-from argosy.state.models import Prediction, PredictionOutcome
+from argosy.adapters.data.cache import transient_cache_writes
+from argosy.state.models import Prediction, PredictionOutcome, PredictionRecoveryState
 
 _log = get_logger("argosy.services.predictions.evaluator")
 
@@ -594,6 +595,7 @@ def find_due_predictions(
     return list(session.execute(stmt).scalars().all())
 
 
+@transient_cache_writes()
 def evaluate_prediction(
     session: Session,
     prediction: Prediction,
@@ -794,12 +796,14 @@ def _compute_outcome(
         "fixed_lookahead_7d",
         "fixed_lookahead_30d",
         "fixed_lookahead_180d",
+        "fixed_lookahead_365d",
         "order_sheet_due_date_v1",
     ):
         windows = {
             "fixed_lookahead_7d": 7,
             "fixed_lookahead_30d": 30,
             "fixed_lookahead_180d": 180,
+            "fixed_lookahead_365d": 365,
             "order_sheet_due_date_v1": int(prediction.timeframe_days or 1),
         }
         return _score_fixed_lookahead(
@@ -846,6 +850,7 @@ def _to_date(dt: datetime) -> date:
 #: family) dedup picks the re-evaluated outcome over the v1
 #: ``unparseable`` one — supersession WITHOUT mutating history.
 ENTRY_BACKFILL_SUFFIX = "_entry_backfilled"
+ENTRY_RECOVERY_SUFFIX = "_entry_backfilled_recovered"
 
 #: Base methods eligible for entry-backfill re-evaluation. ``target_stop``
 #: is deliberately excluded: its entry participates in the target/stop
@@ -855,6 +860,7 @@ ENTRY_BACKFILL_BASE_METHODS: tuple[str, ...] = (
     "fixed_lookahead_7d",
     "fixed_lookahead_30d",
     "fixed_lookahead_180d",
+    "fixed_lookahead_365d",
 )
 
 #: Calendar-day lookback when hunting for the entry bar. ``event_at``
@@ -999,6 +1005,7 @@ def _compute_backfilled_outcome(
     )
 
 
+@transient_cache_writes()
 def reevaluate_prediction(
     session: Session,
     prediction: Prediction,
@@ -1010,7 +1017,8 @@ def reevaluate_prediction(
     Insert-only supersession: the v1 outcome row (typically
     ``unparseable``) is left untouched; a NEW row is inserted under
     ``<base_method>_entry_backfilled``. Idempotency mirrors
-    :func:`evaluate_prediction` — an existing v2 row short-circuits,
+    :func:`evaluate_prediction` — a scored v2 row short-circuits. An unscorable
+    v2 stays retryable; successful recovery appends v3 and never rewrites v2,
     and the ``(prediction_id, evaluation_method)`` UNIQUE index is the
     second line of defence.
 
@@ -1028,12 +1036,27 @@ def reevaluate_prediction(
         .scalars()
         .first()
     )
-    if existing is not None:
+    if existing is not None and existing.outcome_kind != "unparseable":
         return existing
+
+    if existing is not None:
+        # A data outage is not a permanently settled evaluation. Preserve the
+        # failed v2 row and append v3 only when a retry can genuinely score it.
+        method = prediction.evaluation_method + ENTRY_RECOVERY_SUFFIX
+        recovered = session.scalars(select(PredictionOutcome).where(
+            PredictionOutcome.prediction_id == prediction.id,
+            PredictionOutcome.evaluation_method == method,
+        )).first()
+        if recovered is not None:
+            return recovered
 
     outcome = _compute_backfilled_outcome(
         prediction, price_fetcher=price_fetcher
     )
+    if existing is not None and outcome.kind == "unparseable":
+        # Daily job/batch bounds limit retry frequency; do not grow the ledger
+        # with identical failed outcomes, or label this as a successful score.
+        return existing
 
     row = PredictionOutcome(
         prediction_id=prediction.id,
@@ -1088,7 +1111,8 @@ def find_reevaluation_candidates(
     source: str | None = None,
 ) -> list[Prediction]:
     """Predictions whose v1 outcome is ``unparseable`` and that have no
-    v2 entry-backfilled outcome yet.
+    successful entry-backfilled outcome yet. Previously unscorable v2 results
+    remain retryable; an available-data v3 result settles the recovery.
 
     Selection:
 
@@ -1097,7 +1121,7 @@ def find_reevaluation_candidates(
     * an outcome row EXISTS for the base method with
       ``outcome_kind='unparseable'`` (scored rows are settled — the
       verdict stands; only structurally-unscored rows re-run)
-    * NO outcome row exists for ``<base>_entry_backfilled``
+    * NO scored outcome exists for ``<base>_entry_backfilled`` or its recovery method
     * optional ``source`` filter (e.g. ``'discord_alpha_report'``).
 
     Archived predictions are deliberately INCLUDED — retention archives
@@ -1124,20 +1148,24 @@ def find_reevaluation_candidates(
         .where(PredictionOutcome.prediction_id == Prediction.id)
         .where(
             PredictionOutcome.evaluation_method
-            == Prediction.evaluation_method + ENTRY_BACKFILL_SUFFIX
+            .in_((Prediction.evaluation_method + ENTRY_BACKFILL_SUFFIX,
+                  Prediction.evaluation_method + ENTRY_RECOVERY_SUFFIX))
         )
+        .where(PredictionOutcome.outcome_kind != "unparseable")
         .exists()
     )
 
     stmt = (
         select(Prediction)
+        .outerjoin(PredictionRecoveryState, PredictionRecoveryState.prediction_id == Prediction.id)
         .where(
             Prediction.evaluation_method.in_(ENTRY_BACKFILL_BASE_METHODS)
         )
         .where(Prediction.evaluation_due_at <= now)
         .where(unparseable_exists)
         .where(~backfilled_exists)
-        .order_by(Prediction.evaluation_due_at.asc(), Prediction.id.asc())
+        .order_by(PredictionRecoveryState.last_attempt_at.asc().nullsfirst(),
+                  Prediction.evaluation_due_at.asc(), Prediction.id.asc())
         .limit(batch_size)
     )
     if source is not None:
@@ -1146,6 +1174,7 @@ def find_reevaluation_candidates(
     return list(session.execute(stmt).scalars().all())
 
 
+@transient_cache_writes()
 def run_reevaluation_batch(
     session: Session,
     *,
@@ -1156,10 +1185,8 @@ def run_reevaluation_batch(
 ) -> ReevaluationSummary:
     """Entry-backfill re-evaluation over all eligible predictions.
 
-    On-demand path (backtest / operator-invoked) — deliberately NOT
-    wired into the daily cron: the daily evaluator keeps scoring new
-    predictions under their v1 method; this batch exists to recover
-    rows the v1 method structurally could not score. Caller owns the
+    Runs after ordinary scoring in the daily loop and supports operator recovery.
+    This batch recovers rows earlier attempts could not score. Caller owns the
     transaction (same contract as :func:`run_evaluator_batch`).
     """
     summary = ReevaluationSummary()
@@ -1177,6 +1204,14 @@ def run_reevaluation_batch(
     )
 
     for prediction in candidates:
+        # Persist fair rotation even for failures. Never mutate historical
+        # outcomes merely to schedule retries; the caller commits this state
+        # atomically with the batch. Unattempted and least-recently tried first.
+        state = session.get(PredictionRecoveryState, prediction.id)
+        if state is None:
+            session.add(PredictionRecoveryState(prediction_id=prediction.id, last_attempt_at=now))
+        else:
+            state.last_attempt_at = now
         try:
             outcome = reevaluate_prediction(
                 session, prediction, price_fetcher=price_fetcher
@@ -1229,6 +1264,7 @@ def run_reevaluation_batch(
 # ---------------------------------------------------------------------------
 
 
+@transient_cache_writes()
 def run_evaluator_batch(
     session: Session,
     *,

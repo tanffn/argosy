@@ -612,6 +612,7 @@ class DecisionFlow:
         persist_input_analysts: bool = True,
         consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold",
         funnel_meta: dict[str, Any] | None = None,
+        execution_policy: "ExecutionPolicy | str" = "normal",
     ) -> ApprovedProposal | BlockedProposal:
         """Run the full pipeline for the given tier.
 
@@ -632,6 +633,9 @@ class DecisionFlow:
         default behaviour: ``decision_run_id=None`` → open a fresh
         run; ``persist_input_analysts=True`` → persist as before.
         """
+        from argosy.services.chat_advisor.contracts import ExecutionPolicy
+
+        execution_policy = ExecutionPolicy(execution_policy)
         risk_caps = risk_caps or {}
         clock = now or _utcnow
 
@@ -643,7 +647,14 @@ class DecisionFlow:
         analysts_started_at = clock()
         if decision_run_id is None:
             decision_run_id = await self._open_decision_run(
-                ticker=ticker, tier=tier, started_at=analysts_started_at
+                ticker=ticker, tier=tier, started_at=analysts_started_at,
+                execution_policy=execution_policy,
+            )
+        else:
+            execution_policy = await self._effective_execution_policy(
+                run_id=decision_run_id,
+                ticker=ticker,
+                requested=execution_policy,
             )
 
         # Persist analyst reports + record the analysts phase — unless the
@@ -1047,7 +1058,11 @@ class DecisionFlow:
         global_mode = settings.execution.default_mode
         limited_mode = settings.limited_account.execution_mode
         queue_only = global_mode == "queue_only" or limited_mode == "queue_only"
-        if is_limited_t0t1 and not queue_only:
+        if (
+            is_limited_t0t1
+            and not queue_only
+            and execution_policy is not ExecutionPolicy.ANALYSIS_ONLY
+        ):
             initial_status = ProposalStatus.APPROVED
         if tier == Tier.T3:
             cooling_until = clock() + timedelta(
@@ -1367,7 +1382,8 @@ class DecisionFlow:
         }[tier]
 
     async def _open_decision_run(
-        self, *, ticker: str, tier: Tier, started_at: datetime
+        self, *, ticker: str, tier: Tier, started_at: datetime,
+        execution_policy: "ExecutionPolicy | str" = "normal",
     ) -> int:
         if self.config.skip_persistence:
             return 0
@@ -1376,12 +1392,51 @@ class DecisionFlow:
                 user_id=self.user_id,
                 ticker=ticker,
                 tier=tier.value,
+                execution_policy=str(getattr(execution_policy, "value", execution_policy)),
                 started_at=started_at,
                 status="running",
             )
             session.add(row)
             await session.commit()
             return row.id
+
+    async def _effective_execution_policy(
+        self,
+        *,
+        run_id: int,
+        ticker: str,
+        requested: "ExecutionPolicy",
+    ) -> "ExecutionPolicy":
+        """Make a pre-opened run authoritative and never weaken its policy."""
+        from argosy.services.chat_advisor.contracts import ExecutionPolicy
+
+        async with db_mod.get_session() as session:
+            row = await session.get(DecisionRun, run_id)
+            if row is None:
+                raise LookupError(f"decision run {run_id} not found")
+            if row.user_id != self.user_id:
+                raise PermissionError(
+                    f"decision run {run_id} belongs to another user"
+                )
+            if row.ticker.strip().upper() != ticker.strip().upper():
+                raise ValueError(
+                    f"decision run {run_id} is for {row.ticker}, not {ticker}"
+                )
+            # NULL is accepted only for pre-migration legacy rows and has the
+            # documented legacy meaning NORMAL. A caller may tighten it, never
+            # downgrade a persisted ANALYSIS_ONLY run.
+            persisted = ExecutionPolicy(
+                row.execution_policy or ExecutionPolicy.NORMAL.value
+            )
+            effective = (
+                ExecutionPolicy.ANALYSIS_ONLY
+                if ExecutionPolicy.ANALYSIS_ONLY in (persisted, requested)
+                else ExecutionPolicy.NORMAL
+            )
+            if persisted is not effective:
+                row.execution_policy = effective.value
+                await session.commit()
+            return effective
 
     async def _close_decision_run(
         self,

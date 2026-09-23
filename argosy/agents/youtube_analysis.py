@@ -53,6 +53,9 @@ class SpeakerCall(BaseModel):
     direction: Literal["bullish", "bearish", "neutral"]
     conviction: Literal["low", "medium", "high"]
     horizon_days: int | None = Field(default=None, ge=1)
+    forecast_origin_date: str | None = Field(default=None, description="Explicit original forecast date YYYY-MM-DD, otherwise null; never infer it from a retrospective claim")
+    target_date: str | None = Field(default=None, description="Explicit forecast deadline YYYY-MM-DD, otherwise null")
+    is_reiteration: bool = Field(default=False, description="True for an unchanged standing call repeated from earlier material, not a fresh forecast")
     timestamp: str = Field(description="Nearest transcript timestamp, HH:MM:SS")
     statement: str
     evidence_excerpt: str = Field(description="Short verbatim excerpt from the transcript")
@@ -182,6 +185,7 @@ def _safe_source_text(text: str) -> str:
 
 
 class YouTubeClaimsAgent(BaseAgent[TranscriptClaimsOutput]):
+    claude_code_force_toolless = True  # Untrusted source extraction, not an operator.
     agent_role = "youtube_claims"
     output_model = TranscriptClaimsOutput
     require_citations = True
@@ -213,6 +217,7 @@ class YouTubeClaimsAgent(BaseAgent[TranscriptClaimsOutput]):
 
 
 class YouTubeSkepticAgent(BaseAgent[TranscriptSkepticOutput]):
+    claude_code_force_toolless = True
     agent_role = "youtube_skeptic"
     output_model = TranscriptSkepticOutput
     require_citations = True
@@ -239,6 +244,7 @@ class YouTubeSkepticAgent(BaseAgent[TranscriptSkepticOutput]):
 
 
 class YouTubePortfolioAgent(BaseAgent[TranscriptPortfolioOutput]):
+    claude_code_force_toolless = True
     agent_role = "youtube_portfolio_relevance"
     output_model = TranscriptPortfolioOutput
     require_citations = True
@@ -284,6 +290,7 @@ class YouTubePortfolioAgent(BaseAgent[TranscriptPortfolioOutput]):
 
 
 class YouTubeSynthesisAgent(BaseAgent[YouTubeFleetSynthesisOutput]):
+    claude_code_force_toolless = True
     agent_role = "youtube_synthesis"
     output_model = YouTubeFleetSynthesisOutput
     require_citations = True
@@ -302,6 +309,8 @@ class YouTubeSynthesisAgent(BaseAgent[YouTubeFleetSynthesisOutput]):
         skeptic_json: str,
         portfolio_source_id: str,
         portfolio_json: str,
+        portfolio_context_source_id: str | None = None,
+        portfolio_context: str | None = None,
     ) -> tuple[str, str, list[tuple[str, str]]]:
         system = (
             "You are the final editor for a read-only Argosy research panel. "
@@ -333,7 +342,8 @@ class YouTubeSynthesisAgent(BaseAgent[YouTubeFleetSynthesisOutput]):
                 (claims_source_id, _safe_source_text(claims_json)),
                 (skeptic_source_id, _safe_source_text(skeptic_json)),
                 (portfolio_source_id, _safe_source_text(portfolio_json)),
-            ],
+            ] + ([(portfolio_context_source_id, _safe_source_text(portfolio_context))]
+                 if portfolio_context_source_id and portfolio_context else []),
         )
 
 

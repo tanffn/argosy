@@ -16,6 +16,7 @@ import {
   type DiscoveryCandidateDTO,
   type DiscoveryDTO,
   type DiscoverySourceDTO,
+  type HistoricalReplayDTO,
   type NewsCoverageDTO,
   type RecommendationScorecardDTO,
 } from "@/lib/api";
@@ -90,28 +91,142 @@ function SourceScorecardDetails({ source }: { source: DiscoverySourceDTO }) {
 function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO }) {
   const tactical = data.horizons["30d"];
   const thesis = data.horizons["180d"];
+  const annual = data.horizons["365d"];
+  const selfEvaluations = data.self_evaluations ?? [];
   const recent = data.recent.filter((row) => row.horizon_days === 180).slice(0, 8);
   const surfaced = (data.surfaced_order_sheets?.recent ?? [])
     .filter((row) => row.horizon_days === 180)
     .slice(0, 8);
   const surfacedThesis = data.surfaced_order_sheets?.horizons["180d"];
+  const benchmark = data.benchmark;
+  const shadow = data.shadow_order_sheets;
   return (
     <details className="rounded border border-border/60 px-3 py-2 text-xs">
       <summary className="cursor-pointer font-medium">
-        Our recommendations — bought or not
+        Automatic self-evaluation vs S&amp;P 500 — recommendations bought or not
       </summary>
       <div className="mt-2 space-y-2 text-muted-foreground">
-        <div className="grid gap-1 sm:grid-cols-2">
+        {benchmark && (
+          <div className="rounded border border-border/50 p-2">
+            <div className="font-medium text-foreground/80">
+              Did Argosy add value over {benchmark.symbol}?
+            </div>
+            <div>
+              {benchmark.compared} calls compared · {benchmark.beats} beat · {benchmark.lags} lagged · {benchmark.ties} tied · beat rate {fmtRate(benchmark.beat_rate)}
+              {benchmark.avg_excess_return_pct !== null
+                ? ` · average excess ${benchmark.avg_excess_return_pct >= 0 ? "+" : ""}${benchmark.avg_excess_return_pct.toFixed(1)}pp`
+                : ""}
+            </div>
+            <div className="text-[10px]">{benchmark.basis}</div>
+            {shadow && shadow.evaluated > 0 && (
+              <div className="mt-1 border-t border-border/40 pt-1">
+                Authored shadow allocations: {shadow.evaluated} evaluated · {shadow.beats} beat · {shadow.lags} lagged.
+                {shadow.recent[0]
+                  ? ` Latest: $${shadow.recent[0].allocated_usd.toLocaleString()} across ${shadow.recent[0].line_count} buys, ${shadow.recent[0].weighted_excess_return_pct >= 0 ? "+" : ""}${shadow.recent[0].weighted_excess_return_pct.toFixed(1)}pp vs SPY.`
+                  : ""}
+                <div className="text-[10px]">{shadow.basis}</div>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="grid gap-1 sm:grid-cols-3">
           <div>
             30-day: {tactical.graded}/{tactical.scheduled} graded · {tactical.wins} wins · {tactical.misses} misses · win {fmtRate(tactical.win_rate)}
           </div>
           <div>
             6-month: {thesis.graded}/{thesis.scheduled} graded · {thesis.wins} wins · {thesis.misses} misses · win {fmtRate(thesis.win_rate)}
           </div>
+          <div>
+            1-year: {annual.graded}/{annual.scheduled} graded · {annual.wins} wins · {annual.misses} misses · win {fmtRate(annual.win_rate)}
+          </div>
         </div>
         <div>
-          Forecast coverage: {data.coverage.with_30d_forecast}/{data.coverage.actionable_verdicts} at 30 days · {data.coverage.with_180d_forecast}/{data.coverage.actionable_verdicts} at 6 months
+          Forecast coverage: {data.coverage.with_30d_forecast}/{data.coverage.actionable_verdicts} at 30 days · {data.coverage.with_180d_forecast}/{data.coverage.actionable_verdicts} at 6 months · {data.coverage.with_365d_forecast}/{data.coverage.actionable_verdicts} at 1 year
         </div>
+        {(data.coverage.unscorable_evaluations ?? 0) > 0 && (
+          <div className="text-warning">
+            {data.coverage.unscorable_evaluations} historical evaluations lack usable price evidence. They are not counted as wins or losses; see the reports below.
+          </div>
+        )}
+        {data.coverage.legacy_proposals_without_verdict_link > 0 && (
+          <details className="rounded border border-border/50 p-2">
+            <summary className="cursor-pointer">
+              Historical proposal coverage: {data.coverage.legacy_proposals_with_all_clocks ?? 0}/{data.coverage.legacy_proposals_without_verdict_link} with 30/180/365-day clocks
+            </summary>
+            <p className="my-2">These proposals predate verdict links. Original dates and rationale are retained; no verdicts or historical prices were invented. Clocks are not completed evaluations.</p>
+            {(data.coverage.legacy_proposals_missing_clocks ?? []).map((row) => (
+              <div key={row.proposal_id} className="text-warning">{row.ticker}: missing {row.missing_horizons.join("/")} day clocks</div>
+            ))}
+            <table className="w-full text-left text-[11px]">
+              <thead><tr><th>Original call</th><th>You did</th><th>Six-month review</th><th>Report</th></tr></thead>
+              <tbody>
+                {(data.legacy_proposal_evaluations ?? []).map((row) => (
+                  <tr key={row.prediction_id} className="border-t border-border/30 align-top">
+                    <td className="py-1 pr-2"><details><summary className="cursor-pointer">{row.ticker} · {row.recommendation} · {new Date(row.recommended_at).toLocaleDateString()}</summary>{row.expectation}</details></td>
+                    <td className="pr-2">{plainStatus(row.disposition)}</td>
+                    <td className="pr-2">{new Date(row.evaluation_date).toLocaleDateString()}</td>
+                    <td>{row.report}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+        {selfEvaluations.length > 0 && (
+          <div className="overflow-x-auto rounded border border-border/50 p-2">
+            <div className="mb-1 font-medium text-foreground/80">
+              Automatic self-evaluation
+            </div>
+            <table className="w-full min-w-[860px] text-left text-[11px]">
+              <thead>
+                <tr>
+                  <th className="pr-3">Ticker / call</th>
+                  <th className="pr-3">Made</th>
+                  <th className="pr-3">Evaluate</th>
+                  <th className="pr-3">Target</th>
+                  <th>Evaluation report</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selfEvaluations.slice(0, 36).map((row) => (
+                  <tr key={row.prediction_id} className="align-top border-t border-border/30">
+                    <td className="py-1 pr-3">
+                      <div className="font-medium text-foreground">
+                        {row.ticker} · {row.recommendation}
+                        {row.conviction ? ` / ${row.conviction}` : ""}
+                      </div>
+                      <div>{plainStatus(row.source)} · {plainStatus(row.disposition)}</div>
+                    </td>
+                    <td className="py-1 pr-3">
+                      {new Date(row.recommended_at).toLocaleDateString()}
+                      {row.entry_price !== null ? ` @ $${row.entry_price.toFixed(2)}` : ""}
+                    </td>
+                    <td className="py-1 pr-3">
+                      {new Date(row.evaluation_date).toLocaleDateString()}
+                      <div>{row.horizon_days}d</div>
+                    </td>
+                    <td className="max-w-[280px] py-1 pr-3">
+                      <details>
+                        <summary className="cursor-pointer">View target</summary>
+                        <div className="mt-1 whitespace-pre-wrap">{row.target}</div>
+                        {row.expectation && (
+                          <div className="mt-1 whitespace-pre-wrap text-foreground/70">
+                            Expectation: {row.expectation}
+                          </div>
+                        )}
+                      </details>
+                    </td>
+                    <td className="max-w-[300px] py-1">
+                      <span className={row.grade === "miss" || row.grade === "missed_opportunity" ? "text-warning" : ""}>
+                        {row.report}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
         {surfacedThesis && (
           <div>
             Shown in trade plans, whether accepted or ignored: {surfacedThesis.graded}/{surfacedThesis.scheduled} six-month calls graded; {surfacedThesis.wins} wins; {surfacedThesis.misses} misses
@@ -171,6 +286,108 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
         {data.coverage.universe_recall_status !== "available" && (
           <div className="text-warning">Full-market recall: {data.coverage.universe_recall_reason}</div>
         )}
+      </div>
+    </details>
+  );
+}
+
+function ReplayLab({ data }: { data: HistoricalReplayDTO["lab"] }) {
+  if (!data) return null;
+  const pct = (value: number | null) => value == null ? "unknown" : `${value.toFixed(1)}%`;
+  return (
+    <details className="mt-2 rounded border border-border/60 p-2">
+      <summary className="cursor-pointer font-medium">Decision lab — {data.status.replaceAll("_", " ")}</summary>
+      <div className="mt-2 space-y-2">
+        <div>Run {data.run_id}. Synthetic controls: {data.controls_passed ? "passed" : "not passed; historical interpretation blocked"}.</div>
+        <div>Rechecked against current integrity rules; original decisions and review records remain unchanged.</div>
+        <div>6 / 12 / 24-month market comparisons are gross diagnostics, not after-tax trade returns.</div>
+        {data.cases.map((row) => (
+          <details key={row.case_id} className="border-t border-border/30 pt-1">
+            <summary className="cursor-pointer">{row.case_id} ({row.synthetic ? "fictional control" : "historical"}) — {row.action ?? "not run"} / {row.confidence ?? "unknown"}{!row.qualified && " — excluded"}</summary>
+            {row.exclusion_reason && <div className="text-warning">{row.exclusion_reason}</div>}
+            {row.review_violations?.map((value, i) => <div key={`violation-${i}`} className="text-warning">Review finding: {value}</div>)}
+            {row.review_warnings?.map((value, i) => <div key={`warning-${i}`}>Review caveat: {value}</div>)}
+            {row.grading_mismatches?.map((value, i) => <div key={`grading-${i}`} className="text-warning">Scoring mismatch ({value.field}): reference {JSON.stringify(value.expected)}, grader {JSON.stringify(value.actual)}.</div>)}
+            {row.rationale && <div className="whitespace-pre-wrap">{row.rationale}</div>}
+            {row.falsifiers?.map((value, i) => <div key={i}>Falsifier: {value}</div>)}
+            {row.market_horizons?.map((h) => <div key={h.months}>{h.months} months: {h.status === "available" ? `asset ${pct(h.subject_return_pct)}; S&P 500 proxy ${pct(h.benchmark_return_pct)}; difference ${h.excess_return_pp?.toFixed(1)} percentage points` : h.status.replaceAll("_", " ")}</div>)}
+            {!row.synthetic && !row.market_horizons && <div>Fixed-horizon market evidence not available yet.</div>}
+          </details>
+        ))}
+        {data.outcome_errors?.map((text) => <div key={text} className="text-warning">{text}</div>)}
+        {data.limitations.map((text) => <div key={text} className="text-[10px] text-muted-foreground">{text}</div>)}
+      </div>
+    </details>
+  );
+}
+
+export function HistoricalReplay({ data }: { data: HistoricalReplayDTO }) {
+  if (data.status !== "scored" || !data.raw_direction || !data.reviewer_certified) {
+    return (
+      <details className="rounded border border-border/60 px-3 py-2 text-xs">
+        <summary className="cursor-pointer font-medium">Historical replay (anti-hindsight)</summary>
+        <div className="mt-2 text-muted-foreground">{data.message}</div>
+        <ReplayLab data={data.lab} />
+      </details>
+    );
+  }
+  const raw = data.raw_direction;
+  const certified = data.reviewer_certified;
+  return (
+    <details className="rounded border border-border/60 px-3 py-2 text-xs">
+      <summary className="cursor-pointer font-medium">
+        Replay diagnostics -- {certified.correct}/{certified.total} qualified class matches
+      </summary>
+      <div className="mt-2 space-y-2 text-muted-foreground">
+        <div className="rounded border border-border/50 p-2">
+          <div className="font-medium text-foreground/80">Time-machine test, separate from live outcomes</div>
+          <div>
+            Qualified class matches: {certified.correct}/{certified.total} ({fmtRate(certified.rate)}) | raw direction: {raw.correct}/{raw.total} ({fmtRate(raw.rate)})
+          </div>
+          {data.evidence_counts && <div>{data.evidence_counts.synthetic} fictional controls; {data.evidence_counts.historical} historical cases. These are not live investment wins.</div>}
+          <div>
+            Coverage: {data.coverage.executed ?? 0}/{data.coverage.packets} packets replayed | {data.coverage.missing_receipt} missing / {data.coverage.invalid_receipt ?? 0} invalid sourcing receipts | {data.coverage.temporal_disqualified} rejected for hindsight risk
+          </div>
+          {certified.disqualified > 0 && (
+            <div className="text-warning">
+              {certified.disqualified} replay result{certified.disqualified === 1 ? " was" : "s were"} excluded: incomplete or failed integrity/review checks.
+            </div>
+          )}
+          <div className="text-[10px]">{data.message}</div>
+          <ReplayLab data={data.lab} />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[700px] text-left text-[11px]">
+            <thead><tr><th className="pr-3">Frozen case</th><th className="pr-3">Expected</th><th className="pr-3">Argosy</th><th className="pr-3">Direction</th><th>Independent review</th></tr></thead>
+            <tbody>
+              {data.cases.map((row) => (
+                <tr key={row.case_id} className="align-top border-t border-border/30">
+                  <td className="py-1 pr-3 font-medium text-foreground">{row.case_id}</td>
+                  <td className="py-1 pr-3 uppercase">{row.expected_actions.join(" / ") || "--"}</td>
+                  <td className="py-1 pr-3 uppercase">{row.action} / {row.confidence}</td>
+                  <td className={row.in_expected_class ? "py-1 pr-3 text-success" : "py-1 pr-3 text-warning"}>
+                    {row.in_expected_class ? "correct" : "miss"}
+                  </td>
+                  <td className={row.reviewer_qualified ? "py-1" : "py-1 text-warning"}>
+                    {row.reviewer_qualified ? "qualified" : "excluded -- see evidence"}
+                    <details className="mt-0.5 text-muted-foreground">
+                      <summary className="cursor-pointer">Decision evidence</summary>
+                      <div className="max-w-xl space-y-1 whitespace-pre-wrap pt-1">
+                        {row.rationale_summary && <div><span className="font-medium text-foreground/80">Why:</span> {row.rationale_summary}</div>}
+                        {row.size !== null && <div><span className="font-medium text-foreground/80">Size:</span> {row.size.toLocaleString()} {row.size_units ?? ""}</div>}
+                        {row.falsifiers.length > 0 && <div><span className="font-medium text-foreground/80">Falsifiers:</span> {row.falsifiers.join("; ")}</div>}
+                        {row.next_validation_point && <div><span className="font-medium text-foreground/80">Next check:</span> {row.next_validation_point}</div>}
+                        {row.rerating_horizon && <div><span className="font-medium text-foreground/80">Horizon:</span> {row.rerating_horizon}</div>}
+                        {!row.reviewer_qualified && row.review_violations[0] && <div className="text-warning"><span className="font-medium">Excluded because:</span> {row.review_violations[0]}</div>}
+                        {row.review_warnings?.map((value, i) => <div key={i}>Review caveat: {value}</div>)}
+                      </div>
+                    </details>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </details>
   );
@@ -296,6 +513,7 @@ function CandidateDetails({
 export function DiscoveryCard() {
   const [data, setData] = useState<DiscoveryDTO | null>(null);
   const [recommendations, setRecommendations] = useState<RecommendationScorecardDTO | null>(null);
+  const [historicalReplay, setHistoricalReplay] = useState<HistoricalReplayDTO | null>(null);
   const [newsCoverage, setNewsCoverage] = useState<NewsCoverageDTO | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -312,14 +530,35 @@ export function DiscoveryCard() {
     if (typeof api.newsCoverage === "function") {
       api.newsCoverage("ariel").then(setNewsCoverage).catch(() => null);
     }
+    if (typeof api.historicalReplay === "function") {
+      api.historicalReplay().then(setHistoricalReplay).catch(() => null);
+    }
+    const refreshRecommendations = () => {
+      if (typeof api.recommendationScorecard === "function") {
+        api.recommendationScorecard("ariel").then(setRecommendations).catch(() => null);
+      }
+    };
+    const interval = window.setInterval(refreshRecommendations, 60_000);
+    window.addEventListener("focus", refreshRecommendations);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshRecommendations);
+    };
   }, []);
 
   const refresh = () => {
     setLoading(true);
     setError(null);
-    api
-      .portfolioDiscoveryRefresh(false)
-      .then(setData)
+    Promise.all([
+      api.portfolioDiscoveryRefresh(false),
+      typeof api.recommendationScorecard === "function"
+        ? api.recommendationScorecard("ariel")
+        : Promise.resolve(null),
+    ])
+      .then(([discovery, scorecard]) => {
+        setData(discovery);
+        if (scorecard) setRecommendations(scorecard);
+      })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   };
@@ -412,6 +651,7 @@ export function DiscoveryCard() {
       </CardHeader>
       <CardContent className="space-y-2">
         {recommendations && <RecommendationScorecard data={recommendations} />}
+        {historicalReplay && <HistoricalReplay data={historicalReplay} />}
         {newsCoverage && <NewsCoverage data={newsCoverage} />}
         {error && (
           <div className="text-xs text-destructive">Discovery failed: {error}</div>

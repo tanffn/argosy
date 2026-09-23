@@ -474,8 +474,12 @@ class NewsDailyJob(CadenceLoop):
                 ).scalar_one()
             )
             new_signals = (stage1_result.persisted or 0) > 0
-            fire = new_signals or pending_earnings_evidence > 0
+            # Persisted unfinished work is sufficient. Otherwise an outage's
+            # RSS backlog can remain stranded on every subsequent quiet day.
+            fire = new_signals or pending > 0
             reasons: list[str] = ["new_signals"] if new_signals else []
+            if pending > 0 and not new_signals:
+                reasons.append("pending_backlog")
             if pending_earnings_evidence > 0:
                 reasons.append("pending_earnings_evidence")
             vol_moves: dict[str, float] = {}
@@ -537,6 +541,7 @@ class NewsDailyJob(CadenceLoop):
                         session,
                         agent=agent,
                         user_holdings=user_holdings,
+                        commit_batches=True,
                     )
                     stage2_status = "ok"
                     session.commit()
@@ -627,6 +632,7 @@ def _build_summary(
     )
 
     out: dict[str, Any] = {
+        "error_count": stage2_result.skipped if stage2_result else 0,
         "counts": counts,
         "stages": {
             "ingest": stage1_status,

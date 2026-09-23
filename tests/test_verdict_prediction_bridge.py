@@ -392,18 +392,20 @@ def test_best_effort_wrapper_uses_injected_factory(session_factory):
         session_factory=session_factory,
     )
     assert pred is not None
-    assert _count_preds(session_factory) == 2
+    assert _count_preds(session_factory) == 3
     s = session_factory()
     try:
         rows = s.query(Prediction).order_by(Prediction.evaluation_due_at).all()
-        assert [row.timeframe_days for row in rows] == [30, 180]
+        assert [row.timeframe_days for row in rows] == [30, 180, 365]
         assert rows[1].evaluation_method in {"fixed_lookahead_180d", "target_stop"}
         assert '"horizon_days": 180' in rows[1].source_ref
+        assert rows[2].evaluation_method in {"fixed_lookahead_365d", "target_stop"}
+        assert '"horizon_days": 365' in rows[2].source_ref
     finally:
         s.close()
 
 
-def test_daily_repair_backfills_both_clocks_without_execution(session_factory):
+def test_daily_repair_backfills_all_clocks_without_execution(session_factory):
     s = session_factory()
     try:
         verdict = Verdict(
@@ -420,9 +422,9 @@ def test_daily_repair_backfills_both_clocks_without_execution(session_factory):
     finally:
         s.close()
 
-    assert first["predictions_created"] == 2
+    assert first["predictions_created"] == 3
     assert second["predictions_created"] == 0
-    assert [row.timeframe_days for row in rows] == [30, 180]
+    assert [row.timeframe_days for row in rows] == [30, 180, 365]
 
 
 # ---------------------------------------------------------------------------

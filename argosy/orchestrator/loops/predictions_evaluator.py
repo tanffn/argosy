@@ -48,6 +48,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.services.jobs.registry import JobMetadata
+from argosy.services.predictions.benchmark import (
+    BenchmarkSummary,
+    default_benchmark_price_fetcher,
+    ensure_prediction_benchmark_outcomes,
+)
 from argosy.services.predictions.evaluator import (
     EvaluatorSummary,
     PriceFetcher,
@@ -172,6 +177,7 @@ class PredictionsEvaluatorLoop(CadenceLoop):
         enabled: bool = True,
         session_factory: sessionmaker | None = None,
         price_fetcher: PriceFetcher | None = None,
+        benchmark_price_fetcher: PriceFetcher | None = None,
         batch_size: int = _DEFAULT_BATCH_SIZE,
         retention_days: int = DEFAULT_RETENTION_DAYS,
         archive_days: int = DEFAULT_ARCHIVE_DAYS,
@@ -196,6 +202,11 @@ class PredictionsEvaluatorLoop(CadenceLoop):
             )
         self._session_factory = session_factory
         self._price_fetcher = price_fetcher or default_price_fetcher
+        self._benchmark_price_fetcher = (
+            benchmark_price_fetcher
+            or price_fetcher
+            or default_benchmark_price_fetcher
+        )
         self._batch_size = batch_size
         self._retention_days = retention_days
         self._archive_days = archive_days
@@ -208,6 +219,15 @@ class PredictionsEvaluatorLoop(CadenceLoop):
         return _build_default_session_factory()
 
     def _run_tick_sync(self, now_dt: datetime) -> dict[str, Any]:
+        # Price and benchmark adapters use independent cache connections. Keep
+        # misses in memory during the outcome transaction to avoid a second
+        # SQLite writer waiting for this very transaction to finish.
+        from argosy.adapters.data.cache import transient_cache_writes
+
+        with transient_cache_writes():
+            return self._run_tick_transaction(now_dt)
+
+    def _run_tick_transaction(self, now_dt: datetime) -> dict[str, Any]:
         """Synchronous body — opens its own session, runs both passes,
         commits, returns the combined summary dict.
 
@@ -219,13 +239,21 @@ class PredictionsEvaluatorLoop(CadenceLoop):
         factory = self._resolve_session_factory()
         session: Session = factory()
         try:
+            from argosy.services.predictions.clock_repair import repair_alpha_prediction_horizons
+            from argosy.services.predictions.proposal_clocks import (
+                ensure_proposal_prediction_horizons,
+            )
             from argosy.services.predictions.writers import (
                 ensure_deep_verdict_prediction_horizons,
+                ensure_discovery_evaluation_predictions,
                 ensure_surfaced_order_sheet_predictions,
             )
 
+            alpha_clock_summary = repair_alpha_prediction_horizons(session)
             verdict_clock_summary = ensure_deep_verdict_prediction_horizons(session)
+            proposal_clock_summary = ensure_proposal_prediction_horizons(session)
             order_sheet_clock_summary = ensure_surfaced_order_sheet_predictions(session)
+            discovery_clock_summary = ensure_discovery_evaluation_predictions(session)
             ev_summary: EvaluatorSummary = run_evaluator_batch(
                 session,
                 now=now_dt,
@@ -237,6 +265,13 @@ class PredictionsEvaluatorLoop(CadenceLoop):
                 now=now_dt,
                 price_fetcher=self._price_fetcher,
             )
+            benchmark_summary: BenchmarkSummary = (
+                ensure_prediction_benchmark_outcomes(
+                    session,
+                    price_fetcher=self._benchmark_price_fetcher,
+                    batch_size=self._batch_size,
+                )
+            )
             ret_summary: RetentionSummary = run_retention_pass(
                 session,
                 now=now_dt,
@@ -244,6 +279,8 @@ class PredictionsEvaluatorLoop(CadenceLoop):
                 archive_days=self._archive_days,
             )
             session.commit()
+            from argosy.services.predictions.reliability import invalidate_reliability_cache
+            invalidate_reliability_cache()
         except Exception:
             session.rollback()
             raise
@@ -251,10 +288,21 @@ class PredictionsEvaluatorLoop(CadenceLoop):
             session.close()
 
         return {
+            # Explicit work-stage contract: failures below must reach the
+            # scheduler receipt and health UI, not hide in nested counters.
+            "stages": {
+                "evaluator": ev_summary.to_dict(),
+                "reevaluation": reeval_summary.to_dict(),
+                "benchmark": benchmark_summary.to_dict(),
+            },
+            "alpha_clock_repairs": alpha_clock_summary,
             "verdict_clocks": verdict_clock_summary,
+            "proposal_clocks": proposal_clock_summary,
             "order_sheet_clocks": order_sheet_clock_summary,
+            "discovery_clocks": discovery_clock_summary,
             "evaluator": ev_summary.to_dict(),
             "reevaluation": reeval_summary.to_dict(),
+            "benchmark": benchmark_summary.to_dict(),
             "retention": ret_summary.to_dict(),
         }
 

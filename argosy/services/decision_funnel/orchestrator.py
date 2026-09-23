@@ -23,6 +23,7 @@ callables are injectable so the whole flow is testable without live LLMs.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -280,97 +281,120 @@ async def run_funnel(
         "surfaced": 0,
     }
 
-    # ---- Phase A: deterministic (sync session) ----
-    s = sf()
+    # Keep Phase A's entire sync session off the event loop so another
+    # async writer can commit and release SQLite while this stage waits.
+    def prepare():
+        # ---- Phase A: deterministic (sync session) ----
+        s = sf()
+        try:
+            try:
+                expire_stale_proposals(s, user_id=user_id, now=now)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("decision_funnel.expiry_failed", error=str(exc)[:200])
+
+            book = load_book(s, user_id=user_id)
+            market = build_market_read(s, user_id=user_id, now=now)
+            ips = build_ips(s, user_id=user_id)
+            last_review = _last_review_map(s, user_id)
+            signals = _build_signals(s, user_id, book, market)
+
+            run = open_run(
+                s, user_id=user_id, day=day, trigger=trigger, shadow=shadow,
+                policy_version=policy.version,
+                ips_version=(ips.ips_version if ips else None),
+                plan_version_id=(ips.plan_version_id if ips else None),
+                started_at=now,
+            )
+            run_id = run.id
+
+            record_stage_row(
+                s, run_id=run_id, stage="stage0", subject="MARKET", subject_type="market",
+                decision=("risk_off" if market.risk_off else "neutral"),
+                reason=market.summary, inputs=market.to_dict(), commit=False,
+            )
+
+            routing = route(
+                book=book, market_read=market, ips=ips, signals=signals,
+                last_review_by_ticker=last_review, policy=policy, day=day, now=now,
+            )
+            # Shared research requests enter preliminary triage once. A source claim
+            # cannot bypass the full decision team's existing approval/risk gates.
+            from argosy.services.research_catalog import pending_candidates
+            from sqlalchemy import inspect as _research_inspect
+            if _research_inspect(s.connection()).has_table("research_review_requests"):
+                research = pending_candidates(s, user_id=user_id,
+                    held_tickers={h.ticker.upper() for h in book}, now=now)
+                existing = {c.subject.upper(): c for c in routing.routed}
+                for candidate in research:
+                    if candidate.subject in existing:
+                        existing[candidate.subject].extra.update(candidate.extra)
+                    else:
+                        routing.routed.append(candidate)
+                research_symbols = {c.subject for c in research}
+                routing.dropped[:] = [d for d in routing.dropped if d.subject not in research_symbols]
+            # Discovery-driven NEW-name candidates: the high-potential funnel's
+            # HIGH-conviction BUY picks enter the same flow as held names (new kinds
+            # slot in without a contract change). Skipped for names already held.
+            try:
+                held_tickers = {h.ticker.upper() for h in book}
+                discovery = load_discovery_candidates(
+                    s, user_id=user_id, held_tickers=held_tickers, policy=policy,
+                )
+                already_routed = {c.subject.upper() for c in routing.routed}
+                routing.routed.extend(c for c in discovery if c.subject.upper() not in already_routed)
+            except Exception as exc:  # noqa: BLE001 — discovery is additive; never abort the run
+                _log.warning("decision_funnel.discovery_load_failed", error=str(exc)[:200])
+                totals["error_count"] += 1
+                totals["errors"].append(f"discovery: {str(exc)[:300]}")
+            for cand in routing.routed:
+                record_stage_row(
+                    s, run_id=run_id, stage="stage1", subject=cand.subject,
+                    subject_type=cand.subject_type, decision="routed",
+                    reason=cand.reason, signal_or_rule=cand.primary_signal,
+                    inputs={**cand.extra, "triggers": cand.triggers, "is_audit": cand.is_audit},
+                    commit=False,
+                )
+                if cand.is_audit:
+                    totals["stage1_audit"] += 1
+            for drop in routing.dropped:
+                record_stage_row(
+                    s, run_id=run_id, stage="stage1", subject=drop.subject,
+                    subject_type=drop.subject_type, decision="dropped",
+                    reason=drop.reason, signal_or_rule=drop.signal, commit=False,
+                )
+            s.commit()
+            totals["stage1_routed"] = len(routing.routed)
+            totals["stage1_dropped"] = len(routing.dropped)
+
+            weight_by = {h.ticker.upper(): h.weight_pct for h in book}
+            cap_by = {
+                h.ticker.upper(): _cap_for(h.ticker, ips, policy)[0] for h in book
+            }
+            market_dict = market.to_dict()
+            snapshot_cash_usd = _snapshot_cash_usd(s, user_id)
+            price_by = _snapshot_prices(s, user_id)
+        finally:
+            s.close()
+        return (run_id, book, market, routing, weight_by, cap_by, market_dict, snapshot_cash_usd, price_by)
+
+    worker = asyncio.create_task(asyncio.to_thread(prepare))
     try:
-        try:
-            expire_stale_proposals(s, user_id=user_id, now=now)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("decision_funnel.expiry_failed", error=str(exc)[:200])
-
-        book = load_book(s, user_id=user_id)
-        market = build_market_read(s, user_id=user_id, now=now)
-        ips = build_ips(s, user_id=user_id)
-        last_review = _last_review_map(s, user_id)
-        signals = _build_signals(s, user_id, book, market)
-
-        run = open_run(
-            s, user_id=user_id, day=day, trigger=trigger, shadow=shadow,
-            policy_version=policy.version,
-            ips_version=(ips.ips_version if ips else None),
-            plan_version_id=(ips.plan_version_id if ips else None),
-            started_at=now,
-        )
-        run_id = run.id
-
-        record_stage_row(
-            s, run_id=run_id, stage="stage0", subject="MARKET", subject_type="market",
-            decision=("risk_off" if market.risk_off else "neutral"),
-            reason=market.summary, inputs=market.to_dict(), commit=False,
-        )
-
-        routing = route(
-            book=book, market_read=market, ips=ips, signals=signals,
-            last_review_by_ticker=last_review, policy=policy, day=day, now=now,
-        )
-        # Shared research requests enter preliminary triage once. A source claim
-        # cannot bypass the full decision team's existing approval/risk gates.
-        from argosy.services.research_catalog import pending_candidates
-        from sqlalchemy import inspect as _research_inspect
-        if _research_inspect(s.connection()).has_table("research_review_requests"):
-            research = pending_candidates(s, user_id=user_id,
-                held_tickers={h.ticker.upper() for h in book}, now=now)
-            existing = {c.subject.upper(): c for c in routing.routed}
-            for candidate in research:
-                if candidate.subject in existing:
-                    existing[candidate.subject].extra.update(candidate.extra)
-                else:
-                    routing.routed.append(candidate)
-            research_symbols = {c.subject for c in research}
-            routing.dropped[:] = [d for d in routing.dropped if d.subject not in research_symbols]
-        # Discovery-driven NEW-name candidates: the high-potential funnel's
-        # HIGH-conviction BUY picks enter the same flow as held names (new kinds
-        # slot in without a contract change). Skipped for names already held.
-        try:
-            held_tickers = {h.ticker.upper() for h in book}
-            discovery = load_discovery_candidates(
-                s, user_id=user_id, held_tickers=held_tickers, policy=policy,
-            )
-            already_routed = {c.subject.upper() for c in routing.routed}
-            routing.routed.extend(c for c in discovery if c.subject.upper() not in already_routed)
-        except Exception as exc:  # noqa: BLE001 — discovery is additive; never abort the run
-            _log.warning("decision_funnel.discovery_load_failed", error=str(exc)[:200])
-            totals["error_count"] += 1
-            totals["errors"].append(f"discovery: {str(exc)[:300]}")
-        for cand in routing.routed:
-            record_stage_row(
-                s, run_id=run_id, stage="stage1", subject=cand.subject,
-                subject_type=cand.subject_type, decision="routed",
-                reason=cand.reason, signal_or_rule=cand.primary_signal,
-                inputs={**cand.extra, "triggers": cand.triggers, "is_audit": cand.is_audit},
-                commit=False,
-            )
-            if cand.is_audit:
-                totals["stage1_audit"] += 1
-        for drop in routing.dropped:
-            record_stage_row(
-                s, run_id=run_id, stage="stage1", subject=drop.subject,
-                subject_type=drop.subject_type, decision="dropped",
-                reason=drop.reason, signal_or_rule=drop.signal, commit=False,
-            )
-        s.commit()
-        totals["stage1_routed"] = len(routing.routed)
-        totals["stage1_dropped"] = len(routing.dropped)
-
-        weight_by = {h.ticker.upper(): h.weight_pct for h in book}
-        cap_by = {
-            h.ticker.upper(): _cap_for(h.ticker, ips, policy)[0] for h in book
-        }
-        market_dict = market.to_dict()
-        snapshot_cash_usd = _snapshot_cash_usd(s, user_id)
-        price_by = _snapshot_prices(s, user_id)
-    finally:
-        s.close()
+        prepared = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled():
+            try:
+                worker.result()
+            except Exception:
+                _log.exception("decision_funnel.cancelled_prepare_failed")
+        raise
+    (run_id, book, market, routing, weight_by, cap_by, market_dict, snapshot_cash_usd, price_by) = prepared
 
     # ---- Phase B: Stage 2 triage (async LLM) ----
     survivors: list[tuple[RoutedCandidate, Any]] = []
@@ -491,9 +515,17 @@ async def run_funnel(
                     for source in cand.extra["research_sources"]
                 ]
             try:
+                news_context = [
+                    {"signal_id": hit.signal_id, "ticker": hit.ticker, "excerpt": hit.excerpt,
+                     "source": hit.source, "source_ref": hit.source_ref, "source_trust": hit.source_trust,
+                     "received_at": hit.received_at, "publication_date": "not recorded"}
+                    for hit in market.high_materiality_news if hit.ticker.upper() == subj
+                ]
                 dd = await deep_decision_fn(
                     user_id=user_id, ticker=cand.subject, account_class="main",
                     funnel_meta=funnel_meta, subject_type=cand.subject_type,
+                    **({"review_context": json.dumps({"trigger": "daily_news", "evidence": news_context})}
+                       if news_context else {}),
                 )
             except Exception as exc:  # noqa: BLE001 — never abort the run
                 totals["error_count"] += 1
@@ -541,6 +573,7 @@ async def run_funnel(
                     "blocked_reason": dd.blocked_reason, "blocked_by": dd.blocked_by,
                     "triggers": cand.triggers, "router_reason": cand.reason,
                     "north_star_aligned": verdict.aligned,
+                    "news_assessment": getattr(dd, "news_assessment", None),
                 }
                 # Funding gate (step 8, v0): for a fleet-approved BUY, classify
                 # whether it's payable from nominal cash, needs a sell-to-fund

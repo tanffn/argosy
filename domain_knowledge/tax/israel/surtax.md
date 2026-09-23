@@ -4,26 +4,35 @@ topic: israel_surtax_high_income
 jurisdiction: israel
 applies_to_year: 2026
 applies_to_user: israeli_resident_individual
-last_verified: 2026-08-28
+last_verified: 2026-09-13
 verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
 next_refresh_due: 2027-01-31
 source_urls:
   - https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
   - https://taxsummaries.pwc.com/israel/individual/income-determination
-  - https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
   - https://barlaw.co.il/practice_areas/tax/client_updates/high-income-earners-in-israel-prepare-to-pay-an-additional-surtax/
 sources:
+  - url: https://www.gov.il/BlobFolder/policy/inst-05-2025/he/IncomeTax_inst-05-2025.pdf
+    retrieved: 2026-09-13
+    tier: 1
+  - url: https://www.irs.gov/pub/irs-trty/israel.pdf
+    retrieved: 2026-09-13
+    tier: 1
+  - url: https://www.irs.gov/pub/irs-lbi/tax-treaty-table-1.pdf
+    retrieved: 2026-09-13
+    tier: 1
+  - url: https://www.malam-payroll.com/wp-content/uploads/2026/01/loachezer2026.pdf
+    retrieved: 2026-09-13
+    tier: 2
+    note: ITA 2026 booklet, primary authorship mirrored by payroll provider; separate from the post-March income-tax bracket amendment.
   - url: https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
-    retrieved: 2026-08-28
-    tier: 1
+    retrieved: 2026-09-13
+    tier: 2
   - url: https://taxsummaries.pwc.com/israel/individual/income-determination
-    retrieved: 2026-08-28
-    tier: 1
-  - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
-    retrieved: 2026-08-15
+    retrieved: 2026-09-13
     tier: 2
   - url: https://barlaw.co.il/practice_areas/tax/client_updates/high-income-earners-in-israel-prepare-to-pay-an-additional-surtax/
-    retrieved: 2026-08-28
+    retrieved: 2026-09-13
     tier: 2
 ---
 
@@ -46,11 +55,11 @@ Maximum combined surtax on capital-source income above threshold: **5%** (3% + 2
 | Additional capital-source surtax | **2%** | 721,560 | The portion of annual *capital-source* income (CG, dividends, interest, real-estate appreciation, rental, royalties, CPI-linkage differentials) above the threshold |
 | **Combined max on capital income above threshold** | **5%** | — | Sits on top of statutory 25% CGT → ~30% effective |
 
-Source: PwC Israel Individual Tax Summary; PwC Income Determination; CWS Israel 2026 Tax Changes Guide; Barnea Law client update on the additional 2% surtax.
+Source: ITA implementation instruction 5/2025 (Section 121B / Amendment 276), the ITA 2026 booklet, PwC Israel and Barnea Law. The former CWS article redirects to a marketing homepage and is no longer supporting evidence.
 
 Notes on the threshold:
-- The ₪721,560/year threshold corresponds to ₪60,130/month. Indexed annually to wage growth — re-verify each January.
-- The 2026 threshold is unchanged from 2025 per PwC (last reviewed 1 Jan 2026).
+- The ₪721,560/year threshold corresponds to ₪60,130/month. Re-verify the applicable indexation/freeze legislation each year; it is not an automatic wage-growth adjustment.
+- The 2026 threshold is unchanged from 2025 under the Section 120B temporary freeze for 2025–2027, corroborated by the cited ITA sources.
 - The 2% additional capital-source surtax was introduced effective tax year **2025** and remains in force for 2026.
 
 ## Application notes
@@ -63,24 +72,29 @@ Notes on the threshold:
 
 **NVDA tranche sale (capital gain under 102 Capital)**
 - 25% statutory CGT (`capital_gains.md`).
-- If the *combined* income for the year is above ₪721,560 → +3% general surtax on the capital gain.
-- If the capital-gain portion *alone* exceeds ₪721,560 → +2% additional capital-source surtax on the excess.
+- The 3% layer applies to the excess of total annual taxable income above
+  ₪721,560. Attribute incremental surtax to a sale by comparing annual tax with
+  and without that sale; do not charge 3% on the entire gain merely because the
+  sale crosses the threshold.
+- The 2% layer applies to the excess of total annual capital-source income
+  above ₪721,560, including relevant dividends/interest and other capital income,
+  not just this tranche's capital gain. Use the same incremental calculation.
 - For a NVDA tranche realizing > ₪721,560 of capital gain in a year, the effective marginal CGT in the surtax zone = **25% + 5% = 30%**.
 
 **US-source dividends (Schwab)**
-- 25% statutory Israeli dividend tax (after crediting 15% US WHT under the treaty — see `treaties/us_israel.md`).
+- 25% statutory Israeli dividend base tax; ordinary US portfolio dividends for an eligible Israeli individual face a 25% US treaty ceiling, with foreign-tax relief subject to Israeli limitations (`treaties/us_israel.md`). Do not assume a 15% US rate or automatic 10% Israeli top-up.
 - Same 3% + 2% surtax stack applies on the portion above threshold → max 30% effective.
 
 ### Worked example — NVDA tranche, 2026 (Codex-audit-quality)
 
-Assume: 2,000 NVDA shares sold @ $200, FMV-at-vest cost basis $50, FX 2.94 NIS/USD, salary already pushed total income past ₪721,560 for the year.
+Illustration of the **capital slice only**, not a complete sale-tax estimate: assume 2,000 NVDA shares sold @ $200, a settled 30-trading-day pre-grant benchmark of $50, FX 2.94 NIS/USD, no other capital-source income in the year, and salary already above ₪721,560. The ordinary slice and any tax on it are excluded from this example; $50 is an illustrative benchmark, not vest FMV or broker basis.
 
 - Gross gain (USD): 2,000 × ($200 − $50) = $300,000
 - Gross gain (NIS): $300,000 × 2.94 = ₪882,000
 - 25% statutory CGT on full ₪882k = **₪220,500**
 - 3% `mas yesef` general surtax — since combined income > ₪721,560, the full capital gain sits in the surtax zone → 3% × ₪882,000 = **₪26,460**
 - 2% additional capital-source surtax — capital-source income alone (₪882,000) exceeds ₪721,560 by ₪160,440, so 2% × ₪160,440 = **₪3,209**
-- **Total Israeli tax on this tranche:** ~₪250,169 (~**28.4%** effective on this tranche; marginal NIS above threshold = 30%)
+- **Israeli tax attributable to this capital slice:** ~₪250,169 (~**28.4%** of the capital gain; marginal capital-gain NIS above threshold = 30%). Add ordinary-slice tax separately for a complete tranche calculation.
 
 The 2% additional layer is small in absolute terms on a single tranche but compounds materially across multiple quarterly tranches in the same calendar year.
 
@@ -92,12 +106,12 @@ See `brackets_2026.md` for the labor stack and `capital_gains.md` for the capita
 
 - [PwC Israel — Individual — Taxes on personal income](https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income) — accessed 2026-06-02
 - [PwC Israel — Individual — Income determination](https://taxsummaries.pwc.com/israel/individual/income-determination) — accessed 2026-06-02
-- [CWS Israel — Israeli Tax Changes 2026: Complete Guide](https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/) — accessed 2026-06-02
+- [ITA — implementation instruction 5/2025](https://www.gov.il/BlobFolder/policy/inst-05-2025/he/IncomeTax_inst-05-2025.pdf) — captured 2026-09-12; primary basis for the two surtax layers and 2025–2027 threshold freeze.
 - [Barnea — High-Income Earners in Israel Prepare to Pay an Additional Surtax](https://barlaw.co.il/practice_areas/tax/client_updates/high-income-earners-in-israel-prepare-to-pay-an-additional-surtax/) — accessed 2026-06-02
 
 ## Refresh cadence
 
-- **Annual (January)** — threshold is wage-indexed; rates can be modified by budget law.
+- **Annual (January)** — recheck legislation; the current Section 120B temporary provision freezes the Section 121B threshold for 2025–2027. Do not apply automatic wage-growth indexation.
 - **On legislation** — any amendment touching surtax (the 2% layer was a 2025 amendment) triggers immediate refresh.
 
 ## Open issues

@@ -99,6 +99,9 @@ async def reap_prior_process_job_runs(
     can exist yet, so every pre-existing ``running`` row belongs to the
     terminated process and must not remain falsely active for 24 hours.
     """
+    from argosy.services.jobs.registry import JobRegistry
+
+    await JobRegistry().require_completions_drained()
     finished_at = now or _utcnow()
     if finished_at.tzinfo is None:
         finished_at = finished_at.replace(tzinfo=UTC)
@@ -241,6 +244,9 @@ class JobRunsRetentionLoop(CadenceLoop):
         # Side-channel reset so an exception path that fires before the
         # finally block doesn't leak the prior tick's summary.
         self.last_output_summary = None
+        from argosy.services.jobs.registry import JobRegistry
+
+        await JobRegistry().require_completions_drained()
 
         # Resolve the cutoffs once per tick so both DELETE and UPDATE
         # see the same wall-clock — avoids a hypothetical race where
@@ -305,6 +311,14 @@ class JobRunsRetentionLoop(CadenceLoop):
                 reap_predicate = reap_predicate & (
                     JobRun.job_name.not_in(long_running_names)
                 )
+            # The DELETE above already owns the SQLite writer transaction.
+            # Include live owners AND receipts staged after the initial drain.
+            # No await between this snapshot and submitting the guarded UPDATE.
+            from argosy.services.jobs.registry import unfinished_completion_ids
+
+            protected_ids = unfinished_completion_ids(session.bind.url)
+            if protected_ids:
+                reap_predicate = reap_predicate & JobRun.id.not_in(protected_ids)
             upd_stmt = (
                 update(JobRun)
                 .where(reap_predicate)

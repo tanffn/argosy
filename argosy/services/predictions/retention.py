@@ -12,8 +12,9 @@ Two passes per call:
    v1 sets ``archived = 1`` on the prediction row. The partial index
    ``ix_predictions_due_at WHERE archived = 0`` excludes archived rows
    from the evaluator's due-query so the hot-path stays bounded as
-   the ledger grows. A prediction is "evaluated" iff it has at least
-   one row in ``prediction_outcomes`` — un-evaluated old rows are NOT
+   the ledger grows. A prediction is "evaluated" iff it has an active
+   outcome matching its current scoring contract — old checkpoints alone
+   do not qualify. Un-evaluated old rows are NOT
    archived (the evaluator may still need to score them once an
    adapter-error backlog clears).
 
@@ -43,6 +44,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
+from argosy.services.predictions.outcomes import authoritative_outcome_ids
 from argosy.state.models import Prediction, PredictionOutcome
 
 _log = get_logger("argosy.services.predictions.retention")
@@ -91,11 +93,8 @@ def compact_old_predictions(
 
       * ``predictions.event_at < now - retention_days``;
       * ``predictions.archived = 0``;
-      * at least ONE ``prediction_outcomes`` row references it (i.e.
-        the evaluator has scored it at least once under any method —
-        we explicitly do NOT require a row under the CURRENT active
-        method, since archive is about "we're done seeing it" not "we
-        agreed on the final scoring method").
+      * an active outcome matches its CURRENT scoring contract. A checkpoint
+        from another horizon cannot archive a corrected but unscored prediction.
 
     The "at least one outcome row" filter is the codex-probe-worthy
     guarantee: a prediction that's never been scored — e.g. because
@@ -118,6 +117,7 @@ def compact_old_predictions(
     has_outcome = (
         select(PredictionOutcome.id)
         .where(PredictionOutcome.prediction_id == Prediction.id)
+        .where(PredictionOutcome.id.in_(authoritative_outcome_ids()))
         .exists()
     )
     inspect_stmt = select(Prediction.id).where(

@@ -9,9 +9,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.config import get_settings
@@ -295,7 +296,8 @@ async def sync_youtube_subscriptions(
     from argosy.services.research_worker import queue_youtube, sync_research
     queued = await queue_youtube(user_id=user_id)
     result = await sync_research(user_id=user_id)
-    return {**result, "youtube": queued, "failures": queued["failures"] + result["failures"]}
+    failures = queued["failures"] + result["failures"]
+    return {**result, "youtube": queued, "failures": failures, "error_count": len(failures)}
 
 
 
@@ -379,8 +381,15 @@ def _fetch_feed(channel_id: str) -> list[dict[str, Any]]:
         f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}",
         headers={"User-Agent": "Argosy/1.0"},
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed YouTube host
-        root = ET.fromstring(response.read())
+    try:
+        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed YouTube host
+            root = ET.fromstring(response.read())
+    except HTTPError as exc:
+        if exc.code not in {404, 410}:
+            raise
+        # The RSS endpoint can disappear while the public channel is available.
+        # Use the same channel's public uploads, never search/name substitution.
+        return _fetch_public_uploads(channel_id)
     result = []
     for entry in root.findall("atom:entry", _ATOM):
         video_id = entry.findtext("yt:videoId", default="", namespaces=_ATOM)
@@ -388,6 +397,39 @@ def _fetch_feed(channel_id: str) -> list[dict[str, Any]]:
         if video_id:
             result.append({"video_id": video_id, "published_at": published,
                            "title": entry.findtext("atom:title", default="", namespaces=_ATOM)})
+    return result
+
+
+def _fetch_public_uploads(channel_id: str) -> list[dict[str, Any]]:
+    """Metadata-only fallback, bounded to the RSS feed's 15-item window."""
+    from yt_dlp import YoutubeDL
+
+    from argosy.logging import get_logger
+
+    if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", channel_id):
+        raise ValueError("Invalid YouTube channel identity")
+    options = {"quiet": True, "no_warnings": True, "extract_flat": True,
+               "skip_download": True, "playlistend": 15, "socket_timeout": 15,
+               "retries": 1, "extractor_retries": 1,
+               # A partial playlist must not advance our durable checkpoint.
+               "extractor_args": {"youtube": {"raise_incomplete_data": ["true"]}}}
+    with YoutubeDL(options) as extractor:
+        data = extractor.extract_info(
+            "https://www.youtube.com/playlist?list=UU" + channel_id[2:], download=False,
+        )
+    if not isinstance(data, dict) or data.get("channel_id") != channel_id:
+        raise ValueError("Public uploads could not verify the subscribed channel identity")
+    result = []
+    for entry in data.get("entries") or []:
+        if not isinstance(entry, dict) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", entry.get("id") or ""):
+            raise ValueError("Public uploads returned an invalid video identity")
+        result.append({"video_id": entry["id"], "title": entry.get("title") or entry["id"],
+                       # Flat metadata does not prove a publication date. Never
+                       # substitute fetch time or an approximate relative date.
+                       "published_at": None})
+        if len(result) == 15:
+            break
+    get_logger(__name__).info("youtube.public_uploads_fallback", channel_id=channel_id, videos=len(result))
     return result
 
 
@@ -403,18 +445,17 @@ def _update_poll(
     source_id: int, user_id: str, newest: dict[str, Any] | None, error: str | None
 ) -> None:
     with _factory()() as session:
-        source = session.scalar(
-            select(YouTubeChannel).where(
+        values = {"last_polled_at": datetime.now(UTC), "last_error": error}
+        if newest and error is None:
+            values.update(last_seen_video_id=newest["video_id"],
+                          last_seen_published_at=_parse_iso(newest.get("published_at")))
+        # One write, not a read transaction upgraded under another SQLite writer.
+        session.execute(
+            update(YouTubeChannel).where(
                 YouTubeChannel.id == source_id, YouTubeChannel.user_id == user_id
-            )
+            ).values(**values)
         )
-        if source:
-            source.last_polled_at = datetime.now(UTC)
-            source.last_error = error
-            if newest and error is None:
-                source.last_seen_video_id = newest["video_id"]
-                source.last_seen_published_at = _parse_iso(newest.get("published_at"))
-            session.commit()
+        session.commit()
 
 
 def _video_ingested(user_id: str, video_id: str) -> bool:

@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import types
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from sqlalchemy import select
 
-from argosy.adapters.brokers.ibkr import IBKRAdapter
+from argosy.adapters.brokers.ibkr import IBKRAccountConfig, IBKRAdapter, IBKRSettings
 from argosy.adapters.brokers.types import ProposedOrder
 from argosy.state import db as db_mod
-from argosy.state.models import Fill as FillRow, User
-
+from argosy.state.models import Fill as FillRow
+from argosy.state.models import User
 
 # ----------------------------------------------------------------------
 # Fakes
@@ -51,6 +51,7 @@ class _FakeIB:
         self.clientId = clientId
 
     def placeOrder(self, contract: Any, order: Any) -> _FakeTrade:
+        order.clientId = self.clientId
         trade = _FakeTrade(contract, order)
         # Synthesize a broker order id for assertions
         if not getattr(order, "orderId", None):
@@ -178,7 +179,8 @@ async def test_live_mode_calls_placeOrder(engine: None) -> None:
         await session.commit()
 
     fake = _fake_module()
-    adapter = IBKRAdapter(user_id="ariel")
+    adapter = IBKRAdapter(user_id="ariel", settings=IBKRSettings(accounts={
+        "limited": IBKRAccountConfig(account_id="limited", mode="live")}))
     adapter._ib_module_factory = lambda: fake
 
     order = ProposedOrder(
@@ -211,7 +213,8 @@ async def test_live_mode_calls_placeOrder(engine: None) -> None:
 @pytest.mark.asyncio
 async def test_order_snapshot_returns_execution_identity(engine: None) -> None:
     fake = _fake_module()
-    adapter = IBKRAdapter(user_id="ariel")
+    adapter = IBKRAdapter(user_id="ariel", settings=IBKRSettings(accounts={
+        "ibkr_main": IBKRAccountConfig(account_id="ibkr_main", mode="live")}))
     adapter._ib_module_factory = lambda: fake
     order = ProposedOrder(
         account_id="ibkr_main",
@@ -228,12 +231,13 @@ async def test_order_snapshot_returns_execution_identity(engine: None) -> None:
     trade.fills = [
         types.SimpleNamespace(
             execution=types.SimpleNamespace(
-                execId="exec-42", orderId=int(result.broker_order_id),
+                execId="exec-42", orderId=int(result.broker_order_id), clientId=1,
                 acctNumber="ibkr_main", side="BOT", shares=2, price=201.25,
+                time=datetime(2026, 8, 25, 14, 0, tzinfo=UTC),
             ),
             contract=trade.contract,
-            commissionReport=types.SimpleNamespace(commission=0.75),
-            time=datetime(2026, 8, 25, 14, 0, tzinfo=timezone.utc),
+            commissionReport=types.SimpleNamespace(execId="exec-42", commission=0.75),
+            time=datetime(2026, 8, 25, 14, 0, tzinfo=UTC),
         )
     ]
     snapshot = await adapter.get_order_snapshot(
@@ -253,7 +257,8 @@ async def test_limit_order_construction(engine: None) -> None:
         await session.commit()
 
     fake = _fake_module()
-    adapter = IBKRAdapter(user_id="ariel")
+    adapter = IBKRAdapter(user_id="ariel", settings=IBKRSettings(accounts={
+        "limited": IBKRAccountConfig(account_id="limited", mode="live")}))
     adapter._ib_module_factory = lambda: fake
 
     order = ProposedOrder(

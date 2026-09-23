@@ -49,6 +49,7 @@ transcripts/
 
 # Per-user configs (multi-tenant data — owner-managed, never in shared repo)
 configs/*/
+configs/*.json
 !configs/.gitkeep
 !configs/example/
 
@@ -98,3 +99,9 @@ result.md
 
 # superpowers brainstorm artifacts
 .superpowers/
+
+# Local test runs and captured/private research evidence (not source assets).
+/.test-*/
+/runtime/
+/scratchpad/
+/data/research_source_captures/

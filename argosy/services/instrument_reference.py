@@ -119,7 +119,7 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "NKE": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_US, STRUCT_STOCK),
     "CRM": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
     "NOW": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
-    # SpaceX exposure (private; US company = US-situs).
+    # SpaceX (US company = US-situs); listing status comes from live identity reads.
     "SPCX": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
     # High-growth sleeve single names (plan v64+). SITUS is by INCORPORATION,
     # not economics: MELI is Delaware-incorporated / NASDAQ-listed = US-SITUS
@@ -350,7 +350,7 @@ _INSTRUMENT_NAMES: dict[str, str] = {
     "NKE": "Nike",
     "CRM": "Salesforce",
     "NOW": "ServiceNow",
-    "SPCX": "SpaceX (private exposure)",
+    "SPCX": "SpaceX",
     "CRWD": "CrowdStrike",
     "RKLB": "Rocket Lab",
     "OKLO": "Oklo",

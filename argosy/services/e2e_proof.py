@@ -14,8 +14,13 @@ from typing import Any
 from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
+from argosy.execution.fill_evidence import reconcile_fill_evidence
 from argosy.services.order_sheet import OrderSheet, validate_order_sheet
-from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+from argosy.services.order_sheet_materializer import (
+    linked_order_sheet_proposals,
+    materialized_order_sheet_errors,
+    order_sheet_fingerprint,
+)
 from argosy.state.models import (
     ActionProposal,
     AgentReport,
@@ -23,7 +28,6 @@ from argosy.state.models import (
     Lot,
     PendingOrder,
     Prediction,
-    PredictionOutcome,
     Proposal,
 )
 
@@ -141,17 +145,8 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
             .order_by(AgentReport.id)
         ).scalars().all()
     )
-    proposals = list(
-        db.execute(
-            select(Proposal)
-            .where(
-                Proposal.user_id == user_id,
-                Proposal.source == "order_sheet",
-                Proposal.expected_impact_json.like(f"%{fingerprint}%"),
-            )
-            .order_by(Proposal.id)
-        ).scalars().all()
-    )
+    proposals = linked_order_sheet_proposals(db, sheet)
+    materialization_errors = materialized_order_sheet_errors(db, sheet, proposals)
     proposal_ids = [row.id for row in proposals]
     pending_by_proposal: dict[int, PendingOrder] = {}
     fills_by_proposal: dict[int, list[Fill]] = {pid: [] for pid in proposal_ids}
@@ -177,20 +172,18 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
     ).scalars().all():
         if _json_dict(row.source_ref).get("order_sheet_fingerprint") == fingerprint:
             predictions.append(row)
-    outcomes_by_prediction: dict[int, list[PredictionOutcome]] = {
-        row.id: [] for row in predictions
+    from argosy.services.predictions.outcomes import authoritative_outcomes
+    outcomes_by_prediction = {
+        key: [selected[1]] for key, selected in authoritative_outcomes(db, predictions).items()
     }
-    if predictions:
-        for outcome in db.execute(
-            select(PredictionOutcome).where(
-                PredictionOutcome.prediction_id.in_([row.id for row in predictions])
-            )
-        ).scalars().all():
-            outcomes_by_prediction.setdefault(outcome.prediction_id, []).append(outcome)
-    prediction_by_proposal = {
-        int(_json_dict(row.source_ref).get("proposal_id")): row
+    # Forecasts start when the unified recommendation is surfaced, before
+    # executable proposal ids exist. The immutable sheet + ticker + action is
+    # the identity across that transition. Six-month/year clocks are additional
+    # observations, not duplicate or missing authored-expectation telemetry.
+    prediction_by_line = {
+        (row.ticker.upper(), str(_json_dict(row.source_ref).get("action", "")).upper()): row
         for row in predictions
-        if str(_json_dict(row.source_ref).get("proposal_id", "")).isdigit()
+        if row.evaluation_method == "order_sheet_due_date_v1"
     }
 
     proposals_by_symbol = {row.ticker.upper(): row for row in proposals}
@@ -198,20 +191,23 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
     complete_lines = 0
     any_fill = False
     any_approved = False
+    receipt_errors = []
     for authored in sheet.lines:
         proposal = proposals_by_symbol.get(authored.symbol)
         fill_rows = fills_by_proposal.get(proposal.id, []) if proposal else []
-        filled_qty = sum(float(row.quantity) for row in fill_rows)
-        fill_notional = sum(float(row.quantity) * float(row.price) for row in fill_rows)
-        vwap = fill_notional / filled_qty if filled_qty else None
-        target_qty = float(proposal.size_shares_or_currency) if proposal else authored.shares
-        is_complete = bool(proposal and filled_qty + 0.0001 >= target_qty)
+        evidence = reconcile_fill_evidence(proposal, fill_rows, target_quantity=authored.shares) if proposal else None
+        filled_qty = float(evidence.quantity) if evidence else 0.0
+        vwap = evidence.vwap if evidence and evidence.price_currency == "USD" else None
+        target_qty = authored.shares
+        is_complete = bool(evidence and evidence.complete)
+        if evidence:
+            receipt_errors.extend(evidence.errors)
         complete_lines += int(is_complete)
-        any_fill = any_fill or bool(fill_rows)
+        any_fill = any_fill or bool(evidence and evidence.live_rows)
         any_approved = any_approved or bool(
             proposal and proposal.status in {"approved", "executed_live", "executed_paper"}
         )
-        prediction = prediction_by_proposal.get(proposal.id) if proposal else None
+        prediction = prediction_by_line.get((authored.symbol.upper(), authored.action.value))
         outcomes = outcomes_by_prediction.get(prediction.id, []) if prediction else []
         pending = pending_by_proposal.get(proposal.id) if proposal else None
         lines.append(
@@ -233,12 +229,15 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
                     "broker": pending.broker if pending else None,
                     "broker_order_id": pending.broker_order_id if pending else None,
                     "filled_quantity": round(filled_qty, 4),
-                    "fill_count": len(fill_rows),
+                    "fill_count": len(evidence.live_rows) if evidence else 0,
+                    "paper_fill_count": evidence.paper_count if evidence else 0,
+                    "receipt_errors": evidence.errors if evidence else [],
                     "vwap": round(vwap, 4) if vwap is not None else None,
-                    "commission_usd": round(sum(float(row.commission) for row in fill_rows), 2),
+                    "commission_usd": (round(float(evidence.commission), 2) if evidence.commission_confirmed and evidence.commission_currency == "USD" else None) if evidence else None,
                     "complete": is_complete,
                     "manual_fill_allowed": bool(
                         proposal
+                        and not materialization_errors
                         and proposal.status in {"approved", "executed_live"}
                         and proposal.account_id.lower().startswith(("schwab", "leumi"))
                     ),
@@ -248,7 +247,10 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
                         "prediction_id": prediction.id,
                         "due_at": prediction.evaluation_due_at.isoformat(),
                         "entry_price": float(prediction.entry_price or 0),
-                        "status": "scored" if outcomes else "scheduled",
+                        "status": (
+                            "unscorable" if any(o.outcome_kind == "unparseable" for o in outcomes)
+                            else "scored" if outcomes else "scheduled"
+                        ),
                         "outcomes": [
                             {
                                 "kind": outcome.outcome_kind,
@@ -268,8 +270,10 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
             }
         )
 
-    exact_materialization = len(proposals) == len(sheet.lines) and bool(proposals)
-    telemetry_linked = exact_materialization and len(predictions) == len(proposals)
+    exact_materialization = bool(proposals) and not materialization_errors
+    has_actions = bool(lines)
+    # Surfacing, not approval/execution, starts recommendation accountability.
+    telemetry_linked = has_actions and all(line["calibration"] is not None for line in lines)
     fresh = _aware(directive.expires_at) >= datetime.now(UTC)
     one_voice_passed = bool(
         sheet.review_resolution is not None
@@ -282,7 +286,7 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
     checks = [
         {"key": "validated", "label": "Schema + arithmetic", "passed": validation.valid},
         {"key": "fingerprint", "label": "Artifact fingerprint", "passed": recorded_fingerprint == fingerprint},
-        {"key": "fresh", "label": "Live facts eligible", "passed": fresh},
+        {"key": "fresh", "label": "Directive within expiry", "passed": fresh},
         {
             "key": "one_voice",
             "label": "Independent reviewers reconciled",
@@ -290,18 +294,25 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
         },
         {"key": "coverage", "label": "Portfolio + NO-ACTION coverage", "passed": not any(f.code == "portfolio_coverage_missing" for f in validation.failures)},
         {"key": "team_telemetry", "label": "LLM calls + cost recorded", "passed": bool(team_reports) and len(team_reports) == len(team_report_ids)},
-        {"key": "materialized", "label": "Exact orders materialized", "passed": exact_materialization},
+        {"key": "materialized", "label": "Orders match authored fields + custody", "passed": exact_materialization},
         {"key": "telemetry", "label": "Dated outcomes linked", "passed": telemetry_linked},
-        {"key": "fills", "label": "Broker fills reconciled", "passed": bool(lines) and complete_lines == len(lines)},
+        {"key": "fills", "label": "Broker fills reconciled", "passed": exact_materialization and bool(lines) and complete_lines == len(lines)},
     ]
+    for check in checks:
+        check["applicable"] = has_actions or check["key"] not in {"materialized", "telemetry", "fills"}
 
     audit_failures = [f"{failure.code}: {failure.detail}" for failure in validation.failures]
+    audit_failures.extend(receipt_errors)
     if recorded_fingerprint != fingerprint:
         audit_failures.append("Stored fingerprint does not match the order-sheet body.")
-    if directive.status == "accepted" and not exact_materialization:
-        audit_failures.append("Accepted directive does not have exactly one proposal per line.")
-    if exact_materialization and not telemetry_linked:
-        audit_failures.append("Executable proposals are missing dated prediction telemetry.")
+    if has_actions and directive.status == "accepted" and not exact_materialization:
+        audit_failures.append("Accepted directive does not have matching orders for every authored line.")
+    if proposals or (has_actions and directive.status == "accepted"):
+        audit_failures.extend(materialization_errors)
+    if has_actions and not telemetry_linked:
+        audit_failures.append("Surfaced recommendations are missing dated prediction telemetry.")
+    if not has_actions and proposals:
+        audit_failures.append("A no-action sheet unexpectedly has executable proposal records.")
     if not team_reports or len(team_reports) != len(team_report_ids):
         audit_failures.append("Author/reviewer LLM telemetry is not durably linked to this run.")
     if not one_voice_passed:
@@ -315,15 +326,30 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
     ):
         stage = "blocked"
         headline = "Argosy stopped this run before execution"
+    elif proposals and materialization_errors:
+        stage = "broken"
+        headline = "Order records do not match the authored sheet"
+    elif receipt_errors:
+        stage = "broken"
+        headline = "Execution receipts need reconciliation"
+    elif not has_actions:
+        stage = "no_action"
+        headline = (
+            "No trades proposed; research remains open"
+            if sheet.pending_research else "No trades proposed in this review"
+        )
     elif directive.status == "open":
         stage = "ready_to_accept"
         headline = "Validated order sheet ready for your decision"
     elif not exact_materialization:
         stage = "broken"
         headline = "Accepted sheet failed exact materialization"
+    elif complete_lines == len(lines) and audit_failures:
+        stage = "broken"
+        headline = "Trades filled; run audit remains incomplete"
     elif complete_lines == len(lines):
-        stage = "complete"
-        headline = "E2E run complete and awaiting outcome scoring"
+        stage = "filled"
+        headline = "Trades filled; portfolio reconciliation is not yet verified"
     elif any_fill:
         stage = "partially_filled"
         headline = "Broker fills are being reconciled"
@@ -371,6 +397,7 @@ def build_e2e_proof(db: Session, user_id: str) -> dict[str, Any]:
         "checks": checks,
         "lines": lines,
         "no_action": [row.model_dump(mode="json") for row in sheet.no_action],
+        "pending_research": [row.model_dump(mode="json") for row in sheet.pending_research],
         "self_audit": audit_failures,
     }
 

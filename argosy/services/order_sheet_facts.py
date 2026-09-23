@@ -28,7 +28,7 @@ def _is_foreign_plan_etf(symbol: str, plan_domicile: str | None) -> bool:
         return False
 
 
-def _quote_ticker_candidates(symbol: str, plan_domicile: str | None) -> tuple[str, ...]:
+def _quote_ticker_candidates(symbol: str, plan_domicile: str | None, *, foreign_fund: bool = False) -> tuple[str, ...]:
     """Provider tickers in identity-safe order.
 
     A foreign-domiciled ETF in the canonical plan is a specific UCITS security.
@@ -38,7 +38,7 @@ def _quote_ticker_candidates(symbol: str, plan_domicile: str | None) -> tuple[st
     """
 
     suffixes = _YAHOO_SUFFIXES
-    if _is_foreign_plan_etf(symbol, plan_domicile):
+    if foreign_fund or _is_foreign_plan_etf(symbol, plan_domicile):
         suffixes = tuple(suffix for suffix in suffixes if suffix)
     return tuple(f"{symbol}{suffix}" for suffix in suffixes)
 

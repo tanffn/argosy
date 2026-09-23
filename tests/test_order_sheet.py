@@ -352,3 +352,35 @@ def test_discovery_facts_stale_beyond_n_days_are_ineligible() -> None:
 def test_require_valid_reports_all_failures() -> None:
     with pytest.raises(ValueError, match="buy_total_mismatch"):
         require_valid_order_sheet(_sheet(lines=[_buy(notional_usd=9_000)]))
+
+
+def test_pending_research_requires_review_and_cannot_spend_reserve():
+    from argosy.services.order_sheet import PendingResearch, ReviewResolution
+    sheet = _sheet()
+    sheet.pending_research = [PendingResearch(
+        tickers=["AAA", "BBB"], disagreement="Endpoint uncertain", missing_evidence="Revenue evidence",
+        research_question="Which terminal assumptions are supported?", next_review_date=date(2026, 8, 26),
+        reserved_usd=1000, independence_reason="Separate shared funding retained",
+    )]
+    codes = {f.code for f in validate_order_sheet(sheet).failures}
+    assert {"pending_research_contract", "research_separation_unreviewed"} <= codes
+    sheet.funding.new_cash_usd += 1000
+    sheet.funding.reserve_usd = 1000
+    sheet.review_resolution = ReviewResolution(
+        rounds=2, reviewers_ran=5, reviewers_expected=5, one_voice=True,
+        separation_reviewed=True, summary="Core separately reviewed; research remains pending",
+    )
+    assert validate_order_sheet(sheet).valid
+    sheet.pending_research[0].tickers.append("CMPS")
+    assert not validate_order_sheet(sheet).valid
+
+
+def test_default_research_fields_do_not_change_legacy_fingerprint():
+    import hashlib
+    import json
+    from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+    sheet = _sheet()
+    payload = sheet.model_dump(mode="json")
+    payload.pop("pending_research")
+    expected = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert order_sheet_fingerprint(sheet) == expected

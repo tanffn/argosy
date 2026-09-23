@@ -14,7 +14,7 @@ non-terminal, awaiting states, uses the legal state machine, and records a
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -109,4 +109,22 @@ def expire_stale_proposals(
     return expired
 
 
-__all__ = ["DEFAULT_TTL_HOURS", "default_expiry", "expire_stale_proposals"]
+__all__ = ["DEFAULT_TTL_HOURS", "default_expiry", "expire_stale_proposals", "proposal_expiry_reason"]
+
+
+def proposal_expiry_reason(expires_at: datetime | None, *, now: datetime | None = None, today: date | None = None) -> str | None:
+    """Existing lifecycle deadline, with one injectable clock for UI and execution.
+
+    A date-only simulation means UTC midnight; production callers pass an
+    instant or leave both clock arguments unset. Missing deadlines are not
+    fabricated here.
+    """
+    if expires_at is None:
+        return None
+    expiry = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=UTC)
+    reference = now or (datetime.combine(today, time.min, tzinfo=UTC) if today else datetime.now(UTC))
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    if expiry <= reference:
+        return f"Proposal expired at {expiry.isoformat()}; a fresh review and approval are required before trading."
+    return None

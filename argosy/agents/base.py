@@ -277,6 +277,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "fx": "claude-opus-5",
     # Phase 7 cross-cutting (SDD §3.6):
     "domain_refresh": "claude-opus-5",
+    "knowledge_notice_reviewer": "claude-opus-5",
     "audit": "claude-opus-5",
     "watchlist": "claude-opus-5",
     # Plan synthesizer (Phase 3 of plan_synthesis_flow).
@@ -365,6 +366,14 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # Opus 4.8 (closing/authoring class, not the reader class — the reader
     # class runs Opus 5, see plan_critique above).
     "critique_closer": "claude-opus-5",
+    # Historical replay is part of the production decision-quality loop, not a
+    # frozen sidecar.  Keep every replay stage on the same accuracy-default
+    # model family as the live decision fleet so calibration failures measure
+    # Argosy rather than a retired model alias.
+    "calibration_classifier_sourcing": "claude-opus-5",
+    "calibration_sanitizer": "claude-opus-5",
+    "calibration_reviewer": "claude-opus-5",
+    "calibration_grader": "claude-opus-5",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -1363,6 +1372,17 @@ class BaseAgent(Generic[T]):
         run_correlation_id = str(uuid.uuid4())
         self._current_run_id = run_correlation_id
         try:
+            from argosy.services.chat_advisor.progress import record_agent_progress
+
+            await record_agent_progress(
+                agent=self.agent_role,
+                state="started",
+                detail=f"model={self.model}",
+                correlation_id=run_correlation_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry cannot break analysis
+            self._log.warning("durable progress write failed: %s", exc)
+        try:
             from argosy.api.events import publish_event_threadsafe
             _started_payload: dict[str, Any] = {
                 "user_id": self.user_id,
@@ -1535,6 +1555,17 @@ class BaseAgent(Generic[T]):
                 publish_event_threadsafe("agent.run.finished", _finished_payload)
             except Exception as exc:  # noqa: BLE001
                 self._log.warning("event publish failed: %s", exc)
+            try:
+                from argosy.services.chat_advisor.progress import record_agent_progress
+
+                await record_agent_progress(
+                    agent=self.agent_role,
+                    state="completed",
+                    detail=f"cost_usd={cost:.6f}",
+                    correlation_id=run_correlation_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry cannot break analysis
+                self._log.warning("durable progress write failed: %s", exc)
 
             self._log.info(
                 "agent.run.finished",
@@ -1587,6 +1618,17 @@ class BaseAgent(Generic[T]):
                 })
             except Exception as exc:  # noqa: BLE001
                 self._log.warning("failed-event publish failed: %s", exc)
+            try:
+                from argosy.services.chat_advisor.progress import record_agent_progress
+
+                await record_agent_progress(
+                    agent=self.agent_role,
+                    state="failed",
+                    error=str(run_exc)[:500],
+                    correlation_id=run_correlation_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve original failure
+                self._log.warning("durable progress write failed: %s", exc)
             raise
 
     # ------------------------------------------------------------------
@@ -1930,6 +1972,9 @@ class BaseAgent(Generic[T]):
         }
         if allowed_tools:
             options_kwargs["max_turns"] = max(options_kwargs["max_turns"], 6)
+        options_kwargs["max_turns"] = max(
+            options_kwargs["max_turns"], getattr(self, "claude_code_max_turns", 3)
+        )
 
         # CONFIG ISOLATION (2026-07-05, default ON — see
         # AnthropicSettings.claude_code_isolated). Without this, the bundled
@@ -1946,6 +1991,15 @@ class BaseAgent(Generic[T]):
             _isolated = get_settings().anthropic.claude_code_isolated
         except Exception:  # noqa: BLE001 — settings load must never kill a call
             _isolated = True
+        # Advisory chat has a capability boundary, not a user preference.
+        # SDK allowed_tools=[] only controls auto-approval; it does NOT remove
+        # tools. Enforce a truly empty tool/MCP set even if global isolation
+        # is disabled for other fleet roles.
+        _force_toolless = bool(getattr(self, "claude_code_force_toolless", False))
+        _public_documents = bool(getattr(self, "claude_code_public_documents", False)) and not _force_toolless
+        _force_isolated = bool(getattr(self, "claude_code_force_isolated", False)) or _public_documents
+        if _force_toolless or _force_isolated:
+            _isolated = True
         if _isolated:
             options_kwargs["setting_sources"] = []
             # Also trim the CLI's BASE tool set to exactly the per-agent
@@ -1958,6 +2012,20 @@ class BaseAgent(Generic[T]):
             # preserving: unlisted tools were unusable before, now their
             # schemas are simply not loaded.
             options_kwargs["tools"] = list(allowed_tools)
+        if _force_toolless or _force_isolated:
+            options_kwargs["mcp_servers"] = {}
+            options_kwargs["extra_args"] = {"strict-mcp-config": None}
+            options_kwargs["permission_mode"] = "dontAsk"
+        if _force_toolless:
+            options_kwargs["tools"] = []
+            options_kwargs["allowed_tools"] = []
+            allowed_tools = []
+        elif _public_documents:
+            from argosy.services.public_document_tool import TOOL_NAME, create_document_server
+            options_kwargs["mcp_servers"] = {"argosy_sources": create_document_server(self.user_id)}
+            allowed_tools.append(TOOL_NAME)
+            options_kwargs["allowed_tools"] = list(allowed_tools)
+        _keep_tool_stream_open = _public_documents or bool(getattr(self, "claude_code_keep_tool_stream_open", False))
         # Wave A.5 / Opus 4.7 migration: thread thinking config through to
         # the agent-sdk. Prefer adaptive thinking (the canonical Opus 4.6+
         # pattern) when ``thinking_effort`` is configured — Anthropic
@@ -2035,10 +2103,23 @@ class BaseAgent(Generic[T]):
         # prompt cache from prior batches; only the last turn's text is
         # used as the ModelCall response).
         if image_attachments or pdf_attachments:
+            batch_options = {}
+            if _keep_tool_stream_open:
+                # The CLI may coalesce queued user messages. A tool callback
+                # stream must use one bounded user message, not wait for one
+                # ResultMessage per binary chunk (those results may not exist).
+                from pathlib import Path as AttachmentPath
+                attachments = [*(pdf_attachments or []), *(image_attachments or [])]
+                total_bytes = sum(AttachmentPath(getattr(a, "path", None) or a["path"]).stat().st_size for a in attachments)
+                if total_bytes > 4_000_000:
+                    raise AgentRunError("Research attachments exceed the 4 MB single-message budget; split the document review explicitly")
+                batch_options = {"max_blocks_per_batch": max(1, len(attachments)),
+                                 "max_bytes_per_batch": 4_000_000}
             user_messages = _build_claude_code_messages(
                 user_with_sources=user_with_sources,
                 image_attachments=image_attachments or [],
                 pdf_attachments=pdf_attachments or [],
+                **batch_options,
             )
             expected_turns = len(user_messages)
 
@@ -2191,7 +2272,15 @@ class BaseAgent(Generic[T]):
                 # the default for those agents. asyncio.TimeoutError is
                 # caught below as another retry trigger.
                 async with asyncio.timeout(self.sdk_timeout_seconds):
-                    async for message in query(prompt=sdk_prompt, options=options):
+                    if _keep_tool_stream_open:
+                        from argosy.agents.claude_tool_stream import query_with_tool_permissions
+                        messages = query_with_tool_permissions(
+                            query_fn=query, prompt=sdk_prompt, options=options,
+                            allowed_tools=allowed_tools, expected_results=expected_turns,
+                        )
+                    else:
+                        messages = query(prompt=sdk_prompt, options=options)
+                    async for message in messages:
                         if isinstance(message, AssistantMessage):
                             _msg_parts = [
                                 block.text
@@ -2203,6 +2292,16 @@ class BaseAgent(Generic[T]):
                             if _msg_text.strip():
                                 assistant_msg_texts.append(_msg_text)
                         elif isinstance(message, ResultMessage):
+                            if getattr(message, "is_error", False):
+                                # CLI failures arrive on stdout, not necessarily stderr.
+                                # Never discard this diagnostic and retry a known limit
+                                # as an opaque exit-1, or parse partial text as success.
+                                subtype = getattr(message, "subtype", "unknown")
+                                detail = getattr(message, "errors", None) or getattr(message, "result", None)
+                                raise AgentRunError(
+                                    f"{self.agent_role}: Claude CLI result {subtype}; "
+                                    f"turns={getattr(message, 'num_turns', None)}; {str(detail)[:1500]}"
+                                )
                             # Schema-constrained calls put the validated
                             # payload on ``ResultMessage.structured_output``
                             # while AssistantMessage TextBlocks often carry
@@ -2436,6 +2535,8 @@ class BaseAgent(Generic[T]):
                     or "(exit code: 1)" in _exc_str
                 )
                 is_transient_flake = (
+                    not isinstance(exc, AgentRunError)
+                    and
                     (
                         (isinstance(exc, ProcessError)
                          and getattr(exc, "exit_code", None) == 1)

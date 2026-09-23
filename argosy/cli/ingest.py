@@ -183,6 +183,23 @@ def ingest_leumi_portfolio(
 
     from argosy.config import get_settings
     from argosy.services.leumi_import import import_leumi
+
+    # Preserve the raw inputs and audit lineage before any financial write.
+    # Dry runs remain read-only. The catalog deduplicates identical uploads.
+    if apply:
+        from argosy.services.file_catalog import catalog_upload
+
+        async def catalog_exports() -> None:
+            for source_path in (portfolio, ils, usd, eur):
+                if source_path is not None:
+                    await catalog_upload(
+                        user_id=user_id, raw_bytes=source_path.read_bytes(),
+                        original_name=source_path.name,
+                        mime_type="application/vnd.ms-excel", kind="other",
+                        source="intake_upload",
+                    )
+
+        asyncio.run(catalog_exports())
     from argosy.state.db import create_sync_engine
 
     fx_paths = {c: p for c, p in (("USD", usd), ("EUR", eur)) if p}

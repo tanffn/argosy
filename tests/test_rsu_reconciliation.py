@@ -58,11 +58,11 @@ def test_parse_csv_synthetic(tmp_path: Path) -> None:
     assert sale.date == date(2026, 4, 20)
     assert sale.symbol == "NVDA"
     assert sale.quantity_shares == 1040
-    assert sale.gross_usd == pytest.approx(207538.02)
+    assert sale.gross_usd == pytest.approx(207542.50)
     assert sale.fees_usd == pytest.approx(4.48)
-    # No taxes column populated → 0.0; net = gross - fees.
+    # Amount already includes broker deductions; do not deduct fees twice.
     assert sale.total_taxes_usd == pytest.approx(0.0)
-    assert sale.net_usd == pytest.approx(207533.54)
+    assert sale.net_usd == pytest.approx(207538.02)
     assert len(sale.lots) == 2
     assert sale.lots[0].shares == 520
     assert sale.lots[0].sale_price_usd == pytest.approx(199.5601)
@@ -99,6 +99,17 @@ def test_parse_csv_empty(tmp_path: Path) -> None:
     assert report.sales == []
     assert report.disbursements == []
     assert report.unparsed_actions == {}
+
+
+def test_cash_amount_is_not_reduced_twice_when_lot_tax_is_present(tmp_path):
+    path = tmp_path / 'taxed.csv'
+    path.write_text('Date,Action,Symbol,Quantity,FeesAndCommissions,Amount,Type,Shares,SalePrice,Taxes\n'
+                    '08/12/2026,Sale,NVDA,10,$2,$898,,,,\n'
+                    ',,,,,,RS,10,$100,$100\n', encoding='utf-8')
+    sale = parse_csv(path).sales[0]
+    assert sale.net_usd == 898
+    assert sale.fees_usd == 2 and sale.total_taxes_usd == 100
+    assert sale.gross_usd == 1000
 
 
 # ---------------------------------------------------------------------------

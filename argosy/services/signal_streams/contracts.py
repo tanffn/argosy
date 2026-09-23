@@ -304,30 +304,18 @@ class RecipientResolver:
         pending: dict[str, RecipientResolution] = session.info.setdefault(
             pending_key, {}
         )
-        cached = pending.get(normalised)
-        if cached is not None:
-            if cached in session:
-                if self._agent_error_expired(cached):
-                    session.delete(cached)
-                    pending.pop(normalised, None)
-                    session.flush()
-                else:
-                    return cached.ticker
-            else:
-                # Rollback/expunge made the cached object transient. Drop this
-                # session-local entry and re-resolve from durable state.
-                pending.pop(normalised, None)
-
-        # A pending resolution for another recipient must not autoflush here:
-        # fetch still has independent cache-backed adapters to call.
+        # No writes during external research: a flushed deletion of an expired
+        # error takes SQLite's writer lock and deadlocks the independent market
+        # cache connection later in this same fetch. Refresh the row in place,
+        # staged until the owning stream commits; rollback retains the old row.
         with session.no_autoflush:
-            existing = session.get(RecipientResolution, normalised)
-        if existing is not None:
-            if self._agent_error_expired(existing):
-                session.delete(existing)
+            existing = pending.get(normalised)
+            if existing is not None and existing not in session:
                 pending.pop(normalised, None)
-                session.flush()
-            else:
+                existing = None
+            if existing is None:
+                existing = session.get(RecipientResolution, normalised)
+            if existing is not None and not self._agent_error_expired(existing):
                 return existing.ticker
 
         ticker = _CURATED_ALIASES.get(normalised)
@@ -389,16 +377,12 @@ class RecipientResolver:
                             error=str(exc)[:300],
                         )
 
-        row = RecipientResolution(
-            recipient_normalized=normalised,
-            recipient_name=recipient_name,
-            ticker=ticker,
-            resolution_method=method,
-            candidates_json=json.dumps(
-                sorted(candidates), separators=(",", ":")
-            ),
-            resolved_at=self._clock(),
-        )
+        row = existing if existing is not None else RecipientResolution(recipient_normalized=normalised)
+        row.recipient_name = recipient_name
+        row.ticker = ticker
+        row.resolution_method = method
+        row.candidates_json = json.dumps(sorted(candidates), separators=(",", ":"))
+        row.resolved_at = self._clock()
         session.add(row)
         pending[normalised] = row
         return ticker
@@ -651,9 +635,9 @@ class GovContractsStream:
         for award, ticker in resolved:
             if not since <= award.event_date <= through:
                 continue
-            snapshot = snapshots.setdefault(
-                ticker, self.market_snapshot(ticker)
-            )
+            if ticker not in snapshots:
+                snapshots[ticker] = self.market_snapshot(ticker)
+            snapshot = snapshots[ticker]
             revenue = snapshot.trailing_12m_revenue
             if (
                 snapshot.price is None

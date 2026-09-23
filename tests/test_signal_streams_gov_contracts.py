@@ -484,6 +484,59 @@ def test_resolver_stages_without_lock_and_commits_once(
     engine.dispose()
 
 
+def test_contract_market_snapshot_is_fetched_once_per_ticker(db_session):
+    calls = []
+    def market(ticker):
+        calls.append(ticker)
+        return _snapshot(ticker)
+    def fetch_json(payload):
+        return {"results": [
+            {"Award ID": name, "Recipient Name": "Palantir Technologies Inc.",
+             "Award Amount": 60_000_000, "Base Obligation Date": "2026-07-10",
+             "generated_internal_id": name} for name in ("A1", "A2")],
+             "page_metadata": {"hasNext": False}}
+    stream = GovContractsStream(fetch_json=fetch_json, curated_contractors={},
+                                market_snapshot=market, today=lambda: date(2026, 7, 10))
+    assert len(stream.fetch(db_session, since=date(2026, 7, 9))) == 2
+    assert calls == ["PLTR"]
+
+
+def test_expired_resolver_error_does_not_lock_independent_cache_writer(tmp_path):
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'expired-resolver.db'}",
+                              connect_args={"timeout": 0.1})
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    now = datetime(2026, 9, 12, 14, tzinfo=UTC)
+    with engine.begin() as connection:
+        connection.execute(sa.text("PRAGMA journal_mode=WAL"))
+        connection.execute(sa.text("CREATE TABLE cache_probe (id INTEGER PRIMARY KEY)"))
+    with factory() as setup:
+        setup.add(RecipientResolution(recipient_normalized="general dynamics systems",
+                  recipient_name="General Dynamics Systems", ticker=None,
+                  resolution_method="agent_error", candidates_json='["GD","GDYN"]',
+                  resolved_at=now-timedelta(days=2)))
+        setup.commit()
+    resolver = RecipientResolver(public_companies={"GD": "General Dynamics Corporation", "GDYN": "General Dynamics Software"},
+                                 llm_choice=lambda *_: "GD", fuzzy_cutoff=0.45,
+                                 automatic_match_cutoff=0.99, clock=lambda: now)
+    with factory() as session:
+        assert resolver.resolve(session, "General Dynamics Systems") == "GD"
+        assert resolver.resolve(session, "General Dynamics Systems") == "GD"
+        # Actual second SQLite connection: this is the adapter's cache-write seam.
+        with engine.begin() as connection:
+            connection.execute(sa.text("INSERT INTO cache_probe VALUES (1)"))
+        session.rollback()
+    with factory() as verify:
+        assert verify.get(RecipientResolution, "general dynamics systems").resolution_method == "agent_error"
+        assert resolver.resolve(verify, "General Dynamics Systems") == "GD"
+        with engine.begin() as connection:
+            connection.execute(sa.text("INSERT INTO cache_probe VALUES (2)"))
+        verify.commit()
+    with factory() as verify:
+        assert verify.get(RecipientResolution, "general dynamics systems").resolution_method == "llm"
+    engine.dispose()
+
+
 def test_resolver_agent_failure_tombstones_and_other_recipient_nominates(
     db_session,
 ) -> None:
@@ -1486,6 +1539,9 @@ def test_predictions_loop_runs_reevaluation_before_retention_in_same_session(
     from argosy.services.predictions.retention import RetentionSummary
 
     engine = sa.create_engine("sqlite://")
+    # The real tick also reconciles durable forecast clocks and benchmarks.
+    # Give those stages a real empty schema while observing the three passes.
+    Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     calls: list[tuple[str, object]] = []
 

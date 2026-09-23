@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from argosy.services.order_sheet import CandidateComparison, OutcomeScenario, ThesisType
+from argosy.services.order_sheet import CandidateComparison, OutcomeScenario, PendingResearch, ThesisType
 
 
 class AuthoredOrderIntent(BaseModel):
@@ -104,6 +104,8 @@ class AllocationProposal(BaseModel):
     sells: list[Sell] = Field(default_factory=list)
     holds: list[str] = Field(default_factory=list)
     candidate_comparisons: list[CandidateComparison] = Field(default_factory=list)
+    pending_research: list[PendingResearch] = Field(default_factory=list)
+    research_separation_blocker: str | None = None
     rationale: str = ""
 
 

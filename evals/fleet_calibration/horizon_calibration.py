@@ -148,10 +148,14 @@ def score_row(
     rationale: str,
     freeze_date: Any,
     packet: dict[str, Any],
+    rerating_horizon: str = "",
 ) -> dict[str, Any]:
     """Score one persisted replay against its packet (informational dimension)."""
     resolution = packet.get("resolution")
-    stated = parse_clock_band(rationale or "")
+    # Current TraderProposal output records the clock as a dedicated field.
+    # Keep the rationale fallback so older immutable replay artifacts remain
+    # scoreable without rewriting their history.
+    stated = parse_clock_band(rerating_horizon or rationale or "")
     if resolution is None:
         label = score_horizon_calibration(
             stated, actual_months=None, resolution_present=False,

@@ -377,22 +377,20 @@ ON_PLAN_BAND_PP = 5.0
 
 
 def _book_total_usd(session: Session, user_id: str) -> tuple[float | None, str | None]:
-    """(total USD, ISO snapshot date) from the latest snapshot row."""
-    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+    """Current conserved portfolio value, never an unchecked snapshot total."""
+    from argosy.services.current_book import load_current_book
 
-    row = get_latest_snapshot_row(session, user_id)
-    if row is None:
+    book = load_current_book(session, user_id)
+    if book.snapshot is None:
         return None, None
-    as_of = getattr(row, "snapshot_date", None)
+    as_of = book.snapshot_date
     as_of_s = as_of.isoformat() if as_of is not None else None
-    try:
-        totals = json.loads(row.totals_json or "{}")
-        return float(totals.get("total_usd_value_k", 0.0)) * 1000.0, as_of_s
-    except (TypeError, ValueError):
+    if book.degraded or not book.total:
         return None, as_of_s
+    return sum(float(p.get("usd_value_k") or 0.0) for p in book.total) * 1000.0, as_of_s
 
 
-def _on_plan(session: Session, user_id: str) -> tuple[bool, str]:
+def _on_plan(session: Session, user_id: str) -> tuple[bool | None, str]:
     """(on_plan, note) from the live breakdown vs the canonical doc.
 
     Ex-NVDA renormalized comparison — the NVDA strategic sleeve is a
@@ -406,19 +404,30 @@ def _on_plan(session: Session, user_id: str) -> tuple[bool, str]:
     )
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
+    from argosy.services.instrument_plan_class import load_classification_map
+    from argosy.services.current_book import load_current_book
+    from argosy.ingest.tsv import PortfolioPosition
 
     row = get_latest_snapshot_row(session, user_id)
     if row is None:
-        return False, "no portfolio snapshot yet"
+        return None, "no portfolio snapshot yet"
     pv = get_current_plan(session, user_id)
     if pv is None:
-        return False, "no current plan"
+        return None, "no current plan"
+    book = load_current_book(session, user_id)
+    if book.degraded:
+        return None, f"Plan alignment unavailable: {book.degrade_reason}"
     doc = load_plan_target_allocation(pv)
+    if doc is None or not doc.classes:
+        return None, "no plan targets"
+    snap = row_to_snapshot(row)
+    snap.positions = [PortfolioPosition(**{key: value for key, value in position.items() if key in PortfolioPosition.model_fields}) for position in book.total]
     rows = build_allocation_breakdown(
-        row_to_snapshot(row), doc, exclude_nvda=True
+        snap, doc, exclude_nvda=True,
+        classification_map=load_classification_map(session, user_id),
     )
     if not rows:
-        return False, "no allocation data"
+        return None, "no allocation data"
 
     worst = max(
         (r for r in rows if r.target_pct is not None),
@@ -426,7 +435,7 @@ def _on_plan(session: Session, user_id: str) -> tuple[bool, str]:
         default=None,
     )
     if worst is None:
-        return False, "no plan targets"
+        return None, "no plan targets"
     gap = abs(worst.current_pct - (worst.target_pct or 0.0))
     if gap <= ON_PLAN_BAND_PP:
         return True, f"all classes within ±{ON_PLAN_BAND_PP:g}pp of target (ex-NVDA glide)"
@@ -448,16 +457,17 @@ def _fi_line(session: Session, user_id: str, *, now: datetime) -> str:
         )
 
         def _compute() -> dict:
+            from dataclasses import asdict
+
             r = canonical_feasible_dual_track(
                 session=session,
                 user_id=user_id,
                 target_p_solvent=0.90,
                 assumptions=RetirementAssumptions(n_paths=1500, seed=42),
             )
-            return {
-                "earliest_feasible_age": r.earliest_feasible_age,
-                "current_age": r.current_age,
-            }
+            # Both writers MUST cache the full canonical result. A two-field
+            # greeting projection here would poison the retirement API cache.
+            return asdict(r)
 
         version = derived_cache.version_tuple(session, user_id)
         if version is not None:

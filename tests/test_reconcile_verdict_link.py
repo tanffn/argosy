@@ -22,13 +22,18 @@ from argosy.execution.reconcile import (
 from argosy.state import db as db_mod
 from argosy.state.models import (
     DecisionRun,
-    Fill as FillRow,
     PendingOrder,
-    Proposal as ProposalRow,
     User,
+)
+from argosy.state.models import (
+    Fill as FillRow,
+)
+from argosy.state.models import (
+    Proposal as ProposalRow,
+)
+from argosy.state.models import (
     Verdict as VerdictRow,
 )
-
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -79,6 +84,7 @@ async def _seed(
             size_shares_or_currency=10,
             tier="T1",
             account_class="main",
+            account_id="ibkr_main",
             status="executed_live",
             rationale_summary="r",
             expected_impact_json="{}",
@@ -92,6 +98,7 @@ async def _seed(
             proposal_id=proposal.id,
             broker="ibkr",
             broker_order_id="brkr-1",
+            account_id="ibkr_main",
             status="submitted",
         )
         session.add(pending)
@@ -233,9 +240,13 @@ async def test_fill_subject_mismatch_stores_null(engine: None) -> None:
     """Verdict exists for the run but for a different subject → no link."""
     pid, vid = await _seed(ticker="AAPL")
     assert vid is not None
-    # Fill for a different ticker than the verdict's subject.
+    async with db_mod.get_session() as session:
+        verdict = await session.get(VerdictRow, vid)
+        verdict.subject = "MSFT"
+        await session.commit()
+    # Receipt still matches its proposal; only the optional verdict differs.
     loop = ReconcileLoop(adapter_factory=lambda b: MockAdapter(
-        _OrderSnapshot(status="filled", fills=[_fill(pid, ticker="MSFT")])
+        _OrderSnapshot(status="filled", fills=[_fill(pid)])
     ))
     await loop.tick()
 

@@ -42,6 +42,20 @@ def _packet():
     }
 
 
+@pytest.mark.parametrize("lens", ["sizing", "candidate_selection", "diversification"])
+def test_reviewer_replacements_respect_whole_position_sizing(lens):
+    agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+    system, _ = agent.build_prompt(lens=lens, packet=_packet(), buys=[])
+    assert "feasibility of your OWN suggested replacement" in system
+    assert "current holdings plus the proposed addition" in system
+    assert "post-tax portfolio total" in system
+    assert "sub-1% position needs" in system
+    assert "genuine evidence-backed >=5x convexity case" in system
+    assert "not a demand to fund every sleeve now" in system
+    if lens == "sizing":
+        assert "EVERY proposed buy, not only moonshots" in system
+
+
 def test_reviewer_prompt_is_blind_and_lensed():
     agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
     system, user = DeploymentReviewerAgent.build_prompt(
@@ -185,6 +199,31 @@ def test_reviewer_sees_candidate_disposition_receipt_but_not_reasoning():
     assert "ABCL: NOT_SELECTED" in user
     assert "reason withheld" in user
     assert "Tax-lot availability is not verified net sale proceeds" in system
+
+
+@pytest.mark.parametrize("policy_status,failures", [
+    ("blocked", ["tax evidence expired"]), ("actionable", []),
+])
+def test_every_blind_lens_gets_raw_sell_execution_constraints(policy_status, failures):
+    packet = {**_packet(), "allow_sells": True,
+              "staged_sell_policies": {"XYZ": {"status": policy_status, "failures": failures,
+                  "maximum_current_tranche_usd": 1234.56, "execute_no_later_than": "2026-09-20"}},
+              "user_constraints": "No full liquidation."}
+    captured = []
+    def review(lens, packet, buys, **kwargs):
+        agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+        system, user = agent.build_prompt(lens=lens, packet=packet, buys=buys)
+        captured.append((lens, system, user))
+        return DeploymentReviewOutput(lens=lens, objections=[])
+    proposal = SimpleNamespace(buys=[], sells=[], rationale="secret author explanation")
+    result = run_deploy_decision_team(packet, proposal, review_fn=review)
+    assert result.all_clear and not result.degraded
+    assert len(captured) >= 3
+    for _, system, user in captured:
+        assert json.dumps(packet["staged_sell_policies"]) in user
+        assert '"allow_sells": true' in user and "No full liquidation." in user
+        assert "secret author explanation" not in user
+        assert "temporarily unexecutable tranche can coexist" in system
 
 
 def test_sizing_reviewer_rederives_probability_aware_amount_blind():
@@ -600,3 +639,14 @@ def test_prudence_brief_and_prompt_carry_situs_facts():
     assert "never from" in system and "claimed weights" in system
     assert "US-SITUS (estate-exposed)" in user          # MELI's situs fact rendered
     assert "non-US-situs" in user                       # EXUS's too
+
+
+def test_recovery_review_prompt_keeps_prior_portfolio_objection():
+    agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
+    packet = dict(_packet())
+    packet["recovery_review_objections"] = [{"symbol": "PORTFOLIO", "objections": [
+        {"concern": "Core funding depends on an unresolved sale", "impact": "rejects_trade"},
+    ]}]
+    system, user = agent.build_prompt(lens="prudence", packet=packet, buys=[])
+    assert "Core funding depends on an unresolved sale" in user
+    assert "prior portfolio-wide dependency cannot disappear" in system

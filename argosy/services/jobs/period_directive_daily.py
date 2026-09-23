@@ -336,6 +336,9 @@ def _write_directive_proposal(
     )
     db.add(row)
     try:
+        from argosy.services.allocation_research import sync_sheet_research
+
+        sync_sheet_research(db, sheet, fingerprint)
         db.commit()
         _record_surfaced_recommendations(
             db, proposal_id=row.id, sheet=sheet, fingerprint=fingerprint
@@ -363,6 +366,7 @@ def _write_directive_proposal(
         existing.suggested_payload = suggested_payload
         existing.surfaced_at = now
         existing.expires_at = now + timedelta(days=7)
+        sync_sheet_research(db, sheet, fingerprint)
         db.commit()
         _record_surfaced_recommendations(
             db, proposal_id=existing.id, sheet=sheet, fingerprint=fingerprint
@@ -571,6 +575,8 @@ def run_period_directive_daily(
     compose_fn: Callable[..., Any] | None = None,
     funding_account_id: str | None = None,
     materialize_fn: Callable[..., list[Any]] | None = None,
+    research_fn: Callable[..., dict[str, Any]] | None = None,
+    retry_failed_research: bool = False,
 ) -> dict[str, Any]:
     """One triage→compose→sink pass. Returns the rich ``output_summary`` so
     ``job_runs`` tells the whole story (including quiet skips)."""
@@ -578,6 +584,10 @@ def run_period_directive_daily(
     detect_fn = detect_fn or _detect_cash
     recommendations_fn = recommendations_fn or _load_recommendations
     compose_fn = compose_fn or compose_authored_directive
+    from argosy.services.allocation_research import refresh_due_research
+
+    research = refresh_due_research(db, user_id, research_fn=research_fn,
+                                    retry_failed=retry_failed_research)
 
     # --- Stage 1: TRIAGE (deterministic, no LLM) ---------------------------
     event = detect_fn(db, user_id=user_id)
@@ -589,7 +599,7 @@ def run_period_directive_daily(
 
     source_proposal_ids = recommendation_ids(recommendations)
     source_recommendation_keys = recommendation_keys(recommendations)
-    if event is None and not source_recommendation_keys:
+    if event is None and not source_recommendation_keys and not research["due"]:
         # Below threshold (or no/stale snapshot) → quiet success. A standing
         # open directive is now moot — it leaves the checklist.
         superseded = _supersede_open_directives(
@@ -625,6 +635,7 @@ def run_period_directive_daily(
             cash_still_accurate
             and prior_source_keys == source_recommendation_keys
             and _has_fresh_validated_sheet(row)
+            and (not research["due"] or (research["failures"] and not research["refreshed"]))
         ):
             out = {
                 "triggered": False,
@@ -639,6 +650,15 @@ def run_period_directive_daily(
                 "source_recommendation_keys": source_recommendation_keys,
                 "superseded": [],
             }
+            if research["failures"]:
+                payload = json.loads(row.suggested_payload)
+                from argosy.services.order_sheet import OrderSheet
+                from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+                sheet = OrderSheet.model_validate(payload["order_sheet"])
+                out.update(status="degraded", degraded=True, research=research,
+                    reason="Existing validated trade plan retained; separate research recovery pending",
+                    order_sheet_fingerprint=order_sheet_fingerprint(sheet), order_lines=len(sheet.lines),
+                    materialization_status="awaiting_unified_approval", materialized_proposal_ids=[])
             _log.info("period_directive_daily.quiet_skip", **out)
             return out
 
@@ -692,6 +712,7 @@ def run_period_directive_daily(
             "artifact_failures": failures,
             "status": "degraded",
             "degraded": True,
+            "research": research,
         }
         _log.warning("period_directive_daily.degraded", **out)
         return out
@@ -742,7 +763,11 @@ def run_period_directive_daily(
         "order_lines": len(sheet.lines),
         "materialization_status": materialization_status,
         "materialized_proposal_ids": materialized_ids,
+        "pending_research": [item.model_dump(mode="json") for item in sheet.pending_research],
+        "research": research,
     }
+    if research["failures"]:
+        out.update(status="degraded", degraded=True)
     _log.info("period_directive_daily.surfaced", **out)
     return out
 
@@ -760,6 +785,7 @@ class PeriodDirectiveDailyJob(CadenceLoop):
         user_id: str = "ariel",
         session_factory: sessionmaker | Callable[[], Session] | None = None,
         run_fn: Callable[..., dict[str, Any]] | None = None,
+        retry_failed_research: bool = False,
     ) -> None:
         super().__init__(
             schedule=schedule or LoopSchedule(cron=_DEFAULT_CRON, timezone=_DEFAULT_TZ),
@@ -769,6 +795,7 @@ class PeriodDirectiveDailyJob(CadenceLoop):
         self._session_factory = session_factory
         self._cost_guard_enabled = run_fn is None
         self._run_fn = run_fn or run_period_directive_daily
+        self._retry_failed_research = retry_failed_research
         self.last_output_summary: dict[str, Any] | None = None
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
@@ -792,7 +819,8 @@ class PeriodDirectiveDailyJob(CadenceLoop):
             factory = self._session_factory or _build_default_session_factory()
             session = factory()
             try:
-                return self._run_fn(session, self.user_id)
+                kwargs = {"retry_failed_research": True} if self._retry_failed_research else {}
+                return self._run_fn(session, self.user_id, **kwargs)
             finally:
                 session.close()
 

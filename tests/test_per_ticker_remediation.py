@@ -51,6 +51,31 @@ def _request(kind: RemediationKind, role: str, *, ticker: str = "NOW") -> Remedi
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model_label', ['news_analyst', 'NEWS', 'fundamentals'])
+async def test_remediation_routes_to_owning_report_not_model_label(model_label):
+    original = _report('news', requests=[_request('news_empty', model_label)])
+    other = _report('fundamentals')
+    calls = []
+
+    async def refresh(kind, ticker):
+        return True
+
+    async def rerun(role, reports):
+        calls.append(role)
+        return _report(role)
+
+    out, unresolved = await apply_remediations_and_rerun(
+        reports=[original, other], user_id='ariel', ticker='NOW', decision_run_id=1,
+        refresh_payload=refresh, rerun_analyst=rerun,
+    )
+    assert calls == ['news']
+    assert unresolved == []
+    assert len(out) == 2 and out[1] is other
+    assert out[0] is not original
+    assert original.output.remediation_requests[0].target_role == model_label
+
+
 # ----------------------------------------------------------------------
 # No requests → no-op
 # ----------------------------------------------------------------------

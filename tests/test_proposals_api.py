@@ -86,6 +86,38 @@ async def test_list_proposals_empty(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_expired_proposal_cannot_be_approved(client: AsyncClient) -> None:
+    await _seed_user()
+    pid = await _seed_proposal()
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, pid)
+        row.expires_at = datetime.now(UTC) - timedelta(days=1)
+        await session.commit()
+    response = await client.post(f"/api/proposals/{pid}/approve", json={"user_id": "ariel"})
+    assert response.status_code == 409
+    assert "expired" in response.json()["detail"].lower()
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, pid)
+        assert row.status == "awaiting_human"
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_rechecked_at_approval_transition(client: AsyncClient, monkeypatch) -> None:
+    from argosy.services import proposal_expiry
+    from sqlalchemy import select
+
+    checks = iter([None, "Proposal expired during approval checks"])
+    monkeypatch.setattr(proposal_expiry, "proposal_expiry_reason", lambda *a, **kw: next(checks))
+    await _seed_user()
+    pid = await _seed_proposal()
+    response = await client.post(f"/api/proposals/{pid}/approve", json={"user_id": "ariel"})
+    assert response.status_code == 409
+    async with db_mod.get_session() as session:
+        assert (await session.get(ProposalRow, pid)).status == "awaiting_human"
+        assert not (await session.execute(select(Approval).where(Approval.proposal_id == pid))).scalars().all()
+
+
+@pytest.mark.asyncio
 async def test_list_proposals_filters_by_status(client: AsyncClient) -> None:
     await _seed_user()
     pid_a = await _seed_proposal(status="awaiting_human")

@@ -252,6 +252,12 @@ def run_deploy_decision_team(
     )
     enriched = {
         **enriched,
+        "proposed_pending_research": [
+            {"tickers": item.tickers, "reserved_usd": item.reserved_usd,
+             "next_review_date": item.next_review_date.isoformat(),
+             "research_question": item.research_question}
+            for item in (getattr(proposal, "pending_research", None) or [])
+        ],
         "proposed_sells": proposed_sells,
         "author_candidate_dispositions": candidate_dispositions,
         "review_funding": {
@@ -314,6 +320,17 @@ def run_deploy_decision_team(
                 }
             )
 
+    if getattr(proposal, "pending_research", None):
+        for review in reviews:
+            if not getattr(review, "separation_safe", False):
+                objections_by_ticker.setdefault("PORTFOLIO", []).append({
+                    "lens": review.lens,
+                    "concern": "Reviewer did not affirm independent core/reserve separation. "
+                    + (getattr(review, "overall_note", "") or ""),
+                    "severity": "block", "impact": "rejects_trade",
+                    "recommended_amount_usd": None, "recommended_ticker": None,
+                })
+
     material_tickers = {
         ticker
         for ticker, objections in objections_by_ticker.items()
@@ -350,7 +367,7 @@ def run_deploy_decision_team(
     )
 
 
-def build_review_resolution(history: list[TeamDecision]):
+def build_review_resolution(history: list[TeamDecision], pending_research=()):
     """Project bounded review rounds into the durable order-sheet audit record."""
     from argosy.services.order_sheet import (
         ReviewObjectionRecord,
@@ -360,6 +377,7 @@ def build_review_resolution(history: list[TeamDecision]):
     if not history:
         return None
     final = history[-1]
+    pending_symbols = {s for item in pending_research for s in item.tickers}
     records: list[ReviewObjectionRecord] = []
     resolved = 0
     for round_index, decision in enumerate(history, start=1):
@@ -372,6 +390,11 @@ def build_review_resolution(history: list[TeamDecision]):
                 )
                 if material and is_final:
                     status = "unresolved"
+                elif material and (
+                    str(item.get("symbol", "")).upper() in pending_symbols
+                    or str(objection.get("recommended_ticker") or "").upper() in pending_symbols
+                ):
+                    status = "deferred_for_research"
                 elif material:
                     status = "resolved_by_re_review"
                     resolved += 1
@@ -405,6 +428,8 @@ def build_review_resolution(history: list[TeamDecision]):
             "no executable one voice."
         )
     )
+    if pending_research and one_voice:
+        summary += " Executable core/reserve separation approved; discovery research remains unresolved."
     return ReviewResolution(
         rounds=len(history),
         reviewers_ran=final.reviewers_ran,
@@ -412,6 +437,9 @@ def build_review_resolution(history: list[TeamDecision]):
         one_voice=one_voice,
         summary=summary,
         objections=records,
+        separation_reviewed=bool(pending_research) and one_voice and all(
+            getattr(review, "separation_safe", False) for review in final.reviews
+        ),
     )
 
 

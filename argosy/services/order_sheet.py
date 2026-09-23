@@ -47,10 +47,22 @@ class VoiceVerdict(BaseModel):
     """
 
     source: str = Field(min_length=1)
-    verdict: Literal["BUY", "ADD", "HOLD", "TRIM", "SELL"]
+    verdict: str = Field(
+        min_length=1,
+        description="Raw upstream label for prior_context; current_run requires BUY/ADD/HOLD/TRIM/SELL.",
+    )
     as_of: datetime
     rationale: str = Field(min_length=1)
     decision_scope: Literal["current_run", "prior_context"] = "current_run"
+
+    @model_validator(mode="after")
+    def _current_action_vocabulary(self) -> VoiceVerdict:
+        if not self.verdict.strip():
+            raise ValueError("A voice must retain a nonblank verdict")
+        if (self.decision_scope == "current_run"
+                and self.verdict not in {"BUY", "ADD", "HOLD", "TRIM", "SELL"}):
+            raise ValueError("Current-run verdict must be BUY/ADD/HOLD/TRIM/SELL")
+        return self
 
 
 class MarketEvidence(BaseModel):
@@ -174,7 +186,7 @@ class CandidateComparison(BaseModel):
     selection: Literal["SELECTED", "NOT_SELECTED"]
     radar_rank: int | None = Field(default=None, ge=1)
     radar_score: float | None = None
-    research_verdict: Literal["BUY", "HOLD", "SELL", "ABSTAIN"] | None = None
+    research_verdict: Literal["BUY", "HOLD", "TRIM", "SELL", "ABSTAIN", "WATCH", "PASS"] | None = None
     research_conviction: Literal["HIGH", "MED", "LOW"] | None = None
     evidence_fresh_as_of: datetime
     key_advantage: str = Field(min_length=1)
@@ -465,6 +477,41 @@ class FundingSummary(BaseModel):
     available_to_buy_usd: float = Field(ge=0)
 
 
+class PendingResearch(BaseModel):
+    """A non-executable decision, with one shared (not per-alternative) reserve."""
+
+    tickers: list[str] = Field(min_length=1)
+    disagreement: str = Field(min_length=1)
+    missing_evidence: str = Field(min_length=1)
+    research_question: str = Field(min_length=1)
+    next_review_date: date
+    reserved_usd: float = Field(ge=0, allow_inf_nan=False)
+    independence_reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def normalize_tickers(self) -> PendingResearch:
+        self.tickers = sorted({s.strip().upper() for s in self.tickers if s.strip()})
+        if not self.tickers:
+            raise ValueError("pending research requires named tickers")
+        return self
+
+
+def pending_research_errors(items, *, reserve_usd, action_symbols, as_of):
+    """Contract/arithmetic only; independence is judged by the blind team."""
+    errors = []
+    seen = set()
+    for item in items:
+        symbols = set(item.tickers)
+        if symbols & (seen | set(action_symbols)):
+            errors.append("pending research tickers must be unique and cannot be executable actions")
+        seen.update(symbols)
+        if item.next_review_date <= as_of:
+            errors.append("pending research requires a future next_review_date")
+    if sum(item.reserved_usd for item in items) > reserve_usd + 0.01:
+        errors.append("research reserves exceed the sheet's conserved cash reserve")
+    return errors
+
+
 class ReviewObjectionRecord(BaseModel):
     round: int = Field(ge=1)
     lens: str = Field(min_length=1)
@@ -481,7 +528,7 @@ class ReviewObjectionRecord(BaseModel):
     proposed_amount_usd: float = Field(ge=0)
     recommended_amount_usd: float | None = Field(default=None, ge=0)
     recommended_ticker: str | None = None
-    status: Literal["advisory", "resolved_by_re_review", "unresolved"]
+    status: Literal["advisory", "resolved_by_re_review", "unresolved", "deferred_for_research"]
 
 
 class ReviewResolution(BaseModel):
@@ -491,6 +538,7 @@ class ReviewResolution(BaseModel):
     one_voice: bool
     summary: str = Field(min_length=1)
     objections: list[ReviewObjectionRecord] = Field(default_factory=list)
+    separation_reviewed: bool = False
 
 
 class OrderSheet(BaseModel):
@@ -509,6 +557,7 @@ class OrderSheet(BaseModel):
     lines: list[OrderLine] = Field(default_factory=list)
     no_action: list[NoActionLine] = Field(min_length=1)
     candidate_comparisons: list[CandidateComparison] = Field(default_factory=list)
+    pending_research: list[PendingResearch] = Field(default_factory=list)
     review_resolution: ReviewResolution | None = None
     rationale: str = Field(min_length=1)
 
@@ -557,6 +606,18 @@ def validate_order_sheet(sheet: OrderSheet) -> SheetValidation:
     """
 
     failures: list[SheetFailure] = []
+    for error in pending_research_errors(
+        sheet.pending_research, reserve_usd=sheet.funding.reserve_usd,
+        action_symbols={line.symbol for line in sheet.lines}, as_of=sheet.generated_at.date(),
+    ):
+        failures.append(SheetFailure(code="pending_research_contract", detail=error))
+    if sheet.pending_research and (
+        sheet.review_resolution is None or not sheet.review_resolution.separation_reviewed
+    ):
+        failures.append(SheetFailure(
+            code="research_separation_unreviewed",
+            detail="Every independent reviewer must affirm the revised core/reserve separation.",
+        ))
     if sheet.review_resolution is not None and not sheet.review_resolution.one_voice:
         failures.append(
             SheetFailure(
@@ -945,7 +1006,11 @@ def validate_order_sheet(sheet: OrderSheet) -> SheetValidation:
                 ),
             )
         )
-    orphan_selected = sorted(selected_candidates - discovery_symbols)
+    from argosy.services.allocation_research import _is_fund
+    fund_comparisons = {row.ticker for row in sheet.candidate_comparisons if _is_fund(row.ticker)}
+    fund_buy_symbols = {line.symbol for line in sheet.lines
+        if line.symbol in fund_comparisons and line.action in (OrderAction.BUY, OrderAction.ADD)}
+    orphan_selected = sorted(selected_candidates - discovery_symbols - fund_buy_symbols)
     if orphan_selected:
         failures.append(
             SheetFailure(
@@ -960,6 +1025,21 @@ def validate_order_sheet(sheet: OrderSheet) -> SheetValidation:
         and line.action in (OrderAction.BUY, OrderAction.ADD)
     }
     for comparison in sheet.candidate_comparisons:
+        if comparison.ticker in fund_comparisons:
+            amount = sum((line.authored_notional_usd or line.notional_usd) for line in sheet.lines
+                if line.symbol == comparison.ticker and line.action in (OrderAction.BUY, OrderAction.ADD))
+            evidence_age = _age_days(sheet.generated_at, comparison.evidence_fresh_as_of)
+            if (comparison.research_verdict not in {"HOLD", "TRIM", "SELL"}
+                    or comparison.research_conviction is None
+                    or not 0 <= evidence_age <= sheet.freshness_days):
+                failures.append(SheetFailure(code="fund_comparison_evidence_missing",
+                    detail=f"{comparison.ticker}: fund comparison needs a fresh supported fund review"))
+            if (comparison.selection != ("SELECTED" if amount else "NOT_SELECTED")
+                    or comparison.recommended_position_usd is None
+                    or abs(comparison.recommended_position_usd - amount) > 1):
+                failures.append(SheetFailure(code="candidate_sizing_order_mismatch",
+                    detail=f"{comparison.ticker}: fund disposition must match the actual funded line"))
+            continue  # Vehicle comparison; normal order-line safety still applies.
         scenarios = comparison.outcome_scenarios
         if len(scenarios) < 3:
             failures.append(

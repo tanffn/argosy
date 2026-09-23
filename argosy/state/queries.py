@@ -31,7 +31,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from argosy.state import db as db_mod
-from argosy.state.models import InvestorEvent, PensionFundSnapshot
+from argosy.state.models import AuditLog, InvestorEvent, PensionFundSnapshot
 
 
 def _row_to_dict(row: PensionFundSnapshot) -> dict[str, Any]:
@@ -136,8 +136,25 @@ async def get_user_pension_snapshots(
                 .order_by(PensionFundSnapshot.snapshot_at.desc())
             )
         rows = result.scalars().all()
+        provenance = {}
+        # Append-only source observations survive cache refresh. Legacy rows
+        # have no such evidence; never invent a report period from snapshot_at.
+        for offset in range(0, len(rows), 500):
+            ids = [str(row.id) for row in rows[offset:offset + 500]]
+            evidence = (await session.execute(select(AuditLog.entity_id, AuditLog.payload_json).where(
+                AuditLog.user_id == user_id, AuditLog.event_type == 'pension.snapshot.source',
+                AuditLog.entity_type == 'pension_snapshot', AuditLog.entity_id.in_(ids))
+                .order_by(AuditLog.id))).all()
+            for entity_id, payload in evidence:
+                try:
+                    value = json.loads(payload)
+                    if not isinstance(value, dict):
+                        raise ValueError('Invalid pension source evidence')
+                except (TypeError, ValueError):
+                    value = {'status': 'unavailable', 'error': 'Stored source evidence is invalid'}
+                provenance.setdefault(entity_id, value)
 
-    return [_row_to_dict(row) for row in rows]
+    return [{**_row_to_dict(row), 'source_evidence': provenance.get(str(row.id))} for row in rows]
 
 
 def _hash_text(s: str) -> str:

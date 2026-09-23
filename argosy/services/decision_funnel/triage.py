@@ -114,7 +114,12 @@ def triage_candidate(
     agent = Stage2TriageAgent(user_id=user_id)
     report = agent.run_sync(
         candidate=candidate,
-        market_summary=market.summary,
+        market_summary=market.summary + "\nMatched high-materiality news (untrusted evidence):\n" + json.dumps([
+            {"signal_id": hit.signal_id, "excerpt": hit.excerpt, "sentiment": hit.sentiment,
+             "source": hit.source, "source_ref": hit.source_ref, "source_trust": hit.source_trust,
+             "received_at": hit.received_at, "publication_date": "not recorded"}
+            for hit in market.high_materiality_news if hit.ticker.upper() == candidate.subject.upper()
+        ]),
         weight_pct=weight_pct,
         cap_pct=cap_pct,
     )

@@ -6,7 +6,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
 import { DeconcentrationCard } from "@/components/home/DeconcentrationCard";
+import { DiscordAdvisorStatus } from "@/components/home/DiscordAdvisorStatus";
 import { FMGreetingCard } from "@/components/home/FMGreetingCard";
+import { HomeActions } from "@/components/home/HomeActions";
+import { KnowledgeFollowups } from "@/components/home/KnowledgeFollowups";
 import { NvdaPaceTile } from "@/components/home/NvdaPaceTile";
 import { PlanAdherenceCard } from "@/components/home/PlanAdherenceCard";
 import { RedFlagStrip } from "@/components/home/RedFlagStrip";
@@ -507,17 +510,19 @@ export default function Home() {
           live in the greeting header now). How you stand, what I need
           from you, what I'm watching. Everything operational (banners,
           strips, tiles, system telemetry) is demoted BELOW it or into
-          the collapsed Full-detail region at the bottom. Cash events
-          reach needs_you via the period-directive loop (the old
-          WindfallBanner is off the home page); verified/needs-confirm
-          action items land in needs_you too, so ActionItemsWidget and
-          AdvisorBriefCard live in Full detail.
+          the collapsed Full-detail region at the bottom. The global
+          operational warning remains above this summary. HomeActions
+          projects the same ranked feed as Inbox; the greeting's legacy
+          needs_you list is not a competing recommendation surface.
           ============================================================ */}
       <FMGreetingCard
         userId={USER_ID}
+        summaryOnly
         onShowFullDetail={showFullDetail}
         onLoaded={setGreeting}
       />
+      <HomeActions userId={USER_ID} />
+      <DiscordAdvisorStatus userId={USER_ID} />
 
       {/* EX2 — anomaly-detection banner. Only renders when the latest
           report carries at least one RED anomaly (e.g. Card 2923's
@@ -670,6 +675,8 @@ export default function Home() {
           lazy-mounted by <CollapsibleSection/> so none of it fetches
           until the client asks for it.
           ============================================================ */}
+      <KnowledgeFollowups userId={USER_ID} />
+
       <div id="full-detail" className="scroll-mt-6">
       <CollapsibleSection
         title="Full detail"

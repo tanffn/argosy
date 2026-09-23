@@ -411,6 +411,24 @@ def test_tick_happy_path_two_candidates(sync_session_factory) -> None:
     assert "full_diff" in call
 
 
+def test_partial_flag_failure_is_not_success_and_does_not_start_cooloff(sync_session_factory):
+    from types import SimpleNamespace
+    from argosy.services.jobs.summary_status import derive_run_status
+
+    agent = _FakeAgent(candidates=[])
+    loop = _make_loop(session_factory=sync_session_factory, agent=agent)
+    loop._write_fn = lambda *args, **kwargs: SimpleNamespace(
+        written_count=0, deduplicated_count=0, tombstoned_count=0,
+        errors=[("portfolio", "database is locked")],
+    )
+    first = asyncio.run(loop.tick())
+    assert derive_run_status(first)[0] == "error"
+    assert first["error_count"] == 1
+    second = asyncio.run(loop.tick())
+    assert second["skipped_reason"] is None
+    assert len(agent.calls) == 2
+
+
 # ---------------------------------------------------------------------------
 # Cool-off (spec §4.4)
 # ---------------------------------------------------------------------------

@@ -62,8 +62,7 @@
       "annual_income_statement": [
         {
           "fy": "FY-2",
-          "revenue_usd_m": 1195,
-          "net_income_usd_m": 21
+          "revenue_usd_m": 1195
         },
         {
           "fy": "FY-1 (just reported)",
@@ -79,8 +78,8 @@
         "which": "Q4 / FY just reported",
         "revenue_usd_m": 342,
         "same_store_sales_pct": -0.9,
-        "gaap_eps": 0.1,
-        "adjusted_eps": 0.12,
+        "gaap_eps": 0.21,
+        "adjusted_eps": 0.25,
         "note": "missed street; soft SSS; guide for next year is flat SSS"
       },
       "valuation": {
@@ -110,6 +109,10 @@
     {
       "date": "2026-07-11",
       "fix": "block-2b FAIL rebuild: removed mid-single-digits real-scale leak; genericized Amazon + retail-apocalypse phrasing; P/S EV/S P/E recomputed from packet figures."
+    },
+    {
+      "date": "2026-08-31",
+      "fix": "sanitizer repair: scaled the Q4 per-share dollar fields by the packet's 2.1 factor (0.10/0.12 -> 0.21/0.25) and removed unsupported FY-2 GAAP net income. No thesis, resolution, or expected class changed."
     }
   ]
 }

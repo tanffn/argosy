@@ -1,14 +1,23 @@
 ---
 topic: us_congressional_stock_act_filings
 jurisdiction: us
-last_verified: 2026-08-28
+last_verified: 2026-09-08
 next_refresh_due: 2027-05-02
+code_references:
+  - argosy/adapters/data/capitoltrades_adapter.py
 sources:
+  - url: https://www.ethics.senate.gov/public/index.cfm/ethics-faqs
+    tier: 1
+    retrieved: 2026-09-12
+    label: "Senate primary PTR instructions and excepted investment funds"
+  - url: https://ethics.house.gov/financial-disclosure/
+    retrieved: 2026-09-12
+    tier: 1
   - url: https://www.capitoltrades.com/trades
     retrieved: 2026-08-11
     tier: 2
-  - url: https://disclosures-clerk.house.gov/PublicDisclosure/FinancialDisclosure
-    retrieved: 2026-08-10
+  - url: https://disclosures-clerk.house.gov/FinancialDisclosure
+    retrieved: 2026-08-31
     tier: 1
   - url: https://efdsearch.senate.gov/search/
     retrieved: 2026-05-02
@@ -29,10 +38,16 @@ into a sortable web table.
   more than $1,000 within **30 days of being notified**, and not
   later than **45 days after the transaction**.
 - Filings are public on `disclosures-clerk.house.gov` (House) and
-  `efdsearch.senate.gov` (Senate). Both expose CSV/PDF originals;
-  capitoltrades.com is a downstream aggregator.
+  `efdsearch.senate.gov` (Senate), subject to their access/use procedures.
+  Do not promise a uniform CSV/PDF feed from both. Capitol Trades is downstream,
+  and its availability does not establish complete coverage.
 
 ## What's in a record
+
+The following is the expected adapter record shape, not a certification of the
+current aggregator feed. September-12 live access was blocked (429/403), so current
+field coverage and exact amount-bracket endpoints remain unverified. Preserve
+the upstream disclosed range; never substitute an estimated exact trade amount.
 
 - Politician name, party, chamber (House / Senate), state.
 - Issuer + ticker (sometimes — for funds the ticker is empty).
@@ -44,11 +59,9 @@ into a sortable web table.
 
 ## Practical caveats
 
-1. **Track-record evidence is weak.** Several published studies show
-   politician trades modestly outperform the market in aggregate but
-   the effect is highly cluster-driven and sensitive to methodology.
-   Treat as a **sentiment / curiosity signal**, not a directional
-   strategy.
+1. **No calibrated return advantage is established here.** Treat disclosures as
+   research leads, not evidence that copying them beats the market. A performance
+   claim needs named studies or Argosy's dated, out-of-sample evaluation.
 2. **Reporting lag.** A trade can be up to 45 days old by the time
    it appears. Combined with PTR-batching by some offices, the
    effective lag is often longer.
@@ -63,11 +76,9 @@ into a sortable web table.
 
 ## Useful patterns
 
-- **Cluster trades.** Multiple unrelated members buying the same
-  name within a short window is more meaningful than one trade.
-- **Sector-specific committees.** Trades by members of the relevant
-  committee (Armed Services + a defense name; Energy + an oil name)
-  are flagged in academic studies as carrying more information.
+- **Research hypotheses, not verified predictive rules:** examine clustered trades
+  and relevant committee membership, then evaluate outcomes. Neither attribute
+  establishes superior returns or inside knowledge.
 - **Pre-IPO / pre-announcement** windows are the historically
   scrutinized cases.
 

@@ -125,6 +125,14 @@ def verify_allocation_proposal(
     facts. Never mutates or re-authors the allocation."""
     facts_lookup = facts_lookup or lookup_facts
     fails: list[GateFailure] = []
+    from argosy.services.order_sheet import pending_research_errors
+
+    for error in pending_research_errors(
+        proposal.pending_research, reserve_usd=proposal.cash_to_reserve,
+        action_symbols={row.symbol.upper() for row in [*proposal.buys, *proposal.sells]},
+        as_of=datetime.now(UTC).date(),
+    ):
+        fails.append(GateFailure(code="pending_research_contract", detail=error, severity="revision"))
 
     known = {s.upper() for s in (packet.get("known_symbols") or set())}
     holdings = packet.get("holdings") or {}
@@ -164,6 +172,19 @@ def verify_allocation_proposal(
         if str(b.symbol or "").strip().upper() in discovery_rows
     }
     discovery_buys = set(discovery_buy_amounts)
+    covered_research = {row.ticker for row in proposal.candidate_comparisons} | {
+        ticker for item in proposal.pending_research for ticker in item.tickers
+    }
+    outstanding_research = {
+        ticker for item in packet.get("allocation_research_tasks", [])
+        for ticker in item.get("tickers", [])
+    }
+    if outstanding_research - covered_research:
+        fails.append(GateFailure(
+            code="pending_research_coverage",
+            detail="Outstanding research must be explicitly compared or carried pending: "
+            + ", ".join(sorted(outstanding_research - covered_research)), severity="revision",
+        ))
     # Discovery is a staged judgment pipeline: radar -> estimator -> fleet. A
     # missing stage is not a negative verdict. Never allow an already-graded
     # name to win merely because newer or higher-ranked alternatives have NULL
@@ -221,7 +242,9 @@ def verify_allocation_proposal(
         for ticker, row in discovery_rows.items()
         if str((row.get("fleet") or {}).get("verdict") or "").upper() == "BUY"
     }
-    required_comparisons = research_buy_finalists | discovery_buys
+    pending_symbols = {ticker for item in proposal.pending_research for ticker in item.tickers}
+    resolving_research = outstanding_research - pending_symbols
+    required_comparisons = research_buy_finalists | discovery_buys | resolving_research
     comparisons: dict[str, Any] = {}
     for comparison in proposal.candidate_comparisons:
         ticker = comparison.ticker.upper()
@@ -247,6 +270,26 @@ def verify_allocation_proposal(
         )
     for ticker in sorted(required_comparisons & set(comparisons)):
         comparison = comparisons[ticker]
+        if ticker in resolving_research:
+            from argosy.services.allocation_research import _is_fund, fund_research_evidence, fund_comparison_grounded
+            if _is_fund(ticker):
+                from argosy.services.order_sheet import OrderSheet
+                evidence = fund_research_evidence(packet.get("allocation_research_tasks", []))
+                if not fund_comparison_grounded(comparison, evidence.get(ticker), datetime.now(UTC), OrderSheet.model_fields["freshness_days"].default):
+                    fails.append(GateFailure("research_resolution_evidence_missing",
+                        f"{ticker}: a current sourced fund-vehicle review is required; carry pending.", "revision"))
+                amount = sum(b.amount_usd for b in proposal.buys if b.symbol.upper() == ticker)
+                if comparison.selection != ("SELECTED" if amount else "NOT_SELECTED") or comparison.recommended_position_usd is None or abs(comparison.recommended_position_usd - amount) > 1:
+                    fails.append(GateFailure("candidate_sizing_order_mismatch",
+                        f"{ticker}: fund comparison must match the actual funded allocation.", "revision"))
+                continue  # No moonshot radar rank / wipeout / 10x fiction for an ETF.
+        if ticker not in discovery_rows or not isinstance(discovery_rows[ticker].get("fleet"), dict):
+            fails.append(GateFailure(
+                "research_resolution_evidence_missing",
+                f"{ticker}: no current sourced discovery grade; carry the issue pending, not resolved.",
+                "revision",
+            ))
+            continue
         row = discovery_rows[ticker]
         fleet = row.get("fleet") or {}
         expected_selection = "SELECTED" if ticker in discovery_buys else "NOT_SELECTED"

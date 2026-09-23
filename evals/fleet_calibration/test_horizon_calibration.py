@@ -98,3 +98,38 @@ def test_score_row_omk_synthetic_stub():
     )
     assert out["stated"] == "unestimable"
     assert out["score"] == "unestimable_stated"
+
+
+def test_score_row_prefers_structured_rerating_horizon():
+    packet = {
+        "freeze_date": "2023-08-31",
+        "resolution": {
+            "clock_calibration": {"rerating_date": "2024-05-01"},
+        },
+    }
+    out = score_row(
+        rationale="A short client-facing call with no clock scaffold.",
+        rerating_horizon="Honest band: 6-12 months for confirmation.",
+        freeze_date=packet["freeze_date"],
+        packet=packet,
+    )
+    assert out["stated"]["low_months"] == 6
+    assert out["stated"]["high_months"] == 12
+    assert out["actual_months"] == 9
+    assert out["score"] == "inside"
+
+
+def test_score_row_structured_unestimable_wins_over_summary():
+    packet = {
+        "freeze_date": "2021-11-15",
+        "resolution": None,
+        "synthetic": True,
+    }
+    out = score_row(
+        rationale="A concise pass recommendation.",
+        rerating_horizon="A genuine re-rating date is unestimable.",
+        freeze_date=packet["freeze_date"],
+        packet=packet,
+    )
+    assert out["stated"] == "unestimable"
+    assert out["score"] == "unestimable_stated"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -61,6 +62,7 @@ class IBKRAccountConfig:
     live_port: int = 7496
     client_id: int = 1
     mode: str = "paper"  # "paper" or "live"
+    broker_account_id: str | None = None  # Explicit logical -> broker-native identity, never guessed.
 
 
 @dataclass
@@ -88,6 +90,7 @@ class IBKRSettings:
                 live_port=int(blob.get("live_port", 7496)),
                 client_id=int(blob.get("client_id", 1)),
                 mode=blob.get("mode", "paper"),
+                broker_account_id=blob.get("broker_account_id"),
             )
         return cls(accounts=accts)
 
@@ -177,6 +180,9 @@ class IBKRAdapter:
 
         if self._connected_to == target and getattr(ib, "isConnected", lambda: False)():
             return ib
+        if self._connected_to is not None and self._connected_to != target:
+            await self.disconnect()
+            ib = self._ensure_client()
 
         # Note IBKR username (read for audit; ib_insync uses TWS session not creds)
         _ = get_secret("argosy.ibkr.username")
@@ -237,7 +243,8 @@ class IBKRAdapter:
 
     def get_positions(self, account_id: str) -> list[Position]:
         ib = self._sync_connect(account_id)
-        positions_raw = ib.positions(account_id) if hasattr(ib, "positions") else []
+        native = self.settings.for_account(account_id).broker_account_id or account_id
+        positions_raw = ib.positions(native) if hasattr(ib, "positions") else []
         out: list[Position] = []
         for pos in positions_raw or []:
             contract = getattr(pos, "contract", None)
@@ -322,6 +329,8 @@ class IBKRAdapter:
             return OrderSnapshot(
                 status="unknown", fills=[], reason="IBKR account_id is missing"
             )
+        if self.settings.for_account(account_id).mode != "live":
+            raise ValueError("Live reconciliation requires an explicitly live IBKR account configuration")
         ib = await self.connect(account_id)
         wanted = str(broker_order_id)
         trades = list(ib.trades() if hasattr(ib, "trades") else [])
@@ -336,6 +345,11 @@ class IBKRAdapter:
         )
 
         raw_fills = list(getattr(trade, "fills", None) or []) if trade else []
+        native = self.settings.for_account(account_id).broker_account_id or account_id
+        if trade is not None and str(getattr(trade.order, "account", "") or "") != native:
+            raise ValueError("IBKR order custody does not match the configured native account mapping")
+        if trade is not None and getattr(trade.order, "clientId", None) != self.settings.for_account(account_id).client_id:
+            raise ValueError("IBKR order client identity does not match the configured client")
         if not raw_fills and hasattr(ib, "fills"):
             raw_fills = [
                 row
@@ -362,8 +376,9 @@ class IBKRAdapter:
         raw_status = str(getattr(order_status, "status", "") or "")
         status_key = raw_status.lower().replace(" ", "")
         if status_key == "filled":
-            # Do not close the pending row until execution details are visible.
-            status = "filled" if fills else "working"
+            # Keep the broker's actual status; reconciliation explicitly holds
+            # incomplete execution evidence instead of disguising it as working.
+            status = "filled"
         elif status_key in {"cancelled", "apicancelled"}:
             status = "cancelled"
         elif status_key in {"inactive", "rejected"}:
@@ -376,7 +391,9 @@ class IBKRAdapter:
             status = "submitted"
         else:
             status = "working"
-        return OrderSnapshot(status=status, fills=fills, reason=raw_status)
+        reported_filled = getattr(order_status, "filled", None)
+        return OrderSnapshot(status=status, fills=fills, reason=raw_status,
+                             filled_quantity=float(reported_filled) if reported_filled is not None else None)
 
     def _parse_execution_fill(
         self, raw_fill: Any, broker_order_id: str, account_id: str
@@ -386,24 +403,47 @@ class IBKRAdapter:
             return None
         contract = getattr(raw_fill, "contract", None)
         side = str(getattr(execution, "side", "") or "").upper()
+        if side not in {"BOT", "BUY", "SLD", "SELL"}:
+            raise ValueError("IBKR execution side is missing or unsupported")
         action = "sell" if side in {"SLD", "SELL"} else "buy"
-        filled_at = getattr(raw_fill, "time", None)
+        filled_at = getattr(execution, "time", None)
         kwargs: dict[str, Any] = {}
-        if filled_at is not None:
+        if isinstance(filled_at, datetime) and filled_at.tzinfo is not None and filled_at.utcoffset() is not None:
             kwargs["filled_at"] = filled_at
+            kwargs["execution_time_confirmed"] = True
+        else:
+            kwargs["execution_time_confirmed"] = False
+        native_account = str(getattr(execution, "acctNumber", "") or "")
+        config = self.settings.for_account(account_id)
+        expected_native = config.broker_account_id or account_id
+        if not native_account or native_account != expected_native:
+            raise ValueError("IBKR execution custody does not match the configured native account mapping")
+        raw_order = getattr(execution, "orderId", None)
+        if raw_order is None or str(raw_order) != str(broker_order_id):
+            raise ValueError("IBKR execution order identity does not match the requested order")
+        if getattr(execution, "clientId", None) != config.client_id:
+            raise ValueError("IBKR execution client identity does not match the configured client")
+        execution_id = str(getattr(execution, "execId", "") or "")
+        report = getattr(raw_fill, "commissionReport", None)
+        report_id = str(getattr(report, "execId", "") or "")
+        if report_id and report_id != execution_id:
+            raise ValueError("IBKR commission report belongs to a different execution")
+        commission = getattr(report, "commission", None) if execution_id and report_id == execution_id else None
         return Fill(
             broker=self.name,
             broker_order_id=broker_order_id,
-            external_fill_id=str(getattr(execution, "execId", "") or ""),
-            account_id=str(getattr(execution, "acctNumber", "") or account_id),
+            external_fill_id=execution_id,
+            account_id=account_id,
+            native_account_id=native_account,
+            price_currency=str(getattr(contract, "currency", "") or "").strip().upper() or None,
+            commission_currency=str(getattr(report, "currency", "") or "").strip().upper() or None if commission is not None else None,
             ticker=str(getattr(contract, "symbol", "") or ""),
             action=action,
             quantity=float(getattr(execution, "shares", 0) or 0),
             price=float(getattr(execution, "price", 0) or 0),
-            commission=float(
-                getattr(getattr(raw_fill, "commissionReport", None), "commission", 0)
-                or 0
-            ),
+            commission=float(commission) if commission is not None else 0,
+            commission_confirmed=commission is not None,
+            paper=config.mode != "live",
             **kwargs,
         )
 
@@ -442,6 +482,9 @@ class IBKRAdapter:
             )
 
         # Live mode.
+        if self.settings.for_account(order.account_id).mode != "live":
+            return ExecutionResult(status="rejected", broker=self.name,
+                reason="Live placement requires an explicitly live IBKR account configuration")
         client_order_id = order.client_order_id or uuid4().hex
         ib = await self.connect(order.account_id)
         mod = self._ib_module()
@@ -449,6 +492,7 @@ class IBKRAdapter:
         contract = self._make_contract(mod, order)
         ib_order = self._make_order(mod, order)
         ib_order.orderRef = client_order_id  # idempotency tag
+        ib_order.account = self.settings.for_account(order.account_id).broker_account_id or order.account_id
 
         try:
             trade = ib.placeOrder(contract, ib_order)

@@ -12,6 +12,8 @@ adapter imports `yfinance` lazily.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -208,8 +210,44 @@ class YFinanceAdapter:
 
     PROVIDER = "yfinance"
 
-    def __init__(self, *, client: Any | None = None) -> None:
+    def __init__(self, *, client: Any | None = None, access: Any | None = None) -> None:
         self._client = client
+        self._injected_client = client is not None
+        self._access = access
+
+    async def _fetch_guarded(self, fetch, recheck):
+        # Injected SDK doubles do not touch production operational state. Wire
+        # integration tests pass an isolated access controller explicitly.
+        if self._injected_client and self._access is None:
+            return fetch()
+        from argosy.adapters.data.yahoo_access import default_access
+        loop = asyncio.get_running_loop()
+        cancelled = threading.Event()
+
+        def recheck_sync():
+            if cancelled.is_set() or loop.is_closed():
+                return None
+            pending = asyncio.run_coroutine_threadsafe(recheck(), loop)
+            try:
+                return pending.result(timeout=10)
+            finally:
+                if not pending.done():
+                    pending.cancel()
+
+        def work():
+            return (self._access or default_access()).run(
+                fetch, recheck=recheck_sync, cancelled=cancelled.is_set,
+            )
+
+        # Blocking SDK I/O and cross-process admission must not stall the event loop.
+        try:
+            return await asyncio.to_thread(work)
+        finally:
+            # Waiting admission is cancelled cooperatively. An already-started
+            # SDK operation keeps its lease and records throttling through
+            # completion; if its caller cancelled, its successful result is
+            # discarded (not persisted as if the caller completed).
+            cancelled.set()
 
     def _resolve_client(self) -> Any:
         if self._client is not None:
@@ -242,6 +280,7 @@ class YFinanceAdapter:
         start: date,
         end: date,
         *,
+        auto_adjust: bool | None = None,
         ttl_seconds: int = 60 * 60 * 6,  # SDD §8.3: ~EOD-only after close
     ) -> dict[str, list[dict[str, Any]]]:
         """Return per-ticker list of OHLC bars between [start, end]. Cached.
@@ -253,11 +292,23 @@ class YFinanceAdapter:
         client = self._resolve_client()
         out: dict[str, list[dict[str, Any]]] = {}
         for ticker in tickers:
-            key = f"eod:{ticker}:{start.isoformat()}:{end.isoformat()}"
+            adjustment_key = (
+                "provider_default" if auto_adjust is None else str(auto_adjust).lower()
+            )
+            key = (
+                f"eod:{ticker}:{start.isoformat()}:{end.isoformat()}:"
+                f"adjusted={adjustment_key}"
+            )
 
             def _fetch(t: str = ticker) -> list[dict[str, Any]]:
-                tk = client.Ticker(t)
-                hist = tk.history(start=start.isoformat(), end=end.isoformat())
+                tk = client.Ticker(to_yahoo_symbol(t))
+                history_kwargs: dict[str, Any] = {
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                }
+                if auto_adjust is not None:
+                    history_kwargs["auto_adjust"] = auto_adjust
+                hist = tk.history(**history_kwargs)
                 # Normalize pandas DataFrame to list-of-dict if present.
                 rows: list[dict[str, Any]] = []
                 if hist is None:
@@ -287,7 +338,11 @@ class YFinanceAdapter:
                 provider=self.PROVIDER,
                 key=key,
                 ttl_seconds=ttl_seconds,
-                fetch=_fetch,
+                fetch=_fetch, miss_handler=self._fetch_guarded,
+                # Yahoo can swallow transport errors into an empty frame.
+                # Never cache that as six hours of successful price coverage;
+                # bypass legacy empty entries as well, without deleting history.
+                cacheable=lambda bars: isinstance(bars, list) and bool(bars),
             )
             out[ticker] = payload
         return out
@@ -372,7 +427,7 @@ class YFinanceAdapter:
                 provider=self.PROVIDER,
                 key=key,
                 ttl_seconds=ttl_seconds,
-                fetch=_fetch,
+                fetch=_fetch, miss_handler=self._fetch_guarded,
             )
             _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
             return payload
@@ -383,7 +438,7 @@ class YFinanceAdapter:
         key = f"quote:{ticker}"
 
         def _fetch() -> dict[str, Any]:
-            tk = client.Ticker(ticker)
+            tk = client.Ticker(to_yahoo_symbol(ticker))
             info = getattr(tk, "fast_info", None)
             if info is not None:
                 price = getattr(info, "last_price", None) or getattr(info, "lastPrice", None)
@@ -410,7 +465,7 @@ class YFinanceAdapter:
             provider=self.PROVIDER,
             key=key,
             ttl_seconds=ttl_seconds,
-            fetch=_fetch,
+            fetch=_fetch, miss_handler=self._fetch_guarded,
         )
         return Quote(**payload)
 
@@ -438,7 +493,7 @@ class YFinanceAdapter:
         key = f"quote_fundamentals:{ticker}"
 
         def _fetch() -> dict[str, Any]:
-            tk = client.Ticker(ticker)
+            tk = client.Ticker(to_yahoo_symbol(ticker))
             info_dict: dict[str, Any] = getattr(tk, "info", {}) or {}
             price: float | None = None
             shares: float | None = None
@@ -521,7 +576,7 @@ class YFinanceAdapter:
                 provider=self.PROVIDER,
                 key=key,
                 ttl_seconds=ttl_seconds,
-                fetch=_fetch,
+                fetch=_fetch, miss_handler=self._fetch_guarded,
             )
             outcome.set_payload_size_bytes(_approx_size_bytes(payload))
             return payload

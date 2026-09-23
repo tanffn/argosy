@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,87 @@ from argosy.services.leumi_import import (
     read_balance,
 )
 
+
+@pytest.mark.parametrize("replace_usd", [False, True])
+def test_holdings_only_import_preserves_omitted_cash_dates_and_other_accounts(tmp_path, monkeypatch, replace_usd):
+    import json
+    import sqlalchemy as sa
+    from sqlalchemy.orm import Session
+    from argosy.services.leumi_import import import_leumi
+    from argosy.state.models import Base, PortfolioSnapshotRow, User
+
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'import.db'}")
+    Base.metadata.create_all(engine)
+    observed = date(2026, 8, 22)
+    incoming = date(2026, 9, 11)
+    positions = [
+        {"location": "Leumi", "asset_type": "Cash", "currency": currency,
+         "usd_value_k": value, "current_value_local": value * 1000,
+         "observed_as_of": observed.isoformat(), "valued_as_of": observed.isoformat()}
+        for currency, value in (("NIS", 15), ("USD", 112), ("EUR", 7))
+    ] + [{"location": "IBKR", "asset_type": "Stock", "currency": "USD", "symbol": "AAPL", "shares": 10, "current_price": 200, "usd_value_k": 2}]
+    portfolio = LeumiPortfolio(incoming, "test", 1, 10000, (
+        LeumiHolding("1", "EXUS", "EXUS", "LN", 100, 90, 100, 10000, 0, 1),
+    ))
+    monkeypatch.setattr("argosy.services.leumi_import.parse_portfolio_xls", lambda path: portfolio)
+    monkeypatch.setattr("argosy.services.leumi_import.read_balance", lambda path: 0.0)
+    monkeypatch.setattr("argosy.services.fx.rate", lambda *args: 3.0)
+    with Session(engine) as session:
+        session.add(User(id="import-test"))
+        session.add(PortfolioSnapshotRow(user_id="import-test", snapshot_date=observed,
+            imported_at=datetime(2026, 8, 22, tzinfo=UTC),
+            source_path="prior", positions_json=json.dumps(positions),
+            totals_json='{"total_usd_value_k":136}', fx_usd_nis=3.0))
+        session.commit()
+        report = import_leumi(session, user_id="import-test", portfolio_path=tmp_path / "new.xls",
+            fx_paths={"USD": tmp_path / "usd.xls"} if replace_usd else None, apply=True)
+        stored = session.get(PortfolioSnapshotRow, report.snapshot_id)
+        rows = json.loads(stored.positions_json)
+        cash = {p["currency"]: p for p in rows if p["asset_type"] == "Cash"}
+        assert set(cash) == {"NIS", "USD", "EUR"}
+        for currency in ("NIS", "EUR") + (() if replace_usd else ("USD",)):
+            assert cash[currency]["observed_as_of"] == observed.isoformat()
+            assert cash[currency]["valued_as_of"] == observed.isoformat()
+        assert cash["USD"]["usd_value_k"] == (0 if replace_usd else 112)
+        if replace_usd:
+            assert cash["USD"]["valued_as_of"] == incoming.isoformat()
+        assert len(report.cash_carried) == (2 if replace_usd else 3)
+        assert len([p for p in rows if p["location"] == "IBKR"]) == 1
+        assert next(p for p in rows if p.get("symbol") == "EXUS")["valued_as_of"] == incoming.isoformat()
+        assert len(json.loads(stored.parse_warnings_json)) >= len(report.cash_carried)
+        assert stored.source_path == str((tmp_path / "new.xls").resolve())
+    engine.dispose()
+
 DRIVE = Path("D:/Google Drive/Family/Finances/Portfolio/Resources/2026/Leumi")
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_cli_catalogs_raw_exports_only_when_applying(tmp_path, monkeypatch, apply):
+    from types import SimpleNamespace
+    from argosy.cli.ingest import ingest_leumi_portfolio
+
+    portfolio = tmp_path / "holdings.xls"
+    portfolio.write_bytes(b"holdings")
+    cash = tmp_path / "cash.xls"
+    cash.write_bytes(b"balance")
+    calls = []
+
+    async def catalog(**kwargs):
+        calls.append(("catalog", kwargs))
+
+    def importer(*args, **kwargs):
+        calls.append(("import", kwargs))
+        return SimpleNamespace(lines=lambda: [])
+
+    monkeypatch.setattr("argosy.services.file_catalog.catalog_upload", catalog)
+    monkeypatch.setattr("argosy.services.leumi_import.import_leumi", importer)
+    monkeypatch.setattr("argosy.config.get_settings", lambda: SimpleNamespace(database_url="sqlite://"))
+    ingest_leumi_portfolio(portfolio=portfolio, ils=None, usd=cash, eur=None, user_id="test", apply=apply)
+    assert [entry[0] for entry in calls] == (["catalog", "catalog", "import"] if apply else ["import"])
+    if apply:
+        assert calls[0][1]["raw_bytes"] == b"holdings"
+        assert calls[1][1]["raw_bytes"] == b"balance"
+        assert all(entry[1]["source"] == "intake_upload" for entry in calls[:-1])
 ILS_FILE = DRIVE / "תנועות בחשבון 22_8_2026.xls"
 USD_FILE = DRIVE / "תנועות בחשבון מטח 22-08-2026 (1).xls"
 EUR_FILE = DRIVE / "תנועות בחשבון מטח 22-08-2026 (2).xls"

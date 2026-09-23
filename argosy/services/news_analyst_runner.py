@@ -80,14 +80,16 @@ def run_news_signal_analysis(
     batch_size: int = MAX_BATCH_SIZE,
     now: datetime | None = None,
     user_id: str = "ariel",
+    commit_batches: bool = False,
 ) -> AnalysisRunResult:
     """Run Stage 2 analysis over all (or up to ``max_rows``) unanalyzed rows.
 
     Args:
-        session: SQLAlchemy session. Caller owns commit/rollback; the
-            runner flushes after each batch so a partial run still
-            persists prior batches. Mirrors ``run_news_ingest``'s
-            session contract.
+        session: SQLAlchemy session. Caller owns commit/rollback by default;
+            flush alone does not durably persist partial progress.
+        commit_batches: Opt in only with a dedicated analysis session. Commit
+            each completed batch so SQLite's write lock is released BEFORE
+            the next model call and a later failure preserves prior progress.
         agent: The analyst instance. Injected so tests can pass a
             ``_MockNewsSignalAnalystAgent`` without exercising the SDK.
         user_holdings: Ticker symbols the user holds. Threaded into the
@@ -178,20 +180,21 @@ def run_news_signal_analysis(
             for r in batch
         ]
 
+        # Check nesting BEFORE creating the coroutine. Catching RuntimeError
+        # around asyncio.run also catches AgentRunError and hides provider
+        # outages behind an unrelated sync/async diagnostic.
         try:
-            analyses = asyncio.run(
-                agent.analyze(
-                    analyst_inputs, user_holdings=user_holdings,
-                )
-            )
-        except RuntimeError as exc:
-            # ``asyncio.run`` refuses to nest. The runner is the
-            # canonical sync entry; callers in async contexts should
-            # await ``agent.analyze`` directly. Surface a clearer error.
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
             raise RuntimeError(
                 "run_news_signal_analysis is sync — call from a non-async "
                 "context, or await NewsSignalAnalystAgent.analyze directly."
-            ) from exc
+            )
+        analyses = asyncio.run(
+            agent.analyze(analyst_inputs, user_holdings=user_holdings)
+        )
 
         by_id: dict[int, AnalyzedSignalOut] = {a.signal_id: a for a in analyses}
 
@@ -223,6 +226,8 @@ def run_news_signal_analysis(
             )
 
         session.flush()
+        if commit_batches:
+            session.commit()
         batches += 1
 
     return AnalysisRunResult(

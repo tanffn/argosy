@@ -946,6 +946,45 @@ def test_loop_tick_happy_path(sync_session) -> None:
     assert old.archived == 1
 
 
+def test_real_evaluator_tick_persists_nested_failure_receipt(sync_session):
+    import json
+    from argosy.orchestrator.loops.predictions_evaluator import PredictionsEvaluatorLoop, predictions_evaluator_metadata
+    from argosy.services.jobs import JobRegistry, RegisteredScheduler
+    from argosy.state import db as db_mod
+    from argosy.state.models import JobRun
+
+    session, factory = sync_session
+    _insert_prediction(session, ticker="NVDA", entry_price=100.0,
+                       event_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                       evaluation_due_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+                       evaluation_method="fixed_lookahead_7d", timeframe_days=7)
+    session.commit()
+
+    def unavailable(*args):
+        raise EvaluatorAdapterError("provider unavailable")
+
+    async def exercise():
+        db_mod.init_engine()
+        try:
+            loop = PredictionsEvaluatorLoop(session_factory=factory, price_fetcher=unavailable)
+            registry = JobRegistry()
+            scheduler = RegisteredScheduler(registry=registry)
+            registry.bind_scheduler(scheduler)
+            scheduler.register_loop(loop)
+            registry.register(job=loop, metadata=predictions_evaluator_metadata())
+            run_id = await registry.fire_now(loop.name)
+            async with db_mod.get_session() as read:
+                row = await read.get(JobRun, run_id)
+                assert row.status == "error"
+                assert json.loads(row.output_summary)["stages"]["evaluator"]["adapter_errors"] == 1
+            view = await registry.get(loop.name)
+            assert view.health == "red"
+        finally:
+            await db_mod.dispose_engine()
+
+    asyncio.run(exercise())
+
+
 def test_loop_metadata_shape() -> None:
     """Smoke-check the JobMetadata factory returns the expected
     name/cron/source_kind."""

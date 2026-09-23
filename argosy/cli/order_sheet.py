@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 
 def order_sheet(
-    cash_usd: float = typer.Option(..., "--cash-usd", min=0.01),
+    cash_usd: float = typer.Option(..., "--cash-usd", min=0),
     user_id: str = typer.Option("ariel", "--user-id"),
     no_sells: bool = typer.Option(
         False,

@@ -23,7 +23,7 @@ Test command:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -104,6 +104,8 @@ def sync_session(tmp_path):
             ("target_stop", "target_stop"),
             ("fixed_lookahead_7d", "fixed_lookahead"),
             ("fixed_lookahead_30d", "fixed_lookahead"),
+            ("fixed_lookahead_180d", "fixed_lookahead"),
+            ("fixed_lookahead_365d", "fixed_lookahead"),
             ("multi_basket_weighted", "multi_basket"),
             ("unparseable", "unparseable"),
         ):
@@ -424,6 +426,11 @@ def test_run_analyst_writes_analysis_and_predictions(sync_session):
     assert by_ticker["NVDA"].direction == "long"
     assert by_ticker["HOOD"].direction == "short"
     assert by_ticker["AAPL"].direction == "long"
+    for ticker, horizon in (("NVDA", 180), ("HOOD", 7), ("AAPL", 180)):
+        prediction = by_ticker[ticker]
+        assert prediction.timeframe_days == horizon
+        assert prediction.evaluation_method == f"fixed_lookahead_{horizon}d"
+        assert prediction.evaluation_due_at == prediction.event_at + timedelta(days=horizon)
 
     # No monitor flags promoted — caution is benign.
     flags = sync_session.execute(

@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { LiveClock } from "@/components/live-clock";
 import { NavBar } from "@/components/nav";
 import { VersionBadge } from "@/components/version-badge";
+import { DecisionReadinessBanner } from "@/components/decision-readiness-banner";
 
 import "./globals.css";
 
@@ -40,11 +41,12 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <NavBar />
+        <DecisionReadinessBanner />
         <div className="flex-1">{children}</div>
         <footer className="border-t border-border mt-8">
           <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between text-xs text-muted-foreground gap-4 flex-wrap">
             <VersionBadge />
-            <LiveClock label="Last updated" />
+            <LiveClock label="Local time" />
           </div>
         </footer>
       </body>

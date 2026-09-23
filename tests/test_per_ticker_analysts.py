@@ -136,6 +136,27 @@ def _patch_runners(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['long_hold', 'tactical_trade'])
+async def test_news_runner_supplies_dated_mode_context(monkeypatch, mode):
+    captured = {}
+
+    async def run(make_agent, **inputs):
+        captured.update(inputs)
+        return _canned_report('news', cited=['https://example.com/news'])
+
+    monkeypatch.setattr(pta, '_run_analyst_reliably', run)
+    await pta._run_news('ariel', ['XYL'], {}, mode=mode)
+    window = captured['time_window_label']
+    assert 'as of ' in window
+    if mode == 'long_hold':
+        assert window.startswith('Long-term investment research')
+        assert 'A quiet overnight window alone is not a data failure' in window
+        assert 'do not present them as fresh evidence' in window
+    else:
+        assert window.startswith('overnight,')
+
+
+@pytest.mark.asyncio
 async def test_open_decision_run_for_consult_writes_row(engine: None) -> None:
     await _seed_user()
     run_id = await open_decision_run_for_consult(
@@ -601,6 +622,11 @@ def test_trader_long_hold_prompt_distinct_from_tactical() -> None:
     assert "macd" in long_hold_lower
     assert "do not gate on chart timing" in long_hold_lower
     assert "do not cite fx" in long_hold_lower
+    assert "re-underwrite; do not anchor" in long_hold_lower
+    assert "size the uncertainty for new convexity candidates" in long_hold_lower
+    assert "cash runway is only survival capacity" in long_hold_lower
+    assert "machine size must match its unit" in long_hold_lower
+    assert "make the clock explicit" in long_hold_lower
     # Tactical prompt should NOT contain those de-emphasis instructions.
     assert "do not gate on chart timing" not in tactical_sys.lower()
 

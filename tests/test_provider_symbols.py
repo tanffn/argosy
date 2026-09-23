@@ -14,6 +14,10 @@ from argosy.adapters.data.symbols import to_finnhub_symbol, to_yahoo_symbol
         ("GOOG", "GOOG", "GOOG"),      # plain ticker unchanged
         ("goog", "GOOG", "goog"),      # yahoo uppercases; finnhub leaves case
         ("  AMD ", "AMD", "AMD"),      # whitespace stripped
+        ("CSPX.L", "CSPX.L", "CSPX.L"),
+        ("SHOP.TO", "SHOP.TO", "SHOP.TO"),
+        ("BHP.AX", "BHP.AX", "BHP.AX"),
+        ("BF.B", "BF-B", "BF.B"),
     ],
 )
 def test_provider_normalization(raw, yahoo, finnhub):

@@ -56,7 +56,7 @@ class GreetingWatchingItemDTO(BaseModel):
 
 class GreetingBookDTO(BaseModel):
     total_usd: float | None
-    on_plan: bool
+    on_plan: bool | None
     on_plan_note: str
     fi_line: str
     # ISO date of the snapshot behind ``total_usd`` (None when no snapshot).

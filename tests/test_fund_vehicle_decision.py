@@ -126,6 +126,23 @@ class TestFundVehicleAnalystBuildPrompt:
     def test_require_citations(self):
         assert FundVehicleAnalystAgent.require_citations is True
 
+    def test_exact_schema_and_overlap_strings_are_supplied(self):
+        agent = self._agent()
+        system, user, _ = agent.build_prompt(ticker="IWQU", fund_context=self._ctx())
+        assert agent.use_structured_output is True
+        schema = json.loads(user.split("exact output schema:\n", 1)[1])
+        assert schema["properties"]["overlap_instruments"]["items"] == {"type": "string"}
+        assert "ticker STRINGS only, never objects" in system
+
+    def test_concentration_reasoning_uses_funding_not_incidental_exposure(self):
+        system, _, _ = self._agent().build_prompt(ticker="IWQU", fund_context=self._ctx())
+        assert "~58%" not in system
+        assert "it is NOT diversification" not in system
+        assert "do not multiply an already whole-fund weight" in system
+        assert "before/after portfolio" in system
+        assert "incidental NVDA exposure alone is not grounds" in system
+        assert "Do not infer US citizenship" in system
+
 
 # ---------------------------------------------------------------------------
 # 2. run_fund_vehicle_decision — injected fake agent
@@ -220,10 +237,29 @@ def session(alembic_engine_at_head):
 class TestRunFundVehicleDecision:
     """Integration-style tests with an injected fake agent (no LLM).
 
-    All tests patch the DB-touching seams (pushback gate, context builder,
-    verdict writer) so the production DB is never read from or written to.
-    Each test is fully isolated.
+    Verdict/context seams are patched; report persistence uses an isolated
+    temporary database, never the configured production database.
     """
+
+    @pytest.fixture(autouse=True)
+    def isolated_report_database(self, tmp_path, monkeypatch):
+        import sqlalchemy as sa
+        from argosy.state import db as db_mod
+        from argosy.state.models import Base
+
+        engine = sa.create_engine(f"sqlite:///{tmp_path / 'reports.db'}")
+        Base.metadata.create_all(engine)
+        monkeypatch.setattr(db_mod, "get_engine", lambda: engine)
+        yield engine
+        engine.dispose()
+
+    def test_fake_report_is_saved_only_in_isolated_database(self, isolated_report_database):
+        import sqlalchemy as sa
+        from argosy.state.models import AgentReport
+
+        self._run("FWRA")
+        with isolated_report_database.connect() as connection:
+            assert connection.scalar(sa.select(sa.func.count()).select_from(AgentReport)) == 1
 
     def _run(self, ticker: str = "FWRA", report: FundVehicleReport | None = None,
              user_id: str = "ariel",

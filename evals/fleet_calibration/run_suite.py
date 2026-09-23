@@ -38,7 +38,7 @@ PACKETS_DIR = HERE / "packets"
 RUNS_DIR = HERE / "runs"
 CLASSIFIER_RECEIPTS_DIR = HERE / "classifier_receipts"
 
-from agent_pipeline import (  # noqa: E402
+from evals.fleet_calibration.agent_pipeline import (  # noqa: E402
     run_grading,
     run_replay_pipeline,
     run_review,
@@ -56,6 +56,13 @@ USER_CONSTRAINTS = (
     "'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per "
     "position) reserved for asymmetric growth candidates; investable cash is "
     "available. Volatility tolerance is high. No leverage, no options.\n\n"
+    "BENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of "
+    "$1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. "
+    "Any BUY/SELL size expressed as currency must be an actual USD notional, "
+    "never a percentage encoded in a currency field.\n\n"
+    "TEMPORAL MASK: calendar year/date may be intentionally omitted. Never "
+    "use the system current date/year or infer a calendar date. Use relative "
+    "windows only unless the packet explicitly provides an absolute anchor.\n\n"
     "DATA PROVENANCE NOTE: this consult evaluates a candidate supplied by a "
     "research service under a MASKED NAME. The ticker and company name are "
     "aliases, and all absolute dollar figures (revenue, market cap, cash, "
@@ -65,6 +72,27 @@ USER_CONSTRAINTS = (
     "attempt to identify the real company, and do not treat the masked name "
     "as a data-quality defect (the masking is intentional and the figures "
     "are audited)."
+)
+
+SYNTHETIC_USER_CONSTRAINTS = (
+    "Long-horizon investor (5+ year intended hold). Goal: maximize long-term "
+    "wealth and earliest safe financial independence. The portfolio has a "
+    "'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per "
+    "position) reserved for asymmetric growth candidates; investable cash is "
+    "available. Volatility tolerance is high. No leverage, no options.\n\n"
+    "BENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of "
+    "$1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. "
+    "Any BUY/SELL size expressed as currency must be an actual USD notional, "
+    "never a percentage encoded in a currency field.\n\n"
+    "TEMPORAL MASK: calendar year/date may be intentionally omitted. Never "
+    "use the system current date/year or infer a calendar date. Use relative "
+    "windows only unless the packet explicitly provides an absolute anchor.\n\n"
+    "DATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The "
+    "company, alias, events, and absolute dollar figures were invented for "
+    "this test; there is no real company, original figure set, or rescaling "
+    "factor to recover. Ratios, growth rates, margins, and valuation multiples "
+    "are internally consistent. Evaluate strictly on the supplied facts and "
+    "do not attempt to identify a real company."
 )
 
 # v77 exit-discipline rule (scripts/apply_no_price_exit_rule.py), with ONE
@@ -128,25 +156,39 @@ YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 
 def temporal_audit(packet: dict) -> list[str]:
     """Return violations: sources dated after the freeze date."""
-    if packet.get("synthetic"):
+    if not isinstance(packet, dict) or not isinstance(packet.get("synthetic"), bool):
+        return ["packet must be an object with an explicit synthetic boolean"]
+    if packet.get("synthetic") is True:
         return []
     freeze = packet.get("freeze_date")
     violations: list[str] = []
     if not freeze:
         violations.append("missing freeze_date on a non-synthetic packet")
         return violations
-    freeze_d = date.fromisoformat(freeze)
+    try:
+        freeze_d = date.fromisoformat(freeze)
+    except (ValueError, TypeError):
+        return ["invalid freeze_date"]
     sources = packet.get("sources") or []
-    if not sources:
+    if not isinstance(sources, list) or not sources:
         violations.append("non-synthetic packet has no sources")
+        return violations
     for s in sources:
+        if not isinstance(s, dict):
+            violations.append("source must be an object")
+            continue
         d = s.get("date")
         if not d:
-            violations.append(f"source missing date: {s.get('fact', '?')[:80]}")
+            violations.append(f"source missing date: {str(s.get('fact', '?'))[:80]}")
             continue
-        if date.fromisoformat(d) > freeze_d:
+        try:
+            published = date.fromisoformat(d)
+        except (ValueError, TypeError):
+            violations.append("invalid source publication date")
+            continue
+        if published > freeze_d:
             violations.append(
-                f"source dated {d} > freeze {freeze}: {s.get('fact', '?')[:80]}"
+                f"source dated {d} > freeze {freeze}: {str(s.get('fact', '?'))[:80]}"
             )
     return violations
 
@@ -230,7 +272,7 @@ def dry_run_exit_code(run_doc: dict[str, Any]) -> int:
 
 
 def build_constraints(packet: dict) -> str:
-    c = USER_CONSTRAINTS
+    c = SYNTHETIC_USER_CONSTRAINTS if packet.get("synthetic") else USER_CONSTRAINTS
     if packet.get("constraints_extra") == "exit_rule":
         c += EXIT_RULE
     c += CLOCK_RULE
@@ -278,6 +320,9 @@ async def run_point(packet: dict, trader_model: str | None = None) -> dict:
         "size": out.get("size_shares_or_currency"),
         "size_units": out.get("size_units"),
         "rationale_summary": out.get("rationale_summary"),
+        "next_validation_point": out.get("next_validation_point"),
+        "rerating_horizon": out.get("rerating_horizon"),
+        "falsifiers": out.get("falsifiers"),
         "cited_sources": out.get("cited_sources"),
         "tokens_in": report.tokens_in,
         "tokens_out": report.tokens_out,
@@ -305,6 +350,9 @@ def load_classifier_receipt(
     receipts_dir: Path = CLASSIFIER_RECEIPTS_DIR,
 ) -> dict[str, Any] | None:
     path = receipts_dir / f"{packet['case_id']}.json"
+    bound_path = receipts_dir / "v2" / path.name
+    if bound_path.exists():
+        path = bound_path
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))

@@ -97,7 +97,8 @@ TRANSACTION_CODE_MEANING: dict[str, str] = {
     "F": "tax_withholding",
     "G": "gift",
     "D": "disposition_to_issuer",
-    "X": "option_exercise_outofmoney",
+    "X": "option_exercise_in_or_at_money",
+    "O": "option_exercise_outofmoney",
     "C": "conversion",
     "W": "acquisition_via_will",
 }

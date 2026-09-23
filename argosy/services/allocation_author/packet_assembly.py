@@ -111,11 +111,18 @@ def assemble_author_packet(
         from sqlalchemy import select
 
         from argosy.state.models import ScanState
+        from argosy.services.allocation_research import pending_tasks
 
         _cutoff = datetime.now(UTC) - timedelta(days=3)
+        _pending_symbols = {
+            ticker for task in pending_tasks(db, user_id)
+            for ticker in json.loads(task.payload_json).get("tickers", [])
+        }
         _scan_rows = db.execute(
             select(ScanState)
-            .where(ScanState.user_id == user_id, ScanState.status == "active")
+            .where(ScanState.user_id == user_id,
+                   (ScanState.status == "active") |
+                   ((ScanState.status == "dropped") & ScanState.ticker.in_(_pending_symbols)))
             .order_by(ScanState.rank.asc(), ScanState.last_score.desc())
         ).scalars().all()
         for _row in _scan_rows:
@@ -132,7 +139,10 @@ def assemble_author_packet(
             _discovery_candidates.append(
                 {
                     "ticker": _ticker,
-                    "search_source": "trend_scan_state",
+                    "search_source": ("trend_scan_state" if _row.status == "active"
+                                      else "allocation_research_followup"),
+                    "radar_status": _row.status,
+                    "radar_as_of": _row.last_radar_at.isoformat() if _row.last_radar_at else None,
                     "score": float(_row.last_score),
                     "rank": _row.rank,
                     "fresh_as_of": _seen_aware.isoformat(),
@@ -142,8 +152,9 @@ def assemble_author_packet(
                 }
             )
             _candidate_research[_ticker] = (
-                "fresh search-origin candidate; "
-                f"score={float(_row.last_score):.2f}; rank={_row.rank}; "
+                ("fresh search-origin candidate; " if _row.status == "active" else
+                 "pending research follow-up; dropped from current radar, NOT reactivated; ")
+                + f"score={float(_row.last_score):.2f}; rank={_row.rank}; "
                 f"estimator={(_row.estimator_json or 'null')[:600]}; "
                 f"fleet={(_row.fleet_json or 'null')[:600]}"
             )
@@ -297,6 +308,84 @@ def assemble_author_packet(
                 for o in recent_verdict_call_outcomes(db, user_id, limit=8)
             ],
         }
+        from sqlalchemy import select
+
+        from argosy.services.predictions.benchmark import BENCHMARK_SYMBOL, BENCHMARK_VERSION
+        from argosy.services.predictions.outcomes import authoritative_outcome_ids
+        from argosy.state.models import (
+            Prediction,
+            PredictionBenchmarkOutcome,
+            PredictionOutcome,
+        )
+
+        _benchmark_rows = db.execute(
+            select(PredictionBenchmarkOutcome, Prediction)
+            .join(
+                PredictionOutcome,
+                PredictionOutcome.id
+                == PredictionBenchmarkOutcome.prediction_outcome_id,
+            )
+            .join(Prediction, Prediction.id == PredictionOutcome.prediction_id)
+            .where(
+                Prediction.user_id == user_id,
+                Prediction.archived == 0,
+                PredictionOutcome.id.in_(authoritative_outcome_ids()),
+                PredictionBenchmarkOutcome.benchmark_version == BENCHMARK_VERSION,
+                PredictionBenchmarkOutcome.benchmark_symbol == BENCHMARK_SYMBOL,
+                Prediction.source.in_((
+                    "signal_stream:deep_decision_verdict",
+                    "signal_stream:order_sheet",
+                    "signal_stream:discovery_evaluation",
+                )),
+            )
+            .order_by(
+                PredictionBenchmarkOutcome.evaluated_at.desc(),
+                PredictionBenchmarkOutcome.id.desc(),
+            )
+            .limit(100)
+        ).all()
+        _excesses = [
+            float(benchmark.decision_excess_return_pct)
+            for benchmark, _prediction in _benchmark_rows
+        ]
+        _beats = sum(value > 0.001 for value in _excesses)
+        _lags = sum(value < -0.001 for value in _excesses)
+        _recent_benchmark_outcomes = []
+        for _benchmark, _prediction in _benchmark_rows[:8]:
+            try:
+                _ref = json.loads(_prediction.source_ref or "{}")
+                if not isinstance(_ref, dict):
+                    _ref = {}
+            except (TypeError, ValueError):
+                _ref = {}
+            _recent_benchmark_outcomes.append(
+                {
+                    "ticker": _prediction.ticker,
+                    "recommendation": str(
+                        _ref.get("verdict") or _ref.get("action") or _prediction.direction
+                    ).upper(),
+                    "subject_return_pct": float(_benchmark.subject_return_pct),
+                    "benchmark_return_pct": float(_benchmark.benchmark_return_pct),
+                    "decision_excess_return_pct": float(
+                        _benchmark.decision_excess_return_pct
+                    ),
+                    "evaluated_at": _benchmark.evaluated_at.isoformat(),
+                }
+            )
+        _decision_calibration["benchmark"] = {
+            "symbol": "SPY",
+            "version": BENCHMARK_VERSION,
+            "compared": len(_excesses),
+            "beats": _beats,
+            "lags": _lags,
+            "beat_rate": (
+                _beats / (_beats + _lags) if _beats + _lags else None
+            ),
+            "mean_excess_return_pct": (
+                sum(_excesses) / len(_excesses) if _excesses else None
+            ),
+            "recent": _recent_benchmark_outcomes,
+        }
     except Exception as exc:  # noqa: BLE001 - additive calibration context
         _log.warning("author_packet.calibration_failed", error=str(exc)[:120])
     packet = build_decision_packet(
@@ -326,6 +415,9 @@ def assemble_author_packet(
         ),
     )
     packet["staged_sell_policies"] = _staged_sell_policies
+    from argosy.services.allocation_research import research_context
+
+    packet["allocation_research_tasks"] = research_context(db, user_id)
     try:
         from sqlalchemy import select
 

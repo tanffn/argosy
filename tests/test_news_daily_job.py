@@ -583,6 +583,35 @@ def _seed_unanalyzed_signal(session_factory, *, source_ref: str = "seed-1") -> N
         session.close()
 
 
+@pytest.mark.real_seam
+def test_real_news_runner_preserves_provider_failure_through_job(session_factory):
+    """Real job -> real runner -> real agent; only model I/O fails on purpose.
+
+    This proves exception/backlog plumbing, not successful live inference.
+    """
+    from argosy.agents.errors import AgentRunError
+    from sqlalchemy import select
+    from argosy.agents.news_signal_analyst import NewsSignalAnalystAgent
+
+    class UnavailableModel(NewsSignalAnalystAgent):
+        async def _call_model(self, **kwargs):
+            raise AgentRunError("remote managed settings could not be loaded")
+
+    _seed_unanalyzed_signal(session_factory)
+    job = NewsDailyJob(
+        session_factory=session_factory,
+        ingest_fn=lambda s, **kw: _no_new_ingest_result(),
+        agent_factory=lambda: UnavailableModel(user_id="ariel"),
+        tickers=["NVDA"],
+    )
+    with pytest.raises(AgentRunError, match="remote managed settings"):
+        asyncio.run(job.tick())
+    assert job.last_output_summary["stages"]["analyze"] == "error"
+    assert "remote managed settings" in job.last_output_summary["stage_errors"]["analyze"]
+    with session_factory() as session:
+        assert session.execute(select(NewsSignal)).scalar_one().analyzed_at is None
+
+
 def test_resolve_holdings_split_excludes_etfs_and_cash(session_factory) -> None:
     """Snapshot → single stocks at full priority; ETFs/cash/unknowns light."""
     _persist_fake_snapshot(session_factory)
@@ -739,9 +768,9 @@ def test_stage2_fires_on_volatility_trigger(session_factory) -> None:
     assert analyst_called is True
     gate = result["stage2_gate"]
     assert gate["fired"] is True
-    assert gate["reasons"] == ["volatility_trigger"]
-    # Only the beyond-threshold mover is reported; RGTI (+1.0%) is not.
-    assert gate["volatility_moves"] == {"NVDA": -6.5}
+    assert gate["reasons"] == ["pending_backlog"]
+    # Backlog alone is sufficient; no extra price sweep is needed.
+    assert gate["volatility_moves"] == {}
     assert gate["pending_unanalyzed"] == 1
 
 
@@ -779,12 +808,12 @@ def test_stage2_fires_for_pending_earnings_evidence(session_factory) -> None:
 
     assert analyst_called is True
     assert result["stage2_gate"]["reasons"] == [
-        "pending_earnings_evidence"
+        "pending_backlog", "pending_earnings_evidence"
     ]
 
 
-def test_volatility_below_threshold_stays_quiet(session_factory) -> None:
-    """A sub-threshold move is NOT a trigger — quiet day."""
+def test_pending_backlog_recovers_even_on_quiet_day(session_factory) -> None:
+    """An outage backlog must not wait for another headline or price spike."""
     _seed_unanalyzed_signal(session_factory)
     analyst_called = False
 
@@ -804,8 +833,8 @@ def test_volatility_below_threshold_stays_quiet(session_factory) -> None:
     )
     result = asyncio.run(job.tick())
 
-    assert analyst_called is False
-    assert result["reason"] == "no new signals"
+    assert analyst_called is True
+    assert result["stage2_gate"]["reasons"] == ["pending_backlog"]
     assert result["stage2_gate"]["volatility_moves"] == {}
 
 

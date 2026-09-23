@@ -173,6 +173,8 @@ async def analyze_youtube(
         skeptic_json=model_json(skeptic_report.output),
         portfolio_source_id=f"{run_id}:portfolio",
         portfolio_json=model_json(portfolio_report.output),
+        portfolio_context_source_id=portfolio_source_id,
+        portfolio_context=portfolio_context,
         decision_id=run_id,
     )
     reports = (claims_report, skeptic_report, portfolio_report, synthesis_report)

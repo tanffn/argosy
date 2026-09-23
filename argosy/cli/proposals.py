@@ -80,6 +80,18 @@ def approve_cmd(
             if row is None or row.user_id != user_id:
                 typer.echo(f"Proposal #{proposal_id} not found for user {user_id!r}")
                 return 2
+            from argosy.services.chat_advisor.execution_policy import (
+                AnalysisOnlyViolation,
+                assert_proposal_can_mutate,
+            )
+
+            try:
+                await assert_proposal_can_mutate(
+                    session, row.id, operation="approval"
+                )
+            except AnalysisOnlyViolation as exc:
+                typer.echo(str(exc))
+                return 5
             if row.tier == "T3" and not second_factor:
                 typer.echo(
                     "T3 approval requires --second-factor (stub for Phase 3)."

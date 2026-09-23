@@ -99,6 +99,41 @@ deterministic verification receipt; raw model responses remain in the run JSON.
 
 ## Running
 
+### Decision lab (separate from live recommendations)
+
+```powershell
+.venv/Scripts/python.exe -m evals.fleet_calibration.lab --only boot_2017,ttcf_t2 --audit-only
+# Prepare NEW case-bound sourcing receipts; existing legacy receipts are never rewritten.
+.venv/Scripts/python.exe evals/fleet_calibration/prepare_classifier.py --reviewer-approved --only nlf_synthetic,omk_synthetic,boot_2017,ttcf_t2 --receipts-dir evals/fleet_calibration/classifier_receipts/v2
+.venv/Scripts/python.exe -m evals.fleet_calibration.lab --only boot_2017,ttcf_t2 --out evals/fleet_calibration/runs/lab/<new>.json
+.venv/Scripts/python.exe -m evals.fleet_calibration.market_outcomes evals/fleet_calibration/runs/lab/<new>.json --case boot_2017 --symbol BOOT
+```
+
+The lab always prepends the sourced `nlf_synthetic` / `omk_synthetic` controls.
+It stops historical interpretation if either control fails. An independent
+review exclusion is not a passing run, even when the action matches our label.
+Every run uses a new artifact path. The final `.lab.json` seals the decision
+artifact; post-decision `.outcomes.json` stores raw price evidence separately.
+The Portfolio replay panel shows the latest sealed lab and available outcomes.
+New lab qualification requires sourcing receipts bound to the case ID and the
+hash of the exact classifier input. Legacy receipts without that provenance
+remain history, not certified evidence; the loader prefers `classifier_receipts/v2`.
+Review warnings remain visible. Explicit integrity violations or a reviewer
+declaring no grounded reasoning prevent certification; no numeric investment
+quality threshold is added to the live fleet.
+
+This is the production **Trader judgment** with independent benchmark agents,
+not a replay of the entire live allocation workflow. Company masking and
+fictional household context protect the test boundary; this command does not
+automatically anonymize arbitrary user exports. Fixed 6/12/24-month adjusted
+market returns versus SPY are **gross diagnostics**, not actual sized,
+after-tax trades. Missing/delisted bars remain unknown, not zero or a silently
+removed case. Class agreement, outcome returns and live forward calibration
+are different evidence. Curated examples do not establish an unbiased edge,
+and aliasing cannot guarantee a model does not remember a historical story.
+
+### Original suite commands
+
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 .venv/Scripts/python.exe evals/fleet_calibration/prepare_classifier.py --dry-run

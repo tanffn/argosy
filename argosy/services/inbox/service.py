@@ -82,7 +82,7 @@ def _plain(md: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
+def _adapt_trades(db: Session, user_id: str, today: date, *, now: datetime | None = None) -> list[InboxItem]:
     from argosy.services.verdict_registry import provenance_for_subjects
     from argosy.state.models import Proposal as ProposalRow
 
@@ -117,7 +117,17 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
             expiring_in_days = (r.expires_at.date() - today).days
         ready = r.status in _READY_TO_EXECUTE_STATUSES
 
-        if beta:
+        from argosy.services.proposal_expiry import proposal_expiry_reason
+
+        expiry_reason = proposal_expiry_reason(
+            r.expires_at, now=now, today=today,
+        )
+
+        if expiry_reason:
+            primary = InboxAction("view_reasoning", "Expired — review only", "primary")
+            secondary = []
+            ready = False
+        elif beta:
             primary = InboxAction("view_reasoning", "See the reasoning (beta)", "primary")
             secondary = [InboxAction("dismiss", "Dismiss", "secondary")]
         elif ready:
@@ -137,6 +147,7 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
             "order_line": f"{r.size_shares_or_currency:g} {r.size_units} · {r.order_type}",
             "instrument": r.instrument,
             "speculative": speculative,
+            "expiry_reason": expiry_reason,
         }
         if r.confidence:
             body["conviction"] = r.confidence
@@ -160,6 +171,7 @@ def _adapt_trades(db: Session, user_id: str, today: date) -> list[InboxItem]:
                     "action": action,
                     "speculative": speculative,
                     "expiring_in_days": expiring_in_days,
+                    "expired": bool(expiry_reason),
                     "tier": r.tier,
                     "status": r.status,
                     "conviction": r.confidence,
@@ -332,6 +344,23 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
             ]
 
         sheet_lines = payload.get("order_sheet", {}).get("lines", []) if is_order_sheet else []
+        no_action_sheet = False
+        if is_order_sheet and not sheet_lines:
+            from argosy.services.order_sheet import OrderSheet, validate_order_sheet
+            from argosy.services.order_sheet_materializer import order_sheet_fingerprint
+
+            try:
+                parsed_sheet = OrderSheet.model_validate(payload["order_sheet"])
+                no_action_sheet = (
+                    validate_order_sheet(parsed_sheet).valid
+                    and payload.get("order_sheet_fingerprint") == order_sheet_fingerprint(parsed_sheet)
+                )
+            except ValueError:
+                pass  # A malformed artifact is not a no-action decision.
+        if no_action_sheet:
+            decision_required = False
+            primary, secondary = None, []
+            body["no_action_sheet"] = True
         sheet_has_sell = any(
             str(line.get("action") or "").upper() in {"SELL", "TRIM"}
             for line in sheet_lines
@@ -352,7 +381,8 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                 id=f"note:{v.id}",
                 kind="order_sheet" if is_order_sheet else "note",
                 title=(
-                    f"One current trade plan · {len(sheet_lines)} actions"
+                    "No trades proposed in the current review" if no_action_sheet
+                    else f"One current trade plan · {len(sheet_lines)} actions"
                     if is_order_sheet
                     else (v.summary or "Something to look at")
                 ),
@@ -370,6 +400,7 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
                     "risk_kind": risk_kind,
                     "is_cash_note": _CASH_NOTE_HINT in kind_lc,
                     "decision_required": decision_required,
+                    "no_action_sheet": no_action_sheet,
                     "multi_option": multi,
                     "action": "sell" if sheet_has_sell else "buy",
                 },
@@ -379,12 +410,12 @@ def _adapt_notes(db: Session, user_id: str) -> list[InboxItem]:
 
 
 def _adapt_plan_tasks(db: Session, user_id: str, today: date) -> list[InboxItem]:
-    # Reuse the exact home-page action-item collection so the inbox and the home
-    # checklist agree item-for-item. These helpers live in the plan route module.
+    # Reuse collection mechanics, but daily actions come only from the accepted
+    # baseline. An unaccepted draft is a preview, not an instruction to act.
     from argosy.api.routes.plan import _collect_action_items, _load_action_acks
-    from argosy.state.queries import get_current_plan, get_pending_draft
+    from argosy.state.queries import get_current_plan
 
-    pv = get_pending_draft(db, user_id) or get_current_plan(db, user_id)
+    pv = get_current_plan(db, user_id)
     if pv is None:
         return []
     acked = _load_action_acks(db, user_id)
@@ -607,15 +638,17 @@ def build_inbox(
     user_id: str,
     policy: InboxPolicy = DEFAULT_POLICY,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> InboxFeed:
     """Build the ranked inbox feed for ``user_id`` from today's sources."""
-    today = today or datetime.now(timezone.utc).date()
+    now = now or (datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) if today else datetime.now(timezone.utc))
+    today = today or now.date()
     raw: list[InboxItem] = []
     dropped: list[dict[str, Any]] = []
 
     for name, adapter in _ADAPTERS.items():
         try:
-            raw.extend(adapter(db, user_id, today))
+            raw.extend(adapter(db, user_id, today, now=now) if adapter is _adapt_trades else adapter(db, user_id, today))
         except Exception:  # noqa: BLE001 — isolate a failing source; never blank the feed
             _log.exception("inbox.adapter_failed", extra={"adapter": name, "user_id": user_id})
             dropped.append({"id": f"<adapter:{name}>", "reason": "source_error", "kind": name})
@@ -634,7 +667,12 @@ def build_inbox(
         dropped.append({"id": s.id, "reason": "below_materiality", "kind": s.kind})
 
     # Quiet-state liveness signals (all positive-framed).
-    open_approvals = sum(1 for i in surfaced if i.kind in {"trade", "order_sheet"})
+    open_approvals = sum(
+        1 for i in surfaced
+        if i.kind in {"trade", "order_sheet"} and not i.signals.get("expired")
+        and i.primary_action is not None
+        and i.primary_action.intent in {"approve", "accept", "execute"}
+    )
     cash_within_band = not any(i.kind == "cash_deploy" for i in surfaced)
     no_overdue = not any(i.bucket == PriorityBucket.OVERDUE_BLOCKING for i in surfaced)
     future_due = sorted(
@@ -644,7 +682,7 @@ def build_inbox(
     )
     liveness = InboxLiveness(
         last_checked=_utcnow_iso(),
-        pending_decisions=len(surfaced),
+        pending_decisions=sum(1 for i in surfaced if i.bucket != PriorityBucket.OBSERVATION),
         open_approvals=open_approvals,
         cash_within_band=cash_within_band,
         no_overdue_tasks=no_overdue,
@@ -654,12 +692,17 @@ def build_inbox(
     # Trade-plan overview table (current | after | why) — same isolation
     # rule as the adapters: a failure here never blanks the feed.
     trade_plan = None
+    issues = [
+        {"code": "source_error", "message": f"The {item['kind'].replace('_', ' ')} source could not be loaded; the action list may be incomplete."}
+        for item in dropped if item.get("reason") == "source_error"
+    ]
     try:
         from argosy.services.inbox.trade_plan import build_trade_plan
 
-        trade_plan = build_trade_plan(db, user_id, today=today)
+        trade_plan = build_trade_plan(db, user_id, today=today, now=now, diagnostics=issues)
     except Exception:  # noqa: BLE001
         _log.exception("inbox.trade_plan_failed", extra={"user_id": user_id})
+        issues.append({"code": "trade_plan_unavailable", "message": "The current trade plan could not be assembled. Older proposal cards are not a replacement for a current plan."})
 
     return InboxFeed(
         items=surfaced,
@@ -668,6 +711,7 @@ def build_inbox(
         generated_at=_utcnow_iso(),
         dropped=dropped,
         trade_plan=trade_plan,
+        issues=issues,
     )
 
 

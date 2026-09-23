@@ -401,25 +401,53 @@ def test_us_line_does_not_probe_eur_or_chf_venues():
     for details in ("(Sofi Technologies Inc) SOFI", "(Tempus Ai Inc) TEM"):
         chain = _hinted_suffixes(details, "USD")
         assert chain[0] == "", f"{details}: bare US listing must be tried first"
-        for bad in (".AS", ".MI", ".DE", ".SW"):
+        for bad in (".L", ".AS", ".MI", ".DE", ".SW"):
             assert bad not in chain, f"{details}: must not probe {bad}"
 
 
-def test_currency_filter_keeps_hinted_venue_and_prunes_the_tail():
+def test_listing_identity_never_falls_back_to_other_exchanges():
     # An explicit hint is authoritative even when the venue's usual currency
     # differs — the venue is stated, not guessed.
     chain = _hinted_suffixes("(ISHR DM PRPTY YD) DPYA SW", "USD")
-    assert chain[0] == ".SW"
-    # ...but the FALLBACK tail is still pruned to venues that can quote USD.
-    assert ".AS" not in chain and ".MI" not in chain and ".DE" not in chain
+    assert chain == (".SW",)
 
     # A EUR position should only ever see EUR venues.
     eur = _hinted_suffixes("some european line", "EUR")
-    assert set(eur) == {".AS", ".MI", ".DE"}
+    assert eur == ()  # Currency does not establish instrument identity.
 
-    # An unknown currency must never yield an empty chain — falling back to
-    # the full list beats silently refusing to price the position.
-    assert _hinted_suffixes("mystery line", "JPY")
+    assert _hinted_suffixes("mystery line", "JPY") == ()
+
+
+@pytest.mark.parametrize("symbol,details,currency,expected", [
+    ("CSPX", "Ishares CSPX LN", "USD", ["CSPX.L"]),
+    ("CSPX.L", "Ishares CSPX LN", "USD", ["CSPX.L"]),
+    ("BRK/B", "Berkshire BRK/B", "USD", ["BRK-B"]),
+    ("BRK.B", "Berkshire BRK.B", "USD", ["BRK-B"]),
+    ("SOFI", "Sofi SOFI", "USD", ["SOFI"]),
+    ("GE", "General Electric GE", "USD", ["GE"]),
+    ("DE", "Deere DE", "USD", ["DE"]),
+    ("BMY", "BRISTOL MYERS SQUIBB CO", "USD", ["BMY"]),
+    ("TEST", "EXAMPLE HOLDINGS AG", "USD", ["TEST"]),
+    ("AS", "Company AS AS", "USD", ["AS.AS"]),
+    ("AS.L", "Company AS AS", "USD", []),
+    ("IWDP.SW", "Ishares IWDP LN", "USD", []),
+    ("UNKNOWN", "Unknown", "JPY", []),
+    ("UNKNOWN", "Unknown UNKNOWN HK", "USD", []),
+    ("UNKNOWN.L", "Unknown UNKNOWN HK", "USD", []),
+])
+def test_default_quotes_only_the_identified_listing(monkeypatch, symbol, details, currency, expected):
+    from argosy.adapters.data.yfinance_adapter import Quote, YFinanceAdapter
+    from argosy.services.snapshot_refresh import default_quote_fn
+
+    called = []
+
+    async def miss(self, candidate):
+        called.append(candidate)
+        return Quote(ticker=candidate, price=None)
+
+    monkeypatch.setattr(YFinanceAdapter, "get_quote", miss)
+    assert default_quote_fn(symbol, currency=currency, details=details) is None
+    assert called == expected  # A miss never changes the instrument's identity.
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +455,41 @@ def test_currency_filter_keeps_hinted_venue_and_prunes_the_tail():
 # ---------------------------------------------------------------------------
 
 from argosy.services.snapshot_refresh import Fill, apply_fills_to_snapshot  # noqa: E402
+
+
+@pytest.mark.parametrize("holding_unit,cash_unit,receipt_unit", [
+    ("ILS", "NIS", "NIS"), ("NIS", "ILS", "ILS"), ("ILS", "ILS", "NIS"), ("NIS", "NIS", "ILS")])
+def test_fill_currency_aliases_merge_one_holding_and_cash(session, holding_unit, cash_unit, receipt_unit):
+    from argosy.execution.settlement import FillSettlement
+
+    facts = dict(tax_withheld=0, net_cash_delta=-300, reference="alias")
+    assert FillSettlement(currency="ILS", **facts) == FillSettlement(currency="NIS", **facts)
+    persist_snapshot(session, user_id="ariel", snapshot=PortfolioSnapshot(
+        source_path="test:broker", snapshot_date=date(2026, 7, 6), fx_usd_nis=3,
+        positions=[PortfolioPosition(location="Leumi", currency=holding_unit, symbol="TA35", asset_type="Core Equity",
+                     shares=2, current_price=300, current_value_local=600, usd_value_k=.2),
+                   PortfolioPosition(location="Leumi", currency=cash_unit, symbol="", asset_type="Cash",
+                     current_value_local=3000, usd_value_k=1)]))
+    result = apply_fills_to_snapshot(session, user_id="ariel", cash_currency=receipt_unit,
+        fills=[Fill(symbol="TA35", location="Leumi", currency=receipt_unit, shares=1, price=300)],
+        source_tag="fills-applied:alias-test")
+    holdings = [p for p in result.snapshot.positions if p.symbol == "TA35"]
+    assert len(holdings) == 1 and holdings[0].shares == 3
+    assert next(p for p in result.snapshot.positions if p.asset_type == "Cash").current_value_local == 2700
+    assert result.snapshot.total_usd_value_k == pytest.approx(1.2)
+
+
+def test_stored_fx_survives_fresh_session_and_provider_miss(session):
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row, row_to_snapshot
+
+    _seed(session, fx_nis=3.17, fx_eur=.92)
+    with sessionmaker(bind=session.get_bind(), expire_on_commit=False)() as fresh:
+        hydrated = row_to_snapshot(get_latest_snapshot_row(fresh, "ariel"))
+        assert hydrated.fx_usd_nis == 3.17 and hydrated.fx_usd_eur == .92
+        result = refresh_portfolio_snapshot(fresh, user_id="ariel", quote_fn=lambda *a, **kw: None,
+                                           fx_fn=lambda: {}, today=date(2026, 7, 6))
+        assert result.snapshot.fx_usd_nis == 3.17 and result.snapshot.fx_usd_eur == .92
+        assert "fx_miss:usd_nis" in result.warnings and "fx_miss:usd_eur" in result.warnings
 
 
 def _seed_for_fills(session) -> None:
@@ -509,6 +572,264 @@ def test_fill_adds_new_position_and_reduces_cash(session):
     assert "fill-applied:EXUS:100@45" in res.snapshot.parse_warnings
 
 
+@pytest.mark.parametrize("shares", [25, 100])
+def test_sell_reduces_shares_and_credits_net_reported_cash(session, shares):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=shares, price=800,
+                                                     action="sell", commission=2, tax_withheld=100)],
+                                  source_tag="fills-applied:sale", today=date(2026, 7, 6))
+    held = next(p for p in res.snapshot.positions if p.symbol == "CSPX")
+    assert held.shares == 100 - shares
+    assert held.avg_price == 700  # Sale price never rewrites remaining cost basis.
+    assert held.current_value_local == (100 - shares) * 800
+    assert res.cash_after_local == 50000 + shares * 800 - 102
+    assert res.new_total_usd_k == pytest.approx(res.old_total_usd_k - .102)
+    assert any(w.startswith("fill-applied:SELL:CSPX:") for w in res.snapshot.parse_warnings)
+
+
+def test_buy_fees_are_debited_in_native_currency_without_touching_usd(session):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(session, fills=[Fill(symbol="LOCAL", shares=10, price=100,
+                                                     currency="NIS", commission=5)],
+                                  cash_currency="NIS", source_tag="fills-applied:nis",
+                                  today=date(2026, 7, 6))
+    assert res.cash_after_local == 4995
+    assert next(p for p in res.snapshot.positions if p.asset_type == "Cash"
+                and p.currency == "USD").current_value_local == 50000
+    assert res.new_total_usd_k == pytest.approx(res.old_total_usd_k - 5 / 3 / 1000)
+
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"action": "sell"}, "explicit broker tax"),
+    ({"action": "sell", "shares": 101, "tax_withheld": 0}, "exceeds recorded"),
+    ({"action": "sell", "symbol": "NOTHELD", "tax_withheld": 0}, "quantity is unknown"),
+    ({"currency": "NIS"}, "custody and currency"),
+    ({"location": "schwab"}, "custody and currency"),
+    ({"price": float("nan")}, "ledger precision"),
+    ({"shares": .00000001}, "ledger precision"),
+    ({"tax_withheld": -1}, "cannot be negative"),
+])
+def test_invalid_fill_book_inputs_do_not_write_a_snapshot(session, kwargs, match):
+    _seed_for_fills(session)
+    baseline = session.query(PortfolioSnapshotRow).count()
+    fields = {"symbol": "CSPX", "shares": 1, "price": 800, **kwargs}
+    with pytest.raises(ValueError, match=match):
+        apply_fills_to_snapshot(session, fills=[Fill(**fields)], source_tag="fills-applied:invalid",
+                                today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == baseline
+
+
+def test_sell_funded_buy_applies_one_after_withholding_cash_movement(session):
+    _seed_for_fills(session)
+    res = apply_fills_to_snapshot(session, fills=[
+        Fill(symbol="CSPX", shares=10, price=800, action="sell", tax_withheld=500, commission=2),
+        Fill(symbol="EXUS", shares=100, price=50, commission=1),
+    ], source_tag="fills-applied:switch", today=date(2026, 7, 6))
+    assert res.cash_after_local == 50000 + 8000 - 500 - 2 - 5000 - 1
+    assert res.new_total_usd_k == pytest.approx(res.old_total_usd_k - .503)
+    assert {p.symbol: p.shares for p in res.snapshot.positions if p.symbol} == {"CSPX": 90, "EXUS": 100}
+
+
+def test_empty_fill_batch_is_noop_and_missing_average_is_not_invented(session):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    next(p for p in ps if p["symbol"] == "CSPX")["avg_price"] = None
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    empty = apply_fills_to_snapshot(session, fills=[], source_tag="fills-applied:empty")
+    assert empty.row.id == row.id and session.query(PortfolioSnapshotRow).count() == 1
+    result = apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800)],
+                                     source_tag="fills-applied:no-basis", today=date(2026, 7, 6))
+    assert next(p for p in result.snapshot.positions if p.symbol == "CSPX").avg_price is None
+    assert next(p for p in result.snapshot.positions if p.symbol == "CSPX").pct_change is None
+
+
+def test_buy_reopens_zero_position_without_duplicate_or_lost_shares(session):
+    _seed_for_fills(session)
+    apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=100, price=800,
+                                                action="sell", tax_withheld=0)],
+                            source_tag="fills-applied:close", today=date(2026, 7, 6))
+    result = apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=2, price=810)],
+                                     source_tag="fills-applied:reopen", today=date(2026, 7, 6))
+    positions = [p for p in result.snapshot.positions if p.symbol == "CSPX"]
+    assert len(positions) == 1 and positions[0].shares == 2
+    assert positions[0].avg_price == positions[0].current_price == 810
+    persisted = json.loads(result.row.positions_json)
+    assert next(p for p in persisted if p["symbol"] == "CSPX")["shares"] == 2
+    assert result.new_total_usd_k == pytest.approx(result.old_total_usd_k)
+
+
+def test_buy_cannot_invent_prior_quantity(session):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps[0]["shares"] = None
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    with pytest.raises(ValueError, match="quantity is unknown"):
+        apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800)],
+                                source_tag="fills-applied:unknown", today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == 1
+
+
+@pytest.mark.parametrize("duplicate", ["holding", "cash"])
+def test_ambiguous_book_rows_fail_before_writing(session, duplicate):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps.append(dict(ps[0 if duplicate == "holding" else 1]))
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800)],
+                                source_tag="fills-applied:ambiguous", today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == 1
+
+
+@pytest.mark.parametrize("action", ["buy", "sell"])
+@pytest.mark.parametrize("factor", [1.1, 100])
+def test_book_application_checks_exact_unit_consistency(session, action, factor):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps[0]["current_price"] *= factor
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    with pytest.raises(ValueError, match="price/value units"):
+        apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800,
+                                                    action=action, tax_withheld=0)],
+                                source_tag="fills-applied:wrong-units", today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == 1
+
+
+@pytest.mark.parametrize("action", ["buy", "sell"])
+@pytest.mark.parametrize("rate", [None, 0, -1])
+def test_native_currency_application_requires_fx_before_writing(session, action, rate):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps[0]["currency"] = "NIS"
+    row.positions_json = json.dumps(ps)
+    row.fx_usd_nis = rate
+    session.commit()
+    with pytest.raises(ValueError, match="positive FX"):
+        apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800, currency="NIS",
+                                                    action=action, tax_withheld=0)], cash_currency="NIS",
+                                source_tag="fills-applied:no-fx", today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == 1
+
+
+def test_fill_application_cannot_freshen_undated_old_marks(session):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    for position in ps:
+        position["valued_as_of"] = position["observed_as_of"] = None
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    applied = apply_fills_to_snapshot(session, fills=[Fill(symbol="EXUS", shares=1, price=50)],
+                                      source_tag="fills-applied:later", today=date(2026, 7, 20))
+    held = next(p for p in applied.snapshot.positions if p.symbol == "CSPX")
+    assert held.valued_as_of == held.observed_as_of == date(2026, 7, 6)
+    refreshed = refresh_portfolio_snapshot(session, user_id="ariel", today=date(2026, 7, 21),
+                                           quote_fn=lambda *a, **kw: None, fx_fn=lambda *a, **kw: None)
+    held = next(p for p in refreshed.snapshot.positions if p.symbol == "CSPX")
+    assert held.valued_as_of == date(2026, 7, 6) and held.mark_stale
+
+
+def test_same_batch_close_and_reopen_uses_one_holding(session):
+    _seed_for_fills(session)
+    result = apply_fills_to_snapshot(session, fills=[
+        Fill(symbol="CSPX", shares=100, price=800, action="sell", tax_withheld=0),
+        Fill(symbol="CSPX", shares=1, price=800),
+    ], source_tag="fills-applied:roundtrip", today=date(2026, 7, 6))
+    rows = [p for p in result.snapshot.positions if p.symbol == "CSPX"]
+    assert len(rows) == 1 and rows[0].shares == 1
+    assert result.new_total_usd_k == pytest.approx(result.old_total_usd_k)
+
+
+def test_normalized_fill_amounts_conserve_new_holding_and_cash(session):
+    _seed_for_fills(session)
+    result = apply_fills_to_snapshot(session, fills=[
+        Fill(symbol="NEW", shares=1.000000009, price=10_000_000),
+    ], source_tag="fills-applied:near-grid", today=date(2026, 7, 6))
+    position = next(p for p in result.snapshot.positions if p.symbol == "NEW")
+    assert position.shares == 1
+    assert position.current_value_local == 10_000_000
+    assert result.cash_after_local == result.cash_before_local - 10_000_000
+    assert result.new_total_usd_k == pytest.approx(result.old_total_usd_k, abs=1e-10)
+    blob = next(w for w in result.snapshot.parse_warnings if w.startswith("closed_loop_expectations:"))
+    receipt = json.loads(blob.split(":", 1)[1])
+    assert receipt["fills"][0]["shares"] == receipt["expected_positions"][0]["shares_delta"] == 1
+
+
+def test_zero_quantity_with_nonzero_source_value_cannot_be_reopened(session):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps[0]["shares"] = 0
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    with pytest.raises(ValueError, match="price/value units"):
+        apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800)],
+                                source_tag="fills-applied:bad-zero", today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == 1
+
+
+@pytest.mark.parametrize("index", [0, 1])
+@pytest.mark.parametrize("value", [None, 1])
+def test_fill_cannot_silently_repair_prior_usd_projection(session, index, value):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps[index]["usd_value_k"] = value
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    with pytest.raises(ValueError, match="USD projection"):
+        apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800)],
+                                source_tag="fills-applied:bad-projection", today=date(2026, 7, 6))
+    assert session.query(PortfolioSnapshotRow).count() == 1
+
+
+@pytest.mark.parametrize("action", ["buy", "sell"])
+def test_existing_zero_mark_is_not_replaced_by_fill_print(session, action):
+    _seed_for_fills(session)
+    row = session.query(PortfolioSnapshotRow).one()
+    ps = json.loads(row.positions_json)
+    ps[0]["current_price"] = ps[0]["current_value_local"] = ps[0]["usd_value_k"] = 0
+    row.positions_json = json.dumps(ps)
+    session.commit()
+    result = apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800,
+                                                         action=action, tax_withheld=0)],
+                                    source_tag="fills-applied:zero-mark", today=date(2026, 7, 6))
+    held = next(p for p in result.snapshot.positions if p.symbol == "CSPX")
+    assert held.current_price == held.current_value_local == held.usd_value_k == 0
+    assert held.shares == (101 if action == "buy" else 99)
+    delta = -800 if action == "buy" else 800
+    assert result.cash_after_local == result.cash_before_local + delta
+    assert result.new_total_usd_k == pytest.approx(result.old_total_usd_k + delta / 1000)
+
+
+def test_stale_refresh_cannot_overwrite_a_fill_applied_during_quote_collection(session):
+    _seed_for_fills(session)
+    applied_ids = []
+
+    def quote(*args, **kwargs):
+        if not applied_ids:
+            result = apply_fills_to_snapshot(session, fills=[Fill(symbol="CSPX", shares=1, price=800)],
+                source_tag="fills-applied:arrived-during-refresh", today=date(2026, 7, 6))
+            applied_ids.append(result.row.id)
+        return 800
+
+    with pytest.raises(ValueError, match="portfolio changed"):
+        refresh_portfolio_snapshot(session, quote_fn=quote, fx_fn=lambda: {}, today=date(2026, 7, 6))
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row, row_to_snapshot
+    current = get_latest_snapshot_row(session, "ariel")
+    assert current.id == applied_ids[0]
+    assert next(p for p in row_to_snapshot(current).positions if p.symbol == "CSPX").shares == 101
+
+
 def test_fill_overdraft_warns_loudly_but_applies(session):
     _seed_for_fills(session)
     res = apply_fills_to_snapshot(
@@ -527,7 +848,7 @@ def test_fill_without_cash_position_fails_loud(session):
     with pytest.raises(ValueError, match="no cash position"):
         apply_fills_to_snapshot(
             session,
-            fills=[Fill(symbol="EXUS", shares=1.0, price=45.0)],
+            fills=[Fill(symbol="EXUS", shares=1.0, price=45.0, location="Schwab")],
             source_tag="fills-applied:test",
             cash_location="Schwab",  # no cash row there in the seed
         )

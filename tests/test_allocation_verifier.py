@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from argosy.services.allocation_author.proposal import (
     AllocationProposal,
     AuthoredOrderIntent,
@@ -236,6 +238,24 @@ def test_discovery_comparison_records_winner_losers_and_raw_grades():
         f.code for f in report.failures if f.code.startswith("candidate_")
     }
     assert comparison_failures == set(), report.failures
+
+
+@pytest.mark.parametrize("grade", ["WATCH", "PASS"])
+def test_resolving_research_checks_non_buy_source_grade(grade):
+    now = datetime.now(UTC)
+    row = _discovery_row("REPL", 16, 77.5)
+    row["fleet"]["verdict"] = grade
+    row["fresh_as_of"] = now.isoformat()
+    comparison = _candidate_comparison("REPL", 16, 77.5, False)
+    comparison.research_verdict = grade
+    comparison.evidence_fresh_as_of = now
+    packet = _packet(discovery_candidates=[row], allocation_research_tasks=[{"tickers": ["REPL"]}])
+    proposal = _ok_proposal().model_copy(update={"candidate_comparisons": [comparison]})
+    assert verify_allocation_proposal(proposal, packet).status == GateStatus.ACCEPT
+    comparison.research_verdict = "BUY"
+    assert "candidate_grade_mismatch" in {f.code for f in verify_allocation_proposal(proposal, packet).failures}
+    packet["discovery_candidates"] = []
+    assert "research_resolution_evidence_missing" in {f.code for f in verify_allocation_proposal(proposal, packet).failures}
 
 
 def test_every_discovery_finalist_requires_equal_basis_probabilities_and_sizing():
@@ -798,3 +818,20 @@ def test_c4_funded_optionality_split_is_not_rejected_by_a_fixed_ratio():
         ]
     )
     assert not any(code.startswith("moonshot_c4_") for code in codes)
+
+
+def test_pending_fund_resolution_uses_fund_evidence_not_a_fake_moonshot_grade():
+    now = datetime.now(UTC)
+    comparison = CandidateComparison(ticker="IWQU", selection="NOT_SELECTED",
+        research_verdict="HOLD", research_conviction="MED", evidence_fresh_as_of=now,
+        key_advantage="Diversified quality", key_risk="Factor underperformance", why="Core already funded",
+        recommended_position_usd=0)
+    packet = _packet(allocation_research_tasks=[{"tickers": ["IWQU"], "research_result": {
+        "as_of": now.isoformat(), "tickers": {"IWQU": {"kind": "fund_vehicle", "report_id": 123,
+            "verdict": "HOLD", "conviction": "MED"}}}}])
+    proposal = _ok_proposal().model_copy(update={"candidate_comparisons": [comparison]})
+    report = verify_allocation_proposal(proposal, packet)
+    assert report.status == GateStatus.ACCEPT, report.failures
+    comparison.research_verdict = "BUY"
+    report = verify_allocation_proposal(proposal, packet)
+    assert any(f.code == "research_resolution_evidence_missing" for f in report.failures)

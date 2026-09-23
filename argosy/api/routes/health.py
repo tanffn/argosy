@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -25,6 +25,30 @@ from argosy.orchestrator.cost_guard import CostGuard
 from argosy.state.db import get_engine
 
 router = APIRouter()
+
+
+@router.get("/health/discord-advisor")
+async def discord_advisor_status(request: Request, user_id: str = "ariel") -> dict:
+    """Connection state only; no secrets, external requests or model calls."""
+    from argosy.services.chat_advisor.connection_status import connection_status
+
+    return connection_status(request.app.state, user_id=user_id)
+
+
+@router.get("/health/decisions")
+async def decision_readiness(user_id: str = "ariel") -> dict:
+    """Decision operations, separate from process/DB liveness. Never calls an LLM."""
+    from argosy.services.decision_readiness import collect_decision_readiness
+    from argosy.state.db import get_session
+
+    try:
+        async with get_session() as session:
+            return await collect_decision_readiness(session, user_id=user_id)
+    except Exception:
+        from argosy.logging import get_logger
+
+        get_logger(__name__).exception("decision_readiness.unavailable")
+        return {"status": "unknown", "message": "Decision readiness could not be checked.", "jobs": []}
 
 
 class HealthResponse(BaseModel):

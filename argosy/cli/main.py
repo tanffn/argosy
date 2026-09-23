@@ -15,6 +15,8 @@ from argosy.cli.critique import critique
 from argosy.cli.data import app as data_app
 from argosy.cli.decide import decide
 from argosy.cli.diagnose import app as diagnose_app
+from argosy.cli.discord_advisor import app as discord_advisor_app
+from argosy.cli.discord_listener import app as discord_listener_app
 from argosy.cli.email import app as email_app
 from argosy.cli.execute import execute
 from argosy.cli.fills import app as fills_app
@@ -68,6 +70,8 @@ app.add_typer(synthesis_app, name="synthesis",
               help="Plan-synthesis operator commands (forensic-trail replay).")
 app.add_typer(youtube_app, name="youtube",
               help="Fetch YouTube transcripts and run a read-only analysis fleet.")
+app.add_typer(discord_advisor_app, name="discord-advisor")
+app.add_typer(discord_listener_app, name="discord-listener")
 
 
 def main() -> None:  # pragma: no cover

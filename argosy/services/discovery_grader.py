@@ -20,6 +20,7 @@ grade); this module grades exactly one.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -58,7 +59,8 @@ class DiscoveryGraderAgent(BaseAgent[FleetGradeOutput]):
     output_model = FleetGradeOutput
     require_citations = False          # cites are carried from the analyst reports
 
-    def build_prompt(self, *, ticker, analyst_reports):
+    def build_prompt(self, *, ticker, analyst_reports, research_question="",
+                     evidence_limitations=None):
         from argosy.services.high_potential_sleeve import X10_SLEEVE_MANDATE
 
         rendered = "\n\n".join(
@@ -85,6 +87,14 @@ class DiscoveryGraderAgent(BaseAgent[FleetGradeOutput]):
             "support it."
         )
         user = (
+            f"SPECIFIC UNRESOLVED RESEARCH QUESTION: {research_question or '(routine discovery)'}\n"
+            "Address that question explicitly from the fresh analyst evidence. Distinguish "
+            "facts, assumptions and missing sources; do not call an unsourced endpoint "
+            "verified or resolve a dispute merely by changing confidence wording.\n\n"
+            "EVIDENCE LIMITATIONS (not omitted by report-excerpt truncation):\n"
+            f"{json.dumps(evidence_limitations or {}, ensure_ascii=False)}\n"
+            "Assess how these gaps affect the thesis and explain material limitations "
+            "in the resulting grade. A completed analyst call does not verify its inputs.\n\n"
             f"TICKER: {ticker}\n\nANALYST REPORTS:\n{rendered or '(none)'}\n\n"
             "Return a JSON object {\"ticker\": str, \"conviction\": \"HIGH|MED|LOW\", "
             "\"verdict\": \"BUY|WATCH|PASS\", \"thesis_md\": str, \"cites\": [str]}."
@@ -121,7 +131,7 @@ def _ticker_of(candidate) -> str:
 
 
 async def grade_discovery_ticker(user_id: str, candidate, *,
-                                 tier: str = "T1") -> FleetPick | None:
+                                 tier: str = "T1", research_question: str = "") -> FleetPick | None:
     """Grade ONE radar candidate into a FleetPick (analysts + light synthesis).
 
     Returns ``None`` when the analyst quorum fails (the ticker can't be grounded)
@@ -133,7 +143,8 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
     try:
         result = await run_per_ticker_analysts(
             user_id=user_id, ticker=ticker, decision_run_id=run_id,
-            mode="long_hold")
+            mode="long_hold",
+            **({"review_context": research_question} if research_question else {}))
     except InsufficientAnalystQuorum as exc:
         await _close_decision_run(decision_run_id=run_id, status="blocked")
         log.info("discovery_grader.quorum_failed", ticker=ticker, reason=exc.reason)
@@ -149,6 +160,14 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
         report = await agent.run(
             ticker=ticker,
             analyst_reports=list(result.reports),
+            evidence_limitations={
+                "skipped_roles": getattr(result, "skipped_roles", []),
+                "unresolved_remediations": [
+                    request.model_dump() for request in
+                    getattr(result, "unresolved_remediations", [])
+                ],
+            },
+            **({"research_question": research_question} if research_question else {}),
             decision_id=str(run_id),
         )
         await persist_agent_report_async(report, decision_id=str(run_id))

@@ -982,6 +982,15 @@ async def get_recommendation_scorecard(
         )
 
 
+@router.get("/historical-replay")
+async def get_historical_replay() -> dict[str, Any]:
+    """Latest anti-hindsight fleet replay; never mixed with forward outcomes."""
+
+    from argosy.services.historical_replay import build_historical_replay_summary
+
+    return build_historical_replay_summary()
+
+
 @router.get("/news-coverage")
 async def get_news_coverage(
     user_id: str = Query("ariel"),

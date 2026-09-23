@@ -6,13 +6,16 @@ import { api } from "@/lib/api";
 interface ResearchSource {
   id: number; name: string; kind: string; reference: string; enabled: boolean;
   cadence_hours: number; priority: number; last_polled_at: string | null; last_error: string | null;
+  capture_state?: string | null;
+  capture?: { latest_report_date: string; posts: number; images_archived: number } | null;
   stats: { items_collected: number; items_analyzed: number; queued: number; failed: number;
     tickers: string[]; claims: number; evaluated: number; accuracy: number | null;
     reviews_requested: number; verdict_changes_on_review: number; reviews_triaged: number; reviews_completed: number;
-    reports_supplied: number; reports_citing: number; cost_usd: number; };
+    reports_supplied: number; reports_citing: number; cost_usd: number; archived?: number; partially_analyzed?: number; };
 }
 interface Item {
   id: string; title: string; url: string; status: string; error: string | null; summary: string | null;
+  capture?: { source_date: string | null; images: number; catalog_file_id: number; bootstrap_history: boolean } | null;
   claims: { id: string; statement: string; ticker: string | null; due_at: string | null; outcome: { verdict: string; excess_return_pct?: number; reason?: string } | null }[];
   reviews: { ticker: string; state: string; reason: string; result: { action?: string; rationale?: string; decision_run_id?: number } }[];
 }
@@ -27,6 +30,7 @@ const jsonBody = (body: unknown, method = "POST") => ({ method, headers: { "Cont
 
 export function SharedSourcesPanel() {
   const [sources, setSources] = useState<ResearchSource[]>([]);
+  const [dailyFleetLimit, setDailyFleetLimit] = useState(3);
   const [items, setItems] = useState<Item[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [name, setName] = useState("");
@@ -42,8 +46,15 @@ export function SharedSourcesPanel() {
   const load = useCallback(async () => {
     const data = await request("/api/input-sources/research/sources");
     setSources(data.sources);
+    setDailyFleetLimit(data.daily_fleet_limit);
   }, []);
-  useEffect(() => { void load().catch(e => setMessage(e.message)); }, [load]);
+  useEffect(() => {
+    let active = true;
+    request("/api/input-sources/research/sources")
+      .then(data => { if (active) { setSources(data.sources); setDailyFleetLimit(data.daily_fleet_limit); } })
+      .catch(e => { if (active) setMessage(e.message); });
+    return () => { active = false; };
+  }, []);
   async function act(fn: () => Promise<void>) {
     setBusy(true); setMessage("");
     try { await fn(); await load(); } catch (e) { setMessage(e instanceof Error ? e.message : "Request failed"); }
@@ -64,7 +75,7 @@ export function SharedSourcesPanel() {
   return <section className="rounded-xl border border-border p-5 space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 className="text-lg font-semibold">Shared research sources</h2>
-        <p className="text-sm text-muted-foreground mt-1">Checked daily at 14:00 Israel time. Up to three fleet analyses across all feeds per day, with at most one per source. Deferred items stay queued.</p></div>
+        <p className="text-sm text-muted-foreground mt-1">General feeds: daily 14:00 Israel. Browser captures use their displayed schedule. Up to {dailyFleetLimit} fleet analyses per day, at most one per source. Deferred items stay queued.</p></div>
       <button disabled={busy} onClick={() => void act(async () => {
         setMessage("Research is running. This can take several minutes; progress is available in Jobs.");
         const data = await api.jobs.runNow("youtube_subscriptions");
@@ -86,7 +97,12 @@ export function SharedSourcesPanel() {
     <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left border-b border-border"><th className="p-2">Source</th><th className="p-2">Analyzed / collected</th><th className="p-2">Tickers / claims</th><th className="p-2">Reviews completed / requested</th><th className="p-2">Reports citing / supplied</th><th className="p-2">Directional accuracy</th><th className="p-2">Controls</th></tr></thead>
       <tbody>{sources.map(s => <tr key={s.id} className="border-b border-border align-top">
         <td className="p-2"><button onClick={() => void inspect(s.id)} disabled={busy} className="font-medium underline">{s.name}</button><p className="text-xs text-muted-foreground">{s.kind} · {s.cadence_hours}h · priority {s.priority}</p>{s.last_error && <p className="text-xs text-red-400 mt-1">{s.last_error}</p>}</td>
-        <td className="p-2">{s.stats.items_analyzed} / {s.stats.items_collected}<p className="text-xs text-muted-foreground">{s.stats.queued} queued · {s.stats.failed} failed · ${s.stats.cost_usd.toFixed(2)}</p></td>
+        <td className="p-2">{s.stats.items_analyzed} / {s.stats.items_collected}<p className="text-xs text-muted-foreground">{s.stats.queued} queued · {s.stats.failed} failed · ${s.stats.cost_usd.toFixed(2)}</p>
+          {!!s.stats.archived && <p className="text-xs text-muted-foreground">{s.stats.archived} historical posts archived, not fresh alerts</p>}
+          {!!s.stats.partially_analyzed && <p className="text-xs text-amber-500">{s.stats.partially_analyzed} text-only reviews; image evidence not interpreted</p>}
+          {s.capture_state && <p className="text-xs text-muted-foreground">Capture: {s.capture_state.replaceAll("_", " ")}</p>}
+          {s.capture && <p className="text-xs text-muted-foreground">Latest report: {s.capture.latest_report_date} · daily 18:00 Israel</p>}
+        </td>
         <td className="p-2" title={s.stats.tickers.join(", ")}>{s.stats.tickers.length} / {s.stats.claims}</td>
         <td className="p-2">{s.stats.reviews_completed} / {s.stats.reviews_requested}<p className="text-xs text-muted-foreground">{s.stats.verdict_changes_on_review} changed verdicts</p></td>
         <td className="p-2">{s.stats.reports_citing} / {s.stats.reports_supplied}</td>
@@ -108,6 +124,7 @@ export function SharedSourcesPanel() {
       <summary className="cursor-pointer">{item.title} <span className="text-xs text-muted-foreground">— {item.status}</span></summary>
       {/^https?:\/\//i.test(item.url) && <a href={item.url} target="_blank" rel="noreferrer" className="text-sm underline">Original source</a>}
       {item.summary && <p className="text-sm mt-2">{item.summary}</p>}
+      {item.capture && <p className="text-xs text-muted-foreground mt-2">Saved-page evidence · author-stated date: {item.capture.source_date || "unknown"} · archive file #{item.capture.catalog_file_id}. Only captured posts are covered, not full account history.{item.capture.images > 0 && ` ${item.capture.images} images archived but not interpreted.`}{item.capture.bootstrap_history && " Historical reference, not a fresh prediction."}</p>}
       {item.error && <p className="text-sm text-red-400 mt-2">{item.error}</p>}
       {item.status === "failed" && <button onClick={() => void act(async () => { await request(`/api/input-sources/research/items/${item.id}/retry`, { method: "POST" }); setMessage("Retry queued within the daily budget."); })} className="text-sm underline">Retry</button>}
       <ul className="space-y-2 mt-3">{item.reviews.map(r => <li key={r.ticker} className="text-sm"><strong>{r.ticker} · {r.state}</strong> — {r.reason}{r.result.rationale && <p className="text-muted-foreground">Review: {r.result.rationale} {r.result.action || ""}</p>}</li>)}</ul>

@@ -267,7 +267,7 @@ async def test_fundamentals_build_prompt_empty_payload() -> None:
 
 
 def test_fundamentals_analyst_enables_websearch_tool() -> None:
-    assert FundamentalsAnalystAgent.claude_code_allowed_tools == ("WebSearch",)
+    assert FundamentalsAnalystAgent.claude_code_allowed_tools == ("WebSearch", "WebFetch")
 
 
 def test_fundamentals_analyst_prompt_has_search_instruction_and_citation_mandate() -> None:

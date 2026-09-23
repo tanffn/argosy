@@ -648,7 +648,8 @@ def _parse_information_table_xml(xml_text: str) -> list[dict[str, Any]]:
 
     The schema (SEC 13F Information Table) wraps each holding in
     ``<infoTable>`` with children ``nameOfIssuer``, ``cusip``, ``value``
-    (in thousands of USD before 2023-Q3; in dollars from 2023-Q3 on),
+    (legacy format uses thousands; the format change took effect January 3,
+    2023, not a 2023-Q3 reporting-period cutoff),
     ``shrsOrPrnAmt/sshPrnamt``, and optionally ``putCall``. We tolerate
     namespaced elements and the unprefixed variant some filers use.
     """

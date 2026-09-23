@@ -192,7 +192,11 @@ def _collect_remediation_requests(
         raw = payload.get("remediation_requests") or []
         for entry in raw:
             try:
-                out.append(RemediationRequest.model_validate(entry))
+                request = RemediationRequest.model_validate(entry)
+                # target_role is informational in the agent schema. The
+                # invoking report owns this refresh/rerun, not a model-written
+                # alias (e.g. news_analyst) or another analyst's role name.
+                out.append(request.model_copy(update={"target_role": r.agent_role}))
             except Exception:  # noqa: BLE001
                 # Malformed request — log + skip.
                 log.warning(

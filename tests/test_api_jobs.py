@@ -48,6 +48,34 @@ from argosy.state.models import Base, JobRun
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def manual_jobs_only(monkeypatch, tmp_path):
+    from argosy.orchestrator.scheduler import Scheduler
+    from argosy.config import reload_settings
+    from argosy.transport.discord_advisor import job as advisor_job
+
+    # Warming starts a separate daemon thread, outside run_forever. It can
+    # fetch live prices and outlive fixture DB teardown; these route tests
+    # exercise manual jobs, not production portfolio-cache warming.
+    monkeypatch.setenv("ARGOSY_DERIVED_CACHE_WARM", "0")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.setenv("ARGOSY_DISCORD_LISTENER_ENABLED", "0")
+    # Keep supervisor mechanics real for the explicit test jobs, but never
+    # load a production bot binding/token or connect it during API tests.
+    monkeypatch.setattr(advisor_job, "build_discord_advisor_job", lambda **kwargs: None)
+    reload_settings()
+
+    async def manual_driver(self):
+        # Route/registry/supervisor contract tests must not launch real fleet
+        # jobs through boot catch-up. Manual dispatch and supervisors remain
+        # real; cadence/recovery drivers have separate scheduler tests.
+        await self._stop.wait()
+
+    monkeypatch.setattr(Scheduler, "run_forever", manual_driver)
+    yield
+    reload_settings()
+
+
 @pytest_asyncio.fixture
 async def engine(tmp_path):
     """Override the conftest in-memory engine with a FILE-backed one — for the

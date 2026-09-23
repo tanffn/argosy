@@ -34,6 +34,7 @@ def db():
             ),
             EvaluationMethod(
                 method_name="fixed_lookahead_30d_entry_backfilled",
+                scoring_contract="fixed_lookahead_30d",
                 family="fixed_lookahead",
                 method_version=2,
                 is_active=1,
@@ -46,6 +47,7 @@ def db():
             ),
             EvaluationMethod(
                 method_name="fixed_lookahead_180d_entry_backfilled",
+                scoring_contract="fixed_lookahead_180d",
                 family="fixed_lookahead",
                 method_version=2,
                 is_active=1,

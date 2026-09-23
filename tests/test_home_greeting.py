@@ -17,6 +17,7 @@ copied verbatim so the classification contract is pinned to reality:
 from __future__ import annotations
 
 import json
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from argosy.services.home_greeting import (
@@ -354,6 +355,37 @@ class TestSelectActiveFlags:
 
 
 class TestGreetingEndpoint:
+    @pytest.mark.parametrize("target_json", [None, "", "not json", "{}", json.dumps({
+        "anchor_sigma": 0.2, "blended_sigma": 0.2, "nvda_cap_pct": 15,
+        "fi_pct": 20, "provenance": "test", "classes": [], "glide": [],
+    })])
+    def test_current_plan_without_valid_targets_is_unknown(self, client_with_db, target_json):
+        from argosy.services.home_greeting import _on_plan
+        from argosy.state.models import PlanVersion
+
+        SF = client_with_db.app.state.session_factory
+        _seed_user(SF)
+        self._seed_book(SF)
+        with SF() as session:
+            session.add(PlanVersion(user_id="ariel", role="current",
+                target_allocation_json=target_json))
+            session.commit()
+            assert _on_plan(session, "ariel") == (None, "no plan targets")
+
+    def test_total_uses_conserved_book_and_refuses_degraded_or_empty_marks(self, monkeypatch):
+        from types import SimpleNamespace
+        from argosy.services.home_greeting import _book_total_usd
+
+        book = SimpleNamespace(snapshot=object(), snapshot_date=NOW.date(), degraded=False,
+            total=[{"usd_value_k": 100}, {"usd_value_k": 250}])
+        monkeypatch.setattr("argosy.services.current_book.load_current_book", lambda *a: book)
+        assert _book_total_usd(None, "ariel") == (350000, NOW.date().isoformat())
+        book.degraded = True
+        assert _book_total_usd(None, "ariel") == (None, NOW.date().isoformat())
+        book.degraded = False
+        book.total = []
+        assert _book_total_usd(None, "ariel") == (None, NOW.date().isoformat())
+
     def _seed_book(self, SF) -> None:
         with SF() as s:
             s.add(
@@ -378,7 +410,10 @@ class TestGreetingEndpoint:
             )
             s.commit()
 
-    def test_happy_path_shapes_and_buckets(self, client_with_db):
+    def test_happy_path_shapes_and_buckets(self, client_with_db, monkeypatch):
+        # This fixture describes July 7, including seven-day flag expirations.
+        # Keep the request clock on that date rather than aging the fixture out.
+        monkeypatch.setattr("argosy.services.home_greeting_cache._utcnow", lambda: NOW)
         SF = client_with_db.app.state.session_factory
         _seed_user(SF)
         self._seed_book(SF)
@@ -424,8 +459,10 @@ class TestGreetingEndpoint:
         body = r.json()
 
         assert body["greeting_name"] == "Ariel"
-        assert body["book"]["total_usd"] == 3999279.0
-        assert isinstance(body["book"]["on_plan"], bool)
+        # The fixture holds only negative cash. Its unrelated $4M totals_json
+        # must not become the current book value; no plan means unknown alignment.
+        assert body["book"]["total_usd"] == -16434.66
+        assert body["book"]["on_plan"] is None
         assert body["book"]["fi_line"].startswith("FI track")
         assert "as_of" in body["book"]  # ISO snapshot date (None w/o date)
 
@@ -466,7 +503,7 @@ class TestGreetingEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["book"]["total_usd"] is None
-        assert body["book"]["on_plan"] is False
+        assert body["book"]["on_plan"] is None
         assert body["book"]["on_plan_note"] == "no portfolio snapshot yet"
         assert body["needs_you"] == []
         assert body["watching"] == []

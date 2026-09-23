@@ -284,7 +284,7 @@ Suppose tomorrow morning NVDA opens up 3% on a positive analyst note. Walking mi
 - **09:18:** fund manager green-lights with the conservative's condition: cut size in half, accept the wash-sale window for the smaller portion.
 - **09:18:** because the proposal is T3, it enters the 24h `COOLING` state. The auto-pause hooks watch the next 24h for any analyst delta, news event, or plan-critique flip. The proposal lands on the dashboard with full reasoning trail.
 - **You:** wake up, see the proposal, read the trail (analyst reports, debate, risk verdicts, FM note), approve.
-- **Next morning 09:20:** the re-check pass runs (analyst delta only, not the full debate). Nothing flipped overnight. Risk preflight runs (cash, concentration cap, wash-sale, trading hours). Pass. In the Phase-5 design the order then goes to the broker automatically. **Today the last hop is manual:** the approved order is what the client executes at the broker's own UI, and the executed fill is reconciled back into the book by `apply_fills_to_snapshot` (§9.2) — which also arms a closed-loop expectation the next bank ingest verifies. Either way: lots updated, audit row written, dashboard reflects the new position.
+- **Next morning 09:20:** the re-check pass runs (analyst delta only, not the full debate). Nothing flipped overnight. Risk preflight runs (cash, concentration cap, wash-sale, trading hours). Pass. In the Phase-5 design the order then goes to the broker automatically. **Today the last hop is manual** for the read-only brokers: the client executes the approved order in the broker UI and records its receipt. Receipt persistence/audit now connect through the durable `fill_book` application journal (§20.4). Complete broker settlement, exact custody/listing and safe event chronology permit an atomic shares/cash update; missing or conflicting evidence is retained as unresolved work. Tax-lot/reserve reconciliation and complete broker-event coverage remain unverified, so recorded fills still do not prove a completed E2E cycle.
 
 The whole thing cost roughly $3 in Claude tokens, lives in `audit_log` forever, and is queryable by ticker, by tier, by date.
 
@@ -795,6 +795,22 @@ flowchart TD
 
 ### 3.10 Fleet runtime — reliability, session hygiene, telemetry
 
+**Main-page operational status.** The global status panel stays visible even when analysis is current. Failed latest job receipts (including scheduled jobs outside the analysis-retry allowlist) surface with a failure count, safe cause/action guidance, and expandable per-job last-attempt/last-success timestamps. Required managed-settings errors recommend signing in to Claude again first, without claiming expired credentials are the only possible cause. Guidance describes recorded failures, not a live authentication probe; signing in alone does not erase failed receipts. New successful jobs clear their failures. Fetch errors, invalid payloads, and a 10-second request timeout show status unavailable instead of leaving a stale green indicator; polling runs every minute and on window focus. Raw provider stderr/credentials are not exposed in this public readiness payload. This reporting does not expand automatic retry authority.
+
+**Operational readiness and failed-run recovery.** `/health` remains process/DB liveness. `/api/health/decisions` reads durable job receipts and the pending-news backlog without calling a model; the global UI banner shows blocked, degraded, or unknown daily analysis separately from server health. It does not certify an order sheet or investment performance. `scripts/check_decision_operations.py` checks that running endpoint and exits nonzero for incomplete analysis. Required organization-settings failures retain their original cause; nonempty SDK stderr is not treated as the empty-stderr exit-1 retry class. The registered scheduler's wake-watchdog heartbeat can recover explicitly allowlisted analysis jobs, one at a time, after 30 minutes, with at most three persisted attempts per cron slot. A recovery cannot run without its audit receipt, respects the existing per-job lock, and never retries execution/approval jobs. Summary-reported provider failures participate in the shared cooldown. News analysis consumes persisted backlog even without new headlines; missing classifications and failed funnel triage/deep reviews are incomplete work, not no-action decisions. Failed deep reviews do not create completed-review cooldown snapshots. Daily macro context excludes expired VIX cache entries and alpha analyses older than three days, retaining the latter's excluded-source provenance.
+
+The recovery allowlist includes earnings-calendar collection, primary SEC earnings collection, discovery signal streams and the verdict-trigger checker. They retain their normal per-source deduplication and durable attempt bounds; annual evidence audits and execution/approval jobs are not added. Recorded DNS-resolution failures, including nested per-ticker errors, receive explicit `network_dns` guidance without exposing raw hostnames or credentials. They share the outage cooldown across eligible jobs, preventing repeated recovery attempts from fanning out during a continuing outage. This classifies past failure evidence, not current connectivity: only a later successful run clears the failure.
+
+SQLite job completion uses an atomic, fsynced write-ahead receipt beside the actual database before updating the job row. The heartbeat replays a bounded batch using exact run identity and compare-and-set terminal state; original outcome and finish time are retained. Malformed/conflicting receipts remain diagnostic evidence, never authorization to overwrite a different outcome. Startup orphan cleanup requires pending completions to drain (up to five replay batches, stopping on no progress); daily cleanup protects live registry-owned and journaled completions. The verdict checker and decision funnel bootstrap keep their synchronous database sessions on workers so SQLite lock waits do not prevent the async writer from committing. Cancellation drains those workers before releasing job ownership; the verdict checker releases its quote-read snapshot before a short writer transaction and rechecks current verdicts. Recovery does not execute or approve trades.
+
+Shared research intake and job-log retention participate in bounded scheduled recovery. YouTube source queue writes run off the event loop, with no database transaction spanning network retrieval; checkpoint updates are single tenant-scoped writes after durable enqueue. A failure to write one source's error receipt cannot abort the remaining sources. Partial intake/analysis failures report numeric `error_count` to the scheduler. RSS404/410 may fall back to metadata-only public uploads from the exact verified channel, capped at15 entries; other HTTP failures propagate. Incomplete extraction is fatal, publication dates remain unknown when unavailable, and failures never advance the checkpoint.
+
+The news analyst's document formatter accepts both Finnhub (`headline/source/url/datetime`) and normalized Yahoo (`title/publisher/link/published`) payloads, preserving publication values and source links without inventing missing dates. Analyst remediation routes to the owning report's canonical role; the model's informational `target_role` label cannot redirect or prevent that requester-owned rerun. Raw model reports remain unchanged, and the existing bounded rounds and unresolved-request reporting remain in force.
+
+News research also receives the actual consultation mode on initial and remediation calls: `long_hold` requests dated company developments and upcoming catalysts as of the current UTC time, while tactical consultation retains an overnight window. A quiet overnight period alone does not make long-term research unavailable; stale/off-ticker evidence remains an explicit limitation. `PerTickerAnalystsResult` retains unresolved remediation requests. The discovery grader receives those full requests and skipped-role reasons separately from shortened analyst excerpts, leaving materiality and verdict judgment to the agent. Fleet cache JSON carries a research-contract version; old-contract grades are regenerated through the normal funnel while unchanged, fresh estimator results remain reusable. This compatibility marker does not certify provider coverage or investment quality.
+
+Signal-recipient resolution stages new results and expired-error replacements in the owning stream transaction without flushing during external research. In-place replacement preserves rollback semantics and avoids holding SQLite's writer lock while an independent market-data connection updates its cache. A stream fetch obtains at most one market snapshot per ticker. Research-ingest leads for curated non-US funds reuse the order-sheet foreign-listing sequence rather than an ambiguous bare US symbol; accepted fund quotes require a positive finite USD price and fund type, retain the resolved provider ticker, and do not fabricate corporate capitalization or fund domicile. Missing required facts still fail explicitly.
+
 Live fleet calls (multi-minute Opus runs through the bundled `claude.exe`) get a shared reliability + hygiene envelope so a transient CLI failure never silently degrades a decision to a fallback.
 
 **Reliability envelope (`argosy/services/fleet_reliability.py`).** Every wrapped fleet call gets:
@@ -816,6 +832,39 @@ Live fleet calls (multi-minute Opus runs through the bundled `claude.exe`) get a
 **Post-hoc verification.** The `verify-run` skill (`.claude/skills/verify-run/SKILL.md`) is the audit surface for any live run: blind re-derivation from `db/argosy.db`, `logs/app/application.log` and the transcripts, judging roster completeness, silent degradation, groundedness of load-bearing numbers, verdict consistency, and delivery (§14.6).
 
 ---
+
+### Browser-captured Alpha research
+
+`alpha_capture_daily` opens normal Chrome once per Israel calendar day at 18:00,
+when the desktop is available. Startup catch-up and the optional Windows
+sign-in/unlock trigger use the same registered job. A DB claim precedes opening
+Chrome; repeated triggers cannot repeat that day's automatic attempt.
+Windows triggers execute the registered job locally (with normal job receipts),
+not through an unauthenticated API request; API availability is not required.
+Locked-desktop deferral does not consume the attempt. Login challenges remain visible as
+`waiting_for_login`; they require completion and an explicit retry, never
+credential extraction or CAPTCHA bypass. The existing logged-in Chrome session
+is user-authorized; an account chooser selects only the locally configured email.
+
+The connector validates the exact Alpha URL, sets and verifies Chrome's Complete
+save format and filename, and catalogs an inert ZIP of HTML and saved dependencies.
+It covers the visible saved posts, not complete account history. Post dates are
+author-stated; observation time remains separate. Per-post hashes retain revisions
+and deduplicate retries. First-capture older posts are archived references; current
+and later new/revised posts enter the shared research fleet. One reserved daily
+slot supplements the three general research slots; the existing cost guard and
+one-analysis-per-source/day bound remain in force. Additional posts can remain
+queued, visibly, rather than bypassing the budget.
+
+Claims, skeptic, portfolio and synthesis reports feed existing research evidence,
+review requests, discovery nominations and prospective outcome evaluation. Repeated
+standing forecasts do not receive a new outcome clock; explicit original dates and
+deadlines are retained. Source claims do not authorize trades. Image evidence is
+archived but not interpreted by this connector; such analyses are explicitly
+`analyzed_partial`. Input Sources shows capture state, history, queue, coverage,
+claims and review history. Configuration is local (`configs/alpha_capture.json`);
+`scripts/run_alpha_capture.py --retry` and `--import-file PATH` provide explicit
+recovery. No Discord user-token polling or browser extension is involved.
 
 ## 4. Decision Tiers & Cross-Checks
 
@@ -928,6 +977,24 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 | `discord_listener` | Long-running | **off** (`discord_listener_enabled`) | Discord channel listener (disabled: reconnect churn + API blocks) |
 | `snapshot_refresh` | manual Run-now only | **off** (`enabled=False`) | Self-refresh the portfolio snapshot: quantities carried, live reprice + fresh FX, provenance-marked insert (§20.4) |
 | `predictions_backfill_discord` | manual one-shot | off | Discord predictions backfill |
+
+Passive Discord research-feed transport uses the maintained `discord.py` gateway
+in `services/discord_feed_gateway.py`, separately from the private conversational
+bot. Normal disconnects use session RESUME; only authenticated READY/RESUMED is
+reported connected. `discord_feed_safety.py` persists credential-hashed login,
+actual HTTP-login, gateway-attempt and IDENTIFY budgets under
+`runtime/discord-feed/`, with OS leases excluding duplicate listeners/history
+fetches. Terminal authentication/configuration failures use `NonRetryableJobError`:
+the supervisor records an error without automatically reconnecting. History
+reads honor response-header/JSON retry windows, persist cooldowns across restarts,
+and stop on 401/403. Explicit `discord-ingest --clear-auth-stop` after credential
+or permission repair clears only the auth stop, never request budgets or timed
+cooldowns, and makes no network connection. `discord-listener setup` prompts for
+the source IDs and a hidden token, storing the credential in the OS keychain
+under a listener-specific key; the source JSON contains only IDs and a secret
+reference. Legacy plaintext files remain readable. Setup preserves existing
+source bindings and does not enable or connect the feed. See
+`docs/operations/discord-research-feed.md`.
 
 ### 5.2 Loop coordination rules
 
@@ -1056,7 +1123,7 @@ What the intake agent asks for, organized by category:
 | **Income** | Pay stubs (3 months), RSU vesting schedule, bonus history, rental statements (Romania/Atlanta) | Cash-flow model; tax projections; RSU planning |
 | **Bank** | Leumi statements (3 months), Schwab cash sweep | Identify real savings rate vs declared; reserve sizing |
 | **Brokerage** | Schwab + Leumi current positions + **cost-basis lots** | Tax-loss harvesting requires lot-level data, not just totals |
-| **Pensions** | קרן השתלמות, קופת גמל, קרן פנסיה statements | Israeli tax-advantaged accounts are huge; the gemelnet adapter (§8.2) now closes the previous data gap by pulling balances + 1y/3y/5y returns from the Israeli MoF portal |
+| **Pensions** | קרן השתלמות, קופת גמל, קרן פנסיה statements | Private statements establish balances and product classification. Gemel Net supplies public provident/hishtalmut performance, not private balances or universal pension-fund coverage; see §8.2. |
 | **Real estate** | Mortgage balances, property valuations, rental P&L | Net-worth picture; Mas Shevach exposure on Israeli sale |
 | **Tax filings** | Prior דוח שנתי + W-8BEN status at Schwab | Carryforward losses, treaty position, withholding correctness |
 | **Insurance** | Life policies with cash value, disability | Wealth + risk picture |
@@ -1918,16 +1985,33 @@ Citations carry an explicit tier so the LLM weighs them honestly:
 
 The domain-refresh agent prefers Tier 1 sources; refuses to update on Tier 3+ alone. New facts from Tier 3 trigger a "verify with Tier 1" task in the human queue.
 
+The annual sweep reviews one document per model call, in batches of at most three, with a 12-turn research budget and a durable report per document. CLI error results (including exhausted tool turns) remain explicit errors rather than opaque exit-code retries. Each document declares `verification=verified|partial|unavailable`; absent legacy declarations default to unavailable. Only verified `no_change` results with evidence can refresh verification dates. Proposed corrections leave the unchanged old claims dated; partial, missing, or failed documents keep the job incomplete with per-file diagnostics. Annual scheduling is explicit (`0 8 2 1 *`); operator recovery uses the same registered tick.
+
+The domain-refresh SDK path keeps its control input stream open until the expected results arrive and answers permission callbacks only for its existing exact tool allowlist. It does not persist permissions or change managed policy. Explicitly cited `file://Resources/*.pdf` documents are attached through the native PDF input path only when their resolved paths stay below the configured `ARGOSY_EXPENSE_SAMPLES_ROOT`; unavailable/refused documents are identified in the input. Verification stamping requires current-dated, valid source provenance and an unchanged input-document hash. Unverified change candidates remain in the per-file diagnostic reports, not the verified-correction proposal.
+
+Trusted public-source frontmatter may select `pdf_pages` (1–20 distinct, positive, one-based original pages). The full captured source retains its hash and retrieval receipt; selected text and a separately hashed native PDF excerpt identify the original page numbers and explicitly exclude omitted pages from supplied evidence. The 4 MB native-attachment aggregate limit still applies. This avoids sending entire statutes into a single research context; it does not certify that selected pages prove every claim. Report paths must copy the exact requested input path, including its `domain_knowledge/` prefix.
+
+On Windows, a public HTTPS TLS-handshake failure can use the system Schannel curl fallback (version 8.20 or newer, ensuring decompressed-output bounds). It retains certificate/hostname verification, pins the already-validated public address, disables URL expansion, curlrc and proxies, and returns redirects for fresh destination validation. It sends no cookies or credentials, launches without a shell or visible console, and retains bounded bytes/time and transport-attempt provenance. Failure remains unavailable evidence; an accessible methodology page does not establish a healthy data adapter.
+
+Explicitly cited existing Resources CSV/TSV/TXT/XLSX records also enter bounded read-only evidence packets (`domain_local_sources.py`), with source hashes, access times, original as-of dates and explicit truncation/parse failures. UTF-8 HTML-as-XLS exports use the existing inert HTML text extractor; binary XLS and invalid UTF-8 are refused. This is source evidence, not a cash-ledger import or a merger of cash/custody views. Spreadsheet formulas are represented, never executed. `catalog_sources` references resolve by catalog ID with owner, deletion, upload-directory and content-hash checks; new imported evidence goes through `file_catalog.catalog_upload`. Historical-attribution verification checks the original record, not present private truth or renewed user consent. Material missing evidence remains incomplete. The refresh model distinguishes necessary corrections from optional enrichment: extra topics or routine verification-date updates alone do not generate correction proposals. No deterministic rule substitutes for that materiality judgment.
+
+CSV evidence uses bounded sparse JSON rows retaining original row/column coordinates, empty/duplicate headers and continuation cells; it does not infer headers or financial values. Catalogued Markdown evidence is bounded at 100k characters within the shared local-evidence budget. Explicit `profile_fields` opt into at most 20 scalar fields from the same user's stored identity, with selected-content dependency hashes. Stored declarations are planning evidence, not independent certificates; the row's modification time is not the original declaration date. Selected-field changes invalidate affected reviews without exposing unrelated profile fields.
+
+The model response requires an explicit `per_file` field so malformed-JSON recovery cannot accept an unrelated nested object as an all-default report. Domain refresh requests schema-constrained generation through the existing SDK output mode while retaining Pydantic validation and bounded recovery; this is not a guarantee against every CLI/output failure. Its model-facing schema omits `format` annotations for compatibility with older bundled Claude CLI versions that silently ignore schemas containing them; local Pydantic date/citation validation is unchanged. Explicit empty lists remain valid for no-input calls; annual independently checks exact requested-document coverage and identity. A bounded schema-feedback retry lets the model correct invalid output without weakening verification requirements.
+
 ### 7.5 Domain-refresh agent
 
-Runs weekly:
+SpreadsheetML-as-XLS evidence preserves worksheet names, sparse cell coordinates, types and formula text separately from cached values. The reader refuses DTD/entity declarations, unsupported table offsets and ambiguous coordinates; it never allocates sparse gaps or executes formulas. Bare ampersands in malformed exports are escaped with an explicit normalization receipt while CDATA remains verbatim; the provenance hash still identifies the untouched original bytes. Text/cell/coordinate limits report truncation rather than silently presenting incomplete evidence as complete.
 
-1. Scans all files for `next_refresh_due <= today`
-2. Re-fetches sources via web tools (WebFetch, WebSearch)
-3. Computes a structured diff against current content
-4. If material change: writes a proposal to a review queue (does NOT auto-edit — tax content is too sensitive for unsupervised changes)
-5. If no change: bumps `last_verified`, schedules next refresh
-6. Annual cycle in January re-verifies all jurisdiction-specific rate-and-bracket files
+The annual sweep retains its full-scope historical receipt. `knowledge_recheck` runs daily at 06:15 Jerusalem through the registered scheduler (including normal missed-run catch-up), selecting at most two due documents. Kill/cost guards apply, an active annual sweep defers it, and successful execution does not mean every document is verified. The operator command `scripts/run_analysis_recovery.py knowledge_recheck --document <relative-path>` uses that same registered path; up to two explicit documents may be requested without an entire annual rerun.
+
+After a successful recheck, `knowledge_notice_closure.py` asks a maintenance reviewer to compare up to two open knowledge-discrepancy notices with current documents and matching review reports. Only superseded maintenance notes can be retired; the reviewer cannot approve trades, policy changes or user actions. Closure preserves original text/payload and appends a report and audit receipt, with post-review input and proposal-state checks. Identical still-open judgments are cached by evidence fingerprint. Current unrelated findings remain visible after an old notice is superseded.
+
+`FileRefreshResult.findings` carries fleet-authored claim scope (`public_rule`, `implementation`, `household_fact`, `current_balance`), missing evidence, owner, next action, affected advice and an optional retry date. Materiality is judged by the fleet, not deterministic investment gates. Dated declarations establish declared planning facts; historical balances do not become current through public-source access. User-evidence findings wait for changed inputs or an explicit recheck; Argosy-owned findings follow their retry dates. Document runtime errors persist across unrelated or empty successful attempts until that document is successfully rechecked. Corrections use document-scoped proposals, not a shared payload that overwrites another repair. File bodies and investment policy are never automatically rewritten.
+
+`knowledge_status.py` projects the latest user-scoped reports alongside current document fingerprints. New `knowledge_input` blobs retain requested path, exact-coverage validity, raw input hash and a semantic fingerprint that excludes verification-date-only writeback. A current verified state requires matching input, verified/no-change output, dated evidence, no unresolved findings and an unexpired next-review date. Legacy reports remain visible but do not prove current document coverage; invalid newer linked responses cannot silently fall back to older green results. `/api/health/decisions` exposes current progress and findings independently of the annual execution receipt. Routine `knowledge_incomplete` is not an operational failure and does not degrade readiness. Home's neutral **Due papers** card lists current user-owned routine requests, their specific impact and an optional user-scoped collection target (`UserContext.constraints_yaml.knowledge_followups.paperwork_due_date`), not a legal deadline. The expandable research section preserves document reviews and Argosy-owned follow-ups. The operational red banner is reserved for runtime failures, unavailable status or explicitly urgent current findings; findings carry fleet-authored `urgency=routine|urgent`, default routine for legacy reports. An urgent finding requires a concrete material consequence needing action now, not merely incomplete evidence. Historical job receipts are unchanged. Relevant current findings also enter plan tax inputs and the estate decision fleet as limitations to assess, not trade vetoes; changed-input findings cannot resurrect already answered household questions.
+
+Knowledge dependency versions cover explicitly cited local Resources files, user-owned catalog records (including availability and content hashes), and referenced code resolved from the same package root as research attachments. Versions are captured before research and compared after it and on status reads; changed dependencies invalidate old findings and verification. Remote source content is not fetched on a health GET. Verification writeback also rejects contradictory verified results with unresolved material findings. Recheck jobs checkpoint pending document attempts into their own running JobRun before fleet calls and after each result, preserving unfinished work across interruption without rewriting completed history.
 
 ### 7.6 Initial seeding plan
 
@@ -1968,7 +2052,7 @@ but haven't built yet. Everything else is materialized in the live
 | **Audit** | `audit_log`, `agent_reports`, `agent_reports_blobs` ✅ | Append-only; every agent output, every decision, every override |
 | **Provenance** (§17) | `user_files`, `decision_phases` ✅ | catalog/phase tables; FK back to `decision_runs`, `plan_versions`, `agent_reports` |
 | **External cache** | `kv_cache`[^kv-cache-rename], `news_cache`, `macro_cache`, `fx_rates` ✅; `corp_actions` 🛠 | Cached external data with provider + retrieved_at. `fx_rates` (BoI daily ILS-per-currency cache) |
-| **Israeli pension** | `pension_fund_snapshots` ✅ | Per-user, per-fund time-series of gemelnet (MoF) performance data; 12m / 36m / 60m returns, benchmark, relative gap, optional NIS balance, `source_url`. Compound index `(user_id, fund_id, snapshot_at)`. Written by `argosy gemelnet refresh-user`; queried via `get_user_pension_snapshots(user_id)` |
+| **Israeli pension** | `pension_fund_snapshots` ✅ | Per-user, per-fund time-series with 12m return, nullable benchmark/relative gap, optional separately supplied private NIS balance and `source_url`. Other return periods are rejected rather than relabelled. Compound index `(user_id, fund_id, snapshot_at)`. Written by `argosy gemelnet refresh-user`; queried via `get_user_pension_snapshots(user_id)`. An optional annual hook alone does not establish scheduled per-user refresh. |
 | **Investor events** | `investor_events` ✅ | Phase 4 signal persistence — see table spec below |
 | **Argonaut** | `argonaut_snapshots`, `daily_account_pnl`, `totp_secrets` ✅ | Phase 5 autonomy tables: per-day Argonaut PnL snapshot, T3 second-factor secret store |
 | **Productization** | `tenants`, `setup_tokens` ✅ | Phase 6 control-DB rows (multi-tenant onboarding) |
@@ -2012,13 +2096,13 @@ Constraint: `UniqueConstraint(user_id, source, unique_key)` named `uq_investor_e
 | **FRED** | Macro: rates, FX, inflation, ISM, PMI | Primary | 120/min unauth | Free |
 | **Bank of Israel** | USD/NIS rep rate, BoI rate, Israeli macro | Primary | Light | Free |
 | **Finnhub** | News, earnings calendar, basic fundamentals, aggregated social-sentiment payloads | Primary news | 60/min free tier | Free tier sufficient |
-| **gemelnet (MoF)** | Per-fund 12m/36m/60m returns + sector benchmarks for Israeli pension vehicles | Primary | Light (public portal) | Free |
+| **Gemel Net (CMA)** | Public provident/hishtalmut performance. Legacy HTML failure falls back to official CKAN monthly data; twelve consecutive months are compounded into nominal gross 12m return. Missing benchmark stays null; no private balances, universal pension coverage or 36m/60m promise. | Primary | Bounded public requests; monthly source period retained, stale/incomplete series unavailable | Free |
 | **SEC Form 4** | Insider transactions (P/S/A/M/F/G codes) within 2 business days of trade | Primary | 10/sec (SEC EDGAR) | Free |
 | **SEC 13F-HR** | Quarterly institutional long-equity holdings (45-day lag) | Primary | 10/sec | Free |
 | **TipRanks** | Analyst-consensus snapshot, blogger sentiment, hedge-fund signal | Secondary | Public-page scrape; conservative throttling | Free tier |
 | **CapitolTrades** | US Congress STOCK Act PTRs (politician + ticker + transaction) | Secondary | Light; aggregator of clerk-of-house + senate EFD | Free |
 
-These nine (`argosy/adapters/data/`: `yfinance_adapter`, `fred_adapter`, `boi_adapter`, `finnhub_adapter`, `gemelnet_adapter`, `sec_form4_adapter`, `sec_13f_adapter`, `tipranks_adapter`, `capitoltrades_adapter`) are the complete adapter set — there is no Reddit/PRAW adapter (social sentiment arrives via Finnhub or news-derived payloads, §3.1) and no Alpha Vantage fallback adapter. Raw SEC EDGAR filings beyond Form 4 / 13F reach agents via their web tools, not a dedicated adapter.
+These nine (`argosy/adapters/data/`: `yfinance_adapter`, `fred_adapter`, `boi_adapter`, `finnhub_adapter`, `gemelnet_adapter`, `sec_form4_adapter`, `sec_13f_adapter`, `tipranks_adapter`, `capitoltrades_adapter`) are the data adapters — there is no Reddit/PRAW adapter (social sentiment arrives via Finnhub or news-derived payloads, §3.1) and no Alpha Vantage fallback adapter. In addition, `services/sec_earnings_monitor.py` directly collects primary SEC earnings and periodic filings for held single stocks. It completes network collection before writing coverage receipts or news signals, so slow downloads do not retain SQLite's sole writer. The enclosing job owns the atomic persistence transaction; provider failures remain per ticker, while persistence failures propagate for rollback. Historical filings inform review without generating falsely fresh news signals. Agents can also retrieve primary documents through their web/document tools.
 
 All adapters share a common `fetch(ticker,.) -> CachedResponse` interface. Caching is decision-aware: a proposal in flight bumps cache to high-priority refresh; routine polling uses generous TTLs.
 
@@ -2047,6 +2131,8 @@ Cross-references for adapter endpoint details: `domain_knowledge/data_sources/{s
 | Options chain | 15min | EOD | T2/T3 decision needs |
 
 Cache entries record `provider`, `retrieved_at`, `expires_at`, `payload_hash` for auditability.
+
+**Yahoo backpressure.** `YFinanceAdapter` cache misses pass through `adapters/data/yahoo_access.py`: an OS lease spans backend/CLI processes, and a separate operational SQLite sidecar under `db/yahoo-access/` persists 15/30/60-minute cooldowns after `YFRateLimitError`. Cooldown expiry permits a new attempt; success resets it. Valid cache hits remain available, and throttling never refreshes stale evidence. Blocking SDK work runs off the event loop. Cancelled admission waiters stop before SDK initiation; active calls retain their lease through completion. Cache rechecks after admission reduce duplicate work without extending an existing entry's expiry; persistence uses atomic upsert. This is not guaranteed single-flight coalescing, and counters measure completed SDK operations, not each underlying HTTP request. Direct SDK consumers outside this adapter are not covered. `scripts/check_market_data_backpressure.py` provides bounded live diagnostics.
 
 **Derived-computation cache (`argosy/services/derived_cache.py`).** The market-data cache above memoizes *fetched* data; the derived cache memoizes Argosy's expensive *computed* outputs — chiefly the Monte-Carlo-heavy `resolve_plan_numbers(..., include_canonical_ages=True)` that the plan story (§11.9) and `/retirement` panels recompute on every request. It is a process-local, LRU-bounded memo (`get_or_compute(tag, version, compute)`) covering the overview, the retirement MC endpoints (derived-inputs, feasible-age, dual-track-plan, scenarios), the portfolio computations (wealth-dashboard, allocation-breakdown, real-estate), and the plan computations (allocation-glidepath, cashflow-projection, nvda-trajectory).
 
@@ -2166,6 +2252,12 @@ Adapters:
 
 **How real money actually moves today.** The deployment author (§20.5, the fleet-authors path behind `/deploy-cash` and the period directive) produces one validated order sheet; accepting it atomically materializes exact share-sized, account-routed proposals. IBKR can use the broker router. Schwab/Leumi remain deliberately read-only, so the client executes an approved proposal in the broker UI and posts each broker receipt to `POST /api/proposals/{id}/manual-fill`. That endpoint derives ticker, side, broker, account and target quantity from the approved proposal, accepts only receipt facts, deduplicates on the broker execution id, tracks partial/full `pending_orders`, moves the proposal to `executed_live`, and sends actual-fill VWAP/commission/time into the order-sheet prediction and audit ledger. `snapshot_refresh.apply_fills_to_snapshot` (§20.4) remains the separate book/statement reconciliation seam.
 
+**Receipt evidence and recommendation accountability are separate.** `execution/fill_evidence.py` supplies shared Decimal accounting to capture, reconciliation, lifecycle proof and order-sheet audit. Positive quantities/prices must fit NUMERIC(18,4); binary floating noise is tolerated, rounding away a real quantity is not. Live evidence requires matching user/proposal/ticker/side/custody/broker and broker order/execution identity. Paper records never count as live fills; derived IDs retain legacy receipt facts but cannot establish completed execution. A broker `filled` status without complete matching receipts stays pollable and reports a job error. Conflicting receipt identity or duplicate facts fail explicitly rather than overwrite custody; overfills remain recorded facts but fail completion proof. The read-side audit retains and names invalid evidence. Manual capture validates cumulative evidence, rejects reserved derived IDs, and uses exact quantities rather than float tolerances for completion.
+
+Order-sheet forecasts join execution by immutable sheet fingerprint + ticker + authored action, not ambiguous numeric IDs shared by ActionProposal and Proposal tables. Actual-fill aggregates are attached as `fill_telemetry` to every linked horizon; recommendation entry price, event date, due date, evaluation method and outcomes remain unchanged. Invalid later evidence marks execution telemetry `reconciliation_required`. This preserves fair scoring of accepted, ignored and rejected recommendations separately from execution quality. `scripts/check_fill_reconciliation.py` exercises production receipt capture and audit with explicitly simulated receipts on a disposable copy of saved orders; it does not place trades or prove actual execution. Canonical authored-sheet enforcement at broker-send/manual-capture boundaries and full fill-to-current-book proof remain distinct work from receipt identity validation.
+
+**Lifecycle status is evidence, not a completion claim.** `GET /api/e2e-proof` projects the persisted artifact and its linked records. A valid zero-line artifact is `no_action`, not an approval request or completed execution; open research remains explicit, and order/fill/forecast checks are marked inapplicable rather than passed. Inbox ranks a validated, fingerprint-matching empty sheet as an observation with no acceptance controls. Its saved review can remain visible when current-money marks are unavailable, without hiding the price failure or showing a current-value table. That fallback is bound to the saved fingerprint and cannot display approval for a newer/nonempty sheet. Recommendation clocks start at surfacing, independent of acceptance; missing clocks are audited then, and unparseable outcomes are not scores. Materialization and its projection share structured sheet/run identity and exact authored-field, funding, expiry, positive NUMERIC(18,4), and custody-receipt validation. Current holdings cannot change an existing order's historical account selection. Missing original orders stop replay rather than create replacements; unified acceptance promotes matching staged rows, and no-action acknowledgement creates no execution run or cancellation. These integrity checks do not yet enforce the broker-send/manual-fill boundary, establish execution authorization, or prove actual fills. `scripts/check_order_sheet_materialization.py --replay` checks a saved accepted sheet and injects drift only in a disposable SQLite copy; it is not live execution proof.
+
 ### 9.3 Risk preflight (rule-based, no LLM)
 
 Runs before *any* `place_order` call, regardless of paper/live:
@@ -2269,7 +2361,11 @@ flowchart TD
  BR --> ACK[BrokerAck]
  ACK --> RC[Reconcile loop on fills]
  RC --> ER[ExecutionResult]
- ER --> AL2[audit_log + lots update]
+ ER --> AL2[audit_log + execution receipts]
+ AL2 --> AJ[Durable receipt application journal]
+ AJ -->|settlement and identity sufficient| BK[Updated holdings and cash]
+ AJ -->|missing or contradictory evidence| UR[Receipt retained for reconciliation]
+ BK -. tax-lot and statement proof remain separate .-> AU[Outcome audit]
 ```
 
 ### 10.4 Cooling-off mechanic (T3 only)
@@ -2376,6 +2472,14 @@ Header carries a `Headphones` avatar, the time-of-day greeting headline, and a "
 **Fetch resilience.** `api.advisorHomeBrief(userId)` is called with `AbortSignal.timeout(8000)`. On AbortError → "Couldn't reach advisor service." On any other failure → "Brief unavailable right now." (fixed strings; no stack-trace leakage). Empty bullets array → "All caught up. Nothing to surface right now." Loading state → three faint skeleton rows so the page doesn't jump on data arrival.
 
 ### 11.2 Design principles
+
+**Home summary and action preview.** `FMGreetingCard` in `summaryOnly` mode projects the greeting's family/portfolio summary, labels the FI headline as a conditional model estimate, and displays `book.as_of` as the snapshot date (not a guarantee of per-instrument quote freshness). Its legacy `needs_you`, watching and quiet-state blocks are not rendered on Home. `HomeActions` reads the same ranked `/api/inbox` feed as Inbox: buckets 1–5 retain server order, five actions are shown initially with the remainder expandable, and bucket-6 observations are separate. Amounts, deadlines, reasons and expiration timestamps are source fields; the UI does not generate allocations, infer missing amounts, or approve/execute orders. Source-error receipts from the debug projection produce a partial-coverage warning without displaying raw diagnostics. Expiration labels are relative to the feed's assembly timestamp, not a new investment gate. Exact-card deep links use shared `inbox-presentation.ts` anchors; the existing trade table and approval flow remain in Inbox.
+
+`use-home-read.ts` refreshes the summary and action preview on mount, window focus and every minute, with a 20-second abort deadline and no overlapping requests. Failed refreshes clear that surface's previous result and offer Retry; an empty list does not certify successful analysis. Snapshot date, list assembly time and operational-status check time are distinct. The footer clock is explicitly labelled **Local time**, never **Last updated**. The opt-in `home-live.test.tsx` integration renders the actual components against the live API/database (`ARGOSY_UI_LIVE=1`); it verifies data wiring, not investment quality or a visual browser audit.
+
+**Home/Inbox reliability.** The two short dashboard reads default to the browser's own origin through the existing Next proxy, unless `NEXT_PUBLIC_API_URL` explicitly selects another host; long-running model requests retain their existing transport. Public `InboxFeed.issues` reports partial adapter failures and unavailable trade-plan causes without requiring debug mode; a failed source cannot produce a healthy quiet state. Expired trade proposals remain view-only history in the observation bucket, not urgent next actions; pending-decision and approval counts exclude them. Policy fingerprints include a ruleset version. Plan-task actions use only the current accepted baseline, never an unaccepted draft. Greeting bakes have a 60-second safety cap, including pre-existing longer-lived rows. Home and Retirement both cache the full canonical `FeasibleAgeResult` under their shared key, preventing page-order-dependent missing fields. Home total and plan alignment use the conserved current book; alignment also loads persisted instrument classifications. Missing snapshot, current plan, valid nonempty target document, allocation data, or degraded marks yield null alignment, not an off-plan judgment. The target-document check precedes allocation construction, whose legacy missing-target fallback is zero. Degraded or empty current-book totals are unavailable, not raw snapshot totals. These read-model changes do not refresh carried cash or certify its spending availability.
+
+The legacy `Proposal.expires_at` lifecycle contract is checked using a shared instant for Inbox cards and trade projections, at the proposals API approval transition, before the execution router's automatic promotion, and immediately before broker handoff (in addition to the early execution check). Expired legacy records remain inspectable, without actionable approval/execution buttons, but ranking/counts still need lifecycle-aware handling. Unified-sheet and legacy trade projections both respect current-book degradation; a prior controlling period directive prevents fallback to older proposals when no current sheet is usable. This does not yet cover the separate ActionProposal acceptance, ProcessCoolingLoop transitions, or sheet execution-freshness deadline versus wrapper expiry. These are lifecycle/data-integrity checks, not investment-judgment rules. `scripts/check_home_browser.py` provides a read-only headless real-browser/API receipt; it does not certify allocation quality or execute trades.
 
 | Principle | Why |
 |---|---|
@@ -2893,6 +2997,12 @@ The full three-level design — **Pause** (cadence ticks log but don't fire deci
 
 **Fleet-calibration benchmark (`evals/fleet_calibration/`).** A decontaminated historical time-machine suite that scores the production judgment lens itself (the trader agent, invoked in-process with the production prompt/mode) against known-outcome cases across four failure modes: entry recognition, trap rejection, exit discipline, and hold-through-drawdown. Case packets are built from period-accurate filings and pass a four-step decontamination (alias, per-case dollar rescale, relative dates, output contamination check) plus a **temporal-integrity audit** — the runner refuses to score any point whose packet cites a source dated after the freeze date. Two fully synthetic control cases (fictional winner-shape / trap-shape) gate interpretation: if the controls fail, the lens regressed and real-case results are not read. Each point persists the full replay trail (packet fixture + rendered constraints + raw model output) so an independent auditor can re-verify that reasoning used only packet facts. Spec + case table + scoring rules: `docs/design/fleet_calibration_benchmark.md`; runner `evals/fleet_calibration/run_suite.py`; scored runs under `evals/fleet_calibration/runs/`. **Run it on every fleet-affecting change** — model swap, trader/mandate prompt edit — and quarterly otherwise (same trigger class as the §14.8 "agent prompt change" eval-first rule); compare against the prior run's scorecard for regressions.
 
+**Live recommendation benchmark and shadow allocation.** The daily `PredictionsEvaluatorLoop` first persists the immutable absolute `prediction_outcomes` fact, then `predictions/benchmark.py` adds a separate, versioned `prediction_benchmark_outcomes` row. Version `spy_adjusted_eod_previous_close_v1` uses dividend/split-adjusted SPY EOD as the S&P 500 proxy, anchors entry at the last close strictly before the recommendation date (no same-day hindsight), and exits through the subject outcome date. BUY/ADD/HOLD measure owned-ticker return minus SPY; SELL/TRIM/WATCH/PASS measure SPY minus the avoided ticker. These are explicitly **pre-tax decision-alpha** comparisons, not realized household performance. The recommendation scorecard exposes ticker, SPY, and excess return even when the user ignored the advice; it also reconstructs notional-weighted BUY/ADD shadow order sheets from the authored artifact. The deployment author receives aggregate and recent benchmark-relative evidence as judgment context on its next run—never as a deterministic per-ticker gate. Inbox refreshes this report on focus, on discovery refresh, and every 60 seconds while mounted.
+
+**Decision lab side-track.** `python -m evals.fleet_calibration.lab --only <case_ids> --out evals/fleet_calibration/runs/lab/<new>.json` reuses the benchmark's independently sourced, anonymized company packets and fictional portfolio context; it does not ingest personal account exports or publish live recommendations, forecasts, approvals, or fills. The mandatory fictional winner/trap pair runs first and blocks historical interpretation if either fails qualification or its expected class. Frozen packet hashes, exact Trader inputs, and independent stage receipts are retained; a separate final report seals the run hash. `--audit-only` checks packet/receipt availability without inference. `market_outcomes` fetches future adjusted price evidence only after sealing, in separate files that never enter Trader inputs: fixed 6/12/24-calendar-month comparisons against SPY, common entry/exit dates, entry strictly after the date-only freeze, and explicit unknown/not-due outcomes for missing or delisted history. These are **gross market diagnostics, not sized or after-tax household P&L**; no tax lots, fees, FX or sell fractions are invented. Portfolio's existing replay section projects the latest sealed lab via `replay_lab_summary.py`, while legacy `historical_replay.py` re-verifies the complete independent pipeline rather than trusting saved booleans. Synthetic controls and historical cases are labeled separately. Curated-case selection bias, residual model-memory contamination and absence of full allocation-path replay remain explicit limitations; lab results do not automatically tune live decision policy.
+
+Lab sourcing receipts bind `case_id` and the SHA-256 of the exact classifier input. New receipts are emitted by `run_classifier_sourcing`; `classifier_receipts/v2` takes precedence over legacy sidecars. Unbound legacy receipts are not silently upgraded or certified. Outcome files have their own content seals and exact frozen identity binding; a later retry cannot replace a failed control in the same run. Independent reviewers distinguish blocking `violations` from visible non-blocking `warnings`.
+
 ### 14.7 Cost monitoring
 
 ![Cost cap & pause flow](diagrams/15-cost-cap-pause-flow.png)
@@ -3244,7 +3354,7 @@ flowchart LR
 
 **Allowed values** (canonical source: `argosy/services/file_catalog.py::_ALLOWED_KINDS` / `_ALLOWED_SOURCES`):
 - `kind ∈ {text, image, pdf, plan_markdown, broker_csv, tax_simulation, other}`.
-- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import, expense_statement, payslip_ingest}` — `payslip_ingest` routes each payslip PDF's raw bytes through `catalog_upload` before parsing (no ingest path may bypass the catalog). 
+- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import, expense_statement, payslip_ingest, youtube_transcript}` — `payslip_ingest` routes each payslip PDF's raw bytes through `catalog_upload` before parsing; `youtube_transcript` records captions fetched on an explicit user request for read-only fleet analysis (no ingest path may bypass the catalog).
 
 **Filesystem layout:**
 `<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
@@ -4096,6 +4206,8 @@ So the allocation card, the pie, the glidepath, the deconcentration optimizer, a
 
 ### 20.4 Instrument classification — the holdings reference
 
+**Partial Leumi CLI import.** `ingest leumi-portfolio --apply` catalogs the supplied original exports before persistence. A holdings-only file replaces securities, not omitted cash currencies: the importer retains each omitted prior Leumi cash balance with its original observation/valuation dates and explicit warnings. A supplied balance, including zero, replaces only that currency. The snapshot source path identifies the actual holdings file. Other-account preservation remains the canonical account merge's responsibility; retained old cash is not newly verified spending capacity.
+
 The bank/broker snapshot's per-row `asset_type` and `symbol` columns are unreliable: the Leumi export labels equity ETFs `REIT`, leaves `asset_type` blank on some lots, and has pasted the literal `O` onto three distinct instruments. Classifying the book off those raw fields mis-buckets it. The classification authority is therefore a curated, ticker-keyed reference, not the raw fields.
 
 - **Resolved ticker first (`argosy/ingest/tsv.py::_derive_symbol`).** Leumi `Details` reliably carries `(<name>) TICKER [EXCHANGE]`; that trailing latin ticker is authoritative and overrides the Symbol cell at parse time (so `(ISHR CORE EM IMI) EIMI LN` resolves to `EIMI`, not the pasted `O`). Rows with no derivable latin ticker (Schwab plain-category Details, Hebrew-only TASE names) keep the cell verbatim.
@@ -4116,13 +4228,47 @@ The `/portfolio` composition donuts — **asset class · exposure & style · reg
 
 **Source-of-truth ingestion + reconciliation gate.** The Leumi section auto-refreshes from the raw bank exports: `handle_xls_upload` rebuilds positions from the portfolio XLS and pairs BOTH cash currencies — NIS from the Osh statement and USD (פמ"ח) from the `leumi_usd` statement (a missing USD statement surfaces a warning, never a silent omission) — carrying the non-Leumi sections (Schwab / RSU / real estate / pensions) forward. After synthesis a **reconciliation gate** (`reconcile.py`) diffs the persisted snapshot against the raw XLS and fails LOUD on any mismatch: a holding missing, a cash currency the bank reports but the snapshot lacks, or one symbol mapped to two distinct holdings. The doctrine: validate against the RAW source, not derived artifacts — internal consistency (sums conserving) is not correctness (see [[feedback_reconcile_against_raw_source]]).
 
-**Snapshot self-refresh — the TSV is OUTPUT-only.** Argosy keeps its own book fresh; the client never exports a TSV for freshness. `snapshot_refresh.refresh_portfolio_snapshot` takes the latest snapshot's held **quantities** as ground truth and reprices them from live quotes: exchange-hinted suffix mapping (a `Details` hint like `"CSPX LN"` → `.L`, then `.AS`/`.MI`/`.DE`/`.SW`), hard rejection of GBX/pence-quoted prices (accepting one inflates a position ~100×), a 0.5–2.0× price-plausibility band vs the old price (out-of-band = a miss, never a reprice), and a ±20% internal-consistency check on the source row (`shares × price ≈ value`) before any row is repriced. USD/NIS (BoI → FRED → yfinance chain) and USD/EUR refresh under their own plausibility band. Totals are **independently re-summed** over the new positions (never `old_total + delta`). Every miss carries the old value forward with a recorded `parse_warnings` entry (`reprice_miss:…`, `fx_miss:…`) — degrade loud, never fabricate. The result is inserted as a NEW `portfolio_snapshots` row with explicit provenance (`source_path="self-refresh:reprice-of-<date>"`). The Family-Finances TSV is then *generated from* internal state (`portfolio_ingest/tsv_generator.py::generate_family_finances_tsv`: carry-forward template from the most recent prior TSV; today's date, Leumi NIS+USD cash from statements, and recomputed allocation currents/deltas overridden). `SnapshotRefreshJob` is registered `enabled=False` — manual Run-now until trusted on cadence.
+**Snapshot self-refresh — the TSV is OUTPUT-only.** Argosy keeps its own book fresh; the client never exports a TSV for freshness. `snapshot_refresh.refresh_portfolio_snapshot` takes the latest snapshot's held **quantities** as ground truth and reprices them from live quotes: identity-preserving listing mapping (an explicit provider suffix or broker ticker/venue pair such as `"CSPX LN"` → `CSPX.L`, with no fallback to unrelated exchanges; unsupported/conflicting identities remain misses), hard rejection of GBX/pence-quoted prices (accepting one inflates a position ~100×), a 0.5–2.0× price-plausibility band vs the old price (out-of-band = a miss, never a reprice), and a ±20% internal-consistency check on the source row (`shares × price ≈ value`) before any row is repriced. USD/NIS (BoI → FRED → yfinance chain) and USD/EUR refresh under their own plausibility band. Totals are **independently re-summed** over the new positions (never `old_total + delta`). Every miss carries the old value forward with a recorded `parse_warnings` entry (`reprice_miss:…`, `fx_miss:…`) — degrade loud, never fabricate. The result is inserted as a NEW `portfolio_snapshots` row with explicit provenance (`source_path="self-refresh:reprice-of-<date>"`). The Family-Finances TSV is then *generated from* internal state (`portfolio_ingest/tsv_generator.py::generate_family_finances_tsv`: carry-forward template from the most recent prior TSV; today's date, Leumi NIS+USD cash from statements, and recomputed allocation currents/deltas overridden). `SnapshotRefreshJob` is registered `enabled=False` — manual Run-now until trusted on cadence.
 
-**Applying broker fills (`snapshot_refresh.apply_fills_to_snapshot`).** Executed broker fills reconcile into the book without waiting for the next bank export: each `Fill` (symbol, shares, price, currency, location) either blends into the matching `(symbol, location, currency)` position — `new_avg = (old_sh×old_avg + fill_sh×fill_price) / total_sh`, revalued at the snapshot's current price — or opens a new position. The single cash position at the funding `(location, currency)` is reduced by the total cost (fail-loud `ValueError` if absent); a resulting negative balance is NOT an error (fills are facts) but is recorded as a `cash_overdraft:…` warning for the next ingest to reconcile. Totals re-sum independently; every applied fill is recorded (`fill-applied:<sym>:<shares>@<price>`). The result inserts as a new provenance-tagged row (e.g. `source_path="fills-applied:<tag>"`). Additionally, the function writes a machine-readable `closed_loop_expectations:{json}` entry (v1: fills, expected_positions, cash.after_local, manual) alongside the human-readable prose fill/cash lines; callers supply caller-supplied notes via `extra_warnings` which land in the blob's `manual` list.
+**Applying supplied fill facts (`snapshot_refresh.apply_fills_to_snapshot`).** This low-level helper is not itself idempotent; production receipt capture now calls it through the atomic `execution.fill_book` journal described below. `Fill` supplies symbol, action, shares, price, currency, exact location, commission and reported tax withholding. A buy blends a matching position's known average (unknown stays unknown), opens a new position, or reopens a zero row without duplication. A sell reduces known shares, retaining the remaining display average without claiming tax-lot accounting; oversells are rejected. Sell withholding must be explicitly reported, including confirmed zero; actual withholding is not final tax liability or proof all proceeds are investable. One exact custody/currency cash row changes by signed gross proceeds/cost minus fees/withholding. No implicit FX transfer or account-family substitution is allowed. Missing/ambiguous rows, unknown quantities, inconsistent mark/value or USD projections, and unavailable positive FX fail before writing. Accepted amounts use the shared ledger precision consistently. Negative resulting cash remains a loudly recorded `cash_overdraft:…` fact. Existing observation/valuation dates are retained, not freshened by the trade. Totals re-sum independently. A new provenance-tagged snapshot records signed fill notes and a `closed_loop_expectations:{json}` blob (fills including action/fees/withholding, expected final shares and signed delta, post-fill cash, manual notes). `scripts/check_fill_book_math.py` exercises this helper against a disposable live-DB backup with explicitly simulated trades; it does not prove actual executions, automatic application or exactly-once consumption. E2E receipt completion is labeled `filled` with portfolio reconciliation unverified, never `complete` on receipts alone.
 
 **Closed-loop fill verification (`argosy/services/closed_loop.py`).** A deterministic expectation parser/verifier that checks armed expectations against the next real ingest. "Armed" is a positional definition: expectations in `fills-applied:*` snapshot rows whose row id is greater than the newest real-ingest row's id — no extra table; resolution state is implicit in row ordering. Historical rows are never modified; outcomes are **appended to the NEW ingest row's `parse_warnings`** (append-only, audit-safe). The verify hook is `xls_osh_pair._write_through_resolved_snapshot`, called from both ingest paths (XLS upload and Osh-arrival mid-ingest), best-effort — it never breaks an ingest. On the Osh-arrival path the hook runs `commit=False` (mid-ingest atomic batch): outcome lines are flushed immediately but proposal writes defer to the daily sweep, keeping the ingest batch atomic. Verification rules: shares within tolerance resolve internally (the client surface clears); a mismatch writes a loud reconcile warning plus a dedup'd `note_only` proposal. Estimated fill prices (e.g. a sale priced at the live quote at deploy time) verify SHARES only and emit an informational price-delta note — price differences never fail a verification (the market moved between fill time and ingest time). Cash-overdraft expectations resolve when the ingested balance at that account is non-negative (actual vs recorded delta is informational — expenses move cash between snapshots).
 
+**Durable receipt application (`execution.fill_book`, migration 0122).** Production manual capture and broker reconciliation stage real receipts and use one `fill_book_applications` row per fill. The row binds immutable execution facts, reported settlement, original/applied snapshot IDs, status and failure reason. Complete currency, withholding, signed net cash and broker reference are required; gross/fees/withholding must reconcile to reported net within one cent. Broker adapters without settlement evidence leave it unknown, not zero. Explicit execution times normalize to UTC before storage; absent times are marked unconfirmed and can be audit-enriched before application. Omitted commissions remain unknown at the shared broker-model, manual API and UI boundaries. A later explicit fee (including zero) may audit-enrich an unapplied receipt; known fees cannot be overwritten. API/audit projections represent unknown fees as null. New instruments require verified listing evidence; listing and holding identity use the same normalization/resolver as book mutation and repricing. A missing listing can be supplied once without changing existing settlement facts.
+
+Receipt, journal and snapshot writes are atomic. Replays of applied receipts do not alter the book. Unknown-time activity, out-of-order receipts, ambiguous date-only statement boundaries and exact-custody gaps remain explicit reconciliation work. Price and commission currencies are preserved independently and must both be known and match settlement currency before application (ILS/NIS aliases normalize); mixed-currency charges require conversion evidence, not implied FX. A manual settlement submission declares the supplied trade and fee amounts in that currency. Unzoned statement dates use conservative UTC-12 through UTC+14 cutoff bounds; older/ambiguous statements cannot overwrite applied trades. A newer statement is not proof that every intervening event is known. Snapshot writers share a tenant writer lock; derived snapshots compare their original snapshot ID at persistence, preventing an in-flight price refresh from overwriting new quantities. Durable holding-book synchronization errors roll back application, retaining the receipt with its failure status when the transaction remains usable.
+
+The broker loop stages all polled orders before applying in execution-time/receipt-ID order. Failed staging sets an account-scoped durable barrier covering both pending custody and its same-user proposal account; independent accounts continue. Statuses carrying receipts all undergo aggregate evidence checks, including cancelled/rejected orders. A prior completeness failure clears only with complete target receipts or an independently reported broker filled quantity matching saved evidence; a label alone does not clear it. The default adapter loads the loop owner's settings. IBKR supports an explicit logical-to-native `broker_account_id` mapping, preserves native custody in the receipt, and verifies raw execution order/client/account/side plus matching commission-report execution identity. It exposes actual cumulative filled quantity and does not disguise missing filled-order evidence as working. Terminal pollable orders awaiting settlement/time/fees or barrier resolution get bounded six-hour repolls. Intentionally manual-only Schwab/Leumi orders are not remotely polled. Their manual capture validates pending-order custody and can audit-clear only a capability-only unavailable-adapter error, never an execution-data conflict. The manual API and trade-plan receipt form accept settlement details with explicit currency, fee, withholding, signed cash, source reference and execution timestamp including UTC offset. The form lists saved receipts, locks known facts, reuses the original execution ID to enrich missing details, and distinguishes shares/cash application from unresolved reconciliation. The fill read API returns saved settlement and UTC timestamps for faithful reopening; successful receipt capture remains distinct from a failed dashboard refresh. Broker settlement ingestion, tax lots/reserves, native-currency performance attribution and statement/event-completeness proof remain separate work.
+
+Daily snapshot refresh first performs bounded application recovery from saved facts. Last-attempt ordering prevents a blocked page starving other accounts; selected receipts then apply chronologically. Per-receipt/per-order savepoints preserve unrelated successful work and retain failure audits. `/api/fills` and manual-fill responses expose book status/reason/applied snapshot; fills also expose currencies and whether execution time/fees are confirmed. Dated prediction telemetry leaves execution-time bounds null until every included receipt has confirmed time; original recommendation clocks remain unchanged. IBKR uses authoritative execution time, never callback-arrival time; live polling and placement require explicit live configuration, and parsed paper receipts cannot become live evidence. Reconciliation reuses each broker adapter within a tick and closes it on exit, switching configured connection scopes with disconnect/reset. `scripts/check_fill_book_application.py` migrates a disposable live backup and exercises production capture, partials, replay and statement ordering with explicitly synthetic executions/settlements. It does not prove actual trades or complete E2E operation. Tax-lot accounting, final tax-reserve reconciliation, authoritative full broker-event coverage and investment performance remain separate, unverified requirements.
+
 ### 20.5 Deploying idle cash to the target
+
+**Mixed follow-up alternatives.** Pending groups may compare a discovery stock with a core collective vehicle. Reference-classified ETFs/REITs/bonds use the existing fund-vehicle analyst with live execution evidence and the original research question/reserve; stocks use the fresh discovery analyst fleet. Fund results are durable report-backed task evidence, never fabricated radar/ScanState grades or trade authority. Source-matched freshness, funded disposition and complete independent review are required to resolve either kind. Proposal and final-sheet validation both distinguish fund HOLD/TRIM/SELL research from moonshot scenario/rank requirements; all actual order-line arithmetic and sizing checks remain unchanged.
+
+The fund-vehicle agent receives the exact output schema and uses the shared structured-output transport; overlap instruments are ticker strings, with explanations in its rationale. Concentration reasoning uses dated whole-fund exposure and actual funding/portfolio denominators, not a fixed household percentage or a blanket veto on incidental holdings. Missing fund-level weights remain null; a whole-fund weight is not multiplied by regional weight again. Instrument domicile, documented household tax status and accepted risk constraints are separate inputs.
+
+**Sale arithmetic coherence.** Whole-share checks compare authored cent-rounded USD notional against the exact quoted whole-share value with half-cent rounding tolerance; the selected quantity remains an integer. Sub-cent provider quotes cannot make the validator reject its own cent-rounded suggestion. The canonical allocation route keeps one fresh sale quote per symbol for the run, recomputes tax when the authored amount changes, and reuses that quote/result in the final sheet. Existing freshness, tax provenance and staged-sale limits still apply.
+
+**Funded sizing responsibility.** The sizing reviewer covers every proposed buy, not only single-name convexity. It evaluates the resulting whole holding, distinguishing a small incremental purchase into a meaningful position from opening a new small slot. Every reviewer's action-changing replacement must satisfy the same existing sizing and verified-funding constraints as the author; an underweight plan sleeve need not receive an order in every tranche. Ordinary ETFs have no automatic exemption from the existing sub-1%/convexity mandate and must not be relabelled convexity to pass it. The author can explain infeasible feedback and offer consolidation or defer that sleeve without increasing the staged-sale ceiling. The team owns these judgments; this wiring adds no ticker exceptions or deterministic checks.
+
+**Independent core actions and pending discovery.** `AllocationProposal` and `OrderSheet` carry typed `pending_research` groups: alternative tickers, the disagreement, missing evidence, a specific research question, next review date, one shared reserve, and the author's independence rationale. These are not orders. The author re-derives the complete revised allocation and every blind reviewer must explicitly affirm core/reserve separation; unresolved shared funding, tax or portfolio dependencies still block the entire artifact. After persistent disagreement, a bounded, explicit recovery phase requires either this independently reviewed core/pending decision or an authored `research_separation_blocker`; silently dropping the pending issue cannot publish. It never strips lines from a rejected sheet or weakens existing sizing/tax/situs checks. Schema/arithmetic checks prohibit action/pending overlap and double-reserving; pending reserves are included in conserved cash, never added to it. Review history distinguishes deferred research from resolved investment objections.
+
+Blind deployment reviewers receive the author's same raw execution constraints (`staged_sell_policies`, `allow_sells`, `user_constraints`), without the author's rationale. A portfolio-level reason to trim does not itself establish an executable sale: tax evidence freshness, tranche ceilings and resolver failures remain independently visible. Reviewers must distinguish an evidence-repair action from a fundable trade, rather than inventing proceeds or relaxing tax checks to force agreement.
+
+`allocation_research_tasks` (migration 0117) persists follow-up atomically with the single published sheet and survives approval/expiry. The daily directive refreshes due tasks through fresh per-ticker analysts and a dispute-focused discovery synthesis before normal cash/action triage, including overdue tasks after downtime. Successful same-day research is reused; interrupted/failed attempts remain explicit and use the bounded recovery policy below. A pending question survives a candidate dropping out of the daily radar: its existing research cache can refresh without changing radar status, rank or screening timestamp. The author receives such a dropped candidate only while a pending task names it and its evidence meets the freshness requirement, explicitly labelled as follow-up research with separate radar status/date. Missing or quarantined radar records still require repair; ordinary discovery views do not silently reactivate dropped names. Research itself grants no trade authority: only a fresh independently reviewed allocation with explicit candidate dispositions resolves an issue. Repeated composition cannot postpone an overdue task indefinitely. The existing trade-plan table shows pending alternatives, shared reserve, actual queue due date, research failure and latest research timestamp; no second actionable list is created.
+
+The unresolved question and missing-evidence request reach the fundamentals/news evidence collectors as well as discovery synthesis. They survive analyst remediation reruns and allow those web-capable analysts to investigate when generic feeds are empty, without lowering quorum or inventing valuation inputs. Fund alternatives use the fund-vehicle analyst rather than the moonshot grader. These three analysts expose bounded `WebSearch`/`WebFetch` through the existing allowlisted SDK control stream; targeted instructions require primary-document identity, dates, URLs and explicit retrieval limitations. Questions are untrusted context, not citable source documents. Verified issuer evidence can resolve missing fund facts; missing accounting/valuation inputs remain unknown. Declared tools, a completed model call, or a citation string alone do not prove successful retrieval or resolve a task: the reviewed allocation remains the authority.
+
+On the Claude SDK backend, these analysts also receive the opt-in `mcp__argosy_sources__read_document` capability (`services/public_document_tool.py`). It retrieves public HTTPS documents with checked/pinned addresses, checked redirects, verified TLS and no inherited credentials or proxy; unsolicited compression is refused. The tool has three attempts per session, a total fetch deadline and a byte ceiling. PDF/text extraction runs in a hidden, memory-limited subprocess with a kill/reap deadline, reports the inspected PDF pages and character/serialized-byte truncation, and never silently represents partial extraction as the whole document. Raw bytes, URL/time/hash and extraction receipts are retained under tenant-hashed `data/research_source_captures`, with atomic publication, quota accounting and reserved capacity for terminal receipts. Cancellation settles in-flight publication before recording its terminal state. SDK settings and MCP servers are isolated to the declared capabilities; tool-less roles override the opt-in. No broker, portfolio or approval authority is granted. Retrieval receipts establish provenance, not factual correctness, and unavailable extraction remains an explicit research limitation.
+
+Interrupted/failed allocation research is eligible for automatic recovery after the scheduler's 30-minute cooldown, with at most three research attempts per UTC day and three directive-job attempts per scheduled slot. Attempt history survives restarts; successful same-day tasks and future-due tasks are not retried. Completed ticker work is checkpointed under the exact typed research-request hash and reused only within the same UTC day, retaining the oldest evidence timestamp. Partial checkpoints do not become completed task results or resolve an investment dispute. The directive joins the scheduler's audited recovery allowlist; only process-exit-reaped cancellations can restart, never explicit user cancellations. If funding/source recommendations and the validated sheet remain current, a research-only failure preserves that sheet without reauthoring it. Readiness distinguishes generated-plan/research-recovery-pending from runtime, authentication, exhausted-budget or stalled recovery errors; amber recovery requires both research and scheduler attempt capacity. Historical failure receipts are unchanged.
+
+For explicit repair recovery, `scripts/run_analysis_recovery.py period_directive_daily --retry-failed-research` retries failed due tasks once in that registered invocation, retaining previous error/state in lifecycle history. The operator retains the existing enabled, concurrent-run, cron-window, cost and no-autoact safeguards. This option does not resolve disputes, approve trades or turn a rejected artifact into a valid one.
+
+**Scheduled holding-review handoff.** `order_sheet_state.load_portfolio_voices` combines the existing stance context with the latest durable `HoldingReview` per tenant/symbol, ordered by review event time and id. A completed review reaches scheduled sheet construction without a Portfolio page visit to refresh the stance cache. The actual review timestamp/rationale are retained, cached review voices are replaced, and plan/other prior-context voices remain distinct. Only supported settled review outcomes can supply missing coverage; a later failed or disputed attempt cannot resurrect an older cached review as a completed pass. Missing context still carries `coverage_missing` and fails the existing artifact validation. This read does not rebuild the strategic plan, mint default HOLDs, or change current author/reviewer decisions.
+
+`VoiceVerdict` preserves nonblank raw upstream labels in `prior_context` (including abstentions such as WAIT) without translating them into HOLD or discarding them. Only `current_run` voices use the actionable BUY/ADD/HOLD/TRIM/SELL vocabulary; the default remains current-run authority and existing one-voice checks are unchanged. Historical audit labels cannot become orders through this compatibility boundary.
 
 Idle cash is the primary action signal. The `/proposals` page presents it as ONE actionable buy list with supporting context — the `deploy-cash-flow` section in `ui/src/app/proposals/page.tsx`, headed **"Deploy your cash."** The section reads top-to-bottom: a detection banner sizing how much is deployable → THE buy list (the single actionable surface, with per-line Accept/Defer) → context (the reconciled source breakdown + allocation delta). The `#deploy-cash` and `#allocation` anchors are preserved as scroll targets inside the section so Home-banner and intra-page deep-links still resolve.
 
@@ -4209,6 +4355,8 @@ The client-facing inbox is backed by `action_proposals`. The table's `kind` CHEC
 
 ### 20.10 Early-signal discovery streams — public evidence before price recognition
 
+**Research-ingest handoff.** `ingest_recommendation_router` stores source disposition, rationale, provenance and original observation time as discovery nomination evidence; a source mention is not a fleet verdict and never advances `last_fleet_at`. Existing genuine reviews and quarantine survive new mentions. The discovery loader accepts this ingest evidence alongside structured signal-stream candidates, resolves current market facts through the market adapter, and requires positive finite USD prices (and positive finite capitalization for corporations; ETF/fund capitalization is not applicable). Retrieval time is recorded explicitly; provider country is not asserted to be verified incorporation. Market-provider failures propagate instead of silently omitting candidates. Blocking radar and external-fact loading run in worker threads off the API event loop. The normal estimator and top-ranked fleet grading still make investment judgments. `scripts/replay_ingest_leads.py` can repair missing nominations from original open ingest receipts, retaining observation dates and normal deduplication; it is dry-run unless `--apply` is supplied.
+
 `argosy/services/signal_streams/` is the adapter boundary for early public-data evidence. Every adapter emits the same frozen `SignalNomination` contract: ticker, stream name, long/short direction, normalized strength, event date, raw evidence with source URLs, and a stable per-event dedup key. A signal **never creates a trade**. It writes an auditable prediction and nominates a ticker into the existing radar → quick estimator → discovery fleet → decision-funnel path, where the LLM team owns the investment judgment.
 
 **Cadence and recovery.** `SignalStreamsDailyLoop` runs at 15:30 Asia/Jerusalem, before the 16:00 discovery funnel. It opens one transaction per stream so one adapter failure never rolls back another stream. `signal_stream_cursors` (**migration 0083**) stores the last successful timestamp per `(user_id, stream)`. The next query overlaps the cursor by the stream's configured recent-scan window and clamps to its maximum lookback; successful zero-nomination cycles advance the cursor, while a failed cycle rolls back both writes and cursor. Existing observation-time predictions provide the one-time fallback watermark when introducing cursors to an already-populated ledger.
@@ -4221,7 +4369,7 @@ The SEC adapter processes filings with bounded concurrency under the process-glo
 
 Purchase nominations require at least the configured number of distinct officers/directors making non-derivative code-P acquisitions within the rolling window, with transaction-level 10b5-1 status explicitly false and aggregate disclosed value above the greater of the base dollar floor and market-cap-scaled floor. Form 4/A filings supersede their uniquely matched original filing under a stable event identity; ambiguous amendments are cluster-ineligible. Warning-only sell clusters require distinct C-suite sellers whose aggregate sale within one security/ownership pool is strictly above the configured fraction of pre-sale holdings. They write short predictions and one generic `signal_stream_warning` monitor flag but never create a radar candidate. `monitor_flags.kind` admits this generic sink and prediction uniqueness is tenant-scoped under **migration 0084**. Warning reruns do not extend the original TTL or resurface acknowledged/expired events.
 
-**Ledger and outcome methods.** Every nomination writes two idempotent `predictions` rows under `source='signal_stream:<stream>'`: 30 calendar days and 180 calendar days. Both snapshot entry price and `event_at` when Argosy observes/writes the nomination; the underlying event date remains in source evidence. The method registry contains true `fixed_lookahead_180d` and entry-backfilled supersession methods, so thesis-horizon outcomes are not collapsed into the legacy 30-day cap. The daily evaluator runs ordinary scoring, recoverable-row re-evaluation, and retention in one transaction. Reliability queries select one outcome per prediction/method family using the highest **active** method version.
+**Ledger and outcome methods.** Every nomination writes two idempotent `predictions` rows under `source='signal_stream:<stream>'`: 30 calendar days and 180 calendar days. An actual recommendation (settled portfolio verdict, surfaced order-sheet line, or discovery-fleet grade) additionally carries a 365-day clock. Discovery grades use `source='signal_stream:discovery_evaluation'` and persist the fleet verdict/conviction, estimator summary, thesis expectation, dated entry, and success measure; WATCH/PASS remains a long observation so a later winner is reported as a missed opportunity rather than misrepresented as a successful short. All clocks survive rejection, expiry, or non-execution. The method registry contains true `fixed_lookahead_180d` / `fixed_lookahead_365d` methods and entry-backfilled supersession methods, so long-horizon outcomes are not collapsed into the legacy 30-day cap. New Alpha-report predictions also preserve their 180/365-day horizons; replaying an existing dedup key deliberately leaves its original record unchanged. `scripts/check_alpha_prediction_horizons.py --replay` audits clocks read-only and exercises saved analyses through the production fan-out, writer and due selector on a disposable SQLite backup; `--repair-preview` exercises audited historical repair on that copy. The daily evaluator repairs proven historical Alpha clock mismatches and missing recommendation clocks before scoring, retrying unavailable-data outcomes, benchmarking, and retention. Historical repair preserves every old outcome and appends a before/after audit record. Registry `scoring_contract` identifies methods answering the same horizon/question; SQL reliability and shared outcome readers filter active matching contracts before selecting the highest version per prediction. Unregistered compatibility is never inferred. Retention requires a current-contract outcome; historical recommendation reports explicitly include retention archives, while active calibration excludes them. An unscorable entry-backfilled outcome remains retryable: successful recovery appends a version-3 result without rewriting failed evidence. A separate operational attempt timestamp rotates bounded recovery batches fairly across restarts. Yahoo empty history is not a durable cache hit; scoring uses operation-local cache writes to avoid competing SQLite writers while retaining full outcome evidence. `GET /api/decisions/recommendation-scorecard` exposes recommendation date, evaluation date, expectation, disposition, grade and result report in the Discovery audit table. These mechanisms establish auditability and recovery, not investment skill or complete market-data coverage.
 
 **Calibration and context privilege.** `signal_source_scorecard` derives aggregate, 30-day, and 180-day counts, win rates, and average PnL directly from prediction/outcome rows. The 180-day slice also re-derives an always-long benchmark over the same tickers and entry/exit rows. Before 50 scored 180-day outcomes the stream is visibly labelled `uncalibrated (beta — N scored over M days)`. At 50 or more, if the stream's 180-day win rate does not beat the same-ticker always-long benchmark, only its **Stage-2 context privilege** pauses: predictions continue accumulating, no history is deleted, and unrelated radar families still route. A signal-only candidate is withheld from Stage 2; a candidate independently supported by another family may route without the paused stream's nomination, scorecard, or citations.
 
@@ -4721,5 +4869,425 @@ The Mermaid diagrams inline in this document are the immediate readable fallback
 **Note on the prior `system-architecture.drawio`:** the original minimal architecture source is preserved as `_system-architecture.drawio.bak` (and its render as `_system-architecture.png.bak`) in the same folder. The numbered file `01-system-architecture.drawio` supersedes it with a richer three-region view.
 
 ---
+
+## Private Discord advisor
+
+News-impact questions use the typed `ASSESS` research capability: gather the exact
+instrument's issuer identity, cached news, verdicts and proposals, persist the
+evidence in the analysis request, then invoke `services/news_reassessment.py`
+through the canonical deep-decision entry point. Its search-only analyst compares
+current developments with the standing thesis and dated review obligations. A
+decision to reuse the standing verdict receives a second blind assessment; missing
+or materially changed analysis escalates to the full fleet under `analysis_only`.
+Unverifiable evidence is an incomplete review, never an implicit HOLD. The request
+context is research input, not a fabricated headline or social-sentiment sample.
+Progress comes from durable agent receipts; results retain the news assessment,
+standing-verdict identity and canonical new verdict/run references.
+
+The original chat acknowledgement is durably adopted as the analysis progress
+message and edited into the final receipt. Follow-up reply context resolves that
+same message to the final saved answer. A successful research handoff is not
+completion: the inbound success reaction is sent only after the terminal result
+is delivered; failed/cancelled work receives a distinct terminal reaction.
+Restart recovery reuses the persisted message, and a cancellation/status question
+cannot take over another request's progress message.
+
+The scheduled decision funnel supplies matched high-materiality headline excerpts
+to preliminary triage and the same reassessment entry point. New headlines change
+the market fingerprint used for deduplication. The standing-verdict keyword matcher
+cannot veto an evidence-based agent decision to reopen research. This runs on the
+configured cadence and within existing coverage; it is not a real-time guarantee
+for every listed security. Plain headline requests remain read-only; research
+authorization never grants trade, approval, fill or profile mutation authority.
+
+The configurable implementation lives in `services/chat_advisor/` and
+`transport/discord_advisor/`, with durable records in migration `0119`.
+It provides quiet actionable pushes, user-requested fleet analysis, and natural
+two-way questions over canonical Argosy financial and operational records.
+This is a private advisory interface, not another
+portfolio/recommendation engine and not a broker execution channel.
+
+An optional binding `status_channel_id` selects a separate private, outbound-only
+scheduled-task board. It reads the same `JobRegistry` state as the Jobs API plus
+successful `JobRun` receipts; it never invokes jobs or models. The board edits
+stable messages every minute, with localized timestamps, explicit missing data,
+failures and an offline/staleness caveat. Existing outbox rows use isolated
+`board_pending`/`board_sent` states and stable per-page nonces/message IDs; ordinary
+recommendation notification delivery cannot consume or resolve them. Exact
+successfully delivered board text is persisted for failure/restart recovery.
+Both channel destinations require validated private access before startup or
+reconnect; outgoing sends/edits also recheck cached Discord permission state.
+
+For cadence jobs, `JobRegistry` projects the latest completed work receipt by
+completion time (legacy missing finish falls back to start), not the scheduling
+pointer's last-status hint. Persisted and effective skipped receipts do not clear
+an earlier failure. Shared effective-status evaluation includes legacy funnel
+stage evidence; long-running transports instead retain live connection health.
+Job summaries may explicitly declare a `stages` mapping of work summaries or
+terminal status strings. `ok` and `skipped` strings are healthy; failed, unknown,
+or unfinished strings are not. Dictionary summaries recurse so a nested
+operational failure reaches the scheduler receipt and status display. Healthy
+stages never suppress an overall failure count or error.
+Unrelated financial/report payloads are not recursively interpreted as failures.
+Scheduling hints still come from `cadence_state`; status reads are best-effort
+views, not an atomic cross-job snapshot.
+Cron staleness uses the second scheduled slot after the last completed work,
+not time remaining until the next run; interval jobs retain their two-interval
+threshold. This respects the scheduler's timezone and non-daily calendars.
+
+Current retrieval topics are holdings, plan, constraints, actions, verdicts,
+recommendations, research, sources, job health, track record, cost, reports and
+documents. Documents currently expose owned catalog metadata, **not full file
+contents**. Numeric TASE security IDs require a supported listed ticker for fleet
+analysis. Slash-command registration, chat preference mutation and full document
+reading remain outside the current implementation. Interrupted paid fleet runs
+retain partial evidence and require explicit retry; restart does not silently
+launch the expensive work again. Deployment and live-test receipts belong in
+the handover, not this architectural contract.
+
+### Experience and ownership
+
+Saved-record chat uses a bounded evidence team (`services/chat_advisor/read_team.py`):
+the router can request up to six typed reads across topics, including multiple
+records of the same kind. Notification citations retain type, ID, label, category
+and semantic material version; history preserves source-message grouping and
+observation time. Legacy unlabeled citations remain valid. A typed reference is
+matched by both source kind and ID, never an adjacent record or an assumed
+historical snapshot. Missing current Inbox records are explicitly unresolved.
+
+All reads use the transport-selected household and physically read-only access;
+unsupported selectors are rejected rather than silently ignored. An independent
+tool-less agent checks the original question, the same redacted evidence, read
+receipts and warnings against the draft. It can request at most two repair reads
+and one revised draft. There are at most eight physical reads and two reviewer
+attempts per turn; transient reviewer failure consumes an attempt, so it can
+forfeit the repair round. Unchecked drafts are not delivered. A reviewer can
+approve an honestly partial answer, but not substitute related facts for missing
+parts or treat a proposed repair as a verified outcome.
+
+Large results have explicit coverage and stable turn-local `evidence_offset`
+continuations over the cached read, separate from source `detail_offset` paging.
+Space is reserved for repair evidence so a new page does not shrink earlier
+excerpts. Exact references may be compared with a notification's stamped version;
+unknown versions cannot establish historical equality. Normal delivery and queued
+recovery use the same assistant-only notification serializer. Reply targets are
+conversation-scoped. Model logs contain status categories, not private evidence.
+
+Mixed saved-fact/new-investment-judgment questions can return reviewed saved facts
+with an explicit fresh-assessment-not-run section; the read team cannot dispatch
+research or trades. Pure news-impact questions retain the existing `ASSESS`
+workflow. Historical archive retrieval and unlimited conversation history are not
+implied by these bounded current-record reads.
+
+- One private server, one `#argosy` channel visible only to the authorized
+  household members and bot. Start with Ariel only; adding Noga requires an
+  explicit identity binding, not matching a display name.
+- A short push: action, size/currency if actually approved for recommendation,
+  why now, principal risk, expiry/freshness and one next action. A recommendation
+  is marked proposed, approved, superseded or blocked exactly as in the Inbox.
+- Reply naturally: “Why this?”, “Why not QURE?”, “What changed since last week?”,
+  “How does this affect my NVDA concentration?”, “How did your old calls do?”
+  Replies retain the original recommendation/version context across restarts,
+  fetch current state, and distinguish the original rationale from new evidence.
+- `/ask`, `/analyze`, `/sources`, `/actions`, `/status`, `/track-record`, `/quiet` are optional shortcuts,
+  not a requirement to remember commands. Plain conversation works in the
+  allowlisted channel and its authorized recommendation threads.
+- Concise answer first; evidence and detail on request. Every factual answer
+  carries retrievable record references and as-of dates. Missing or stale data
+  is identified explicitly. A fresh research request is distinct from reading
+  existing records; do not silently spawn the whole fleet on each message.
+
+### On-demand fleet analysis and internal questions
+
+Discord must support these three modes through natural conversation, without
+requiring command syntax:
+
+| Request | Required behavior |
+|---|---|
+| "What do you think of ticker X?" / "Run the fleet on X" | Start a bounded ticker review through the real fleet, including unowned discovery names; return the persisted final verdict and portfolio relevance. |
+| "Why did you recommend X?" | Retrieve and explain the referenced recommendation; no unnecessary new fleet run. |
+| "How many subscriptions do we follow?" | Query source registries; distinguish configured, enabled, paused and actually healthy/fresh sources, broken down by provider. |
+| "Highlights of what X said" | Retrieve the author's/channel's stored material, summarize with source links, publication dates and transcript timestamps where available; separate their claims from Argosy's assessment. |
+| "System health? What ran or failed?" | Query actual job receipts, last successes, backlog, retries and data freshness; distinguish server availability from successful analysis. |
+| "Our hit rate? What did we miss? What did we spend?" | Retrieve recommendation/outcome coverage, graded cohorts and cost telemetry, stating period, denominator, missing data and benchmark. |
+
+A new ticker-review request authorizes that analysis and its ordinary configured
+LLM usage; do not ask for redundant approval. Clarify only genuinely ambiguous
+instruments or scope. Respect existing spend/authentication controls and report
+any block clearly; chat must not silently disable them. A request for an entire
+universe does not inherit unbounded authority from a single-ticker review.
+
+Immediately acknowledge with a durable request/run ID. Use a single evolving
+progress message in the request thread, plus one final reply. Example progression
+(illustrative, never generated in advance): queued -> fleet started -> named
+analysts running/completed -> bull/bear and risk review -> final verdict saved.
+Show actual participating roles, elapsed time, retries and failures. Progress
+comes from correlated run/agent events and persisted receipts, never invented
+percentages, simulated activity, or raw private model reasoning. Summaries of
+completed agent findings may be shown; intermediate views are not final verdicts.
+During long stages show a restrained elapsed-time update even without a new
+milestone. A reused report or defended standing verdict must be identified as
+such, not described as newly deployed agents.
+
+Use the existing decision orchestration and canonical recording path, not a
+Discord-only analyst or portfolio. The dispatcher must explicitly select an
+analysis-only mode: reports, verdicts and proposed recommendations may be saved,
+but no broker execution or automatic approval, including normally autonomous
+tiers. If no such safe entry point exists, implement it before exposing dispatch;
+do not assume that calling an existing trade flow is harmless. Record final
+calls, declined/no-go outcomes, rationale, uncertainties, evidence and applicable
+evaluation clocks with the chat request linked to the canonical run. Final
+answers should include action, why, falsifier/catalyst and size only when the
+fleet actually derived and validated it. Failure or incomplete review remains
+explicit, never presented as consensus. Ask follow-ups in the same thread.
+
+Keep one durable analysis request per inbound message; reconnects and retries
+must not create duplicate fleets. A repeated request can attach to a matching
+running review. Allow the owner to cancel or retry their analysis through scoped
+commands, retaining partial reports and a terminal receipt. Persist run linkage
+and progress cursor so bot restart recovers state from the DB; the in-process
+event bus alone is not durable. Continue answering lightweight status questions
+while a fleet is running. Terminal results are delivered even if the user leaves
+the conversation and returns later.
+
+For source questions, count registered input-source subscriptions rather than
+claiming visibility into unrelated personal accounts. Show the selected time
+window; ask which author/source if a name is ambiguous. If no transcript or
+article was ingested, say so rather than summarizing from the title. Existing
+read owners include `input-sources/youtube`, `input-sources/research`, the research
+catalog and their stored items. A plain stats/highlights request does not sync
+subscriptions, change source configuration, retry jobs or launch investment
+analysis. An explicitly requested source refresh needs its own scoped research
+capability; generic admin job access is not granted by this design.
+
+### Read access and safety boundary
+
+Reuse Argosy's canonical services for holdings/accounts/cash, current plan and
+constraints, proposals/order sheets, discovery and rejected alternatives,
+verdicts and supersession, news/earnings/research (including YouTube), agent
+reports, registered household documents, fills/audit history, self-evaluation,
+replay results and operational failures. All reads are bound to the authenticated
+household user; access is broad across those datasets, not limited to the push
+summary. Retrieval is paginated and on demand, not a full database dump per turn.
+
+Do **not** expose arbitrary SQL, shell, filesystem traversal, credentials,
+environment secrets, other tenants' records or unrelated personal files. Use a
+read-only DB connection and tenant-scoped typed retrieval functions; document
+reads resolve catalog IDs through ownership checks. Redact unnecessary account
+identifiers in outgoing text. Discord is a third-party destination for the
+financial information shown in messages; bot setup must make that clear.
+
+The current `POST /api/advisor/turn` is **not** a read-only transport: it can persist
+profile updates and dispatch plan amendments. Extract/reuse its reasoning and
+context assembly behind a new read-only conversation service; do not grant the
+Discord bot that endpoint, generic HTTP tools or direct amendment tools.
+Transport metadata must bind Discord guild/channel/user IDs to Argosy user IDs
+server-side, before any retrieval or model call, on **every** message/button.
+Thread authorization checks the configured parent channel and participants.
+Ignore bots/webhooks and reject unauthorized callers without private content.
+
+Financial account/plan state is read-only from chat. Separate scoped capabilities
+allow conversation/audit writes, notification preferences, and explicitly
+requested analysis dispatch/cancel/retry with durable research/verdict outputs.
+No trading, approval, fill recording, plan/profile mutation, arbitrary job reruns
+or server administration through chat in v1. Discussion is labeled discussion;
+it must not become an untracked authoritative buy/sell recommendation. New
+actionable advice must use the existing decision/fleet recording lifecycle,
+persisted with provenance and evaluation clocks before being surfaced, and
+clearly distinguished from explanation of an existing call. Analysis dispatch
+is a typed server-side capability after identity checks, not an unrestricted
+write connection or tool granted to the conversational model.
+
+Treat news, documents, URLs and message attachments as evidence, never system
+instructions. A linked recommendation ID is also checked for household ownership.
+Private data may only leave through the configured private channel, not model-
+selected recipients. Disable automatic mass mentions and unsolicited file exports.
+
+### Quiet notification policy
+
+Derive notifications from the **same canonical Inbox action/readiness services**
+as the website. No separate bot judgments or duplicate recommendation stream.
+The daily overview reads saved news, tenant-scoped active discovery research,
+the exact current trade plan, and holdings through the read-only chat retrieval
+boundary. The existing answer/independent-coverage team selects up to three
+useful points (100 words), not queue counts or empty-plan announcements. A
+ranking is not an executable recommendation. The brief distinguishes dated
+research and incomplete coverage from absence of a worthwhile update.
+Drafting is asynchronous and bounded; it cannot delay critical alerts. Durable
+unsent drafts are reused across retries, but a changed canonical action material
+fingerprint invalidates the draft before sending. Internal provenance is retained
+for follow-up reads without ID footers in visible chat. The default delivery
+time is 09:00 in the configured timezone. Persist delivery by
+binding and local date; intraday changes/restarts do not resend it. Wake-up sends
+only today's overview, not a backlog. Immediate chat pushes require an upstream
+critical Inbox severity. Background job failures use a separate `status.jobs`
+category delivered to the configured status channel (chat only if no status
+channel exists), respecting quiet hours and deduplicating the failure episode.
+They are explicitly unrelated to chat research; legacy combined job alerts are
+relabelled as moved, not falsely resolved. The task board uses current canonical
+knowledge readiness for annual follow-ups while preserving historical failure
+receipts. Urgent findings remain red; overdue paperwork alone is not an emergency.
+The transport does not author risk judgments.
+Research completion, green health checks, unchanged recommendations and noncritical
+missing year-end papers do not page. Self-evaluation results are accessible on
+request, not one ping per call.
+This quiet policy applies to unsolicited pushes. A fleet review explicitly
+requested in chat does deliver its progress and final result in that thread,
+including during quiet hours; avoid repeated mentions or unrelated channel pings.
+
+Deduplicate by household + canonical action ID + material version + event type.
+Re-check current action status before delivery; suppress expired, superseded or
+resolved queued alerts. An LLM may phrase the existing evidence but cannot change
+amounts, statuses or approve actions. Store the exact delivered text and source
+version. Quiet hours default to 22:00–08:00 Asia/Jerusalem (configurable); ordinary
+overviews wait. Critical alerts bypass quiet hours.
+Do not retry-ping unchanged failures; recovery edits/closes the original alert.
+Chat answers normally use 1–3 short sentences and address only the question;
+greetings never trigger capability menus. Detailed explanations remain available
+on request. Full citations are persisted; displayed provenance is compact.
+Delivered proactive chat notices join ordinary conversation history as untrusted
+assistant context, with the same redaction boundary as delivery. They remain
+tenant/binding-scoped, exclude status-channel content, and do not enter private
+thread history automatically or grant research/trade authority. The router
+distinguishes the user action Inbox from Argosy's research queue. Both reads
+carry filtered totals, returned counts and next-page metadata; summaries preserve
+item priority, blockers and dates without repeating giant plan artifacts. Named
+record reads restore full details; `actions/current_trade_plan` is available even
+when the canonical plan is assembled from ordinary/cooling proposals. Overview
+answers are compact, with explicit page coverage and no invented task ownership.
+Large named action/research records use bounded character continuations via
+`detail_offset`, redacting before slicing so page boundaries cannot expose a
+secret suffix. Detail pagination retains record identity and next offset; these
+are current reads, not a frozen cross-request snapshot.
+Authorized chat is acknowledged immediately by reaction where supported. One
+persisted message is edited through actual lookup stages and finally into the
+answer; delivery recovery reuses its ID. Prior assistant text is untrusted
+referent context, not authority for dispatch or evidence of facts. The existing
+router selects a cosmetic contextual emoji, replacing a neutral immediate receipt
+without a separate model call or per-question keyword rules. Entity identity is
+verified through a bounded, fixed-URL public issuer-directory lookup before a
+clarification; unavailable/absent identities remain unknown, never fabricated.
+Only true intent ambiguity requires the user. Compound reads may combine news,
+verdicts and recommendations for the same exact instrument; identity verification
+does not imply a new verdict or authority to execute. Typed instrument selectors
+must not be silently dropped. Market
+news reads include public NewsSignal sources plus tenant-owned research, never
+unowned private Discord signals, and never equate ingestion dates with publication.
+
+### Transport, persistence and recovery
+
+Use an outbound Discord Gateway connection with a maintained client library,
+REST for sending messages, heartbeat/reconnect/resume and rate-limit handling.
+No public port forwarding to the local backend. Normal unmentioned channel chat
+requires the Message Content intent; enable it deliberately for the private bot.
+Application commands/buttons must defer promptly before long model work; Discord
+requires initial interaction acknowledgement within 3 seconds. After token expiry,
+finish via a durable authorized-channel message instead of losing the result.
+Sources: [Gateway](https://docs.discord.com/developers/events/gateway),
+[interactions](https://docs.discord.com/developers/interactions/receiving-and-responding).
+
+Implement a separate `discord_advisor` supervised job/worker. The existing
+`discord_listener` is a disabled **passive research ingestion** service and stays
+separate, with separate configuration and credentials. Chat messages must not
+re-enter the research-prediction feed as supposedly independent alpha signals.
+
+Durable records (migration `0119_private_discord_advisor`):
+
+| Record | Required identity/state |
+|---|---|
+| `chat_bindings` | provider, guild/channel/user IDs, household user, enabled/read scope |
+| `chat_threads` | binding, Discord thread/reply ID, canonical recommendation ID/version |
+| `chat_turns` | unique inbound message ID, question, response, citations, timestamps, status/error |
+| `chat_analysis_requests` | unique inbound message/binding, normalized instrument/scope, canonical run ID, queued/running/terminal state, progress message/cursor, cancellation/retry lineage |
+| `chat_agent_progress` | request/run linkage, ordered agent start/completion/failure receipts and dedup key |
+| `notification_outbox` | unique semantic event key, version, destination binding, attempts, retry-after, sent message ID |
+| `chat_cursors` | binding/channel, last durable received message, gateway resume state |
+
+Durable outbox plus message-ID/nonce reconciliation handles a crash after sending
+but before acknowledgement. Do not promise exactly-once delivery from retries
+alone. Persist queued turns before model calls, serialize each conversation,
+bound concurrency/retries, and reconcile missed allowed-channel messages after
+invalid gateway resume. On wake, catch up while suppressing stale alert backlog.
+Authentication failure is not endlessly retried: show a clear repair instruction
+in the main-page real-error status. Unconfigured/disabled bot is not a red error.
+
+The PC must be awake and online for local Argosy chat or pushes. Discord stores
+messages while it sleeps, but a local bot cannot immediately answer or report its
+own total outage. An always-on relay/host would be a separate deployment decision.
+Localhost dashboard links work only on this PC: from a phone, answer fully in
+Discord; add UI links only once an authenticated private remote-access path exists.
+Never make the currently local API public just to make a link work.
+
+### Delivery sequence and acceptance
+
+#### Fable 5.1 review resolutions (2026-09-19)
+
+The external design review (`scratchpad/discord_advisor/design-review.md`) found
+five underspecified boundaries. Implementation must satisfy these contracts:
+
+- Persist `execution_policy=analysis_only` when opening a chat-originated decision
+  run. Enforce it at automatic approval, execution and fill/approval sinks, not
+  merely in the chat prompt. Use the full canonical T2 ticker fleet, including
+  standing positions/constraints and the discovery lifecycle for unowned names.
+  T2 ticker review is distinct from plan-amendment worker sizing; chat never
+  regenerates the plan. Negative tests must prove autonomous tiers cannot approve,
+  execute or record fills for these runs.
+- Use a separate SQLite `mode=ro` / `query_only` retrieval engine with bounded
+  busy timeout. Only typed chat persistence and analysis dispatch use RW sessions.
+  The worker is an in-process supervised asyncio job, not another OS process.
+- Agent progress must project durable, run-correlated receipts (add persisted
+  progress records where existing receipts do not cover starts/completions).
+  Coalesce progress edits to at most one per 10 seconds, heartbeat at 60 seconds.
+- Default bounds: 3 instruments per request, 1 concurrent fleet per household;
+  additional requests queue. Existing budget/authentication controls remain.
+- Preserve the dirty worktree. Prefer new modules under
+  `argosy/services/chat_advisor/` and `argosy/transport/discord_advisor/`;
+  shared-file changes are narrow/additive. Do not refactor the mutating advisor
+  HTTP endpoint as part of this delivery.
+
+One authorization function handles all inbound events: reject DMs, bots,
+webhooks, foreign users/channels and unauthorized threads before reads/writes or
+model calls. One outbound filter covers every send/edit, redacting unnecessary
+identifiers, secret-like tokens and local paths; deterministic chunks retain
+citations within Discord's 2000-character limit. Persist send nonces before
+sending, use enforced nonce deduplication and reconcile after crashes; this does
+not promise unlimited exactly-once delivery. Material versions hash canonical
+action ID, status, amount, currency, expiry, rationale version and blockers.
+Compute cost/track-record statistics in canonical services, never in the LLM.
+Defer slash-command breadth, digest/preferences UI and multi-person onboarding;
+natural chat, configuration-based quiet hours and clear connection health ship
+first. Live Discord acceptance requires actual credentials and message IDs;
+database tests and model-only probes do not prove Discord delivery.
+
+1. Extract read-only conversation/retrieval service; test tenant isolation,
+   secret exclusion, malicious research text and accidental write denial.
+   Add a separate allowlisted analysis dispatcher with no execution authority;
+   test that reading stats or hostile source text cannot invoke it.
+2. Add durable chat/outbox records and private Discord identity bindings. Test
+   natural replies, thread context, restart recovery, duplicate messages and
+   both unauthorized users and unauthorized channels before enabling pushes.
+3. Connect canonical Inbox events, quiet hours, dedup/material-version updates,
+   current-state checks and homepage connectivity status.
+4. With the user's test server/bot, prove live: one real recommendation alert,
+   reply “why this and not X?” with correct cited comparisons, reconnect/reply
+   with context retained, reject an unauthorized account, suppress duplicate and
+   superseded alerts, and show that no approval/fill/order/profile changed.
+5. Ask about an unowned ticker in ordinary language: a real fleet run starts,
+   named-agent progress reflects durable run events, and the final verdict's
+   run/record IDs and outcome clocks match the website. Prove failure/cancel
+   reporting, no duplicate launch after reconnect, and follow-up context.
+6. Ask for subscription counts, a named source's highlights and system health:
+   compare answers with actual DB/API results and cited source items, including
+   missing transcripts and failed ingestion. Prove these reads launch no fleet.
+
+Setup needed from user: private server/channel ID, own Discord user ID, and bot
+token stored locally via protected credential setup (never committed,
+logged or pasted into a public channel). Grant only the necessary channel read,
+history/send/thread permissions, never Administrator. Application ID is optional.
+`argosy discord-advisor setup` stores the token through the OS keyring and the
+non-secret identity binding in local configuration. The main page and
+`GET /health/discord-advisor` distinguish unconfigured, connected, reconnecting and
+actionable errors. Conversation router/answer roles force an empty tool set and
+strict empty MCP configuration even if general fleet isolation is disabled.
 
 *End of Argosy SDD v0.1.*

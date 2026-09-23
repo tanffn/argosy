@@ -27,6 +27,37 @@ def test_price_summary_reduces_eod_bars() -> None:
     assert _price_summary([{"no_close": 1}]) == {}
 
 
+def test_news_outage_uses_existing_yahoo_fallback_and_normalizes_sec_symbol(monkeypatch):
+    from datetime import datetime
+    from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
+    from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+    from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
+    from argosy.services.stock_decision import fetchers
+    from argosy.orchestrator.loops.thesis_monitor import default_gather_feeds
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("Finnhub not configured")
+
+    async def prices(*args, **kwargs):
+        return {"BRK-B": [{"Close": 500}]}
+
+    seen = []
+
+    async def insider(self, symbol, **kwargs):
+        seen.append(symbol)
+        return []
+
+    monkeypatch.setattr(FinnhubAdapter, "get_company_news", unavailable)
+    monkeypatch.setattr(YFinanceAdapter, "get_eod_prices", prices)
+    monkeypatch.setattr(SecForm4Adapter, "get_recent_form4_for_ticker", insider)
+    monkeypatch.setattr(fetchers, "_yahoo_news", lambda *a, **kw: "source=yahoo; 2026-09-11: Company update")
+    bundle = default_gather_feeds({"ticker": "BRK/B"}, now=datetime.now(UTC))
+    assert bundle["news"][0]["source"] == "yahoo"
+    assert "Company update" in bundle["news"][0]["headline"]
+    assert bundle["feed_errors"] == []
+    assert seen == ["BRK-B"]
+
+
 class _FakeSession:
     def add(self, row) -> None:
         pass
@@ -135,6 +166,18 @@ async def test_only_thesis_changes_escalate() -> None:
     assert summary["escalated"] == 1  # only O (broken); NVDA intact is skipped
     assert summary["flags_written"] == 1
     assert write_calls == ["O"]
+
+
+@pytest.mark.asyncio
+async def test_missing_assessment_and_feed_failure_are_not_green():
+    from argosy.services.jobs.summary_status import derive_run_status
+    loop = _loop(holdings=[{"ticker": "A"}, {"ticker": "B"}],
+                 assessments=[HoldingThesisAssessment(ticker="A")], write_calls=[])
+    loop._gather_fn = lambda h, **kwargs: {**h, "feed_errors": ["company news unavailable"]}
+    summary = await loop.tick()
+    assert derive_run_status(summary)[0] == "error"
+    assert "B: model returned no assessment" in summary["errors"]
+    assert "A: company news unavailable" in summary["errors"]
 
 
 @pytest.mark.asyncio

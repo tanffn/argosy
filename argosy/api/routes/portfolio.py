@@ -2533,9 +2533,14 @@ def get_deploy_cash(
                 user_id=user_id,
                 error=str(exc)[:120],
             )
+    _has_pending_research = False
+    if doc is not None and include_order_sheet:
+        from argosy.services.allocation_research import pending_tasks
+
+        _has_pending_research = bool(pending_tasks(db, user_id))
     if (
         doc is not None
-        and (float(amount or 0.0) > 0 or _has_actionable_recommendations)
+        and (float(amount or 0.0) > 0 or _has_actionable_recommendations or _has_pending_research)
         and get_settings().deployment_author_enabled
     ):
         try:
@@ -2578,19 +2583,22 @@ def get_deploy_cash(
                 _key = (symbol.strip().upper(), round(float(gross_usd), 2))
                 if _key in _sale_resolutions:
                     return _sale_resolutions[_key]
-                _facts, _failures = collect_execution_facts([_key[0]], doc=doc)
-                if _failures or _key[0] not in _facts:
-                    raise ValueError(
-                        f"{_key[0]} live sale facts unavailable: "
-                        + "; ".join(_failures.values())
-                    )
-                _sale_execution_facts[_key[0]] = _facts[_key[0]]
+                # A revised amount is priced against the same run-scoped
+                # quote, not a moving target. Final projection reuses it too.
+                if _key[0] not in _sale_execution_facts:
+                    _facts, _failures = collect_execution_facts([_key[0]], doc=doc)
+                    if _failures or _key[0] not in _facts:
+                        raise ValueError(
+                            f"{_key[0]} live sale facts unavailable: "
+                            + "; ".join(_failures.values())
+                        )
+                    _sale_execution_facts[_key[0]] = _facts[_key[0]]
                 _resolved = resolve_authoritative_sale(
                     db,
                     user_id=user_id,
                     symbol=_key[0],
                     gross_proceeds_usd=_key[1],
-                    current_price_usd=_facts[_key[0]].evidence.price_usd,
+                    current_price_usd=_sale_execution_facts[_key[0]].evidence.price_usd,
                 )
                 _sale_resolutions[_key] = _resolved
                 return _resolved
@@ -2610,11 +2618,33 @@ def get_deploy_cash(
 
             _team = None
             _team_history = []
+            _core_research_recovery = False
+            _recovery_symbols = set()
+            _recovery_objections = []
 
             def _verify_with_team(proposal, pkt):
                 """Run arithmetic first, then bounce stop-level judgment
                 objections to the same author for one coherent voice."""
-                nonlocal _team
+                nonlocal _team, _core_research_recovery
+                if proposal.research_separation_blocker:
+                    return _GateReport(status=_GateStatus.BLOCK, failures=[_GateFailure(
+                        code="core_research_not_independent",
+                        detail=proposal.research_separation_blocker, severity="block",
+                    )])
+                if _core_research_recovery and not proposal.pending_research:
+                    return _GateReport(status=_GateStatus.BLOCK, failures=[_GateFailure(
+                        code="core_research_recovery_incomplete",
+                        detail="Recovery must retain typed pending research or explicitly report why core cannot be separated.",
+                        severity="block",
+                    )])
+                pending_symbols = {s for item in proposal.pending_research for s in item.tickers}
+                missing_research = _recovery_symbols - pending_symbols
+                if missing_research:
+                    return _GateReport(status=_GateStatus.BLOCK, failures=[_GateFailure(
+                        code="core_research_coverage_missing",
+                        detail="Recovery dropped disputed alternatives: " + ", ".join(sorted(missing_research)),
+                        severity="block",
+                    )])
                 report = _verify_allocation_proposal(
                     proposal,
                     pkt,
@@ -2647,6 +2677,11 @@ def get_deploy_cash(
                     )
                     _review_execution_facts.update(live_facts)
                 team_packet = {**pkt}
+                if _core_research_recovery:
+                    # Earlier independent objections are evidence, not the
+                    # current author's rationale. Preserve portfolio-wide
+                    # concerns as well as named alternatives for fresh review.
+                    team_packet["recovery_review_objections"] = _recovery_objections
                 instrument_facts = [
                     dict(item) for item in (pkt.get("instrument_facts") or [])
                 ]
@@ -2700,6 +2735,32 @@ def get_deploy_cash(
                     return report
                 failures = []
                 persistent_disagreement = len(_team_history) >= 2
+                # One bounded opportunity to author an independent core/reserve
+                # decision. No old line is promoted or removed by code; all
+                # lenses must freshly agree with the replacement.
+                separation_revision = (
+                    len(_team_history) == 2 and not proposal.pending_research
+                )
+                if separation_revision:
+                    _core_research_recovery = True
+                    for item in _team.material_flagged:
+                        _recovery_objections.append(item)
+                        symbol = str(item.get("symbol") or "").strip().upper()
+                        if symbol and symbol != "PORTFOLIO":
+                            _recovery_symbols.add(symbol)
+                        for objection in item.get("objections", []):
+                            if objection.get("impact", "advisory_only") == "advisory_only" and objection.get("severity") != "block":
+                                continue
+                            alternative = str(objection.get("recommended_ticker") or "").strip().upper()
+                            if alternative and alternative != "PORTFOLIO":
+                                _recovery_symbols.add(alternative)
+                    failures.append(_GateFailure(
+                        code="core_research_recovery", severity="revision",
+                        detail="Enter independent-core/pending-research recovery, not another moonshot selection attempt. "
+                        "Re-author core funding with a shared research reserve and typed pending issues, "
+                        "or set research_separation_blocker if shared dependencies prevent it. "
+                        "Preserve these disputed alternatives in pending_research: " + ", ".join(sorted(_recovery_symbols)),
+                    ))
                 for item in _team.material_flagged:
                     concerns = []
                     for objection in item.get("objections", []):
@@ -2732,21 +2793,27 @@ def get_deploy_cash(
                             detail=(
                                 (
                                     f"{item['symbol']} still has a material team "
-                                    "disagreement after re-review; the run must stop: "
+                                    "disagreement after re-review: "
                                     if persistent_disagreement
                                     else f"{item['symbol']} must be re-authored: "
                                 )
                                 + " | ".join(concerns)
+                                + (
+                                    " Re-author an independent core allocation with explicit "
+                                    "pending_research and conserved reserve if defensible. "
+                                    "Otherwise retain the objection; no partial approval."
+                                    if separation_revision else ""
+                                )
                             ),
                             severity=(
-                                "block" if persistent_disagreement else "revision"
+                                "block" if persistent_disagreement and not separation_revision else "revision"
                             ),
                         )
                     )
                 return _GateReport(
                     status=(
                         _GateStatus.BLOCK
-                        if persistent_disagreement
+                        if persistent_disagreement and not separation_revision
                         else _GateStatus.REVISION_REQUIRED
                     ),
                     failures=failures,
@@ -2934,7 +3001,9 @@ def get_deploy_cash(
                                     "staged_sell_policies"
                                 ),
                                 horizon_years=(horizon_years_min, horizon_years_max),
-                                review_resolution=build_review_resolution(_team_history),
+                                review_resolution=build_review_resolution(
+                                    _team_history, _proposal.pending_research,
+                                ),
                             )
                             dto.order_sheet = OrderSheetArtifactDTO(
                                 status=("validated" if _built.validation.valid else "invalid"),

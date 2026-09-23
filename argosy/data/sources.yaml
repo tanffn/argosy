@@ -27,11 +27,11 @@ sources:
     kind: "official"
 
   israeli_tax_authority_pension_exemption_2025:
-    title: "Israel Tax Authority — Pension exemption procedure (rights-fixation regime)"
-    url: "https://www.gov.il/BlobFolder/policy/procedures-270125/he/IncomeTax_procedures-270125.pdf"
-    as_of: "2025-01"
+    title: "Israel Tax Authority — 2026 qualifying-pension exemption guidance (legacy source ID)"
+    url: "https://www.gov.il/BlobFolder/dynamiccollectorresultitem/employers-info-020226-1/he/IncomeTax_employers-info-020226-1.pdf"
+    as_of: "2026-02"
     kind: "official"
-    notes: "Rights-fixation regime replaces flat 35%; 57% in 2025, phased increases by 2027-2030."
+    notes: "Maximum fraction of qualifying ceiling, not whole annuity: 57%2025, 57.5%2026, 62.5%2027, 67%2028 onward. Personal rights/grants affect usable exemption. Official publication also inspected via Malam Payroll mirror ptormas2026.pdf on 2026-09-12."
 
   hishtalmut_6yr_rule:
     title: "Israeli Income Tax Ordinance §3(e) — Hishtalmut tax-free window"
@@ -122,17 +122,17 @@ sources:
   # ─── US tax / estate ──────────────────────────────────────────────────
   us_nra_estate_tax:
     title: "IRS — Non-Resident-Alien estate tax on US-situs assets"
-    url: "https://www.irs.gov/businesses/small-businesses-self-employed/estate-tax-for-nonresidents-not-citizens-of-the-united-states"
-    as_of: "2024"
+    url: "https://www.irs.gov/instructions/i706na"
+    as_of: "2026-09"
     kind: "official"
-    notes: "$60K exemption for non-US-persons. Above that, 18-40% federal estate tax on US-situs assets including US-domiciled stocks/ETFs. UCITS-domiciled funds are non-US-situs."
+    notes: "NRNC regime depends on estate-tax domicile. Generally $13K unified credit, not $60K deduction from the tax base; $60K filing threshold includes relevant prior gifts. Value US-situs assets at death-date FMV. Foreign corporate shares generally non-US-situs; verify structure."
 
   us_israel_tax_treaty:
-    title: "US-Israel Income Tax Treaty (1995, in force)"
-    url: "https://www.irs.gov/businesses/international-businesses/israel-tax-treaty-documents"
-    as_of: "1995"
+    title: "US-Israel income tax convention and protocols — operative dividend Article 12"
+    url: "https://www.irs.gov/pub/irs-trty/israel.pdf"
+    as_of: "2026-09"
     kind: "official"
-    notes: "US-source dividend withholding for Israeli residents capped at 15%; reciprocal foreign-tax-credit mechanism applies in Israeli tax."
+    notes: "Eligible Israeli individual ordinary portfolio dividends: general ceiling25% under Article12(2)(a), not15% from superseded introductory correspondence. Exceptions and usable foreign-tax credits require their own conditions; actual broker withholding is separate evidence."
 
   # ─── Derived marker (computed values) ─────────────────────────────────
   argosy_derived:

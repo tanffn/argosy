@@ -44,6 +44,14 @@ def _null_session_factory() -> _NullSession:
     return _NullSession()
 
 
+@pytest.fixture(autouse=True)
+def isolate_receipt_recovery_in_scheduler_unit_tests(monkeypatch):
+    # This module supplies a fake session to test scheduler result transport.
+    # Actual receipt recovery uses real DB tests in test_manual_fill_capture.
+    monkeypatch.setattr("argosy.execution.fill_book.recover_fill_applications",
+                        lambda session, **kw: {"examined": 0, "applied": 0})
+
+
 def _wire(loop: SnapshotRefreshJob) -> tuple[JobRegistry, RegisteredScheduler]:
     registry = JobRegistry()
     scheduler = RegisteredScheduler(

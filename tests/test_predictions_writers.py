@@ -67,7 +67,7 @@ def sync_session(tmp_path):
     here so the writers' idempotency contract exercises the same DB
     constraint it would in production.
 
-    We also seed ``evaluation_method_registry`` with the five v1 methods
+    We also seed ``evaluation_method_registry`` with the supported v1 methods
     so the FK on ``predictions.evaluation_method`` accepts the writer's
     chosen method name (the registry seed normally ships in migration
     0051).
@@ -105,6 +105,8 @@ def sync_session(tmp_path):
             ("target_stop", "target_stop"),
             ("fixed_lookahead_7d", "fixed_lookahead"),
             ("fixed_lookahead_30d", "fixed_lookahead"),
+            ("fixed_lookahead_180d", "fixed_lookahead"),
+            ("fixed_lookahead_365d", "fixed_lookahead"),
             ("multi_basket_weighted", "multi_basket"),
             ("unparseable", "unparseable"),
         ):
@@ -763,14 +765,48 @@ def test_write_alpha_report_prediction_invalid_kind_raises(sync_session):
         )
 
 
-def test_write_alpha_report_prediction_default_timeframe_caps_at_30d(sync_session):
-    """timeframe_days=None falls back to 180; evaluator window caps at 30d
-    (spec §5.5 long-horizon cap)."""
+def test_write_alpha_report_prediction_default_timeframe_preserves_180d(sync_session):
+    """An explicitly long thesis must not be graded at a one-month checkpoint."""
     row = write_alpha_report_prediction(
         sync_session, USER, analysis_id=1, news_signal_id=1,
         ticker="X", direction="long", kind="pick", event_at=EVENT_AT,
     )
     sync_session.commit()
     assert row.timeframe_days == DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT
-    assert row.evaluation_method == "fixed_lookahead_30d"
-    assert _due_at_aware(row) == EVENT_AT + timedelta(days=LONG_HORIZON_CAP_DAYS)
+    assert row.evaluation_method == "fixed_lookahead_180d"
+    assert _due_at_aware(row) == EVENT_AT + timedelta(days=DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT)
+
+
+@pytest.mark.parametrize("horizon", [7, 30, 180, 365])
+def test_alpha_writer_horizon_and_real_due_selection(sync_session, horizon):
+    from argosy.services.predictions.evaluator import find_due_predictions
+    row = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=900, news_signal_id=1,
+        ticker="NVDA", direction="long", kind="signal", event_at=EVENT_AT,
+        timeframe_days=horizon,
+    )
+    sync_session.commit()
+    due = EVENT_AT + timedelta(days=horizon)
+    assert row.evaluation_method == f"fixed_lookahead_{horizon}d"
+    assert _due_at_aware(row) == due
+    assert not find_due_predictions(sync_session, now=due - timedelta(seconds=1))
+    assert [p.id for p in find_due_predictions(sync_session, now=due)] == [row.id]
+
+
+def test_alpha_retry_does_not_silently_rewrite_legacy_scoring_clock(sync_session):
+    row = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=901, news_signal_id=1,
+        ticker="NVDA", direction="long", kind="signal", event_at=EVENT_AT,
+        timeframe_days=180,
+    )
+    row.evaluation_method = "fixed_lookahead_30d"
+    row.evaluation_due_at = EVENT_AT + timedelta(days=30)
+    sync_session.commit()
+    retry = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=901, news_signal_id=1,
+        ticker="NVDA", direction="long", kind="signal", event_at=EVENT_AT,
+        timeframe_days=180,
+    )
+    assert retry.id == row.id
+    assert retry.evaluation_method == "fixed_lookahead_30d"
+    assert _due_at_aware(retry) == EVENT_AT + timedelta(days=30)

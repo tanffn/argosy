@@ -71,12 +71,28 @@ def test_market_read_neutral_when_no_signals(session):
     assert read.summary == "no material macro signal"
 
 
+def test_expired_vix_does_not_supply_a_current_risk_off_signal(session):
+    from datetime import UTC, datetime, timedelta
+    from argosy.state.models import MacroCache
+
+    now = datetime.now(UTC)
+    row = MacroCache(provider="test", key="vix", payload_json='{"value": 45}',
+                     retrieved_at=now-timedelta(days=7), expires_at=now-timedelta(days=6))
+    session.add(row)
+    session.commit()
+    assert build_market_read(session, user_id="ariel", now=now).vix is None
+    row.retrieved_at = now-timedelta(minutes=5)
+    row.expires_at = now+timedelta(hours=1)
+    session.commit()
+    assert build_market_read(session, user_id="ariel", now=now).vix == 45
+
+
 def test_market_read_risk_off_on_bearish_tone(session):
     from datetime import datetime, timezone
 
     ns = NewsSignal(
-        source="alpha_report", source_ref="ar-1",
-        received_at=datetime.now(timezone.utc), sentiment="bearish",
+        source="discord", source_ref="ar-1",
+        received_at=datetime.now(timezone.utc), sentiment="negative",
         source_trust="high", evidence_excerpt="x", raw_text="x",
     )
     session.add(ns)
@@ -99,10 +115,16 @@ def test_market_read_risk_off_on_bearish_tone(session):
         )
     )
     session.commit()
-    read = build_market_read(session, user_id="ariel")
+    read = build_market_read(session, user_id="ariel", now=datetime(2026, 6, 22, 19, tzinfo=timezone.utc))
     assert read.risk_off is True
     assert read.macro_tone == "bearish"
     assert "AI cycle" in read.key_themes
+    stale = build_market_read(session, user_id="ariel", now=datetime(2026, 9, 11, tzinfo=timezone.utc))
+    assert stale.macro_tone is None
+    assert stale.risk_off is False
+    assert stale.ticker_signals == []
+    assert stale.freshness_issues
+    assert stale.source_refs[0]["excluded"] == "stale_or_undated"
 
 
 def test_market_read_collects_high_materiality_news(session):
@@ -110,11 +132,11 @@ def test_market_read_collects_high_materiality_news(session):
 
     session.add(
         NewsSignal(
-            source="finnhub",
+            source="rss",
             source_ref="abc-1",
             received_at=datetime.now(timezone.utc),
             parsed_tickers=json.dumps(["NVDA"]),
-            sentiment="bearish",
+            sentiment="negative",
             source_trust="high",
             evidence_excerpt="guidance cut",
             raw_text="full text",

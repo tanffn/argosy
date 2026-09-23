@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from argosy.state.models import Fill, Prediction, PredictionOutcome, Proposal
+from argosy.execution.fill_evidence import reconcile_fill_evidence
+from argosy.services.predictions.outcomes import authoritative_outcomes
+from argosy.state.models import Fill, Prediction, Proposal
 
 
 class OrderLineAudit(BaseModel):
@@ -23,11 +25,13 @@ class OrderLineAudit(BaseModel):
     filled_shares: float = 0
     average_fill_price_usd: float | None = None
     adverse_slippage_bps: float | None = None
-    commission_usd: float = 0
+    commission_usd: float | None = None
     prediction_id: int | None = None
     expectation_due_at: str | None = None
     outcome_kind: str | None = None
     outcome_pnl_pct: float | None = None
+    paper_fill_count: int = 0
+    receipt_errors: list[str] = Field(default_factory=list)
 
 
 class OrderSheetAudit(BaseModel):
@@ -60,25 +64,35 @@ def audit_order_sheet(
             select(Prediction).where(
                 Prediction.user_id == user_id,
                 Prediction.source == "signal_stream:order_sheet",
+                Prediction.evaluation_method == "order_sheet_due_date_v1",
                 Prediction.message_id.like(f"%{fingerprint}.%"),
             )
         )
         .scalars()
         .all()
     )
-    prediction_by_proposal: dict[int, Prediction] = {}
+    prediction_by_line: dict[tuple[str, str], Prediction] = {}
     for prediction in prediction_rows:
         try:
-            proposal_id = int(json.loads(prediction.source_ref)["proposal_id"])
+            ref = json.loads(prediction.source_ref)
+            if ref["order_sheet_fingerprint"] != fingerprint:
+                continue
+            action = ref["action"]
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        prediction_by_proposal[proposal_id] = prediction
+        prediction_by_line[(prediction.ticker, action)] = prediction
 
     lines: list[OrderLineAudit] = []
+    selected_outcomes = authoritative_outcomes(session, prediction_rows)
     scored = 0
     for proposal in proposals:
         try:
             payload: dict[str, Any] = json.loads(proposal.expected_impact_json)
+            if not isinstance(payload, dict) or payload.get("order_sheet_fingerprint") != fingerprint:
+                continue
+        except (TypeError, ValueError):
+            continue
+        try:
             order_line = payload["order_line"]
             expected_price = float(order_line["evidence"]["price_usd"])
             expected_shares = float(order_line["shares"])
@@ -90,23 +104,23 @@ def audit_order_sheet(
             .scalars()
             .all()
         )
-        filled_shares = sum(float(row.quantity) for row in fills)
-        fill_notional = sum(float(row.quantity) * float(row.price) for row in fills)
-        average_fill = fill_notional / filled_shares if filled_shares > 0 else None
+        evidence = reconcile_fill_evidence(proposal, fills, target_quantity=expected_shares)
+        filled_shares = float(evidence.quantity)
+        average_fill = evidence.vwap if evidence.price_currency == "USD" else None
         adverse_bps = None
         if average_fill is not None and expected_price > 0:
             raw = (average_fill - expected_price) / expected_price * 10_000
             adverse_bps = raw if proposal.action == "buy" else -raw
-        prediction = prediction_by_proposal.get(proposal.id)
+        try:
+            action = payload["order_line"]["action"]
+        except (KeyError, TypeError):
+            action = None
+        prediction = prediction_by_line.get((proposal.ticker, action))
         outcome = None
         if prediction is not None:
-            outcome = session.execute(
-                select(PredictionOutcome)
-                .where(PredictionOutcome.prediction_id == prediction.id)
-                .order_by(PredictionOutcome.evaluated_at.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-        if outcome is not None:
+            selected = selected_outcomes.get(prediction.id)
+            outcome = selected[1] if selected is not None else None
+        if outcome is not None and outcome.outcome_kind != "unparseable":
             scored += 1
         lines.append(
             OrderLineAudit(
@@ -120,7 +134,9 @@ def audit_order_sheet(
                 filled_shares=filled_shares,
                 average_fill_price_usd=average_fill,
                 adverse_slippage_bps=adverse_bps,
-                commission_usd=sum(float(row.commission) for row in fills),
+                commission_usd=float(evidence.commission) if evidence.commission_confirmed and evidence.commission_currency == "USD" else None,
+                paper_fill_count=evidence.paper_count,
+                receipt_errors=evidence.errors,
                 prediction_id=prediction.id if prediction is not None else None,
                 expectation_due_at=(
                     prediction.evaluation_due_at.isoformat()
@@ -138,9 +154,9 @@ def audit_order_sheet(
     return OrderSheetAudit(
         fingerprint=fingerprint,
         lines=lines,
-        proposals=len(proposals),
+        proposals=len(lines),
         proposals_filled=sum(1 for row in lines if row.filled_shares > 0),
-        predictions_due=len(prediction_rows),
+        predictions_due=len(prediction_by_line),
         predictions_scored=scored,
     )
 

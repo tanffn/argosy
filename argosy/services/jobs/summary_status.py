@@ -23,6 +23,10 @@ and DERIVES the close status from it:
 * ``error`` — a non-empty top-level scalar or container. Several cadence
   loops deliberately catch an exception so the scheduler stays alive and
   return ``{"error": "..."}``; that is a failed tick, not a green run.
+* ``stages`` — an explicitly declared mapping of stage names to work
+  summaries or terminal status strings (``ok`` / ``skipped`` or a failure).
+  Summaries are recursively evaluated by this same contract. Unrelated nested
+  business payloads are not inspected for incidental error-like fields.
 * any of the count keys in :data:`_FAILURE_COUNT_KEYS` — int ``> 0``
   (``failures`` / ``failed`` / ``failure_count`` / ``error_count`` /
   ``failed_streams`` / ``streams_failed`` / ``failed_count``).
@@ -112,6 +116,23 @@ def derive_run_status(summary: Any) -> tuple[str, str | None]:
     top = summary.get("status")
     if isinstance(top, str) and top.lower() in _FAILED_STATUS_STRINGS:
         return FAILURE_STATUS, f"summary.status={top!r}"
+
+    if "stages" in summary:
+        stages = summary["stages"]
+        if not isinstance(stages, dict):
+            return FAILURE_STATUS, "summary.stages must be a mapping"
+        for name, stage in stages.items():
+            if isinstance(stage, str):
+                terminal = stage.strip().lower()
+                if terminal in {"ok", "skipped"}:
+                    continue
+                # Unknown/in-progress states do not prove finished work.
+                return FAILURE_STATUS, f"stage {name!r}: status={stage!r}"
+            if not isinstance(stage, dict):
+                return FAILURE_STATUS, f"stage {name!r} must be a work summary"
+            status, reason = derive_run_status(stage)
+            if status != OK_STATUS:
+                return status, f"stage {name!r}: {reason}"
 
     # 2/4. Integer failure counts.
     for key in _FAILURE_COUNT_KEYS:

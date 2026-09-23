@@ -37,6 +37,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import select
 
+from argosy.orchestrator.loops.base import NonRetryableJobError
 from argosy.services.discord_listener import DiscordCreds
 from argosy.services.jobs import JobRegistry
 from argosy.services.jobs.discord_listener_job import (
@@ -45,7 +46,6 @@ from argosy.services.jobs.discord_listener_job import (
 )
 from argosy.state import db as db_mod
 from argosy.state.models import JobRun
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -180,10 +180,8 @@ class _FakeClose(Exception):
 
 
 @pytest.mark.asyncio
-async def test_run_terminal_4004_clean_exit_no_restart() -> None:
-    """A 4004 (auth failed) close is NON-recoverable: run() must NOT re-raise
-    (which would crash→restart→reconnect-storm and get the token blocked). It
-    stops cleanly with exit_intent='clean' so the supervisor does not restart."""
+async def test_run_terminal_4004_explicit_failure_no_restart() -> None:
+    """A terminal failure must be visible, without supervisor retries."""
     creds = _make_creds()
     sf = _make_session_factory()
 
@@ -191,9 +189,8 @@ async def test_run_terminal_4004_clean_exit_no_restart() -> None:
         raise _FakeClose(4004)
 
     job = DiscordListenerJob(creds, sf, listener_fn=fake_listener)
-    await job.run()  # must NOT raise
-
-    assert job.exit_intent == "clean"
+    with pytest.raises(NonRetryableJobError, match="4004"):
+        await job.run()
     assert job.connection_status() == "stopped"
 
 
@@ -207,8 +204,8 @@ async def test_run_terminal_4004_detected_from_message_text() -> None:
         raise _FakeClose(4004, via_attr=False)
 
     job = DiscordListenerJob(creds, sf, listener_fn=fake_listener)
-    await job.run()
-    assert job.exit_intent == "clean"
+    with pytest.raises(NonRetryableJobError, match="4004"):
+        await job.run()
 
 
 @pytest.mark.asyncio
@@ -433,4 +430,24 @@ async def test_supervisor_missing_creds_records_ok_no_restart(
         assert len(rows) == 1
         assert rows[0].status == "ok"
 
+    await reg.stop_supervisors()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_terminal_auth_records_error_without_retry(engine):
+    calls = []
+    async def rejected(*args, **kwargs):
+        calls.append(1)
+        raise _FakeClose(4004)
+    job = DiscordListenerJob(_make_creds(), _make_session_factory(), listener_fn=rejected)
+    reg = JobRegistry()
+    reg.register(job=job, metadata=discord_listener_metadata())
+    await reg.start_supervisors()
+    await asyncio.wait_for(reg._supervisor_tasks["discord_listener"], 3)
+    async with db_mod.get_session() as session:
+        rows = (await session.execute(select(JobRun).where(JobRun.job_name == "discord_listener"))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].status == "error"
+        assert "4004" in rows[0].error_message
+    assert len(calls) == 1
     await reg.stop_supervisors()

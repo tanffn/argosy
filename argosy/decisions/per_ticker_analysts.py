@@ -40,7 +40,7 @@ not produce; deferred to Phase 2.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -52,6 +52,7 @@ from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
 from argosy.agents.fx_analyst import FXAnalystAgent
 from argosy.agents.macro_analyst import MacroAnalystAgent
 from argosy.agents.news_analyst import NewsAnalystAgent
+from argosy.agents.remediation import RemediationRequest
 from argosy.agents.sentiment_analyst import SentimentAnalystAgent
 from argosy.agents.technical_analyst import TechnicalAnalystAgent
 from argosy.logging import get_logger
@@ -156,10 +157,12 @@ class PerTickerAnalystsResult:
     reports: list[AgentReport]
     succeeded_roles: list[str]
     skipped_roles: list[tuple[str, str]]  # (role, reason)
+    unresolved_remediations: list[RemediationRequest] = field(default_factory=list)
 
 
 async def open_decision_run_for_consult(
     *, user_id: str, ticker: str, tier_value: str, started_at: datetime | None = None,
+    execution_policy: str = "normal",
 ) -> int:
     """Open a fresh ``decision_runs`` row early (before the per-ticker
     analyst pass) so the analyst reports + downstream phase rows all
@@ -175,6 +178,7 @@ async def open_decision_run_for_consult(
             user_id=user_id,
             ticker=ticker,
             tier=tier_value,
+            execution_policy=execution_policy,
             started_at=started_at,
             status="running",
         )
@@ -209,12 +213,27 @@ async def close_decision_run_blocked(
     )
 
 
+async def close_decision_run_from_chat(
+    *, decision_run_id: int, user_id: str, status: Literal["cancelled", "failed"],
+    finished_at: datetime | None = None,
+) -> None:
+    """Tenant-checked terminal close for interrupted chat-owned analysis."""
+    finished_at = finished_at or datetime.now(timezone.utc)
+    async with db_mod.get_session() as session:
+        row = await session.get(DecisionRun, decision_run_id)
+        if row is None or row.user_id != user_id:
+            return
+        if row.status == "running":
+            row.finished_at = finished_at
+            row.status = status
+            await session.commit()
 async def run_per_ticker_analysts(
     *,
     user_id: str,
     ticker: str,
     decision_run_id: int,
     mode: ConsultMode = "long_hold",
+    review_context: str = "",
 ) -> PerTickerAnalystsResult:
     """Run the per-ticker analyst fleet on ``ticker`` in parallel.
 
@@ -283,17 +302,19 @@ async def run_per_ticker_analysts(
         if role not in selected_roles:
             return  # role excluded by mode (e.g. long_hold skips fx + technical)
         payload = payloads[payload_key]
-        if not payload:
+        if not payload and not (role in {"news", "fundamentals"} and review_context):
             skipped_empty_payload.append((role, f"empty_payload (no {payload_key} data)"))
             return
         runnable.append((role, coro_factory()))
 
     _maybe("fundamentals", "fundamentals",
-           lambda: _run_fundamentals(user_id, tickers, payloads["fundamentals"]))
+           lambda: _run_fundamentals(user_id, tickers, payloads["fundamentals"],
+                                    **({"review_context": review_context} if review_context else {})))
     _maybe("technical", "indicators",
            lambda: _run_technical(user_id, tickers, payloads["indicators"]))
     _maybe("news", "news",
-           lambda: _run_news(user_id, tickers, payloads["news"]))
+           lambda: _run_news(user_id, tickers, payloads["news"], mode=mode,
+                             **({"review_context": review_context} if review_context else {})))
     _maybe("sentiment", "social",
            lambda: _run_sentiment(user_id, tickers, payloads["social"]))
     _maybe("macro", "macro",
@@ -418,12 +439,14 @@ async def run_per_ticker_analysts(
         runner_map = {
             "fundamentals": lambda: _run_fundamentals(
                 user_id, [ticker], payloads["fundamentals"],
+                **({"review_context": review_context} if review_context else {}),
             ),
             "technical": lambda: _run_technical(
                 user_id, [ticker], payloads["indicators"],
             ),
             "news": lambda: _run_news(
-                user_id, [ticker], payloads["news"],
+                user_id, [ticker], payloads["news"], mode=mode,
+                **({"review_context": review_context} if review_context else {}),
             ),
             "sentiment": lambda: _run_sentiment(
                 user_id, [ticker], payloads["social"],
@@ -478,6 +501,7 @@ async def run_per_ticker_analysts(
         reports=surviving,
         succeeded_roles=succeeded_roles,
         skipped_roles=skipped_roles,
+        unresolved_remediations=unresolved_remediations,
     )
 
 
@@ -708,10 +732,12 @@ async def _run_analyst_reliably(make_agent, /, **inputs: Any) -> AgentReport:
 
 async def _run_fundamentals(
     user_id: str, tickers: list[str], payload: dict[str, dict[str, Any]],
+    *, review_context: str = "",
 ) -> AgentReport:
     return await _run_analyst_reliably(
         lambda: FundamentalsAnalystAgent(user_id=user_id),
         tickers=tickers, fundamentals_payload=payload,
+        **({"research_question": review_context} if review_context else {}),
     )
 
 
@@ -726,10 +752,22 @@ async def _run_technical(
 
 async def _run_news(
     user_id: str, tickers: list[str], payload: dict[str, list[dict[str, Any]]],
+    *, mode: ConsultMode = "tactical_trade",
+    review_context: str = "",
 ) -> AgentReport:
+    as_of = datetime.now(timezone.utc).isoformat()
+    window = (
+        f"Long-term investment research as of {as_of}. Review the latest available "
+        "company-specific developments and dated upcoming catalysts. Preserve each "
+        "publication date; distinguish new developments from older background. "
+        "A quiet overnight window alone is not a data failure. Investigate stale "
+        "coverage and off-ticker stories; do not present them as fresh evidence."
+        if mode == "long_hold" else f"overnight, as of {as_of}"
+    )
     return await _run_analyst_reliably(
         lambda: NewsAnalystAgent(user_id=user_id),
-        tickers=tickers, news_payload=payload,
+        tickers=tickers, news_payload=payload, time_window_label=window,
+        **({"research_question": review_context} if review_context else {}),
     )
 
 
@@ -811,6 +849,7 @@ __all__ = [
     "TACTICAL_TRADE_ROLES",
     "TICKER_SPECIFIC_ROLES",
     "close_decision_run_blocked",
+    "close_decision_run_from_chat",
     "open_decision_run_for_consult",
     "run_per_ticker_analysts",
 ]

@@ -388,17 +388,9 @@ def get_feasible_age(
             session=db, user_id=user_id, target_p_solvent=target_p_solvent,
             assumptions=RetirementAssumptions(n_paths=n_paths, seed=seed),
         )
-        return {
-            "earliest_feasible_age": r.earliest_feasible_age,
-            "p_solvent_at_age": r.p_solvent_at_age,
-            "target_p_solvent": r.target_p_solvent,
-            "operational_target_age": r.operational_target_age,
-            "statutory_lump_age": r.statutory_lump_age,
-            "statutory_annuity_age": r.statutory_annuity_age,
-            "current_age": r.current_age,
-            "reserve_netted_nis": r.reserve_netted_nis,
-            "basis": r.basis,
-        }
+        from dataclasses import asdict
+
+        return asdict(r)
 
     # Deterministic given (plan, snapshot, params) — seed defaults to 42, so the
     # MC is reproducible. Cache keyed on the version tuple + the MC params.
@@ -762,20 +754,25 @@ def post_tax_compute(
             account=payload.get("account", "taxable"),
             holding_years=int(payload.get("holding_years", 0)),
             user_age=int(payload.get("user_age", 40)),
-            us_gross_amount_for_treaty=float(
-                payload.get("us_gross_amount_for_treaty", 0.0),
-            ),
+            us_gross_amount_for_treaty=(float(payload['us_gross_amount_for_treaty'])
+                                      if payload.get('us_gross_amount_for_treaty') is not None else None),
             is_post_67=bool(payload.get("is_post_67", False)),
+            pension_period_months=payload.get('pension_period_months', 1),
+            pension_exemption_monthly_nis=float(payload.get('pension_exemption_monthly_nis', 0)),
         )
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    tb = compute_tax(cashflow, user_id=user_id, session=db, year=year)
+    try:
+        tb = compute_tax(cashflow, user_id=user_id, session=db, year=year)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {
         "gross": as_dict(tb.gross),
         "net": as_dict(tb.net),
         "israeli_tax": as_dict(tb.israeli_tax),
         "us_treaty_credit": as_dict(tb.us_treaty_credit),
+        "us_withholding": as_dict(tb.us_withholding),
         "bituach_leumi_tax": as_dict(tb.bituach_leumi_tax),
         "surtax": as_dict(tb.surtax),
         "effective_rate": as_dict(tb.effective_rate),

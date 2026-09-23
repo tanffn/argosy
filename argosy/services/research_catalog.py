@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from argosy.state.research_models import ResearchSource, ResearchItem, ResearchClaim, ResearchReviewRequest, ResearchEvidenceUse
 
-KINDS = {"rss", "sec13d", "sec13f", "youtube", "manual", "existing"}
+KINDS = {"rss", "sec13d", "sec13f", "youtube", "manual", "existing", "browser_capture"}
 
 
 def index_existing_events(*, user_id):
@@ -118,9 +118,12 @@ def enqueue(session, source, *, external_id: str, title: str, url: str, body: st
 def complete_item(session, item, payload: dict, *, now=None):
     """Keep source claims and fleet judgments distinct; preserve older versions."""
     now = now or datetime.now(UTC)
-    if item.status == "analyzed":
+    if item.status in {"analyzed", "analyzed_partial"}:
         return
     claims = payload.get("claims") or {}
+    capture = json.loads(item.analysis_json or "{}").get("capture")
+    if capture:
+        payload["capture"] = capture
     document_body = payload.pop("_document_body", None)
     if document_body:
         item.body = document_body
@@ -159,15 +162,34 @@ def complete_item(session, item, payload: dict, *, now=None):
             claim_id = digest(item.id, statement, ticker, scope)
             if session.get(ResearchClaim, claim_id):
                 continue
+            due_at = (utc(item.published_at or item.observed_at) + timedelta(days=horizon)) if horizon else None
+            if capture:
+                # Prospective observation only; never backdate an unverified web
+                # claim or reset a repeated standing forecast's clock.
+                if call.get("is_reiteration") or claim.get("is_reiteration"):
+                    due_at = None
+                elif call.get("target_date") or claim.get("target_date"):
+                    try:
+                        target = datetime.fromisoformat(call.get("target_date") or claim["target_date"]).replace(tzinfo=UTC)
+                        due_at = target if target > utc(item.observed_at) else None
+                    except (TypeError, ValueError):
+                        due_at = None
+                elif call.get("forecast_origin_date") or claim.get("forecast_origin_date"):
+                    try:
+                        origin = datetime.fromisoformat(call.get("forecast_origin_date") or claim["forecast_origin_date"]).replace(tzinfo=UTC)
+                        target = origin + timedelta(days=horizon) if horizon else None
+                        due_at = target if target and target > utc(item.observed_at) else None
+                    except (TypeError, ValueError):
+                        due_at = None
             session.add(ResearchClaim(
                 id=claim_id, user_id=item.user_id, item_id=item.id, ticker=ticker,
                 scope=scope, statement=statement,
                 payload_json=json.dumps({**claim, "speaker_call": call}, ensure_ascii=False),
                 direction=call.get("direction") or claim.get("direction"), horizon_days=horizon,
-                due_at=(utc(item.published_at or item.observed_at) + timedelta(days=horizon)) if horizon else None,
+                due_at=due_at,
             ))
     item.analysis_json = json.dumps(payload, ensure_ascii=False, default=str)
-    item.status = "analyzed"
+    item.status = "analyzed_partial" if capture and capture.get("images") else "analyzed"
     item.analyzed_at = now
     item.lease_until = None
     item.error = None
@@ -207,9 +229,13 @@ def list_sources(session, user_id: str) -> list[dict]:
             "id": source.id, "name": source.name, "kind": source.kind, "reference": source.reference,
             "enabled": source.enabled, "cadence_hours": source.cadence_hours, "priority": source.priority,
             "last_polled_at": source.last_polled_at, "last_error": source.last_error,
+            "capture": json.loads(source.config_json or "{}").get("last_capture"),
+            "capture_state": json.loads(source.config_json or "{}").get("capture_state"),
             "stats": {"items_collected": len(items), "items_analyzed": sum(i.status == "analyzed" for i in items),
                       "queued": sum(i.status in {"queued", "processing"} for i in items),
                       "failed": sum(i.status == "failed" for i in items),
+                      "archived": sum(i.status == "archived" for i in items),
+                      "partially_analyzed": sum(i.status == "analyzed_partial" for i in items),
                       "tickers": sorted({c.ticker for c in claims if c.ticker}),
                       "claims": len(claims), "evaluated": len(scored),
                       "accuracy": (sum(s["verdict"] == "correct" for s in scored) / len(scored)) if scored else None,

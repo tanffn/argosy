@@ -160,6 +160,44 @@ _STANCE_RECONCILE_RULE = (
 )
 
 
+_LONG_HOLD_DECISION_RULE = (
+    "  - **RE-UNDERWRITE; DO NOT ANCHOR.** For an EXISTING position, recover "
+    "the original thesis legs from the supplied reports and explicitly decide "
+    "which are achieved, intact, deteriorating, or broken. Cash runway is only "
+    "survival capacity; it does not repair failed unit economics, margins, or "
+    "customer diversification. A visible catalyst such as distribution growth "
+    "does not outweigh deterioration in the economics it was supposed to "
+    "improve. If a load-bearing thesis leg or previously stated falsifier has "
+    "already failed, do not invent a new future falsifier to defend HOLD: "
+    "recommend SELL/TRIM unless newer evidence actually repairs the thesis. "
+    "Never wait for price recovery to admit that the thesis broke.\n"
+    "  - **SIZE THE UNCERTAINTY FOR NEW CONVEXITY CANDIDATES.** For an "
+    "unowned high-potential candidate, decide probability-weighted asymmetry "
+    "at the proposed portfolio size, not whether the company is already a "
+    "fully proven mature compounder. Distinguish 'too risky for 2%' from "
+    "'positive expected value at a 0.5-1% accepted-total-loss starter'. A "
+    "removed survival cliff plus a real unit-economic inflection can justify a "
+    "small starter before every risk is resolved. Do not automatically demand "
+    "volume re-acceleration after management deliberately shrank volume to fix "
+    "economics, and do not annualize one turnaround quarter as though it were "
+    "steady-state earnings. Conversely, small size never rescues negative "
+    "asymmetry: state the downside, plausible upside, and evidence that makes "
+    "the expected-value sign positive or negative.\n"
+    "  - **MACHINE SIZE MUST MATCH ITS UNIT.** `currency` means an actual "
+    "currency notional, never a portfolio percentage. If constraints provide "
+    "a portfolio NAV and a target percentage, calculate the notional. If no "
+    "NAV/share count exists, use zero rather than disguising a percentage as "
+    "currency, and state that the downstream allocator must size it.\n"
+    "  - **MAKE THE CLOCK EXPLICIT.** Fill `next_validation_point` and "
+    "`rerating_horizon` for every verdict. A relative event is acceptable "
+    "('next earnings print, estimated 2-3 months'); do not omit the clock just "
+    "because an exact date is unknown. When converting a stated window such as "
+    "12-18 months into a hard deadline, use its OUTER edge and show the date "
+    "math. If the packet has no trustworthy absolute anchor, keep the event "
+    "relative and do not fabricate an ISO dated trigger.\n"
+)
+
+
 class RevisitTrigger(BaseModel):
     """One typed tripwire the fleet arms alongside a verdict.
 
@@ -235,6 +273,16 @@ class TraderProposal(BaseModel):
     )
     expected_impact: ExpectedImpact = Field(default_factory=ExpectedImpact)
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
+    next_validation_point: str = Field(
+        default="",
+        description="The next event that will test this verdict, dated when "
+        "known or explicitly estimated as a relative window.",
+    )
+    rerating_horizon: str = Field(
+        default="",
+        description="Honest expected re-rating/validation horizon band, or an "
+        "explicit statement that it cannot be estimated.",
+    )
     cited_sources: list[str] = Field(
         default_factory=list,
         description="Citations from analyst reports / debate outcome / "
@@ -443,6 +491,8 @@ class TraderAgent(BaseAgent[TraderProposal]):
                 "not initiate' framing — /consult is most often used "
                 "to evaluate new candidates.\n"
                 + _STANCE_RECONCILE_RULE
+                + "\n"
+                + _LONG_HOLD_DECISION_RULE
                 + "\n"
                 + _FALSIFIER_RULE
                 + "OUTPUT must be a JSON object conforming to this schema:\n"

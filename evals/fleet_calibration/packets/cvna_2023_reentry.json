@@ -1,6 +1,6 @@
 {
   "case_id": "cvna_2023_reentry",
-  "alias": "APO",
+  "alias": "MZXQ",
   "category": "A",
   "grading": "entry",
   "real": "CVNA @ 2023-08-01 ($49.11 as-traded); re-entry after 2023-07-19 debt exchange + record GPU/Adj EBITDA print",
@@ -11,7 +11,7 @@
     "buy"
   ],
   "positioned": false,
-  "positions": "No existing position in APO. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+  "positions": "No existing position in MZXQ. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
   "constraints_extra": null,
   "run_order": 53,
   "contamination_terms": [
@@ -55,8 +55,8 @@
   "analyst_reports": [
     {
       "agent_role": "fundamentals",
-      "report_name": "fundamentals/APO",
-      "company": "AutoPort Online (alias APO)",
+      "report_name": "fundamentals/MZXQ",
+      "company": "Masked Auto Marketplace (alias MZXQ)",
       "as_of": "current",
       "market_cap_usd_m": 10652,
       "share_price_usd": 56.48,
@@ -100,7 +100,7 @@
     },
     {
       "agent_role": "news",
-      "report_name": "news/APO",
+      "report_name": "news/MZXQ",
       "business_description": "National online used-vehicle retailer with a vertically integrated model (ecommerce + logistics + in-house financing + a physical wholesale-auction network acquired at the prior cycle peak). Founder-controlled. Two years ago the firm looked like a survival risk under a debt spiral; it has since shrunk units, cut opex, and just completed a noteholder exchange that removes the near-term maturity wall.",
       "recent_developments": [
         "Just printed company-record gross profit per unit and first strongly positive Adjusted EBITDA quarter while units fell ~35% YoY — a deliberate profitability-over-growth pivot.",
@@ -121,6 +121,10 @@
     {
       "date": "2026-07-11",
       "fix": "mechanical PASS follow-up: deleted trader-visible (rescaled); restored real dollar figures in sources[0]/[1]; mcap aligned to cvna_2022 A+B share-count convention (~189M x price x k = 10652)."
+    },
+    {
+      "date": "2026-08-31",
+      "fix": "anti-identification audit: replaced alias APO because it collides with the denylisted Apollo ticker/prefix; MZXQ is a non-ticker nonce and carries no answer-key hint. No investment facts or expected class changed."
     }
   ]
 }

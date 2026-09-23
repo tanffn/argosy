@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import json
 from typing import Any
 
@@ -16,6 +17,14 @@ from argosy.agents.domain_refresh import (
 )
 
 
+def test_finding_urgency_is_explicit_and_backwards_compatible():
+    from argosy.agents.domain_refresh import KnowledgeFinding
+    finding = dict(scope="household_fact", claim="Dated balance", missing_evidence="Statement",
+                   owner="user", next_action="Upload at year end", affected_advice="Exact reconciliation")
+    assert KnowledgeFinding(**finding).urgency == "routine"
+    assert KnowledgeFinding(**finding, urgency="urgent").urgency == "urgent"
+
+
 class _MockDomainRefreshAgent(DomainRefreshAgent):
     def __init__(self, *, user_id: str, canned_output: dict) -> None:
         super().__init__(user_id=user_id)
@@ -28,6 +37,38 @@ class _MockDomainRefreshAgent(DomainRefreshAgent):
             tokens_out=600,
             model=self.model,
         )
+
+
+def test_model_report_cannot_recover_unrelated_objects_as_empty_report():
+    agent = DomainRefreshAgent(user_id='ariel')
+    assert agent.use_structured_output is True
+    assert 'per_file' in agent.output_model.model_json_schema()['required']
+    assert '"format"' not in json.dumps(agent.output_model.model_json_schema())
+    # Empty local combination and explicit no-work result are legitimate;
+    # annual separately checks requested-file coverage.
+    assert DomainRefreshReport().per_file == []
+    assert agent._parse_output('{"per_file": []}').per_file == []
+    for text in ('{}', 'broken {"url":"https://example.org"}'):
+        with pytest.raises(ValueError):
+            agent._parse_output(text)
+
+
+def test_wire_annotation_compatibility_does_not_relax_local_date_validation():
+    agent = DomainRefreshAgent(user_id='ariel')
+    item = {'path': 'domain_knowledge/test.md', 'status': 'no_change',
+            'next_refresh_due': '2026-02-30'}
+    with pytest.raises(ValueError):
+        agent.output_model.model_validate({'per_file': [item]})
+    item['next_refresh_due'] = '2026-12-31'
+    assert agent.output_model.model_validate({'per_file': [item]}).per_file[0].next_refresh_due.isoformat() == '2026-12-31'
+
+
+def test_model_report_recovers_actual_report_not_preceding_evidence_object():
+    agent = DomainRefreshAgent(user_id='ariel')
+    payload = {'per_file': [{'path': 'domain_knowledge/test.md', 'status': 'no_change',
+                            'verification': 'unavailable', 'note': 'Source unavailable'}]}
+    text = 'Malformed preliminary object {"url":"https://example.org"}\n' + json.dumps(payload)
+    assert agent._parse_output(text).per_file[0].path == 'domain_knowledge/test.md'
 
 
 @pytest.mark.asyncio
@@ -122,8 +163,8 @@ def test_domain_refresh_has_web_tools_and_demands_citations() -> None:
     The prompt must also demand a non-empty top-level `cited_sources`."""
     assert "WebSearch" in DomainRefreshAgent.claude_code_allowed_tools
     assert "WebFetch" in DomainRefreshAgent.claude_code_allowed_tools
-    # Validator NOT weakened — fail-loud on critical agents is binding.
-    assert DomainRefreshAgent.require_citations is True
+    # Evidence eligibility lives at per-file verification/writeback now.
+    assert DomainRefreshAgent.require_citations is False  # Unavailable reports persist; cannot stamp.
 
     agent = DomainRefreshAgent(user_id="ariel")
     system, _user = agent.build_prompt(
@@ -131,13 +172,13 @@ def test_domain_refresh_has_web_tools_and_demands_citations() -> None:
     )
     assert "CITATIONS ARE MANDATORY" in system
     assert "cited_sources" in system
+    assert "Copy the exact requested input path including its domain_knowledge/ prefix" in system
+    assert "Selected PDF excerpts cover ONLY" in system
 
 
 @pytest.mark.asyncio
-async def test_domain_refresh_empty_citations_still_fails_loud() -> None:
-    """The citation gate stays intact: an output with empty cited_sources
-    (and no per-file evidence) raises AgentRunError."""
-    from argosy.agents.errors import AgentRunError
+async def test_domain_refresh_unavailable_sources_produce_explicit_incomplete_report() -> None:
+    """Unavailable evidence is retained for the loop, never falsely verified."""
 
     canned = {
         "per_file": [
@@ -155,8 +196,7 @@ async def test_domain_refresh_empty_citations_still_fails_loud() -> None:
         "cited_sources": [],
     }
     agent = _MockDomainRefreshAgent(user_id="ariel", canned_output=canned)
-    with pytest.raises(AgentRunError, match="missing required citations"):
-        await agent.run(
+    report = await agent.run(
             files_due=[
                 {
                     "path": "domain_knowledge/tax/israel/capital_gains.md",
@@ -165,6 +205,7 @@ async def test_domain_refresh_empty_citations_still_fails_loud() -> None:
                 }
             ],
         )
+    assert report.output.per_file[0].verification == "unavailable"
 
 
 @pytest.mark.asyncio

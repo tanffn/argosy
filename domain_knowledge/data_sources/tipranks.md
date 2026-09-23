@@ -1,19 +1,24 @@
 ---
 topic: tipranks_analyst_aggregator
 jurisdiction: us
-last_verified: 2026-08-28
+last_verified: 2026-09-13
 next_refresh_due: 2027-05-02
+code_references:
+  - argosy/adapters/data/tipranks_adapter.py
 sources:
+  - url: https://enterprise.tipranks.com/
+    retrieved: 2026-09-13
+    tier: 1
   - url: https://www.tipranks.com
     retrieved: 2026-08-09
     tier: 2
   - url: https://www.tipranks.com/about
-    retrieved: 2026-08-10
+    retrieved: 2026-09-13
     tier: 2
   # TipRanks's hedge-fund signal is downstream of SEC 13F filings;
   # the SEC FAQ is the upstream regulator-canonical reference.
-  - url: https://www.sec.gov/divisions/investment/13ffaq.htm
-    retrieved: 2026-08-15
+  - url: https://www.sec.gov/rules-regulations/staff-guidance/division-investment-management-frequently-asked-questions/frequently-asked-questions-about-form-13f
+    retrieved: 2026-09-13
     tier: 1
 ---
 
@@ -38,11 +43,16 @@ pages for `blogger-opinions` and `hedge-funds-activity`).
 
 ## Free tier and rate limits
 
-- Roughly **10 lookups per day per IP** for unauthenticated traffic.
-- The adapter caches for **24 hours** which keeps a daily-brief loop
-  well under the limit (1 lookup per ticker per day).
-- **Tests must not fan out** in tight loops; production code uses the
-  cache; `daily_brief.py` caps fan-out to 10 tickers.
+- A stable unauthenticated quota is **not established**. Do not promise
+  10 lookups/day/IP or treat an old operational observation as provider policy.
+  TipRanks offers enterprise APIs; that does not imply Argosy has credentials,
+  a subscription, or permission to use a private endpoint.
+- The adapter caches for **24 hours**, reducing repeated lookups while a cache
+  entry remains valid. That does not establish a provider quota, permission,
+  or a guarantee that the daily-brief loop stays within provider limits.
+- **Tests must not fan out** against the live provider. Read the adapter/code
+  evidence for local caching behavior; no quota or daily coverage guarantee follows
+  from that cache setting.
 
 ## Signal half-life and caveats
 
@@ -52,16 +62,21 @@ pages for `blogger-opinions` and `hedge-funds-activity`).
 2. **Consensus label is hysteretic.** Going from `Strong Buy` to
    `Hold` typically requires a meaningful event; intra-quarter the
    label barely budges.
-3. **Blogger sentiment is noisy.** It captures retail-adjacent mood
-   more than informed positioning. Useful as a contrarian indicator
-   at extremes (>80% bullish, <20% bullish), low signal in the middle.
-4. **Hedge-fund signal lags.** Same 45-day lag as the underlying
-   13Fs — see `sec_13f.md`.
-5. **Layout instability.** TipRanks rewrites their HTML and
-   `__NEXT_DATA__` payload shape every few quarters. The adapter
-   tries the JSON blob first, falls back to regex extraction, and
-   raises `MissingDataSourceError` on a full miss rather than
-   guessing.
+3. **Sentiment interpretation is an uncalibrated hypothesis.** An 80%/20%
+   cutoff does not establish a profitable contrarian rule. Check observations,
+   provider provenance and dated outcomes before giving it predictive weight.
+4. **Hedge-fund signal may lag.** The 45-day deadline applies to 13F filings;
+   attributing every TipRanks value to that feed is an Argosy inference,
+   not a verified provider freshness promise.
+5. **Implementation caveat:** Current per-ticker captures can be denied with
+   HTTP 403, so the live signal is not established by the adapter interface.
+   HTML/JSON layout can also change. Analyst and
+   hedge-fund methods can raise `MissingDataSourceError`; blogger sentiment
+   can fall back to an injected Finnhub adapter and ultimately return a
+   zero-shaped default. That 0/0 result is **missing evidence**, not an observed
+   neutral or bearish reading. Consult provider-outcome telemetry; do not
+   use the default as a sourced sentiment fact. A fixed redesign cadence
+   or permission to scrape is not established by this document.
 
 ## Adapter usage
 
@@ -76,4 +91,5 @@ pages for `blogger-opinions` and `hedge-funds-activity`).
 ## Etiquette
 
 - Polite User-Agent: `Argosy/<version> ...`.
-- Never scrape in parallel; the adapter is intentionally sequential.
+- Caller guidance: do not scrape in parallel. The adapter has no internal
+  concurrency limiter; its interface alone does not establish serialized calls.

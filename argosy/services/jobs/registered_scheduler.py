@@ -16,8 +16,9 @@ body, the order of writes is
 
 Step 4 is ATTEMPTED EVEN IF step 3 fails — per spec §1.7 the matrix
 row "close fails, record_tick ok" must be reachable. Close-failure is
-logged and the cadence pointer write proceeds, leaving an audit row
-stuck in ``running`` (reaped by the retention loop in commit #9).
+logged and the cadence pointer write proceeds. A write-ahead completion
+receipt is retried independently by the heartbeat and before startup reaping;
+the job body is not rerun merely because its completion UPDATE failed.
 
 Lock acquisition (§1.4) — single-acquire model (closes round-2 codex
 BLOCKER on the release-then-reacquire race):
@@ -80,6 +81,97 @@ class RegisteredScheduler(Scheduler):
     def __init__(self, *args, registry: "JobRegistry", **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._registry = registry
+
+    async def _recover_failed_jobs(self) -> None:
+        """Retry one safe analysis job per heartbeat, with durable limits.
+
+        Same per-job lock, audit writer and tick as scheduled/manual runs.
+        A shared managed-settings or DNS outage gets at most one recovery attempt
+        per cooldown, not one per agent. Normal cron slots remain unchanged.
+        """
+        from sqlalchemy import func, select
+        from argosy.services.decision_readiness import (
+            MAX_SLOT_ATTEMPTS, RECOVERABLE_JOBS, RETRY_DELAY,
+            effective_status, latest_job_runs, legacy_failed_funnels, job_has_managed_settings_failure, utc,
+            job_has_network_resolution_failure,
+        )
+        from argosy.state import db as db_mod
+        from argosy.state.models import JobRun
+
+        try:
+            await self._registry.recover_completions()
+            now = utc(self.clock())
+            async with db_mod.get_session() as session:
+                rows = {r.job_name: r for r in await latest_job_runs(session)}
+                failed_funnel_ids = await legacy_failed_funnels(session, self.user_id)
+            if any(
+                effective_status(r) == "error"
+                and (job_has_managed_settings_failure(r) or job_has_network_resolution_failure(r))
+                and now - utc(r.finished_at or r.started_at) < RETRY_DELAY
+                for r in rows.values()
+            ):
+                return
+            for name in RECOVERABLE_JOBS:
+                loop, row = self._loops.get(name), rows.get(name)
+                interrupted_directive = (name == "period_directive_daily" and row
+                    and (row.error_message or "").startswith("reaped: prior backend process exited"))
+                recoverable_states = {"error", "cancelled"} if interrupted_directive else {"error"}
+                if not loop or not loop.enabled or not row or effective_status(row, failed_funnel_ids) not in recoverable_states:
+                    continue
+                if name in self._inflight or self._stop.is_set():
+                    continue
+                due = loop.schedule.prev_due_before(now)
+                if due is None or utc(row.started_at) < due:
+                    continue  # boot/wake catch-up or next cron owns missing slots
+                if now - utc(row.finished_at or row.started_at) < RETRY_DELAY:
+                    continue
+                if loop.schedule.market_hours_only and not self._market_open_check():
+                    continue
+                lock = self._registry._lock_for(name)
+                if lock.locked():
+                    continue
+                async with self._catchup_gate, lock:
+                    if name in self._inflight or self._stop.is_set():
+                        continue
+                    async with db_mod.get_session() as session:
+                        latest = (await session.execute(
+                            select(JobRun).where(JobRun.job_name == name)
+                            .order_by(JobRun.id.desc()).limit(1)
+                        )).scalar_one()
+                        attempts = (await session.execute(
+                            select(func.count()).select_from(JobRun).where(
+                                JobRun.job_name == name, JobRun.started_at >= due,
+                            )
+                        )).scalar_one()
+                    if latest.id != row.id or attempts >= MAX_SLOT_ATTEMPTS:
+                        continue
+                    await self.fire_once_already_locked(
+                        # Recovery MUST acquire its durable attempt receipt.
+                        # force=True prevents the normal self-alerting-job
+                        # fallback from running unaudited when the DB is locked.
+                        loop, force=True, manual_trigger=False, triggered_by="recovery",
+                    )
+                    return
+        except Exception:
+            _log.exception("jobs.recovery_failed")
+
+    async def _tick_recorded_since(self, loop_name, when):
+        # job_runs is authoritative even if the secondary cadence_state write
+        # failed too. An open receipt also prevents catch-up from duplicating
+        # completed-but-not-yet-acknowledged work; bounded recovery owns retries.
+        from sqlalchemy import select
+        from argosy.state import db as db_mod
+        from argosy.state.models import JobRun
+        try:
+            async with db_mod.get_session() as session:
+                if (await session.execute(select(JobRun.id).where(
+                    JobRun.job_name == loop_name, JobRun.started_at >= when,
+                ).limit(1))).scalar_one_or_none() is not None:
+                    return True
+        except Exception:
+            _log.exception("jobs.tick_receipt_read_failed", loop=loop_name)
+            return None
+        return await super()._tick_recorded_since(loop_name, when)
 
     async def _fire_once(
         self, loop: CadenceLoop, *, force: bool = False

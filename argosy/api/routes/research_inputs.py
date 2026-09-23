@@ -59,8 +59,9 @@ class ManualDocument(BaseModel):
 @router.get("/sources")
 def get_sources(user_id: str = "ariel"):
     from argosy.services.research_catalog import research_session, list_sources
+    from argosy.services.research_worker import daily_fleet_limit
     with research_session() as session:
-        return {"sources": list_sources(session, user_id), "daily_fleet_limit": 3}
+        return {"sources": list_sources(session, user_id), "daily_fleet_limit": daily_fleet_limit(session, user_id=user_id)}
 
 
 @router.post("/sources", status_code=201)
@@ -119,6 +120,7 @@ def get_items(user_id: str = "ariel", source_id: int | None = None):
         return {"items": [{"id": i.id, "source_id": i.source_id, "title": i.title, "url": i.url,
                            "status": i.status, "error": i.error, "published_at": i.published_at,
                            "observed_at": i.observed_at,
+                           "capture": json.loads(i.analysis_json).get("capture"),
                            "summary": (json.loads(i.analysis_json).get("synthesis") or {}).get("executive_summary"),
                            "claims": [{"id": c.id, "ticker": c.ticker, "statement": c.statement,
                                        "due_at": c.due_at, "outcome": json.loads(c.outcome_json) if c.outcome_json else None}

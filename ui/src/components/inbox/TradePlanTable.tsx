@@ -174,6 +174,7 @@ export function TradePlanTable({ plan }: { plan: TradePlanDTO }) {
   const groups = plan.groups ?? [];
   const finalistComparisons = plan.candidate_comparisons ?? [];
   const selectedFinalists = finalistComparisons.filter((row) => row.selection === "SELECTED");
+  const pendingTickers = new Set(plan.pending_research?.flatMap((item) => item.tickers) ?? []);
   const review = plan.review_resolution;
   const resolvedObjections = review?.objections.filter(
     (row) => row.status === "resolved_by_re_review",
@@ -207,6 +208,29 @@ export function TradePlanTable({ plan }: { plan: TradePlanDTO }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {(plan.pending_research?.length ?? 0) > 0 && (
+          <section className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 p-3 text-xs" aria-label="Research pending">
+            <div className="font-medium">Research pending — not approved</div>
+            <p className="mt-1">The actions below were separately re-reviewed. Pending names are not orders.
+              {` Total cash reserve: ${usd(plan.reserve_usd ?? 0)}; already excluded from buys.`}</p>
+            {plan.pending_research?.map((item) => (
+              <details key={item.tickers.join(":")} className="mt-2">
+                <summary className="cursor-pointer font-medium">
+                  {item.tickers.join(" / ")} · {usd(item.reserved_usd)} shared reserve · next review {item.next_review_date}
+                </summary>
+                <div className="mt-1 space-y-1">
+                  <p><strong>Disagreement:</strong> {item.disagreement}</p>
+                  <p><strong>Missing evidence:</strong> {item.missing_evidence}</p>
+                  <p><strong>Argosy will investigate:</strong> {item.research_question}</p>
+                  <p><strong>Why core can proceed:</strong> {item.independence_reason}</p>
+                  {item.last_error && <p className="text-error"><strong>Research failure:</strong> {item.last_error}</p>}
+                  {item.last_researched_at && <p>Latest research: {item.last_researched_at}. Allocation decision still pending.</p>}
+                  <p>Automatically revisited by the daily job, including overdue work after downtime. No ticker choice is required from you.</p>
+                </div>
+              </details>
+            ))}
+          </section>
+        )}
         {plan.approval_blocked && (
           <div className="mb-3 rounded border border-error/40 bg-error/5 p-2 text-xs text-error">
             This is the one current trade plan, but approval is blocked. Older
@@ -216,11 +240,14 @@ export function TradePlanTable({ plan }: { plan: TradePlanDTO }) {
         {review && (
           <details className="mb-3 rounded border border-border/60 p-3 text-xs">
             <summary className="cursor-pointer font-medium text-foreground">
-              {review.one_voice ? "Independent review reconciled" : "Independent review unresolved"}
+              {review.one_voice ? (plan.lines.length ? "Executable actions independently reviewed" : "No-action review independently checked") : "Independent review unresolved"}
               {` · ${review.reviewers_ran}/${review.reviewers_expected} reviewers · ${review.rounds} round${review.rounds === 1 ? "" : "s"}`}
             </summary>
             <div className="mt-2 space-y-2">
               <div>{review.summary}</div>
+              {review.objections.filter((row) => row.status === "deferred_for_research").map((row, index) => (
+                <div key={`pending:${index}`}><strong>{row.ticker} · {row.lens} — research pending:</strong> {row.concern}</div>
+              ))}
               {resolvedObjections.map((objection, index) => (
                 <div key={`resolved:${objection.round}:${objection.lens}:${objection.ticker}:${index}`} className="rounded bg-muted/30 p-2">
                   <strong>{objection.ticker} · {objection.lens} resolved:</strong>{" "}
@@ -254,7 +281,7 @@ export function TradePlanTable({ plan }: { plan: TradePlanDTO }) {
                   <div className="flex flex-wrap items-center gap-2 font-medium">
                     <span>{candidate.ticker}</span>
                     <span className={candidate.selection === "SELECTED" ? "text-success" : "text-muted-foreground"}>
-                      {candidate.selection === "SELECTED" ? "Selected" : "Deferred"}
+                      {pendingTickers.has(candidate.ticker) ? "Research pending — not approved" : candidate.selection === "SELECTED" ? "Selected" : "Deferred"}
                     </span>
                     <span className="font-normal text-muted-foreground">
                       radar #{candidate.radar_rank ?? "—"} / {candidate.radar_score?.toFixed(1) ?? "—"}
@@ -312,7 +339,7 @@ export function TradePlanTable({ plan }: { plan: TradePlanDTO }) {
                     </div>
                   )}
                   {candidate.recommended_position_usd === 0 && candidate.larger_position_usd != null && candidate.why_not_larger && (
-                    <div><strong>Why zero:</strong> Argosy considered {usd(candidate.larger_position_usd)} but rejected it because {candidate.why_not_larger}</div>
+                    <div><strong>Why zero now:</strong> Argosy considered {usd(candidate.larger_position_usd)} but {pendingTickers.has(candidate.ticker) ? "has not approved it while research remains pending: " : "rejected it because "}{candidate.why_not_larger}</div>
                   )}
                   {candidate.split_considered != null && candidate.split_why && (
                     <div><strong>Split:</strong> {candidate.split_considered ? "Considered" : "Not warranted"} — {candidate.split_why}</div>

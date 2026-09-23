@@ -457,49 +457,44 @@ def run_sec_earnings_checks(
     evidence_cutoff = now.date() - timedelta(days=max(1, int(evidence_history_days)))
     succeeded = empty = failures = recent = persisted = duplicates = 0
     errors: list[dict[str, str]] = []
+    # Download before issuing ANY writes. SQLite has one writer: keeping the
+    # receipt transaction open during later network requests starves the job
+    # registry, quote cache and all other writers. The caller still owns one
+    # atomic persistence transaction; this service must not commit its session.
+    fetched: list[tuple[str, list[SecEarningsFiling], str | None]] = []
     try:
         for ticker in symbols:
             try:
                 events = provider(ticker, cutoff=evidence_cutoff)  # type: ignore[misc]
-                _write_receipt(
-                    session,
-                    user_id=user_id,
-                    ticker=ticker,
-                    checked_at=now,
-                    status="ok" if events else "empty",
-                    events=events,
-                    error=None,
-                )
-                succeeded += 1
-                empty += not events
-                for event in events:
-                    # Historical primary evidence belongs in the durable review
-                    # packet, but it is not a new event and must not create a
-                    # backdated "fresh" signal or prediction.
-                    if event.filed_at < recent_cutoff:
-                        continue
-                    recent += 1
-                    with session.begin_nested():
-                        if _write_signal(session, event):
-                            persisted += 1
-                        else:
-                            duplicates += 1
+                fetched.append((ticker, events, None))
             except Exception as exc:  # noqa: BLE001 - isolate per ticker
                 message = str(exc)[:300]
-                failures += 1
-                errors.append({"ticker": ticker, "error": message})
-                _write_receipt(
-                    session,
-                    user_id=user_id,
-                    ticker=ticker,
-                    checked_at=now,
-                    status="error",
-                    events=[],
-                    error=message,
-                )
+                fetched.append((ticker, [], message))
     finally:
         if owned_fetcher is not None:
             owned_fetcher.close()
+    for ticker, events, error in fetched:
+        _write_receipt(
+            session, user_id=user_id, ticker=ticker, checked_at=now,
+            status="error" if error is not None else ("ok" if events else "empty"),
+            events=events, error=error,
+        )
+        if error is not None:
+            failures += 1
+            errors.append({"ticker": ticker, "error": error})
+            continue
+        succeeded += 1
+        empty += not events
+        for event in events:
+            # Historical evidence is not a backdated "fresh" signal.
+            if event.filed_at < recent_cutoff:
+                continue
+            recent += 1
+            with session.begin_nested():
+                if _write_signal(session, event):
+                    persisted += 1
+                else:
+                    duplicates += 1
     session.flush()
     return SecEarningsCoverageSummary(
         attempted=len(symbols),

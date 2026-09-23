@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -89,6 +90,7 @@ from argosy.services.discord_attachment_fetcher import (
     fetch_text_attachments,
     parse_attachments,
 )
+from argosy.services.discord_feed_safety import DiscordFeedSafety, normalize_bot_token
 from argosy.services.discord_listener import (
     DiscordCreds,
     _default_creds_path,
@@ -258,6 +260,7 @@ async def _fetch_page(
     *,
     client: httpx.AsyncClient | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
+    safety: DiscordFeedSafety | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch one page of messages from Discord's REST API.
 
@@ -307,11 +310,12 @@ async def _fetch_page(
     if before_id is not None:
         params["before"] = before_id
     headers = {
-        "Authorization": f"Bot {bot_token}",
+        "Authorization": f"Bot {normalize_bot_token(bot_token)}",
         "User-Agent": "Argosy/1.0 (predictions-backfill)",
     }
 
     async def _do_request(http: httpx.AsyncClient) -> httpx.Response:
+        guard.check()  # Another worker can revoke access while a retry sleeps.
         return await http.get(
             url, params=params, headers=headers,
             timeout=REQUEST_TIMEOUT_S,
@@ -321,16 +325,27 @@ async def _fetch_page(
         # One retry on 429; second 429 escalates.
         for attempt in (1, 2):
             resp = await _do_request(http)
+            if resp.status_code in {401, 403}:
+                guard.block(f"Discord feed HTTP {resp.status_code}; repair credentials/channel access before retrying.")
             if resp.status_code == 429:
+                try:
+                    body = resp.json()
+                    body_retry = body.get("retry_after") if isinstance(body, dict) else None
+                except ValueError:
+                    body_retry = None
                 retry_after_raw = (
                     resp.headers.get("Retry-After")
+                    or body_retry
                     or resp.headers.get("X-RateLimit-Reset-After")
                     or "1"
                 )
                 try:
                     retry_after_s = float(retry_after_raw)
                 except (TypeError, ValueError):
-                    retry_after_s = 1.0
+                    retry_after_s = 60.0
+                if not math.isfinite(retry_after_s) or retry_after_s <= 0:
+                    retry_after_s = 60.0
+                guard.block("Discord feed rate-limited; waiting for Discord's retry window.", seconds=retry_after_s)
                 if retry_after_s > MAX_RETRY_AFTER_S:
                     # Sustained throttle — surface to caller so the
                     # admin UI shows "throttled, try later".
@@ -356,6 +371,10 @@ async def _fetch_page(
                     reset_after_s = float(reset_after_raw)
                 except (TypeError, ValueError):
                     reset_after_s = 0.0
+                if not math.isfinite(reset_after_s) or reset_after_s < 0:
+                    reset_after_s = 60.0
+                if reset_after_s > 0:
+                    guard.block("Discord history rate-limit bucket exhausted; retry after its reset.", seconds=reset_after_s)
                 if 0 < reset_after_s <= MAX_RETRY_AFTER_S:
                     logger.debug(
                         "discord_backfill: bucket exhausted, "
@@ -375,10 +394,12 @@ async def _fetch_page(
         # Unreachable — the loop either returns or raises.
         raise RuntimeError("discord_backfill: _handle exhausted retries")
 
-    if client is not None:
-        return await _handle(client)
-    async with httpx.AsyncClient() as transient_client:
-        return await _handle(transient_client)
+    guard = safety or DiscordFeedSafety(bot_token)
+    with guard.lease("history"):
+        if client is not None:
+            return await _handle(client)
+        async with httpx.AsyncClient() as transient_client:
+            return await _handle(transient_client)
 
 
 # ---------------------------------------------------------------------------
@@ -501,236 +522,237 @@ async def backfill_discord_predictions(
     cutoff = now_fn() - timedelta(days=lookback_days)
     before_cursor: str | None = None
 
-    for page_index in range(MAX_PAGES):
-        try:
-            page = await fetcher(
-                final_channel_id, before_cursor, final_bot_token,
-            )
-        except httpx.HTTPStatusError as exc:
-            summary.errors.append(
-                f"http_error: status={exc.response.status_code} "
-                f"page={page_index}"
-            )
-            logger.exception(
-                "discord_backfill: HTTP error on page %d", page_index
-            )
-            break
-        except httpx.HTTPError as exc:
-            summary.errors.append(
-                f"transport_error: {type(exc).__name__}: {exc} "
-                f"page={page_index}"
-            )
-            logger.exception(
-                "discord_backfill: transport error on page %d",
-                page_index,
-            )
-            break
-        summary.pages_fetched += 1
-
-        if not page:
-            # Channel ran out of history before lookback exhausted.
-            logger.info(
-                "discord_backfill: empty page at index %d — channel "
-                "history exhausted",
-                page_index,
-            )
-            break
-
-        # Cursor for the NEXT page = the page's actual last-by-position
-        # message id. Discord returns messages newest-first, so
-        # ``page[-1]`` IS the oldest in the page regardless of whether
-        # any individual message parses cleanly. Driving the cursor off
-        # ``page[-1]["id"]`` (instead of off the oldest *parseable*
-        # timestamp inside the loop) avoids the bug where a malformed
-        # OLDEST message would let the cursor advance to a younger
-        # message id — causing the next page to re-fetch already-
-        # consumed messages, inflate ``messages_scanned``, and risk
-        # an infinite same-cursor loop if the same malformed id keeps
-        # appearing at position [-1]. (Spec C commit #7 codex review
-        # IMPORTANT 1.) The id is read defensively — Discord ALWAYS
-        # ships a non-null ``id`` on a message envelope, but if a
-        # future API change ever omits it we want to log + bail rather
-        # than crash.
-        next_cursor: str | None
-        try:
-            next_cursor = str(page[-1]["id"])
-        except (KeyError, TypeError) as exc:
-            summary.errors.append(
-                f"malformed_page_tail: {type(exc).__name__}: {exc}"
-            )
-            logger.warning(
-                "discord_backfill: page %d tail has no id — stopping",
-                page_index,
-            )
-            break
-
-        oldest_in_page_ts: datetime | None = None
-        for msg in page:
-            summary.messages_scanned += 1
+    try:
+        for page_index in range(MAX_PAGES):
             try:
-                msg_id = str(msg["id"])
-                msg_ts = _parse_discord_ts(msg["timestamp"])
-                msg_content = str(msg.get("content", ""))
-                msg_attachments_raw = msg.get("attachments")
-            except (KeyError, ValueError, TypeError) as exc:
+                page = await fetcher(
+                    final_channel_id, before_cursor, final_bot_token,
+                )
+            except httpx.HTTPStatusError as exc:
                 summary.errors.append(
-                    f"malformed_message: {type(exc).__name__}: {exc}"
-                )
-                logger.warning(
-                    "discord_backfill: malformed message in page %d: %s",
-                    page_index, exc,
-                )
-                continue
-
-            # Track the page's oldest PARSEABLE timestamp for the
-            # lookback-exhausted check below. The CURSOR for the next
-            # page comes from ``page[-1]["id"]`` (set above) — NOT
-            # from this min-timestamp scan — so a malformed oldest
-            # message can't corrupt the cursor advance.
-            if (
-                oldest_in_page_ts is None
-                or msg_ts < oldest_in_page_ts
-            ):
-                oldest_in_page_ts = msg_ts
-
-            # Skip messages already older than our window — they're
-            # in the page only because the cursor walks in chunks of
-            # 100. We don't break here because the page is ordered
-            # newest-first; later messages in the SAME page may also
-            # be older but we still let the loop fall through to the
-            # post-page lookback-exhausted check.
-            if msg_ts < cutoff:
-                continue
-
-            # Fetch text attachments (alpha-report channel posts daily
-            # reports as ``.txt`` uploads with a caption). Combined
-            # text = caption first, then attachment body — caption-
-            # first so a user-supplied prefix wins alpha-call regex
-            # precedence. ``fetch_text_attachments`` never raises on
-            # operational errors; HTTP failures log + skip that one
-            # attachment.
-            attachments = parse_attachments(msg_attachments_raw)
-            if attachments:
-                attachment_text = await fetch_text_attachments(
-                    attachments,
-                    http_client=attachment_client,
-                    max_bytes=MAX_ATTACHMENT_BYTES,
-                )
-            else:
-                attachment_text = ""
-            effective_text = (
-                f"{msg_content}\n\n{attachment_text}"
-                if attachment_text
-                else msg_content
-            )
-
-            # Long-form alpha-report skip — defer to the
-            # ``alpha_report_analyst`` cron for posts that the regex
-            # parser would mis-handle (multi-page commentary produces
-            # one false-positive Prediction per first-matching pattern
-            # in the prose). The NewsSignal row was already INSERTed
-            # by an upstream ingest path; the analyst cron picks up
-            # signals without an ``alpha_report_analyses`` row.
-            if _is_long_form_alpha_report(effective_text):
-                logger.debug(
-                    "discord_backfill: skipping regex parser, long-form "
-                    "report; analyst will handle (msg_id=%s, len=%d, "
-                    "newlines=%d)",
-                    msg_id,
-                    len(effective_text or ""),
-                    (effective_text or "").count("\n"),
-                )
-                summary.messages_long_form_skipped += 1
-                continue
-
-            call = extract_alpha_call_from_text(effective_text)
-            if call is None:
-                summary.messages_unparseable += 1
-                continue
-
-            # Write the prediction. The writer's idempotency contract
-            # collapses re-runs into the same row; we observe whether
-            # the row's ``id`` was already present pre-call by
-            # checking row identity — the writer returns the EXISTING
-            # row's instance unchanged on dedup hits, so a fresh
-            # `is_dedup` check uses the SQLAlchemy attribute
-            # ``_sa_instance_state.persistent`` semantics. Simpler:
-            # snapshot the row count before/after and infer.
-            try:
-                pre_id = _peek_existing_id(
-                    session,
-                    message_id=msg_id,
-                    channel_id=final_channel_id,
-                )
-                _ = write_discord_prediction(
-                    session,
-                    user_id,
-                    message_id=msg_id,
-                    channel_id=final_channel_id,
-                    ticker=call.ticker,
-                    direction=call.direction,
-                    target_price=call.target_price,
-                    stop_price=call.stop_price,
-                    event_at=msg_ts,
-                )
-                session.commit()
-            except Exception as exc:  # noqa: BLE001
-                session.rollback()
-                summary.errors.append(
-                    f"write_failed: msg_id={msg_id} "
-                    f"{type(exc).__name__}: {exc}"
+                    f"http_error: status={exc.response.status_code} "
+                    f"page={page_index}"
                 )
                 logger.exception(
-                    "discord_backfill: write failed for message %s",
-                    msg_id,
+                    "discord_backfill: HTTP error on page %d", page_index
                 )
-                continue
+                break
+            except httpx.HTTPError as exc:
+                summary.errors.append(
+                    f"transport_error: {type(exc).__name__}: {exc} "
+                    f"page={page_index}"
+                )
+                logger.exception(
+                    "discord_backfill: transport error on page %d",
+                    page_index,
+                )
+                break
+            summary.pages_fetched += 1
 
-            if pre_id is not None:
-                summary.predictions_deduped += 1
-            else:
-                summary.predictions_written += 1
+            if not page:
+                # Channel ran out of history before lookback exhausted.
+                logger.info(
+                    "discord_backfill: empty page at index %d — channel "
+                    "history exhausted",
+                    page_index,
+                )
+                break
 
-        # Pagination terminator: if the OLDEST PARSEABLE message in
-        # this page is older than the lookback cutoff, the next page
-        # would be entirely beyond our window — stop. (We still wrote
-        # any in-window messages in this page above.)
-        if oldest_in_page_ts is None:
-            # Page had only malformed messages — bail to avoid an
-            # infinite walk on a page that yields no usable timestamps.
-            # The id-based cursor would still advance (we set it from
-            # ``page[-1]["id"]`` above), but without any parseable
-            # timestamp we can't bound the lookback so we stop
-            # defensively rather than potentially walk all-history.
+            # Cursor for the NEXT page = the page's actual last-by-position
+            # message id. Discord returns messages newest-first, so
+            # ``page[-1]`` IS the oldest in the page regardless of whether
+            # any individual message parses cleanly. Driving the cursor off
+            # ``page[-1]["id"]`` (instead of off the oldest *parseable*
+            # timestamp inside the loop) avoids the bug where a malformed
+            # OLDEST message would let the cursor advance to a younger
+            # message id — causing the next page to re-fetch already-
+            # consumed messages, inflate ``messages_scanned``, and risk
+            # an infinite same-cursor loop if the same malformed id keeps
+            # appearing at position [-1]. (Spec C commit #7 codex review
+            # IMPORTANT 1.) The id is read defensively — Discord ALWAYS
+            # ships a non-null ``id`` on a message envelope, but if a
+            # future API change ever omits it we want to log + bail rather
+            # than crash.
+            next_cursor: str | None
+            try:
+                next_cursor = str(page[-1]["id"])
+            except (KeyError, TypeError) as exc:
+                summary.errors.append(
+                    f"malformed_page_tail: {type(exc).__name__}: {exc}"
+                )
+                logger.warning(
+                    "discord_backfill: page %d tail has no id — stopping",
+                    page_index,
+                )
+                break
+
+            oldest_in_page_ts: datetime | None = None
+            for msg in page:
+                summary.messages_scanned += 1
+                try:
+                    msg_id = str(msg["id"])
+                    msg_ts = _parse_discord_ts(msg["timestamp"])
+                    msg_content = str(msg.get("content", ""))
+                    msg_attachments_raw = msg.get("attachments")
+                except (KeyError, ValueError, TypeError) as exc:
+                    summary.errors.append(
+                        f"malformed_message: {type(exc).__name__}: {exc}"
+                    )
+                    logger.warning(
+                        "discord_backfill: malformed message in page %d: %s",
+                        page_index, exc,
+                    )
+                    continue
+
+                # Track the page's oldest PARSEABLE timestamp for the
+                # lookback-exhausted check below. The CURSOR for the next
+                # page comes from ``page[-1]["id"]`` (set above) — NOT
+                # from this min-timestamp scan — so a malformed oldest
+                # message can't corrupt the cursor advance.
+                if (
+                    oldest_in_page_ts is None
+                    or msg_ts < oldest_in_page_ts
+                ):
+                    oldest_in_page_ts = msg_ts
+
+                # Skip messages already older than our window — they're
+                # in the page only because the cursor walks in chunks of
+                # 100. We don't break here because the page is ordered
+                # newest-first; later messages in the SAME page may also
+                # be older but we still let the loop fall through to the
+                # post-page lookback-exhausted check.
+                if msg_ts < cutoff:
+                    continue
+
+                # Fetch text attachments (alpha-report channel posts daily
+                # reports as ``.txt`` uploads with a caption). Combined
+                # text = caption first, then attachment body — caption-
+                # first so a user-supplied prefix wins alpha-call regex
+                # precedence. ``fetch_text_attachments`` never raises on
+                # operational errors; HTTP failures log + skip that one
+                # attachment.
+                attachments = parse_attachments(msg_attachments_raw)
+                if attachments:
+                    attachment_text = await fetch_text_attachments(
+                        attachments,
+                        http_client=attachment_client,
+                        max_bytes=MAX_ATTACHMENT_BYTES,
+                    )
+                else:
+                    attachment_text = ""
+                effective_text = (
+                    f"{msg_content}\n\n{attachment_text}"
+                    if attachment_text
+                    else msg_content
+                )
+
+                # Long-form alpha-report skip — defer to the
+                # ``alpha_report_analyst`` cron for posts that the regex
+                # parser would mis-handle (multi-page commentary produces
+                # one false-positive Prediction per first-matching pattern
+                # in the prose). The NewsSignal row was already INSERTed
+                # by an upstream ingest path; the analyst cron picks up
+                # signals without an ``alpha_report_analyses`` row.
+                if _is_long_form_alpha_report(effective_text):
+                    logger.debug(
+                        "discord_backfill: skipping regex parser, long-form "
+                        "report; analyst will handle (msg_id=%s, len=%d, "
+                        "newlines=%d)",
+                        msg_id,
+                        len(effective_text or ""),
+                        (effective_text or "").count("\n"),
+                    )
+                    summary.messages_long_form_skipped += 1
+                    continue
+
+                call = extract_alpha_call_from_text(effective_text)
+                if call is None:
+                    summary.messages_unparseable += 1
+                    continue
+
+                # Write the prediction. The writer's idempotency contract
+                # collapses re-runs into the same row; we observe whether
+                # the row's ``id`` was already present pre-call by
+                # checking row identity — the writer returns the EXISTING
+                # row's instance unchanged on dedup hits, so a fresh
+                # `is_dedup` check uses the SQLAlchemy attribute
+                # ``_sa_instance_state.persistent`` semantics. Simpler:
+                # snapshot the row count before/after and infer.
+                try:
+                    pre_id = _peek_existing_id(
+                        session,
+                        message_id=msg_id,
+                        channel_id=final_channel_id,
+                    )
+                    _ = write_discord_prediction(
+                        session,
+                        user_id,
+                        message_id=msg_id,
+                        channel_id=final_channel_id,
+                        ticker=call.ticker,
+                        direction=call.direction,
+                        target_price=call.target_price,
+                        stop_price=call.stop_price,
+                        event_at=msg_ts,
+                    )
+                    session.commit()
+                except Exception as exc:  # noqa: BLE001
+                    session.rollback()
+                    summary.errors.append(
+                        f"write_failed: msg_id={msg_id} "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    logger.exception(
+                        "discord_backfill: write failed for message %s",
+                        msg_id,
+                    )
+                    continue
+
+                if pre_id is not None:
+                    summary.predictions_deduped += 1
+                else:
+                    summary.predictions_written += 1
+
+            # Pagination terminator: if the OLDEST PARSEABLE message in
+            # this page is older than the lookback cutoff, the next page
+            # would be entirely beyond our window — stop. (We still wrote
+            # any in-window messages in this page above.)
+            if oldest_in_page_ts is None:
+                # Page had only malformed messages — bail to avoid an
+                # infinite walk on a page that yields no usable timestamps.
+                # The id-based cursor would still advance (we set it from
+                # ``page[-1]["id"]`` above), but without any parseable
+                # timestamp we can't bound the lookback so we stop
+                # defensively rather than potentially walk all-history.
+                logger.warning(
+                    "discord_backfill: page %d had no parseable messages "
+                    "— stopping",
+                    page_index,
+                )
+                break
+            if oldest_in_page_ts < cutoff:
+                logger.info(
+                    "discord_backfill: lookback exhausted at page %d "
+                    "(oldest=%s, cutoff=%s)",
+                    page_index, oldest_in_page_ts.isoformat(),
+                    cutoff.isoformat(),
+                )
+                break
+            # Set up the cursor for the next page — from ``page[-1]["id"]``
+            # captured BEFORE the per-message loop (Spec C commit #7 codex
+            # review IMPORTANT 1).
+            before_cursor = next_cursor
+        else:
+            # Hit MAX_PAGES without exiting via break.
+            summary.errors.append(
+                f"max_pages_reached: stopped after {MAX_PAGES} pages"
+            )
             logger.warning(
-                "discord_backfill: page %d had no parseable messages "
-                "— stopping",
-                page_index,
+                "discord_backfill: MAX_PAGES (%d) reached", MAX_PAGES
             )
-            break
-        if oldest_in_page_ts < cutoff:
-            logger.info(
-                "discord_backfill: lookback exhausted at page %d "
-                "(oldest=%s, cutoff=%s)",
-                page_index, oldest_in_page_ts.isoformat(),
-                cutoff.isoformat(),
-            )
-            break
-        # Set up the cursor for the next page — from ``page[-1]["id"]``
-        # captured BEFORE the per-message loop (Spec C commit #7 codex
-        # review IMPORTANT 1).
-        before_cursor = next_cursor
-    else:
-        # Hit MAX_PAGES without exiting via break.
-        summary.errors.append(
-            f"max_pages_reached: stopped after {MAX_PAGES} pages"
-        )
-        logger.warning(
-            "discord_backfill: MAX_PAGES (%d) reached", MAX_PAGES
-        )
-
-    if own_attachment_client:
-        await attachment_client.aclose()
+    finally:
+        if own_attachment_client:
+            await attachment_client.aclose()
 
     logger.info(
         "discord_backfill: done — scanned=%d written=%d deduped=%d "

@@ -363,7 +363,25 @@ async def approve_proposal(
         if row is None or row.user_id != body.user_id:
             raise HTTPException(status_code=404, detail="proposal not found")
 
+        from argosy.services.chat_advisor.execution_policy import (
+            AnalysisOnlyViolation,
+            assert_proposal_can_mutate,
+        )
+
+        try:
+            await assert_proposal_can_mutate(
+                session, row.id, operation="approval"
+            )
+        except AnalysisOnlyViolation as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         # ----- T3 second-factor (Phase 5: TOTP or delay) ---------------------
+        from argosy.services.proposal_expiry import proposal_expiry_reason
+
+        expiry_reason = proposal_expiry_reason(row.expires_at)
+        if expiry_reason:
+            raise HTTPException(status_code=409, detail=expiry_reason)
+
         # Per `agent_settings.security.t3_second_factor`:
         #   - "totp"  → require a valid X-TOTP-Code header
         #   - "delay" → require body.second_factor=True AND first approval
@@ -485,6 +503,9 @@ async def approve_proposal(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         now = _utcnow()
+        expiry_reason = proposal_expiry_reason(row.expires_at, now=now)
+        if expiry_reason:
+            raise HTTPException(status_code=409, detail=expiry_reason)
         row.status = ProposalStatus.APPROVED.value
         row.updated_at = now
         session.add(

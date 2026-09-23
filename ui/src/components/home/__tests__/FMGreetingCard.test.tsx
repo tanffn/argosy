@@ -71,6 +71,37 @@ const QUIET_GREETING: GreetingDTO = {
 };
 
 describe("FMGreetingCard", () => {
+  it("does not label unavailable alignment as an investment transition", async () => {
+    homeGreeting.mockResolvedValueOnce({ ...GREETING, book: { ...GREETING.book, on_plan: null, on_plan_note: "Plan alignment unavailable: stale mark" } });
+    render(<FMGreetingCard userId="ariel" summaryOnly />);
+    await screen.findByTestId("family-summary");
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("In transition")).not.toBeInTheDocument();
+    expect(screen.getByText(/Plan alignment unavailable: stale mark/)).toBeInTheDocument();
+  });
+
+  it("shows the family summary with source dates and no competing greeting action list", async () => {
+    homeGreeting.mockResolvedValueOnce({ ...GREETING, book: { ...GREETING.book, as_of: "2026-09-10" } });
+    render(<FMGreetingCard userId="ariel" summaryOnly />);
+    await screen.findByTestId("family-summary");
+    expect(screen.getByText("Retirement outlook · model estimate")).toBeInTheDocument();
+    expect(screen.getByText(/Snapshot dated 2026-09-10/)).toBeInTheDocument();
+    expect(screen.getByText(/Individual prices may be older/)).toBeInTheDocument();
+    expect(screen.getByText(/Alignment is not a safety or approval verdict/)).toBeInTheDocument();
+    expect(screen.queryByTestId("needs-you")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("quiet-line")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("watching")).not.toBeInTheDocument();
+    expect(screen.getByText("Explain my plan")).toHaveAttribute("href", "/overview");
+  });
+
+  it("does not manufacture missing snapshot dates or retirement estimates", async () => {
+    homeGreeting.mockResolvedValueOnce({ ...QUIET_GREETING, book: { ...QUIET_GREETING.book, fi_line: "FI track: —" } });
+    render(<FMGreetingCard userId="ariel" summaryOnly />);
+    await screen.findByTestId("family-summary");
+    expect(screen.getByText("Estimate unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Snapshot date unavailable/)).toBeInTheDocument();
+  });
+
   it("renders the greeting header: logo, time-of-day salutation, live clock", async () => {
     homeGreeting.mockResolvedValueOnce(GREETING);
     render(<FMGreetingCard userId="ariel" />);
@@ -196,7 +227,7 @@ describe("FMGreetingCard", () => {
       expect(screen.getByTestId("quiet-line")).toBeInTheDocument(),
     );
     expect(screen.getByTestId("quiet-line").textContent).toContain(
-      "Everything is quiet — nothing needs you.",
+      "No actions listed in this summary; check analysis status for coverage.",
     );
     expect(screen.getByTestId("quiet-line").textContent).toContain(
       "Next scheduled review: 17:00.",

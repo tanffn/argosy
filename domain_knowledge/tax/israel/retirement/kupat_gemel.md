@@ -1,78 +1,56 @@
 ---
+profile_fields:
+  - user_date_of_birth
+  - spouse_date_of_birth
 topic: israel_kupat_gemel
 jurisdiction: israel
-last_verified: 2026-08-28
+last_verified: 2026-09-08
 next_refresh_due: 2026-12-31
 sources:
-  - url: https://www.taxes.gov.il/Pages/default.aspx
-    retrieved: 1900-01-01
+  - url: file://Resources/Family Finances Status - 26 May.tsv
+    as_of: 2026-05
     tier: 1
-  - url: https://www.gov.il/he/departments/ministry_of_finance
-    retrieved: 1900-01-01
+    label: "Historical intake reporting December-2025 account balances; not a current statement"
+  - url: https://www.gov.il/BlobFolder/guide/2026-filling-out-form-161d/he/Guides_IncomeTax_filling-out-form-161d-2026.pdf
+    retrieved: 2026-09-12
     tier: 1
-  - url: https://www.kolzchut.org.il/he/%D7%A7%D7%95%D7%A4%D7%AA_%D7%92%D7%9E%D7%9C
-    retrieved: 1900-01-01
+  - url: https://www.harel-group.co.il/long-term-savings/funding-saving
+    retrieved: 2026-09-12
+    tier: 1
+    label: "Issuer investment-provident product terms, not regulator tax guidance"
+  - url: https://www.harel-group.co.il/long-term-savings/funding/information/190-amendment
+    retrieved: 2026-09-12
+    tier: 1
+  - url: https://www.malam-payroll.com/wp-content/uploads/2026/01/loachezer2026.pdf
+    retrieved: 2026-09-12
     tier: 2
+    note: ITA January 2026 publication mirrored by payroll provider, not a direct regulator retrieval.
+  - url: https://www.gov.il/BlobFolder/policy/income-tax-professional-directives-251012/he/251012.pdf
+    retrieved: 1900-01-01
+    tier: 1
 ---
 
-# Kupat Gemel (`קופת גמל`) and Tikun 190
+# Kupat Gemel and Amendment 190
 
-`Kupat Gemel` is an Israeli long-term savings vehicle — a "provident fund" — that is part of the layered Israeli pension/savings system. The classic `kupat gemel` is illiquid until retirement age (currently 60+); however, a parallel mechanism called **Tikun 190** (`תיקון 190`) lets investors over 60 use a `kupat gemel l'haskhala` ("provident fund as a savings track") for significantly tax-advantaged investing without forcing annuitization.
+Do not conflate retirement provident funds, Amendment 190 treatment of qualifying contributions, and **Kupat Gemel LeHashkaa** (investment provident fund). The former “l'haskhala” product name was incorrect. Corrections await full-file re-verification; historical stamps do not establish account eligibility.
 
-> **Verification status:** `last_verified: 1900-01-01`. Domain-refresh agent must verify ceilings, eligibility ages, and the Tikun 190 rules annually.
+## Classify the actual account first
 
-## Two flavors
+- Classic retirement provident-fund withdrawal rules differ by contribution vintage and component. Post-2008 retirement contributions are generally pension-designated, not automatically liquid lump sums at age 60. Older capital-designated balances retain their own conditions.
+- Amendment 190 is a tax regime, not a promise of liquidity on a birthday. Qualifying recognized-pension money can receive lump-sum treatment at age 60 **with** minimum qualifying pension and classification conditions. The 2026 minimum pension amount is ₪5,306/month; state old-age benefits alone do not establish this condition. Obtain fund classification and required pension evidence.
+- Qualifying lump-sum withdrawal can incur 15% on **nominal gains**; eligible recognized-pension annuitization has different treatment. A first contribution layer and prior tax benefits can affect classification: do not label every post-tax deposit recognized pension.
+- Gemel LeHashkaa is a separate liquid savings product with its own annually indexed contribution cap and withdrawal/annuitization rules. Do not apply Amendment 190's 15% nominal rule to its ordinary withdrawals.
 
-| Flavor | Liquidity | Best for |
-|---|---|---|
-| **Classic Kupat Gemel** (employer-track or self-funded) | Locked until retirement age (60+); withdrawal as annuity or one-time | Salary-deferred contribution within the wage-ceiling pension/savings basket |
-| **Kupat Gemel l'Haskhala (Tikun 190)** | Withdrawable from age 60 (under amendment 190 conditions); penalty if withdrawn earlier | Lump-sum tax-efficient investment for 60+ residents who want flexibility, low CGT (15% nominal), and estate-planning benefits |
+## Compare tax bases, not just percentages
 
-## Tikun 190 highlights
+15% nominal is not always better than 25% real. Illustration before fees: ₪100 grows to ₪110 while the price index rises 8%; nominal gain is ₪10, indexed gain ₪2. Taxes under those simplified bases are ₪1.50 versus ₪0.50. Actual comparisons need the instrument's index/currency rule, fees, liquidity and withdrawal conditions.
 
-- Available to individuals **age 60 or older** (verify against current rule).
-- Capital gains taxed at **15% nominal** rate at withdrawal — significantly lower than the standard 25% real-gain CGT (`capital_gains.md`) for typical post-2003 investments.
-- No deduction for the contribution (it is post-tax money), but the wrapper materially reduces the on-going CGT load and offers good estate-planning treatment for heirs.
-- Can be used to consolidate other retirement balances under more favorable rules.
+There is no universal ₪26,400/₪57,000 monthly cap covering all pension/provident benefits. Employee credits, employer imputation ceilings, self-employed deductions and product deposit limits are distinct. Use the applicable statutory category and payroll/fund records; excess contributions are not universally prohibited.
 
-## The user's situation
+## Historical household context
 
-- Ariel reports 75,000 NIS in `provident fund` (Dec 2025 snapshot).
-- Noga reports 75,000 NIS in `provident fund` (Dec 2025 snapshot).
-- The user is currently **mid-40s**, well below the Tikun 190 age threshold of 60. So Tikun 190 is **not a current** lever; it becomes relevant in ~15 years and is worth flagging in the long-horizon roadmap.
-- The classic `kupat gemel` employer-side is part of the full Israeli pension/savings basket and likely subsumed in the user's `Pension` and `Executive Insurance` figures.
+May-2026 intake reported December-2025 provident balances of ₪75,000 for Ariel and ₪75,000 for Noga. Public research does not refresh these observations or establish contribution vintages or whether another pension balance already includes them. Reconcile statements to avoid double counting. Age-60 withdrawal is not current liquidity for the user's mid-40s planning.
 
-## Annual contribution ceilings (2025 vintage; verify)
+## Research use
 
-The pension/savings wrapper covering employer + employee contributions to pensions, executive insurance, and `kupat gemel` is jointly capped by the same 2 ceilings:
-- "Income up to the ceiling" (~26,400 NIS/month — verify) for one set of deduction rules.
-- "Income up to the broader ceiling" (~57,000 NIS/month — verify) for another.
-
-These ceilings are unified across pensions and provident funds; over-contribution above the ceiling generally cannot enter the tax-favored wrapper.
-
-## When this matters for the plan
-
-- **Long-horizon (10–15 years from now):** When the user approaches age 60, evaluate moving a meaningful chunk of taxable Leumi USD assets into a Tikun 190 wrapper to lock in the 15% nominal rate on future gains.
-- **Annual:** Verify that Noga's `kupat gemel` is being maximized as part of household tax planning.
-
-## How agents should use this file
-
-- **Cite this file** for any claim about classic `kupat gemel`, Tikun 190 mechanics, or the 60+ age threshold.
-- Pair with `keren_hishtalmut.md` (the more immediately relevant tax-advantaged wrapper for this user).
-- Pair with `capital_gains.md` for the comparison vs the 25% standard CGT.
-- The intake agent should record provider names and balances for both spouses.
-- If `last_verified` is older than 12 months OR is `1900-01-01`, report `confidence=low`.
-
-## Refresh cadence
-
-- **Annual (January)** — ceilings, age thresholds, and rates re-issued.
-- **On reform** — Israel periodically reforms the pension/`gemel`/`hishtalmut` rules; any reform triggers a full refresh.
-
-## Performance data
-
-Per-fund 12-month / 36-month / 60-month nominal returns plus the
-sector benchmark are available via the gemelnet adapter (see
-`domain_knowledge/brokers/gemelnet.md`). When discussing a specific
-user's `kupat gemel` performance, query
-`argosy.state.queries.get_user_pension_snapshots(user_id)` and cite the
-snapshot's `source_url` (`gemelnet.mof.gov.il/Tsuot/UI/DafMakdim.aspx`).
+Before a transfer compare after-tax cashflows, guarantees, beneficiary rules, insurance lost and fees; do not automatically move taxable assets at age 60. Read `keren_hishtalmut.md`, `kupat_pensia.md` and `capital_gains.md`. GemelNet research is separate from live adapter availability and personal records (`domain_knowledge/brokers/gemelnet.md`). Refresh public rules annually and private records separately.

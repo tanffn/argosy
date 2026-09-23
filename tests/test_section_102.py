@@ -94,23 +94,27 @@ class TestCapitalTaxBands:
             s102.capital_tax_ils(-1.0)
 
 
-class TestAgainstTheRealWithholding:
-    """The 2026 sales are the strongest available check: two independent
-    computations — statutory tax, and cash actually withheld — must agree."""
+class TestHistoricalSaleArithmetic:
+    """Historical arithmetic fixture, not proof of tax-component allocation.
+
+    One illustrative FX is used here; final filing requires sale-date FX and
+    certificates. Proceeds-minus-wire may also include trustee/wire expenses.
+    """
 
     FX = 2.9910
     LOTS = [   # (grant benchmark, shares, sale price)
-        (18.3305, 560, 191.33), (18.3305, 517, 176.59), (18.3305, 1040, 199.56),
-        (18.3305, 560, 216.09), (18.3305, 700, 219.93), (18.1159, 560, 223.80),
+        (18.3305, 560, 191.3301), (18.3305, 520, 176.59), (18.3305, 1040, 199.5601),
+        (18.3305, 560, 216.085), (18.3305, 700, 219.93), (18.1159, 560, 223.80),
     ]
-    WITHHELD_USD = 217_766.76   # gross 806,787.47 minus wires 589,020.71
+    PROCEEDS_WIRE_GAP_USD = 217_766.76  # after broker commissions, not certified tax
 
-    def test_computed_tax_matches_cash_withheld_within_two_percent(self):
+    def test_capital_estimate_and_illustrative_gap_comparison(self):
         gain = sum(s102.capital_gain_usd(sh, px, b) for b, sh, px in self.LOTS)
-        assert gain == pytest.approx(734_227, abs=500)
+        assert sum(sh for _, sh, _ in self.LOTS) == 3940
+        assert gain == pytest.approx(734_698.766, abs=0.0001)
         tax = s102.capital_tax_ils(gain * self.FX)
-        withheld_ils = self.WITHHELD_USD * self.FX
-        assert tax.tax_ils == pytest.approx(withheld_ils, rel=0.02)
+        gap_ils = self.PROCEEDS_WIRE_GAP_USD * self.FX
+        assert tax.tax_ils == pytest.approx(gap_ils, rel=0.02)
 
     def test_the_effective_rate_sits_in_the_surtax_band(self):
         gain = sum(s102.capital_gain_usd(sh, px, b) for b, sh, px in self.LOTS)
@@ -118,11 +122,9 @@ class TestAgainstTheRealWithholding:
         assert 0.28 < r < 0.30
 
     def test_a_broker_basis_would_break_the_agreement(self):
-        """Sanity: if the vest-FMV basis were correct, the withheld cash would
-        imply a rate far outside the statutory band. It doesn't — which is what
-        confirms the grant-benchmark reading."""
-        schwab_gain_usd = 472_910.71
-        implied = self.WITHHELD_USD / schwab_gain_usd
+        """Different basis gives a different ratio; this does not prove a tax rule."""
+        schwab_gain_usd = 473_169.36
+        implied = self.PROCEEDS_WIRE_GAP_USD / schwab_gain_usd
         assert implied > 0.42, f"implied {implied:.1%} — nowhere near 28-30%"
 
 
@@ -148,9 +150,7 @@ class TestOrdinarySlice:
 
 
 class TestSaleTaxAgainstForm106:
-    """The 2025 Form 106 is the authoritative reconciliation: it reports both
-    slices, so it pins the combined model in a way the withheld cash (capital
-    slice only) cannot."""
+    """Both slices enter the settled model; a wire gap alone cannot allocate tax."""
 
     FX = 2.9910
 
@@ -170,16 +170,15 @@ class TestSaleTaxAgainstForm106:
 
     def test_form_106_proportions_reproduce(self):
         """Capital + ordinary = 97.2% of gross 102 proceeds on the 2025 form
-        (ILS 1,327,411 + 411,704 against 1,790,099), the rest fees."""
+        (ILS 1,327,411 + 411,704 against 1,790,099); gap is not proof of fees."""
         assert (1_327_411 + 411_704) / 1_790_099 == pytest.approx(0.972, abs=0.001)
 
     def test_net_retention_is_68_not_73_percent(self):
-        """Sizing deployment off the capital slice alone overstates cash by ~5
-        points. The 2026 actuals read 73% only because the ordinary slice had
-        not been taken."""
-        lots = [(18.3305, 560, 191.33), (18.3305, 517, 176.59),
-                (18.3305, 1040, 199.56), (18.3305, 560, 216.09),
-                (18.3305, 700, 219.93), (18.1159, 560, 223.80)]
+        """Illustrative gross liability, not additional unpaid household tax.
+
+        Actual credited withholding must be reconciled before reserve changes.
+        """
+        lots = TestHistoricalSaleArithmetic.LOTS
         gross = sum(sh * px for _, sh, px in lots) * self.FX
         gain = sum(s102.capital_gain_usd(sh, px, b) for b, sh, px in lots) * self.FX
         ordinary = sum(s102.ordinary_income_usd(sh, b) for b, sh, _ in lots) * self.FX

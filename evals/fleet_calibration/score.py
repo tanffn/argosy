@@ -28,17 +28,26 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PACKETS_DIR = HERE / "packets"
+sys.path.insert(0, str(HERE.parent.parent))
 
-from agent_pipeline import (  # noqa: E402
+from evals.fleet_calibration.agent_pipeline import (  # noqa: E402
     verify_classifier,
     verify_grading,
     verify_review,
     verify_sanitizer,
 )
-from run_suite import build_constraints, output_audit, temporal_audit  # noqa: E402
+from evals.fleet_calibration.run_suite import build_constraints, output_audit, temporal_audit  # noqa: E402
 
 LONG_ACTIONS_UNPOSITIONED = {"buy"}
 LONG_ACTIONS_POSITIONED = {"buy", "hold"}
+
+
+def print_console_preview(text: str, *, stream=None) -> None:
+    """Print UTF-8 report text without crashing a legacy Windows console."""
+    selected = stream or sys.stdout
+    encoding = getattr(selected, "encoding", None) or "utf-8"
+    safe = text.encode(encoding, errors="backslashreplace").decode(encoding)
+    selected.write(safe + "\n")
 
 
 def ensure_report_path_writable(report_path: Path) -> None:
@@ -157,6 +166,18 @@ def pipeline_disqualification(
     missing_replay = [field for field in replay_required if not result.get(field)]
     if missing_replay:
         return f"replay incomplete: missing {', '.join(missing_replay)}"
+    output = result["output_full"]
+    for outer, inner in (
+        ("action", "action"), ("confidence", "confidence"),
+        ("size", "size_shares_or_currency"), ("size_units", "size_units"),
+        ("rationale_summary", "rationale_summary"), ("falsifiers", "falsifiers"),
+        ("next_validation_point", "next_validation_point"),
+        ("rerating_horizon", "rerating_horizon"), ("cited_sources", "cited_sources"),
+    ):
+        # Legacy records don't duplicate every clock/source field. Any field
+        # they DO duplicate must match the immutable structured Trader output.
+        if outer in result and result[outer] != output.get(inner):
+            return f"Trader output mismatch: {outer}"
     snapshot_mismatch = packet_snapshot_mismatch(result, packet)
     if snapshot_mismatch:
         return f"packet snapshot mismatch: {snapshot_mismatch}"
@@ -276,6 +297,32 @@ def grade_point(result: dict, packet: dict) -> dict:
     rationale = result.get("rationale_summary") or ""
     positioned = packet.get("positioned", False)
 
+    output_full = result.get("output_full") or {}
+    structured_falsifiers = (
+        output_full.get("falsifiers") or result.get("falsifiers") or []
+    )
+    structured_clock = " ".join(
+        value
+        for value in (
+            output_full.get("next_validation_point")
+            or result.get("next_validation_point"),
+            output_full.get("rerating_horizon")
+            or result.get("rerating_horizon"),
+        )
+        if value
+    )
+    falsifiers_snippet = (
+        "; ".join(str(value) for value in structured_falsifiers)
+        if structured_falsifiers
+        else find_snippet(rationale, r"falsifier")
+    )
+    clock_snippet = structured_clock or find_snippet(
+        rationale,
+        r"THE CLOCK|\bCLOCK\b\s*[:—-]|next validation|validation point",
+    )
+    verdict_line = extract_section(rationale, "Verdict") or rationale
+    has_falsifiers = bool(structured_falsifiers) or mentions_falsifiers(rationale)
+
     pipeline = result.get("agent_pipeline") or {}
     grader = pipeline.get("grading") or {}
     if grader and verify_grading(packet, result, grader)["ok"]:
@@ -296,12 +343,9 @@ def grade_point(result: dict, packet: dict) -> dict:
             "notes": [authored["rationale"]] if authored.get("rationale") else [],
             "acted_return_pct": acted,
             "benchmark_return_pct": authored.get("benchmark_return_pct"),
-            "falsifiers_snippet": find_snippet(rationale, r"falsifier"),
-            "clock_snippet": find_snippet(
-                rationale,
-                r"THE CLOCK|\bCLOCK\b\s*[:—-]|next validation|validation point",
-            ),
-            "verdict_line": extract_section(rationale, "Verdict"),
+            "falsifiers_snippet": falsifiers_snippet,
+            "clock_snippet": clock_snippet,
+            "verdict_line": verdict_line,
             "grade_source": "calibration_grader",
         }
 
@@ -309,12 +353,12 @@ def grade_point(result: dict, packet: dict) -> dict:
     score = 1.0 if in_class else 0.0
     notes = []
     if not in_class:
-        if grading == "F1_lenient" and action == "hold" and mentions_falsifiers(rationale):
+        if grading == "F1_lenient" and action == "hold" and has_falsifiers:
             score = 0.5
             notes.append("F1 lenient: reasoned pass with falsifiers = half-fail")
         elif grading == "trap" and action == "buy":
             small = bool(re.search(r"(?i)starter|small slot|0\.5|half slot|minimum", rationale))
-            if small and mentions_falsifiers(rationale):
+            if small and has_falsifiers:
                 score = 0.5
                 notes.append("trap BUY half-credit: small + killing falsifier recorded (verify manually)")
             else:
@@ -333,12 +377,9 @@ def grade_point(result: dict, packet: dict) -> dict:
         "notes": notes,
         "acted_return_pct": acted_ret,
         "benchmark_return_pct": bench_ret,
-        "falsifiers_snippet": find_snippet(rationale, r"falsifier"),
-        "clock_snippet": find_snippet(
-            rationale,
-            r"THE CLOCK|\bCLOCK\b\s*[:—-]|next validation|validation point",
-        ),
-        "verdict_line": extract_section(rationale, "Verdict"),
+        "falsifiers_snippet": falsifiers_snippet,
+        "clock_snippet": clock_snippet,
+        "verdict_line": verdict_line,
         "grade_source": "legacy_deterministic",
     }
 
@@ -388,10 +429,16 @@ def main() -> None:
         score_audit = recompute_integrity_audit(r, pkt)["output_audit"]
         from horizon_calibration import score_row as score_horizon_row
 
+        output_full = r.get("output_full") or {}
         horizon = score_horizon_row(
             rationale=r.get("rationale_summary") or "",
             freeze_date=pkt.get("freeze_date"),
             packet=pkt,
+            rerating_horizon=(
+                output_full.get("rerating_horizon")
+                or r.get("rerating_horizon")
+                or ""
+            ),
         )
         rows.append({
             **r,
@@ -519,8 +566,11 @@ def main() -> None:
     report_path = run_path.with_name(run_path.stem + "_report.md")
     ensure_report_path_writable(report_path)
     report_path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"report -> {report_path}")
-    print("\n".join(lines[:60]))
+    # Windows supervisors often expose a cp1252 stdout even though the report
+    # is intentionally UTF-8.  The artifact is already persisted above; keep
+    # a console preview from turning a successful score into a false failure.
+    preview = f"report -> {report_path}\n" + "\n".join(lines[:60])
+    print_console_preview(preview)
 
 
 if __name__ == "__main__":

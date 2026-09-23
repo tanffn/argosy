@@ -1,76 +1,21 @@
-"""``DiscordListenerJob`` — Sprint A commit #6.
+"""Supervised passive Discord research feed.
 
-Wraps :func:`argosy.services.discord_listener.run_discord_listener` as a
-:class:`~argosy.orchestrator.loops.base.LongRunningJob` so the
-:class:`~argosy.services.jobs.registry.JobRegistry` supervisor (commit
-#5) owns the (connect, disconnect) cycle, the exponential-backoff
-restart state, and the ``job_runs`` audit rows.
-
-Retires the external-cron expectation that earlier shipped with the
-listener — production now goes through the supervisor; ``argosy
-discord-ingest`` is one-shot smoke only.
-
-Lifecycle of one supervisor cycle:
-
-1. Supervisor opens a ``job_runs`` row in ``status='running'``.
-2. Calls :meth:`DiscordListenerJob.run`.
-3. ``run()`` flips ``_status`` to ``"reconnecting"`` and awaits
-   ``run_discord_listener``, passing an ``on_connected`` callback that
-   flips ``_status`` to ``"connected"`` once the gateway HELLO has been
-   acked and heartbeat is scheduled.
-4. ``finally``: ``_status`` returns to ``"stopped"``;
-   ``exit_intent`` is stamped (``"clean"`` on normal return; the
-   supervisor coerces a raise into ``"crashed"``).
-
-Missing-creds path
-------------------
-
-If credentials are missing at construction (``creds=None``) the job
-``run()`` does a fast-clean exit: logs once, stamps
-``exit_intent='clean'``, leaves ``_status='stopped'``. The supervisor
-sees a clean exit and does NOT auto-restart (per spec §3 IMPORTANT #3).
-The job remains registered so the operator can see "creds missing;
-drop ~/.argosy/discord_creds.json to activate" in the admin UI rather
-than the row disappearing.
-
-Race notes (spec §6 codex review focus)
----------------------------------------
-
-* The supervisor opens a ``job_runs`` row BEFORE ``run()`` flips
-  ``_status`` to ``"reconnecting"``. There is a small window where the
-  raw ``job_runs.status='running'`` disagrees with
-  ``connection_status()='stopped'``. The :class:`JobRegistry.list`
-  health derivation explicitly prefers ``connection_status()`` for
-  ``LongRunningJob`` (see ``registry.py`` near
-  ``isinstance(rec.job, LongRunningJob)``), so the UI sees a coherent
-  state even during the window.
-* The ``on_connected`` callback fires inside
-  :func:`run_discord_listener` immediately AFTER
-  ``await client.connect()`` returns — the real client returns from
-  ``connect()`` once the gateway HELLO has been received, IDENTIFY has
-  been SENT, and the heartbeat task has been scheduled. The gateway's
-  IDENTIFY-ACK / ``READY`` dispatch arrives LATER inside the messages
-  loop. So the callback semantics are GATEWAY-TRANSPORT-CONNECTED, NOT
-  authenticated (codex review BLOCKER on commit #6). The trade-off:
-  green-dot lights up promptly on a healthy gateway; on a revoked
-  token there's a brief false-green window before the gateway closes
-  the connection. A stricter "fire on first READY" semantic is a
-  follow-on if false-greens become operator-visible.
-
-The supervisor handles cancellation: :meth:`cancel` defers to the
-listener's own ``finally``-block close (``client.close()`` is in a
-``finally`` inside ``run_discord_listener``), so the supervisor's
-``task.cancel()`` is sufficient to unwind a connected listener.
+The maintained SDK handles transient disconnects by resuming sessions with
+backoff. Connected means authenticated READY/RESUMED; disconnects immediately
+show reconnecting. Durable transport budgets limit fresh login/IDENTIFY calls.
+Terminal authentication/configuration errors are recorded as failures via
+NonRetryableJobError and do not restart automatically. Ordinary unexpected
+errors retain the registry backoff. Missing credentials remain dormant.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
 
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
-from argosy.orchestrator.loops.base import ConnectionStatus, LongRunningJob
+from argosy.orchestrator.loops.base import ConnectionStatus, LongRunningJob, NonRetryableJobError
 from argosy.services.discord_listener import (
     DiscordCreds,
     run_discord_listener,
@@ -81,8 +26,8 @@ _log = get_logger("argosy.jobs.discord_listener")
 
 # Discord gateway close codes that reconnecting CANNOT fix — auth/config
 # failures. Retrying just hammers the gateway, and a tight reconnect storm is
-# exactly what gets a token rate-limited / blocked. Treat these like missing
-# creds: stop cleanly, NO supervisor restart, leave the job visible in the admin
+# exactly what gets a token rate-limited / blocked. Record a failure with
+# NO supervisor restart, leaving the job visible in the admin
 # UI until the operator refreshes credentials.
 #   4004 auth failed | 4010 invalid shard | 4011 sharding required
 #   4012 invalid API version | 4013 invalid intent(s) | 4014 disallowed intent(s)
@@ -240,6 +185,7 @@ class DiscordListenerJob(LongRunningJob):
                 self._session_factory,
                 creds=self._creds,
                 on_connected=self._on_gateway_connected,
+                on_disconnected=self._on_gateway_disconnected,
             )
             # Normal return: gateway closed cleanly OR the message
             # iterator stopped. Either way, this is a clean exit per
@@ -257,7 +203,7 @@ class DiscordListenerJob(LongRunningJob):
         except Exception as exc:  # noqa: BLE001 — terminal-auth triage before re-raise
             # A non-recoverable gateway close (4004 auth / 401x config) must NOT
             # become a supervisor crash→restart: the reconnect storm is what
-            # blocks the token. Stop cleanly (no restart), like missing creds.
+            # blocks the token. Record an error without automatic restart.
             # CancelledError is BaseException, so operator-stop still propagates.
             code = _terminal_close_code(exc)
             if code is None:
@@ -271,7 +217,9 @@ class DiscordListenerJob(LongRunningJob):
                     "refreshed (tight reconnects can get the token blocked)."
                 ),
             )
-            self._exit_intent = "clean"
+            raise NonRetryableJobError(
+                f"Discord feed stopped: gateway code {code}. Repair credentials/intents; automatic reconnect is disabled."
+            ) from None
         finally:
             # Always return to 'stopped' on exit (clean, operator_stop,
             # or crashed). The supervisor reads exit_intent (set above
@@ -279,18 +227,11 @@ class DiscordListenerJob(LongRunningJob):
             self._status = "stopped"
 
     def _on_gateway_connected(self) -> None:
-        """Callback fired by ``run_discord_listener`` after the gateway
-        transport handshake completes (HELLO received + IDENTIFY sent +
-        heartbeat scheduled).
-
-        Flips ``_status`` to ``"connected"`` so the admin UI's health
-        derivation lights up green. NOTE — this is the
-        GATEWAY-TRANSPORT-CONNECTED point, not authenticated. See the
-        module docstring's BLOCKER note for the deliberate trade-off
-        between prompt UI greening and a brief false-green window on
-        revoked tokens.
-        """
+        """Production callback after authenticated READY, not merely HELLO."""
         self._status = "connected"
+
+    def _on_gateway_disconnected(self) -> None:
+        self._status = "reconnecting"
 
 
 __all__ = [

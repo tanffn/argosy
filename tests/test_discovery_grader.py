@@ -40,6 +40,18 @@ def test_idempotency_key_stable_and_varies():
     assert k1 != dg.discovery_idempotency_key("ariel", "PLTR", "fp-abc", "2026-06-13")
 
 
+def test_grader_sees_complete_limitations_outside_report_excerpt():
+    reason = 'Unresolved issuer evidence beyond truncated report text'
+    _, prompt = dg.DiscoveryGraderAgent(user_id='ariel').build_prompt(
+        ticker='PLTR', analyst_reports=[_Report('news', 'x' * 4500 + reason)],
+        evidence_limitations={'unresolved_remediations': [{'reason': reason}],
+                              'skipped_roles': [('macro', 'empty payload')]},
+    )
+    assert reason in prompt
+    assert 'empty payload' in prompt
+    assert 'A completed analyst call does not verify its inputs' in prompt
+
+
 def _stub_pipeline(monkeypatch, grade_payload, *, quorum_fail=False):
     async def fake_open(**kwargs):
         return 4242
@@ -103,6 +115,22 @@ def test_grade_returns_none_on_quorum_failure(monkeypatch):
     _stub_pipeline(monkeypatch, {}, quorum_fail=True)
     pick = asyncio.run(dg.grade_discovery_ticker("ariel", _cand("ZZZZ")))
     assert pick is None
+
+
+def test_followup_question_reaches_evidence_collectors(monkeypatch):
+    _stub_pipeline(monkeypatch, {
+        "ticker": "PLTR", "conviction": "LOW", "verdict": "WATCH",
+        "thesis_md": "Needs primary evidence", "cites": ["news"]})
+    captured = {}
+
+    async def analysts(**kwargs):
+        captured.update(kwargs)
+        return _Result([_Report("news", "Evidence still missing")])
+
+    monkeypatch.setattr(dg, "run_per_ticker_analysts", analysts)
+    question = "Verify the dated fully diluted share count in issuer filings."
+    asyncio.run(dg.grade_discovery_ticker("ariel", _cand(), research_question=question))
+    assert captured["review_context"] == question
 
 
 def test_synthesis_failure_closes_run_blocked(monkeypatch):

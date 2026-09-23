@@ -16,7 +16,7 @@ router = APIRouter(prefix="/e2e-proof", tags=["e2e-proof"])
 
 class RunRequest(BaseModel):
     user_id: str = "ariel"
-    cash_usd: float = Field(gt=0)
+    cash_usd: float = Field(ge=0)
     allow_sells: bool = True
     horizon_years_min: int = Field(default=1, ge=1, le=30)
     horizon_years_max: int = Field(default=5, ge=1, le=30)
@@ -51,7 +51,8 @@ def run_e2e_proof(
         raise HTTPException(status_code=409, detail="Monthly LLM budget is paused")
 
     from argosy.api.routes.portfolio import get_deploy_cash
-    from argosy.services.current_recommendations import recommendation_ids
+    from argosy.services.current_recommendations import recommendation_ids, recommendation_keys
+    from argosy.services.allocation_research import refresh_due_research
     from argosy.services.jobs.period_directive_daily import (
         _find_open_directives,
         _has_fresh_validated_sheet,
@@ -61,6 +62,7 @@ def run_e2e_proof(
         _supersede_open_directives,
         _write_directive_proposal,
     )
+    refresh_due_research(db, body.user_id)
     outcome = get_deploy_cash(
         cash_usd=body.cash_usd,
         user_id=body.user_id,
@@ -121,6 +123,7 @@ def run_e2e_proof(
         body.user_id,
         excess_usd=body.cash_usd,
         source_proposal_ids=source_ids,
+        source_recommendation_keys=recommendation_keys(recommendations),
         sheet=artifact.sheet,
     )
     if proposal_id is None:

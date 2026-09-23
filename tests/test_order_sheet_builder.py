@@ -10,6 +10,7 @@ from argosy.services.allocation_author.proposal import (
     Sell,
 )
 from argosy.services.order_sheet import (
+    CandidateComparison,
     MarketEvidence,
     NoActionLine,
     TaxImpact,
@@ -47,7 +48,9 @@ def _voice(verdict="HOLD") -> VoiceVerdict:
     )
 
 
-def test_authored_cash_allocation_becomes_validated_quantities() -> None:
+@pytest.mark.parametrize("fund_verdict", ["HOLD", "TRIM"])
+@pytest.mark.parametrize("selected", [True, False])
+def test_authored_cash_allocation_becomes_validated_quantities(fund_verdict, selected) -> None:
     proposal = AllocationProposal(
         cash_to_deploy=120_000,
         buys=[
@@ -61,6 +64,11 @@ def test_authored_cash_allocation_becomes_validated_quantities() -> None:
             )
         ],
         rationale="One list, fully deploy the stated cash.",
+        candidate_comparisons=[CandidateComparison(ticker="EXUS" if selected else "IWQU",
+            selection="SELECTED" if selected else "NOT_SELECTED", research_verdict=fund_verdict,
+            research_conviction="MED", evidence_fresh_as_of=NOW, key_advantage="Diversified vehicle",
+            key_risk="Index tracking", why="Compared using the fund's mandate and portfolio role",
+            recommended_position_usd=120000 if selected else 0)],
     )
     facts = ExecutionFacts(
         evidence=MarketEvidence(
@@ -94,6 +102,13 @@ def test_authored_cash_allocation_becomes_validated_quantities() -> None:
     assert built.sheet.lines[0].shares == 5_000
     assert built.sheet.lines[0].action == "BUY"
     assert built.validation.buy_total_usd == 120_000
+    from argosy.services.order_sheet import validate_order_sheet
+    wrong = built.sheet.model_copy(deep=True)
+    wrong.candidate_comparisons[0].recommended_position_usd += 100
+    assert any(f.code == "candidate_sizing_order_mismatch" for f in validate_order_sheet(wrong).failures)
+    wrong.candidate_comparisons[0].recommended_position_usd -= 100
+    wrong.candidate_comparisons[0].evidence_fresh_as_of = datetime(2026, 1, 1, tzinfo=UTC)
+    assert any(f.code == "fund_comparison_evidence_missing" for f in validate_order_sheet(wrong).failures)
 
 
 def test_missing_author_judgment_never_becomes_an_order() -> None:

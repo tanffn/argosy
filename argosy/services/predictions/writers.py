@@ -66,7 +66,7 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -260,6 +260,8 @@ def _choose_method_and_window(
         window = timeframe_days (default 7 if unspecified).
       * direction='multi' → ``multi_basket_weighted``,
         window = min(timeframe_days, 30).
+      * preserve_long_horizon with timeframe_days in (180, 365) →
+        the matching fixed-lookahead method and exact window.
       * timeframe_days <= 7  → ``fixed_lookahead_7d``,  window = 7.
       * timeframe_days <= 30 → ``fixed_lookahead_30d``, window = 30.
       * timeframe_days > 30  → ``fixed_lookahead_30d``, window = 30
@@ -277,6 +279,9 @@ def _choose_method_and_window(
         multi). ``multi`` selects ``multi_basket_weighted``.
       timeframe_days: source-asserted timeframe. ``None`` → falls back
         to 7 days (the most conservative per-source default).
+      preserve_long_horizon: retain supported explicit long horizons for
+        recommendation clocks and Alpha-report predictions. Other sources
+        keep their legacy checkpoint bucketing.
 
     Returns:
       ``(method_name, window_days)`` — both strings used downstream:
@@ -295,8 +300,8 @@ def _choose_method_and_window(
         chosen_window = timeframe_days or DEFAULT_TIMEFRAME_DAYS_DISCORD
         return ("target_stop", chosen_window)
 
-    if preserve_long_horizon and timeframe_days == 180:
-        return ("fixed_lookahead_180d", 180)
+    if preserve_long_horizon and timeframe_days in (180, 365):
+        return (f"fixed_lookahead_{timeframe_days}d", timeframe_days)
 
     # No-target-stop path: bucket by stated timeframe into the two
     # fixed-lookahead methods. The 30d cap (§5.5) is realised here so
@@ -523,12 +528,12 @@ def write_order_sheet_predictions(
     session: Session,
     user_id: str,
     **kwargs: Any,
-) -> tuple[Prediction, Prediction]:
+) -> tuple[Prediction, Prediction, Prediction]:
     """Track a surfaced order recommendation whether or not it is accepted.
 
-    The authored expectation keeps its exact due date. A second independent
-    six-month clock makes accepted, declined, expired, and ignored advice
-    comparable in the same long-horizon calibration cohort.
+    The authored expectation keeps its exact due date. Independent six-month
+    and one-year clocks make accepted, declined, expired, and ignored advice
+    comparable in the same long-horizon calibration cohorts.
     """
 
     authored = write_order_sheet_prediction(session, user_id, **kwargs)
@@ -560,7 +565,30 @@ def write_order_sheet_predictions(
         timeframe_days=180,
         preserve_long_horizon=True,
     )
-    return authored, thesis
+    annual = _insert_prediction(
+        session,
+        user_id,
+        source="signal_stream:order_sheet",
+        source_ref={
+            "order_sheet_fingerprint": fingerprint,
+            "proposal_id": kwargs["proposal_id"],
+            "action": action,
+            "expectation": kwargs["expectation"],
+            "success_measure": kwargs["success_measure"],
+            "stance_source": kwargs["stance_source"],
+            "horizon_days": 365,
+        },
+        message_id=(
+            f"v1|predictions|order_sheet|{fingerprint}.{ticker}|365d"
+        ),
+        ticker=ticker,
+        direction=direction,
+        event_at=event_at,
+        entry_price=kwargs["entry_price"],
+        timeframe_days=365,
+        preserve_long_horizon=True,
+    )
+    return authored, thesis, annual
 
 
 def ensure_surfaced_order_sheet_predictions(
@@ -1112,8 +1140,8 @@ def write_alpha_report_prediction(
         introduce hindsight bias).
       timeframe_days: per-signal timeframe (caller maps from the
         TickerSignal.timeframe enum: short=7, medium=30, long=180,
-        unspecified=30). The shared method selector caps at 30 days
-        via spec §5.5.
+        unspecified=30). Explicit 180/365-day horizons are preserved rather
+        than replaced with the legacy 30-day checkpoint.
       raw_text_ref: pointer to ``news_signals.id:<id>`` for citation
         display. NEVER injected into LLM prompts.
 
@@ -1143,6 +1171,7 @@ def write_alpha_report_prediction(
             else DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT
         ),
         raw_text_ref=raw_text_ref,
+        preserve_long_horizon=True,
     )
 
 
@@ -1163,6 +1192,92 @@ def write_alpha_report_prediction(
 # first-class ``deep_decision_verdict`` source would need a one-line CHECK
 # relaxation migration (mirroring 0058/0082); flagged as the clean alternative.
 DEEP_DECISION_VERDICT_SOURCE: str = "signal_stream:deep_decision_verdict"
+DISCOVERY_EVALUATION_SOURCE: str = "signal_stream:discovery_evaluation"
+
+
+def write_discovery_evaluation_predictions(
+    session: Session,
+    user_id: str,
+    *,
+    event_key: str,
+    ticker: str,
+    verdict: str,
+    conviction: str,
+    event_at: datetime,
+    entry_price: Decimal | float,
+    estimator_go: bool | None,
+    estimator_conviction: str | None,
+    estimation: str,
+    thesis: str,
+    radar_rank: int | None,
+    radar_score: float | None,
+) -> tuple[Prediction, Prediction, Prediction]:
+    """Put the actual discovery-fleet call on 30d/180d/365d clocks.
+
+    Every fleet-graded name keeps a long price observation. ``BUY`` means the
+    fleet recommended the upside; ``WATCH``/``PASS`` use the same return to
+    identify a correct skip or a missed winner. A non-recommendation is never
+    silently rewritten as a short thesis.
+    """
+
+    symbol = ticker.strip().upper()
+    if not symbol:
+        raise ValueError("discovery evaluation requires a ticker")
+    if entry_price is None or float(entry_price) <= 0:
+        raise ValueError("discovery evaluation requires a positive entry price")
+    recommendation = (verdict or "").strip().upper()
+    if recommendation not in {"BUY", "WATCH", "PASS"}:
+        raise ValueError(f"unsupported discovery verdict: {verdict!r}")
+    common_ref = {
+        "kind": "discovery_evaluation",
+        "verdict": recommendation,
+        "conviction": (conviction or "").strip().upper() or None,
+        "estimator_go": estimator_go,
+        "estimator_conviction": estimator_conviction,
+        "estimation": estimation,
+        "expectation": thesis,
+        "radar_rank": radar_rank,
+        "radar_score": radar_score,
+    }
+    rows: list[Prediction] = []
+    for horizon in (30, 180, 365):
+        if recommendation == "BUY":
+            success_measure = (
+                f"At {horizon} days, report total price return from the dated "
+                "entry. Positive is supporting evidence; +10% or more is a "
+                "strong win. Negative challenges the call; -10% or worse is a "
+                "strong miss. This grades price outcome, not thesis milestones."
+            )
+        else:
+            success_measure = (
+                f"At {horizon} days, report total price return from the dated "
+                "entry. +10% or more is a missed opportunity; -10% or worse "
+                "supports the skip. WATCH/PASS is never scored as a short. "
+                "This grades price outcome, not thesis milestones."
+            )
+        rows.append(
+            _insert_prediction(
+                session,
+                user_id,
+                source=DISCOVERY_EVALUATION_SOURCE,
+                source_ref={
+                    **common_ref,
+                    "horizon_days": horizon,
+                    "success_measure": success_measure,
+                },
+                message_id=(
+                    f"v1|predictions|discovery_evaluation|{event_key}|"
+                    f"{symbol}|{horizon}d"
+                ),
+                ticker=symbol,
+                direction="long",
+                event_at=event_at,
+                entry_price=entry_price,
+                timeframe_days=horizon,
+                preserve_long_horizon=horizon in (180, 365),
+            )
+        )
+    return rows[0], rows[1], rows[2]
 
 #: Settled-verdict → prediction direction. SELL/TRIM → ``short``: the fleet
 #: expected the price it AVOIDED to fall (a down-or-flat move vindicates the
@@ -1350,12 +1465,12 @@ def write_deep_decision_verdict_predictions(
     session: Session,
     user_id: str,
     **kwargs: Any,
-) -> tuple[Prediction, Prediction] | tuple[()]:
-    """Put a settled verdict on both tactical and thesis calibration clocks.
+) -> tuple[Prediction, Prediction, Prediction] | tuple[()]:
+    """Put a settled verdict on tactical, thesis, and annual clocks.
 
     The first row preserves the original 30-day contract and dedup key.  The
-    second row is an independent 180-day counterfactual.  Neither depends on
-    whether the user accepts or executes the related proposal.
+    next rows are independent 180-day and 365-day counterfactuals. None depends
+    on whether the user accepts or executes the related proposal.
     """
 
     tactical = write_deep_decision_verdict_prediction(session, user_id, **kwargs)
@@ -1385,7 +1500,29 @@ def write_deep_decision_verdict_predictions(
         timeframe_days=180,
         preserve_long_horizon=True,
     )
-    return tactical, thesis
+    annual = _insert_prediction(
+        session,
+        user_id,
+        source=DEEP_DECISION_VERDICT_SOURCE,
+        source_ref=_verdict_source_ref_for_horizon(
+            verdict_id=verdict_id,
+            ticker=str(tactical.ticker or ""),
+            verdict=str(kwargs.get("verdict") or "").strip().upper(),
+            horizon_days=365,
+        ),
+        message_id=(
+            f"{deep_decision_verdict_message_id(verdict_id=verdict_id)}|365d"
+        ),
+        ticker=tactical.ticker,
+        direction=tactical.direction,
+        event_at=kwargs["event_at"],
+        entry_price=kwargs.get("entry_price"),
+        target_price=tactical.target_price,
+        stop_price=tactical.stop_price,
+        timeframe_days=365,
+        preserve_long_horizon=True,
+    )
+    return tactical, thesis, annual
 
 
 def _verdict_source_ref_for_horizon(
@@ -1410,12 +1547,16 @@ def ensure_deep_verdict_prediction_horizons(
     This is intentionally a scheduler seam, not a one-off migration: if the
     fire-on-settle bridge ever misses, the next evaluator pass repairs it.  It
     also backfills pre-bridge verdicts.  Execution/acceptance status is never a
-    condition for writing either horizon.
+    condition for writing any horizon.
     """
 
     from argosy.state.models import Verdict
 
-    stmt = select(Verdict).where(Verdict.settled.is_(True))
+    # Superseding clears `settled`; it must not erase the original call's
+    # accountability. Unfinished drafts have neither marker and stay excluded.
+    stmt = select(Verdict).where(
+        or_(Verdict.settled.is_(True), Verdict.superseded_by.is_not(None))
+    )
     if user_id is not None:
         stmt = stmt.where(Verdict.user_id == user_id)
     verdicts = session.execute(stmt.order_by(Verdict.id)).scalars().all()
@@ -1443,7 +1584,7 @@ def ensure_deep_verdict_prediction_horizons(
             .where(
                 Prediction.user_id == row.user_id,
                 Prediction.source == DEEP_DECISION_VERDICT_SOURCE,
-                Prediction.source_ref.like(f'%"verdict_id": {int(row.id)}%'),
+                func.json_extract(Prediction.source_ref, "$.verdict_id") == int(row.id),
             )
             .order_by(Prediction.id)
             .limit(1)
@@ -1473,8 +1614,115 @@ def ensure_deep_verdict_prediction_horizons(
         )
     ).scalars().all()
     return {
-        "settled_verdicts": len(verdicts),
+        "settled_verdicts": sum(bool(row.settled) for row in verdicts),
+        "superseded_verdicts": sum(not row.settled for row in verdicts),
         "eligible_verdicts": attempted,
+        "predictions_created": max(0, len(after) - len(before)),
+    }
+
+
+def ensure_discovery_evaluation_predictions(
+    session: Session,
+    *,
+    user_id: str | None = None,
+) -> dict[str, int]:
+    """Backfill the fleet verdict, not merely its radar input, into telemetry.
+
+    ``ScanState`` is the durable latest discovery judgment. Its quote is
+    recovered from the nearest dated radar observation, so a reused grade is
+    anchored near its authored time rather than silently using today's price.
+    """
+
+    from argosy.state.models import ScanState
+
+    stmt = select(ScanState).where(
+        ScanState.fleet_json.is_not(None),
+        ScanState.last_fleet_at.is_not(None),
+    )
+    if user_id is not None:
+        stmt = stmt.where(ScanState.user_id == user_id)
+    scan_rows = session.execute(stmt.order_by(ScanState.updated_at)).scalars().all()
+
+    radar_stmt = select(Prediction).where(
+        Prediction.source == "signal_stream:radar_observation",
+        Prediction.timeframe_days == 30,
+    )
+    if user_id is not None:
+        radar_stmt = radar_stmt.where(Prediction.user_id == user_id)
+    radar_rows = session.execute(radar_stmt).scalars().all()
+    radar_by_key: dict[tuple[str, str], list[Prediction]] = {}
+    for prediction in radar_rows:
+        if prediction.ticker:
+            radar_by_key.setdefault(
+                (prediction.user_id, prediction.ticker.upper()), []
+            ).append(prediction)
+
+    before = session.execute(
+        select(Prediction.id).where(
+            Prediction.source == DISCOVERY_EVALUATION_SOURCE,
+            *((Prediction.user_id == user_id,) if user_id is not None else ()),
+        )
+    ).scalars().all()
+    eligible = 0
+    skipped_no_price = 0
+    for scan in scan_rows:
+        try:
+            fleet = json.loads(scan.fleet_json or "{}")
+            estimator = json.loads(scan.estimator_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        verdict = str(fleet.get("verdict") or "").upper()
+        if verdict not in {"BUY", "WATCH", "PASS"}:
+            continue
+        fleet_at = _ensure_aware(scan.last_fleet_at)
+        candidates = radar_by_key.get((scan.user_id, scan.ticker.upper()), [])
+        priced = [row for row in candidates if row.entry_price is not None]
+        if not priced:
+            skipped_no_price += 1
+            continue
+        nearest = min(
+            priced,
+            key=lambda row: abs(
+                (_ensure_aware(row.event_at) - fleet_at).total_seconds()
+            ),
+        )
+        quote_distance = abs(_ensure_aware(nearest.event_at) - fleet_at)
+        if quote_distance > timedelta(days=3):
+            skipped_no_price += 1
+            continue
+        expectation = str(fleet.get("thesis_md") or "").strip()
+        if len(expectation) > 2_000:
+            expectation = expectation[:1_997].rstrip() + "..."
+        write_discovery_evaluation_predictions(
+            session,
+            scan.user_id,
+            event_key=(
+                f"{fleet_at.isoformat()}|{scan.radar_fingerprint}|{verdict}"
+            ),
+            ticker=scan.ticker,
+            verdict=verdict,
+            conviction=str(fleet.get("conviction") or ""),
+            event_at=fleet_at,
+            entry_price=nearest.entry_price,
+            estimator_go=estimator.get("go"),
+            estimator_conviction=estimator.get("conviction"),
+            estimation=str(estimator.get("one_line") or ""),
+            thesis=expectation,
+            radar_rank=scan.rank,
+            radar_score=scan.last_score,
+        )
+        eligible += 1
+
+    after = session.execute(
+        select(Prediction.id).where(
+            Prediction.source == DISCOVERY_EVALUATION_SOURCE,
+            *((Prediction.user_id == user_id,) if user_id is not None else ()),
+        )
+    ).scalars().all()
+    return {
+        "fleet_evaluations": len(scan_rows),
+        "eligible_evaluations": eligible,
+        "skipped_no_price": skipped_no_price,
         "predictions_created": max(0, len(after) - len(before)),
     }
 
@@ -1556,12 +1804,15 @@ def emit_verdict_prediction_best_effort(
 __all__ = [
     "DEDUP_KEY_VERSION",
     "DEEP_DECISION_VERDICT_SOURCE",
+    "DISCOVERY_EVALUATION_SOURCE",
     "deep_decision_verdict_message_id",
     "emit_verdict_prediction_best_effort",
+    "ensure_discovery_evaluation_predictions",
     "ensure_deep_verdict_prediction_horizons",
     "ensure_surfaced_order_sheet_predictions",
     "write_deep_decision_verdict_prediction",
     "write_deep_decision_verdict_predictions",
+    "write_discovery_evaluation_predictions",
     "DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT",
     "DEFAULT_TIMEFRAME_DAYS_DISCORD",
     "DEFAULT_TIMEFRAME_DAYS_MONITOR",

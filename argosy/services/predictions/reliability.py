@@ -84,6 +84,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
+from argosy.services.predictions.outcomes import authoritative_outcomes
 from argosy.services.predictions.writers import DEEP_DECISION_VERDICT_SOURCE
 from argosy.state.models import EvaluationMethod, Prediction, PredictionOutcome
 
@@ -436,7 +437,7 @@ WITH dedup_outcomes AS (
         o.evaluated_at  AS evaluated_at,
         r.family        AS method_family,
         ROW_NUMBER() OVER (
-            PARTITION BY o.prediction_id, r.family
+            PARTITION BY o.prediction_id
             ORDER BY r.method_version DESC,
                      o.evaluated_at DESC,
                      o.id DESC
@@ -445,6 +446,11 @@ WITH dedup_outcomes AS (
     JOIN evaluation_method_registry r
       ON r.method_name = o.evaluation_method
      AND r.is_active = 1
+    JOIN predictions current_prediction ON current_prediction.id = o.prediction_id
+    JOIN evaluation_method_registry current_method
+      ON current_method.method_name = current_prediction.evaluation_method
+    WHERE COALESCE(r.scoring_contract, r.method_name)
+        = COALESCE(current_method.scoring_contract, current_method.method_name)
 )
 SELECT
     p.source        AS source,
@@ -790,48 +796,15 @@ def _authoritative_signal_outcomes(
     user_id: str,
     source: str,
 ) -> list[tuple[Prediction, PredictionOutcome, EvaluationMethod]]:
-    """Select one highest-version outcome per prediction/method family."""
-    rows = session.execute(
-        select(Prediction, PredictionOutcome, EvaluationMethod)
-        .join(
-            PredictionOutcome,
-            PredictionOutcome.prediction_id == Prediction.id,
-        )
-        .join(
-            EvaluationMethod,
-            EvaluationMethod.method_name
-            == PredictionOutcome.evaluation_method,
-        )
-        .where(
+    """Select one highest active version matching each prediction's contract."""
+    predictions = session.scalars(
+        select(Prediction).where(
             Prediction.user_id == user_id,
             Prediction.source == source,
             Prediction.archived == 0,
-            EvaluationMethod.is_active == 1,
         )
     ).all()
-    selected: dict[
-        tuple[int, str],
-        tuple[Prediction, PredictionOutcome, EvaluationMethod],
-    ] = {}
-    for prediction, outcome, method in rows:
-        key = (prediction.id, method.family)
-        current = selected.get(key)
-        rank = (
-            int(method.method_version or 0),
-            outcome.evaluated_at or datetime.min,
-            int(outcome.id or 0),
-        )
-        if current is None:
-            selected[key] = (prediction, outcome, method)
-            continue
-        current_rank = (
-            int(current[2].method_version or 0),
-            current[1].evaluated_at or datetime.min,
-            int(current[1].id or 0),
-        )
-        if rank > current_rank:
-            selected[key] = (prediction, outcome, method)
-    return list(selected.values())
+    return list(authoritative_outcomes(session, predictions).values())
 
 
 def _signal_horizon_slice(
@@ -1055,38 +1028,21 @@ def recent_verdict_call_outcomes(
     ``source = DEEP_DECISION_VERDICT_SOURCE`` and the outcome is GRADED
     (``outcome_kind`` in :data:`_GRADED_OUTCOME_KINDS`; ungraded/open
     predictions have NO outcome row and never join). Picks ONE
-    authoritative outcome per prediction (latest ``evaluated_at``, then
-    highest outcome id) and returns the ``limit`` most-recently-graded,
+    authoritative outcome per prediction (highest active compatible method
+    version, then evaluation time and id) and returns the ``limit`` most-recently-graded,
     newest first. Read-only.
     """
-    rows = session.execute(
-        select(Prediction, PredictionOutcome)
-        .join(
-            PredictionOutcome,
-            PredictionOutcome.prediction_id == Prediction.id,
-        )
-        .where(
+    predictions = session.scalars(
+        select(Prediction).where(
             Prediction.user_id == user_id,
             Prediction.source == DEEP_DECISION_VERDICT_SOURCE,
             Prediction.archived == 0,
-            PredictionOutcome.outcome_kind.in_(sorted(_GRADED_OUTCOME_KINDS)),
         )
     ).all()
-
-    # One authoritative outcome per prediction (latest eval, then id).
-    best: dict[int, tuple[Prediction, PredictionOutcome]] = {}
-    for prediction, outcome in rows:
-        cur = best.get(prediction.id)
-        rank = (outcome.evaluated_at or datetime.min, int(outcome.id or 0))
-        if cur is None:
-            best[prediction.id] = (prediction, outcome)
-            continue
-        cur_rank = (cur[1].evaluated_at or datetime.min, int(cur[1].id or 0))
-        if rank > cur_rank:
-            best[prediction.id] = (prediction, outcome)
-
     out: list[VerdictCallOutcome] = []
-    for prediction, outcome in best.values():
+    for prediction, outcome, _ in authoritative_outcomes(session, predictions).values():
+        if outcome.outcome_kind not in _GRADED_OUTCOME_KINDS:
+            continue
         ref = _verdict_source_ref(prediction)
         subject = str(ref.get("subject") or prediction.ticker or "").strip()
         verdict = str(ref.get("verdict") or "").strip().upper()

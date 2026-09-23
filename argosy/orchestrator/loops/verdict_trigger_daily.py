@@ -7,6 +7,7 @@ settle, before the 15:30 signal streams / 16:00 discovery funnel).
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
@@ -94,6 +95,31 @@ class VerdictTriggerDailyLoop(CadenceLoop):
         today = self._today if self._today is not None else (
             now().date() if now is not None else None
         )
+        # A synchronous SQLite wait on the event loop can prevent another
+        # async writer from committing and releasing the very lock we need.
+        # Keep the ENTIRE session lifecycle on one worker, not just quotes.
+        worker = asyncio.create_task(asyncio.to_thread(self._tick_sync, today))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # Do not release the scheduler's job lock while a worker can still
+            # write. Python cannot cancel an already-running thread. Shutdown
+            # can cancel again after its grace timeout: shield EVERY drain wait.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not worker.cancelled():
+                try:
+                    worker.result()
+                except Exception:
+                    _log.exception("verdict_trigger.cancelled_worker_failed")
+            raise
+
+    def _tick_sync(self, today: date | None) -> dict[str, Any]:
         factory = self._session_factory or _default_session_factory()
         sess = factory()
         try:
@@ -114,16 +140,19 @@ class VerdictTriggerDailyLoop(CadenceLoop):
             # keyword-only args. Bridge here so BOTH work (live-smoke
             # 2026-07-12: the default path had never been exercised).
             if self._quotes_fn is _fetch_quotes_for_subjects:
-                import asyncio
-
-                quotes = await asyncio.to_thread(
-                    _fetch_quotes_for_subjects,
-                    sess,
-                    user_id=self.user_id,
-                    subjects=subjects,
+                quotes = _fetch_quotes_for_subjects(
+                    sess, user_id=self.user_id, subjects=subjects,
                 )
             else:
                 quotes = self._quotes_fn(sess, self.user_id, subjects)
+            # Quotes are plain values. End the old read snapshot before
+            # acquiring a short write transaction; never hold it over network
+            # I/O. Re-read current verdicts and dedup rows under that lock.
+            sess.rollback()
+            if sess.get_bind().dialect.name == "sqlite":
+                from sqlalchemy import text
+
+                sess.execute(text("BEGIN IMMEDIATE"))
             fired = evaluate_triggers(
                 sess,
                 user_id=self.user_id,
@@ -153,3 +182,5 @@ class VerdictTriggerDailyLoop(CadenceLoop):
             return {"error": str(exc)[:200]}
         finally:
             sess.close()
+            if self._session_factory is None:
+                factory.kw["bind"].dispose()

@@ -8,8 +8,8 @@ quotes + fresh FX.
 
 ``refresh_portfolio_snapshot`` takes the latest ``portfolio_snapshots`` row,
 carries every QUANTITY unchanged, re-prices each priceable position with a
-live quote (yfinance; UCITS tickers resolved via exchange suffixes — same
-convention as ``deployment_funnel.from_plan.SnapshotOrLiveProvider``),
+live quote (yfinance; explicit listings and broker ticker/venue hints are
+preserved, never replaced by guesses on other exchanges),
 refreshes USD/NIS + USD/EUR FX, recomputes local values / USD conversions /
 totals, and INSERTS a new row with ``snapshot_date=today`` and
 ``source_path="self-refresh:reprice-of-<old snapshot_date>"`` so provenance is
@@ -44,12 +44,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
 from argosy.async_bridge import run_async_from_sync
+from argosy.execution.fill_evidence import canonical_currency
 from argosy.ingest.tsv import PortfolioPosition, PortfolioSnapshot
 from argosy.logging import get_logger
 from argosy.services.portfolio_snapshot_store import (
@@ -65,11 +67,6 @@ _log = get_logger("argosy.services.snapshot_refresh")
 # Hebrew fund names, multi-word index names ("STOXX Europe 600"), '-' and ''
 # are unpriceable rows that carry over silently.
 _PRICEABLE_SYMBOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9./-]{0,9}$")
-
-# yfinance listing-suffix candidates: bare first (US listings), then the UCITS
-# exchange suffixes (LSE / Amsterdam / Milan / Xetra / SIX). Same rationale as
-# SnapshotOrLiveProvider._YF_QUOTE_SUFFIXES (+ .SW for the SIX-listed lines).
-_YF_QUOTE_SUFFIXES: tuple[str, ...] = ("", ".L", ".AS", ".MI", ".DE", ".SW")
 
 # Exchange hint in the Details column ("(ISH NASDAQ100 $A) CNDX LN") → try that
 # listing first so we don't pick up a bare-symbol collision on a US exchange.
@@ -102,66 +99,33 @@ _PENCE_CURRENCIES = {"GBP_PENCE", "GBX", "GBP0.01", "GBp"}
 # ---------------------------------------------------------------------------
 
 
-#: Quote currency each venue suffix can actually produce. A candidate whose
-#: venue cannot quote the position's currency is not worth an HTTP call — and
-#: is worse than useless, because a same-ticker foreign listing that omits its
-#: currency slips through :func:`_currencies_agree` (which tolerates a ``None``
-#: currency for USD positions) and would price the WRONG instrument.
-_SUFFIX_CURRENCIES: dict[str, frozenset[str]] = {
-    "": frozenset({"USD"}),          # bare = US listing
-    ".L": frozenset({"USD", "GBP"}),  # LSE quotes both USD and GBP lines
-    ".AS": frozenset({"EUR"}),
-    ".MI": frozenset({"EUR"}),
-    ".DE": frozenset({"EUR"}),
-    # SIX does carry USD-denominated lines, but reaching one WITHOUT a venue
-    # hint is not a real case: Leumi writes the hint (``IWDP SW``) for every
-    # such holding, and the hint branch above handles it. Leaving USD in here
-    # would keep making the exact SOFI.SW call this filter exists to stop.
-    ".SW": frozenset({"CHF"}),
-}
+def _exchange_hint(details: str, symbol: str = ""):
+    text = (details or "").strip()
+    match = _EXCHANGE_HINT_RE.search(text)
+    if match and symbol:
+        prefix = text[:match.start()].rstrip()
+        names = {symbol.upper(), symbol.upper().split(".")[0]}
+        if not any(re.search(rf"(?<![A-Z0-9]){re.escape(name)}$", prefix) for name in names):
+            # Broker listing notation is a ticker + venue pair. Company names
+            # ending in CO/AG/SA, or a lone two-letter ticker, aren't venues.
+            return None
+    return match
 
 
-def _hinted_suffixes(details: str, currency: str = "USD") -> tuple[str, ...]:
-    """Order the suffix candidates, trying the Details exchange hint first.
+def _hinted_suffixes(details: str, currency: str = "USD", *, symbol: str = "") -> tuple[str, ...]:
+    """Use the stated listing, never guess another exchange after a miss.
 
-    An explicit venue hint (Leumi writes ``CSPX LN`` / ``IWDP SW``) always
-    wins and the rest of the chain follows as a fallback.
-
-    Without a hint the chain is FILTERED to venues that can quote
-    ``currency``. Previously every position walked the full chain, so a plain
-    US line like SOFI or TEM (no hint, USD) tried ``.L``, ``.AS``, ``.MI``,
-    ``.DE`` and ``.SW`` in turn — observed on 2026-08-23 as repeated
-    ``SOFI.SW``/``TEM.AS`` 404s during a plan run, each costing several HTTP
-    round-trips with retries. Filtering removes that, and closes the
-    wrong-instrument hole described on :data:`_SUFFIX_CURRENCIES`.
+    Currency alone cannot identify a European listing. Unhinted USD symbols
+    retain their bare US identity; other unhinted currencies need mapping.
     """
     pc = (currency or "USD").strip().upper()
-    if pc == "NIS":
-        pc = "ILS"
-
-    def _plausible(chain: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(
-            s for s in chain
-            if pc in _SUFFIX_CURRENCIES.get(s, frozenset({pc}))
-        )
-
-    m = _EXCHANGE_HINT_RE.search((details or "").strip())
+    m = _exchange_hint(details, symbol)
     if m:
         suffix = _EXCHANGE_HINT_SUFFIX.get(m.group(1))
         if suffix:
-            # The hint is authoritative and is tried regardless of currency —
-            # the venue is stated, not guessed. Only the FALLBACK tail is
-            # filtered, so a hinted line no longer walks venues that cannot
-            # quote its currency.
-            rest = _plausible(
-                tuple(s for s in _YF_QUOTE_SUFFIXES if s != suffix)
-            )
-            return (suffix,) + rest
-
-    plausible = _plausible(_YF_QUOTE_SUFFIXES)
-    # Never return an empty chain: an unknown currency falls back to the full
-    # list rather than silently refusing to price the position.
-    return plausible or _YF_QUOTE_SUFFIXES
+            return (suffix,)
+        return ()  # Explicit but unsupported venue is not a US listing.
+    return ("",) if pc == "USD" else ()
 
 
 def _currencies_agree(position_currency: str, quote_currency: str | None) -> bool:
@@ -181,19 +145,34 @@ def _currencies_agree(position_currency: str, quote_currency: str | None) -> boo
     return qc.upper() == pc
 
 
+def resolved_quote_symbols(symbol: str, *, currency: str, details: str) -> tuple[str, ...]:
+    """Single listing-identity resolver shared by repricing and receipt application."""
+    from argosy.adapters.data.symbols import to_yahoo_symbol
+
+    symbol = symbol.strip()
+    yf_symbol = to_yahoo_symbol(symbol)
+    hint = _exchange_hint(details, symbol)
+    hint_suffix = _EXCHANGE_HINT_SUFFIX.get(hint.group(1)) if hint else None
+    if hint and (hint_suffix is None or ("." in yf_symbol and not yf_symbol.endswith(hint_suffix))):
+        return ()
+    suffixes = ("",) if "." in yf_symbol else _hinted_suffixes(details, currency, symbol=symbol)
+    return tuple(f"{yf_symbol}{suffix}" for suffix in suffixes)
+
+
 def default_quote_fn(symbol: str, *, currency: str, details: str) -> float | None:
     """Live yfinance quote for one position, or ``None`` (miss).
 
-    Tries the exchange-hinted listing first, then the standard suffix chain.
+    Uses the explicit symbol listing or the exchange hint from the broker.
     A listing whose quote currency disagrees with the position currency is
     skipped (next suffix), never unit-converted — we don't fabricate prices.
     """
     from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
-    yf_symbol = symbol.strip().upper().replace("/", "-").replace(".", "-")
     adapter = YFinanceAdapter()
-    for suffix in _hinted_suffixes(details, currency):
-        candidate = f"{yf_symbol}{suffix}"
+    candidates = resolved_quote_symbols(symbol, currency=currency, details=details)
+    if not candidates:
+        _log.info("snapshot_refresh.listing_unresolved", symbol=symbol, currency=currency)
+    for candidate in candidates:
         try:
             q = run_async_from_sync(
                 lambda candidate=candidate: adapter.get_quote(candidate)
@@ -629,7 +608,8 @@ def refresh_portfolio_snapshot(
     # stored total is by construction an independent sum, never old+delta.
     result.new_total_usd_k = new_snap.total_usd_value_k
 
-    row = persist_snapshot(session, user_id=user_id, snapshot=new_snap, commit=commit)
+    row = persist_snapshot(session, user_id=user_id, snapshot=new_snap, commit=commit,
+                           expected_prior_id=old_row.id)
     result.row = row
     result.snapshot = new_snap
     _log.info("snapshot_refresh.done", user_id=user_id, **result.summary())
@@ -637,13 +617,13 @@ def refresh_portfolio_snapshot(
 
 
 # ---------------------------------------------------------------------------
-# Broker-fill application (executed buys → new snapshot row)
+# Broker-fill application (executed trades → new snapshot row)
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Fill:
-    """One executed broker buy to fold into the latest snapshot.
+    """One executed trade with cash charges in its explicitly stated currency.
 
     ``symbol`` must be the SNAPSHOT convention (bare ticker, e.g. "CSPX" not
     "CSPX.L"); put the listing hint in ``details`` ("... CSPX LN") so the
@@ -657,10 +637,38 @@ class Fill:
     details: str = ""
     location: str = "Leumi"
     currency: str = "USD"
+    action: str = "buy"
+    commission: float = 0.0
+    tax_withheld: float | None = None
+    net_cash_delta: float | None = None
+    observed_as_of: date | None = None
 
     @property
     def cost(self) -> float:
-        return float(self.shares) * float(self.price)
+        from argosy.execution.fill_evidence import ledger_amount
+
+        return float(ledger_amount(self.shares) * ledger_amount(self.price))
+
+    @property
+    def cash_delta(self) -> Decimal:
+        from argosy.execution.fill_evidence import ledger_amount
+
+        gross = ledger_amount(self.shares) * ledger_amount(self.price)
+        fees = ledger_amount(self.commission, positive=False)
+        if self.action not in {"buy", "sell"}:
+            raise ValueError("fill action must be buy or sell")
+        if self.action == "sell" and self.tax_withheld is None:
+            raise ValueError("sell requires explicit broker tax withheld, including confirmed zero")
+        withheld = ledger_amount(self.tax_withheld or 0, positive=False)
+        if withheld < 0:
+            raise ValueError("tax withheld cannot be negative")
+        computed = (-gross if self.action == "buy" else gross) - fees - withheld
+        if self.net_cash_delta is not None:
+            reported = ledger_amount(self.net_cash_delta, positive=False)
+            if abs(computed - reported) > Decimal("0.01"):
+                raise ValueError("reported net cash does not reconcile with gross, fees and withholding")
+            return reported
+        return computed
 
 
 @dataclass
@@ -676,6 +684,27 @@ class ApplyFillsResult:
     merged: list[str] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+def _fill_mark_consistent(position: PortfolioPosition) -> bool:
+    """Accounting identity, not the quote resolver's price plausibility band."""
+    from argosy.execution.fill_evidence import number
+
+    if position.shares == 0:
+        return position.current_value_local is not None and abs(number(position.current_value_local)) <= Decimal("0.01")
+    if any(value is None for value in (position.shares, position.current_price, position.current_value_local)):
+        return False
+    return abs(number(position.shares) * number(position.current_price)
+               - number(position.current_value_local)) <= Decimal("0.01")
+
+
+def matching_fill_positions(positions, *, symbol: str, location: str, currency: str):
+    """Use identical holding identity for settlement checks and book mutation."""
+    return [p for p in positions if (
+        (p.symbol or "").strip().upper() == symbol.strip().upper()
+        and (p.location or "").strip().lower() == location.strip().lower()
+        and canonical_currency(p.currency) == canonical_currency(currency)
+        and (p.asset_type or "").strip().lower() != "cash")]
 
 
 def _pct_unit_is_percent(p: PortfolioPosition) -> bool:
@@ -698,19 +727,26 @@ def apply_fills_to_snapshot(
     today: date | None = None,
     commit: bool = True,
 ) -> ApplyFillsResult:
-    """Fold executed broker fills into the latest snapshot; INSERT a new row.
+    """Fold explicitly supplied trade facts into a snapshot; INSERT a new row.
+
+    This low-level helper is NOT an idempotent receipt consumer. Its caller
+    must own durable receipt application and statement reconciliation.
+    Sell cash uses reported withholding, never an invented tax estimate.
 
     Rules (conservation — cash becomes positions, nothing appears/vanishes):
 
-    * A fill whose (symbol, location, currency) matches a held non-cash
+    * A buy whose (symbol, location, currency) matches a held non-cash
       position MERGES: shares add, ``avg_price`` is the honest blended
       average ``(old_sh*old_avg + fill_sh*fill_px) / total_sh``, and the
       position is re-valued at the snapshot's ``current_price`` (fresher
       than the fill print when the snapshot was repriced the same day).
-    * A non-matching fill ADDS a new position with
+      An unknown prior average remains unknown. A sale subtracts shares,
+      retaining the display average without claiming tax-lot accounting.
+    * A non-matching buy ADDS a new position with
       ``avg_price = current_price = fill price``.
     * The single cash position at (``cash_location``, ``cash_currency``)
-      is reduced by the total cost. Missing cash row → ``ValueError``
+      changes by signed proceeds/cost less fees and reported withholding.
+      Missing or ambiguous cash row → ``ValueError``
       (never invent a funding source). A negative resulting balance is
       NOT an error — the executed fills are facts — but it is recorded
       loudly as ``cash_overdraft:...`` in ``parse_warnings`` (stale
@@ -734,39 +770,112 @@ def apply_fills_to_snapshot(
     result = ApplyFillsResult(
         row=None, snapshot=None, old_total_usd_k=old.total_usd_value_k,
     )
+    if not fills:
+        result.row, result.snapshot = old_row, old
+        result.new_total_usd_k = result.old_total_usd_k
+        return result
+
+    from argosy.execution.fill_evidence import ledger_amount
+
+    # Use one canonical NUMERIC(18,4) representation for holdings, cash and
+    # expectation receipts, including accepted floating-point transport noise.
+    fills = [replace(fill, shares=float(ledger_amount(fill.shares)),
+                     price=float(ledger_amount(fill.price)),
+                     commission=float(ledger_amount(fill.commission, positive=False)),
+                     tax_withheld=(float(ledger_amount(fill.tax_withheld, positive=False))
+                                   if fill.tax_withheld is not None else None),
+                     net_cash_delta=(float(ledger_amount(fill.net_cash_delta, positive=False))
+                                     if fill.net_cash_delta is not None else None)) for fill in fills]
 
     positions = [p.model_copy(deep=True) for p in old.positions]
+    # A trade changes quantities, not the age of unrelated price observations.
+    for position in positions:
+        if old.snapshot_date is None and (position.observed_as_of is None or position.valued_as_of is None):
+            raise ValueError("prior snapshot date is required to preserve undated mark provenance")
+        position.observed_as_of = position.observed_as_of or old.snapshot_date
+        position.valued_as_of = position.valued_as_of or old.snapshot_date
+
+    from argosy.execution.fill_evidence import number
+
+    ccy = canonical_currency(cash_currency)
+    rate = 1 if ccy in {"USD", "$"} else old.fx_usd_nis if ccy in {"NIS", "ILS"} else old.fx_usd_eur if ccy == "EUR" else None
+    if rate is None or number(rate) <= 0:
+        raise ValueError(f"finite positive FX conversion is required for {cash_currency}")
+
+    def _require_consistent_projection(position: PortfolioPosition) -> None:
+        if (position.current_value_local is None or position.usd_value_k is None
+                or abs(number(position.current_value_local) / number(rate)
+                       - number(position.usd_value_k) * 1000) > Decimal("0.01")):
+            raise ValueError(f"{position.symbol or 'cash'}: existing USD projection is inconsistent")
+
+    # One funding currency/account per call. An FX transfer is a separate
+    # broker fact; silently subtracting USD from NIS is not conservation.
+    total_delta = Decimal(0)
+    for fill in fills:
+        if (fill.location.strip().lower() != cash_location.strip().lower()
+                or canonical_currency(fill.currency) != canonical_currency(cash_currency)):
+            raise ValueError("fill and cash must have the same explicit custody and currency")
+        total_delta += fill.cash_delta  # Validate before changing the in-memory book.
 
     def _find_position(fill: Fill) -> PortfolioPosition | None:
-        for p in positions:
-            if (
-                (p.symbol or "").strip().upper() == fill.symbol.strip().upper()
-                and (p.location or "").strip().lower() == fill.location.strip().lower()
-                and (p.currency or "").strip().upper() == fill.currency.strip().upper()
-                and (p.asset_type or "").strip().lower() != "cash"
-            ):
-                return p
-        return None
+        matches = matching_fill_positions(positions, symbol=fill.symbol, location=fill.location, currency=fill.currency)
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous holding rows for {fill.symbol} at {fill.location}")
+        return matches[0] if matches else None
 
     for fill in fills:
         if fill.shares <= 0 or fill.price <= 0:
             raise ValueError(f"non-positive fill for {fill.symbol}: {fill}")
         held = _find_position(fill)
-        if held is not None and held.shares:
-            old_sh = float(held.shares)
-            old_avg = held.avg_price if held.avg_price is not None else fill.price
-            if held.avg_price is None:
+        if held is not None and held.shares is None:
+            raise ValueError(f"cannot apply {fill.symbol}: held quantity is unknown")
+        if held is not None:
+            # The quote path's +/-20% plausibility band is not conservation.
+            # A fill cannot silently correct a pre-existing valuation mismatch.
+            if not _fill_mark_consistent(held):
+                raise ValueError(f"{fill.symbol}: existing holding price/value units are inconsistent")
+            _require_consistent_projection(held)
+        if fill.action == "sell":
+            if held is None or held.shares is None:
+                raise ValueError(f"cannot sell {fill.symbol}: held quantity is unknown")
+            from argosy.execution.fill_evidence import ledger_amount, number
+
+            remaining = number(held.shares) - ledger_amount(fill.shares)
+            if remaining < 0:
+                raise ValueError(f"cannot apply {fill.symbol}: sale exceeds recorded holding")
+            held.shares = float(remaining)
+            price_basis = held.current_price
+            held.current_value_local = float(remaining * number(price_basis))
+            held.usd_value_k = _to_usd_k(
+                held.current_value_local, held.currency,
+                fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
+            )
+            # A sale does not establish the remaining lots' tax basis. Keep
+            # the old display average; do not average the sale price into it.
+            result.merged.append(fill.symbol)
+            continue
+        if held is not None:
+            from argosy.execution.fill_evidence import ledger_amount, number
+
+            old_sh = number(held.shares)
+            if old_sh < 0:
+                raise ValueError(f"cannot apply {fill.symbol}: short-position accounting is not supported")
+            old_avg = number(held.avg_price) if held.avg_price is not None else (Decimal(0) if old_sh == 0 else None)
+            if held.avg_price is None and old_sh > 0:
                 result.warnings.append(f"fill_merge_no_avg:{fill.symbol}")
-            total_sh = old_sh + fill.shares
-            blended = (old_sh * old_avg + fill.shares * fill.price) / total_sh
+            total_sh = old_sh + ledger_amount(fill.shares)
+            blended = ((old_sh * old_avg + ledger_amount(fill.shares) * ledger_amount(fill.price)) / total_sh
+                       if old_avg is not None else None)
             price_basis = (
-                held.current_price if held.current_price else fill.price
+                held.current_price if old_sh > 0 else fill.price
             )
             pct_is_percent = _pct_unit_is_percent(held)  # judge on OLD row
-            held.shares = total_sh
-            held.avg_price = round(blended, 4)
+            held.shares = float(total_sh)
+            held.avg_price = float(round(blended, 4)) if blended is not None else None
             held.current_price = float(price_basis)
-            held.current_value_local = total_sh * float(price_basis)
+            if old_sh == 0:
+                held.valued_as_of = held.observed_as_of = fill.observed_as_of or today
+            held.current_value_local = float(total_sh * number(price_basis))
             held.usd_value_k = _to_usd_k(
                 held.current_value_local, held.currency,
                 fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
@@ -774,6 +883,8 @@ def apply_fills_to_snapshot(
             if held.avg_price:
                 frac = float(price_basis) / held.avg_price - 1.0
                 held.pct_change = round(frac * 100.0 if pct_is_percent else frac, 4)
+            else:
+                held.pct_change = None
             result.merged.append(fill.symbol)
         else:
             value_local = fill.cost
@@ -793,28 +904,32 @@ def apply_fills_to_snapshot(
                         fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
                     ),
                     pct_change=0.0,
+                    valued_as_of=fill.observed_as_of or today,
+                    observed_as_of=fill.observed_as_of or today,
                 )
             )
             result.added.append(fill.symbol)
 
     # ---- Cash deduction (single funding source, fail-loud if absent) -------
-    total_cost = sum(f.cost for f in fills)
-    cash_pos = next(
-        (
+    cash_matches = [
             p for p in positions
             if (p.asset_type or "").strip().lower() == "cash"
             and (p.location or "").strip().lower() == cash_location.strip().lower()
-            and (p.currency or "").strip().upper() == cash_currency.strip().upper()
-        ),
-        None,
-    )
+            and canonical_currency(p.currency) == canonical_currency(cash_currency)
+    ]
+    if len(cash_matches) > 1:
+        raise ValueError(f"ambiguous cash positions at {cash_location}/{cash_currency}")
+    cash_pos = cash_matches[0] if cash_matches else None
     if cash_pos is None or cash_pos.current_value_local is None:
         raise ValueError(
             f"no cash position at {cash_location}/{cash_currency} to fund "
-            f"${total_cost:,.2f} of fills"
+            f"the reported fills"
         )
     result.cash_before_local = cash_pos.current_value_local
-    cash_pos.current_value_local = cash_pos.current_value_local - total_cost
+    _require_consistent_projection(cash_pos)
+    from argosy.execution.fill_evidence import number
+
+    cash_pos.current_value_local = float(number(cash_pos.current_value_local) + total_delta)
     cash_pos.usd_value_k = _to_usd_k(
         cash_pos.current_value_local, cash_pos.currency,
         fx_usd_nis=old.fx_usd_nis, fx_usd_eur=old.fx_usd_eur,
@@ -828,7 +943,7 @@ def apply_fills_to_snapshot(
         )
 
     fill_notes = [
-        f"fill-applied:{f.symbol}:{f.shares:g}@{f.price:g}" for f in fills
+        f"fill-applied:{'SELL:' if f.action == 'sell' else ''}{f.symbol}:{f.shares:g}@{f.price:g}" for f in fills
     ]
 
     # Machine-readable closed-loop expectations blob (the prose entries above
@@ -839,23 +954,27 @@ def apply_fills_to_snapshot(
 
     touched_keys = {
         (f.symbol.strip().upper(), f.location.strip().lower(),
-         f.currency.strip().upper())
+         canonical_currency(f.currency))
         for f in fills
     }
     expected_positions = [
         {
             "symbol": (p.symbol or "").strip().upper(),
             "location": p.location,
-            "currency": (p.currency or "USD").strip().upper(),
+            "currency": canonical_currency(p.currency),
             "shares": p.shares,
             "price": p.current_price,
+            "shares_delta": sum((-f.shares if f.action == "sell" else f.shares)
+                                for f in fills if f.symbol.strip().upper() == (p.symbol or "").strip().upper()
+                                and f.location.strip().lower() == p.location.strip().lower()
+                                and canonical_currency(f.currency) == canonical_currency(p.currency)),
         }
         for p in positions
         if (p.asset_type or "").strip().lower() != "cash"
         and (
             (p.symbol or "").strip().upper(),
             (p.location or "").strip().lower(),
-            (p.currency or "USD").strip().upper(),
+            canonical_currency(p.currency),
         ) in touched_keys
     ]
     expectations_blob = "closed_loop_expectations:" + _json.dumps({
@@ -863,7 +982,10 @@ def apply_fills_to_snapshot(
         "source_tag": source_tag,
         "fills": [
             {"symbol": f.symbol, "shares": f.shares, "price": f.price,
-             "location": f.location, "currency": f.currency}
+             "location": f.location, "currency": f.currency, "action": f.action,
+             "commission": f.commission, "tax_withheld": f.tax_withheld,
+             "net_cash_delta": f.net_cash_delta,
+             "cash_delta": str(f.cash_delta)}
             for f in fills
         ],
         "expected_positions": expected_positions,
@@ -892,7 +1014,8 @@ def apply_fills_to_snapshot(
     )
     result.new_total_usd_k = new_snap.total_usd_value_k
 
-    row = persist_snapshot(session, user_id=user_id, snapshot=new_snap, commit=commit)
+    row = persist_snapshot(session, user_id=user_id, snapshot=new_snap, commit=commit,
+                           expected_prior_id=old_row.id, require_book_sync=True)
     result.row = row
     result.snapshot = new_snap
     _log.info(

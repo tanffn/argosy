@@ -513,11 +513,12 @@ verdict_buy_gates_enforce: false
 """
 
 
-def load_agent_settings(user_id: str) -> AgentSettings:
+def load_agent_settings(user_id: str, *, create_if_missing: bool = True) -> AgentSettings:
     """Return AgentSettings for a user.
 
     If the per-user file is missing, the default YAML is written there so
-    the user has a discoverable starting point. The function never raises
+    the user has a discoverable starting point, unless create_if_missing is
+    False (read-only status projections). The function never raises
     on parse errors — corrupt files yield defaults plus a stderr warning;
     callers are expected to be resilient (the scheduler must not crash on
     a malformed config).
@@ -526,8 +527,9 @@ def load_agent_settings(user_id: str) -> AgentSettings:
     path = settings.agent_settings_path(user_id)
 
     if not path.is_file():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_DEFAULT_YAML, encoding="utf-8")
+        if create_if_missing:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_DEFAULT_YAML, encoding="utf-8")
         return AgentSettings()
 
     try:

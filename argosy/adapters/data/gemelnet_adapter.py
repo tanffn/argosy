@@ -1,10 +1,9 @@
 """Israeli Ministry of Finance pension performance adapter (Phase 3).
 
-Source: http://gemelnet.mof.gov.il/Tsuot/UI/DafMakdim.aspx — public,
-no auth, free. Page is HTML (ASP.NET WebForms output, not a JSON API);
-we parse it. Data covers `kupot gemel`, `karnot hishtalmut`, and
-`karnot pensia` published by the Ministry of Finance, with monthly
-refresh upstream.
+Public, unauthenticated sources: the legacy Gemel Net HTML portal and,
+when it is unavailable, the official CMA monthly dataset at data.gov.il.
+The latter covers provident and training funds; it is not Pension Net
+and does not establish a household account's tax classification.
 
 Provides:
 
@@ -23,13 +22,14 @@ Implementation notes:
   - The MoF site renders an ASP.NET WebForms `<table>` with the data
     rows. Column names are Hebrew; we map to English keys via the
     constants below so callers never see Hebrew strings on the wire.
-  - Cached in `kv_cache` keyed ``gemelnet:fund_returns:<id>:<p>``
-    with a 24h TTL. Fund-level data is updated monthly upstream so a
-    daily refresh is more than enough.
-  - On unreachable site (DNS, timeout, 5xx, parse failure) we raise
-    `MissingDataSourceError` per the existing convention. We do NOT
-    silently return empty results — that would be a footgun for
-    downstream agents that build pension snapshots.
+  - Cached in `kv_cache` with versioned request keys and a default
+    24h TTL. Observation timestamps are separate from report periods.
+  - Legacy fetch/grid failure tries the official CKAN fallback. It
+    requires twelve consecutive monthly observations for a 12m return,
+    preserves gross-return provenance and leaves unavailable benchmarks
+    null. Failure of both paths raises `MissingDataSourceError`, not an
+    empty-success result. Private account refresh still needs explicit
+    account mapping and orchestration.
 
 Test injection:
 
@@ -145,13 +145,18 @@ class GemelnetAdapter:
             )
 
         async def _fetch() -> list[dict[str, Any]]:
-            html_text = await self._fetch_index_html()
-            return _parse_funds_table(html_text)
+            try:
+                html_text = await self._fetch_index_html()
+                return _parse_funds_table(html_text)
+            except MissingDataSourceError as exc:
+                _log.warning('gemelnet.legacy_unavailable', reason=str(exc), fallback='cma_ckan')
+                from argosy.adapters.data.gemelnet_ckan import fetch
+                return await fetch(http_client=self._http, timeout=self._timeout)
 
         funds: list[dict[str, Any]] = await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
-            key="funds:index",
+            key="funds:index:v2",
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
         )
@@ -193,10 +198,19 @@ class GemelnetAdapter:
             raise ValueError(
                 f"unknown period {period!r}; expected one of {sorted(VALID_PERIODS)}"
             )
+        if period != '12m':
+            raise MissingDataSourceError(
+                f'gemelnet: {period} returns are not implemented; refusing to relabel 12m data'
+            )
 
         async def _fetch() -> dict[str, Any]:
-            html_text = await self._fetch_index_html()
-            funds = _parse_funds_table(html_text)
+            try:
+                html_text = await self._fetch_index_html()
+                funds = _parse_funds_table(html_text)
+            except MissingDataSourceError as exc:
+                _log.warning('gemelnet.legacy_unavailable', reason=str(exc), fallback='cma_ckan')
+                from argosy.adapters.data.gemelnet_ckan import fetch
+                return await fetch(fund_id=fund_id, http_client=self._http, timeout=self._timeout)
             row = next((f for f in funds if str(f.get("fund_id")) == str(fund_id)), None)
             if row is None:
                 raise MissingDataSourceError(
@@ -222,7 +236,7 @@ class GemelnetAdapter:
         return await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
-            key=f"fund_returns:{fund_id}:{period}",
+            key=f"fund_returns:{fund_id}:{period}:v2",
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
         )
@@ -487,8 +501,10 @@ async def persist_pension_snapshot(
     from sqlalchemy.exc import SQLAlchemyError
 
     from argosy.state import db as db_mod
-    from argosy.state.models import PensionFundSnapshot
+    from argosy.state.models import AuditLog, PensionFundSnapshot
 
+    if fund_returns.get('period', '12m') != '12m':
+        raise ValueError('Pension snapshot 12m columns cannot store another return period')
     when = snapshot_at or datetime.now(timezone.utc)
     snap = PensionFundSnapshot(
         user_id=user_id,
@@ -508,6 +524,13 @@ async def persist_pension_snapshot(
     try:
         async with db_mod.get_session() as session:
             session.add(snap)
+            await session.flush()
+            # Keep the actual return period/inputs beyond the mutable cache.
+            # snapshot_at is observation time, not the performance period end.
+            import json
+            session.add(AuditLog(user_id=user_id, event_type='pension.snapshot.source',
+                entity_type='pension_snapshot', entity_id=str(snap.id),
+                payload_json=json.dumps(fund_returns, ensure_ascii=False, allow_nan=False)))
             await session.commit()
             await session.refresh(snap)
             return snap.id

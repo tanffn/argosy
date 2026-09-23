@@ -32,6 +32,7 @@ _log = get_logger("argosy.services.decision_funnel.stage0")
 
 _RISK_OFF_TONES = {"bearish", "cautiously_bearish"}
 _NEWS_LOOKBACK_DAYS = 2
+_MACRO_LOOKBACK_DAYS = 3  # daily context, allowing a weekend; not a strategic thesis TTL
 VIX_ELEVATED = 20.0
 VIX_HIGH = 28.0
 
@@ -43,6 +44,10 @@ class NewsHit:
     sentiment: str | None
     materiality: str | None
     excerpt: str
+    source: str | None = None
+    source_ref: str | None = None
+    source_trust: str | None = None
+    received_at: str | None = None  # ingestion time, NOT a publication date
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,7 @@ class MarketRead:
     high_materiality_news: list[NewsHit]
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     summary: str = ""
+    freshness_issues: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,11 +81,14 @@ class MarketRead:
                     "signal_id": n.signal_id, "ticker": n.ticker,
                     "sentiment": n.sentiment, "materiality": n.materiality,
                     "excerpt": n.excerpt,
+                    "source": n.source, "source_ref": n.source_ref,
+                    "source_trust": n.source_trust, "received_at": n.received_at,
                 }
                 for n in self.high_materiality_news
             ],
             "source_refs": self.source_refs,
             "summary": self.summary,
+            "freshness_issues": self.freshness_issues,
         }
 
 
@@ -92,8 +101,9 @@ def _loads(blob: Any, default: Any) -> Any:
         return default
 
 
-def _read_vix(session: Session) -> float | None:
+def _read_vix(session: Session, *, now: datetime | None = None) -> float | None:
     """Best-effort VIX from MacroCache; None if not cached."""
+    now = now or datetime.now(UTC)
     try:
         from argosy.state.models import MacroCache
     except Exception:  # pragma: no cover
@@ -101,7 +111,10 @@ def _read_vix(session: Session) -> float | None:
     try:
         rows = (
             session.execute(
-                select(MacroCache).where(MacroCache.key.ilike("%vix%"))
+                select(MacroCache).where(
+                    MacroCache.key.ilike("%vix%"), MacroCache.expires_at > now,
+                    MacroCache.retrieved_at <= now,
+                ).order_by(MacroCache.retrieved_at.desc())
             )
             .scalars()
             .all()
@@ -129,9 +142,12 @@ def build_market_read(
     read when no signals are available (the funnel then routes only on
     per-name hard triggers)."""
     now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     from argosy.state.models import AlphaReportAnalysis, MonitorFlag, NewsSignal
 
     refs: list[dict[str, Any]] = []
+    freshness_issues: list[str] = []
 
     # 1) Latest Discord macro analysis.
     macro_tone = macro_conf = None
@@ -160,6 +176,16 @@ def build_market_read(
             "id": getattr(alpha, "id", None),
             "at": analyzed_at.isoformat() if analyzed_at else None,
         })
+        stamp = analyzed_at.replace(tzinfo=UTC) if analyzed_at and analyzed_at.tzinfo is None else analyzed_at
+        if stamp is None or not timedelta(0) <= now - stamp <= timedelta(days=_MACRO_LOOKBACK_DAYS):
+            # Retain provenance, not a weeks-old directional signal presented
+            # as today's market judgment. Other fresh sources still participate.
+            refs[-1]["excluded"] = "stale_or_undated"
+            freshness_issues.append("Daily macro analysis is stale or undated; excluded from current signals.")
+            macro_tone = macro_conf = None
+            key_themes = []
+            ticker_signals = []
+            analyzed_at = None
 
     # 2) Active macro/volatility monitor flags (regime shift).
     macro_critical = False
@@ -215,6 +241,8 @@ def build_market_read(
                     sentiment=getattr(s, "sentiment", None),
                     materiality=getattr(s, "materiality", None),
                     excerpt=(getattr(s, "evidence_excerpt", "") or "")[:200],
+                    source=s.source, source_ref=s.source_ref, source_trust=s.source_trust,
+                    received_at=s.received_at.isoformat() if s.received_at else None,
                 )
             )
         if tickers:
@@ -223,7 +251,7 @@ def build_market_read(
                 "at": s.received_at.isoformat() if getattr(s, "received_at", None) else None,
             })
 
-    vix = _read_vix(session)
+    vix = _read_vix(session, now=now)
     vix_band = None
     if vix is not None:
         vix_band = "high" if vix >= VIX_HIGH else ("elevated" if vix >= VIX_ELEVATED else "calm")
@@ -244,6 +272,8 @@ def build_market_read(
     if key_themes:
         parts.append("themes: " + ", ".join(key_themes[:3]))
     summary = "; ".join(parts) or "no material macro signal"
+    if freshness_issues:
+        summary += "; " + " ".join(freshness_issues)
 
     read = MarketRead(
         as_of=(analyzed_at.isoformat() if analyzed_at else now.isoformat()),
@@ -257,6 +287,7 @@ def build_market_read(
         high_materiality_news=high_news,
         source_refs=refs,
         summary=summary,
+        freshness_issues=freshness_issues,
     )
     _log.info(
         "decision_funnel.stage0_done", user_id=user_id, risk_off=risk_off,

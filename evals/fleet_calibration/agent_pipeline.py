@@ -7,11 +7,12 @@ Stages 4 and 5 independently review and grade the replay reloaded from disk.
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Awaitable, Callable
 from datetime import date
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, StrictBool, StrictFloat, ValidationError
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
 
@@ -19,8 +20,8 @@ OutputT = TypeVar("OutputT", bound=BaseModel)
 
 
 class SourcedFact(BaseModel):
-    fact: str
-    url: str
+    fact: str = Field(min_length=1, pattern=r"\S")
+    url: str = Field(min_length=1, pattern=r"^https?://\S+$")
     publication_date: str
 
 
@@ -55,7 +56,7 @@ class ProtocolCheck(BaseModel):
 
 
 class CalibrationSanitizerOutput(BaseModel):
-    safe_to_run: bool
+    safe_to_run: StrictBool
     checks: list[ProtocolCheck]
     leaked_terms: list[str] = Field(default_factory=list)
     summary: str
@@ -63,21 +64,22 @@ class CalibrationSanitizerOutput(BaseModel):
 
 
 class CalibrationReviewOutput(BaseModel):
-    output_clean: bool
-    packet_fidelity: bool
-    workflow_correct: bool
-    reasoning_grounded_score: int = Field(ge=0, le=4)
+    output_clean: StrictBool
+    packet_fidelity: StrictBool
+    workflow_correct: StrictBool
+    reasoning_grounded_score: int = Field(ge=0, le=4, strict=True)
     grounding_evidence: list[str] = Field(default_factory=list)
     violations: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     summary: str
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
 
 
 class CalibrationGradingOutput(BaseModel):
-    in_expected_class: bool
-    score: float = Field(ge=0.0, le=1.0)
-    acted_return_pct: float | None = None
-    benchmark_return_pct: float | None = None
+    in_expected_class: StrictBool
+    score: float = Field(ge=0.0, le=1.0, strict=True, allow_inf_nan=False)
+    acted_return_pct: StrictFloat | None = Field(default=None, allow_inf_nan=False)
+    benchmark_return_pct: StrictFloat | None = Field(default=None, allow_inf_nan=False)
     rationale: str
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
 
@@ -216,8 +218,10 @@ def build_grader_input(
 
 
 def verify_classifier(
-    packet: dict[str, Any], receipt: dict[str, Any]
+    packet: dict[str, Any], receipt: dict[str, Any], *, require_binding: bool = False
 ) -> dict[str, Any]:
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("output"), dict):
+        return {"ok": False, "mismatches": [{"field": "receipt_shape", "actual": "not an object with object output"}]}
     output = receipt.get("output") or {}
     expected = {
         "category": packet.get("category"),
@@ -229,7 +233,12 @@ def verify_classifier(
         for field, value in expected.items()
         if output.get(field) != value
     ]
-    if receipt.get("stage") != 1:
+    if require_binding or "case_id" in receipt or "classifier_input_sha256" in receipt:
+        expected_hash = classifier_input_digest(build_classifier_input(packet))
+        if receipt.get("case_id") != packet.get("case_id") or receipt.get("classifier_input_sha256") != expected_hash:
+            mismatches.append({"field": "classifier_input_binding", "expected": expected_hash,
+                               "actual": receipt.get("classifier_input_sha256")})
+    if type(receipt.get("stage")) is not int or receipt.get("stage") != 1:
         mismatches.append({
             "field": "stage", "expected": 1, "actual": receipt.get("stage")
         })
@@ -247,6 +256,7 @@ def verify_classifier(
             "expected": "CalibrationClassificationOutput",
             "actual": str(exc),
         })
+        return {"ok": False, "mismatches": mismatches}
     if not packet.get("synthetic"):
         sourced_facts = output.get("sourced_facts") or []
         if not sourced_facts:
@@ -295,7 +305,12 @@ def verify_sanitizer(
     }
     accepted = {"pass", "not_applicable"} if packet.get("synthetic") else {"pass"}
     failures = []
-    if receipt.get("stage") != 2:
+    checks = output.get("checks") or []
+    if len(checks) != len(expected_checks) or {check.get("check") for check in checks} != expected_checks:
+        failures.append({"check": "check_cardinality", "verdict": "Each protocol check must occur exactly once"})
+    if any(check.get("verdict") not in accepted for check in checks):
+        failures.append({"check": "check_verdicts", "verdict": "Unacceptable sanitizer check"})
+    if type(receipt.get("stage")) is not int or receipt.get("stage") != 2:
         failures.append({
             "check": "stage", "expected": 2, "verdict": receipt.get("stage")
         })
@@ -329,7 +344,11 @@ def verify_sanitizer(
 
 def verify_review(receipt: dict[str, Any]) -> dict[str, Any]:
     failures = []
-    if receipt.get("stage") != 4:
+    if (receipt.get("output") or {}).get("violations"):
+        failures.append({"check": "violations", "actual": receipt["output"]["violations"]})
+    if (receipt.get("output") or {}).get("reasoning_grounded_score") == 0:
+        failures.append({"check": "no_grounding", "actual": "Reviewer explicitly reports no grounded reasoning"})
+    if type(receipt.get("stage")) is not int or receipt.get("stage") != 4:
         failures.append({
             "check": "stage", "expected": 4, "actual": receipt.get("stage")
         })
@@ -361,7 +380,10 @@ class _CalibrationAgent(BaseAgent[OutputT], Generic[OutputT]):
     max_tokens = 6000
 
     def __init__(self, *, user_id: str = "ariel", model: str | None = None) -> None:
-        super().__init__(user_id=user_id, model=model or "claude-opus-4-8")
+        # Deliberately delegate model selection to BaseAgent's per-role policy.
+        # A stale hard-coded model here previously disconnected replay from the
+        # production fleet and caused every sanitizer call to die after 180s.
+        super().__init__(user_id=user_id, model=model)
 
 
 class CalibrationClassifierSourcingAgent(
@@ -415,8 +437,11 @@ class CalibrationSanitizerAgent(
             "classifier agent's facts). If scaling cannot be independently "
             "proven from that manifest and the masked payload, mark that check "
             "unverifiable rather than inventing proof. You have no tools and "
-            "may not fetch or search. For a fully fictional synthetic packet, "
-            "mark inapplicable checks not_applicable. Do not identify the "
+            "may not fetch or search. When synthetic=true, the figures have no "
+            "real-world originals and absolute-figure rescaling is therefore "
+            "not_applicable; verify internal consistency instead. Other "
+            "synthetic-only inapplicable checks must likewise be marked "
+            "not_applicable. Do not identify the "
             "company in your output or infer the eventual outcome."
         )
         return system, "SANITIZER INPUT:\n" + _render(payload)
@@ -437,6 +462,11 @@ class CalibrationReviewAgent(_CalibrationAgent[CalibrationReviewOutput]):
             "grounding, 1=mostly unsupported, 2=mixed, 3=grounded with minor gaps, "
             "4=fully grounded. You do not know the expected verdict or outcome "
             "and must not grade investment correctness."
+            " Put disqualifying integrity defects in violations and set the "
+            "corresponding output_clean/packet_fidelity/workflow_correct flag "
+            "false. Put genuinely non-blocking caveats in warnings, NOT "
+            "violations. Do not mark an unsupported actionable assumption as "
+            "minor merely because the overall narrative seems plausible."
         )
         return system, "PERSISTED REPLAY INPUT:\n" + _render(payload)
 
@@ -492,7 +522,15 @@ async def run_classifier_sourcing(
 ) -> dict[str, Any]:
     selected = agent or CalibrationClassifierSourcingAgent()
     report = await selected.run(case_brief=case_brief)
-    return _receipt(1, selected.agent_role, report)
+    receipt = _receipt(1, selected.agent_role, report)
+    receipt["case_id"] = case_brief.get("case_id")
+    receipt["classifier_input_sha256"] = classifier_input_digest(case_brief)
+    return receipt
+
+
+def classifier_input_digest(case_brief: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(case_brief, sort_keys=True, ensure_ascii=False,
+                                    allow_nan=False).encode("utf-8")).hexdigest()
 
 
 async def run_review(
@@ -536,7 +574,7 @@ def verify_grading(
     )
 
     mismatches: list[dict[str, Any]] = []
-    if receipt.get("stage") != 5:
+    if type(receipt.get("stage")) is not int or receipt.get("stage") != 5:
         mismatches.append({
             "field": "stage", "expected": 5, "actual": receipt.get("stage")
         })

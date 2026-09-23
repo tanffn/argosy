@@ -301,6 +301,45 @@ class ExecutionRouter:
                 raise IllegalTransitionError(current, ProposalStatus.EXECUTED_LIVE)
 
             # ----- Account-scoped escalation re-check (SDD §4.3) -----------------
+            from argosy.services.proposal_expiry import proposal_expiry_reason
+
+            expiry_reason = proposal_expiry_reason(proposal.expires_at)
+            if expiry_reason:
+                await record_audit_event(
+                    user_id=self.user_id, event_type="execution.proposal_expired",
+                    entity_type="proposal", entity_id=str(proposal.id),
+                    payload={"reason": expiry_reason}, session=session,
+                )
+                await session.commit()
+                return ExecutionResult(
+                    status="rejected",
+                    broker="(proposal_expired)",
+                    reason=expiry_reason,
+                )
+
+            from argosy.services.chat_advisor.execution_policy import (
+                AnalysisOnlyViolation,
+                assert_proposal_can_mutate,
+            )
+
+            try:
+                await assert_proposal_can_mutate(
+                    session, proposal.id, operation="broker execution"
+                )
+            except AnalysisOnlyViolation as exc:
+                await record_audit_event(
+                    user_id=self.user_id,
+                    event_type="execution.analysis_only_blocked",
+                    entity_type="proposal",
+                    entity_id=str(proposal.id),
+                    payload={"reason": str(exc)},
+                    session=session,
+                )
+                await session.commit()
+                return ExecutionResult(
+                    status="rejected", broker="(analysis_only)", reason=str(exc)
+                )
+
             # The proposal's tier was decided at flow time. If the account
             # has shrunk since (e.g. the user withdrew funds), the trade may
             # now cross the per-decision-max threshold; the agent must NOT
@@ -479,6 +518,17 @@ class ExecutionRouter:
             )
 
             paper = mode != "live"
+            # Preflight can take time; enforce the deadline at the last
+            # application boundary before handing an order to the broker.
+            expiry_reason = proposal_expiry_reason(proposal.expires_at)
+            if expiry_reason:
+                await record_audit_event(
+                    user_id=self.user_id, event_type="execution.proposal_expired",
+                    entity_type="proposal", entity_id=str(proposal.id),
+                    payload={"reason": expiry_reason}, session=session,
+                )
+                await session.commit()
+                return ExecutionResult(status="rejected", broker="(proposal_expired)", reason=expiry_reason)
             result = await adapter.place_order(order, paper=paper)
 
             # ----- Post-place state-machine + bookkeeping -----------------------
@@ -671,6 +721,18 @@ class ExecutionRouter:
                     f"proposal {proposal_id} belongs to {proposal.user_id}"
                 )
 
+            from argosy.services.chat_advisor.execution_policy import (
+                AnalysisOnlyViolation,
+                assert_proposal_can_mutate,
+            )
+
+            try:
+                await assert_proposal_can_mutate(
+                    session, proposal.id, operation="automatic approval"
+                )
+            except AnalysisOnlyViolation:
+                return None
+
             if proposal.account_class != "limited":
                 return None
             if proposal.tier not in ("T0", "T1"):
@@ -691,6 +753,10 @@ class ExecutionRouter:
 
             # Promote → APPROVED via legal path.
             now = _utcnow()
+            from argosy.services.proposal_expiry import proposal_expiry_reason
+
+            if proposal_expiry_reason(proposal.expires_at, now=now):
+                return None
             try:
                 if current is ProposalStatus.DRAFT:
                     # DRAFT → APPROVED is legal per Phase 5 transitions.

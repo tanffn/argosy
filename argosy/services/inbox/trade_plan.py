@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -57,18 +57,39 @@ def _latest_snapshot(db: Session, user_id: str):
     ).scalar_one_or_none()
 
 
-def _build_current_sheet_plan(db: Session, user_id: str, current, *, today=None):
+def _projection_book(db, user_id, *, today, diagnostics):
+    from argosy.config import get_settings
+    from argosy.services.current_book import load_current_book
+
+    book = load_current_book(db, user_id, today=today)
+    reason = None
+    if book.snapshot is None:
+        reason = "No portfolio snapshot is available."
+    elif book.degraded:
+        reason = f"{book.degrade_reason}. A current broker holdings export or verified instrument prices are needed."
+    elif not book.validated and get_settings().spine_gate_enforce:
+        reason = f"The portfolio book has not passed validation: {book.validation_reason}."
+    if reason:
+        if diagnostics is not None:
+            diagnostics.append({"code": "trade_plan_unavailable", "message": f"Trade plan unavailable: {reason} Older proposals are not a substitute."})
+        return None
+    return book
+
+
+def _build_current_sheet_plan(db: Session, user_id: str, current, *, today=None, now=None, diagnostics=None):
     """Project the validated unified sheet into the established table shape."""
 
-    snapshot = _latest_snapshot(db, user_id)
-    if snapshot is None:
+    from argosy.services.proposal_expiry import proposal_expiry_reason
+    reason = proposal_expiry_reason(current.directive.expires_at, now=now, today=today)
+    if reason:
+        if diagnostics is not None:
+            diagnostics.append({"code": "trade_plan_unavailable", "message": reason})
         return None
-    try:
-        positions = json.loads(snapshot.positions_json or "[]")
-    except (TypeError, ValueError):
+    book = _projection_book(db, user_id, today=today, diagnostics=diagnostics)
+    if book is None:
         return None
-    if not isinstance(positions, list):
-        return None
+    snapshot = book.snapshot
+    positions = book.total
     book_usd = sum(float(p.get("usd_value_k") or 0.0) for p in positions) * 1000.0
     held: dict[str, float] = {}
     for position in positions:
@@ -132,7 +153,10 @@ def _build_current_sheet_plan(db: Session, user_id: str, current, *, today=None)
                 "current_usd": round(current_usd),
                 "current_pct": pct(current_usd),
                 "after_usd": round(after_usd),
-                "after_pct": pct(after_usd),
+                "after_pct": (
+                    round(after_usd / post_funding_book_usd * 100.0, 2)
+                    if post_funding_book_usd > 0 else None
+                ),
                 "delta_usd": round(-amount if is_sell else amount),
                 "why": authored.thesis,
                 "outcome_scenarios": [
@@ -203,14 +227,31 @@ def _build_current_sheet_plan(db: Session, user_id: str, current, *, today=None)
         ),
         "lines": lines,
     }
+    from argosy.services.allocation_research import research_context
+
+    research_by_tickers = {
+        tuple(sorted(row["tickers"])): row for row in research_context(db, user_id)
+    }
+    pending_display = []
+    for item in current.sheet.pending_research:
+        task = research_by_tickers.get(tuple(item.tickers), {})
+        pending_display.append({
+            **item.model_dump(mode="json"),
+            "next_review_date": task.get("next_review_date", item.next_review_date.isoformat()),
+            "last_error": task.get("last_error"),
+            "last_researched_at": (task.get("research_result") or {}).get("as_of"),
+        })
     return {
         "as_of": str(snapshot.snapshot_date or ""),
         "book_total_usd": round(book_usd),
+        "post_funding_book_total_usd": round(post_funding_book_usd, 2),
         "lines": lines,
         "groups": [group],
         "source": "order_sheet",
         "approval_blocked": not current.validation.valid,
         "candidate_comparisons": candidate_payloads,
+        "pending_research": pending_display,
+        "reserve_usd": float(funding.reserve_usd),
         "review_resolution": (
             current.sheet.review_resolution.model_dump(mode="json")
             if current.sheet.review_resolution is not None
@@ -227,15 +268,31 @@ def _build_current_sheet_plan(db: Session, user_id: str, current, *, today=None)
 
 
 def build_trade_plan(
-    db: Session, user_id: str, *, today: "date | None" = None
+    db: Session, user_id: str, *, today: "date | None" = None,
+    now: datetime | None = None,
+    diagnostics: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """The overview table, or ``None`` when no trade decision is open."""
     from argosy.services.current_order_sheet import load_current_order_sheet
     from argosy.state.models import ActionProposal, Proposal
 
+    now = now or (datetime.combine(today, datetime.min.time(), tzinfo=UTC) if today else datetime.now(UTC))
+    today = today or now.date()
     current_sheet = load_current_order_sheet(db, user_id)
     if current_sheet is not None:
-        return _build_current_sheet_plan(db, user_id, current_sheet, today=today)
+        return _build_current_sheet_plan(db, user_id, current_sheet, today=today, now=now, diagnostics=diagnostics)
+
+    # A unified directive establishes precedence even when expired, malformed,
+    # or superseded. Do not resurrect its legacy materializations or rivals.
+    directive = db.execute(select(ActionProposal.id).where(
+        ActionProposal.user_id == user_id,
+        ActionProposal.dedup_key == f"period_directive:{user_id}",
+    ).limit(1)).scalar_one_or_none()
+    if directive is not None:
+        if diagnostics is not None:
+            diagnostics.append({"code": "trade_plan_unavailable", "message": "No active current order sheet is available. The previous directive is no longer current or could not be validated; older instructions remain history, not a replacement plan."})
+        _projection_book(db, user_id, today=today, diagnostics=diagnostics)
+        return None
 
     # Cooling proposals (user-deferred / scheduled resurfaces, e.g. a sell
     # parked for a pending evaluation) ARE part of "how will my portfolio
@@ -247,6 +304,8 @@ def build_trade_plan(
             .where(
                 Proposal.user_id == user_id,
                 Proposal.status.in_(("awaiting_human", "approved", "cooling")),
+                # Paper/shadow calibration records are not executable plans.
+                Proposal.shadow.is_not(True),
             )
             .order_by(Proposal.id.asc())
         )
@@ -254,6 +313,16 @@ def build_trade_plan(
         .all()
     )
     if not rows:
+        return None
+
+    from argosy.services.proposal_expiry import proposal_expiry_reason
+
+    # Expired instructions remain inspectable in Inbox/history, never projected
+    # as current portfolio changes. This reads their existing expiry contract.
+    rows = [row for row in rows if not proposal_expiry_reason(row.expires_at, now=now)]
+    if not rows:
+        if diagnostics is not None:
+            diagnostics.append({"code": "trade_plan_unavailable", "message": "The outstanding trade instructions have expired. A fresh trade plan is needed; old proposals remain available for review only."})
         return None
 
     from datetime import date  # noqa: F401  (used in the signature annotation)
@@ -268,6 +337,8 @@ def build_trade_plan(
     book = load_current_book(db, user_id, today=today)
     snap = book.snapshot
     if snap is None:
+        if diagnostics is not None:
+            diagnostics.append({"code": "trade_plan_unavailable", "message": "No portfolio snapshot is available to assemble the trade plan."})
         return None
     # A degraded book cannot publish current money (durable unmanaged NVDA
     # unrestorable / a hard-stale unrepriceable mark / a conservation break).
@@ -275,6 +346,8 @@ def build_trade_plan(
     # the whole projection exactly as a missing snapshot does (Sol round-5 #3).
     if book.degraded:
         _log.warning("trade_plan.book_degraded reason=%s", book.degrade_reason)
+        if diagnostics is not None:
+            diagnostics.append({"code": "trade_plan_unavailable", "message": f"Trade plan unavailable: {book.degrade_reason}. A current broker holdings export or verified instrument prices are needed; older proposals are not a substitute."})
         return None
     # SPINE GATE (Phase 3c) — money-critical projection. When enforcement is ON
     # (``spine_gate_enforce``, default OFF) degrade the projection on a NON-
@@ -289,6 +362,8 @@ def build_trade_plan(
                 "trade_plan.book_not_validated_enforced reason=%s",
                 book.validation_reason,
             )
+            if diagnostics is not None:
+                diagnostics.append({"code": "trade_plan_unavailable", "message": f"The portfolio book has not passed validation: {book.validation_reason}."})
             return None
     # Positions come from the CONSERVED book (incl. durable unmanaged NVDA),
     # not raw positions_json which understates when Schwab NVDA is absent.

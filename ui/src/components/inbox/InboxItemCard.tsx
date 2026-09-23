@@ -1,5 +1,7 @@
 "use client";
 
+import { inboxItemAnchor } from "@/lib/inbox-presentation";
+
 /**
  * InboxItemCard — the one attention contract every inbox item shares.
  *
@@ -229,7 +231,7 @@ export function InboxItemCard({ item, busy, onAction }: Props) {
   }
 
   return (
-    <Card>
+    <Card id={inboxItemAnchor(item.id)} className="scroll-mt-24">
       <CardContent className="py-4 space-y-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -248,6 +250,7 @@ export function InboxItemCard({ item, busy, onAction }: Props) {
         </div>
 
         {item.why_now && <p className="text-sm">{item.why_now}</p>}
+        {typeof item.body.expiry_reason === "string" && item.body.expiry_reason && <p className="text-sm text-warning">{item.body.expiry_reason}</p>}
 
         {expanded && (
           <div className="border-t border-border/40 pt-3">

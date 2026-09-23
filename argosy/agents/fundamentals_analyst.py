@@ -130,15 +130,19 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
     #: Texas AG probe. A few targeted WebSearch queries let the analyst
     #: catch catalysts (earnings, regulatory/legal, tariffs, M&A,
     #: guidance) the pre-gathered feed didn't carry. Payload metrics
-    #: remain the arithmetic ground truth. WebFetch NOT enabled — see
-    #: NewsAnalystAgent for rationale.
-    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch",)
+    #: remain the arithmetic ground truth. Primary documents are available for
+    #: bounded follow-up research; snippets cannot verify detailed filing terms.
+    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch", "WebFetch")
+    claude_code_max_turns = 10
+    claude_code_keep_tool_stream_open = True
+    claude_code_public_documents = True
 
     def build_prompt(
         self,
         *,
         tickers: list[str],
         fundamentals_payload: dict[str, dict[str, Any]],
+        research_question: str = "",
     ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
@@ -207,7 +211,8 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             "recommendation into ``summary`` prose. Include the affected "
             "ticker and a one-sentence reason citing the specific "
             "inconsistency you observed.\n"
-            "  - WEB SEARCH: you have the WebSearch tool. You SHOULD run "
+            "  - ROUTINE WEB SEARCH (only when no targeted research question is supplied): "
+            "you have the WebSearch tool. You SHOULD run "
             "1-3 targeted web searches for MATERIAL recent developments "
             "on the tickers in scope — earnings surprises, regulatory or "
             "legal actions, tariffs / trade policy, M&A, guidance changes "
@@ -266,14 +271,20 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             )
         )
 
+        from argosy.agents.research_guidance import targeted_research_guidance
+        system += targeted_research_guidance(research_question)
+
         user = (
             f"Tickers in scope: {', '.join(tickers) if tickers else '(none)'}\n"
             f"Attached fundamentals sources: {ref_list}\n\n"
             "The per-ticker pre-computed metrics are attached as document "
             "sources (one per ticker). Treat them as data already computed by "
-            "the ingestion layer — do NOT recompute. Cite the matching "
-            "`fundamentals/<TICKER>` source on every per-ticker entry that "
-            "carries any numeric data."
+            "the ingestion layer — do NOT recompute. Cite `fundamentals/<TICKER>` "
+            "only for claims derived from that attached payload; never cite a "
+            "payload source that is absent. Question-specific document findings "
+            "in notes/summary instead cite the primary URLs actually retrieved, "
+            "including when no fundamentals payload exists. Missing valuation "
+            "inputs still require a null fair-value estimate."
             f"{missing_line}\n\n"
             "Produce a FundamentalsReport JSON now."
         )

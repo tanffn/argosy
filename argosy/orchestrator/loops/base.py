@@ -18,6 +18,10 @@ except ImportError:  # pragma: no cover - exercised only when dep missing
     _croniter = None  # type: ignore[assignment]
 
 
+class NonRetryableJobError(RuntimeError):
+    """Record a failed job without automatically repeating an unsafe operation."""
+
+
 class TickStatus(str, enum.Enum):
     OK = "ok"
     ERROR = "error"

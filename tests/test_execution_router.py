@@ -134,6 +134,57 @@ class MockBroker:
 
 
 @pytest.mark.asyncio
+async def test_expired_approval_cannot_reach_a_broker(engine: None) -> None:
+    from datetime import datetime, timedelta
+    pid = await _seed_user_and_proposal()
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, pid)
+        row.expires_at = datetime.now(UTC) - timedelta(days=1)
+        await session.commit()
+    broker = MockBroker()
+    router = ExecutionRouter(user_id="ariel", adapter_factories={"ibkr": lambda: broker})
+    result = await router.execute(pid, cash_available_usd=100000)
+    assert result.status == "rejected"
+    assert "expired" in result.reason.lower()
+    assert broker.placed == []
+    async with db_mod.get_session() as session:
+        assert (await session.get(ProposalRow, pid)).status == "approved"
+        receipts = (await session.execute(select(AuditLog).where(AuditLog.event_type == "execution.proposal_expired"))).scalars().all()
+        assert len(receipts) == 1
+
+
+@pytest.mark.asyncio
+async def test_expiry_during_preflight_is_rechecked_before_broker(engine: None, monkeypatch) -> None:
+    from argosy.services import proposal_expiry
+    checks = iter([None, "Proposal expired during preflight"])
+    monkeypatch.setattr(proposal_expiry, "proposal_expiry_reason", lambda *a, **kw: next(checks))
+    pid = await _seed_user_and_proposal()
+    broker = MockBroker()
+    router = ExecutionRouter(user_id="ariel", adapter_factories={"ibkr": lambda: broker})
+    result = await router.execute(pid, cash_available_usd=100000)
+    assert result.status == "rejected"
+    assert "expired" in result.reason
+    assert broker.placed == []
+
+
+@pytest.mark.asyncio
+async def test_expired_limited_proposal_is_not_auto_promoted(engine: None) -> None:
+    from datetime import datetime, timedelta
+    pid = await _seed_user_and_proposal(account_class="limited", status="draft")
+    async with db_mod.get_session() as session:
+        row = await session.get(ProposalRow, pid)
+        row.expires_at = datetime.now(UTC) - timedelta(days=1)
+        await session.commit()
+    broker = MockBroker()
+    router = ExecutionRouter(user_id="ariel", adapter_factories={"ibkr": lambda: broker})
+    assert await router.auto_execute_if_eligible(pid, cash_available_usd=100000) is None
+    assert broker.placed == []
+    async with db_mod.get_session() as session:
+        assert (await session.get(ProposalRow, pid)).status == "draft"
+        assert not (await session.execute(select(AuditLog).where(AuditLog.event_type == "auto_execute.promoted"))).scalars().all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.real_seam
 async def test_router_paper_path_writes_paper_fill_and_advances(engine: None) -> None:
     pid = await _seed_user_and_proposal()

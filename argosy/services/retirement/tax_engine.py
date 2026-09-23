@@ -9,19 +9,25 @@ Per-source rules (corrected per codex review):
   - capital_gain (taxable equity): flat 25% Israeli CGT per
     ``israeli_tax_authority_cgt_2026``.
 
-  - dividend_us_source (Israeli resident): treaty withholding 15% at US
+  - dividend_us_source (eligible Israeli-resident individual, ordinary dividend,
+    valid W-8BEN): treaty withholding 25% at US
     source; Israeli tax 25% on gross; foreign-tax-credit reduces Israeli
     liability:
-        israeli_tax_due = max(0, 0.25 * gross - 0.15 * gross_us_withheld)
-    Per ``us_israel_tax_treaty``.
+        israeli_tax_due = max(0, 0.25 * gross - 0.25 * us_gross)
+        net = gross - us_withholding - israeli_tax_due - applicable_surtax
+    Assumes the base-tax credit is fully usable; not an account withholding
+    observation, surtax-credit ruling, REIT/QIE or exempt RIC-distribution model.
+    Per operative Article 12(2)(a) and IRS Treaty Table 1 (Israel), checked
+    2026-09-12: https://www.irs.gov/pub/irs-lbi/tax-treaty-table-1.pdf .
 
   - dividend_israeli_source: flat 25% Israeli withholding at source.
 
   - pension_annuity (kupat_pensia post-67): rights-fixation regime per
     ``israeli_tax_authority_pension_exemption_2025``. Exemption envelope:
-    57% in 2025, phasing to 67% by 2030 (Argosy uses a year-indexed
-    table; see ``_pension_exemption_rate``). Marginal tax (47% top
-    bracket assumed) on the non-exempt portion only.
+    Maximum 57% in 2025, 57.5% in 2026, 62.5% in 2027 and 67% from
+    2028, applied to the qualifying-pension CEILING, not the whole annuity.
+    Personal usable exemption must be supplied; otherwise no exemption is
+    assumed. Marginal-rate estimate, not a full personal tax return.
 
   - hishtalmut_lump_taxfree / hishtalmut_lump_taxable: handled by the
     Wave 5b hishtalmut module per eligibility.
@@ -39,6 +45,7 @@ Plan: ``docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md``
 § Wave 5a.
 """
 from dataclasses import dataclass
+import math
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -47,7 +54,7 @@ from argosy.services.retirement.citations import ValueWithRationale
 from argosy.services.retirement.reference import resolve
 from argosy.services.tax_curve import (
     ISRAELI_CGT_RATE,
-    SURTAX_THRESHOLD_ANNUAL_NIS,
+    SURTAX_THRESHOLD_ANNUAL_NIS as SURTAX_THRESHOLD_ANNUAL_NIS,  # backwards-compatible re-export
     annual_surtax,
 )
 
@@ -79,22 +86,25 @@ class TaxableCashflow:
     account: Account = "taxable"
     holding_years: int = 0
     user_age: int = 40
-    us_gross_amount_for_treaty: float = 0.0  # for dividend_us_source
+    us_gross_amount_for_treaty: float | None = None  # None = full ordinary US dividend gross
     is_post_67: bool = False  # for pension_annuity rights-fixation
+    pension_period_months: int = 1  # pension gross is monthly unless explicitly annual (12)
+    pension_exemption_monthly_nis: float = 0.0  # usable personal entitlement; no inference from age
 
 
-# Year-indexed pension exemption rate per ITA Jan 2025 procedure.
-# Rights-fixation regime: 57% in 2025 stepping to 67% by 2030.
+# ITA 2026 161d guide and January 2026 withholding booklet, checked 2026-09-12.
+# https://www.gov.il/BlobFolder/guide/2026-filling-out-form-161d/he/Guides_IncomeTax_filling-out-form-161d-2026.pdf
 _PENSION_EXEMPTION_BY_YEAR: dict[int, float] = {
-    2025: 0.57, 2026: 0.59, 2027: 0.61, 2028: 0.63, 2029: 0.65, 2030: 0.67,
+    2024: 0.52, 2025: 0.57, 2026: 0.575, 2027: 0.625,
 }
+PENSION_QUALIFYING_CEILING_2026_MONTHLY_NIS = 9_430.0
 
 
 def _pension_exemption_rate(year: int) -> float:
     """Return the exemption fraction of pension qualifying income at the year."""
-    if year < 2025:
-        return 0.35  # legacy regime
-    if year > 2030:
+    if year < 2024:
+        raise ValueError('Historical pension exemption schedule before 2024 is not supported')
+    if year >= 2028:
         return 0.67  # max under current ITA phasing
     return _PENSION_EXEMPTION_BY_YEAR[year]
 
@@ -104,7 +114,7 @@ DEFAULT_MARGINAL_TOP_RATE = 0.47
 # ISRAELI_CGT_RATE + the surtax constants are sourced from ``tax_curve`` — the
 # single tax-band source (T5.7) — and imported above, so the 25% CGT can't
 # drift between the calculator, the deterministic path and the MC.
-US_DIVIDEND_TREATY_RATE = 0.15
+US_DIVIDEND_TREATY_RATE = 0.25
 # Bituach leumi insurable ceiling — applies to salary + RSU; surplus uninsured.
 DEFAULT_BL_CEILING_NIS_MONTHLY = 50_000.0
 DEFAULT_BL_RATE = 0.07  # employee portion ~7% (simplified; depends on bracket)
@@ -116,6 +126,7 @@ class TaxBreakdown:
     net: ValueWithRationale
     israeli_tax: ValueWithRationale
     us_treaty_credit: ValueWithRationale  # 0 unless US-source dividends
+    us_withholding: ValueWithRationale  # cash tax paid to US; not additional to the credit
     bituach_leumi_tax: ValueWithRationale
     surtax: ValueWithRationale  # mas yesef on income above the annual threshold
     effective_rate: ValueWithRationale
@@ -160,6 +171,7 @@ def compute_tax(
 
     israeli_tax = 0.0
     us_credit = 0.0
+    us_withholding = 0.0
     bl_tax = 0.0
 
     if src == "capital_gain":
@@ -168,14 +180,20 @@ def compute_tax(
         source_id = "israeli_tax_authority_cgt_2026"
 
     elif src == "dividend_us_source":
-        # US treaty withholding 15%; Israeli 25%; FTC interaction
-        us_credit = cashflow.us_gross_amount_for_treaty * US_DIVIDEND_TREATY_RATE
+        # Ordinary dividend only, with treaty eligibility and usable base FTC.
+        us_gross = gross if cashflow.us_gross_amount_for_treaty is None else cashflow.us_gross_amount_for_treaty
+        if not math.isfinite(cashflow.gross_amount_nis) or cashflow.gross_amount_nis < 0 or not math.isfinite(us_gross) or not 0 <= us_gross <= gross:
+            raise ValueError('Dividend gross and US treaty gross must be finite, nonnegative, and US gross cannot exceed total gross')
+        us_withholding = us_gross * US_DIVIDEND_TREATY_RATE
         israeli_gross = gross * ISRAELI_CGT_RATE
+        us_credit = min(us_withholding, israeli_gross)
         israeli_tax = max(0.0, israeli_gross - us_credit)
         rationale = (
-            "US-source dividend: 15% US treaty withholding becomes a "
-            "foreign-tax-credit against Israeli 25% dividend tax. "
-            "israeli_tax = max(0, 0.25 × gross - 0.15 × us_gross)."
+            "Ordinary US dividend, eligible Israeli individual with valid W-8BEN: "
+            "25% projected US withholding, assumed fully creditable against the "
+            "25% Israeli base tax. US tax still reduces net cash. "
+            "Exempt fund distributions, actual broker withholding and taxpayer-specific "
+            "credit/surtax treatment require separate evidence."
         )
         source_id = "us_israel_tax_treaty"
 
@@ -185,18 +203,35 @@ def compute_tax(
         source_id = "israeli_tax_authority_cgt_2026"
 
     elif src == "pension_annuity":
+        months = cashflow.pension_period_months
+        usable = cashflow.pension_exemption_monthly_nis
+        if months not in (1, 12) or isinstance(months, bool):
+            raise ValueError('Pension period must be 1 or 12 months')
+        if not math.isfinite(cashflow.gross_amount_nis) or cashflow.gross_amount_nis < 0 or not math.isfinite(usable) or usable < 0:
+            raise ValueError('Pension gross and personal exemption must be finite and nonnegative')
+        taxable_portion = gross
         if cashflow.is_post_67:
             exemption = _pension_exemption_rate(year)
-            taxable_portion = gross * (1.0 - exemption)
+            # Ceiling is the 2026 reference, not a forecast of future nominal law.
+            maximum = round(PENSION_QUALIFYING_CEILING_2026_MONTHLY_NIS * exemption)
+            if usable > maximum:
+                raise ValueError(f'Personal monthly exemption exceeds model ceiling of {maximum:g} NIS')
+            taxable_portion = max(0.0, gross - usable * months)
             marginal = _marginal_rate(user_id, session)
             israeli_tax = taxable_portion * marginal
             rationale = (
-                f"Pension annuity post-67 under rights-fixation regime: "
-                f"{exemption*100:.0f}% exempt in year {year}; remaining "
-                f"{(1-exemption)*100:.0f}% × marginal {marginal*100:.0f}%."
+                f"Pension estimate over {months} month(s): supplied personal exemption "
+                f"NIS {usable:,.0f}/month, not inferred from age. Statutory fraction "
+                f"{exemption*100:g}% of qualifying ceiling, NOT the whole pension. "
+                f"Taxable NIS {taxable_portion:,.0f} at marginal {marginal*100:g}%. "
+                "Zero exemption is the conservative default pending personal entitlement. "
+                "Ceiling uses the 2026 reference; future nominal ceilings and full "
+                "progressive tax/credits are not forecast here."
             )
             source_id = "israeli_tax_authority_pension_exemption_2025"
         else:
+            if usable:
+                raise ValueError('Personal pension exemption requires the qualifying eligibility flag')
             # Pre-67 partial annuity: no rights-fixation; assume marginal
             marginal = _marginal_rate(user_id, session)
             israeli_tax = gross * marginal
@@ -243,7 +278,11 @@ def compute_tax(
     if apply_surtax and src in _SURTAX_CAPITAL_SOURCES:
         surtax = annual_surtax(gross, is_capital=True)
     elif apply_surtax and src in _SURTAX_ORDINARY_SOURCES:
-        surtax = annual_surtax(gross, is_capital=False)
+        if src == 'pension_annuity':
+            # Annualize recurring taxable pension, then return tax for its period.
+            surtax = annual_surtax(taxable_portion * 12 / months, is_capital=False) * months / 12
+        else:
+            surtax = annual_surtax(gross, is_capital=False)
     if surtax > 0:
         cap = src in _SURTAX_CAPITAL_SOURCES
         from argosy.services.tax_curve import _surtax_params
@@ -256,8 +295,10 @@ def compute_tax(
             f"₪{_thr:,.0f} annual threshold "
             f"({'capital/passive' if cap else 'ordinary'} income)."
         )
+        if src == 'pension_annuity':
+            surtax_rationale = f'Ordinary surtax on annualized taxable pension, apportioned to {months} month(s); other annual income is not included.'
 
-    total_tax = israeli_tax + bl_tax + surtax
+    total_tax = israeli_tax + us_withholding + bl_tax + surtax
     net = max(0.0, gross - total_tax)
     effective_rate = total_tax / gross if gross > 0 else 0.0
 
@@ -282,6 +323,11 @@ def compute_tax(
                 if us_credit > 0 else "No US-source income."
             ),
         ),
+        us_withholding=ValueWithRationale(
+            value=round(us_withholding, 2), unit="NIS",
+            source_id="us_israel_tax_treaty" if src == "dividend_us_source" else None,
+            rationale="Projected ordinary-dividend US cash withholding under the documented treaty assumptions; the credit is not a second cash payment.",
+        ),
         bituach_leumi_tax=ValueWithRationale(
             value=round(bl_tax, 2), unit="NIS",
             source_id="bituach_leumi_ceiling_2026" if bl_tax > 0 else None,
@@ -300,8 +346,8 @@ def compute_tax(
             value=round(effective_rate, 4), unit="fraction", source_id=None,
             rationale=(
                 f"Total tax ₪{total_tax:,.0f} / gross ₪{gross:,.0f}. "
-                "Includes Israeli income/CGT + bituach leumi + surtax "
-                "- US treaty credit."
+                "Includes US cash withholding + net Israeli income/CGT "
+                "(after applicable base credit) + bituach leumi + surtax."
             ),
         ),
     )
@@ -322,18 +368,28 @@ def _marginal_rate(user_id: str, session: Session) -> float:
 
 def effective_pension_annuity_tax(
     *, user_id: str, session: Session, year: int = 2031,
+    gross_monthly_nis: float | None = None,
+    personal_exemption_monthly_nis: float = 0.0,
 ) -> float:
     """Effective income-tax rate on a post-67 private pension annuity.
 
-    The non-exempt (taxable) fraction of the annuity × the household marginal
-    rate, under the ITA rights-fixation exemption phasing. Sourced from
-    :func:`_pension_exemption_rate` (ITA exemption schedule) and
-    :func:`_marginal_rate` (household marginal, default top 47% — conservative,
-    overstates tax slightly, which is the safe direction for a retirement
-    GO/NO-GO). Used to net the annuity income credited in the retirement MC,
-    instead of crediting it gross (codex review 2026-06-04). Bituach Leumi
-    old-age pension is income-tax-exempt and is NOT subject to this.
+    With an amount, use the same ceiling-bound personal-exemption arithmetic
+    as the calculator. Without one, use the household marginal base-tax rate
+    with no assumed personal exemption. This conservative scenario assumption
+    is not a full progressive-tax or surtax forecast. Never apply the statutory
+    exemption percentage to an unlimited annuity. State old-age pension is
+    separate and is not taxed by this helper.
     """
-    exemption = _pension_exemption_rate(year)
     marginal = _marginal_rate(user_id, session)
-    return max(0.0, min(1.0, (1.0 - exemption) * marginal))
+    if gross_monthly_nis is None:
+        if personal_exemption_monthly_nis:
+            raise ValueError('A personal exemption needs the corresponding pension amount')
+        # Scenario engines supply neither per-person future rights nor a fixed
+        # annuity amount: do not grant an unlimited percentage exemption. This
+        # is an explicit conservative marginal-rate assumption, not exact tax.
+        return max(0.0, min(1.0, marginal))
+    result = compute_tax(TaxableCashflow(source='pension_annuity',
+        gross_amount_nis=gross_monthly_nis, is_post_67=True,
+        pension_exemption_monthly_nis=personal_exemption_monthly_nis),
+        user_id=user_id, session=session, year=year, apply_surtax=False)
+    return result.effective_rate.value

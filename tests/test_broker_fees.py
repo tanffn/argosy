@@ -77,15 +77,15 @@ class TestSchedule:
         assert est.below_breakeven is False
 
     def test_floor_binds_below_breakeven(self):
-        est = bf.estimate(10_000.0, bf.LEUMI_FOREIGN)
+        est = bf.estimate(5_000.0, bf.LEUMI_FOREIGN)
         assert est.binding_rule == "minimum"
-        assert est.commission == 25.0
+        assert est.commission == 6.0
         assert est.below_breakeven is True
-        assert est.cost_bps == pytest.approx(25.0)
+        assert est.cost_bps == pytest.approx(12.0)
 
     def test_breakeven_is_where_the_two_rules_meet(self):
         be = bf.breakeven_ticket(bf.LEUMI_FOREIGN)
-        assert be == pytest.approx(41_666.67, abs=0.01)
+        assert be == pytest.approx(10_000.0, abs=0.01)
         assert bf.estimate(be + 1, bf.LEUMI_FOREIGN).binding_rule == "rate"
         assert bf.estimate(be - 1, bf.LEUMI_FOREIGN).binding_rule == "minimum"
 
@@ -105,18 +105,24 @@ class TestSchedule:
         assert bf.breakeven_ticket(bf.LEUMI_ISRAELI) == pytest.approx(10_000.0)
 
 
-class TestTheDisputedMinimum:
-    """The 20/08/2026 change must be modelled conservatively and stay loud."""
+class TestCompleteLetterMinimum:
+    """The last three pages resolve the former page-1-only interpretation."""
 
-    def test_foreign_schedule_models_the_conservative_25(self):
-        assert bf.LEUMI_FOREIGN.minimum == 25.0
-        assert bf.LEUMI_FOREIGN.disputed_minimum == 7.0
+    def test_foreign_schedule_models_the_explicit_six(self):
+        assert bf.LEUMI_FOREIGN.minimum == 6.0
+        assert bf.LEUMI_FOREIGN.disputed_minimum is None
 
-    def test_every_foreign_estimate_carries_the_dispute_note(self):
-        assert "DISPUTED" in bf.estimate(5_000.0, bf.LEUMI_FOREIGN).note
-        assert "DISPUTED" in bf.estimate(500_000.0, bf.LEUMI_FOREIGN).note
+    def test_every_foreign_estimate_carries_scope_and_expiry(self):
+        for ticket in (5_000, 500_000):
+            note = bf.estimate(ticket, bf.LEUMI_FOREIGN).note
+            assert '2027-06-30' in note and '0.05%' in note
+            assert 'DISPUTED' not in note
 
-    def test_the_dispute_doubles_the_h1_2026_bill(self):
+    @pytest.mark.parametrize('ticket,expected', [(3000,6), (10000,6), (50000,30)])
+    def test_matches_independent_complete_letter_derivation(self,ticket,expected):
+        assert bf.estimate(ticket).commission == expected
+
+    def test_rejected_page_one_only_counterfactual_overstates_h1_bill(self):
         """The finding that makes this worth modelling: at 0.06% with a $25
         floor, 29 of 30 foreign trades on the real H1 tape pay the flat floor,
         so the 'improved' rate is decorative. Reproduce that here."""
@@ -145,9 +151,9 @@ class TestTheDisputedMinimum:
 
 class TestDescribe:
     def test_flags_the_floor_and_names_the_breakeven(self):
-        text = bf.describe(bf.estimate(10_000.0, bf.LEUMI_FOREIGN))
+        text = bf.describe(bf.estimate(5_000.0, bf.LEUMI_FOREIGN))
         assert "per-trade floor" in text
-        assert "41,667" in text
+        assert "10,000" in text
 
     def test_stays_quiet_when_the_rate_binds(self):
         text = bf.describe(bf.estimate(200_000.0, bf.LEUMI_FOREIGN))

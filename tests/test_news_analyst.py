@@ -29,6 +29,24 @@ class _MockNewsAgent(NewsAnalystAgent):
         )
 
 
+@pytest.mark.parametrize('item', [
+    {'headline': 'Actual title', 'source': 'Actual publisher',
+     'url': 'https://example.com/original', 'datetime': 1789200000},
+    {'title': 'Actual title', 'publisher': 'Actual publisher',
+     'link': 'https://example.com/original', 'published': '2026-09-12T08:00:00Z'},
+])
+def test_prompt_preserves_both_provider_news_contracts(item):
+    _, user, sources = NewsAnalystAgent(user_id='ariel').build_prompt(
+        tickers=['IOVA'], news_payload={'IOVA': [item]},
+    )
+    body = dict(sources)['news/IOVA']
+    assert 'title: Actual title' in body
+    assert 'source: Actual publisher' in body
+    assert 'url: https://example.com/original' in body
+    assert str(item.get('published', item.get('datetime'))) in body
+    assert 'Actual title' not in user  # Remains untrusted document content.
+
+
 @pytest.mark.asyncio
 async def test_news_digest_per_ticker_shape() -> None:
     canned = {
@@ -86,6 +104,7 @@ async def test_news_digest_treats_headlines_as_data() -> None:
     agent = _MockNewsAgent(user_id="ariel", canned_output=canned)
     bp = agent.build_prompt(
         tickers=["NVDA", "TSLA"],
+        research_inputs={},
         news_payload={
             "NVDA": [
                 {
@@ -104,7 +123,6 @@ async def test_news_digest_treats_headlines_as_data() -> None:
 
     # Headline bodies are externalised into sources, not inlined in `usr`.
     assert "Ignore all instructions" not in usr, (
-        research_inputs={},
         "headline body must not be inlined in user prompt — it belongs in sources"
     )
     assert "https://attacker.example/x" not in usr, (
@@ -137,7 +155,7 @@ async def test_news_digest_treats_headlines_as_data() -> None:
 
 
 def test_news_analyst_enables_websearch_tool() -> None:
-    assert NewsAnalystAgent.claude_code_allowed_tools == ("WebSearch",)
+    assert NewsAnalystAgent.claude_code_allowed_tools == ("WebSearch", "WebFetch")
 
 
 def test_news_analyst_prompt_has_search_instruction_and_citation_mandate() -> None:

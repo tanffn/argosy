@@ -8,11 +8,9 @@ with defensible falsifiers, not a stock-shaped misfire.
 
 Five questions the agent must address:
 
-  1. DOMICILE — UCITS (Irish/EU-domiciled) vs US-domiciled?  This household
-     is Israeli-resident; US-domiciled fund shares are US-situs for estate-tax
-     purposes (NRA $60K exemption, 40% marginal above; see
-     domain_knowledge/tax/us/estate_tax_nonresidents.md). A UCITS vehicle
-     avoids this exposure entirely.
+  1. DOMICILE — identify the vehicle's domicile, not its holdings' countries.
+     Apply the supplied household tax status and accepted constraints; Israeli
+     residency alone does not establish non-US-person status.
 
   2. TER / TOTAL EXPENSE RATIO — Is the fund cheap relative to its mandate
      and available alternatives?  If the exact TER is not in the supplied
@@ -23,12 +21,9 @@ Five questions the agent must address:
      role the plan assigned it (e.g. FWRA covers "global equity" but is 62%
      US — does that still serve the plan's intended diversification)?
 
-  4. NVDA LOOK-THROUGH — Does the fund's index embed meaningful NVDA
-     weight?  Given the household's 58% NVDA single-name concentration,
-     additional NVDA look-through compounds the concentration risk. The
-     agent must quantify this if the holding's us_weight + index-type are
-     known (e.g. CSPX / SPMV / XZEW all track S&P 500 variants; NVDA is
-     ~5-6% of those, so ~0.05 × holding_weight compounds the exposure).
+  4. NVDA LOOK-THROUGH — use dated fund-specific holdings, funding and the
+     actual portfolio denominator. Absolute indirect exposure can increase
+     while portfolio concentration falls. Incidental exposure is not a veto.
 
   5. OVERLAP — Does this fund duplicate exposure already provided by another
      sleeve?  Given FWRA (62% US) + CSPX (100% US) both in the book, the
@@ -81,7 +76,7 @@ class FundVehicleReport(BaseModel):
             "2-4 sentence advisor-voice explanation of the verdict. "
             "Must reference the domicile assessment, the index-fit judgment, "
             "and any data gaps. Do NOT invent TER or tracking-error numbers "
-            "that were not in the input packet."
+            "that were not in the input packet or actually retrieved primary evidence."
         ),
     )
     domicile_ok: bool = Field(
@@ -92,13 +87,13 @@ class FundVehicleReport(BaseModel):
     )
     ter_known: bool = Field(
         default=False,
-        description="True only when TER was present in the input packet.",
+        description="True only when TER was supplied or verified in a retrieved dated primary document.",
     )
     ter_bps: float | None = Field(
         default=None,
         description=(
             "Total expense ratio in basis points, IF known from the input. "
-            "NULL if not supplied — do NOT fabricate."
+            "NULL if neither supplied nor verified in a retrieved dated primary document — do NOT fabricate."
         ),
     )
     nvda_lookahead_weight_pct: float | None = Field(
@@ -169,11 +164,15 @@ class FundVehicleAnalystAgent(BaseAgent[FundVehicleReport]):
     agent_role = "fund_vehicle_analyst"
     output_model = FundVehicleReport
     require_citations = True
+    use_structured_output = True
     # Adaptive thinking at "high" effort — same band as the trader/risk_officer.
     # Fund-vehicle judgments involve multi-dimensional reasoning (domicile +
     # mandate fit + overlap + concentration look-through) and have direct
     # portfolio consequence (leading to a settled verdict).
-    claude_code_allowed_tools: tuple[str, ...] = ()
+    claude_code_allowed_tools: tuple[str, ...] = ("WebSearch", "WebFetch")
+    claude_code_max_turns = 10
+    claude_code_keep_tool_stream_open = True
+    claude_code_public_documents = True
 
     def build_prompt(
         self,
@@ -229,6 +228,8 @@ class FundVehicleAnalystAgent(BaseAgent[FundVehicleReport]):
             ("position_weight_pct", "Current portfolio weight %"),
             ("position_usd_value", "Current USD value"),
             ("other_book_holdings", "Other holdings in book"),
+            ("research_reserve_usd", "Shared pending-research reserve USD"),
+            ("live_execution_evidence", "Live execution evidence with source timestamps"),
         ]:
             val = ctx.get(key)
             if val is not None:
@@ -248,31 +249,38 @@ class FundVehicleAnalystAgent(BaseAgent[FundVehicleReport]):
             "Your job is to evaluate a COLLECTIVE INSTRUMENT (ETF, index fund, bond "
             "fund) and produce a structured verdict: HOLD, TRIM, or SELL. BUY is "
             "NOT in scope — position sizing is the plan's job.\n\n"
-            "This household is ISRAELI-RESIDENT (non-resident alien for US tax "
-            "purposes). Two household-specific facts dominate fund selection:\n"
-            "  1. US-domiciled funds are US-SITUS for estate tax (NRA exemption "
-            "only $60K; 40% marginal above that). UCITS (Irish/EU-domiciled) funds "
-            "are NOT US-situs. This is the PRIMARY structural distinction.\n"
-            "  2. The household carries ~58% single-name NVDA concentration. Any "
-            "fund with S&P 500 or US-heavy index look-through ADDS to this "
-            "concentration — it is NOT diversification.\n\n"
+            "Derive household constraints and current holdings from the supplied "
+            "context and attributed domain evidence. Do not infer US citizenship "
+            "or tax status from Israeli residency. Distinguish instrument domicile "
+            "from the countries of its underlying holdings. Missing facts remain "
+            "data gaps, not guessed household facts.\n\n"
             "RULES:\n"
             "  - Cite every claim with a source id from the attached documents "
-            "(fund_context/<TICKER> or domain_knowledge/tax).\n"
-            "  - If TER / tracking-error / AUM / domicile is NOT in the input packet, "
+            "(fund_context/<TICKER> or domain_knowledge/tax) or an exact primary "
+            "document URL actually retrieved, including its date.\n"
+            "  - If TER / tracking-error / AUM / domicile is NOT in the input packet "
+            "or verified in a dated primary document, "
             "add it to data_gaps and carry LOW confidence for that dimension — "
             "NEVER fabricate a number.\n"
             "  - DOMICILE: derive estate_safe from the supplied 'Estate-safe' flag "
             "and 'Domicile country'. Irish domicile (IE) → estate_safe=True. "
-            "US domicile → estate_safe=False and TRIM/SELL is usually appropriate "
-            "unless the position is already earmarked for migration in the plan.\n"
+            "US domicile → estate_safe=False under the supplied non-US-person "
+            "estate framework. A risk flag alone is not a sell mandate: assess "
+            "documented constraints, accepted exposures and available alternatives.\n"
             "  - OVERLAP: if two holdings track the same or nearly the same index "
             "(e.g. FWRA + ACWD are both FTSE/MSCI All-World variants), flag the "
-            "duplicates in overlap_instruments.\n"
-            "  - NVDA look-through: if the fund is S&P 500, S&P 500 variants, "
-            "or a US-heavy broad index, estimate NVDA's index weight (~5-6% of "
-            "S&P 500 as of 2026) × the fund's us_weight if provided. If you cannot "
-            "derive it, set nvda_lookahead_weight_pct=null and add to data_gaps.\n"
+            "duplicates in overlap_instruments as ticker STRINGS only, never "
+            "objects. Put overlap explanations in reasoning_md.\n"
+            "  - NVDA look-through: use dated fund-specific holdings evidence. "
+            "nvda_lookahead_weight_pct is NVDA as a percent of the fund's entire "
+            "NAV; do not multiply an already whole-fund weight by US weight again. "
+            "If unavailable, return null and a data gap, not a remembered index weight. "
+            "Separate absolute dollars of indirect exposure from portfolio weight. "
+            "An ETF containing NVDA can dilute concentration when funded from NVDA "
+            "or when its NVDA weight is below the existing portfolio's. Evaluate "
+            "the actual funding and before/after portfolio; incidental NVDA exposure "
+            "alone is not grounds to reject a diversified fund. If funding or current "
+            "portfolio exposure is absent, state that rather than inventing it.\n"
             "  - FALSIFIERS must be CONCRETE. 'Performance deteriorates' is "
             "degenerate. 'Tracking difference to its stated index exceeds 20 bps "
             "over any rolling 12-month window' is concrete.\n"
@@ -284,28 +292,39 @@ class FundVehicleAnalystAgent(BaseAgent[FundVehicleReport]):
             "UCITS alternative is available, TER is competitive (or unknown).\n"
             "      TRIM: fund has a marginal issue (domicile tolerated per plan, "
             "or moderate overlap) but should be reduced rather than replaced.\n"
-            "      SELL: fund is US-domiciled without a plan migration plan, OR "
-            "it materially duplicates another sleeve AND a better vehicle exists, "
+            "      SELL: an evidenced structural risk is incompatible with the "
+            "documented household mandate, OR it materially duplicates another "
+            "sleeve AND a better vehicle exists, "
             "OR it fails the plan mandate.\n"
             "  - CONVICTION:\n"
             "      HIGH: all five dimensions (domicile, TER, fit, overlap, NVDA "
-            "look-through) are resolved from the packet.\n"
+            "look-through) are resolved from the packet or dated primary evidence.\n"
             "      MEDIUM: most dimensions resolved, some data gaps.\n"
             "      LOW: critical data missing (TER unknown, domicile ambiguous, "
             "plan role unclear).\n"
         )
 
+        from argosy.agents.research_guidance import targeted_research_guidance
+        system += targeted_research_guidance(ctx.get("research_question") or (
+            "Resolve material missing fund facts using official issuer documents: "
+            "domicile, current TER, mandate, dated holdings and tracking difference. "
+            "Use the exact share class; distinguish tracking difference from tracking error."
+        ))
+
         user = (
             f"Analyse fund/ETF {tk} using the supplied context and domain knowledge. "
             f"Produce a FundVehicleReport with: verdict, conviction, reasoning_md "
             f"(2-4 sentences, advisor voice), domicile_ok, ter_known, ter_bps (null "
-            f"if not supplied), nvda_lookahead_weight_pct (null if not derivable), "
+            f"if neither supplied nor verified from dated primary evidence), "
+            f"nvda_lookahead_weight_pct (null if not derivable), "
             f"overlap_instruments, falsifiers (≥2 concrete sentences), "
             f"revisit_triggers (typed), data_gaps, cited_sources.\n\n"
             f"Context is attached as source 'fund_context/{tk}'. "
             f"Domain knowledge is attached as source 'domain_knowledge/tax'.\n\n"
             f"Do NOT fabricate TER, AUM, or tracking-error numbers. "
-            f"Missing data → add to data_gaps + lower conviction accordingly."
+            f"Missing data → add to data_gaps + lower conviction accordingly.\n\n"
+            f"Return JSON matching this exact output schema:\n"
+            f"{json.dumps(FundVehicleReport.model_json_schema(), ensure_ascii=False)}"
         )
 
         return (system, user, sources)

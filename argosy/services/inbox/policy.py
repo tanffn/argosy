@@ -55,7 +55,7 @@ class InboxPolicy:
     @property
     def version(self) -> str:
         """Short content hash — stamped on every feed."""
-        blob = json.dumps(asdict(self), sort_keys=True, default=list)
+        blob = json.dumps({"ruleset": 3, "thresholds": asdict(self)}, sort_keys=True, default=list)
         digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
         return f"inbox-pol-{digest}"
 
@@ -90,6 +90,12 @@ def assign_bucket(item: InboxItem, policy: InboxPolicy = DEFAULT_POLICY) -> Prio
     sig = item.signals
     kind = item.kind
 
+    if sig.get("expired"):
+        return PriorityBucket.OBSERVATION
+
+    if kind == "order_sheet" and sig.get("no_action_sheet"):
+        return PriorityBucket.OBSERVATION
+
     if kind == "plan_task":
         status = sig.get("status")
         if status == "OVERDUE":
@@ -99,7 +105,7 @@ def assign_bucket(item: InboxItem, policy: InboxPolicy = DEFAULT_POLICY) -> Prio
 
     if kind in ("trade", "order_sheet", "discovery_buy", "switch"):
         expiring = sig.get("expiring_in_days")
-        if expiring is not None and expiring <= policy.expiring_soon_days:
+        if expiring is not None and 0 <= expiring <= policy.expiring_soon_days:
             return PriorityBucket.OVERDUE_BLOCKING
         action = str(sig.get("action", "")).lower()
         if action in policy.risk_reducing_actions or sig.get("risk_reducing"):
@@ -183,6 +189,8 @@ def rank_reason(item: InboxItem, bucket: PriorityBucket) -> str:
     """
     sig = item.signals
     amount = item.amount_usd
+    if sig.get("expired"):
+        return "Expired recommendation — history only; a fresh review is needed before acting."
     amount_clause = f" · affects {_money(amount)}" if amount else ""
 
     if bucket == PriorityBucket.OVERDUE_BLOCKING:
@@ -229,6 +237,8 @@ def rank_reason(item: InboxItem, bucket: PriorityBucket) -> str:
         return f"An opportunity to weigh{amount_clause}."
 
     # OBSERVATION
+    if item.kind == "order_sheet" and sig.get("no_action_sheet"):
+        return "No trades to approve; review the recorded reasons and any open research."
     severity = str(sig.get("severity", "")).lower()
     if severity == "critical":
         return f"Flagged as important{amount_clause}."

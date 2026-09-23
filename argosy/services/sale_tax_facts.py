@@ -66,7 +66,13 @@ def resolve_authoritative_sale(
 
     shares = gross_proceeds_usd / current_price_usd
     whole_shares = round(shares)
-    if not math.isclose(shares, whole_shares, abs_tol=1e-8):
+    # Authored USD notionals have cent precision; provider quotes can retain
+    # sub-cent precision. Compare in dollars with half-cent rounding tolerance,
+    # not a share epsilon that rejects our own rounded correction suggestion.
+    if whole_shares < 1 or not math.isclose(
+        gross_proceeds_usd, whole_shares * current_price_usd,
+        rel_tol=0.0, abs_tol=0.005 + 1e-8,
+    ):
         executable_gross = math.floor(shares) * current_price_usd
         return AfterTaxSale(
             failures=[

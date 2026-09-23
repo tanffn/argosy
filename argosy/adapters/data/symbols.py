@@ -13,13 +13,18 @@ metrics. A plain ``/`` replace is a no-op on the Hebrew / dash TA-200 tickers
 """
 from __future__ import annotations
 
+import re
+
 
 def to_yahoo_symbol(symbol: str) -> str:
     """Portfolio symbol -> Yahoo/yfinance form (BRK/B -> BRK-B). No-op on
     plain tickers and on non-latin (Hebrew) tickers."""
     if not symbol:
         return symbol
-    return symbol.strip().upper().replace("/", "-").replace(".", "-")
+    normalized = symbol.strip().upper().replace("/", "-")
+    # Dotted A/B class shares use a dash at Yahoo. Other dots carry venue
+    # identity (.L, .TO, .AX, etc.) and must not be destroyed as punctuation.
+    return re.sub(r"^([A-Z0-9]+)\.([AB])$", r"\1-\2", normalized)
 
 
 def to_finnhub_symbol(symbol: str) -> str:

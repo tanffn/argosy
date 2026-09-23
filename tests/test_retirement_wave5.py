@@ -41,13 +41,25 @@ class TestPensionExemptionRate:
         assert _pension_exemption_rate(2030) == 0.67
 
     def test_pre_2025_legacy(self):
-        assert _pension_exemption_rate(2024) == 0.35
+        assert _pension_exemption_rate(2024) == 0.52
+
+    def test_corrected_schedule(self):
+        assert _pension_exemption_rate(2026) == 0.575
+        assert _pension_exemption_rate(2027) == 0.625
+        assert _pension_exemption_rate(2028) == 0.67
 
     def test_post_2030_caps(self):
         assert _pension_exemption_rate(2050) == 0.67
 
 
 class TestTaxEngine:
+    def test_shipped_treaty_reference_matches_calculator(self, client_with_db):
+        from argosy.services.retirement.reference import resolve
+        with client_with_db.app.state.session_factory() as session:
+            _seed(session)
+            value = resolve('tax.us_dividend_treaty_withholding', user_id='ariel', session=session)
+        assert value.value == 0.25
+
     def test_capital_gain_25_pct(self, client_with_db):
         SF = client_with_db.app.state.session_factory
         with SF() as s:
@@ -71,9 +83,24 @@ class TestTaxEngine:
                 ),
                 user_id="ariel", session=s,
             )
-        # Israeli 25% × 10K = 2500; US treaty 15% × 10K = 1500; FTC reduces to 1000
-        assert tb.israeli_tax.value == pytest.approx(1_000.0, abs=0.01)
-        assert tb.us_treaty_credit.value == pytest.approx(1_500.0)
+        assert tb.israeli_tax.value == pytest.approx(0.0, abs=0.01)
+        assert tb.us_treaty_credit.value == pytest.approx(2_500.0)
+        assert tb.us_withholding.value == pytest.approx(2_500.0)
+        assert tb.net.value == pytest.approx(7_500.0)
+        assert tb.effective_rate.value == pytest.approx(0.25)
+
+    @pytest.mark.parametrize('us_gross', [None, 0, 4_000, 10_000])
+    def test_dividend_cash_conservation(self, us_gross):
+        tb = compute_tax(TaxableCashflow(source='dividend_us_source', gross_amount_nis=10_000,
+                         us_gross_amount_for_treaty=us_gross), user_id='ariel', session=None)
+        assert tb.net.value == 7_500
+        assert tb.net.value + tb.us_withholding.value + tb.israeli_tax.value + tb.surtax.value == 10_000
+
+    @pytest.mark.parametrize('us_gross', [-1, 10_001, float('nan'), float('inf')])
+    def test_invalid_us_gross_rejected(self, us_gross):
+        with pytest.raises(ValueError):
+            compute_tax(TaxableCashflow(source='dividend_us_source', gross_amount_nis=10_000,
+                        us_gross_amount_for_treaty=us_gross), user_id='ariel', session=None)
 
     def test_pension_annuity_post_67_exemption(self, client_with_db):
         SF = client_with_db.app.state.session_factory
@@ -83,12 +110,34 @@ class TestTaxEngine:
                 TaxableCashflow(
                     source="pension_annuity", gross_amount_nis=10_000,
                     is_post_67=True,
+                    pension_exemption_monthly_nis=5_422,
                 ),
                 user_id="ariel", session=s, year=2026,
             )
-        # 2026 exemption 59%; remaining 41% × 47% marginal
-        expected = 10_000 * (1.0 - 0.59) * DEFAULT_MARGINAL_TOP_RATE
-        assert tb.israeli_tax.value == pytest.approx(expected, abs=10.0)
+        expected = (10_000 - 5_422) * DEFAULT_MARGINAL_TOP_RATE
+        assert tb.israeli_tax.value == pytest.approx(expected, abs=0.01)
+
+    def test_pension_no_unverified_entitlement_assumed(self):
+        from argosy.services.retirement.tax_engine import effective_pension_annuity_tax
+        tb = compute_tax(TaxableCashflow(source='pension_annuity', gross_amount_nis=20_000,
+            is_post_67=True), user_id='ariel', session=None)
+        assert tb.israeli_tax.value == 9_400
+        assert effective_pension_annuity_tax(user_id='ariel', session=None) == 0.47
+
+    @pytest.mark.parametrize('amount', [3_000, 20_000, 100_000])
+    def test_pension_exemption_capped_and_periods_consistent(self, amount):
+        monthly = compute_tax(TaxableCashflow(source='pension_annuity', gross_amount_nis=amount,
+            is_post_67=True, pension_exemption_monthly_nis=5_422), user_id='ariel', session=None)
+        annual = compute_tax(TaxableCashflow(source='pension_annuity', gross_amount_nis=amount * 12,
+            is_post_67=True, pension_exemption_monthly_nis=5_422, pension_period_months=12), user_id='ariel', session=None)
+        assert monthly.israeli_tax.value == pytest.approx(max(0, amount - 5_422) * 0.47, abs=0.01)
+        assert annual.net.value == pytest.approx(monthly.net.value * 12, abs=0.12)
+
+    @pytest.mark.parametrize('exemption', [-1, 5_423, float('nan')])
+    def test_pension_invalid_entitlement_rejected(self, exemption):
+        with pytest.raises(ValueError):
+            compute_tax(TaxableCashflow(source='pension_annuity', gross_amount_nis=10_000,
+                is_post_67=True, pension_exemption_monthly_nis=exemption), user_id='ariel', session=None)
 
     def test_salary_includes_bituach_leumi(self, client_with_db):
         SF = client_with_db.app.state.session_factory

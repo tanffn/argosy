@@ -798,6 +798,10 @@ def assemble_phase1_inputs(
     #     best-effort, never raises.
     try:
         inputs.domain_kb_files = _load_tax_domain_kb_files()
+        import asyncio
+        from argosy.services.knowledge_status import knowledge_advice_context
+        inputs.domain_kb_files["knowledge_review/current_status"] = asyncio.run(knowledge_advice_context(
+            user_id=user_id, paths=list(inputs.domain_kb_files)))
     except Exception as exc:  # noqa: BLE001 - defensive
         log.warning(
             "plan_synthesis.inputs.domain_kb_files_failed",

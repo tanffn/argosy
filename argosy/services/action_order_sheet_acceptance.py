@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from argosy.services.order_sheet import OrderSheet
 from argosy.services.order_sheet_materializer import (
+    linked_order_sheet_proposals,
     materialize_order_sheet,
     order_sheet_fingerprint,
-    resolve_order_sheet_accounts,
 )
 
 
@@ -51,24 +51,24 @@ def materialize_action_order_sheet(
     actual_fingerprint = order_sheet_fingerprint(sheet)
     if recorded_fingerprint and recorded_fingerprint != actual_fingerprint:
         raise ValueError("order-sheet fingerprint does not match the accepted payload")
+    if not sheet.lines:
+        from argosy.services.order_sheet import require_valid_order_sheet
+
+        require_valid_order_sheet(sheet)
+        return [], None  # An acknowledgement cannot cancel unrelated approvals.
 
     configured = (funding_account_id or "").strip() or None
-    if configured is None:
+    if configured is None and not linked_order_sheet_proposals(session, sheet):
         from argosy.config import get_settings
 
         configured = get_settings().order_sheet_funding_account_id
-    funding, sell_accounts = resolve_order_sheet_accounts(
-        session,
-        sheet,
-        funding_account_id=configured,
-    )
     rows = materialize_order_sheet(
         session,
         sheet,
-        funding_account_id=funding,
-        sell_accounts_by_symbol=sell_accounts,
+        funding_account_id=configured,
         approved_by_unified_acceptance=True,
     )
+    funding = next((row.account_id for row in rows if row.action == "buy"), None)
     # Acceptance means this sheet becomes the one executable list.  Retain
     # older rows as audit history, but remove their ability to surface or
     # execute beside the accepted sheet.

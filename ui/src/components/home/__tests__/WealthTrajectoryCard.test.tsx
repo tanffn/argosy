@@ -147,16 +147,17 @@ describe("WealthTrajectoryCard", () => {
 
 describe("bucketQuarterly", () => {
   it("keeps the LAST point per calendar quarter within the past year", () => {
-    const now = Date.now();
+    // Fixed calendar quarters: offsets from today can all land in one quarter.
+    const now = Date.parse("2026-09-23T12:00:00Z");
     const h: NetWorthHistoryResponse = {
       user_id: "ariel",
       points: [
         // Two points in the same quarter — only the later survives.
-        { date: isoDaysAgo(80), total_usd: 1_000_000, nvda_pct: null },
-        { date: isoDaysAgo(75), total_usd: 1_100_000, nvda_pct: null },
+        { date: "2026-05-01", total_usd: 1_000_000, nvda_pct: null },
+        { date: "2026-06-15", total_usd: 1_100_000, nvda_pct: null },
         // Outside the 1y window — dropped.
-        { date: isoDaysAgo(400), total_usd: 900_000, nvda_pct: null },
-        { date: isoDaysAgo(1), total_usd: 1_200_000, nvda_pct: null },
+        { date: "2025-08-01", total_usd: 900_000, nvda_pct: null },
+        { date: "2026-09-22", total_usd: 1_200_000, nvda_pct: null },
       ],
     };
     const rows = bucketQuarterly(h, now);

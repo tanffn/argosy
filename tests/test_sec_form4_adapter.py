@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import json
 from datetime import date, timedelta
 from typing import Any
@@ -17,6 +18,11 @@ from argosy.adapters.data.sec_form4_adapter import (
     _parse_form4_xml,
     _parse_ticker_map,
 )
+
+
+def test_exercise_code_labels_match_sec_legend():
+    assert TRANSACTION_CODE_MEANING['X'] == 'option_exercise_in_or_at_money'
+    assert TRANSACTION_CODE_MEANING['O'] == 'option_exercise_outofmoney'
 
 
 @pytest.fixture(autouse=True)

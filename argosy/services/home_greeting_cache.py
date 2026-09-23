@@ -25,7 +25,7 @@ _log = get_logger("argosy.services.home_greeting_cache")
 
 PROVIDER = "home_greeting"
 # Safety-net TTL — dirty marks are the primary invalidation path.
-DEFAULT_TTL_SECONDS = 7 * 24 * 3600
+DEFAULT_TTL_SECONDS = 60
 
 
 def _user_key(user_id: str) -> str:
@@ -96,6 +96,11 @@ def _read_bake(session: Session, user_id: str, *, now: datetime) -> dict[str, An
         )
     ).scalar_one_or_none()
     if row is None:
+        return None
+    retrieved = _aware_utc(row.retrieved_at)
+    # Cap pre-existing seven-day bakes too: a missed dirty notification must
+    # not make a minute-refresh dashboard silently stale for a week.
+    if retrieved is None or now - retrieved >= timedelta(seconds=DEFAULT_TTL_SECONDS):
         return None
     expires = _aware_utc(row.expires_at)
     if expires is not None and expires <= now:

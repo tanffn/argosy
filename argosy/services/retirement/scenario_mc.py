@@ -403,7 +403,7 @@ def _gather_inputs(session, user_id: str, today: date | None) -> _GatheredInputs
         spend_basis_annual_nis=spend_basis_annual, spend_t12_annual_nis=spend_t12_annual,
         reserve_nis=reserve_nis, bl_monthly_nis=bl_monthly, bl_source=bl_src,
         annuity_tax_rate=annuity_tax,
-        annuity_tax_source=f"tax_engine.effective_pension_annuity_tax (claim year {claim_year})",
+        annuity_tax_source=f"tax_engine.effective_pension_annuity_tax (claim year {claim_year}); conservative marginal-rate estimate, no personal exemption assumed; not a full progressive-tax/surtax projection",
     )
 
 

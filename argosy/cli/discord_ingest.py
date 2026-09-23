@@ -72,6 +72,10 @@ def main(
     log_level: str = typer.Option(
         "INFO", "--log-level", help="Logging level (DEBUG/INFO/WARNING/ERROR)."
     ),
+    clear_auth_stop: bool = typer.Option(
+        False, "--clear-auth-stop",
+        help="After repairing bot credentials/permissions, clear its auth stop and exit without connecting. Request budgets remain intact.",
+    ),
 ) -> None:
     """Connect to Discord and ingest messages until the gateway disconnects.
 
@@ -97,6 +101,12 @@ def main(
             "Drop ~/.argosy/discord_creds.json to activate."
         )
         raise typer.Exit(code=0)
+
+    if clear_auth_stop:
+        from argosy.services.discord_feed_safety import DiscordFeedSafety
+        DiscordFeedSafety(creds.bot_token).clear_auth_block()
+        typer.echo("Discord feed auth stop cleared. No connection made; request budgets preserved.")
+        return
 
     session_factory = _build_session_factory()
     logger.info(

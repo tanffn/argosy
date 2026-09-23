@@ -35,24 +35,15 @@ stays dormant — the supervisor that schedules
 listener if credentials are not present. This keeps fresh checkouts /
 CI green without requiring real Discord tokens.
 
-Implementation note — discord.py vs raw websockets
---------------------------------------------------
+Connection safety
+-----------------
 
-``discord.py`` is NOT in ``pyproject.toml``. To avoid adding a heavy
-dependency for what is effectively a one-channel read-only listener, we
-talk to the Discord gateway directly using the ``websockets`` library
-(already pulled in transitively by FastAPI / uvicorn). The protocol
-surface we need is small:
-
-* Opcode 10  ``HELLO``    — server announces ``heartbeat_interval``.
-* Opcode  1  ``HEARTBEAT`` — periodic keep-alive (sequence number).
-* Opcode  2  ``IDENTIFY``  — auth payload with bot token + intents.
-* Opcode  0  ``DISPATCH``  — ``MESSAGE_CREATE`` is the only event we
-                             care about. Other dispatches are ignored.
-
-We deliberately do NOT implement RESUME / sharding / voice / reactions /
-slash-commands. Restart on disconnect is delegated to the caller (cron
-or supervisor) per the task spec.
+The production transport uses discord.py (already a project dependency),
+including session RESUME, heartbeat acknowledgements and reconnect backoff.
+It waits for authenticated READY before reporting connected. Durable per-token
+login/IDENTIFY budgets and an OS process lock protect against restart storms.
+Authentication/configuration failures stop the job with an actionable error.
+This feed is separate from the private conversational Discord bot.
 
 Codex BLOCKER #2 isolation contract
 -----------------------------------
@@ -72,7 +63,8 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field as dataclasses_field
+from dataclasses import dataclass
+from dataclasses import field as dataclasses_field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -81,10 +73,9 @@ import httpx
 from sqlalchemy.orm import Session
 
 from argosy.services.discord_attachment_fetcher import (
-    Attachment,
     MAX_ATTACHMENT_BYTES,
+    Attachment,
     fetch_text_attachments,
-    parse_attachments,
 )
 from argosy.services.news_extractor import extract
 from argosy.services.predictions.parsers import extract_alpha_call_from_text
@@ -203,14 +194,25 @@ def load_creds(path: Path | None = None) -> DiscordCreds | None:
             f"got {type(payload).__name__}"
         )
 
-    missing = [k for k in ("bot_token", "channel_id", "server_id") if k not in payload]
+    missing = [k for k in ("channel_id", "server_id") if k not in payload]
+    if "bot_token" not in payload and "token_secret" not in payload:
+        missing.append("bot_token")
     if missing:
         raise ValueError(
             f"Discord creds file {creds_path} is missing required field(s): "
             f"{', '.join(missing)}"
         )
 
-    bot_token = payload["bot_token"]
+    if "token_secret" in payload:
+        # Fixed key keeps this integration isolated from the private advisor.
+        if payload["token_secret"] != "discord_listener_bot_token":
+            raise ValueError("Discord listener token_secret must be discord_listener_bot_token")
+        from argosy.secrets import get_secret
+        bot_token = get_secret("discord_listener_bot_token")
+        if not bot_token:
+            raise ValueError("Discord listener keychain token missing; run discord-listener setup")
+    else:
+        bot_token = payload["bot_token"]
     channel_id = payload["channel_id"]
     server_id = payload["server_id"]
 
@@ -310,7 +312,7 @@ class DiscordClient(Protocol):
 # ---------------------------------------------------------------------------
 
 
-# Default client factory uses raw websockets. Tests pass a stub.
+# Default client factory uses the maintained SDK. Tests may pass a stub.
 ClientFactory = Callable[[DiscordCreds], DiscordClient]
 
 
@@ -323,6 +325,7 @@ async def run_discord_listener(
     client_factory: ClientFactory | None = None,
     now: Callable[[], datetime] | None = None,
     on_connected: Callable[[], None] | None = None,
+    on_disconnected: Callable[[], None] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> None:
     """Connect to the Discord gateway and persist incoming messages.
@@ -344,37 +347,11 @@ async def run_discord_listener(
             minutes. Default 60. Prevents re-ingesting an entire channel
             history on reconnect.
         client_factory: Override the Discord client constructor (for
-            tests). ``None`` uses the raw-websockets default.
+            tests). ``None`` uses the maintained Discord SDK.
         now: Override the wallclock for age comparisons (for tests).
             ``None`` uses ``datetime.now(timezone.utc)``.
-        on_connected: Optional zero-arg callback fired AFTER the gateway
-            transport handshake completes (HELLO opcode received +
-            IDENTIFY sent + heartbeat scheduled) — i.e. immediately
-            after the awaited ``client.connect()`` returns without
-            raising. Used by
-            :class:`~argosy.services.jobs.discord_listener_job.DiscordListenerJob`
-            to flip its ``connection_status()`` from ``"reconnecting"``
-            to ``"connected"``. Default ``None`` is a no-op — existing
-            tests + the CLI smoke path are unaffected (Sprint A
-            commit #6).
-
-            Semantics (codex review BLOCKER on commit #6): the callback
-            fires at the GATEWAY-TRANSPORT-CONNECTED point — i.e. HELLO
-            + heartbeat are in flight, IDENTIFY has been SENT but the
-            gateway's IDENTIFY-ACK / ``READY`` dispatch has NOT yet
-            been received. This is a deliberate trade-off: firing here
-            lights up the admin-UI green dot promptly on a healthy
-            gateway, at the cost of a brief false-positive window if
-            the bot token has been revoked (the gateway will close the
-            connection seconds later when it rejects IDENTIFY; the
-            listener observes that as a clean disconnect + the
-            supervisor opens a fresh cycle). A stricter "fire on first
-            ``READY`` dispatch" semantic would require parsing the
-            ``READY`` opcode in the raw-websockets client — a follow-on
-            if false-positives become a real operator pain. Callback
-            exceptions are caught + logged but do NOT bring the
-            listener down — a flaky status hook should not crash
-            ingestion.
+        on_connected: Optional callback after authenticated READY. Callback
+            failures are logged without interrupting ingestion.
 
     Returns:
         None — the coroutine runs until the client iterator stops, then
@@ -392,22 +369,29 @@ async def run_discord_listener(
     max_age = timedelta(minutes=max_message_age_minutes)
 
     client = factory(creds)
+    def status_changed(connected: bool) -> None:
+        callback = on_connected if connected else on_disconnected
+        if callback:
+            try:
+                callback()
+            except Exception:
+                logger.exception("discord_listener: status callback failed")
+    if hasattr(client, "set_status_callback"):
+        client.set_status_callback(status_changed)
     logger.info(
         "discord_listener: connecting to channel %s on server %s",
         creds.channel_id, creds.server_id,
     )
-    await client.connect()
+    try:
+        await client.connect()
+    except BaseException:
+        # Includes cancelled/failed authentication: don't leak sockets, SDK
+        # tasks or the cross-process lease before the message-loop finally.
+        await client.close()
+        raise
     logger.info("discord_listener: connected, awaiting messages")
 
-    # Sprint A commit #6 — fire the status hook AFTER client.connect()
-    # returns successfully. For the real client, ``connect()`` returns
-    # once it has received the HELLO opcode and SENT IDENTIFY (see
-    # ``_RawWebsocketsDiscordClient.connect``: HELLO is verified +
-    # IDENTIFY is dispatched + the heartbeat task is started, all
-    # before the function returns). IDENTIFY-ACK / ``READY`` arrive
-    # later inside the messages loop; this hook is therefore a
-    # "transport connected, auth in flight" signal — see the
-    # docstring's BLOCKER note for the deliberate trade-off.
+    # The production client has received authenticated READY, not just HELLO.
     if on_connected is not None:
         try:
             on_connected()
@@ -655,127 +639,14 @@ def _already_ingested(session: Session, source_ref: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Default client — raw websockets implementation
+# Default client — maintained SDK with durable safety budgets
 # ---------------------------------------------------------------------------
 
 
-# Discord gateway version + URL. v10 is current as of 2026.
-_DISCORD_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
-
-# Gateway intents bitmask. We need:
-#   GUILDS (1 << 0)           — channel metadata
-#   GUILD_MESSAGES (1 << 9)   — receive MESSAGE_CREATE in guild channels
-#   MESSAGE_CONTENT (1 << 15) — actually see ``content`` (privileged intent;
-#                               must be enabled in the bot's app settings)
-_INTENTS = (1 << 0) | (1 << 9) | (1 << 15)
-
-
 def _default_client_factory(creds: DiscordCreds) -> DiscordClient:
-    """Construct the production raw-websockets client."""
-    return _RawWebsocketsDiscordClient(creds)
-
-
-class _RawWebsocketsDiscordClient:
-    """Minimal Discord gateway client over raw websockets.
-
-    Implements just enough of the gateway protocol to subscribe to
-    MESSAGE_CREATE events on the configured channel. Heartbeat is a
-    background task; the public ``messages()`` async iterator yields
-    ``MessageEvent`` for each MESSAGE_CREATE dispatch.
-
-    This class is constructed by the default factory; tests pass their
-    own ``DiscordClient`` and never exercise this code.
-    """
-
-    def __init__(self, creds: DiscordCreds) -> None:
-        self._creds = creds
-        self._ws: Any = None
-        self._heartbeat_task: asyncio.Task[None] | None = None
-        self._sequence: int | None = None
-        self._heartbeat_interval_ms: int | None = None
-        self._closed = False
-
-    async def connect(self) -> None:
-        # Lazy import so the module imports cleanly even if websockets
-        # is somehow unavailable; the test path never reaches this.
-        import websockets  # type: ignore[import-not-found]
-
-        self._ws = await websockets.connect(_DISCORD_GATEWAY_URL)
-        hello = json.loads(await self._ws.recv())
-        if hello.get("op") != 10:
-            raise RuntimeError(
-                f"discord_listener: expected HELLO opcode 10, got {hello.get('op')}"
-            )
-        self._heartbeat_interval_ms = int(hello["d"]["heartbeat_interval"])
-
-        # IDENTIFY (opcode 2)
-        await self._ws.send(json.dumps({
-            "op": 2,
-            "d": {
-                "token": self._creds.bot_token,
-                "intents": _INTENTS,
-                "properties": {
-                    "os": "linux",
-                    "browser": "argosy",
-                    "device": "argosy",
-                },
-            },
-        }))
-
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-
-    async def _heartbeat_loop(self) -> None:
-        assert self._heartbeat_interval_ms is not None
-        interval_s = self._heartbeat_interval_ms / 1000.0
-        while not self._closed:
-            await asyncio.sleep(interval_s)
-            if self._closed or self._ws is None:
-                return
-            try:
-                await self._ws.send(json.dumps({"op": 1, "d": self._sequence}))
-            except Exception as exc:  # pragma: no cover — network
-                logger.warning("discord_listener: heartbeat failed: %s", exc)
-                return
-
-    async def messages(self) -> Any:
-        assert self._ws is not None
-        async for raw in self._ws:
-            payload = json.loads(raw)
-            seq = payload.get("s")
-            if seq is not None:
-                self._sequence = seq
-            if payload.get("op") != 0:
-                continue
-            if payload.get("t") != "MESSAGE_CREATE":
-                continue
-            data = payload.get("d", {})
-            try:
-                yield MessageEvent(
-                    message_id=str(data["id"]),
-                    channel_id=int(data["channel_id"]),
-                    content=str(data.get("content", "")),
-                    timestamp=_parse_discord_ts(data["timestamp"]),
-                    attachments=parse_attachments(data.get("attachments")),
-                )
-            except (KeyError, ValueError) as exc:  # pragma: no cover
-                logger.warning(
-                    "discord_listener: malformed MESSAGE_CREATE: %s", exc,
-                )
-                continue
-
-    async def close(self) -> None:
-        self._closed = True
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except (asyncio.CancelledError, Exception):  # pragma: no cover
-                pass
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:  # pragma: no cover
-                pass
+    """Construct the guarded, session-resuming production transport."""
+    from argosy.services.discord_feed_gateway import DiscordFeedGateway
+    return DiscordFeedGateway(creds)
 
 
 def _parse_discord_ts(value: str) -> datetime:

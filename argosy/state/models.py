@@ -935,6 +935,12 @@ class DecisionRun(Base):
     decision_kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="trade_proposal", server_default="trade_proposal"
     )
+    # Capability boundary for callers such as the private chat analysis
+    # dispatcher.  An analysis-only run may persist reports, a verdict, and a
+    # proposed recommendation, but it can never approve or execute it.
+    execution_policy: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="normal", server_default="normal"
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -1047,6 +1053,11 @@ class Fill(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False, index=True
     )
     paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    execution_time_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    commission_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    native_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    price_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    commission_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # Seam 4 (decision loop): the settled verdict that recommended this fill,
     # resolved best-effort at reconcile time via
     #   fills.proposal_id → proposals.decision_run_id ↔ verdicts.source_decision_run_id
@@ -1067,6 +1078,21 @@ class Fill(Base):
             postgresql_where=_sa_text("external_fill_id <> ''"),
         ),
     )
+
+
+class FillBookApplication(Base):
+    """One receipt's settlement/application state; snapshot writes are atomic with it."""
+
+    __tablename__ = "fill_book_applications"
+    fill_id: Mapped[int] = mapped_column(Integer, ForeignKey("fills.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False, index=True)
+    settlement_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    receipt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    base_snapshot_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("portfolio_snapshots.id"), nullable=True)
+    applied_snapshot_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("portfolio_snapshots.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
 class PendingOrder(Base):
@@ -1092,6 +1118,7 @@ class PendingOrder(Base):
         String(64), nullable=False, default="", server_default="", index=True
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="submitted", index=True)
+    receipt_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -3407,6 +3434,9 @@ class EvaluationMethod(Base):
     method_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default=_sa_text("1")
     )
+    # Versions are comparable only when they score the same question/horizon.
+    # NULL means this method's own name (no implicit family-wide equivalence).
+    scoring_contract: Mapped[str | None] = mapped_column(Text, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # SQLite-native bool: 0/1. ``is_active = 1`` is the source-of-truth
     # filter in the source_reliability view.
@@ -3437,6 +3467,16 @@ class EvaluationMethod(Base):
             name="ck_eval_method_registry_version_positive",
         ),
     )
+
+
+class PredictionRecoveryState(Base):
+    """Operational retry cursor, separate from immutable forecast outcomes."""
+
+    __tablename__ = "prediction_recovery_state"
+    prediction_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("predictions.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class PredictionOutcome(Base):
@@ -3519,6 +3559,78 @@ class PredictionOutcome(Base):
         ),
         Index("ix_outcomes_evaluated", "evaluated_at"),
         Index("ix_outcomes_kind", "outcome_kind"),
+    )
+
+
+class PredictionBenchmarkOutcome(Base):
+    """Immutable benchmark comparison for one persisted prediction outcome.
+
+    The absolute outcome remains the historical fact in
+    :class:`PredictionOutcome`.  Benchmark comparisons are separate and
+    versioned so changing the proxy or date convention never rewrites it.
+    Ratios use decimal fractions (``0.05`` = five percentage points).
+
+    Migration: alembic 0115.
+    """
+
+    __tablename__ = "prediction_benchmark_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    prediction_outcome_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey(
+            "prediction_outcomes.id",
+            ondelete="CASCADE",
+            name="fk_prediction_benchmark_outcomes_outcome_id",
+        ),
+        nullable=False,
+    )
+    benchmark_symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    benchmark_version: Mapped[str] = mapped_column(Text, nullable=False)
+    comparison_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    benchmark_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    benchmark_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    benchmark_entry_price: Mapped[Decimal] = mapped_column(
+        Numeric(12, 4), nullable=False
+    )
+    benchmark_exit_price: Mapped[Decimal] = mapped_column(
+        Numeric(12, 4), nullable=False
+    )
+    benchmark_return_pct: Mapped[Decimal] = mapped_column(
+        Numeric(11, 6), nullable=False
+    )
+    subject_return_pct: Mapped[Decimal] = mapped_column(
+        Numeric(11, 6), nullable=False
+    )
+    decision_excess_return_pct: Mapped[Decimal] = mapped_column(
+        Numeric(11, 6), nullable=False
+    )
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "prediction_outcome_id",
+            "benchmark_symbol",
+            "benchmark_version",
+            name="uq_prediction_benchmark_outcome_version",
+        ),
+        CheckConstraint(
+            "comparison_mode IN ('own_vs_benchmark', 'avoid_vs_benchmark')",
+            name="ck_prediction_benchmark_outcomes_mode",
+        ),
+        CheckConstraint(
+            "json_valid(evidence_json)",
+            name="ck_prediction_benchmark_outcomes_evidence_json",
+        ),
+        Index(
+            "ix_prediction_benchmark_outcomes_evaluated",
+            "evaluated_at",
+        ),
     )
 
 
@@ -4038,6 +4150,23 @@ class InferredLifeEventFinding(Base):
             name="uq_inferred_findings_pattern_evidence",
         ),
     )
+
+
+class AllocationResearchTask(Base):
+    """Durable, non-executable follow-up owned by the daily allocation team."""
+
+    __tablename__ = "allocation_research_tasks"
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    next_review_date: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_json: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
 
 
 class PendingReevaluation(Base):
@@ -5612,3 +5741,4 @@ for _immutable_model in (
 
 # Register the independent research ledger with the shared migration metadata.
 from argosy.state import research_models as _research_models  # noqa: E402,F401
+from argosy.state import chat_models as _chat_models  # noqa: E402,F401

@@ -295,8 +295,8 @@ def test_method_family_dedup_picks_one_outcome(sync_session) -> None:
     session.execute(
         sa.text(
             "INSERT INTO evaluation_method_registry "
-            "(method_name, family, method_version, is_active) "
-            "VALUES ('fixed_lookahead_7d_v2', 'fixed_lookahead', 2, 1)"
+            "(method_name, family, method_version, is_active, scoring_contract) "
+            "VALUES ('fixed_lookahead_7d_v2', 'fixed_lookahead', 2, 1, 'fixed_lookahead_7d')"
         )
     )
     session.flush()
@@ -563,6 +563,101 @@ def test_cache_ttl_constant_is_5_minutes() -> None:
     """Spec §4.2 — 5-minute TTL pinned in code. Tests would silently
     break if a future edit changed this number; pin via assertion."""
     assert CACHE_TTL_SECONDS == 300.0
+
+
+def test_checkpoint_cannot_score_repaired_long_horizon(sync_session) -> None:
+    from argosy.services.predictions.outcomes import authoritative_outcomes
+
+    session, _ = sync_session
+    p = _insert_prediction(
+        session, timeframe_days=180, evaluation_method="fixed_lookahead_180d",
+        event_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    checkpoint = _insert_outcome(
+        session, p, outcome_kind="hit_target", pnl_pct=0.90,
+        evaluation_method="fixed_lookahead_30d_entry_backfilled",
+        evaluated_at=datetime.now(timezone.utc),
+    )
+    session.flush()
+    # Old checkpoint remains in the audit ledger, but supplies no current score.
+    assert authoritative_outcomes(session, [p]) == {}
+    assert get_source_reliability(session, "ariel") == []
+    assert reliability_mod._compute_medians(session, "ariel") == {}
+    actual = _insert_outcome(
+        session, p, outcome_kind="expired_negative", pnl_pct=-0.25,
+        evaluation_method="fixed_lookahead_180d",
+        evaluated_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    session.flush()
+    invalidate_reliability_cache()
+    selected = authoritative_outcomes(session, [p])
+    assert selected[p.id][1].id == actual.id
+    rel = get_source_reliability(session, "ariel")[0]
+    assert rel.scored_predictions == 1
+    assert rel.mean_pnl_pct == pytest.approx(-0.25)
+    assert rel.median_pnl_pct == pytest.approx(-0.25)
+    assert session.get(PredictionOutcome, checkpoint.id) is not None
+    assert reliability_mod._authoritative_signal_outcomes(
+        session, user_id="ariel", source="discord"
+    )[0][1].id == actual.id
+
+
+def test_unknown_method_version_requires_explicit_contract(sync_session) -> None:
+    from argosy.services.predictions.outcomes import authoritative_outcomes
+
+    session, _ = sync_session
+    session.execute(sa.text(
+        "INSERT INTO evaluation_method_registry "
+        "(method_name,family,method_version,is_active) "
+        "VALUES ('different_question','fixed_lookahead',99,1)"
+    ))
+    p = _insert_prediction(session)
+    original = _insert_outcome(session, p, outcome_kind="hit_stop", pnl_pct=-0.1)
+    _insert_outcome(session, p, outcome_kind="hit_target", pnl_pct=1,
+                    evaluation_method="different_question")
+    session.flush()
+    assert authoritative_outcomes(session, [p])[p.id][1].id == original.id
+    rel = get_source_reliability(session, "ariel")[0]
+    assert rel.hit_stop_count == 1
+    assert rel.mean_pnl_pct == pytest.approx(-0.1)
+
+
+def test_same_contract_cross_family_has_one_winner_everywhere(sync_session) -> None:
+    from argosy.services.predictions.outcomes import authoritative_outcomes
+
+    session, _ = sync_session
+    session.execute(sa.text(
+        "INSERT INTO evaluation_method_registry "
+        "(method_name,family,method_version,is_active,scoring_contract) "
+        "VALUES ('alternate_family_v2','target_stop',2,1,'fixed_lookahead_7d')"
+    ))
+    p = _insert_prediction(session)
+    _insert_outcome(session, p, outcome_kind="hit_stop", pnl_pct=-0.1)
+    replacement = _insert_outcome(session, p, outcome_kind="hit_target", pnl_pct=0.2,
+                                  evaluation_method="alternate_family_v2")
+    session.flush()
+    assert authoritative_outcomes(session, [p])[p.id][1].id == replacement.id
+    rows = get_source_reliability(session, "ariel")
+    assert len(rows) == 1
+    assert rows[0].method_family == "target_stop"
+    assert rows[0].mean_pnl_pct == pytest.approx(0.2)
+    assert rows[0].median_pnl_pct == pytest.approx(0.2)
+
+
+def test_selector_batches_and_accepts_active_successor_of_retired_base(sync_session) -> None:
+    from argosy.services.predictions.outcomes import authoritative_outcomes
+
+    session, _ = sync_session
+    predictions = [_insert_prediction(session) for _ in range(501)]
+    for prediction in predictions:
+        _insert_outcome(session, prediction, outcome_kind="expired_positive", pnl_pct=0.1,
+                        evaluation_method="fixed_lookahead_7d_entry_backfilled")
+    session.execute(sa.text(
+        "UPDATE evaluation_method_registry SET is_active=0 WHERE method_name='fixed_lookahead_7d'"
+    ))
+    assert len(authoritative_outcomes(session, predictions)) == 501
+    rows = get_source_reliability(session, "ariel")
+    assert rows[0].scored_predictions == 501
 
 
 # ---------------------------------------------------------------------------

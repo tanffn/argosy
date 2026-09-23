@@ -1,0 +1,91 @@
+{
+  "status": "incomplete",
+  "controls_passed": true,
+  "historical_interpretation_allowed": true,
+  "cases": [
+    {
+      "case_id": "nlf_synthetic",
+      "synthetic": true,
+      "action": "buy",
+      "qualified": true,
+      "exclusion_reason": null,
+      "matches_expected_class": true,
+      "confidence": "HIGH",
+      "size": 15000.0,
+      "size_units": "currency",
+      "rationale": "Buy a starter position in NLF, about 1.5% of the portfolio — sized so a total loss would not damage the plan. It is a boring niche software company that just turned genuinely profitable while still growing over 30%, keeps about three-quarters of each sales dollar as gross profit, and sees existing customers spend ~22% more each year. It trades near 3.4x sales with more cash than debt, which is cheap for that combination. Main risk: a large enterprise-software vendor bundles a 'good enough' module and the niche stalls.",
+      "falsifiers": [
+        "Net revenue retention (source: company quarterly disclosure, fundamentals/NLF latest_quarter; as-of Q0, currently 122% and above 120% for three straight quarters) falls below 100% in any single quarter — meaning the installed base is net-contracting, which is a decisive break of the retention-economics leg of this thesis, not noise -> BUY->EXIT.",
+        "Gross margin (source: company income statement, fundamentals/NLF; as-of FY-1, currently 74.5% and expanding each of the last three fiscal years from 71%) falls below 70% for two consecutive quarters, excluding any named one-time or restructuring item -> BUY->EXIT. Persistence required because hosted-delivery mix shifts one quarter at a time.",
+        "Revenue growth (source: company income statement / quarterly disclosure, fundamentals/NLF; as-of Q0, currently +31% year-over-year, with fiscal-year growth accelerating 22% -> 28.6% -> 33.3%) decelerates below +15% year-over-year for two consecutive quarters -> BUY->EXIT. This is the deteriorating side of today's actual, not the status quo.",
+        "Operating profitability reverses: GAAP net income (source: company income statement, fundamentals/NLF; as-of Q0, currently +$14M, following FY-1 net income of +$28M and free cash flow of +$55M) returns to a loss for two consecutive quarters on an operating basis, with any one-time gains or charges stripped out -> BUY->EXIT.",
+        "STRUCTURAL: the bundling risk materialises — a larger horizontal enterprise-resource-planning (ERP) vendor ships a competing maintenance-scheduling module AND at least one disclosed multi-year NLF customer is lost to it (source: company disclosures / news coverage, news/NLF bear case; as-of Q0 no such event has occurred). No numeric threshold is meaningful here, so this is honestly flagged qualitative -> BUY->EXIT."
+      ],
+      "next_validation_point": "Next quarterly earnings print (Q+1), estimated 2-3 months from the just-reported Q0 — the report that shows whether net revenue retention stays above 120%, gross margin keeps expanding, and GAAP profitability persists for a second straight quarter. No absolute date is asserted: the packet provides no trustworthy calendar anchor."
+    },
+    {
+      "case_id": "omk_synthetic",
+      "synthetic": true,
+      "action": "hold",
+      "qualified": true,
+      "exclusion_reason": null,
+      "matches_expected_class": true,
+      "confidence": "HIGH",
+      "size": 0.0,
+      "size_units": "currency",
+      "rationale": "Pass on OMK — do not initiate a position. After marketing costs, OMK still loses money on the customers it buys, and that gap was still negative last quarter. Growth collapsed from over 60% to under 7% while gross margin slipped to about 27.5%, so the rebrand has not fixed churn or the underlying economics. With less than two years of cash against heavy losses, a dilutive raise looks like the likely next event. Even a small 0.5% starter needs evidence the customer economics work; there isn't any yet.",
+      "falsifiers": [
+        "Full-year contribution profit after marketing (source: company annual disclosure in fundamentals/OMK; as-of FY-0 just ended, currently -$55M on $1,260M revenue) turns positive (> $0) for a full fiscal year -> HOLD->ADD (initiate a 0.5-1% starter, $5,000-$10,000 on the $1,000,000 benchmark NAV).",
+        "Gross margin (source: quarterly income statement, fundamentals/OMK; as-of Q0 just reported, currently 27.5%, down from 34% two years earlier) recovers above 33% for two consecutive quarters without an offsetting collapse in revenue -> HOLD->ADD (re-underwrite for a starter). Qualitative: needs two-quarter persistence, so no point-trigger armed.",
+        "Revenue growth (source: quarterly income statement, fundamentals/OMK; as-of Q0, currently +4.5% YoY, down from +62% in FY-2) re-accelerates above +15% YoY for two consecutive quarters while quarterly contribution profit after marketing improves versus the -$18M Q0 baseline -> HOLD->ADD (re-underwrite). Qualitative: compound, two-quarter condition — no point-trigger armed.",
+        "Free cash flow (source: annual cash-flow statement, fundamentals/OMK; as-of FY-1, currently -$290M) improves to better than -$100M for a full fiscal year with revenue growth still positive and no increase in discount intensity -> HOLD->ADD (cash-burn objection retired). Qualitative: compound condition — no point-trigger armed."
+      ],
+      "next_validation_point": "Next quarterly print (estimated 2-3 months out): check contribution profit after marketing (Q0 = -$18M), gross margin (Q0 = 27.5%) and YoY revenue growth (Q0 = +4.5%). A financing/equity-raise announcement before that print would be an earlier, unscheduled test."
+    },
+    {
+      "case_id": "boot_2017",
+      "synthetic": false,
+      "action": "buy",
+      "qualified": false,
+      "exclusion_reason": "grading verification failed",
+      "matches_expected_class": true,
+      "confidence": "MEDIUM",
+      "size": 5000.0,
+      "size_units": "currency",
+      "rationale": "Buy a small starter in POT — $5,000, half a percent, money we accept could go to zero. It's cheap: about 12 times trailing earnings and a quarter of annual sales, for a niche western-and-workwear chain with real pricing power. The catch is honest — sales grew 10.7% only because they opened stores and had an extra week; same-store sales were flat, profit per dollar of sales fell from 3.3% to 2.3%, and they carry $462m of debt against $32m of cash. Small size is the protection.",
+      "falsifiers": [
+        "Same-store sales (metric source: company quarterly same-store-sales disclosure; as-of the just-reported Q4/FY-1; current baseline -0.9% for Q4 and +0.3% for the full year, with management guiding flat) come in below -3% year-over-year for two consecutive quarters. That breaks the load-bearing 'need-based niche with pricing power' leg — it would say demand is leaving the category, not just pausing. Decision transition: BUY->EXIT. Left QUALITATIVE deliberately: the two-consecutive-quarter persistence requirement cannot be captured by a single metric reading, so no point-trigger is armed.",
+        "Full-year adjusted net margin (metric source: annual income statement, adjusted net income divided by revenue; as-of FY-1 just reported; current baseline 2.3% = $31m on $1,323m, down from roughly 3.3% the prior year, which is why adjusted earnings per share fell ~20% while sales rose 10.7%) falls below 1.5% for a full fiscal year. Note on earnings quality: GAAP net income $30m versus adjusted $31m means add-backs are only ~$1m (~3%), so there is no one-time gain inflating the current baseline — the compression is operating, not cosmetic. A third straight year of compression would mean the rising exclusive-brand mix is not converting into gross margin and new doors are being bought at negative operating leverage. Decision transition: BUY->EXIT.",
+        "Leverage rises without new productive assets (metric source: balance-sheet debt footnote and store-count disclosure; as-of FY-1, only a combined $462m total debt against $32m cash and ~220 doors is disclosed to me) — specifically, total debt increases while store count is flat-to-down, or the company discloses a covenant waiver/amendment or a revolver draw to fund operations. Decision transition: BUY->EXIT. Left QUALITATIVE: my inputs do not split funded debt from capitalized operating-lease liabilities, so a bare debt threshold would mis-fire on ordinary lease additions from normal new-store openings. This disclosure gap is a stated reason confidence is MEDIUM, not HIGH.",
+        "Exclusive/own-brand penetration stalls or reverses (metric source: company merchandise-mix disclosure; as-of FY-1 described only qualitatively as 'rising', with no percentage given) while gross margin declines year-over-year for two consecutive quarters. That removes the single identified margin-expansion lever underneath this thesis and leaves only unit growth, which flat comps already show is not paying for itself. Decision transition: BUY->EXIT. Left QUALITATIVE: compound condition plus two-quarter persistence, not expressible as one metric reading."
+      ],
+      "next_validation_point": "Next quarterly earnings print — estimated 2-3 months out (relative window only; the packet supplies no absolute date anchor, and the temporal mask forbids inferring one). What gets tested: (a) same-store sales versus the flat-SSS guide, against the just-reported Q4 reading of -0.9%; (b) whether gross margin stops compressing year-over-year; (c) any disclosure splitting the $462m total debt into funded debt versus capitalized lease liabilities. Second checkpoint: the full-year print roughly 12 months out, judged against management's own flat-SSS guide."
+    },
+    {
+      "case_id": "ttcf_t2",
+      "synthetic": false,
+      "action": "sell",
+      "qualified": false,
+      "exclusion_reason": "grading verification failed",
+      "matches_expected_class": true,
+      "confidence": "HIGH",
+      "size": 133.0,
+      "size_units": "shares",
+      "rationale": "Exit PVF in full. The distribution milestone landed — over 12,000 stores — but the economics it was meant to improve went the wrong way: margin guidance was cut and the full year flipped from a small profit to a meaningful loss, so they sell far more and keep less on each sale. Customer concentration never improved. Management also wrote off its own deferred tax assets, meaning it no longer treats future profits as probable. Ample cash funds survival, not repair. We take the loss and free the slot.",
+      "falsifiers": [
+        "REPAIR / PAUSE-FALSIFIER (would invalidate this exit): Reported gross margin (source: company quarterly income statement; as-of Q2 of the current FY, baseline 15.7%, FY guide cut to 16-22% from 20-25%) prints above 20% for two consecutive quarters while revenue growth stays above +30% YoY — i.e. the branded mix finally pays for the shelf space -> SELL->PAUSE (halt the reduction and re-underwrite for re-entry). Left qualitative: needs two consecutive readings, so no single-point trigger.",
+        "REPAIR / PAUSE-FALSIFIER: Full-year adjusted EBITDA guidance (source: company FY guidance issued with the Q2 print; currently -$52m to -$63m after being cut from +$7m to +$15m) is revised back to breakeven or better in any subsequent guidance update -> SELL->PAUSE (stop reducing; the profitability leg is repairing).",
+        "REPAIR / PAUSE-FALSIFIER: Top-2 customer concentration (source: company revenue-concentration disclosure; as-of the latest quarter, baseline 71%, split 39%/32%) falls below 50% of revenue for two consecutive quarters without a decline in absolute revenue -> SELL->PAUSE. Left qualitative: the two-quarter persistence and the no-revenue-decline condition cannot be captured by a single metric threshold."
+      ],
+      "next_validation_point": "Q3 of the current fiscal year earnings print — estimated ~3 months after the Q2 print that landed ~4 days ago. It is the first quarter with the mass-retail rollout and the heavy marketing spend fully in the numbers: watch reported gross margin against the cut 16-22% guide and whether the $870-895m FY revenue guide holds after the first-ever consensus miss."
+    }
+  ],
+  "limitations": [
+    "Production Trader plus independent benchmark agents, not the full live allocation workflow.",
+    "Curated cases test failure modes, not an unbiased sample or proof of investment alpha.",
+    "Masking reduces but cannot eliminate model-memory contamination.",
+    "Market returns are gross diagnostics, not sized trades or after-tax family performance.",
+    "No live recommendations, predictions, approvals, or fills are written by this runner."
+  ],
+  "run_sha256": "d19b385ebdd680abbda1cc4a3423ed724c1c8e6022c1a532e2cfaae2193f7ccc"
+}

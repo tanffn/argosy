@@ -32,12 +32,14 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
+from weakref import WeakSet
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from argosy.logging import get_logger
-from argosy.orchestrator.loops.base import CadenceLoop, LongRunningJob
+from argosy.orchestrator.loops.base import CadenceLoop, LongRunningJob, NonRetryableJobError
+from argosy.services.jobs.completion_journal import CompletionJournal, validate_receipt
 from argosy.state import db as db_mod
 from argosy.state.models import CadenceState, JobRun
 
@@ -45,6 +47,20 @@ if TYPE_CHECKING:  # pragma: no cover
     from argosy.orchestrator.scheduler import Scheduler
 
 _log = get_logger("argosy.jobs.registry")
+_live_registries: WeakSet = WeakSet()
+
+
+def unfinished_completion_ids(url) -> set[int]:
+    """In-process run owners plus durable completions, for daily retention.
+
+    Snapshot without awaits while retention owns SQLite's writer transaction.
+    An owner retains identity until its receipt is published, leaving no gap
+    in which a live/finishing job can be mistaken for an abandoned old row.
+    """
+    ids = {run_id for registry in list(_live_registries)
+           for database, run_id in registry._completion_identities if database == str(url)}
+    ids.update(receipt["run_id"] for receipt in CompletionJournal(url).pending())
+    return ids
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -175,7 +191,8 @@ def _idempotency_key(job_name: str, started_at: datetime, triggered_by: str) -> 
 # ---------------------------------------------------------------------------
 
 
-def _derive_health(view: JobView, *, cadence_seconds: float | None = None) -> Health:
+def _derive_health(view: JobView, *, cadence_seconds: float | None = None,
+                   stale_at: datetime | None = None) -> Health:
     """Server-side health derivation per spec §1.6.
 
     Caller passes the loop's interval-or-cron-derived cadence in
@@ -213,6 +230,8 @@ def _derive_health(view: JobView, *, cadence_seconds: float | None = None) -> He
         return "green" if age_s < 600 else "amber"
 
     if status == "ok":
+        if stale_at is not None:
+            return "green" if now < _ensure_utc(stale_at) else "amber"
         if cadence_seconds is None or view.last_run_at is None:
             return "green"
         age_s = (now - _ensure_utc(view.last_run_at)).total_seconds()
@@ -251,6 +270,11 @@ class JobRegistry:
         self._jobs: dict[str, _RegisteredJob] = {}
         self._lock_holders: dict[str, _LockHolder] = {}
         self._log = _log
+        # Identity captured at open lets completion be journaled even if a
+        # later DB read fails. Key by actual DB URL as run IDs are tenant-local.
+        self._completion_identities: dict[tuple[str, int], dict] = {}
+        self._completion_recovery_cursor = 0
+        _live_registries.add(self)
         # ------------------------------------------------------------
         # Supervisor state (commit #5 — LongRunningJob branch).
         # ------------------------------------------------------------
@@ -414,8 +438,9 @@ class JobRegistry:
     async def list(self) -> list[JobView]:
         """Materialize a snapshot of all registered jobs.
 
-        Reads ``cadence_state`` for ``last_*`` fields; queries the
-        ``job_runs`` table for the currently-running row id if any.
+        Reads scheduling hints from ``cadence_state`` and actual outcomes
+        from durable ``job_runs`` receipts. Cadence bookkeeping must not
+        turn a failed or incomplete run green.
         This is the GET /api/jobs payload (commit #4).
 
         For :class:`LongRunningJob` instances, ``last_run_status`` is
@@ -454,6 +479,49 @@ class JobRegistry:
                     currently_running_run_id=running_id,
                 )
 
+                if not isinstance(rec.job, LongRunningJob):
+                    # Contention/skip receipts are not completed work and must
+                    # not erase the last actual failure. Preserve cadence-only
+                    # history for older jobs with no durable outcome receipt.
+                    from sqlalchemy import func
+
+                    from argosy.services.decision_readiness import (
+                        effective_status, failure_guidance, legacy_failed_funnels,
+                    )
+
+                    candidates = await session.stream_scalars(
+                        select(JobRun).where(
+                            JobRun.job_name == name,
+                            JobRun.status.notin_(("running", "skipped")),
+                        ).order_by(func.coalesce(JobRun.finished_at, JobRun.started_at).desc(),
+                                   JobRun.id.desc()).execution_options(yield_per=100)
+                    )
+                    latest = None
+                    try:
+                        async for candidate in candidates:
+                            # Legacy schedulers persisted a skipped body as ok.
+                            # It is still not evidence of completed work.
+                            if effective_status(candidate) != "skipped":
+                                latest = candidate
+                                break
+                    finally:
+                        await candidates.close()
+                    if latest is not None:
+                        if latest.id == running_id:
+                            # Completion may race the earlier running-ID read.
+                            # Do not project the same receipt in both states.
+                            view.currently_running_run_id = None
+                        view.last_run_at = latest.finished_at or latest.started_at
+                        failed_funnels = frozenset()
+                        if name == "decision_funnel" and latest.status == "ok":
+                            failed_funnels = await legacy_failed_funnels(
+                                session, getattr(self._scheduler, "user_id", None)
+                            )
+                        view.last_run_status = effective_status(latest, failed_funnels)
+                        view.last_run_error = latest.error_message
+                        if view.last_run_status == "error" and not view.last_run_error:
+                            view.last_run_error = failure_guidance(latest)["reason"]
+
                 # LongRunningJob branch: override last_run_status with
                 # the job's live connection_status. For the
                 # 'reconnecting > 60s' health-red boundary, also stamp
@@ -479,6 +547,7 @@ class JobRegistry:
                 view.health = _derive_health(
                     view,
                     cadence_seconds=_cadence_seconds(rec.job),
+                    stale_at=_scheduled_stale_at(rec.job, view.last_run_at),
                 )
                 out.append(view)
         return out
@@ -646,22 +715,30 @@ class JobRegistry:
                 await session.rollback()
                 # Race: the same idempotency_key was written by a
                 # retry. Read the existing row id and return that.
-                existing_id = (
+                existing = (
                     await session.execute(
-                        select(JobRun.id).where(
+                        select(JobRun).where(
                             JobRun.idempotency_key == key
                         )
                     )
                 ).scalar_one_or_none()
-                if existing_id is None:
+                if existing is None:
                     raise
                 # Update the in-memory holder if we hold the lock for
                 # this job (manual or supervisor path).
-                self._note_holder(job_name, existing_id)
-                return existing_id
+                self._note_holder(job_name, existing.id)
+                self._remember_completion_identity(session, existing.id, existing.job_name, existing.started_at, existing.idempotency_key)
+                return existing.id
             run_id = row.id
             self._note_holder(job_name, run_id)
+            self._remember_completion_identity(session, run_id, job_name, started_at, key)
             return run_id
+
+    def _remember_completion_identity(self, session, run_id, job_name, started_at, key):
+        self._completion_identities[(str(session.bind.url), run_id)] = {
+            "run_id": run_id, "job_name": job_name,
+            "started_at": _ensure_utc(started_at).isoformat(), "idempotency_key": key,
+        }
 
     def _note_holder(self, job_name: str, run_id: int) -> None:
         """Refresh the in-memory holder marker with the actual run-id.
@@ -712,27 +789,100 @@ class JobRegistry:
         )
 
         async with db_mod.get_session() as session:
-            row = (
-                await session.execute(
-                    select(JobRun).where(JobRun.id == run_id)
+            journal = CompletionJournal(session.bind.url)
+            identity_key = (str(session.bind.url), run_id)
+            identity = self._completion_identities.get(identity_key)
+            if identity is None:
+                row = (await session.execute(select(JobRun).where(JobRun.id == run_id))).scalar_one_or_none()
+                if row is None:
+                    raise ValueError(f"completion row missing: {run_id}")
+                self._remember_completion_identity(
+                    session, run_id, row.job_name, row.started_at, row.idempotency_key,
                 )
-            ).scalar_one_or_none()
-            if row is None:
-                self._log.warning(
-                    "jobs.close.row_missing", run_id=run_id, status=status
-                )
-                return
-            row.finished_at = finished_at
-            row.status = status
-            row.error_message = error_message
-            row.skip_reason = skip_reason
-            row.output_summary = summary_text
-            if row.started_at is not None:
-                started = _ensure_utc(row.started_at)
-                row.duration_ms = int(
-                    (finished_at - started).total_seconds() * 1000
-                )
-            await session.commit()
+                identity = self._completion_identities[identity_key]
+                # Do not upgrade a read transaction while another writer owns
+                # SQLite: that can fail immediately despite busy_timeout.
+                await session.rollback()
+            receipt = journal.stage({
+                **identity, "database": journal.database,
+                "finished_at": finished_at.isoformat(), "status": status,
+                "error_message": error_message, "skip_reason": skip_reason,
+                "output_summary": summary_text,
+            })
+            self._completion_identities.pop(identity_key, None)
+            await self._apply_completion(session, receipt)
+            journal.acknowledge(receipt)
+
+    async def _apply_completion(self, session, receipt: dict) -> None:
+        """Idempotent compare-and-set; never overwrite a different outcome."""
+        validate_receipt(receipt)
+        finished = datetime.fromisoformat(receipt["finished_at"])
+        started = datetime.fromisoformat(receipt["started_at"])
+        if finished.tzinfo is None or started.tzinfo is None:
+            raise ValueError("completion timestamps must include timezone")
+        if receipt["status"] not in ("ok", "error", "skipped", "cancelled") or finished < started:
+            raise ValueError("invalid completion outcome/time")
+        values = {key: receipt[key] for key in (
+            "status", "error_message", "skip_reason", "output_summary",
+        )}
+        values.update(finished_at=finished, duration_ms=int((finished - started).total_seconds() * 1000))
+        result = await session.execute(update(JobRun).where(
+            JobRun.id == receipt["run_id"],
+            JobRun.idempotency_key == receipt["idempotency_key"],
+            JobRun.job_name == receipt["job_name"],
+            JobRun.started_at == started,
+            JobRun.status == "running",
+        ).values(**values))
+        if not result.rowcount:
+            row = (await session.execute(select(JobRun).where(JobRun.id == receipt["run_id"]))).scalar_one_or_none()
+            if (row is None or row.idempotency_key != receipt["idempotency_key"]
+                    or row.job_name != receipt["job_name"]
+                    or _ensure_utc(row.started_at) != _ensure_utc(started)
+                    or any(getattr(row, k) != v for k, v in values.items() if k != "finished_at")
+                    or row.finished_at is None or _ensure_utc(row.finished_at) != _ensure_utc(finished)):
+                raise ValueError(f"completion conflicts with stored run {receipt['run_id']}")
+        await session.commit()
+
+    async def recover_completions(self, *, limit: int = 20) -> int:
+        """Replay a bounded batch before analysis retries/startup orphan cleanup.
+
+        An outage stops this batch (no N x busy-timeout storm). The durable
+        receipt remains for the next heartbeat. No job body is called here.
+        """
+        recovered = 0
+        async with db_mod.get_session() as session:
+            journal = CompletionJournal(session.bind.url)
+            receipts = list(journal.pending(strict=False))
+            if not receipts:
+                return 0
+            offset = self._completion_recovery_cursor % len(receipts)
+            batch = (receipts[offset:] + receipts[:offset])[:limit]
+            self._completion_recovery_cursor = offset + len(batch)
+            for receipt in batch:
+                try:
+                    await self._apply_completion(session, receipt)
+                    journal.acknowledge(receipt)
+                    recovered += 1
+                    self._log.info("jobs.completion_recovered", run_id=receipt["run_id"], status=receipt["status"])
+                except (ValueError, KeyError, TypeError, IntegrityError):
+                    await session.rollback()
+                    # Retain evidence and refuse orphan cleanup, but do not
+                    # disable recovery for all unrelated jobs/receipts.
+                    self._log.exception("jobs.completion_conflict", run_id=receipt.get("run_id"))
+        return recovered
+
+    async def require_completions_drained(self) -> None:
+        """Fail closed before an orphan sweep, including on corrupt receipts."""
+        # Wake-up can leave more than the heartbeat's 20-receipt batch. Drain
+        # bounded batches before declaring a failure, without discarding evidence.
+        for _ in range(5):
+            recovered = await self.recover_completions()
+            async with db_mod.get_session() as session:
+                if next(CompletionJournal(session.bind.url).pending(), None) is None:
+                    return
+            if recovered == 0:
+                break
+        raise RuntimeError("pending completion receipts; defer orphan sweep")
 
     # ------------------------------------------------------------------
     # LongRunningJob supervisor (Spec A commit #5)
@@ -1110,7 +1260,7 @@ class JobRegistry:
                     job._exit_intent = "crashed"
                     close_status = "error"
                     close_error = str(exc)
-                    restart_after = True
+                    restart_after = not isinstance(exc, NonRetryableJobError)
                     self._log.exception(
                         "supervisor.run_crashed", job=job.name
                     )
@@ -1215,12 +1365,21 @@ class JobRegistry:
 # ---------------------------------------------------------------------------
 
 
+def _scheduled_stale_at(job, last_run_at: datetime | None) -> datetime | None:
+    """Two missed cron slots after actual work, respecting weekends and DST."""
+    schedule = getattr(job, "schedule", None)
+    if last_run_at is None or not getattr(schedule, "cron", None):
+        return None
+    first_due = schedule.next_due_after(_ensure_utc(last_run_at))
+    return schedule.next_due_after(first_due) if first_due is not None else None
+
+
 def _cadence_seconds(job: "CadenceLoop | LongRunningJob") -> float | None:
     """Resolve a CadenceLoop's nominal cadence in seconds.
 
     For interval-driven loops, that's ``schedule.interval_seconds``.
-    For cron-driven loops, the next-due delta from "now" approximates
-    the cadence (e.g. daily cron → ~86400). LongRunningJob doesn't
+    Cron-driven loops use actual scheduled deadlines in _scheduled_stale_at;
+    time remaining until the next fire is NOT a cadence. LongRunningJob doesn't
     expose ``.schedule``; ``cadence_seconds=None`` means health
     falls back to ``"green"`` on ``ok`` per the §1.6 table.
     """
@@ -1229,16 +1388,7 @@ def _cadence_seconds(job: "CadenceLoop | LongRunningJob") -> float | None:
         return None
     if getattr(schedule, "interval_seconds", None):
         return float(schedule.interval_seconds)
-    # Approximate cron cadence as the next-due distance from now.
-    try:
-        now = datetime.now(timezone.utc)
-        nxt = schedule.next_due_after(now)
-        delta = (nxt - now).total_seconds()
-        if delta <= 0:
-            return None
-        return float(delta)
-    except Exception:  # pragma: no cover - defensive
-        return None
+    return None
 
 
 __all__ = [
