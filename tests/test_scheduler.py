@@ -575,3 +575,29 @@ async def test_stretched_normal_timers_share_catchup_gate(engine, monkeypatch):
     await asyncio.wait_for(asyncio.gather(*(scheduler._run_loop(x) for x in loops)), timeout=3)
     assert fired == 2
     assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_overdue_interval_catches_up_once_after_restart(engine):
+    from datetime import timedelta
+    now = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+    await _seed_cadence_row("counting", now - timedelta(days=3))
+    scheduler = Scheduler(user_id="ariel", clock=lambda: now)
+    loop = _CountingLoop(schedule=LoopSchedule(interval_seconds=86400))
+    scheduler.register_loop(loop)
+    await scheduler._catch_up_if_missed(loop)
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 1
+
+
+@pytest.mark.asyncio
+async def test_interval_not_yet_due_does_not_restart_full_wait(engine):
+    from datetime import timedelta
+    now = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+    last = now - timedelta(hours=20)
+    await _seed_cadence_row("counting", last)
+    scheduler = Scheduler(user_id="ariel", clock=lambda: now)
+    loop = _CountingLoop(schedule=LoopSchedule(interval_seconds=86400))
+    await scheduler._catch_up_if_missed(loop)
+    assert loop.ticks == 0
+    assert await scheduler._last_tick_at(loop.name) == last

@@ -137,7 +137,7 @@ def parse_capture(path: Path, *, html_bytes: bytes | None = None) -> list[Post]:
         if total > MAX_TOTAL or len(posts) >= 100 or len(seen_assets) > 200:
             raise ValueError("Capture exceeds bounded import size")
         posts.append(Post(identity, title, body, source_date, assets, image_bytes))
-    if not posts or not any(p.identity.startswith("report:") for p in posts):
+    if not posts or not any(p.identity.startswith(("report:", "post:")) for p in posts):
         raise ValueError("No Alpha reports found; login or page-layout repair is needed")
     # A report date is a grouping key, not a unique publisher post ID. The
     # source can publish multiple versions with the same heading. Preserve all
@@ -270,7 +270,7 @@ async def ingest_capture(path: Path, *, user_id: str, now=None, attempt_id=None)
             "posts": len(posts), "images": len(assets), "dependencies": dependency_coverage}, sort_keys=True))
     catalog = await catalog_upload(user_id=user_id, raw_bytes=archive.getvalue(),
         original_name=path.stem + ".zip", mime_type="application/zip", kind="other", source="browser_capture")
-    latest = max(p.source_date[:10] for p in posts if p.identity.startswith("report:"))
+    latest = max(p.source_date[:10] for p in posts if p.source_date)
     result = {"posts": len(posts), "images_archived": len(assets), "queued": 0, "historical": 0,
               "unchanged": 0, "catalog_file_id": catalog.id, "latest_report_date": latest,
               "dependencies": dependency_coverage,

@@ -1776,19 +1776,13 @@ def _yfinance_news_fallback(
 ) -> None:
     """Best-effort yfinance backfill for tickers Finnhub returned no
     news for. Mutates ``out`` in place. Errors are logged + swallowed."""
-    try:
-        import yfinance as yf
-    except ImportError:
-        log.warning("plan_synthesis.inputs.news_yfinance_unavailable")
-        return
-
     for ticker in tickers[:25]:
         if ticker in out:
             continue
         try:
-            from argosy.adapters.data.symbols import to_yahoo_symbol
+            from argosy.services.stock_decision.fetchers import _yahoo_news_items
 
-            raw = yf.Ticker(to_yahoo_symbol(ticker)).news or []
+            raw = _yahoo_news_items(ticker, max_items=10)
         except Exception as exc:  # noqa: BLE001 - per-ticker defensive
             log.warning(
                 "plan_synthesis.inputs.news_yfinance_per_ticker_failed",
@@ -1816,7 +1810,7 @@ def _yfinance_news_fallback(
                     "title": item.get("title"),
                     "publisher": item.get("publisher"),
                     "link": item.get("link"),
-                    "published": item.get("providerPublishTime"),
+                    "published": item.get("providerPublishTime") or item.get("pubDate"),
                 })
         # Drop entries with no title (yfinance occasionally emits empty rows).
         headlines = [h for h in headlines if h.get("title")]

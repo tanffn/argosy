@@ -270,7 +270,7 @@ def _cached_yfinance_fetch(
     return payload
 
 
-def _yahoo_news(ticker: str, *, max_items: int) -> str | None:
+def _yahoo_news_items(ticker: str, *, max_items: int) -> list[dict[str, Any]]:
     """Yahoo company-news fallback, preserving source and publication time."""
     from argosy.adapters.data.symbols import to_yahoo_symbol
 
@@ -311,6 +311,12 @@ def _yahoo_news(ticker: str, *, max_items: int) -> str | None:
         target=ticker,
         fetch=_fetch,
     )
+    return list(raw or [])
+
+
+def _yahoo_news(ticker: str, *, max_items: int) -> str | None:
+    """Render the shared, source-attributed JSON/RSS news records."""
+    raw = _yahoo_news_items(ticker, max_items=max_items)
     rendered: list[str] = []
     for item in list(raw or [])[:max_items]:
         if not isinstance(item, dict):

@@ -601,3 +601,19 @@ async def test_capture_publication_does_not_block_async_writer(store, tmp_path):
         if task is not None and not task.done():
             await asyncio.gather(task, return_exceptions=True)
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dated_alpha_posts_need_no_legacy_report_heading(store, tmp_path):
+    path = tmp_path / "new-layout.html"
+    path.write_text('<html><div><div>AI News</div><div>October 28, 2026 at 06:51:54 AM PT<p>New source observation</p><div><button>Copy Link To This Post</button></div></div></div></html>')
+    posts = capture.parse_capture(path)
+    assert len(posts) == 1 and posts[0].identity.startswith("post:2026-10-28T")
+    assert posts[0].source_date.endswith("-07:00")
+    result = await capture.ingest_capture(path, user_id="a", now=NOW)
+    assert result["latest_report_date"] == "2026-10-28"
+    with store() as db:
+        item = db.scalar(select(ResearchItem))
+        assert item.published_at is None
+        assert item.observed_at.replace(tzinfo=UTC) == NOW
+        assert "2026-10-28" in json.loads(item.analysis_json)["capture"]["source_date"]

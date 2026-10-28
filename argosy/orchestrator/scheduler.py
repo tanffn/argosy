@@ -457,7 +457,9 @@ class Scheduler:
         # *planned* due, not from wall-now after a late fire. Sleep stretch
         # otherwise compounds (each wake pushes the next due out by the
         # sleep duration) — SpeculativeMonitor / FxRefresh are 86_400s.
-        planned_due: datetime | None = None
+        planned_due: datetime | None = (
+            await self._last_tick_at(loop.name) if loop.schedule.interval_seconds else None
+        )
         while not self._stop.is_set():
             now = self.clock()
             interval = loop.schedule.interval_seconds
@@ -549,6 +551,20 @@ class Scheduler:
             else:
                 await self._fire_once(loop)
 
+    async def _last_tick_at(self, loop_name: str) -> datetime | None:
+        try:
+            async with db_mod.get_session() as session:
+                row = (await session.execute(select(CadenceState).where(
+                    CadenceState.loop_name == loop_name,
+                ))).scalar_one_or_none()
+                if row is None or row.last_tick_at is None:
+                    return None
+                last = row.last_tick_at
+                return last.replace(tzinfo=timezone.utc) if last.tzinfo is None else last
+        except Exception:
+            _log.exception("cadence.last_tick_read_failed", loop=loop_name)
+            return None
+
     async def _catch_up_if_missed(self, loop: CadenceLoop) -> None:
         """Missed-run catch-up: if this loop's most recent scheduled fire
         was missed (no tick recorded at or after it — the server was down
@@ -578,6 +594,12 @@ class Scheduler:
         if not bool(_scheduler_setting("scheduler_catchup_on_boot", True)):
             return
         prev_due = loop.schedule.prev_due_before(self.clock())
+        if prev_due is None and loop.schedule.interval_seconds:
+            last = await self._last_tick_at(loop.name)
+            if last is not None:
+                prev_due = last + timedelta(seconds=loop.schedule.interval_seconds)
+                if prev_due > self.clock():
+                    return
         if prev_due is None:
             return
         # Only catch up RECENTLY missed fires. A long-idle slot (e.g. the

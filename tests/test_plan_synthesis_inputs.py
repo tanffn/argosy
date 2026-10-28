@@ -1368,3 +1368,19 @@ def test_assemble_base_salary_usd_none_on_malformed_yaml(
         decision_audit_token="plan-synth-eqc-5",
     )
     assert inputs.base_salary_usd is None
+
+
+
+def test_long_hold_news_uses_shared_rss_fallback_with_citations(monkeypatch):
+    from argosy.orchestrator.flows.plan_synthesis.inputs import _yfinance_news_fallback
+    calls = []
+    def records(ticker, *, max_items):
+        calls.append(ticker)
+        return [{"title": "Fresh company filing", "link": "https://example.org/filing",
+                 "pubDate": "Wed, 28 Oct 2026 11:00:00 GMT"}]
+    monkeypatch.setattr("argosy.services.stock_decision.fetchers._yahoo_news_items", records)
+    out = {"PRESENT": [{"title": "Existing primary evidence"}]}
+    _yfinance_news_fallback(["NVDA", "PRESENT"], out)
+    assert calls == ["NVDA"]
+    assert out["NVDA"][0]["published"] == "Wed, 28 Oct 2026 11:00:00 GMT"
+    assert out["NVDA"][0]["link"] == "https://example.org/filing"
