@@ -782,16 +782,8 @@ def validate_order_sheet(sheet: OrderSheet) -> SheetValidation:
                         detail=f"{line.symbol}: probability confidence and evidence/base-rate basis are required",
                     )
                 )
-            if (line.expected_upside_multiple or 0.0) < 5.0:
-                failures.append(
-                    SheetFailure(
-                        code="small_position_insufficient_asymmetry",
-                        detail=(
-                            f"{line.symbol}: sub-1% slot requires at least a "
-                            "5x authored upside case"
-                        ),
-                    )
-                )
+            # The independent sizing review compares payoff, time and risk.
+            # A fixed 5x hurdle would reject a credible shorter-horizon 2x case.
 
         if line.stance_source == "discovery":
             ev = line.evidence

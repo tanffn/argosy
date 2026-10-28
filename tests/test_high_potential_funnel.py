@@ -19,6 +19,12 @@ from argosy.services.trend_radar import ScanResult, TrendCandidate
 from argosy.state.models import Base, Prediction, ScanState, User
 
 
+@pytest.fixture(autouse=True)
+def _isolate_durable_recovery(monkeypatch):
+    # Unit orchestration tests inject all persistence; never read the live DB.
+    monkeypatch.setattr(hpf, "_recover_grade", lambda *args: None)
+
+
 def _cand(ticker, score=80.0):
     return TrendCandidate(ticker=ticker, name=ticker, score=score,
                           families=("MOMENTUM",), reasons=("trend",),
@@ -27,6 +33,9 @@ def _cand(ticker, score=80.0):
 
 
 def _setup(monkeypatch, shortlist, existing, estimate_calls, *, fleet_pick=True):
+    async def record_failure(*args):
+        pass
+    monkeypatch.setattr(hpf, '_record_screen_failure', record_failure)
     monkeypatch.setattr(hpf, "_scan_radar",
                         lambda: ScanResult(shortlist=tuple(shortlist),
                                            quarantine=(), source_counts={}))
@@ -128,8 +137,9 @@ def test_radar_observation_is_persisted_before_estimator_failure(monkeypatch):
 
     monkeypatch.setattr(hpf, "_estimate", failed_estimator)
 
-    with pytest.raises(RuntimeError, match="estimator unavailable"):
-        asyncio.run(hpf.run_funnel("ariel", force=False, now=now))
+    result = asyncio.run(hpf.run_funnel("ariel", force=False, now=now))
+    assert result.research_failures[0]['ticker'] == 'QURE'
+    assert 'estimator unavailable' in result.research_failures[0]['reason']
 
     assert store["QURE"]["observation"]["price"] == 100.0
     assert store["QURE"]["last_radar_at"] == now.isoformat()
@@ -145,7 +155,8 @@ def test_unchanged_ticker_is_not_re_estimated(monkeypatch):
         "ticker": "PLTR", "last_score": 80.0, "radar_fingerprint": fp,
         "status": "active", "rank": 1, "quarantine_reason": "",
         "estimator_json": json.dumps({"ticker": "PLTR", "go": True,
-            "conviction": "HIGH", "sentiment": 0.8, "one_line": "cached"}),
+            "conviction": "HIGH", "sentiment": 0.8, "one_line": "cached",
+            "mandate_version": hpf.MOONSHOT_MANDATE_VERSION}),
         "fleet_json": None,
         "last_estimated_at": "2026-06-12T11:00:00+00:00",  # 1h ago, fresh
         "last_radar_at": "2026-06-12T11:00:00+00:00",
@@ -179,6 +190,75 @@ def test_old_research_contract_regrades_without_reestimating(monkeypatch):
     assert hpf._current_fleet_contract(store['PLTR']['fleet_json'])
     asyncio.run(hpf.run_funnel('ariel', now=now))
     assert grades == ['PLTR', 'PLTR']  # Current contract may reuse the grade.
+
+
+def test_old_mandate_reestimates_even_a_fresh_rejection(monkeypatch):
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
+    calls = []
+    store = _setup(monkeypatch, [_cand('XYL')], {}, calls)
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    legacy = json.loads(store['XYL']['estimator_json'])
+    legacy.pop('mandate_version')
+    legacy['go'] = False
+    store['XYL']['estimator_json'] = json.dumps(legacy)
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert calls == ['XYL', 'XYL']
+
+
+def test_cached_top_names_do_not_consume_new_research_slots(monkeypatch):
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
+    store = _setup(monkeypatch, [_cand('A'), _cand('B')], {}, [])
+    monkeypatch.setattr(hpf, 'TOP_K_TO_FLEET', 1)
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert store['A']['fleet_json']
+    assert store['B']['fleet_json'] is None
+    result = asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert store['B']['fleet_json']
+    assert result.research_attempted == 1
+
+
+def test_failed_review_is_not_no_buy_and_other_subject_survives(monkeypatch):
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
+    store = _setup(monkeypatch, [_cand('A'), _cand('B')], {}, [])
+
+    async def grade(user_id, candidate, **kwargs):
+        if candidate.ticker == 'A':
+            raise RuntimeError('primary evidence unavailable')
+        return FleetPick(ticker='B', conviction='MED', thesis_md='Investigated', verdict='WATCH')
+
+    monkeypatch.setattr(hpf, '_grade', grade)
+    result = asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert result.research_failures == [{'ticker': 'A', 'reason': 'primary evidence unavailable'}]
+    assert store['B']['fleet_json']
+    assert store['A']['estimator_json']
+
+
+def test_estimator_failure_cannot_starve_a_successful_candidate(monkeypatch):
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
+    store = _setup(monkeypatch, [_cand('GOOD'), _cand('BROKEN')], {}, [])
+
+    def estimate(candidate, **kwargs):
+        if candidate.ticker == 'BROKEN':
+            raise RuntimeError('source unavailable')
+        return EstimatorVerdict(candidate.ticker, True, 'MED', .3, 'Investigate')
+
+    monkeypatch.setattr(hpf, '_estimate', estimate)
+    result = asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert [p.ticker for p in result.picks] == ['GOOD']
+    assert store['GOOD']['estimator_json']
+    assert store['BROKEN']['estimator_json'] is None
+    assert result.research_failures[0]['ticker'] == 'BROKEN'
+
+
+def test_oldest_attempt_gets_research_before_repeated_failure(monkeypatch):
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
+    store = _setup(monkeypatch, [_cand('A'), _cand('B')], {}, [])
+    monkeypatch.setattr(hpf, 'TOP_K_TO_FLEET', 1)
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    store['A']['fleet_json'] = None
+    store['A']['last_research_attempt_at'] = now.isoformat()
+    asyncio.run(hpf.run_funnel('ariel', now=now))
+    assert store['B']['fleet_json']
 
 
 def test_changed_fingerprint_triggers_re_estimate(monkeypatch):
@@ -231,7 +311,8 @@ def test_naive_stored_timestamp_does_not_crash_reuse(monkeypatch):
         "ticker": "PLTR", "last_score": 80.0, "radar_fingerprint": fp,
         "status": "active", "rank": 1, "quarantine_reason": "",
         "estimator_json": json.dumps({"ticker": "PLTR", "go": True,
-            "conviction": "HIGH", "sentiment": 0.8, "one_line": "c"}),
+            "conviction": "HIGH", "sentiment": 0.8, "one_line": "c",
+            "mandate_version": hpf.MOONSHOT_MANDATE_VERSION}),
         "fleet_json": None,
         "last_estimated_at": "2026-06-12T11:00:00",  # NAIVE (no tz), 1h ago
         "last_radar_at": "2026-06-12T11:00:00", "last_fleet_at": None,

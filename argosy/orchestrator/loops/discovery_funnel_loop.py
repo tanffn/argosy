@@ -31,12 +31,24 @@ _MAX_ATTEMPTS = 2
 _RETRY_DELAY_SECONDS = 2.0
 
 
-async def _run_with_retry(user_id: str):
+async def _run_with_retry(user_id: str, *, quality_enabled=True):
     """Retry a failed smart refresh once within the same scheduled receipt."""
+    from argosy.services.discovery_followthrough import DailyResearchBudget
+    budget = DailyResearchBudget(user_id)
+    followthrough = {}
+    if quality_enabled:
+        from argosy.services.discovery_followthrough import audit_recent_screens, run_due_reviews
+        for label, operation in (("audit", audit_recent_screens), ("reviews", run_due_reviews)):
+            try:
+                followthrough[label] = await operation(user_id, **({"budget": budget} if label == "reviews" else {}))
+            except Exception as exc:
+                followthrough[label] = {"errors": [str(exc)[:500]]}
     last_error: Exception | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            return await run_funnel(user_id, force=False)
+            reviewed = [r["ticker"] for r in followthrough.get("reviews", {}).get("completed", [])]
+            result = await run_funnel(user_id, force=False, research_budget=budget, reviewed_tickers=reviewed)
+            return result, followthrough
         except Exception as exc:  # noqa: BLE001 - retry boundary
             last_error = exc
             _log.warning(
@@ -62,12 +74,14 @@ class DiscoveryFunnelLoop(CadenceLoop):
         schedule: LoopSchedule | None = None,
         enabled: bool = True,
         user_id: str = "ariel",
+        quality_enabled: bool = True,
     ) -> None:
         super().__init__(
             schedule=schedule or LoopSchedule(cron=_DEFAULT_CRON, timezone=_DEFAULT_TZ),
             enabled=enabled,
         )
         self.user_id = user_id
+        self.quality_enabled = quality_enabled
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> dict | None:
         if await get_cost_guard(
@@ -79,7 +93,7 @@ class DiscoveryFunnelLoop(CadenceLoop):
             )
             return {"status": "paused", "reason": "cost_cap"}
         try:
-            result = await _run_with_retry(self.user_id)
+            result, followthrough = await _run_with_retry(self.user_id, quality_enabled=self.quality_enabled)
         except Exception as exc:  # noqa: BLE001 — failure isolation (codex #10)
             _log.warning("discovery_funnel.tick_failed", error=str(exc)[:200])
             return {"error": str(exc)[:200]}
@@ -90,12 +104,23 @@ class DiscoveryFunnelLoop(CadenceLoop):
             estimated=len(result.estimated),
             picks=len(result.picks),
         )
-        return {
+        summary = {
             "radar": len(result.radar),
             "estimated": len(result.estimated),
             "picks": len(result.picks),
             "last_refreshed_at": result.last_refreshed_at,
+            "research_attempted": result.research_attempted,
+            "research_deferred": result.research_deferred,
+            "research_failures": result.research_failures,
+            "quality_followthrough": followthrough,
         }
+        quality_errors = [error for lane in followthrough.values() for error in lane.get("errors", [])]
+        if result.research_failures or quality_errors:
+            summary["error"] = (
+                f"Discovery research incomplete: {len(result.research_failures) + len(quality_errors)} "
+                "candidate review(s) failed; this is not a no-buy conclusion"
+            )
+        return summary
 
 
 __all__ = ["DiscoveryFunnelLoop"]

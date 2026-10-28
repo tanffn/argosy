@@ -47,6 +47,7 @@ def collect_research_inputs(session, *, user_id: str, ticker: str,
             .join(ResearchItem, ResearchClaim.item_id == ResearchItem.id)
             .join(ResearchSource, ResearchItem.source_id == ResearchSource.id)
             .where(ResearchClaim.user_id == user_id, ResearchItem.status.in_(["analyzed", "analyzed_partial"]),
+                   func.json_extract(ResearchClaim.payload_json, "$.superseded_by_assessment").is_(None),
                    ResearchItem.observed_at <= now, ResearchItem.analyzed_at <= now,
                    func.coalesce(ResearchItem.published_at, ResearchItem.observed_at) >= floor,
                    func.coalesce(ResearchItem.published_at, ResearchItem.observed_at) <= now,

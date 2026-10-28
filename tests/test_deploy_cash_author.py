@@ -323,6 +323,7 @@ def test_route_reauthors_material_warn_and_persists_resolution(monkeypatch):
     def assemble_without_environment_candidates(*args, **kwargs):
         packet = original_assemble(*args, **kwargs)
         packet["discovery_candidates"] = []
+        packet["allocation_research_tasks"] = []
         return packet
 
     monkeypatch.setattr(
@@ -351,7 +352,7 @@ def test_route_reauthors_material_warn_and_persists_resolution(monkeypatch):
                     impact="changes_amount",
                     recommended_amount_usd=170_000,
                 )]
-            return DeploymentReviewOutput(lens=lens, objections=objections)
+            return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=objections)
 
         return actual_run_deploy_decision_team(packet, proposal, review_fn=review)
 

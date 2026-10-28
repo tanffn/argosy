@@ -50,7 +50,8 @@ def test_reviewer_replacements_respect_whole_position_sizing(lens):
     assert "current holdings plus the proposed addition" in system
     assert "post-tax portfolio total" in system
     assert "sub-1% position needs" in system
-    assert "genuine evidence-backed >=5x convexity case" in system
+    assert "genuine evidence-backed time-adjusted convexity case" in system
+    assert "no fixed multiple hurdle" in system
     assert "not a demand to fund every sleeve now" in system
     if lens == "sizing":
         assert "EVERY proposed buy, not only moonshots" in system
@@ -115,7 +116,7 @@ def test_review_team_sees_blind_sells_and_verified_funding_without_rationale():
 
     def review(lens, packet, buys, **_kwargs):
         captured.update(packet)
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
 
     proposal = SimpleNamespace(
         buys=[_buy("ABCL", 8_000, "moonshot")],
@@ -151,7 +152,7 @@ def test_team_carries_unique_plan_sleeve_across_blind_review_seam():
 
     def review(lens, packet, buys, **_kwargs):
         captured_buys.extend(buys)
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
 
     packet = {
         **_packet(),
@@ -214,7 +215,7 @@ def test_every_blind_lens_gets_raw_sell_execution_constraints(policy_status, fai
         agent = DeploymentReviewerAgent.__new__(DeploymentReviewerAgent)
         system, user = agent.build_prompt(lens=lens, packet=packet, buys=buys)
         captured.append((lens, system, user))
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
     proposal = SimpleNamespace(buys=[], sells=[], rationale="secret author explanation")
     result = run_deploy_decision_team(packet, proposal, review_fn=review)
     assert result.all_clear and not result.degraded
@@ -266,6 +267,7 @@ def test_real_reviewer_agent_dispatch_parses_objection(monkeypatch):
             "severity": "block",
         }],
         "overall_note": "One material objection.",
+        "separation_safe": False,
     }
 
     async def fake_call(self, *, system, user, **kwargs):
@@ -288,10 +290,10 @@ def test_team_flags_objected_buys_and_approves_the_rest():
     # Concentration reviewer refutes R1GR (NVDA-heavy); nothing objects to EXUS.
     def _review(lens, packet, buys, *, user_id="ariel"):
         if lens == "concentration":
-            return DeploymentReviewOutput(lens=lens, objections=[
+            return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[
                 ReviewObjection(ticker="R1GR", concern="~14% NVDA — not a diversifier", severity="block"),
             ])
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
 
     decision = run_deploy_decision_team(
         _packet(), _proposal(_buy("R1GR", 18000, "US growth"), _buy("EXUS", 26000, "Intl")),
@@ -309,7 +311,7 @@ def test_team_records_degradation_when_a_reviewer_dies():
     def _review(lens, packet, buys, *, user_id="ariel"):
         if lens == "diversification":
             raise RuntimeError("claude.exe timeout")
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
 
     decision = run_deploy_decision_team(
         _packet(), _proposal(_buy("EXUS", 26000)),
@@ -331,7 +333,7 @@ def test_warn_only_buy_remains_approved_but_auditable():
             objections = [ReviewObjection(
                 ticker="IWQU", concern="compare a role-equivalent fund", severity="warn"
             )]
-        return DeploymentReviewOutput(lens=lens, objections=objections)
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=objections)
 
     decision = run_deploy_decision_team({}, proposal, review_fn=_review)
     assert [b.symbol for b in decision.approved] == ["IWQU"]
@@ -353,7 +355,7 @@ def test_glue_warn_that_changes_amount_forces_reconciliation():
                 impact="changes_amount",
                 recommended_amount_usd=10_000,
             )]
-        return DeploymentReviewOutput(lens=lens, objections=objections)
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=objections)
 
     decision = run_deploy_decision_team({}, proposal, review_fn=_review)
     assert not decision.all_clear
@@ -377,7 +379,7 @@ def test_omitted_candidate_objection_is_not_orphaned():
                 impact="adds_omitted_candidate",
                 recommended_amount_usd=12_000,
             )]
-        return DeploymentReviewOutput(lens=lens, objections=objections)
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=objections)
 
     decision = run_deploy_decision_team({}, proposal, review_fn=_review)
     assert not decision.all_clear
@@ -394,7 +396,7 @@ def test_review_resolution_preserves_dissent_and_the_re_review_outcome():
         _proposal(_buy("GLUE", 26_000, "moonshot")),
         lenses=("sizing",),
         review_fn=lambda lens, packet, buys, **kwargs: DeploymentReviewOutput(
-            lens=lens,
+            lens=lens, separation_safe=False,
             objections=[ReviewObjection(
                 ticker="GLUE",
                 concern="The probability distribution warrants a smaller starter.",
@@ -409,7 +411,7 @@ def test_review_resolution_preserves_dissent_and_the_re_review_outcome():
         _proposal(_buy("GLUE", 10_000, "moonshot")),
         lenses=("sizing",),
         review_fn=lambda lens, packet, buys, **kwargs: DeploymentReviewOutput(
-            lens=lens, objections=[]
+            lens=lens, separation_safe=False, objections=[]
         ),
     )
 
@@ -429,9 +431,9 @@ def test_team_decision_maps_to_dto():
 
     def _review(lens, packet, buys, *, user_id="ariel"):
         if lens == "concentration":
-            return DeploymentReviewOutput(lens=lens, objections=[
+            return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[
                 ReviewObjection(ticker="R1GR", concern="14% NVDA", severity="block")])
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
 
     d = run_deploy_decision_team(
         _packet(), _proposal(_buy("R1GR", 18000, "growth"), _buy("EXUS", 26000, "intl")),
@@ -606,7 +608,7 @@ def test_team_enriches_facts_with_nvda_lookthrough():
 
     def _review(lens, packet, buys, *, user_id="ariel"):
         captured["facts"] = packet.get("instrument_facts")
-        return DeploymentReviewOutput(lens=lens, objections=[])
+        return DeploymentReviewOutput(lens=lens, separation_safe=False, objections=[])
 
     run_deploy_decision_team(_packet(), _proposal(_buy("R1GR", 18000), _buy("MELI", 6000)),
                              lenses=("concentration",), review_fn=_review)

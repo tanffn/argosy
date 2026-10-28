@@ -247,6 +247,10 @@ class TraderProposal(BaseModel):
             "state so the user knows the system didn't fail-soft into HOLD."
         ),
     )
+    recommendation_intent: Literal["hold_owned", "do_not_initiate", "buy", "sell", "unknown"] = Field(
+        default="unknown", description="Distinguish HOLD of an owned position from do_not_initiate for "
+        "an unowned candidate. Derive from supplied positions, not assumptions. This controls future "
+        "accountability: a missed unowned winner is not a successful hold. Use buy/sell for those actions.")
     size_shares_or_currency: float = Field(
         description="Numeric size; interpret per `size_units`. For shares, "
         "this is share count; for currency, this is the notional in the "
@@ -327,8 +331,7 @@ class TraderAgent(BaseAgent[TraderProposal]):
             t = (tier or "").upper()
             if t in ("T0", "T1"):
                 model = "claude-sonnet-4-6"
-            else:
-                model = "claude-opus-5"
+            # Higher tiers use BaseAgent's configured fleet default.
         super().__init__(user_id=user_id, model=model)
         self.tier = tier
 
@@ -578,6 +581,13 @@ class TraderAgent(BaseAgent[TraderProposal]):
             f"{debate_outcome}\n\n"
             "Produce the TraderProposal JSON now."
         )
+        corrections = [r["corrections"] for r in analyst_reports
+                       if r.get("agent_role") == "independent_evidence_review" and r.get("corrections")]
+        if corrections:
+            user += ("\n\nINDEPENDENT REVIEW — REQUIRED REVISION:\n" + "\n".join(corrections)
+                     + "\nRe-derive the proposal. Correct or remove unsupported material claims in ALL "
+                     "fields, including falsifiers, triggers and citations. Do not copy a prior draft's "
+                     "errors. Honest uncertainty is acceptable; unexplained unresolved contradictions are not.")
         return system, user
 
 

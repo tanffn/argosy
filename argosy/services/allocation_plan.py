@@ -915,17 +915,15 @@ def build_target_allocation(
                 snapshot_category=HIGH_GROWTH_SNAPSHOT_CATEGORY,
                 agreement="team-sourced",
                 rationale=(
-                    "Permanent high-growth / high-potential 'moonshot' sleeve — the x10 "
-                    "ASYMMETRY sleeve (binding mandate): names that can plausibly 10x in "
-                    "5-10 years on cap-math (current market cap vs addressable outcome; "
-                    "favors sub-~$20-30B earlier-stage; >$50B needs an extraordinary "
-                    "written justification), sourced GLOBALLY (US/EU/ISR/anywhere) and "
-                    "deliberately NOT estate-gated. Accepted per-name loss is 100%, so "
-                    "defensibility never boosts rank; rank and deploy fill order are "
-                    "asymmetry-first (upside plausibility relative to downside risk, "
-                    "using the mandate's explicit evidence classes — the instrument "
-                    "weights ARE the asymmetry rank). Safe maybe-2x compounders belong "
-                    "in the core/growth sleeves, not here. Held as a fixed strategic "
+                    "Permanent high-growth / high-potential sleeve — time-aware "
+                    "structural upside, including established businesses. No fixed "
+                    "5x/10x eligibility hurdle: compare evidenced per-share upside, "
+                    "timeframe, downside, dilution and whole-portfolio contribution. "
+                    "A credible shorter-horizon 2x may dominate a speculative long-term "
+                    "5x. Quality matters when it makes the outcome achievable, not as "
+                    "a substitute for upside at today's valuation. Sourced globally; "
+                    "US-situs is a priced accepted cost within the bounded carve-out. "
+                    "A total per-name loss must remain survivable. Held as a fixed strategic "
                     "weight; its sourced sigma feeds the FI solver so the book's "
                     "covariance sigma stays on the anchor."
                 ),

@@ -387,6 +387,7 @@ def build_plan_export_markdown(
     today: date | None = None,
     window_days: int = 14,
     include_fm_objections: bool = True,
+    plan_version_id: int | None = None,
 ) -> str:
     """Build the one-pager markdown export for ``user_id``.
 
@@ -394,6 +395,9 @@ def build_plan_export_markdown(
     is missing so the document is always cohesive end-to-end. Returns the
     full markdown body — the route layer wraps it in a ``Response`` with
     appropriate headers.
+
+    ``plan_version_id`` pins review exports to the explicitly selected,
+    tenant-owned version. Omitted IDs retain the UI's draft-first selection.
 
     ``include_fm_objections``: the "Pending FM objections" block is INTERNAL
     review metadata frozen at the fund-manager phase — it predates the
@@ -406,7 +410,15 @@ def build_plan_export_markdown(
     today_iso = today.isoformat()
 
     # ----- Resolve current plan + status ----------------------------------
-    plan, status_label = _resolve_plan(db, user_id)
+    if plan_version_id is None:
+        plan, status_label = _resolve_plan(db, user_id)
+    else:
+        plan = db.execute(select(PlanVersion).where(
+            PlanVersion.id == plan_version_id, PlanVersion.user_id == user_id,
+        )).scalar_one_or_none()
+        if plan is None:
+            raise ValueError("Requested plan does not belong to this user or no longer exists")
+        status_label = f"Selected for review ({plan.role})"
 
     # ----- READ-time {{fact:key}} render (item I / SAME seam as /draft) ---
     # ``horizon_*_md`` (and the Quick Reference block, which is sourced from
@@ -866,13 +878,15 @@ def plan_markdown_for_review(db: Session, *, user_id: str, plan: Any) -> str:
     the canonical one-pager export — the same document the user downloads —
     so the critique reviews the REAL current plan.
     """
+    if plan.user_id != user_id:
+        raise ValueError("Review plan does not belong to this user")
     md = (getattr(plan, "raw_markdown", "") or "").strip()
     if md:
         return md
     # Reader-facing artifact: exclude the stale internal FM-objection
     # scratchpad (see build_plan_export_markdown docstring).
     return build_plan_export_markdown(
-        db, user_id=user_id, include_fm_objections=False,
+        db, user_id=user_id, include_fm_objections=False, plan_version_id=plan.id,
     )
 
 

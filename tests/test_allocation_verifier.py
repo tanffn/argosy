@@ -54,6 +54,20 @@ def _packet(**over):
     return p
 
 
+def test_optional_incomplete_comparison_bounces_before_final_sheet():
+    from argosy.services.order_sheet import PendingResearch
+    packet = _packet(discovery_candidates=[_discovery_row('EXUS', 26, 76.9)])
+    comparison = _candidate_comparison('EXUS', 26, 76.9, False).model_copy(
+        update={'split_considered': None, 'split_why': None})
+    # A WATCH candidate is not required, but any supplied comparison still has
+    # the final sheet's structural obligations.
+    packet['discovery_candidates'][0]['fleet']['verdict'] = 'WATCH'
+    comparison = comparison.model_copy(update={'research_verdict': 'WATCH'})
+    proposal = _ok_proposal().model_copy(update={'buys': [], 'cash_to_deploy': 0,
+        'cash_to_reserve': 180000, 'candidate_comparisons': [comparison]})
+    assert 'candidate_sizing_missing' in {f.code for f in verify_allocation_proposal(proposal, packet).failures}
+
+
 def _intent(thesis_type="diversifier", upside=2) -> AuthoredOrderIntent:
     kwargs = {}
     if str(thesis_type).lower().endswith("convexity"):
@@ -309,7 +323,7 @@ def test_sub_one_percent_nonconvex_buy_is_bounced_inside_author_loop():
     report = verify_allocation_proposal(proposal, _packet())
     assert report.status == GateStatus.REVISION_REQUIRED
     assert "small_position_without_convexity" in {f.code for f in report.failures}
-    assert "small_position_insufficient_asymmetry" in {f.code for f in report.failures}
+    assert "small_position_insufficient_asymmetry" not in {f.code for f in report.failures}
 
 
 def test_sub_one_percent_order_is_allowed_when_existing_position_exceeds_floor():
@@ -835,3 +849,7 @@ def test_pending_fund_resolution_uses_fund_evidence_not_a_fake_moonshot_grade():
     comparison.research_verdict = "BUY"
     report = verify_allocation_proposal(proposal, packet)
     assert any(f.code == "research_resolution_evidence_missing" for f in report.failures)
+    detail = next(f.detail for f in report.failures if f.code == "research_resolution_evidence_missing")
+    assert now.isoformat() in detail
+    assert "123" in detail and "HOLD" in detail and "MED" in detail
+    assert "incorrect reference is not missing research" in detail

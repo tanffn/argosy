@@ -275,6 +275,9 @@ async def run_deep_decision(
             execution_policy=execution_policy,
         )
     except Exception as exc:  # noqa: BLE001
+        await close_decision_run_blocked(
+            decision_run_id=pre_opened, reason=f"decision flow failed: {str(exc)[:1500]}"
+        )
         _log.warning("decision_funnel.deep_flow_error", ticker=ticker, error=str(exc)[:200])
         return DeepDecisionOutcome(
             ticker=ticker, status="error", decision_run_id=pre_opened,

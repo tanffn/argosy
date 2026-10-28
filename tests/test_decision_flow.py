@@ -195,6 +195,7 @@ def _make_flow(
     fm_canned: dict = _FM_GREEN,
 ) -> DecisionFlow:
     return DecisionFlow(
+        evidence_review_runner=__import__("tests.evidence_fakes", fromlist=["accept_author"]).accept_author,
         user_id="ariel",
         config=FlowConfig(
             debate_rounds_t1=1,

@@ -661,6 +661,9 @@ def test_fundamentals_yfinance_fallback_emits_anchor_fields(monkeypatch):
     # Ratios still present.
     assert payload["pe_ratio"] == 10.98
     assert payload["source_url"] == "yfinance:ACN"
+    assert payload['retrieved_at']
+    assert payload['quote_timestamp_status'] == 'unknown'
+    assert 'quote_market_time_epoch' not in payload  # unknown is not retrieval time
 
 
 def test_fundamentals_yfinance_enriches_finnhub_payload_with_anchors(monkeypatch):
@@ -698,6 +701,7 @@ def test_fundamentals_yfinance_enriches_finnhub_payload_with_anchors(monkeypatch
     assert payload["revenue_ttm"] == 73_100_591_104
     assert payload["net_income_ttm"] == 7_789_751_808
     assert payload["free_cashflow"] == 12_089_380_864
+    assert payload['yfinance_anchor_observation']['quote_timestamp_status'] == 'unknown'
 
 
 def test_fundamentals_yfinance_enrich_skipped_when_fully_anchored(monkeypatch):

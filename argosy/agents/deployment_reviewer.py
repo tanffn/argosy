@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
 from argosy.agents.base import BaseAgent
 
@@ -70,7 +70,9 @@ _LENS_BRIEF: dict[str, str] = {
         "research-BUY finalists using cap math, cash runway versus catalyst, "
         "dilution/leverage, catalyst quality, and independent multi-shot versus "
         "single-binary risk. A sub-1% position is not disqualified by size when it "
-        "has a genuine evidence-backed >=5x convexity case; judge whether its upside "
+        "has a genuine evidence-backed time-aware convexity case; there is no fixed "
+        "5x/10x hurdle. A credible 2x in six months may beat a speculative 5x in ten "
+        "years; judge evidence and downside, not headline targets. Judge whether its upside "
         "could materially affect the whole portfolio. Prefer a split when two "
         "qualifying candidates have meaningfully independent failure modes; prefer "
         "concentration only when one clearly dominates. Plan gaps are context, not a "
@@ -98,7 +100,7 @@ _LENS_BRIEF: dict[str, str] = {
         "resulting whole position, not the incremental order: a small addition to "
         "an already meaningful core position is different from opening a new tiny "
         "slot. Apply the owner's sub-1% convexity requirement to proposed new or "
-        "still-small positions; an income/diversifier ETF is not a 5x moonshot. "
+        "still-small positions; an income/diversifier ETF is not a moonshot merely by relabeling. "
         "This mandate includes ordinary ETF positions: diversification within a "
         "fund does not exempt a tiny portfolio slot. Do not silently reinterpret "
         "it as a rule applying only to speculative single stocks. "
@@ -168,7 +170,8 @@ class DeploymentReviewOutput(BaseModel):
     lens: str
     objections: list[ReviewObjection] = Field(default_factory=list)
     overall_note: str = ""
-    separation_safe: bool = False
+    # Missing is a malformed review, not an independently derived rejection.
+    separation_safe: StrictBool
 
 
 class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
@@ -177,6 +180,7 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
     agent_role = "deployment_reviewer"
     output_model = DeploymentReviewOutput
     require_citations = False
+    schema_retry_attempts = 1
 
     def build_prompt(self, *, lens: str, packet: dict[str, Any], buys: list[dict[str, Any]]):
         nvda = packet.get("nvda") or {}
@@ -297,7 +301,8 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             "the feasibility of your OWN suggested replacement: use current holdings "
             "plus the proposed addition and the post-tax portfolio total. Under the "
             "owner's existing sizing mandate, a resulting sub-1% position needs a "
-            "genuine evidence-backed >=5x convexity case; there is no automatic "
+            "genuine evidence-backed time-adjusted convexity case, with no fixed "
+            "multiple hurdle; there is no automatic "
             "ETF exemption. This mandate includes ETFs as well as single stocks. "
             "Do not recommend an ordinary "
             "income/compounder/diversifier fragment or invent a convexity label for "
@@ -327,6 +332,9 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             f"CURRENT CONCENTRATION: {nvda.get('pct', 0)}% NVDA look-through "
             f"(${nvda.get('lookthrough_usd', 0):,.0f} of ${nvda.get('book_usd', 0):,.0f}), "
             f"cap {nvda.get('cap_pct', 0)}%.\n\n"
+            "BOOK BASIS: the concentration book above already includes deployable cash. "
+            "Do not add that cash again when computing post-buy weights. "
+            "Only sale tax/costs reduce the denominator.\n\n"
             f"REQUESTED TERMINAL HORIZON (years): "
             f"{packet.get('horizon_years') or [1, 5]}.\n\n"
             "VERIFIED INVESTOR FUNDING (issuer cash/runway is unrelated):\n"
@@ -350,7 +358,9 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             '"concern": str, "severity": "block|warn", "impact": '
             '"advisory_only|changes_amount|changes_ticker|adds_omitted_candidate|rejects_trade", '
             '"recommended_amount_usd": number|null, "recommended_ticker": str|null}], '
-            '"overall_note": str}.'
+            '"overall_note": str, "separation_safe": boolean}. '
+            'All top-level fields are required. Put separation_safe at the top level, '
+            'not only in overall_note; use a JSON true/false, never a string.'
         )
         import json
 
@@ -390,6 +400,13 @@ class DeploymentReviewerAgent(BaseAgent[DeploymentReviewOutput]):
             {key: item.get(key) for key in ("tickers", "research_question", "research_result", "last_error")}
             for item in packet.get("allocation_research_tasks", [])
         ], default=str)
+        from argosy.services.allocation_research import fund_research_evidence
+        user += "\nCANONICAL FUND EVIDENCE FOR THIS PACKET (same dated source record as author; older nested results are history):\n" + json.dumps(
+            fund_research_evidence(packet.get("allocation_research_tasks") or []), default=str,
+        ) + "\nA reference mismatch is not absence of research. Assess the actual source and distinguish stale evidence from incorrect metadata."
+        user += "\nSUBSCRIPTION RESEARCH (same source evidence as author; not author rationale):\n" + json.dumps(
+            packet.get("subscription_research") or {}, default=str,
+        ) + "\nIndependently assess portfolio relevance; source opinion is not verified fact or authority to trade."
         return system, user
 
 

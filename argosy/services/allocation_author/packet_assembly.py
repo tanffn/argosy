@@ -310,7 +310,12 @@ def assemble_author_packet(
         }
         from sqlalchemy import select
 
-        from argosy.services.predictions.benchmark import BENCHMARK_SYMBOL, BENCHMARK_VERSION
+        from argosy.services.predictions.benchmark import (
+            BENCHMARK_SYMBOL,
+            BENCHMARK_VERSION,
+            SUPPORTED_BENCHMARK_VERSIONS,
+            benchmark_version_expression,
+        )
         from argosy.services.predictions.outcomes import authoritative_outcome_ids
         from argosy.state.models import (
             Prediction,
@@ -330,7 +335,7 @@ def assemble_author_packet(
                 Prediction.user_id == user_id,
                 Prediction.archived == 0,
                 PredictionOutcome.id.in_(authoritative_outcome_ids()),
-                PredictionBenchmarkOutcome.benchmark_version == BENCHMARK_VERSION,
+                PredictionBenchmarkOutcome.benchmark_version == benchmark_version_expression(),
                 PredictionBenchmarkOutcome.benchmark_symbol == BENCHMARK_SYMBOL,
                 Prediction.source.in_((
                     "signal_stream:deep_decision_verdict",
@@ -375,6 +380,7 @@ def assemble_author_packet(
         _decision_calibration["benchmark"] = {
             "symbol": "SPY",
             "version": BENCHMARK_VERSION,
+            "supported_versions": list(SUPPORTED_BENCHMARK_VERSIONS),
             "compared": len(_excesses),
             "beats": _beats,
             "lags": _lags,
@@ -418,6 +424,12 @@ def assemble_author_packet(
     from argosy.services.allocation_research import research_context
 
     packet["allocation_research_tasks"] = research_context(db, user_id)
+    from argosy.services.allocation_author.research_inputs import collect_allocation_research
+    try:
+        packet["subscription_research"] = collect_allocation_research(db, user_id)
+    except Exception as exc:
+        _log.warning("author_packet.subscription_research_failed", error=str(exc)[:120])
+        packet["subscription_research"] = {"items": [], "error": "Research retrieval failed; coverage is incomplete"}
     try:
         from sqlalchemy import select
 

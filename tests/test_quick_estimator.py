@@ -35,6 +35,16 @@ def test_estimator_defaults_to_sonnet():
     assert agent.require_citations is False
 
 
+def test_mandate_compares_time_risk_and_business_not_fixed_multiple():
+    system, _ = qe.QuickEstimatorAgent(user_id="ariel").build_prompt(candidate=_cand("XYL"))
+    assert "2x in six months" in system
+    assert "NO fixed 5x or 10x" in system
+    assert "Quality" not in system or "irrelevant" not in system
+    assert "established" in system
+    assert "INVESTIGATE" in system
+    assert "missing coverage" in system
+
+
 @pytest.mark.real_seam
 def test_estimate_returns_verdict(monkeypatch):
     _stub(monkeypatch, {"PLTR": {

@@ -31,7 +31,8 @@ def pending_tasks(db, user_id):
 
 def research_context(db, user_id):
     return [
-        {**json.loads(row.payload_json), "issue_key": row.issue_key,
+        {**{key: value for key, value in json.loads(row.payload_json).items()
+            if key not in {"lifecycle_history", "prior_tasks"}}, "issue_key": row.issue_key,
          "next_review_date": row.next_review_date.isoformat(),
          "last_error": row.last_error,
          "research_result": json.loads(row.result_json) if row.result_json else None}
@@ -306,6 +307,7 @@ def refresh_due_research(db, user_id, *, now=None, research_fn=None, retry_faile
                       _research(item, user_id, completed=completed, checkpoint=checkpoint))
             if set(result) != set(item.tickers):
                 raise ValueError("Research result does not cover every pending alternative")
+            publication = {}
             for ticker, pick in result.items():
                 if _is_fund(ticker):
                     if pick.get("kind") != "fund_vehicle" or not pick.get("report_id"):
@@ -313,14 +315,20 @@ def refresh_due_research(db, user_id, *, now=None, research_fn=None, retry_faile
                     continue  # Saved in task evidence, not a moonshot ScanState.
                 scan = db.get(ScanState, (user_id, ticker))
                 if scan is None or scan.status not in {"active", "dropped"}:
-                    raise ValueError(f"{ticker}: missing or quarantined discovery record; research not promoted")
+                    # Named research evidence belongs to this pending task even
+                    # when the radar cannot admit it. Never create or revive a
+                    # radar entry, and never resolve the investment question.
+                    publication[ticker] = {"status": "withheld", "reason":
+                        "missing_discovery_record" if scan is None else "quarantined_discovery_record"}
+                    continue
                 # Radar absence is not a research failure. An existing pending
                 # question survives daily ranking churn; update its evidence,
                 # never its radar membership, rank or screening timestamp.
                 scan.fleet_json = json.dumps(pick)
                 scan.last_fleet_at = evidence_as_of
                 scan.updated_at = now
-            row.result_json = json.dumps({"as_of": evidence_as_of.isoformat(), "tickers": result})
+            row.result_json = json.dumps({"as_of": evidence_as_of.isoformat(), "tickers": result,
+                                          "discovery_publication": publication})
             row.last_error = None
             row.updated_at = now
             db.commit()

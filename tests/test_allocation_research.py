@@ -119,8 +119,13 @@ def test_pending_research_preserves_radar_lifecycle(alembic_engine_at_head, stat
             assert json.loads(scan.fleet_json)["verdict"] == "WATCH"
             assert pending_tasks(db, "ariel")[0].status == "pending"
         else:
-            assert out["failures"] and not out["refreshed"]
+            assert out["refreshed"] and not out["failures"]
             assert not scan.fleet_json
+            task = pending_tasks(db, "ariel")[0]
+            assert task.status == "pending" and task.last_error is None
+            saved = json.loads(task.result_json)
+            assert saved["tickers"]["AAA"]["verdict"] == "WATCH"
+            assert saved["discovery_publication"]["AAA"]["reason"] == "quarantined_discovery_record"
 
 
 def test_author_sees_pending_dropped_research_not_unrelated_or_quarantined(alembic_engine_at_head):
@@ -480,3 +485,20 @@ def test_zero_cash_pending_research_reaches_real_route_author(alembic_engine_at_
             use_high_potential=False, fleet_review=False, include_order_sheet=True,
             allow_sells=False, horizon_years_min=1, horizon_years_max=5, db=db)
         assert calls == [0.0]
+
+
+def test_missing_radar_record_keeps_research_evidence_without_creation(alembic_engine_at_head):
+    now = datetime(2026, 10, 28, 15, tzinfo=UTC)
+    with Session(alembic_engine_at_head) as db:
+        sync_sheet_research(db, SimpleNamespace(user_id="ariel", pending_research=[
+            pending(tickers=["AAA"], next_review_date=now.date())], candidate_comparisons=[]), "missing")
+        db.commit()
+        out = refresh_due_research(db, "ariel", now=now,
+            research_fn=lambda item, user: {"AAA": {"verdict": "WATCH", "conviction": "LOW"}})
+        assert out["refreshed"] and not out["failures"]
+        assert db.get(ScanState, ("ariel", "AAA")) is None
+        task = pending_tasks(db, "ariel")[0]
+        assert task.status == "pending" and task.last_error is None
+        saved = json.loads(task.result_json)
+        assert saved["discovery_publication"]["AAA"]["reason"] == "missing_discovery_record"
+        assert saved["tickers"]["AAA"]["verdict"] == "WATCH"

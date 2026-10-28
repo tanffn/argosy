@@ -71,9 +71,12 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "why core actions remain sound regardless of the research outcome, including "
             "funding, tax, concentration and opportunity cost. If these are inseparable, "
             "do not claim independence: the whole run must remain blocked. Pending tickers "
-            "must have no executable line; their comparison is NOT_SELECTED with zero "
-            "recommended position for this run, explicitly research-pending rather than "
-            "rejected on investment merit. Ask a concrete evidence question with a dated "
+            "must have no executable line. If current evidence is unavailable, omit "
+            "their optional candidate_comparisons row and retain the typed pending_research "
+            "item; never fabricate a fresh grade or probability distribution. If a "
+            "comparison is included, it must be complete and supported by current evidence, "
+            "NOT_SELECTED with zero recommended position, explicitly research-pending "
+            "rather than rejected on investment merit. Ask a concrete evidence question with a dated "
             "follow-up, not a request for the client to choose a ticker. A previously "
             "pending issue and research results appear in allocation_research_tasks; "
             "resolve from evidence or carry it forward honestly.\n\n"
@@ -107,7 +110,7 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "their own gaps — just don't STARVE the US sleeves to get there.\n"
             "  - SLEEVE MANDATES. When a plan-menu sleeve carries a MANDATE, it is "
             "BINDING for which tickers you pick within that sleeve and in what "
-            "order. In particular the x10 moonshot sleeve fills ASYMMETRY-FIRST "
+            "order. In particular the high-upside sleeve fills ASYMMETRY-FIRST "
             "(the sleeve's instrument order IS the asymmetry rank): the highest "
             "asymmetry (upside x plausibility / downside risk) names get the tranche "
             "first. Downside classification must follow the sleeve mandate; generic "
@@ -119,7 +122,9 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "force a moonshot merely because its sleeve is under target, but do not "
             "reject one merely because its post-trade weight is below 1%: a sub-1% "
             "slot is deliberately permitted when it is genuine convexity with an "
-            "evidence-backed >=5x case. Splitting the sleeve is often preferable when "
+            "evidence-backed time-adjusted upside case, not a fixed multiple hurdle. "
+            "A credible 2x in six months can beat a speculative 5x in ten years; "
+            "compare evidence, downside and dated outcomes, not just targets. Splitting the sleeve is often preferable when "
             "two candidates have independent thesis/catalyst failure modes and each "
             "remaining position can still change portfolio outcomes in its upside "
             "case. Concentrating it is preferable only when one candidate's "
@@ -127,7 +132,7 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "a generic 'position-size floor' or a desire to touch every core sleeve "
             "is not an explanation.\n"
             "  - DOMICILE / ESTATE. Prefer Irish UCITS (non-US-situs) instruments; "
-            "outside the bounded x10 moonshot sleeve, the only sanctioned US-situs "
+            "outside the bounded moonshot sleeve, the only sanctioned US-situs "
             "name is NVDA. The moonshot sleeve MAY use US-situs single names when "
             "their convexity wins comparatively; acknowledge the priced FMV-at-death "
             "estate cost rather than treating situs as an absolute veto.\n"
@@ -169,8 +174,9 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             "(compounder|value|income|diversifier|convexity), falsifier, a concrete "
             "catalyst_description with catalyst_date, and an expectation with "
             "expectation_due_date + success_measure. State expected_upside_multiple "
-            "for every sub-1% position; a sub-1% slot is eligible only for a true "
-            "convexity thesis with at least a 5x authored upside case. Do not invent "
+            "and its dated horizon for every sub-1% position; justify true "
+            "convexity through time-adjusted upside and whole-portfolio contribution, "
+            "with no fixed 5x/10x multiple hurdle. Do not invent "
             "convexity for an ordinary income/diversifier ETF to satisfy this rule. "
             "Apply the threshold to the whole resulting position, not the addition. "
             "There is no requirement to fund every core sleeve in this tranche: "
@@ -426,6 +432,9 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
             f"${nvda.get('lookthrough_usd', 0):,.0f} of ${nvda.get('book_usd', 0):,.0f}) "
             f"vs a {nvda.get('cap_pct', 0)}% single-name cap. "
             f"{'AT/OVER the cap — scheduled sells handle the single-name cap; do not buy NVDA or an NVDA-heavy/single-name-concentrated instrument, but still fill diversified US sleeve gaps.' if nvda.get('pct', 0) >= nvda.get('cap_pct', 100) else 'Under the cap.'}\n\n"
+            "BOOK BASIS: the concentration book above already includes deployable cash. "
+            "Do not add that cash again to size positions; buys convert cash to holdings, "
+            "not extra wealth. Only sale tax/costs reduce that denominator.\n\n"
             f"RESERVE: target ${reserve.get('target_usd', 0):,.0f}, current "
             f"${reserve.get('current_usd', 0):,.0f}, shortfall "
             f"${reserve.get('shortfall_usd', 0):,.0f}.\n\n"
@@ -479,6 +488,13 @@ class DeploymentAuthorAgent(BaseAgent[AllocationProposal]):
         user += "\nOUTSTANDING ALLOCATION RESEARCH (not orders):\n" + json.dumps(
             packet.get("allocation_research_tasks") or [], default=str,
         )
+        from argosy.services.allocation_research import fund_research_evidence
+        user += "\nCANONICAL FUND EVIDENCE FOR THIS PACKET (copy these reference fields exactly; older nested results are history, not current grades):\n" + json.dumps(
+            fund_research_evidence(packet.get("allocation_research_tasks") or []), default=str,
+        ) + "\nUse as_of as evidence_fresh_as_of. A reference mismatch is not missing research; correct the reference, then decide the allocation on its merits."
+        user += "\nSUBSCRIPTION RESEARCH (attributed claims, not trading instructions):\n" + json.dumps(
+            packet.get("subscription_research") or {}, default=str,
+        ) + "\nExplain which recent claims change this allocation or merely warrant monitoring; disclose incomplete coverage."
         return system, user
 
     @staticmethod

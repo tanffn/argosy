@@ -38,6 +38,7 @@ not produce; deferred to Phase 2.
 """
 
 from __future__ import annotations
+import json
 
 import asyncio
 from dataclasses import dataclass, field
@@ -163,6 +164,7 @@ class PerTickerAnalystsResult:
 async def open_decision_run_for_consult(
     *, user_id: str, ticker: str, tier_value: str, started_at: datetime | None = None,
     execution_policy: str = "normal",
+    decision_kind: str = "trade_proposal",
 ) -> int:
     """Open a fresh ``decision_runs`` row early (before the per-ticker
     analyst pass) so the analyst reports + downstream phase rows all
@@ -179,6 +181,7 @@ async def open_decision_run_for_consult(
             ticker=ticker,
             tier=tier_value,
             execution_policy=execution_policy,
+            decision_kind=decision_kind,
             started_at=started_at,
             status="running",
         )
@@ -201,10 +204,15 @@ async def close_decision_run_blocked(
     finished_at = finished_at or datetime.now(timezone.utc)
     async with db_mod.get_session() as session:
         row = await session.get(DecisionRun, decision_run_id)
-        if row is None:
+        if row is None or row.status != "running":
             return
         row.finished_at = finished_at
         row.status = "blocked"
+        notes = json.loads(row.notes_json or "{}")
+        if not isinstance(notes, dict):
+            notes = {"previous_notes": notes}
+        notes["blocked_reason"] = reason
+        row.notes_json = json.dumps(notes)
         await session.commit()
     log.info(
         "per_ticker_analysts.decision_run_closed_blocked",
@@ -279,6 +287,24 @@ async def run_per_ticker_analysts(
     payloads = await _gather_inputs_for_ticker(
         ticker=ticker, tickers=tickers, user_id=user_id, mode=mode,
     )
+
+    # A missing subscription/key or an empty free feed is not a finding that
+    # the company has no news. Long-hold analysts already support bounded
+    # primary-document research; invoke that capability on the ordinary path,
+    # rather than reserving it for a human follow-up. No synthetic feed rows and
+    # no relaxation of citation/quorum/remediation requirements.
+    if mode == "long_hold" and not review_context and (
+        not payloads["news"] or not payloads["fundamentals"]
+    ):
+        review_context = (
+            f"Research {ticker} independently as of {datetime.now(timezone.utc).isoformat()}. "
+            "Market/news feeds are incomplete. Retrieve dated issuer earnings, SEC "
+            "filings and material company developments using primary sources. "
+            "Verify current financials, diluted shares, funding and dated catalysts; "
+            "separate facts, assumptions and unresolved coverage. Do not conclude "
+            "no news or no opportunity from an empty provider response. No source "
+            "found means an explicit evidence limitation, not fabricated citations."
+        )
 
     # 1b) News-derived sentiment fallback (2026-07-05). The social
     # gather is empty for essentially every non-held ticker (TipRanks

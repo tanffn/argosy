@@ -797,7 +797,7 @@ def assemble_phase1_inputs(
     #     Tax will fail citations the same as before — the loader is
     #     best-effort, never raises.
     try:
-        inputs.domain_kb_files = _load_tax_domain_kb_files()
+        inputs.domain_kb_files = _load_tax_domain_kb_files(user_id=user_id)
         import asyncio
         from argosy.services.knowledge_status import knowledge_advice_context
         inputs.domain_kb_files["knowledge_review/current_status"] = asyncio.run(knowledge_advice_context(
@@ -904,7 +904,7 @@ def assemble_phase1_inputs(
 # ----------------------------------------------------------------------
 
 
-def _load_tax_domain_kb_files() -> dict[str, str]:
+def _load_tax_domain_kb_files(*, user_id: str = "ariel") -> dict[str, str]:
     """Load every Markdown file under ``domain_knowledge/tax/``.
 
     Returns ``{repo-relative-path: file-contents}`` keyed by the form
@@ -921,6 +921,10 @@ def _load_tax_domain_kb_files() -> dict[str, str]:
 
     settings = get_settings()
     out: dict[str, str] = {}
+    # Tax documents also embed private facts. Until generic rules are stored
+    # separately, the entire local tree belongs to the configured household.
+    if user_id != getattr(settings, "domain_knowledge_owner_user_id", "ariel"):
+        return out
 
     # ``household/members.md`` is not under tax/ but every tax rule that turns
     # on residence, citizenship or account registration is unusable without
@@ -1982,12 +1986,21 @@ def _yfinance_fundamentals_fallback(
         if not info:
             continue
         anchors = _extract_yf_anchors(info)
+        observation = {
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "quote_source_url": f"https://finance.yahoo.com/quote/{to_yahoo_symbol(ticker)}/",
+            "quote_currency": info.get("currency"),
+            # Retrieval time is NOT the time of the underlying market quote.
+            "quote_market_time_epoch": info.get("regularMarketTime"),
+            "quote_timestamp_status": "provider_reported" if info.get("regularMarketTime") else "unknown",
+        }
         if existing is not None:
             # Finnhub covered the ratios — backfill only the missing
             # anchor fields; never overwrite the primary source.
             for k, v in anchors.items():
                 if existing.get(k) is None:
                     existing[k] = v
+            existing["yfinance_anchor_observation"] = observation
             continue
         payload = {
             "pe_ratio": info.get("trailingPE"),
@@ -2003,6 +2016,7 @@ def _yfinance_fundamentals_fallback(
             "industry": info.get("industry"),
             **anchors,
             "source_url": f"yfinance:{ticker}",
+            **observation,
         }
         # Drop None-valued keys to keep the prompt tight.
         out[ticker] = {k: v for k, v in payload.items() if v is not None}

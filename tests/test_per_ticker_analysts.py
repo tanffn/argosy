@@ -493,6 +493,31 @@ async def test_close_decision_run_blocked_is_noop_for_missing_id(
 
 
 @pytest.mark.asyncio
+async def test_empty_long_hold_feeds_invoke_primary_research_without_weakening_quorum(engine, monkeypatch):
+    async def empty(**kwargs):
+        return {key: {} for key in ('fundamentals', 'news', 'social', 'macro', 'fx', 'indicators')}
+
+    contexts = {}
+
+    def runner(role):
+        async def run(*args, **kwargs):
+            contexts[role] = kwargs['review_context']
+            return _canned_report(role, cited=[f'{role}:primary-document'])
+        return run
+
+    monkeypatch.setattr(pta, '_gather_inputs_for_ticker', empty)
+    monkeypatch.setattr(pta, '_run_fundamentals', runner('fundamentals'))
+    monkeypatch.setattr(pta, '_run_news', runner('news'))
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(user_id='ariel', ticker='XYL', tier_value='T1')
+    result = await run_per_ticker_analysts(user_id='ariel', ticker='XYL', decision_run_id=run_id,
+                                         mode='long_hold')
+    assert set(result.succeeded_roles) == {'fundamentals', 'news'}
+    assert 'primary sources' in contexts['news']
+    assert 'empty provider response' in contexts['news']
+
+
+@pytest.mark.asyncio
 async def test_long_hold_mode_skips_technical_and_fx(
     engine: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

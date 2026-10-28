@@ -167,16 +167,14 @@ def test_find_x10_class_keys_on_sigma_class_not_label():
 # --- block builder: plan-owned mandate + derived bounds + funding gap --------
 
 
-def test_block_carries_plan_owned_mandate_not_hardcoded_constant(sf):
+def test_current_owner_mandate_supersedes_old_plan_return_hurdle(sf):
     _seed_plan(sf, _doc())
     _seed_snapshot(sf, _POSITIONS)
     with sf() as s:
         block = build_sleeve_mandate_context(s, user_id="ariel")
-    # The PLAN's rationale is the mandate paragraph, verbatim.
-    assert _PLAN_MANDATE in block
-    # The hardcoded constant is the FALLBACK only — not used when the plan
-    # carries its own sleeve rationale.
-    assert X10_SLEEVE_MANDATE not in block
+    assert _PLAN_MANDATE not in block
+    assert X10_SLEEVE_MANDATE in block
+    assert "supersedes older plan return hurdles" in block
     # Adjudication frame: the plan class + target are named.
     assert "High-growth / high-potential" in block
     assert "5.0%" in block
@@ -259,7 +257,7 @@ def test_no_snapshot_degrades_funding_to_budget_envelope(sf):
     _seed_plan(sf, _doc())
     with sf() as s:
         block = build_sleeve_mandate_context(s, user_id="ariel")
-    assert _PLAN_MANDATE in block
+    assert X10_SLEEVE_MANDATE in block
     assert "budget envelope" in block
 
 

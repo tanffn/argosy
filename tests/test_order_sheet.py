@@ -258,9 +258,9 @@ def test_sell_with_gross_proceeds_as_buying_power_is_rejected() -> None:
     assert "available_funds_mismatch" in {f.code for f in report.failures}
 
 
-def test_sub_one_percent_reliable_two_x_is_not_an_eligible_slot() -> None:
+def test_two_x_case_is_not_rejected_by_a_fixed_multiple_hurdle() -> None:
     report = validate_order_sheet(_sheet(lines=[_buy(expected_upside_multiple=2)]))
-    assert "small_position_insufficient_asymmetry" in {f.code for f in report.failures}
+    assert "small_position_insufficient_asymmetry" not in {f.code for f in report.failures}
 
 
 def test_convexity_requires_probability_distribution_and_exact_math() -> None:

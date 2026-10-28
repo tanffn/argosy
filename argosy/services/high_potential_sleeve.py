@@ -21,99 +21,68 @@ fleet-validated.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 Conviction = Literal["HIGH", "MEDIUM", "LOW"]
 Vehicle = Literal["ucits_thematic", "single_name"]
 
-# --- Binding sleeve mandate (Ariel, 2026-07-06) -------------------------------
-# The permanent ~5% high-growth / moonshot sleeve's criterion is x10 ASYMMETRY,
-# NOT conviction-safety. Ariel: "it should be the x10 sleeve, not maybe x2 if
-# they are lucky (higher risk)." Every surface that grades, ranks, sizes, or
-# fills this sleeve embeds this text — the first live tranche went to $70-120B
-# maybe-2x compounders (NU/MELI/CRWD) precisely because the fill order was
-# conviction-safety-descending; that is the failure mode this mandate bans.
+# --- Binding sleeve mandate ----------------------------------------------
+
+# Keep the public name for existing consumers, but version the actual mandate:
+# the owner explicitly includes established, macro-aligned 5x businesses. The
+# prior 10x-only/small-cap doctrine is not the current investment objective.
+MOONSHOT_MANDATE_VERSION = "time-aware-structural-upside-v2"
 X10_SLEEVE_MANDATE = (
-    "SLEEVE MANDATE - x10 ASYMMETRY (binding). This is the moonshot sleeve: its "
-    "job is names that can plausibly 10x, NOT safe growth compounders that might "
-    "2x if they are lucky.\n"
-    "  (a) CAP-MATH TEST: a candidate must plausibly 10x in 5-10 years given its "
-    "CURRENT market cap vs its addressable outcome. This mechanically favors "
-    "sub-~$20-30B, earlier-stage names; a >$50B company needs an EXTRAORDINARY "
-    "written justification - a $70-120B company that can 'maybe 2x' is the "
-    "OPPOSITE of this sleeve's job.\n"
-    "  (b) ACCEPTED PER-NAME LOSS = 100% is a SIZING rule, not a ranking rule. "
-    "Every name is sized so a total loss is survivable. Generic 'quality' or "
-    "'defensibility' (wide moat, strong brand) is a COMPOUNDER trait and remains "
-    "correctly irrelevant here.\n"
-    "  (c) DO NOT USE THE WORD 'FLOOR'. Rewritten 2026-08-21 after adversarial "
-    "review: the previous mandate told you to find a downside FLOOR, and agents "
-    "duly reported one - by relabelling ordinary operating viability as downside "
-    "protection. Positive gross profit, 'real revenue' and even positive "
-    "operating cash flow are VIABILITY EVIDENCE, not floors: sales do not belong "
-    "to shareholders, and cash flow can vanish, be working-capital timing, or "
-    "coexist with heavy capex and stock comp. Even price/tangible-book below 1 "
-    "is not mechanically protective - book is not liquidation value; inventory, "
-    "receivables and PP&E need haircuts; debt, leases, pensions, environmental "
-    "and preferred claims rank ahead of you; and absent a catalyst nothing forces "
-    "price toward book. Classify each name into EXACTLY ONE of:\n"
-    "      ASSET_BACKED - conservatively realizable assets exceed ALL claims plus "
-    "expected cash burn, ideally with a catalyst (liquidation, sale, buyback, "
-    "activist). Evidence = haircutted liquidation value / FULLY DILUTED market "
-    "cap. The real Graham test is nearer market cap below two-thirds of a "
-    "haircutted NCAV, NOT merely P/TB < 1.\n"
-    "      EARNING_POWER - normalized earnings or free cash flow justify the price "
-    "through a full cycle. Evidence = EV/normalized EBIT, FCF yield after capex, "
-    "replacement economics. This is where a cyclical trough belongs.\n"
-    "      FUNDED_OPTIONALITY - enough capital to reach a DEFINED inflection "
-    "without refinancing, plus genuinely nonlinear upside. Evidence = runway in "
-    "months vs the milestone date, maturities, dilution-adjusted scenario value. "
-    "Net cash as a % of market cap is a CUSHION STATISTIC and belongs here, never "
-    "in ASSET_BACKED - management spends the cash, and markets routinely assign "
-    "negative enterprise value when expected destruction exceeds it.\n"
-    "  (c2) WRITE THE EVIDENCE DOWN in downside_math, naming the class and the "
-    "numbers behind it, with a source date. An UNCLASSIFIED name is treated as "
-    "FUNDED_OPTIONALITY for risk review - you cannot earn a stronger downside "
-    "assessment by leaving the field vague.\n"
-    "  (c3) CALIBRATION - SanDisk (SNDK) on 2025-08-21, corrected twice and now "
-    "classified correctly. $45.50, market cap $6.66B on FY25 revenue $7.36B (P/S "
-    "0.91x); twelve months later $1,600.62, +3,418%. It was NOT ASSET_BACKED: "
-    "$4.999B of its $9.216B equity was GOODWILL, so tangible book was $4.217B and "
-    "it traded at 1.58x TANGIBLE book, with NCAV of only $1.317B. It was NOT "
-    "'losing money': FY25 gross profit +$2.212B, operating income +$0.507B, "
-    "operating cash flow +$0.084B - the GAAP loss was a NONCASH goodwill "
-    "impairment. SNDK was EARNING_POWER: a depressed cyclical/spinoff valuation "
-    "on real cash-generating operations, plus a demand catalyst. Do not cite it "
-    "as evidence that assets protected anyone.\n"
-    "  (c4) SIZING BY PORTFOLIO JUDGMENT. Class is evidence, not a fixed allocation "
-    "formula. All else equal, FUNDED_OPTIONALITY deserves less capital than equally "
-    "attractive ASSET_BACKED or EARNING_POWER, but do not require an artificial "
-    "anchor or impose a fixed fraction. Decide zero, one, or multiple names from "
-    "upside plausibility, runway through the catalyst, dilution, evidence quality, "
-    "failure-mode independence, and whole-portfolio outcome contribution. A split "
-    "is preferred when multiple qualifying theses fail independently and each slot "
-    "still matters in its upside case; concentration requires clear comparative "
-    "dominance. Every position must remain survivable at a 100% loss.\n"
-    "  (c5) BASE RATES - state these honestly rather than implying a promise the "
-    "evidence does not support. Extreme winners are barely predictable: across "
-    "12,238 firm-decades and 22 characteristics, models explain ~0.8% of the "
-    "variation in top-decile decade returns (Bessembinder), and market-to-book "
-    "does not reliably predict them. Bounded downside is a MYTH for this asset "
-    "class: the 100 greatest wealth creators still averaged a 32.5% drawdown "
-    "DURING their winning decade, and 51.6% in the decade before. What IS "
-    "predictable is the LEFT tail - leverage, weak profitability, high volatility "
-    "and distress reliably predict losers. So this sleeve's real edge is "
-    "REJECTING likely losers and diversifying across survivable optionality, NOT "
-    "picking the 10x. Never tell the owner a name cannot fall 90%.\n"
-    "  (d) DEPLOY FILL ORDER = asymmetry-first: tranches fill the "
-    "highest-asymmetry names first (the sleeve's stored instrument weights ARE "
-    "the asymmetry rank), never safety-first."
+    "SLEEVE MANDATE - TIME-AWARE STRUCTURAL UPSIDE, including moonshots. "
+    "This is a bounded high-upside sleeve, not a safe slow-growth substitute for the core. "
+    "There is NO fixed 5x or 10x eligibility hurdle: a credible 2x in six months can "
+    "be more attractive than a speculative 5x in ten years.\n"
+    "  (a) SEEK A BUSINESS MECHANISM, NOT A SMALL MARKET CAP. Investigate established "
+    "companies as well as emerging businesses: technology adoption, an industry "
+    "bottleneck, earnings inflection, market-share capture, restructuring or a "
+    "cyclical recovery can create nonlinear equity upside. Market cap is scale "
+    "evidence, not a small-cap eligibility rule. Explain PER-SHARE outcomes from "
+    "today's price over explicit dates: short catalysts and multi-year transformations "
+    "both qualify for investigation. State revenue, margins, cash flow, valuation "
+    "and dilution assumptions. Compare returns per unit of time with realistic "
+    "uncertainty and downside; do not mechanically extrapolate a six-month double "
+    "into a repeatable annual return. An ambitious scenario is not a base case.\n"
+    "  (b) QUALITY MATTERS WHEN IT MAKES THE UPSIDE ACHIEVABLE. Competitive advantage, "
+    "execution, customer demand, funding and cash generation can increase the "
+    "probability of capturing a structural change. They must NOT be dismissed as "
+    "irrelevant compounder traits, nor substitute for upside at the CURRENT price. "
+    "A past rally alone proves neither exhaustion nor future success.\n"
+    "  (c) UNDERWRITE BOTH TAILS. Give downside/base/upside scenarios and their "
+    "assumptions, compare the thesis with the benchmark alternative, and distinguish "
+    "evidence from speculation. Do not invent calibrated probabilities. Recognize "
+    "correlated macro, technology and financing risks across candidates and holdings. "
+    "Macro alignment is conditional: identify what happens if the regime reverses.\n"
+    "  (d) CLASSIFY DOWNSIDE EVIDENCE in downside_math as ASSET_BACKED, EARNING_POWER "
+    "or FUNDED_OPTIONALITY. ASSET_BACKED requires conservatively realizable assets "
+    "after ALL senior claims and expected burn, not book value or net cash alone. "
+    "EARNING_POWER requires normalized earnings/FCF through a cycle after capex and "
+    "dilution. FUNDED_OPTIONALITY requires runway through a DEFINED inflection, "
+    "maturities and dilution-adjusted scenarios. Unclassified evidence is not stronger "
+    "than funded optionality. Revenue, gross profit and operating viability are NOT "
+    "a downside FLOOR. Every stock can suffer a severe or total loss.\n"
+    "  (e) SIZING IS PORTFOLIO JUDGMENT. A 100% loss must remain survivable. Compare "
+    "zero, one or several names, failure-mode independence and whole-portfolio outcome "
+    "contribution. Do not require very-high conviction for every small position; "
+    "uncertainty can justify a smaller researched allocation. Below roughly 1% of "
+    "book, test whether the plausible upside meaningfully changes the portfolio. "
+    "Do not force a purchase to fill the sleeve, impose arbitrary splits, or assume "
+    "a profitable business is safe at any valuation.\n"
+    "  (f) RESEARCH IS NOT AN ORDER. Missing facts mean investigate or WATCH with "
+    "specific unresolved questions, not a fabricated endpoint or automatic PASS. "
+    "State dated catalysts, falsifiers and the next review point. Rank by evidenced "
+    "upside plausibility, downside and portfolio contribution, not headline multiple "
+    "or generic safety alone. Do not retrofit known winners into proof of foresight."
 )
 
-# Weight per grade. NOTE (x10 mandate): within THIS sleeve a grade is an
-# ASYMMETRY grade — HIGH means the strongest (upside x plausibility)/DOWNSIDE
-# under the cap-math test above, NOT the safest / most defensible name. The
+# Weight per grade. Within THIS sleeve a grade reflects time-aware asymmetry:
+# HIGH means the strongest evidenced upside relative to downside and horizon,
+# not the largest advertised multiple or the safest / most defensible name. The
 # graders (quick_estimator / discovery_grader) are prompted with the mandate so
 # the existing weight math below ranks and fills asymmetry-first by meaning.
 _CONVICTION_WEIGHT: dict[str, float] = {"HIGH": 3.0, "MEDIUM": 2.0, "LOW": 1.0}

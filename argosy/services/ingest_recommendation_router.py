@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from argosy.services.action_proposer_runner import write_action_proposal
@@ -51,11 +51,29 @@ def route_ingest_recommendations(
     source_url: str | None,
     recommendations: Sequence[RecommendationLike | dict[str, Any]],
     now: datetime | None = None,
+    assessment_id: str | None = None,
+    complete_assessment: bool = False,
 ) -> tuple[RoutedIngestRecommendation, ...]:
     """Persist WATCH/BUY dispositions with deterministic open-row deduplication."""
     observed_at = now or datetime.now(UTC)
     source_key = _slug(source_kind)
     result: list[RoutedIngestRecommendation] = []
+    if complete_assessment:
+        if not assessment_id:
+            raise ValueError("Complete research assessment needs a stable assessment ID")
+        # Withdraw superseded source notes, including names absent from this
+        # revision. Do not delete past decisions/clocks or another source's notes.
+        for prior in session.scalars(select(ActionProposal).where(
+                ActionProposal.user_id == user_id, ActionProposal.status == "open",
+                func.json_extract(ActionProposal.suggested_payload, '$.source_kind') == source_kind,
+                func.json_extract(ActionProposal.suggested_payload, '$.source_id') == source_id)):
+            ref = json.loads(prior.suggested_payload or '{}')
+            if ref.get('assessment_id') != assessment_id:
+                prior.status = 'superseded'
+                prior.execution_state = 'dismissed'
+                prior.decided_at = observed_at
+                prior.decided_by_user_note = f"Source assessment replaced by {assessment_id}; history retained"
+        session.commit()
 
     for raw in recommendations:
         ticker = str(_value(raw, "ticker", "")).strip().upper()
@@ -64,6 +82,13 @@ def route_ingest_recommendations(
             continue
         if not _TICKER_RE.fullmatch(ticker):
             continue
+        from argosy.services.research_accountability import record_disposition
+        record_disposition(session, user_id=user_id, source_kind=source_kind,
+            source_id=source_id, source_url=source_url, ticker=ticker, disposition=disposition,
+            assessment_id=assessment_id or f"{source_kind}:{source_id}:{disposition}",
+            rationale=str(_value(raw, "rationale", "")).strip(),
+            next_step=str(_value(raw, "next_step", "")).strip(),
+            confidence=_confidence(_value(raw, "confidence", "LOW")), observed_at=observed_at)
         _supersede_conflicting_open_rows(
             session,
             user_id=user_id,
@@ -74,6 +99,7 @@ def route_ingest_recommendations(
             now=observed_at,
         )
         if disposition == "pass":
+            session.commit()
             result.append(
                 RoutedIngestRecommendation(
                     ticker=ticker,
@@ -90,6 +116,7 @@ def route_ingest_recommendations(
             "source_kind": source_kind,
             "research_mandate": "general" if source_kind in {"research", "youtube"} else None,
             "source_id": source_id,
+            "assessment_id": assessment_id,
             "source_url": source_url,
             "disposition": disposition,
             "rationale": rationale,
@@ -120,6 +147,8 @@ def route_ingest_recommendations(
         inbox_id: int | None = None
         if disposition == "watch":
             dedup_key = f"ingest_watch|{source_key}|{source_id}|{ticker}"
+            if complete_assessment:
+                dedup_key += f"|{assessment_id}"
             proposal = _existing_open(session, user_id, dedup_key) or (
                 write_action_proposal(
                     session,
@@ -134,6 +163,7 @@ def route_ingest_recommendations(
                         "watch_kind": "candidate",
                         "source_kind": source_kind,
                         "source_id": source_id,
+                        "assessment_id": assessment_id,
                         "next_step": next_step,
                     },
                     severity="info",
@@ -144,6 +174,8 @@ def route_ingest_recommendations(
             watchlist_id = proposal.id
         else:
             dedup_key = f"ingest_buy|{source_key}|{source_id}|{ticker}"
+            if complete_assessment:
+                dedup_key += f"|{assessment_id}"
             proposal = _existing_open(session, user_id, dedup_key) or (
                 write_action_proposal(
                     session,
@@ -163,6 +195,7 @@ def route_ingest_recommendations(
                         "requested_action": "run_full_decision_funnel",
                         "source_kind": source_kind,
                         "source_id": source_id,
+                        "assessment_id": assessment_id,
                         "next_step": next_step,
                     },
                     severity="warning",

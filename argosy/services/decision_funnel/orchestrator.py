@@ -76,7 +76,7 @@ _log = get_logger("argosy.services.decision_funnel.orchestrator")
 # The fleet's headline model (per accuracy-over-cost: T2 deep decisions run the
 # Opus fleet). The granular per-agent model/prompt identities live in
 # agent_reports under the snapshot's decision_run_id.
-_FLEET_MODEL = "claude-opus-5"
+_FLEET_MODEL = "claude-opus-5-5"
 
 
 def _utcnow() -> datetime:
@@ -323,11 +323,15 @@ async def run_funnel(
             from sqlalchemy import inspect as _research_inspect
             if _research_inspect(s.connection()).has_table("research_review_requests"):
                 research = pending_candidates(s, user_id=user_id,
-                    held_tickers={h.ticker.upper() for h in book}, now=now)
+                    held_tickers={h.ticker.upper() for h in book}, now=now,
+                    already_routed={c.subject.upper() for c in routing.routed})
                 existing = {c.subject.upper(): c for c in routing.routed}
                 for candidate in research:
                     if candidate.subject in existing:
                         existing[candidate.subject].extra.update(candidate.extra)
+                        existing[candidate.subject].triggers.extend(
+                            trigger for trigger in candidate.triggers
+                            if trigger not in existing[candidate.subject].triggers)
                     else:
                         routing.routed.append(candidate)
                 research_symbols = {c.subject for c in research}
@@ -521,6 +525,10 @@ async def run_funnel(
                      "received_at": hit.received_at, "publication_date": "not recorded"}
                     for hit in market.high_materiality_news if hit.ticker.upper() == subj
                 ]
+                # Research is an attributed new claim, not a verified fact. The
+                # same independent reassessment team must corroborate it before
+                # reusing or reopening the standing verdict.
+                news_context.extend(cand.extra.get("research_sources", []))
                 dd = await deep_decision_fn(
                     user_id=user_id, ticker=cand.subject, account_class="main",
                     funnel_meta=funnel_meta, subject_type=cand.subject_type,

@@ -268,25 +268,35 @@ def verify_allocation_proposal(
                 "revision",
             )
         )
-    for ticker in sorted(required_comparisons & set(comparisons)):
+    # Optional comparisons still become part of the final order sheet. Validate
+    # them before independent review as well, so an accepted draft cannot fail
+    # later merely because it included an incomplete pending comparison.
+    for ticker in sorted(comparisons):
         comparison = comparisons[ticker]
-        if ticker in resolving_research:
-            from argosy.services.allocation_research import _is_fund, fund_research_evidence, fund_comparison_grounded
-            if _is_fund(ticker):
-                from argosy.services.order_sheet import OrderSheet
-                evidence = fund_research_evidence(packet.get("allocation_research_tasks", []))
-                if not fund_comparison_grounded(comparison, evidence.get(ticker), datetime.now(UTC), OrderSheet.model_fields["freshness_days"].default):
-                    fails.append(GateFailure("research_resolution_evidence_missing",
-                        f"{ticker}: a current sourced fund-vehicle review is required; carry pending.", "revision"))
-                amount = sum(b.amount_usd for b in proposal.buys if b.symbol.upper() == ticker)
-                if comparison.selection != ("SELECTED" if amount else "NOT_SELECTED") or comparison.recommended_position_usd is None or abs(comparison.recommended_position_usd - amount) > 1:
-                    fails.append(GateFailure("candidate_sizing_order_mismatch",
-                        f"{ticker}: fund comparison must match the actual funded allocation.", "revision"))
-                continue  # No moonshot radar rank / wipeout / 10x fiction for an ETF.
+        from argosy.services.allocation_research import _is_fund, fund_research_evidence, fund_comparison_grounded
+        if ticker in outstanding_research and _is_fund(ticker):
+            from argosy.services.order_sheet import OrderSheet
+            evidence = fund_research_evidence(packet.get("allocation_research_tasks", []))
+            if not fund_comparison_grounded(comparison, evidence.get(ticker), datetime.now(UTC), OrderSheet.model_fields["freshness_days"].default):
+                record = evidence.get(ticker) or {}
+                reference = {key: record.get(key) for key in ("report_id", "as_of", "verdict", "conviction")}
+                fails.append(GateFailure("research_resolution_evidence_missing",
+                    f"{ticker}: comparison does not match a current sourced fund-vehicle review. "
+                    f"Canonical packet reference: {reference}. Copy as_of into evidence_fresh_as_of "
+                    "and the exact verdict/conviction if this record is current. An incorrect "
+                    "reference is not missing research. If the record is absent or stale, carry "
+                    "pending without an unsupported comparison.", "revision"))
+            amount = sum(b.amount_usd for b in proposal.buys if b.symbol.upper() == ticker)
+            if comparison.selection != ("SELECTED" if amount else "NOT_SELECTED") or comparison.recommended_position_usd is None or abs(comparison.recommended_position_usd - amount) > 1:
+                fails.append(GateFailure("candidate_sizing_order_mismatch",
+                    f"{ticker}: fund comparison must match the actual funded allocation.", "revision"))
+            continue  # No moonshot radar rank / wipeout / 10x fiction for an ETF.
         if ticker not in discovery_rows or not isinstance(discovery_rows[ticker].get("fleet"), dict):
             fails.append(GateFailure(
                 "research_resolution_evidence_missing",
-                f"{ticker}: no current sourced discovery grade; carry the issue pending, not resolved.",
+                f"{ticker}: no current sourced discovery grade. Omit its optional "
+                "candidate_comparisons row and carry the ticker in pending_research; "
+                "do not copy a stale grade or mark it resolved.",
                 "revision",
             ))
             continue
@@ -909,15 +919,8 @@ def verify_allocation_proposal(
                         "revision",
                     )
                 )
-            if (intent.expected_upside_multiple or 0.0) < 5.0:
-                fails.append(
-                    GateFailure(
-                        "small_position_insufficient_asymmetry",
-                        f"{buy.symbol}: a sub-1% slot requires at least a 5x "
-                        "authored upside case; consolidate or resize it.",
-                        "revision",
-                    )
-                )
+            # Multiple, horizon and risk are comparative investment judgments
+            # owned by the author and blind sizing reviewer, not a fixed 5x gate.
 
     if any(x.severity == "block" for x in fails):
         status = GateStatus.BLOCK

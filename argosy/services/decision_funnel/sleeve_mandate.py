@@ -221,13 +221,16 @@ def build_sleeve_mandate_context(session: Session, *, user_id: str) -> str:
             "INCOMPLETE and must not be issued.",
         ])
 
-    mandate = (cls.rationale or "").strip() or X10_SLEEVE_MANDATE
+    # The current owner mandate supersedes older plan prose's 10x-only screen.
+    # Keep the plan's budget/holdings/exits, not its superseded return hurdle.
+    mandate = X10_SLEEVE_MANDATE
     lines: list[str] = [
         f"X10 / HIGH-POTENTIAL SLEEVE MANDATE — DISCOVERY CANDIDATE. This "
         f"candidate is adjudicated AGAINST the plan's bounded sleeve class "
         f"'{cls.label}' (target {float(cls.target_pct or 0.0):.1f}% of the "
         f"tradeable book), NOT the core allocation. The binding mandate below "
-        f"is the PLAN'S OWN sleeve definition:",
+        f"is the CURRENT OWNER mandate (supersedes older plan return hurdles; "
+        f"the plan's budget and existing exit policies remain unchanged):",
         "",
         mandate,
         "",

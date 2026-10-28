@@ -553,6 +553,7 @@ class DecisionFlow:
     risk_officer_factory: _RiskFactory | None = None
     risk_facilitator_factory: _RiskFacFactory | None = None
     fund_manager_factory: _FundFactory | None = None
+    evidence_review_runner: Any | None = None
 
     def _settings(self) -> AgentSettings:
         if self.settings is None:
@@ -755,18 +756,28 @@ class DecisionFlow:
         # ---------------- Trader ----------------
         trader_started_at = clock()
         trader = self._trader(tier.value)
-        trader_report = await trader.run(
-            analyst_reports=analyst_dicts,
-            debate_outcome=(debate_outcome.model_dump() if debate_outcome else {}),
-            positions_snapshot=positions_summary,
-            user_constraints=user_constraints,
-            tier=tier.value,
-            mode=consult_mode,
-            ticker=ticker,
-        )
-        trader_ids = await self._persist_agent_reports(
-            decision_run_id, [trader_report]
-        )
+        from argosy.services.evidence_review import original_sources, reviewed_authoring
+        trader_ids = []
+        async def persist_review(report):
+            ids = await self._persist_agent_reports(decision_run_id, [report])
+            if not ids and not self.config.skip_persistence:
+                raise RuntimeError("Required evidence report was not durably saved")
+            trader_ids.extend(ids)
+        async def author(feedback):
+            return await trader.run(
+                analyst_reports=[*analyst_dicts, {"agent_role": "independent_evidence_review",
+                                                 "corrections": feedback}],
+                debate_outcome=(debate_outcome.model_dump() if debate_outcome else {}),
+                positions_snapshot=positions_summary, user_constraints=user_constraints,
+                tier=tier.value, mode=consult_mode, ticker=ticker)
+        trader_report, _evidence_review = await (self.evidence_review_runner or reviewed_authoring)(
+            user_id=self.user_id,
+            sources=[*original_sources(analyst_reports),
+                     ("review:current_positions", positions_summary),
+                     ("review:user_constraints", str(user_constraints))],
+            context=f"Independent review of the {ticker} decision, including HOLD/no-initiation. "
+                    "Assess evidence and arithmetic, not whether it matches a desired action.",
+            author=author, persist=persist_review, decision_id=str(decision_run_id))
         trader_proposal: TraderProposal = trader_report.output  # type: ignore[assignment]
         try:
             await record_negotiation_phase(
@@ -823,6 +834,7 @@ class DecisionFlow:
                 stop=trader_proposal.stop_price,
                 entry_price=trader_proposal.limit_price,
                 next_validation=getattr(trader_proposal, "next_validation", None),
+                recommendation_intent=trader_proposal.recommendation_intent,
             )
             return BlockedProposal(
                 reason=f"Trader returned HOLD: {trader_proposal.rationale_summary}",
@@ -1240,6 +1252,7 @@ class DecisionFlow:
         stop: float | None = None,
         entry_price: float | None = None,
         next_validation: Any = None,
+        recommendation_intent: str = "unknown",
     ) -> None:
         """Write settled verdict + retract contradictory open proposals atomically.
 
@@ -1367,6 +1380,7 @@ class DecisionFlow:
                     entry_price=entry_price,
                     stop_price=stop,
                     revisit_triggers=revisit_triggers or [],
+                    recommendation_intent=recommendation_intent,
                 )
             except Exception as exc:  # noqa: BLE001 — wrapper already swallows
                 _log.warning(
@@ -1502,6 +1516,9 @@ class DecisionFlow:
                     user_prompt=r.user_prompt,
                 )
                 session.add(row)
+                from argosy.state.models import AgentReportBlob
+                row.blobs = [AgentReportBlob(key=str(key)[:64], value=str(value))
+                             for key, value in r.blobs.items()]
                 await session.flush()
                 ids.append(row.id)
             await session.commit()

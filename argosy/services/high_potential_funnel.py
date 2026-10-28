@@ -16,18 +16,21 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from argosy.logging import get_logger
 from argosy.services.contracts import EstimatorVerdict, FleetPick
+from argosy.services.discovery_evidence import EVIDENCE_CONTRACT
+from argosy.services.high_potential_sleeve import MOONSHOT_MANDATE_VERSION
+from argosy.services.research_catalog import research_database_url, research_user_scope
 from argosy.services.trend_radar import ScanResult, TrendCandidate
 
 log = get_logger(__name__)
 
 ESTIMATE_TTL = timedelta(hours=24)
 FLEET_TTL = timedelta(days=3)
-FLEET_RESEARCH_CONTRACT = "dated-news-and-explicit-limitations-v1"
+FLEET_RESEARCH_CONTRACT = f"primary-research-v4-complete-evidence:{MOONSHOT_MANDATE_VERSION}"
 TOP_K_TO_FLEET = 5
 _CONVICTION_RANK = {"HIGH": 3, "MED": 2, "LOW": 1}
 
@@ -38,6 +41,9 @@ class FunnelResult:
     estimated: list[EstimatorVerdict]
     radar: list[TrendCandidate]
     last_refreshed_at: str
+    research_failures: list[dict[str, str]] = field(default_factory=list)
+    research_attempted: int = 0
+    research_deferred: int = 0
 
 
 # --- seams (stubbable) -----------------------------------------------------
@@ -51,10 +57,9 @@ def _external_rows(user_id: str, status: str):
     from sqlalchemy import create_engine, select
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.config import get_settings
     from argosy.state.models import ScanState
 
-    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    url = research_database_url(user_id)
     factory = sessionmaker(
         bind=create_engine(url, connect_args={"check_same_thread": False})
     )
@@ -141,8 +146,7 @@ def _ingest_candidate(row, payload: dict) -> TrendCandidate:
     pass explicitly rather than silently treating the lead as evaluated.
     """
     from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
-
-    from argosy.services.instrument_reference import lookup, STRUCT_ETF
+    from argosy.services.instrument_reference import STRUCT_ETF, lookup
     from argosy.services.order_sheet_facts import _quote_ticker_candidates
 
     symbol = row.ticker.strip().upper().replace("/", "-")
@@ -216,22 +220,75 @@ def _estimate(candidate, *, user_id: str = "ariel") -> EstimatorVerdict:
 
 async def _grade(user_id: str, candidate, **kwargs) -> FleetPick | None:
     from argosy.services.discovery_grader import grade_discovery_ticker
-    return await grade_discovery_ticker(user_id, candidate, **kwargs)
+    async def opened(run_id):
+        from argosy.state import db as db_mod
+        from argosy.state.models import DecisionRun
+        async with db_mod.get_session(user_id=user_id) as db:
+            row = await db.get(DecisionRun, run_id)
+            notes = json.loads(row.notes_json or "{}")
+            row.notes_json = json.dumps({**notes, "radar_fingerprint": radar_fingerprint(candidate),
+                                        "research_contract": FLEET_RESEARCH_CONTRACT})
+            await db.commit()
+    return await grade_discovery_ticker(user_id, candidate, on_open=opened, **kwargs)
+
+
+def _recover_grade(user_id, candidate, previous, now):
+    from sqlalchemy import String, cast, exists, func, select
+
+    from argosy.services.discovery_followthrough import _recover_completed
+    from argosy.services.research_catalog import research_session
+    from argosy.state.models import AgentReport, DecisionRun
+    try:
+        prior = json.loads(previous.get("fleet_json") or "{}")
+    except (ValueError, TypeError):
+        prior = {}
+    prior_run = prior.get("decision_run_id") if isinstance(prior, dict) else None
+    with research_session(user_id=user_id) as db:
+        run_id = db.scalar(select(DecisionRun.id).where(DecisionRun.user_id == user_id,
+            DecisionRun.ticker == candidate.ticker, DecisionRun.status.in_(("running", "completed")),
+            DecisionRun.started_at >= now - FLEET_TTL,
+            func.json_extract(DecisionRun.notes_json, "$.research_contract") == FLEET_RESEARCH_CONTRACT,
+            func.json_extract(DecisionRun.notes_json, "$.radar_fingerprint") == radar_fingerprint(candidate),
+            exists(select(AgentReport.id).where(AgentReport.user_id == user_id,
+                AgentReport.agent_role == "discovery_grader",
+                AgentReport.decision_id == cast(DecisionRun.id, String))),
+            *((DecisionRun.id != prior_run,) if prior_run else ()),
+        ).order_by(DecisionRun.id.desc()).limit(1))
+    return _recover_completed(user_id, {"decision_run_id": run_id, "ticker": candidate.ticker}, allow_interrupt=False) if run_id else None
+
+
+async def _record_screen_failure(user_id: str, ticker: str, reason: str) -> None:
+    """Durable operational receipt, never an investment verdict or proposal."""
+    from argosy.state import db as db_mod
+    from argosy.state.models import DecisionRun
+
+    at = datetime.now(UTC)
+    async with db_mod.get_session() as db:
+        db.add(DecisionRun(
+            user_id=user_id, ticker=ticker, tier="screen", decision_kind="discovery_screen",
+            execution_policy="analysis_only", status="blocked", started_at=at, finished_at=at,
+            notes_json=json.dumps({"blocked_reason": reason, "mandate_version": MOONSHOT_MANDATE_VERSION}),
+        ))
+        await db.commit()
 
 
 def _load_scan_states(user_id: str) -> dict[str, dict]:
     """{ticker: row-dict} of the user's persisted ScanState."""
-    from sqlalchemy import create_engine, select
+    from sqlalchemy import create_engine, func, select
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.config import get_settings
-    from argosy.state.models import ScanState
+    from argosy.state.models import DecisionRun, ScanState
 
-    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    url = research_database_url(user_id)
     factory = sessionmaker(bind=create_engine(
         url, connect_args={"check_same_thread": False}))
     out: dict[str, dict] = {}
     with factory() as db:
+        attempts = dict(db.execute(select(
+            DecisionRun.ticker, func.max(DecisionRun.started_at),
+        ).where(DecisionRun.user_id == user_id,
+                DecisionRun.decision_kind == "discovery_research")
+            .group_by(DecisionRun.ticker)).all())
         for r in db.execute(select(ScanState).where(
                 ScanState.user_id == user_id)).scalars():
             out[r.ticker] = {
@@ -244,6 +301,7 @@ def _load_scan_states(user_id: str) -> dict[str, dict]:
                 "last_radar_at": _iso(r.last_radar_at),
                 "last_fleet_at": _iso(r.last_fleet_at),
                 "last_seen_at": _iso(r.last_seen_at),
+                "last_research_attempt_at": _iso(attempts.get(r.ticker)),
             }
     return out
 
@@ -252,11 +310,10 @@ def _persist_scan_states(user_id: str, states) -> None:
     """Upsert scan memory and date-stamp every eligible radar opportunity."""
     from sqlalchemy.orm import sessionmaker
 
-    from argosy.config import get_settings
     from argosy.state.db import create_sync_engine
     from argosy.state.models import ScanState
 
-    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    url = research_database_url(user_id)
     factory = sessionmaker(bind=create_sync_engine(url))
     state_rows = list(states)
     with factory() as db:
@@ -330,16 +387,24 @@ def _persist_scan_states(user_id: str, states) -> None:
         observation = s.get("observation")
         fleet_at = _parse(s.get("last_fleet_at"))
         observed_at = _parse(s.get("last_radar_at"))
+        try:
+            fleet_payload = json.loads(s.get("fleet_json") or "{}")
+            if not isinstance(fleet_payload, dict):
+                continue
+        except (ValueError, TypeError):
+            continue
+        post_decision_entry = fleet_payload.get("entry_price_policy") == "post_decision_bar"
         if (
-            not isinstance(observation, dict)
-            or not observation.get("price")
-            or fleet_at is None
-            or observed_at is None
-            or abs(fleet_at - observed_at) > timedelta(minutes=5)
+            fleet_at is None
+            or (not post_decision_entry and (
+                not isinstance(observation, dict) or not observation.get("price")
+                or observed_at is None or abs(fleet_at - observed_at) > timedelta(minutes=5)
+            ))
         ):
             continue
         try:
             from argosy.services.predictions.writers import (
+                discovery_evaluation_identity,
                 write_discovery_evaluation_predictions,
             )
 
@@ -349,27 +414,26 @@ def _persist_scan_states(user_id: str, states) -> None:
             if verdict not in {"BUY", "WATCH", "PASS"}:
                 continue
             thesis = str(fleet.get("thesis_md") or "").strip()
-            if len(thesis) > 2_000:
-                thesis = thesis[:1_997].rstrip() + "..."
             with factory() as telemetry_db:
                 write_discovery_evaluation_predictions(
                     telemetry_db,
                     user_id,
-                    event_key=(
-                        f"{fleet_at.isoformat()}|"
-                        f"{s.get('radar_fingerprint', '')}|{verdict}"
-                    ),
+                    event_key=discovery_evaluation_identity(fleet, fleet_at, s.get("radar_fingerprint", "")),
                     ticker=s["ticker"],
                     verdict=verdict,
                     conviction=str(fleet.get("conviction") or ""),
                     event_at=fleet_at,
-                    entry_price=float(observation["price"]),
+                    entry_price=None if post_decision_entry else float(observation["price"]),
+                    entry_price_policy="post_decision_bar" if post_decision_entry else "provided_observation",
                     estimator_go=estimator.get("go"),
                     estimator_conviction=estimator.get("conviction"),
                     estimation=str(estimator.get("one_line") or ""),
                     thesis=thesis,
                     radar_rank=s.get("rank"),
                     radar_score=s.get("last_score"),
+                    mandate_version=fleet.get("mandate_version"),
+                    research_context={key: fleet[key] for key in ("research_contract", "evidence_contract", "decision_run_id", "report_id")
+                                      if fleet.get(key) is not None},
                 )
                 telemetry_db.commit()
         except Exception as exc:  # noqa: BLE001 - telemetry is best-effort
@@ -439,7 +503,16 @@ def _fresh(prev_iso: str | None, ttl: timedelta, now: datetime) -> bool:
 
 
 def _verdict_to_json(v: EstimatorVerdict) -> str:
-    return json.dumps(asdict(v))
+    return json.dumps({**asdict(v), "mandate_version": MOONSHOT_MANDATE_VERSION})
+
+
+def _current_estimator_contract(blob: str | None) -> bool:
+    if not blob:
+        return False
+    try:
+        return json.loads(blob).get("mandate_version") == MOONSHOT_MANDATE_VERSION
+    except (ValueError, AttributeError):
+        return False
 
 
 def _verdict_from_json(blob: str) -> EstimatorVerdict:
@@ -453,6 +526,8 @@ def _pick_to_json(p: FleetPick) -> str:
     d = asdict(p)
     d["cites"] = list(p.cites)
     d["research_contract"] = FLEET_RESEARCH_CONTRACT
+    d["evidence_contract"] = EVIDENCE_CONTRACT
+    d["mandate_version"] = MOONSHOT_MANDATE_VERSION
     return json.dumps(d)
 
 
@@ -470,15 +545,19 @@ def _pick_from_json(blob: str) -> FleetPick:
     d = json.loads(blob)
     return FleetPick(ticker=d["ticker"], conviction=d["conviction"],
                      thesis_md=d["thesis_md"], verdict=d["verdict"],
-                     cites=tuple(d.get("cites", ())))
+                     cites=tuple(d.get("cites", ())), decision_run_id=d.get("decision_run_id"),
+                     report_id=d.get("report_id"), completed_at=d.get("completed_at"))
 
 
 # --- orchestration ---------------------------------------------------------
 
+@research_user_scope
 async def run_funnel(user_id: str, *, force: bool = False,
-                     now: datetime | None = None) -> FunnelResult:
+                     now: datetime | None = None, research_budget=None,
+                     reviewed_tickers=()) -> FunnelResult:
     """Radar -> diff vs ScanState -> estimate new/changed -> grade top-K go
     names -> persist. ``force`` re-estimates + re-grades everything."""
+    injected_clock = now is not None
     now = now or datetime.now(UTC)
     scan = await asyncio.to_thread(_scan_radar)
     merged = {c.ticker: c for c in scan.shortlist}
@@ -486,8 +565,8 @@ async def run_funnel(user_id: str, *, force: bool = False,
     merged.update({c.ticker: c for c in external})
     shortlist = sorted(merged.values(), key=lambda c: -c.score)
     _scan_quarantine = list(scan.quarantine or ())
-    _scan_quarantine.extend(_load_external_quarantine(user_id))
-    existing = _load_scan_states(user_id)
+    _scan_quarantine.extend(await asyncio.to_thread(_load_external_quarantine, user_id))
+    existing = await asyncio.to_thread(_load_scan_states, user_id)
     radar_tickers = {c.ticker for c in shortlist}
 
     # Persist the deterministic observation BEFORE any estimator/fleet LLM
@@ -561,79 +640,145 @@ async def run_funnel(user_id: str, *, force: bool = False,
             "status": "dropped",
         })
     if observation_states:
-        _persist_scan_states(user_id, observation_states)
+        await asyncio.to_thread(_persist_scan_states, user_id, observation_states)
 
     estimated: list[EstimatorVerdict] = []
     states: dict[str, dict] = {}
     go_candidates: list[tuple[EstimatorVerdict, TrendCandidate, dict, bool]] = []
+    failures: list[dict[str, str]] = []
 
-    for rank, c in enumerate(shortlist, start=1):
-        fp = radar_fingerprint(c)
-        prev = existing.get(c.ticker)
-        same_fp = prev is not None and prev.get("radar_fingerprint") == fp
-        reuse = (not force and same_fp and prev.get("estimator_json")
-                 and _fresh(prev.get("last_estimated_at"), ESTIMATE_TTL, now))
-        if reuse:
-            verdict = _verdict_from_json(prev["estimator_json"])
-            last_estimated_at = prev.get("last_estimated_at")
-        else:
-            # The estimator is a sync agent (run_sync -> asyncio.run); offload it
-            # so it never calls asyncio.run() inside this running event loop.
-            verdict = await asyncio.to_thread(_estimate, c, user_id=user_id)
-            last_estimated_at = now.isoformat()
-        estimated.append(verdict)
-        # Carry a stored fleet grade forward ONLY when the fingerprint is
-        # unchanged AND it is still fresh AND we are not forcing — otherwise the
-        # old grade is for the OLD fingerprint and must not be persisted against
-        # the new one (codex p2 #1/#2). It is reset below if a fresh grade lands.
-        fleet_fresh = (not force and same_fp and prev is not None
-                       and prev.get("fleet_json")
-                       and _current_fleet_contract(prev.get("fleet_json"))
-                       and _fresh(prev.get("last_fleet_at"), FLEET_TTL, now))
-        state = {
-            "ticker": c.ticker, "last_score": c.score, "radar_fingerprint": fp,
-            "status": "active", "rank": rank, "quarantine_reason": "",
-            "estimator_json": _verdict_to_json(verdict),
-            "fleet_json": prev.get("fleet_json") if fleet_fresh else None,
-            "last_estimated_at": last_estimated_at,
-            "last_radar_at": now.isoformat(),
-            "last_fleet_at": prev.get("last_fleet_at") if fleet_fresh else None,
-            "last_seen_at": now.isoformat(),
-            "nomination_evidence_json": (
-                json.dumps(c.evidence, sort_keys=True, default=str)
-                if c.evidence is not None
-                else (prev or {}).get("nomination_evidence_json")
-            ),
-            "observation": {
-                "score": c.score,
-                "rank": rank,
-                "families": list(c.families),
-                "price": c.price,
-                "market_cap": c.market_cap,
-                "dollar_volume": c.dollar_volume,
-                "lane": c.lane,
-                "radar_fingerprint": fp,
-            },
-        }
-        states[c.ticker] = state
-        if verdict.go:
-            go_candidates.append((verdict, c, state, fleet_fresh))
+    semaphore = asyncio.Semaphore(3)
 
-    # Escalate the top-K go names (by conviction then sentiment) to the fleet,
+    async def screen(rank: int, c: TrendCandidate) -> None:
+        async with semaphore:
+            fp = radar_fingerprint(c)
+            prev = existing.get(c.ticker)
+            same_fp = prev is not None and prev.get("radar_fingerprint") == fp
+            reuse = (not force and same_fp and prev.get("estimator_json")
+                     and _current_estimator_contract(prev.get("estimator_json"))
+                     and _fresh(prev.get("last_estimated_at"), ESTIMATE_TTL, now))
+            if reuse:
+                verdict = _verdict_from_json(prev["estimator_json"])
+                last_estimated_at = prev.get("last_estimated_at")
+            else:
+                # The estimator is a sync agent (run_sync -> asyncio.run); offload it
+                # so it never calls asyncio.run() inside this running event loop.
+                try:
+                    verdict = await asyncio.to_thread(_estimate, c, user_id=user_id)
+                except Exception as exc:  # one screen cannot starve every fleet call
+                    failures.append({"ticker": c.ticker, "reason": f"Estimator failed: {str(exc)[:450]}"})
+                    await _record_screen_failure(user_id, c.ticker, failures[-1]["reason"])
+                    states[c.ticker] = {
+                        **next(s for s in observation_states if s["ticker"] == c.ticker),
+                        "estimator_json": None, "fleet_json": None,
+                        "last_estimated_at": None, "last_fleet_at": None,
+                    }
+                    log.warning("high_potential_funnel.estimator_failed", ticker=c.ticker,
+                                error=str(exc)[:450])
+                    return
+                last_estimated_at = now.isoformat()
+            estimated.append(verdict)
+            # Carry a stored fleet grade forward ONLY when the fingerprint is
+            # unchanged AND it is still fresh AND we are not forcing — otherwise the
+            # old grade is for the OLD fingerprint and must not be persisted against
+            # the new one (codex p2 #1/#2). It is reset below if a fresh grade lands.
+            fleet_fresh = (not force and same_fp and prev is not None
+                           and prev.get("fleet_json")
+                           and _current_fleet_contract(prev.get("fleet_json"))
+                           and _fresh(prev.get("last_fleet_at"), FLEET_TTL, now))
+            state = {
+                "ticker": c.ticker, "last_score": c.score, "radar_fingerprint": fp,
+                "status": "active", "rank": rank, "quarantine_reason": "",
+                "estimator_json": _verdict_to_json(verdict),
+                "fleet_json": prev.get("fleet_json") if fleet_fresh else None,
+                "last_estimated_at": last_estimated_at,
+                "last_radar_at": now.isoformat(),
+                "last_fleet_at": prev.get("last_fleet_at") if fleet_fresh else None,
+                "last_seen_at": now.isoformat(),
+                "nomination_evidence_json": (
+                    json.dumps(c.evidence, sort_keys=True, default=str)
+                    if c.evidence is not None
+                    else (prev or {}).get("nomination_evidence_json")
+                ),
+                "observation": {
+                    "score": c.score,
+                    "rank": rank,
+                    "families": list(c.families),
+                    "price": c.price,
+                    "market_cap": c.market_cap,
+                    "dollar_volume": c.dollar_volume,
+                    "lane": c.lane,
+                    "radar_fingerprint": fp,
+                },
+            }
+            states[c.ticker] = state
+            # Durable progress is independent of the remaining screens. No DB
+            # transaction spans a model call; interruption cannot erase this one.
+            await asyncio.to_thread(_persist_scan_states, user_id, [state])
+            log.info("high_potential_funnel.screened", ticker=c.ticker,
+                     go=verdict.go, conviction=verdict.conviction)
+            if verdict.go:
+                go_candidates.append((verdict, c, state, fleet_fresh))
+
+    await asyncio.gather(*(screen(rank, candidate)
+                           for rank, candidate in enumerate(shortlist, start=1)))
+    estimated.sort(key=lambda verdict: states[verdict.ticker]["rank"])
+
+    # Commit all completed screens before any long fleet call or cancellation.
+    if states:
+        await asyncio.to_thread(_persist_scan_states, user_id, list(states.values()))
+
+    # Escalate research-ready names to the fleet,
     # reusing a fresh stored grade when the fingerprint is unchanged.
     go_candidates.sort(
-        key=lambda t: (_CONVICTION_RANK.get(t[0].conviction, 0), t[0].sentiment),
-        reverse=True)
+        # Research scheduling, not an investment grade: oldest/unattempted first
+        # prevents recurring provider failures from monopolizing the budget.
+        key=lambda t: (
+            _parse((existing.get(t[1].ticker) or {}).get("last_research_attempt_at"))
+            or datetime.min.replace(tzinfo=UTC),
+            -_CONVICTION_RANK.get(t[0].conviction, 0), -t[0].sentiment,
+            t[2]["rank"],
+        ))
     picks: list[FleetPick] = []
-    for _verdict, c, state, fleet_fresh in go_candidates[:TOP_K_TO_FLEET]:
+    attempted = 0
+    deferred = 0
+    # Reusing a completed grade costs no research slot. Previously cached top
+    # names consumed all five slots forever, starving lower-ranked candidates.
+    for _verdict, c, state, fleet_fresh in go_candidates:
+        if c.ticker in reviewed_tickers:
+            continue  # This invocation already researched it through the repair lane.
         if fleet_fresh:
             picks.append(_pick_from_json(state["fleet_json"]))
             continue
-        pick = await _grade(user_id, c)
+        try:
+            pick = await asyncio.to_thread(_recover_grade, user_id, c, existing.get(c.ticker, {}), now)
+            if pick is None:
+                if attempted >= TOP_K_TO_FLEET:
+                    deferred += 1
+                    continue
+                if research_budget is not None and not await asyncio.to_thread(research_budget.consume):
+                    deferred += 1
+                    continue
+                attempted += 1
+                pick = await _grade(user_id, c)
+        except Exception as exc:  # isolate subjects, not the run's truth
+            failures.append({"ticker": c.ticker, "reason": str(exc)[:500]})
+            log.warning("high_potential_funnel.research_failed", ticker=c.ticker,
+                        error=str(exc)[:500])
+            # Preserve every completed estimate/grade if another name fails.
+            await asyncio.to_thread(_persist_scan_states, user_id, list(states.values()))
+            continue
         if pick is not None:
-            state["fleet_json"] = _pick_to_json(pick)
-            state["last_fleet_at"] = now.isoformat()
+            completed_at = now if injected_clock else (_parse(pick.completed_at) or datetime.now(UTC))
+            payload = json.loads(_pick_to_json(pick))
+            payload.update(entry_price_policy="post_decision_bar", decision_completed_at=completed_at.isoformat())
+            state["fleet_json"] = json.dumps(payload)
+            state["last_fleet_at"] = completed_at.isoformat()
             picks.append(pick)
+        else:
+            failures.append({"ticker": c.ticker,
+                             "reason": "Analyst quorum unavailable; no investment verdict"})
+        await asyncio.to_thread(_persist_scan_states, user_id, list(states.values()))
 
     # Seen-but-quarantined (radar filtered them, e.g. liquidity) -> status
     # 'quarantined' with the reason; NOT dropped (codex p2 #6).
@@ -664,11 +809,12 @@ async def run_funnel(user_id: str, *, force: bool = False,
             dropped["status"] = "dropped"
             states[ticker] = dropped
 
-    _persist_scan_states(user_id, list(states.values()))
+    await asyncio.to_thread(_persist_scan_states, user_id, list(states.values()))
     log.info("high_potential_funnel.run_done", user_id=user_id,
              radar=len(shortlist), estimated=len(estimated), picks=len(picks))
     return FunnelResult(picks=picks, estimated=estimated, radar=shortlist,
-                        last_refreshed_at=now.isoformat())
+                        last_refreshed_at=now.isoformat(), research_failures=failures,
+                        research_attempted=attempted, research_deferred=deferred)
 
 
 __all__ = ["FunnelResult", "run_funnel", "radar_fingerprint"]

@@ -84,6 +84,30 @@ def _triage_go(candidate, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_routed_holding_receives_research_and_blind_reassessment_context(sf):
+    from datetime import timedelta
+    from argosy.services.research_catalog import upsert_source, enqueue, complete_item
+    from tests.test_shared_research import payload
+    with sf() as db:
+        source = upsert_source(db, user_id="ariel", name="Source", kind="manual", reference="source")
+        for index, ticker in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "NVDA"]):
+            item, _ = enqueue(db, source, external_id=ticker, title=ticker, url="https://example.com/" + ticker,
+                              body="New funding claim", now=NOW - timedelta(hours=1))
+            complete_item(db, item, payload(ticker), now=NOW - timedelta(minutes=10-index))
+        db.commit()
+    calls = []
+    async def deep(**kwargs):
+        calls.append(kwargs)
+        return DeepDecisionOutcome(ticker=kwargs["ticker"], status="blocked", blocked_reason="Reviewed, no action",
+                                   news_assessment={"disposition": "reuse", "rationale": "Already covered"})
+    await run_funnel("ariel", now=NOW, session_factory=sf, triage_fn=_triage_go,
+        deep_decision_fn=deep, settings=SimpleNamespace(decision_funnel_shadow=True, decision_funnel_stage3=True))
+    nvda = next(call for call in calls if call["ticker"] == "NVDA")
+    assert any(row.get("url") == "https://example.com/NVDA" for row in json.loads(nvda["review_context"])["evidence"])
+    assert nvda["funnel_meta"]["cited_new_facts"]
+
+
+@pytest.mark.asyncio
 async def test_daily_news_reaches_deep_review_and_new_event_breaks_dedup(sf):
     from argosy.state.models import NewsSignal
     calls = []
