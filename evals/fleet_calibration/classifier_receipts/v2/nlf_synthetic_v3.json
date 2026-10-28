@@ -1,0 +1,22 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 2,
+  "tokens_out": 863,
+  "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_winner\", \"freeze_date\": null, \"classification_rationale\": \"This is a reconstruction run. The category, grading and freeze_date are copied exactly from frozen_taxonomy: synthetic, synthetic_winner, null. I did not reconsider the taxonomy. The subject is a fictional company: a winner-shaped control in an obscure industrial-software niche, not a real one. Because no real company or period exists, there is nothing real to cite. The source manifest is empty, there is no freeze date to check sources against, and any URL, filing or market figure I attached would be made up. That would break the rules against inventing citations and certifying receipts that don't exist. So I made no fetches or searches and am returning an empty sourced_facts list. All facts about this case's business, numbers and story should come from the synthetic packet itself, not from outside sources. Confidence is LOW only because no outside data exists. The taxonomy itself is certain because it is frozen. The domain-refresh agent has nothing to look into, since this fictional control has no missing real-world facts. Note for the audit agent: if the downstream packet cites real-world URLs for this case, treat them as contamination.\", \"sourced_facts\": [], \"confidence\": \"LOW\"}",
+  "output": {
+    "category": "synthetic",
+    "grading": "synthetic_winner",
+    "freeze_date": null,
+    "classification_rationale": "This is a reconstruction run. The category, grading and freeze_date are copied exactly from frozen_taxonomy: synthetic, synthetic_winner, null. I did not reconsider the taxonomy. The subject is a fictional company: a winner-shaped control in an obscure industrial-software niche, not a real one. Because no real company or period exists, there is nothing real to cite. The source manifest is empty, there is no freeze date to check sources against, and any URL, filing or market figure I attached would be made up. That would break the rules against inventing citations and certifying receipts that don't exist. So I made no fetches or searches and am returning an empty sourced_facts list. All facts about this case's business, numbers and story should come from the synthetic packet itself, not from outside sources. Confidence is LOW only because no outside data exists. The taxonomy itself is certain because it is frozen. The domain-refresh agent has nothing to look into, since this fictional control has no missing real-world facts. Note for the audit agent: if the downstream packet cites real-world URLs for this case, treat them as contamination.",
+    "sourced_facts": [],
+    "confidence": "LOW"
+  },
+  "case_id": "nlf_synthetic_v3",
+  "classifier_input_sha256": "013e7a80120516060d1c9dbb5be7ca7b6632d11ae14ac391a1eadcde9f57a157",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

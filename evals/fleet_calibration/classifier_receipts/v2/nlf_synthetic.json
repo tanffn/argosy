@@ -1,0 +1,22 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 2,
+  "tokens_out": 851,
+  "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_winner\", \"freeze_date\": null, \"classification_rationale\": \"This is a reconstruction burn, so category=synthetic, grading=synthetic_winner and freeze_date=null are copied exactly from frozen_taxonomy. I have not re-selected them. The subject is a fictional control (a winner-shaped case in an obscure industrial-software niche) and there is no real company behind it. The source_manifest is empty and there is no freeze date to date sources against. Because no real issuer, filing, press release or market print exists for this case, no primary source can support it. Any URL or publication date I attached would be made up and would be flagged as a hallucinated citation. sourced_facts is therefore deliberately empty. Confidence is LOW because nothing here comes from live or primary-source data. That is by design for a synthetic control, not a data gap, so a domain-refresh investigation is not needed. If a downstream step needs fictional fundamentals for this winner-shaped control (for example revenue growth, net retention or margin path), the case-construction step should write them as labeled synthetic fixtures rather than send them through sourced_facts.\", \"sourced_facts\": [], \"confidence\": \"LOW\"}",
+  "output": {
+    "category": "synthetic",
+    "grading": "synthetic_winner",
+    "freeze_date": null,
+    "classification_rationale": "This is a reconstruction burn, so category=synthetic, grading=synthetic_winner and freeze_date=null are copied exactly from frozen_taxonomy. I have not re-selected them. The subject is a fictional control (a winner-shaped case in an obscure industrial-software niche) and there is no real company behind it. The source_manifest is empty and there is no freeze date to date sources against. Because no real issuer, filing, press release or market print exists for this case, no primary source can support it. Any URL or publication date I attached would be made up and would be flagged as a hallucinated citation. sourced_facts is therefore deliberately empty. Confidence is LOW because nothing here comes from live or primary-source data. That is by design for a synthetic control, not a data gap, so a domain-refresh investigation is not needed. If a downstream step needs fictional fundamentals for this winner-shaped control (for example revenue growth, net retention or margin path), the case-construction step should write them as labeled synthetic fixtures rather than send them through sourced_facts.",
+    "sourced_facts": [],
+    "confidence": "LOW"
+  },
+  "case_id": "nlf_synthetic",
+  "classifier_input_sha256": "bc3c4bdbd2df3b9f597dc20117243c6d92774b12d28db13a6502a7042b2d99c8",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

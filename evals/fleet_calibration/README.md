@@ -109,7 +109,17 @@ deterministic verification receipt; raw model responses remain in the run JSON.
 .venv/Scripts/python.exe -m evals.fleet_calibration.market_outcomes evals/fleet_calibration/runs/lab/<new>.json --case boot_2017 --symbol BOOT
 ```
 
-The lab always prepends the sourced `nlf_synthetic` / `omk_synthetic` controls.
+Legacy lab protocol 2 prepended the sourced `nlf_synthetic` / `omk_synthetic` controls.
+Current lab protocol **3** uses `nlf_synthetic_v3` / `omk_synthetic` instead.
+The original NLF fixture and failed runs are preserved: v3 corrects its inconsistent
+trailing valuation arithmetic using an explicit year-ago quarter and TTM basis.
+It changes neither the expected verdict nor the underlying business/risk story.
+Protocol-2 manifests continue to use their original pinned hashes; the versions
+cannot substitute each other's controls. Prepare the new case-bound receipt with
+`prepare_classifier.py --reviewer-approved --only nlf_synthetic_v3 --receipts-dir evals/fleet_calibration/classifier_receipts/v2`
+after the required dry-run and independent review. The receipt binding protocol
+remains v2; the control-fixture protocol is v3. A sanitizer rejection remains an
+exclusion, never evidence that an investment prediction was correct.
 It stops historical interpretation if either control fails. An independent
 review exclusion is not a passing run, even when the action matches our label.
 Every run uses a new artifact path. The final `.lab.json` seals the decision
@@ -131,6 +141,77 @@ after-tax trades. Missing/delisted bars remain unknown, not zero or a silently
 removed case. Class agreement, outcome returns and live forward calibration
 are different evidence. Curated examples do not establish an unbiased edge,
 and aliasing cannot guarantee a model does not remember a historical story.
+
+### Discovery screen + grader replay
+
+This separate lab runs the production quick screen and discovery grader, not
+the Trader or full historical universe sourcing. Case manifests and prices are
+pinned. V2 screen inputs contain only the exact existing frozen business
+description instead of V1's identical generic stub. Packet financials, expected
+stage labels and price observations are unchanged. Earlier failed runs remain.
+The fictional context boundary is explicit; missing real filings are intentional
+for fiction, while unspecified economic facts remain unknown.
+
+```powershell
+.venv/Scripts/python.exe -m evals.fleet_calibration.discovery_lab --partition development --audit-only
+.venv/Scripts/python.exe -m evals.fleet_calibration.discovery_lab --partition development --out evals/fleet_calibration/runs/lab/<new-dev>.json
+.venv/Scripts/python.exe -m evals.fleet_calibration.discovery_lab --partition reserved_evaluation --out evals/fleet_calibration/runs/lab/<new-reserved>.json
+.venv/Scripts/python.exe -m evals.fleet_calibration.discovery_lab --outcomes evals/fleet_calibration/runs/lab/<sealed>.json --out evals/fleet_calibration/runs/lab/<new-outcomes>.json
+```
+
+Run call-free audit and independent input review before real judgments. Both
+controls and integrity reviews must pass. An exclusion or unattempted case is
+not a correct prediction. Outcomes are fetched only after decisions are sealed.
+6/12/24-month adjusted returns are gross market diagnostics, not allocations or
+after-tax trades. Curated examples and retrospective bars cannot establish an
+unbiased discovery edge, and masking cannot exclude model memory.
+
+### Evidence-delivery tuning (separate from investment-class controls)
+
+This experiment audits real archived decisions and tests whether the grader
+receives and faithfully uses evidence. It does not change expected labels in
+failed curated-control runs or use BUY frequency as a success criterion.
+Freeze first, independently review the runner, then execute each stage once:
+
+```powershell
+.venv/Scripts/python.exe -m evals.fleet_calibration.tuning freeze --out logs/<snapshot>.json
+.venv/Scripts/python.exe -m evals.fleet_calibration.tuning audit --snapshot logs/<snapshot>.json --out logs/<audit>.json
+.venv/Scripts/python.exe -m evals.fleet_calibration.tuning paired --snapshot logs/<snapshot>.json --partition development --out logs/<development>.json
+.venv/Scripts/python.exe -m evals.fleet_calibration.tuning paired --snapshot logs/<snapshot>.json --partition reserved --development logs/<development>.json --out logs/<reserved>.json
+# After the audit and paired judgments are sealed; no returns enter any agent.
+.venv/Scripts/python.exe -m evals.fleet_calibration.tuning_outcomes --snapshot logs/<snapshot>.json --audit logs/<audit>.json --out logs/<historical-diagnostics>.json
+```
+
+Source archive and selection can be preserved after **reviewed mechanical**
+runner fixes using `freeze --source-snapshot <sealed-original>` with a new output.
+This does not authorize post-result policy changes or reruns of a claimed trial.
+Semantic one-shot claims live under `runtime/research_trials/`; changing output
+names, freeze timestamps or parent references does not reset them. Do not remove
+claims to retry until green. Failed/incomplete attempts remain evidence.
+
+If an attribution check fails only because the quoted words span Markdown bold
+formatting or whitespace, `tuning_attribution --source <sealed-run> --out <new>`
+can produce a **separate** word-preserving adjudication. Original grades,
+findings/severities, model receipts and seals never change. Its normalization
+code hash and per-quote proofs are retained. Independently review and declare
+that rule before opening reserved results, then apply it to every reserved arm,
+not just favorable cases. It cannot repair new words, numbers, case changes,
+missing calls or genuinely unsupported quotes. Do not equate workflow completion
+with an assessable or favorable result.
+
+Both arms use the same frozen policy and Opus model; only evidence rendering
+differs. Tool-free isolated sessions have no schema/session retries. There are
+at most16 SDK sessions per four-pair partition, plus at most4 screen-audit sessions.
+Sessions can include up to3 internal text turns. API `max_tokens` is not an
+effective CLI token cap. Admission checks an observed USD30 stop, including
+before assessors; already-inflight calls and failed-call cost uncertainty remain
+explicit. A missing/unverified pair makes the behavioral result inconclusive.
+
+The old screen diagnostic retains original policies and all missing denominators.
+It measures30-calendar-day adjusted-price moves versus matched SPY, not returns
+from BUYs, allocations or fills. Current-provider history, unresolved historical
+identity and earlier operator exposure limit retrospective conclusions. A strong
+subsequent gain does not establish that a rejected name was predictable.
 
 ### Original suite commands
 

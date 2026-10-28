@@ -1,0 +1,58 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 8,
+  "tokens_out": 3213,
+  "response_raw": "{\"category\": \"A\", \"grading\": \"entry\", \"freeze_date\": \"2017-06-02\", \"classification_rationale\": \"This is a reconstruction burn, so I copied the frozen_taxonomy exactly: category A, grading entry, freeze date 2017-06-02. I did not re-select the taxonomy. The facts support a hard-foresight winner whose contemporaneous print looks soft. Q4 FY2017 consolidated same-store sales fell 0.9%. Q4 sales of $163.0M missed the $164.7M consensus. The stock dropped about 15% to roughly $6.30 on 2017-06-02. FY2018 guidance was flat to slightly positive SSS with EPS of $0.52–0.57, and Q1 FY2018 guidance was break-even EPS. Adjusted EPS fell from $0.69 to $0.55. Leverage was high: a $192.6M term loan plus $33.3M on the revolver, against $8.0M in cash. Management blamed low commodity prices in key markets and soft general retail. There were also some underlying positives. Q4 gross margin rose 190 bp to 30.3%, core merchandise margin improved 30 bp, physical-store comps improved sequentially, and revenue still grew 10.7% on unit expansion to 219 stores. That fits the soft-print, foresight-required A shape. Every source is dated on or before the freeze date. I used no retrospective articles and no outcome data. One source conflict: OCBJ describes Q4 SSS as 'flat', but the primary 8-K Ex-99.1 says it declined 0.9%, so the primary figure governs. Confidence is HIGH because the key numbers come from the primary SEC filing and were checked directly, with one dated secondary news source covering market reaction and consensus.\", \"confidence\": \"HIGH\", \"sourced_facts\": [{\"fact\": \"FY2017 (ended 2017-04-01): net sales rose 10.7% to $629.8M; consolidated same-store sales +0.3%; GAAP net income $14.2M / $0.53 per diluted share; adjusted net income $14.9M / $0.55 vs prior-year adjusted $18.7M / $0.69 (about -20%). $0.03 of the FY2017 $0.55 adjusted EPS came from the 53rd week.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 FY2017: net sales rose 9.1% to $163.0M; consolidated same-store sales declined 0.9%; GAAP net income $2.6M / $0.10 per diluted share.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 FY2017 gross profit was $49.3M (30.3% of sales) vs $42.4M (28.4%) a year earlier, up 190 bp; core merchandise margin improved 30 bp. FY2017 gross margin was 30.2% vs 30.4%, pressured by store occupancy costs and higher e-commerce mix.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"CEO: 'While we reported slightly negative consolidated same store sales for the quarter, we are pleased that comparable sales in our physical stores improved on a sequential basis.' Store count was 219 stores in 31 states (12 opened, 1 closed in FY2017).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"FY2018 guidance: open 12 new stores; flat to slightly positive consolidated SSS; income from operations $37.8M–$40.0M; net income $14.0M–$15.4M; EPS $0.52–$0.57 on 27.1M diluted shares (midpoint roughly flat vs FY2017 adjusted $0.55). Q1 FY2018 guidance: flat consolidated SSS and break-even EPS. This is not a re-acceleration guide.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Balance sheet at 2017-04-01: cash $8.0M; line of credit $33.3M outstanding; term loan $192.6M ($191.5M long-term + $1.1M current); inventory $189.1M. The company was highly levered relative to about $15M of annual net income.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 sales of $163M missed the analyst expectation of $164.7M. The stock fell 15% to $6.30 in Friday-morning trading on 2017-06-02. CEO Jim Conroy cited 'the impact from low commodities prices in some of our key markets coupled with a general softness in the overall retail environment.' This article calls Q4 SSS 'flat'; the primary 8-K figure is -0.9%.\", \"url\": \"https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/\", \"publication_date\": \"2017-06-02\"}]}",
+  "output": {
+    "category": "A",
+    "grading": "entry",
+    "freeze_date": "2017-06-02",
+    "classification_rationale": "This is a reconstruction burn, so I copied the frozen_taxonomy exactly: category A, grading entry, freeze date 2017-06-02. I did not re-select the taxonomy. The facts support a hard-foresight winner whose contemporaneous print looks soft. Q4 FY2017 consolidated same-store sales fell 0.9%. Q4 sales of $163.0M missed the $164.7M consensus. The stock dropped about 15% to roughly $6.30 on 2017-06-02. FY2018 guidance was flat to slightly positive SSS with EPS of $0.52–0.57, and Q1 FY2018 guidance was break-even EPS. Adjusted EPS fell from $0.69 to $0.55. Leverage was high: a $192.6M term loan plus $33.3M on the revolver, against $8.0M in cash. Management blamed low commodity prices in key markets and soft general retail. There were also some underlying positives. Q4 gross margin rose 190 bp to 30.3%, core merchandise margin improved 30 bp, physical-store comps improved sequentially, and revenue still grew 10.7% on unit expansion to 219 stores. That fits the soft-print, foresight-required A shape. Every source is dated on or before the freeze date. I used no retrospective articles and no outcome data. One source conflict: OCBJ describes Q4 SSS as 'flat', but the primary 8-K Ex-99.1 says it declined 0.9%, so the primary figure governs. Confidence is HIGH because the key numbers come from the primary SEC filing and were checked directly, with one dated secondary news source covering market reaction and consensus.",
+    "sourced_facts": [
+      {
+        "fact": "FY2017 (ended 2017-04-01): net sales rose 10.7% to $629.8M; consolidated same-store sales +0.3%; GAAP net income $14.2M / $0.53 per diluted share; adjusted net income $14.9M / $0.55 vs prior-year adjusted $18.7M / $0.69 (about -20%). $0.03 of the FY2017 $0.55 adjusted EPS came from the 53rd week.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Q4 FY2017: net sales rose 9.1% to $163.0M; consolidated same-store sales declined 0.9%; GAAP net income $2.6M / $0.10 per diluted share.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Q4 FY2017 gross profit was $49.3M (30.3% of sales) vs $42.4M (28.4%) a year earlier, up 190 bp; core merchandise margin improved 30 bp. FY2017 gross margin was 30.2% vs 30.4%, pressured by store occupancy costs and higher e-commerce mix.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "CEO: 'While we reported slightly negative consolidated same store sales for the quarter, we are pleased that comparable sales in our physical stores improved on a sequential basis.' Store count was 219 stores in 31 states (12 opened, 1 closed in FY2017).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "FY2018 guidance: open 12 new stores; flat to slightly positive consolidated SSS; income from operations $37.8M–$40.0M; net income $14.0M–$15.4M; EPS $0.52–$0.57 on 27.1M diluted shares (midpoint roughly flat vs FY2017 adjusted $0.55). Q1 FY2018 guidance: flat consolidated SSS and break-even EPS. This is not a re-acceleration guide.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Balance sheet at 2017-04-01: cash $8.0M; line of credit $33.3M outstanding; term loan $192.6M ($191.5M long-term + $1.1M current); inventory $189.1M. The company was highly levered relative to about $15M of annual net income.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Q4 sales of $163M missed the analyst expectation of $164.7M. The stock fell 15% to $6.30 in Friday-morning trading on 2017-06-02. CEO Jim Conroy cited 'the impact from low commodities prices in some of our key markets coupled with a general softness in the overall retail environment.' This article calls Q4 SSS 'flat'; the primary 8-K figure is -0.9%.",
+        "url": "https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/",
+        "publication_date": "2017-06-02"
+      }
+    ],
+    "confidence": "HIGH"
+  },
+  "case_id": "boot_2017",
+  "classifier_input_sha256": "1a192fb17e1ce1e6892ea151b93ec7c0898fe5925dce3d17a1876fff5bcb7b58",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

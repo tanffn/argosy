@@ -1,0 +1,217 @@
+{
+  "case_id": "gpro_2016_discovery_v2",
+  "alias": "RQM",
+  "category": "B",
+  "grading": "trap",
+  "real": "GPRO @ 2016-06-01",
+  "market_symbol": "GPRO",
+  "freeze_date": "2016-06-01",
+  "rescale_factor": 0.85,
+  "synthetic": false,
+  "positioned": false,
+  "positions": "No existing position in RQM. Fictional diversified portfolio; research initiation only.",
+  "constraints_extra": null,
+  "expected_classes": [
+    "hold"
+  ],
+  "contamination_terms": [
+    "GPRO",
+    "GoPro",
+    "Woodman",
+    "HERO4",
+    "Karma"
+  ],
+  "sources": [
+    {
+      "fact": "Pre-freeze issuer results, balance sheet and outlook; all amounts and derivations below are from these original units.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+      "date": "2016-05-05",
+      "source_to_masked_mapping": [
+        {
+          "masked_field": "analyst_reports[0].share_price_usd",
+          "raw_value": 10.32,
+          "masked_value": 8.772,
+          "transform": "multiply by0.85",
+          "units": "USD per share",
+          "publication_date": "2016-06-01",
+          "source_url": "https://finance.yahoo.com/quote/GPRO/history/",
+          "original_units": "USD per share",
+          "source_locator": "Nominal market close on freeze date",
+          "reporting_period": "2016-06-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_revenue_usd_m",
+          "raw_value": 183.536,
+          "masked_value": 156.0056,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_net_income_usd_m",
+          "raw_value": -107.459,
+          "masked_value": -91.34015,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_operating_income_usd_m",
+          "raw_value": -121.435,
+          "masked_value": -103.21975,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_operating_cashflow_usd_m",
+          "raw_value": -33.265,
+          "masked_value": -28.27525,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_capex_usd_m",
+          "raw_value": 8.219,
+          "masked_value": 6.98615,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].cash_usd_m",
+          "raw_value": 248.717,
+          "masked_value": 211.40945,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].marketable_securities_usd_m",
+          "raw_value": 139.951,
+          "masked_value": 118.95835,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].total_liabilities_usd_m",
+          "raw_value": 249.534,
+          "masked_value": 212.1039,
+          "transform": "multiply by0.85",
+          "units": "USD millions",
+          "publication_date": "2016-05-05",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2016-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].market_cap_usd_m",
+          "raw_value": 1419.44376,
+          "masked_value": 1206.527196,
+          "transform": "price*weighted shares*0.85",
+          "units": "USD millions",
+          "publication_date": "2016-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+          "derivation": {
+            "price": 10.32,
+            "weighted_diluted_shares_m": 137.543
+          },
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Approximate capitalization derived from market close and reported weighted shares",
+          "reporting_period": "2016-06-01"
+        }
+      ],
+      "unscaled_share_quantity_m": 137.543,
+      "share_count_period": "Quarter ended 2016-03-31 weighted-average diluted shares"
+    },
+    {
+      "fact": "Freeze-day nominal close $10.32; provider daily history read without any subsequent return observations.",
+      "url": "https://finance.yahoo.com/quote/GPRO/history/",
+      "date": "2016-06-01",
+      "market_bar_receipt": {
+        "date": "2016-06-01",
+        "close": 10.32,
+        "currency": "USD",
+        "source_type": "retrospective daily bar, not an archived data vintage",
+        "construction_note": "Verified no subsequent split adjustments in provider action metadata; no subsequent prices or returns used.",
+        "frozen_snapshot_boundary": "After close on freeze date; earliest hypothetical entry strictly later"
+      }
+    }
+  ],
+  "resolution": null,
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/RQM",
+      "company": "RQM anonymized issuer",
+      "as_of": "T0 frozen snapshot",
+      "share_count_basis": "Latest reported weighted-average diluted shares, not a verified period-end count",
+      "shares_m": 137.543,
+      "confidence": "MEDIUM",
+      "share_price_usd": 8.772,
+      "quarter_revenue_usd_m": 156.0056,
+      "quarter_net_income_usd_m": -91.34015,
+      "quarter_operating_income_usd_m": -103.21975,
+      "quarter_operating_cashflow_usd_m": -28.27525,
+      "quarter_capex_usd_m": 6.98615,
+      "cash_usd_m": 211.40945,
+      "marketable_securities_usd_m": 118.95835,
+      "total_liabilities_usd_m": 212.1039,
+      "market_cap_usd_m": 1206.527196,
+      "market_cap_basis": "Derived price times diluted weighted shares; approximation, not reported market capitalization"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/RQM",
+      "business_description": "A branded consumer-camera manufacturer expanding toward content software and a new adjacent flying-camera product. It has substantial brand recognition but faces improving phone cameras and product saturation.",
+      "developments": [
+        "Latest quarter revenue fell49.5% year-over-year; gross margin was32.5%. Management says end-customer sales were stronger than shipments while channel inventory was reduced.",
+        "A new adjacent hardware product was delayed to the holiday selling season. Management reaffirmed its full-year revenue outlook.",
+        "The cash/securities balance is not a guarantee of normalized earnings; the next product cycle could recover demand or require further price reductions."
+      ],
+      "as_of": "T0",
+      "confidence": "MEDIUM"
+    }
+  ],
+  "changelog": [
+    {
+      "date": "2026-10-23",
+      "fix": "NEW discovery case version with complete original-to-masked monetary mapping, pre-freeze primary sources and explicit nominal price receipt. Original fixtures/failed runs unchanged. No historical outcome enters analyst inputs."
+    },
+    {
+      "date": "2026-10-23",
+      "fix": "Independent pre-scoring review corrected cited table values (GPRO revenue183.536; SFIX revenue535.589/net loss18.846; AEHR quarter revenue3.773), added units/period provenance and BOOT extra-week comparability, expanded issuer denylist. No expected stage labels or business theses changed."
+    }
+  ]
+}

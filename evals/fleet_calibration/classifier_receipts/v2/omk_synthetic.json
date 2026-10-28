@@ -1,0 +1,22 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 2,
+  "tokens_out": 936,
+  "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_trap\", \"freeze_date\": null, \"classification_rationale\": \"This is a reconstruction burn, so the category (synthetic), grading (synthetic_trap) and freeze_date (null) are copied exactly from frozen_taxonomy and not re-decided. The subject, omk_synthetic, is a fictional control: a made-up meal-kit / direct-to-consumer company shaped as a 'growth theater' trap. Because the company does not exist, no primary source or public filing can describe it, and there is no freeze date to check sources against. The source_manifest is also empty, so there are no source ids I am allowed to cite.\\n\\nI am leaving sourced_facts empty on purpose. Any URL I attached would be either invented or a real company's record passed off as this fictional one, and either would be flagged as a hallucinated citation. The packet's numbers (for example revenue growth, customer acquisition cost, retention, contribution margin, cash burn) should be written by the synthetic-case author as clearly labelled fictional values. They should not be backed by external URLs.\\n\\nConfidence is LOW only because there is no outside data behind this packet. The frozen taxonomy itself is not in doubt. If the benchmark wants real base rates for the sector, such as meal-kit churn and customer acquisition cost from public companies, the domain-refresh agent should collect them as a separate packet with its own source manifest and freeze date.\", \"sourced_facts\": [], \"confidence\": \"LOW\"}",
+  "output": {
+    "category": "synthetic",
+    "grading": "synthetic_trap",
+    "freeze_date": null,
+    "classification_rationale": "This is a reconstruction burn, so the category (synthetic), grading (synthetic_trap) and freeze_date (null) are copied exactly from frozen_taxonomy and not re-decided. The subject, omk_synthetic, is a fictional control: a made-up meal-kit / direct-to-consumer company shaped as a 'growth theater' trap. Because the company does not exist, no primary source or public filing can describe it, and there is no freeze date to check sources against. The source_manifest is also empty, so there are no source ids I am allowed to cite.\n\nI am leaving sourced_facts empty on purpose. Any URL I attached would be either invented or a real company's record passed off as this fictional one, and either would be flagged as a hallucinated citation. The packet's numbers (for example revenue growth, customer acquisition cost, retention, contribution margin, cash burn) should be written by the synthetic-case author as clearly labelled fictional values. They should not be backed by external URLs.\n\nConfidence is LOW only because there is no outside data behind this packet. The frozen taxonomy itself is not in doubt. If the benchmark wants real base rates for the sector, such as meal-kit churn and customer acquisition cost from public companies, the domain-refresh agent should collect them as a separate packet with its own source manifest and freeze date.",
+    "sourced_facts": [],
+    "confidence": "LOW"
+  },
+  "case_id": "omk_synthetic",
+  "classifier_input_sha256": "186de6dbf976068d45d272f5a1b23559089320ba322bfa93552bf0003474f75b",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

@@ -11,14 +11,15 @@ from evals.fleet_calibration.market_outcomes import add_months, compare_horizons
 
 
 def test_controls_always_first_and_unknown_is_not_silently_skipped():
-    assert [p["case_id"] for p in lab.select_cases(["boot_2017", "nlf_synthetic"])] == [
-        "nlf_synthetic", "omk_synthetic", "boot_2017"]
+    assert [p["case_id"] for p in lab.select_cases(["boot_2017", "nlf_synthetic_v3"])] == [
+        "nlf_synthetic_v3", "omk_synthetic", "boot_2017"]
     with pytest.raises(ValueError, match="Unknown cases"):
         lab.select_cases(["not_a_case"])
 
 
-def test_real_frozen_packet_preflight_and_answer_key_isolation():
+def test_real_frozen_packet_preflight_and_answer_key_isolation(monkeypatch):
     packets = lab.select_cases(["boot_2017"])
+    monkeypatch.setattr(run_suite, 'load_classifier_receipt', lambda packet: None)
     assert all(row["errors"] for row in lab.preflight(packets))  # Legacy receipts are unbound.
     packet = deepcopy(packets[-1])
     before = run_suite.build_trader_inputs(packet)
@@ -33,7 +34,7 @@ def test_real_previous_control_run_rechecks_recorded_violations_and_tampering():
     # Immutable real LLM receipts, not mocked reviewer booleans.
     path = run_suite.RUNS_DIR / "2026-09-11-daily-control-pair.json"
     doc = json.loads(path.read_text(encoding="utf-8"))
-    packets = {p["case_id"]: p for p in lab.select_cases([])}
+    packets = {p["case_id"]: p for p in run_suite.load_packets(list(lab.LEGACY_CONTROLS))}
     for result in doc["results"]:
         if result.get("status") != "ok":
             continue
@@ -234,6 +235,21 @@ def test_control_contents_cannot_be_weakened_with_a_new_manifest_hash():
     packets = lab.select_cases([])
     packets[0]["positions"] = "Changed control portfolio"
     assert not lab.valid_control_protocol(packets)
+
+
+def test_corrected_control_uses_one_trailing_basis_and_preserves_old_version():
+    packets = lab.select_cases([])
+    f = packets[0]['analyst_reports'][0]
+    ttm = f['trailing_income_statement']
+    assert ttm['revenue_usd_m'] == pytest.approx(720 - 205 / 1.31 + 205)
+    assert ttm['gaap_net_income_usd_m'] == 28 - 0 + 14
+    assert f['valuation']['pe_trailing'] == pytest.approx(2800 / 42)
+    assert f['valuation']['ps_trailing'] == pytest.approx(2800 / ttm['revenue_usd_m'])
+    assert lab.valid_control_protocol(packets, version=3)
+    legacy = run_suite.load_packets(list(lab.LEGACY_CONTROLS))
+    legacy.sort(key=lambda p: lab.LEGACY_CONTROLS.index(p['case_id']))
+    assert lab.valid_control_protocol(legacy, version=2)
+    assert not lab.valid_control_protocol(legacy, version=3)
 
 
 def test_bare_legacy_identity_is_not_a_symbol_binding():

@@ -1,0 +1,178 @@
+{
+  "protocol": "discovery_screen_grader_v1",
+  "created_at": "2026-10-23T14:47:18.586052+00:00",
+  "cases": [
+    {
+      "case_id": "nlf_synthetic_v3",
+      "packet_sha256": "8d99827106a6de25c133055cbe9acbc2623916e1f13a403ab69d01ad9779a9a8",
+      "partition": "control",
+      "expected_screen_go": true,
+      "expected_grade": [
+        "BUY"
+      ],
+      "radar_candidate": {
+        "ticker": "NLF",
+        "name": "Fictional control issuer",
+        "score": null,
+        "price": 18.4,
+        "market_cap": 2800000000.0,
+        "families": [
+          "FROZEN_CASE_LEAD"
+        ],
+        "reasons": [
+          "Reported business expansion and a proposed market opportunity warrant checking current earnings, valuation and customer economics. These are research leads, not purchase evidence."
+        ]
+      },
+      "radar_scope": "Fictional screen lead; full evidence supplied only to grader"
+    },
+    {
+      "case_id": "omk_synthetic",
+      "packet_sha256": "f760f0d400364aec169347abbbee7127f142c7c8ce5dd1e4996ca01195beafc8",
+      "partition": "control",
+      "expected_screen_go": true,
+      "expected_grade": [
+        "WATCH",
+        "PASS"
+      ],
+      "radar_candidate": {
+        "ticker": "OMK",
+        "name": "Fictional control issuer",
+        "score": null,
+        "price": 22.7,
+        "market_cap": 3600000000.0,
+        "families": [
+          "FROZEN_CASE_LEAD"
+        ],
+        "reasons": [
+          "Reported business expansion and a proposed market opportunity warrant checking current earnings, valuation and customer economics. These are research leads, not purchase evidence."
+        ]
+      },
+      "radar_scope": "Fictional screen lead; full evidence supplied only to grader"
+    },
+    {
+      "case_id": "boot_2017_discovery_v2",
+      "packet_sha256": "a70d2921d4d92dd46af3dabfbdb355d89a0986ece2f7bc5905ada7dbc3c31e7a",
+      "partition": "development",
+      "expected_screen_go": true,
+      "expected_grade": [
+        "BUY"
+      ],
+      "radar_candidate": {
+        "ticker": "QPX",
+        "name": "Anonymized issuer",
+        "score": null,
+        "families": [
+          "FROZEN_CASE_LEAD"
+        ],
+        "price": 12.558,
+        "market_cap": 339919944.0,
+        "reasons": [
+          "A niche specialty work-apparel and footwear retailer with physical stores and ecommerce. It serves occupational and regional lifestyle customers, not general mall fashion.",
+          "A just-reported earnings update creates an investigate-or-pass question. Verify fundamentals, valuation, funding and catalysts before any purchase."
+        ],
+        "dollar_volume": null,
+        "pct_change": null
+      },
+      "radar_scope": "Constructed historical lead, not a replay of a historical market-wide radar scan",
+      "frozen_snapshot_boundary": "after_close"
+    },
+    {
+      "case_id": "gpro_2016_discovery_v2",
+      "packet_sha256": "06fd5c19180841d1fc41c690490412ae886551d671a74c7596ccb65b3eff8e70",
+      "partition": "development",
+      "expected_screen_go": true,
+      "expected_grade": [
+        "WATCH",
+        "PASS"
+      ],
+      "radar_candidate": {
+        "ticker": "RQM",
+        "name": "Anonymized issuer",
+        "score": null,
+        "families": [
+          "FROZEN_CASE_LEAD"
+        ],
+        "price": 8.772,
+        "market_cap": 1206527196.0,
+        "reasons": [
+          "A branded consumer-camera manufacturer expanding toward content software and a new adjacent flying-camera product. It has substantial brand recognition but faces improving phone cameras and product saturation.",
+          "A just-reported earnings update creates an investigate-or-pass question. Verify fundamentals, valuation, funding and catalysts before any purchase."
+        ],
+        "dollar_volume": null,
+        "pct_change": null
+      },
+      "radar_scope": "Constructed historical lead, not a replay of a historical market-wide radar scan",
+      "frozen_snapshot_boundary": "after_close"
+    },
+    {
+      "case_id": "aehr_2020_discovery_v1",
+      "packet_sha256": "f9ff2b2feeb1f6dfafa373bc8ca6f56b85056511474110943489681ae66a50b3",
+      "partition": "reserved_evaluation",
+      "expected_screen_go": true,
+      "expected_grade": [
+        "BUY"
+      ],
+      "radar_candidate": {
+        "ticker": "LZX",
+        "name": "Anonymized issuer",
+        "score": null,
+        "families": [
+          "FROZEN_CASE_LEAD"
+        ],
+        "price": 8.987,
+        "market_cap": 207240220.0,
+        "reasons": [
+          "A small semiconductor test-and-reliability equipment supplier selling systems and recurring consumables for optical-interconnect devices and wide-bandgap power semiconductors used in electrification.",
+          "A just-reported earnings update creates an investigate-or-pass question. Verify fundamentals, valuation, funding and catalysts before any purchase."
+        ],
+        "dollar_volume": null,
+        "pct_change": null
+      },
+      "radar_scope": "Constructed historical lead, not a replay of a historical market-wide radar scan",
+      "frozen_snapshot_boundary": "after_close"
+    },
+    {
+      "case_id": "sfix_2021_discovery_v1",
+      "packet_sha256": "f49d61ce8700a8a609208744c0acbd1e3454243d64c6568ae11330dddb3bf439",
+      "partition": "reserved_evaluation",
+      "expected_screen_go": true,
+      "expected_grade": [
+        "WATCH",
+        "PASS"
+      ],
+      "radar_candidate": {
+        "ticker": "TQR",
+        "name": "Anonymized issuer",
+        "score": null,
+        "families": [
+          "FROZEN_CASE_LEAD"
+        ],
+        "price": 152.03,
+        "market_cap": 16221026326.6,
+        "reasons": [
+          "An online personalized clothing and styling service combining customer data, algorithms and human stylists. It is expanding direct shopping and preview services alongside its existing curated-delivery model.",
+          "A just-reported earnings update creates an investigate-or-pass question. Verify fundamentals, valuation, funding and catalysts before any purchase."
+        ],
+        "dollar_volume": null,
+        "pct_change": null
+      },
+      "radar_scope": "Constructed historical lead, not a replay of a historical market-wide radar scan",
+      "frozen_snapshot_boundary": "after_close"
+    }
+  ],
+  "control_ids": [
+    "nlf_synthetic_v3",
+    "omk_synthetic"
+  ],
+  "limitations": [
+    "Curated diagnostic cases, not unbiased market selection or alpha proof.",
+    "Historical prices are retrieved later, not archived-vintage data; revisions/shape-memory remain possible.",
+    "Reserved evaluation cases are not used for prompt tuning in this protocol; no claim of model-training novelty.",
+    "No radar-universe scan, live analyst research, order sizing, tax, execution or portfolio simulation is replayed."
+  ],
+  "factual_correction": {
+    "prior_manifest_sha256": "772bfab71f129e6d3b7d49a8cd671c8ef28311cd1887458dc3e5de1e54ec8392",
+    "review": "oct23-discovery-fixture-review",
+    "investment_expectations_changed": false
+  }
+}

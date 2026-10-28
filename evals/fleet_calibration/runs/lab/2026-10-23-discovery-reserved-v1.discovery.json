@@ -1,0 +1,23 @@
+{
+  "protocol": "discovery_screen_grader_v1",
+  "controls_passed": false,
+  "cases": [
+    {
+      "case_id": "nlf_synthetic_v3",
+      "partition": "control",
+      "qualified": true,
+      "status": "reviewed",
+      "screen_go": true,
+      "verdict": "WATCH",
+      "expected_class_agreement": false,
+      "research_verdict_not_order": true
+    }
+  ],
+  "status": "incomplete",
+  "unattempted": [
+    "omk_synthetic",
+    "aehr_2020_discovery_v1",
+    "sfix_2021_discovery_v1"
+  ],
+  "run_sha256": "bc1ec777bbec3af4e5269f59130d7fce1c36f9a1657230921a414fced9ef372a"
+}

@@ -344,6 +344,9 @@ def verify_sanitizer(
 
 def verify_review(receipt: dict[str, Any]) -> dict[str, Any]:
     failures = []
+    for flag in ("output_clean", "packet_fidelity", "workflow_correct"):
+        if (receipt.get("output") or {}).get(flag) is not True:
+            failures.append({"check": flag, "actual": (receipt.get("output") or {}).get(flag)})
     if (receipt.get("output") or {}).get("violations"):
         failures.append({"check": "violations", "actual": receipt["output"]["violations"]})
     if (receipt.get("output") or {}).get("reasoning_grounded_score") == 0:
@@ -392,6 +395,7 @@ class CalibrationClassifierSourcingAgent(
     agent_role = "calibration_classifier_sourcing"
     output_model = CalibrationClassificationOutput
     claude_code_allowed_tools = ("WebSearch", "WebFetch")
+    claude_code_max_turns = 12
 
     def build_prompt(self, *, case_brief: dict[str, Any]) -> tuple[str, str]:
         system = (
@@ -401,7 +405,10 @@ class CalibrationClassifierSourcingAgent(
             "URL and its publication date. No source may postdate the freeze "
             "date. Do not use retrospective 'why it moved' articles, do not "
             "sanitize the packet, and do not use the eventual outcome as "
-            "evidence.\n"
+            "evidence. Use the supplied source URLs first. Bound retrieval to "
+            "six document fetches and two focused searches. If a source remains "
+            "inaccessible, report that limitation honestly rather than looping "
+            "or inventing verified facts; a missing receipt must not be certified.\n"
             "Taxonomy: A=entry (should BUY; includes hard foresight / "
             "trap-shaped winners where the contemporaneous print looks soft), "
             "B=trap (should PASS / no position), C=exit (positioned, should "

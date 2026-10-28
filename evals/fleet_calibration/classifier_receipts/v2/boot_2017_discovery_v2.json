@@ -1,0 +1,78 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 6,
+  "tokens_out": 3553,
+  "response_raw": "{\"category\": \"A\", \"grading\": \"entry\", \"freeze_date\": \"2017-06-02\", \"classification_rationale\": \"Reconstruction burn: category A / grading entry / freeze date 2017-06-02 are copied exactly from frozen_taxonomy, and the taxonomy was not re-selected. Three fetches were used, out of a budget of six fetches and two searches. Facts are period-accurate to the freeze date. (1) The issuer's FY2017 Q4 results release, SEC Exhibit 99.1 dated 2017-06-01, matched every raw value in the manifest. Revenue was $629.8M, GAAP net income $14.2M, adjusted net income $14.9M, Q4 net sales $163.0M, cash $8.035M, net debt $225.9M, Q4 diluted weighted shares 27.068M, and FY2018 net income guidance $14.0M-$15.4M. (2) A date-limited Yahoo Finance history request confirmed the 2017-06-02 nominal close of $5.98, with Adj Close also $5.98. That is consistent with the manifest note that no later split adjustment was found. Derived market cap: 5.98 × 27.068M = $161.87M, matching the manifest raw_value. This entry setup looks soft at the time: Q4 same-store sales fell 0.9%, guidance was flat to slightly positive, and the stock dropped from $7.42 to $5.98 (about -19.4%) on the day after the release. That fits the A bucket's 'trap-shaped winner' description, but the outcome was not used as evidence. Caveats: (a) The price bar is a retrospective provider bar, not an archived data vintage. (b) The release's stated net debt of $225.9M is higher than a simple sum of the extracted lines ($33.274M line of credit + $191.517M long-term notes - $8.035M cash = $216.756M). The gap is probably the current portion of notes payable and/or debt issuance costs, which were not extracted. The issuer's stated $225.9M is used as-is, and the domain-refresh agent should reconcile the components if a net-debt bridge is load-bearing. (c) Masked values are the raw values × 2.1, per the manifest transform, and were not independently re-verified beyond that arithmetic. Confidence is HIGH because issuer figures come from the primary SEC filing and the freeze-day close was confirmed directly. The only qualification is the retrospective price-bar sourcing.\", \"confidence\": \"HIGH\", \"sourced_facts\": [{\"fact\": \"Boot Barn Holdings released fiscal 2017 Q4 and full-year results on June 1, 2017 (SEC Exhibit 99.1).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Fiscal 2017 (year ended April 1, 2017) net sales were $629.8 million.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Fiscal 2017 GAAP net income was $14.2 million, or $0.53 per diluted share.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Fiscal 2017 adjusted net income was $14.9 million, or $0.55 per diluted share.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 fiscal 2017 (fourteen weeks ended April 1, 2017) net sales were $163.0 million; same store sales declined 0.9%.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Cash and cash equivalents at April 1, 2017 were $8,035 thousand (about $8.0 million). Line of credit outstanding was $33,274 thousand and long-term notes payable $191,517 thousand. The release states total net debt of $225.9 million.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Weighted average diluted shares were 27,068 thousand for Q4 fiscal 2017 and 26,939 thousand for the full fiscal year 2017.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Fiscal 2018 outlook: net income of $14.0 million to $15.4 million ($0.52 to $0.57 per diluted share), income from operations of $37.8 million to $40.0 million, same store sales flat to slightly positive, and 12 new stores.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"BOOT nominal close on June 2, 2017 (freeze date) was $5.98, with Adj Close also $5.98 (open 6.16, high 6.65, low 5.91, volume 3,389,300). This is a retrospective provider daily bar, not an archived data vintage.\", \"url\": \"https://finance.yahoo.com/quote/BOOT/history/?period1=1496275200&period2=1496534400\", \"publication_date\": \"2017-06-02\"}, {\"fact\": \"BOOT closed at $7.42 on June 1, 2017, the release date and day before the freeze. The freeze-day close of $5.98 is a one-day decline of about 19.4% after the results and outlook.\", \"url\": \"https://finance.yahoo.com/quote/BOOT/history/?period1=1496275200&period2=1496534400\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Derived approximate market cap at freeze: $5.98 × 27.068M Q4 weighted diluted shares = about $161.87 million (price from the Yahoo daily bar; shares from the SEC release).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-02\"}]}",
+  "output": {
+    "category": "A",
+    "grading": "entry",
+    "freeze_date": "2017-06-02",
+    "classification_rationale": "Reconstruction burn: category A / grading entry / freeze date 2017-06-02 are copied exactly from frozen_taxonomy, and the taxonomy was not re-selected. Three fetches were used, out of a budget of six fetches and two searches. Facts are period-accurate to the freeze date. (1) The issuer's FY2017 Q4 results release, SEC Exhibit 99.1 dated 2017-06-01, matched every raw value in the manifest. Revenue was $629.8M, GAAP net income $14.2M, adjusted net income $14.9M, Q4 net sales $163.0M, cash $8.035M, net debt $225.9M, Q4 diluted weighted shares 27.068M, and FY2018 net income guidance $14.0M-$15.4M. (2) A date-limited Yahoo Finance history request confirmed the 2017-06-02 nominal close of $5.98, with Adj Close also $5.98. That is consistent with the manifest note that no later split adjustment was found. Derived market cap: 5.98 × 27.068M = $161.87M, matching the manifest raw_value. This entry setup looks soft at the time: Q4 same-store sales fell 0.9%, guidance was flat to slightly positive, and the stock dropped from $7.42 to $5.98 (about -19.4%) on the day after the release. That fits the A bucket's 'trap-shaped winner' description, but the outcome was not used as evidence. Caveats: (a) The price bar is a retrospective provider bar, not an archived data vintage. (b) The release's stated net debt of $225.9M is higher than a simple sum of the extracted lines ($33.274M line of credit + $191.517M long-term notes - $8.035M cash = $216.756M). The gap is probably the current portion of notes payable and/or debt issuance costs, which were not extracted. The issuer's stated $225.9M is used as-is, and the domain-refresh agent should reconcile the components if a net-debt bridge is load-bearing. (c) Masked values are the raw values × 2.1, per the manifest transform, and were not independently re-verified beyond that arithmetic. Confidence is HIGH because issuer figures come from the primary SEC filing and the freeze-day close was confirmed directly. The only qualification is the retrospective price-bar sourcing.",
+    "sourced_facts": [
+      {
+        "fact": "Boot Barn Holdings released fiscal 2017 Q4 and full-year results on June 1, 2017 (SEC Exhibit 99.1).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Fiscal 2017 (year ended April 1, 2017) net sales were $629.8 million.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Fiscal 2017 GAAP net income was $14.2 million, or $0.53 per diluted share.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Fiscal 2017 adjusted net income was $14.9 million, or $0.55 per diluted share.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Q4 fiscal 2017 (fourteen weeks ended April 1, 2017) net sales were $163.0 million; same store sales declined 0.9%.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Cash and cash equivalents at April 1, 2017 were $8,035 thousand (about $8.0 million). Line of credit outstanding was $33,274 thousand and long-term notes payable $191,517 thousand. The release states total net debt of $225.9 million.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Weighted average diluted shares were 27,068 thousand for Q4 fiscal 2017 and 26,939 thousand for the full fiscal year 2017.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Fiscal 2018 outlook: net income of $14.0 million to $15.4 million ($0.52 to $0.57 per diluted share), income from operations of $37.8 million to $40.0 million, same store sales flat to slightly positive, and 12 new stores.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "BOOT nominal close on June 2, 2017 (freeze date) was $5.98, with Adj Close also $5.98 (open 6.16, high 6.65, low 5.91, volume 3,389,300). This is a retrospective provider daily bar, not an archived data vintage.",
+        "url": "https://finance.yahoo.com/quote/BOOT/history/?period1=1496275200&period2=1496534400",
+        "publication_date": "2017-06-02"
+      },
+      {
+        "fact": "BOOT closed at $7.42 on June 1, 2017, the release date and day before the freeze. The freeze-day close of $5.98 is a one-day decline of about 19.4% after the results and outlook.",
+        "url": "https://finance.yahoo.com/quote/BOOT/history/?period1=1496275200&period2=1496534400",
+        "publication_date": "2017-06-01"
+      },
+      {
+        "fact": "Derived approximate market cap at freeze: $5.98 × 27.068M Q4 weighted diluted shares = about $161.87 million (price from the Yahoo daily bar; shares from the SEC release).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+        "publication_date": "2017-06-02"
+      }
+    ],
+    "confidence": "HIGH"
+  },
+  "case_id": "boot_2017_discovery_v2",
+  "classifier_input_sha256": "7aab1800e7fade55a4ec1ed98d2f2fdfada62e8bc914ace6a68bdef3952fa3f7",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

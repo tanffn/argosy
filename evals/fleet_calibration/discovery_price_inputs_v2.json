@@ -1,0 +1,67 @@
+{
+  "protocol": "discovery_frozen_input_prices_v1",
+  "manifest_sha256": "6f5c1e154670e1b0e9ae9cc4a63d443c0893bd06a6580aecf03135b384b89574",
+  "fetched_at": "2026-10-23T14:55:55.303032+00:00",
+  "cases": [
+    {
+      "case_id": "boot_2017_discovery_v2",
+      "packet_sha256": "a70d2921d4d92dd46af3dabfbdb355d89a0986ece2f7bc5905ada7dbc3c31e7a",
+      "market_symbol": "BOOT",
+      "freeze_date": "2017-06-02",
+      "provider_nominal_close": 5.980000019073486,
+      "subsequent_split_factors": {},
+      "reconstructed_original_close": 5.980000019073486,
+      "bars_requested": [
+        "2017-06-02"
+      ],
+      "source": "yfinance auto_adjust=False freeze-day bar; action-only split metadata",
+      "vintage": "retrieved retrospectively, not an archived market-data vintage",
+      "no_post_freeze_price_observations_stored": true
+    },
+    {
+      "case_id": "gpro_2016_discovery_v2",
+      "packet_sha256": "06fd5c19180841d1fc41c690490412ae886551d671a74c7596ccb65b3eff8e70",
+      "market_symbol": "GPRO",
+      "freeze_date": "2016-06-01",
+      "provider_nominal_close": 10.319999694824219,
+      "subsequent_split_factors": {},
+      "reconstructed_original_close": 10.319999694824219,
+      "bars_requested": [
+        "2016-06-01"
+      ],
+      "source": "yfinance auto_adjust=False freeze-day bar; action-only split metadata",
+      "vintage": "retrieved retrospectively, not an archived market-data vintage",
+      "no_post_freeze_price_observations_stored": true
+    },
+    {
+      "case_id": "aehr_2020_discovery_v1",
+      "packet_sha256": "f9ff2b2feeb1f6dfafa373bc8ca6f56b85056511474110943489681ae66a50b3",
+      "market_symbol": "AEHR",
+      "freeze_date": "2020-07-17",
+      "provider_nominal_close": 2.0899999141693115,
+      "subsequent_split_factors": {},
+      "reconstructed_original_close": 2.0899999141693115,
+      "bars_requested": [
+        "2020-07-17"
+      ],
+      "source": "yfinance auto_adjust=False freeze-day bar; action-only split metadata",
+      "vintage": "retrieved retrospectively, not an archived market-data vintage",
+      "no_post_freeze_price_observations_stored": true
+    },
+    {
+      "case_id": "sfix_2021_discovery_v1",
+      "packet_sha256": "f49d61ce8700a8a609208744c0acbd1e3454243d64c6568ae11330dddb3bf439",
+      "market_symbol": "SFIX",
+      "freeze_date": "2021-06-08",
+      "provider_nominal_close": 66.0999984741211,
+      "subsequent_split_factors": {},
+      "reconstructed_original_close": 66.0999984741211,
+      "bars_requested": [
+        "2021-06-08"
+      ],
+      "source": "yfinance auto_adjust=False freeze-day bar; action-only split metadata",
+      "vintage": "retrieved retrospectively, not an archived market-data vintage",
+      "no_post_freeze_price_observations_stored": true
+    }
+  ]
+}

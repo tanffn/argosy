@@ -1,0 +1,73 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 6,
+  "tokens_out": 3469,
+  "response_raw": "{\"category\": \"B\", \"grading\": \"trap\", \"freeze_date\": \"2021-06-08\", \"classification_rationale\": \"Reconstruction burn: category B, grading trap and freeze date 2021-06-08 are copied exactly from frozen_taxonomy and were not re-selected. I used three document fetches and no searches. Facts come from two places. The first is Stitch Fix's Q3 FY2021 earnings release (SEC Exhibit 99.1, dated 2021-06-07). The second is Yahoo Finance's daily bar for 2021-06-08, fetched with a date window that ended 2021-06-09 00:00 UTC, so no later prices were seen. Every raw value in the source manifest matched its source. The values are: revenue $535.589M, net loss $18.846M, adjusted EBITDA $11.6M, cash $124.737M, short-term investments $98.189M, inventory $215.628M, weighted diluted shares 106,696,220, Q4 revenue guidance $540-550M, full-year FY2021 revenue guidance $2.070-2.080B, full-year adjusted EBITDA guidance $25-30M, and a close of $66.10. The release also gives Q4 adjusted EBITDA guidance of $15-20M, which the manifest leaves out. The manifest labels the full-year rows 'fiscal period ending 2021-07-31'. That is correct, because FY2021 ends then, but it is the same date as the Q4 period, so the two can be confused. The masked_value fields are the raw values multiplied by 2.3 (a masking transform). The sourced facts below use the raw source values, not the masked ones. Limitations: (1) The Yahoo bar is a retrospective provider record, not an archived 2021 snapshot. Its Adj Close equals Close at $66.10, which fits the manifest's note that no later split adjustments were made. (2) The bare history URL listed in the manifest now shows only October 2025 to October 2026 data. The 2021 row was only reachable with the period1/period2 URL. (3) Market cap is an approximation: close times weighted-average diluted shares, about $7,052.6M. It is not a point-in-time count of shares outstanding. Because the quarter was a net loss, diluted shares equal basic shares here. Pre-freeze signals in the release: revenue grew 44% year over year and active clients grew 20%, but revenue per active client fell 3% year over year, adjusted EBITDA margin is thin (about 1.2-1.4% for the full year), and Q4 guidance implies growth slowing to 21.8-24.0%. Confidence is HIGH because both sources are primary or provider data, every figure was verified, and nothing used postdates the freeze.\", \"confidence\": \"HIGH\", \"sourced_facts\": [{\"fact\": \"Stitch Fix reported Q3 FY2021 (quarter ended May 1, 2021) net revenue of $535.6 million ($535,589 thousand), up 44% year over year.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Q3 FY2021 net loss was $18.8 million ($18,846 thousand).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Q3 FY2021 adjusted EBITDA was $11.6 million.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Active clients were 4.1 million, up 689,000 (20%) year over year. Net revenue per active client was $481, down 3% year over year.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Balance sheet at May 1, 2021: cash and cash equivalents $124,737 thousand, short-term investments $98,189 thousand, inventory (net) $215,628 thousand.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Q3 FY2021 weighted-average diluted shares were 106,696,220. Because the quarter was a net loss, diluted shares equal basic shares.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Q4 FY2021 outlook (quarter ending July 31, 2021): net revenue $540-550 million (21.8%-24.0% year-over-year growth) and adjusted EBITDA $15-20 million (2.8%-3.6% margin).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"Full fiscal 2021 outlook (year ending July 31, 2021): net revenue $2.070-2.080 billion (20.9%-21.5% year-over-year growth) and adjusted EBITDA $25-30 million (1.2%-1.4% margin).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}, {\"fact\": \"SFIX daily bar for 2021-06-08 (freeze date): open $66.60, high $69.20, low $62.50, close $66.10, adjusted close $66.10, volume 9,243,200. This is a retrospective provider bar, fetched with a window ending 2021-06-09 00:00 UTC so no later prices were viewed. Adjusted close equals close, so no split adjustment applies.\", \"url\": \"https://finance.yahoo.com/quote/SFIX/history/?period1=1622937600&period2=1623196800\", \"publication_date\": \"2021-06-08\"}, {\"fact\": \"Derived approximate market capitalization at the freeze-date close: $66.10 × 106.69622M weighted diluted shares ≈ $7,052.6 million (unmasked). This is an approximation from weighted-average shares, not a point-in-time count of shares outstanding.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm\", \"publication_date\": \"2021-06-07\"}]}",
+  "output": {
+    "category": "B",
+    "grading": "trap",
+    "freeze_date": "2021-06-08",
+    "classification_rationale": "Reconstruction burn: category B, grading trap and freeze date 2021-06-08 are copied exactly from frozen_taxonomy and were not re-selected. I used three document fetches and no searches. Facts come from two places. The first is Stitch Fix's Q3 FY2021 earnings release (SEC Exhibit 99.1, dated 2021-06-07). The second is Yahoo Finance's daily bar for 2021-06-08, fetched with a date window that ended 2021-06-09 00:00 UTC, so no later prices were seen. Every raw value in the source manifest matched its source. The values are: revenue $535.589M, net loss $18.846M, adjusted EBITDA $11.6M, cash $124.737M, short-term investments $98.189M, inventory $215.628M, weighted diluted shares 106,696,220, Q4 revenue guidance $540-550M, full-year FY2021 revenue guidance $2.070-2.080B, full-year adjusted EBITDA guidance $25-30M, and a close of $66.10. The release also gives Q4 adjusted EBITDA guidance of $15-20M, which the manifest leaves out. The manifest labels the full-year rows 'fiscal period ending 2021-07-31'. That is correct, because FY2021 ends then, but it is the same date as the Q4 period, so the two can be confused. The masked_value fields are the raw values multiplied by 2.3 (a masking transform). The sourced facts below use the raw source values, not the masked ones. Limitations: (1) The Yahoo bar is a retrospective provider record, not an archived 2021 snapshot. Its Adj Close equals Close at $66.10, which fits the manifest's note that no later split adjustments were made. (2) The bare history URL listed in the manifest now shows only October 2025 to October 2026 data. The 2021 row was only reachable with the period1/period2 URL. (3) Market cap is an approximation: close times weighted-average diluted shares, about $7,052.6M. It is not a point-in-time count of shares outstanding. Because the quarter was a net loss, diluted shares equal basic shares here. Pre-freeze signals in the release: revenue grew 44% year over year and active clients grew 20%, but revenue per active client fell 3% year over year, adjusted EBITDA margin is thin (about 1.2-1.4% for the full year), and Q4 guidance implies growth slowing to 21.8-24.0%. Confidence is HIGH because both sources are primary or provider data, every figure was verified, and nothing used postdates the freeze.",
+    "sourced_facts": [
+      {
+        "fact": "Stitch Fix reported Q3 FY2021 (quarter ended May 1, 2021) net revenue of $535.6 million ($535,589 thousand), up 44% year over year.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Q3 FY2021 net loss was $18.8 million ($18,846 thousand).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Q3 FY2021 adjusted EBITDA was $11.6 million.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Active clients were 4.1 million, up 689,000 (20%) year over year. Net revenue per active client was $481, down 3% year over year.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Balance sheet at May 1, 2021: cash and cash equivalents $124,737 thousand, short-term investments $98,189 thousand, inventory (net) $215,628 thousand.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Q3 FY2021 weighted-average diluted shares were 106,696,220. Because the quarter was a net loss, diluted shares equal basic shares.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Q4 FY2021 outlook (quarter ending July 31, 2021): net revenue $540-550 million (21.8%-24.0% year-over-year growth) and adjusted EBITDA $15-20 million (2.8%-3.6% margin).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "Full fiscal 2021 outlook (year ending July 31, 2021): net revenue $2.070-2.080 billion (20.9%-21.5% year-over-year growth) and adjusted EBITDA $25-30 million (1.2%-1.4% margin).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      },
+      {
+        "fact": "SFIX daily bar for 2021-06-08 (freeze date): open $66.60, high $69.20, low $62.50, close $66.10, adjusted close $66.10, volume 9,243,200. This is a retrospective provider bar, fetched with a window ending 2021-06-09 00:00 UTC so no later prices were viewed. Adjusted close equals close, so no split adjustment applies.",
+        "url": "https://finance.yahoo.com/quote/SFIX/history/?period1=1622937600&period2=1623196800",
+        "publication_date": "2021-06-08"
+      },
+      {
+        "fact": "Derived approximate market capitalization at the freeze-date close: $66.10 × 106.69622M weighted diluted shares ≈ $7,052.6 million (unmasked). This is an approximation from weighted-average shares, not a point-in-time count of shares outstanding.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+        "publication_date": "2021-06-07"
+      }
+    ],
+    "confidence": "HIGH"
+  },
+  "case_id": "sfix_2021_discovery_v1",
+  "classifier_input_sha256": "b4f142eaba12d35318e4cc6a4b12fea56b9403cfc6a01283f4b09d862e953439",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

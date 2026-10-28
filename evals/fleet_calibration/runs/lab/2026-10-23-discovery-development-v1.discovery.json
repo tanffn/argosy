@@ -1,0 +1,23 @@
+{
+  "protocol": "discovery_screen_grader_v1",
+  "controls_passed": false,
+  "cases": [
+    {
+      "case_id": "nlf_synthetic_v3",
+      "partition": "control",
+      "qualified": false,
+      "status": "reviewed",
+      "screen_go": true,
+      "verdict": "WATCH",
+      "expected_class_agreement": false,
+      "research_verdict_not_order": true
+    }
+  ],
+  "status": "incomplete",
+  "unattempted": [
+    "omk_synthetic",
+    "boot_2017_discovery_v2",
+    "gpro_2016_discovery_v2"
+  ],
+  "run_sha256": "17cae3ddebd89980b0e4f54ecbb7e0a3e3c63ad3272403f3566ce6b05e8e1f00"
+}

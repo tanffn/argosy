@@ -18,12 +18,17 @@ from typing import Any
 
 from evals.fleet_calibration import run_suite, score
 
-CONTROLS = ("nlf_synthetic", "omk_synthetic")
+LEGACY_CONTROLS = ("nlf_synthetic", "omk_synthetic")
+CONTROLS = ("nlf_synthetic_v3", "omk_synthetic")
 # Versioned control fixtures, not mutable labels. Changing a control requires
 # an explicit benchmark version change; never weaken one mid-run to get green.
 CONTROL_DIGESTS_V2 = {
     "nlf_synthetic": "a66b7acbbff1a4d285f631b3fe7f905604b6e11628c8fe599c5504dcbea3c7e0",
     "omk_synthetic": "f760f0d400364aec169347abbbee7127f142c7c8ce5dd1e4996ca01195beafc8",
+}
+CONTROL_DIGESTS_V3 = {
+    "nlf_synthetic_v3": "8d99827106a6de25c133055cbe9acbc2623916e1f13a403ab69d01ad9779a9a8",
+    "omk_synthetic": CONTROL_DIGESTS_V2["omk_synthetic"],
 }
 
 
@@ -100,15 +105,17 @@ def summarize(document: dict) -> dict:
             "review_warnings": (((result.get("agent_pipeline") or {}).get("review") or {}).get("output") or {}).get("warnings", []),
             "grading_mismatches": (((result.get("agent_pipeline") or {}).get("grading") or {}).get("verification") or {}).get("mismatches", []),
         })
-    controls = {r["case_id"]: r for r in rows if r["case_id"] in CONTROLS}
+    protocol_version = document["lab_manifest"].get("version", 1)
+    control_ids = CONTROLS if protocol_version >= 3 else LEGACY_CONTROLS
+    controls = {r["case_id"]: r for r in rows if r["case_id"] in control_ids}
     manifest_packets = [entry["packet"] for entry in document["lab_manifest"]["cases"]]
     ids = [p["case_id"] for p in manifest_packets]
     result_ids = [r["case_id"] for r in document.get("results", [])]
-    control_protocol = (valid_control_protocol(manifest_packets)
+    control_protocol = (valid_control_protocol(manifest_packets, version=protocol_version)
                         and result_ids == ids[:len(result_ids)]
                         and len(result_ids) >= 2)
     controls_passed = control_protocol and all(c in controls and controls[c]["qualified"] and
-                          controls[c]["matches_expected_class"] for c in CONTROLS)
+                          controls[c]["matches_expected_class"] for c in control_ids)
     return {
         "status": "qualified" if controls_passed and all(r["qualified"] for r in rows) else "incomplete",
         "qualification_protocol": "case_bound_v2",
@@ -131,10 +138,14 @@ def save_new(path: Path, document: dict) -> None:
         json.dump(document, handle, indent=2, ensure_ascii=False, allow_nan=False)
 
 
-def valid_control_protocol(packets: list[dict]) -> bool:
+def valid_control_protocol(packets: list[dict], *, version: int = 3) -> bool:
+    if version not in (2, 3):
+        return False
+    control_ids = CONTROLS if version == 3 else LEGACY_CONTROLS
+    hashes = CONTROL_DIGESTS_V3 if version == 3 else CONTROL_DIGESTS_V2
     ids = [p["case_id"] for p in packets]
-    return (ids[:2] == list(CONTROLS) and len(ids) == len(set(ids))
-            and all(digest({k: v for k, v in p.items() if k != "_file"}) == CONTROL_DIGESTS_V2[p["case_id"]]
+    return (ids[:2] == list(control_ids) and len(ids) == len(set(ids))
+            and all(digest({k: v for k, v in p.items() if k != "_file"}) == hashes[p["case_id"]]
                     for p in packets[:2])
             and packets[0].get("synthetic") is True and packets[1].get("synthetic") is True
             and packets[0].get("grading") == "synthetic_winner"
@@ -157,7 +168,7 @@ async def run_lab(packets: list[dict], out: Path) -> dict:
     out.parent.mkdir(parents=True, exist_ok=True)
     document = run_suite.new_pipeline_run_doc(started=datetime.now(timezone.utc).isoformat())
     document["lab_manifest"] = {
-        "version": 2, "horizons_months": [6, 12, 24],
+        "version": 3, "horizons_months": [6, 12, 24],
         "cases": [{"packet": deepcopy(p), "packet_sha256": digest(p)} for p in packets],
     }
     save_new(out, document)

@@ -1,0 +1,217 @@
+{
+  "case_id": "boot_2017_discovery_v2",
+  "alias": "QPX",
+  "category": "A",
+  "grading": "entry",
+  "real": "BOOT @ 2017-06-02",
+  "market_symbol": "BOOT",
+  "freeze_date": "2017-06-02",
+  "rescale_factor": 2.1,
+  "synthetic": false,
+  "positioned": false,
+  "positions": "No existing position in QPX. Fictional diversified portfolio; research initiation only.",
+  "constraints_extra": null,
+  "expected_classes": [
+    "buy"
+  ],
+  "contamination_terms": [
+    "BOOT",
+    "Boot Barn",
+    "Sheplers",
+    "Conroy"
+  ],
+  "sources": [
+    {
+      "fact": "Pre-freeze issuer results, balance sheet and outlook; all amounts and derivations below are from these original units.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+      "date": "2017-06-01",
+      "source_to_masked_mapping": [
+        {
+          "masked_field": "analyst_reports[0].share_price_usd",
+          "raw_value": 5.98,
+          "masked_value": 12.558,
+          "transform": "multiply by2.1",
+          "units": "USD per share",
+          "publication_date": "2017-06-02",
+          "source_url": "https://finance.yahoo.com/quote/BOOT/history/",
+          "original_units": "USD per share",
+          "source_locator": "Nominal market close on freeze date",
+          "reporting_period": "2017-06-02"
+        },
+        {
+          "masked_field": "analyst_reports[0].annual_revenue_usd_m",
+          "raw_value": 629.8,
+          "masked_value": 1322.58,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Fiscal year ended 2017-04-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].annual_gaap_net_income_usd_m",
+          "raw_value": 14.2,
+          "masked_value": 29.82,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Fiscal year ended 2017-04-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].annual_adjusted_net_income_usd_m",
+          "raw_value": 14.9,
+          "masked_value": 31.29,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Fiscal year ended 2017-04-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_revenue_usd_m",
+          "raw_value": 163.0,
+          "masked_value": 342.3,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2017-04-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].cash_usd_m",
+          "raw_value": 8.035,
+          "masked_value": 16.8735,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2017-04-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].net_debt_usd_m",
+          "raw_value": 225.9,
+          "masked_value": 474.39,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2017-04-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].next_year_net_income_low_usd_m",
+          "raw_value": 14.0,
+          "masked_value": 29.4,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2018-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].next_year_net_income_high_usd_m",
+          "raw_value": 15.4,
+          "masked_value": 32.34,
+          "transform": "multiply by2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-01",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2018-03-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].market_cap_usd_m",
+          "raw_value": 161.86664000000002,
+          "masked_value": 339.919944,
+          "transform": "price*weighted shares*2.1",
+          "units": "USD millions",
+          "publication_date": "2017-06-02",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+          "derivation": {
+            "price": 5.98,
+            "weighted_diluted_shares_m": 27.068
+          },
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Approximate capitalization derived from market close and reported weighted shares",
+          "reporting_period": "2017-06-02"
+        }
+      ],
+      "unscaled_share_quantity_m": 27.068,
+      "share_count_period": "Quarter ended 2017-04-01 weighted-average diluted shares"
+    },
+    {
+      "fact": "Freeze-day nominal close $5.98; provider daily history read without any subsequent return observations.",
+      "url": "https://finance.yahoo.com/quote/BOOT/history/",
+      "date": "2017-06-02",
+      "market_bar_receipt": {
+        "date": "2017-06-02",
+        "close": 5.98,
+        "currency": "USD",
+        "source_type": "retrospective daily bar, not an archived data vintage",
+        "construction_note": "Verified no subsequent split adjustments in provider action metadata; no subsequent prices or returns used.",
+        "frozen_snapshot_boundary": "After close on freeze date; earliest hypothetical entry strictly later"
+      }
+    }
+  ],
+  "resolution": null,
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/QPX",
+      "company": "QPX anonymized issuer",
+      "as_of": "T0 frozen snapshot",
+      "share_count_basis": "Latest reported weighted-average diluted shares, not a verified period-end count",
+      "shares_m": 27.068,
+      "confidence": "MEDIUM",
+      "share_price_usd": 12.558,
+      "annual_revenue_usd_m": 1322.58,
+      "annual_gaap_net_income_usd_m": 29.82,
+      "annual_adjusted_net_income_usd_m": 31.29,
+      "quarter_revenue_usd_m": 342.3,
+      "cash_usd_m": 16.8735,
+      "net_debt_usd_m": 474.39,
+      "next_year_net_income_low_usd_m": 29.4,
+      "next_year_net_income_high_usd_m": 32.34,
+      "market_cap_usd_m": 339.919944,
+      "market_cap_basis": "Derived price times diluted weighted shares; approximation, not reported market capitalization"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/QPX",
+      "business_description": "A niche specialty work-apparel and footwear retailer with physical stores and ecommerce. It serves occupational and regional lifestyle customers, not general mall fashion.",
+      "developments": [
+        "Just-reported annual revenue grew10.7%; same-store sales grew0.3% and the latest quarter's same-store sales fell0.9%.",
+        "Management guides next-year same-store sales flat to slightly positive and plans12 new stores. Earnings are not visibly reaccelerating yet.",
+        "Inventory per store fell5%. Debt is material. A niche moat and new-store growth are the bull argument; flat organic sales and levered retail are the bear argument.",
+        "The latest fiscal year and quarter had53 and14 weeks, versus52 and13 previously. The extra week supported reported growth; do not treat the full increase as comparable organic demand."
+      ],
+      "as_of": "T0",
+      "confidence": "MEDIUM"
+    }
+  ],
+  "changelog": [
+    {
+      "date": "2026-10-23",
+      "fix": "NEW discovery case version with complete original-to-masked monetary mapping, pre-freeze primary sources and explicit nominal price receipt. Original fixtures/failed runs unchanged. No historical outcome enters analyst inputs."
+    },
+    {
+      "date": "2026-10-23",
+      "fix": "Independent pre-scoring review corrected cited table values (GPRO revenue183.536; SFIX revenue535.589/net loss18.846; AEHR quarter revenue3.773), added units/period provenance and BOOT extra-week comparability, expanded issuer denylist. No expected stage labels or business theses changed."
+    }
+  ]
+}

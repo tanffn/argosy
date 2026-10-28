@@ -1,0 +1,1541 @@
+{
+  "started": "2026-10-23T10:43:06.638611+00:00",
+  "pipeline_version": 1,
+  "results": [
+    {
+      "case_id": "nlf_synthetic_v3",
+      "alias": "NLF",
+      "category": "synthetic",
+      "grading": "synthetic_winner",
+      "freeze_date": null,
+      "packet_snapshot": {
+        "case_id": "nlf_synthetic_v3",
+        "alias": "NLF",
+        "analyst_reports": [
+          {
+            "agent_role": "fundamentals",
+            "report_name": "fundamentals/NLF",
+            "company": "Nexus Lattice Fabric (alias NLF)",
+            "as_of": "current",
+            "market_cap_usd_m": 2800,
+            "share_price_usd": 18.4,
+            "balance_sheet": {
+              "cash_and_equivalents_usd_m": 410,
+              "total_debt_usd_m": 90,
+              "note": "net cash; runway not the constraint"
+            },
+            "annual_income_statement": [
+              {
+                "fy": "FY-3",
+                "revenue_usd_m": 420,
+                "revenue_growth_pct": 22,
+                "gross_margin_pct": 71,
+                "net_income_usd_m": -35
+              },
+              {
+                "fy": "FY-2",
+                "revenue_usd_m": 540,
+                "revenue_growth_pct": 28.6,
+                "gross_margin_pct": 73,
+                "net_income_usd_m": -12
+              },
+              {
+                "fy": "FY-1",
+                "revenue_usd_m": 720,
+                "revenue_growth_pct": 33.3,
+                "gross_margin_pct": 74.5,
+                "net_income_usd_m": 28,
+                "free_cash_flow_usd_m": 55,
+                "note": "first full year of GAAP profit; FCF positive"
+              }
+            ],
+            "latest_quarter": {
+              "which": "Q0 just reported",
+              "revenue_usd_m": 205,
+              "revenue_growth_yoy_pct": 31,
+              "gaap_net_income_usd_m": 14,
+              "net_revenue_retention_pct": 122,
+              "note": "NRR >120% for a third straight quarter",
+              "prior_year_revenue_usd_m": 156.4885496183206,
+              "prior_year_gaap_net_income_usd_m": 0
+            },
+            "valuation": {
+              "ps_trailing": 3.643407002731562,
+              "ev_s_trailing": 3.227017630990812,
+              "pe_trailing": 66.66666666666667,
+              "price_action": "quiet grind higher off a forgotten ordinary listing; -40% from a prior overshoot, now consolidating"
+            },
+            "confidence": "HIGH",
+            "trailing_income_statement": {
+              "revenue_usd_m": 768.5114503816794,
+              "gaap_net_income_usd_m": 42,
+              "period_basis": "FY-1 minus the year-ago quarter plus Q0"
+            },
+            "shares_outstanding_m": 152.17391304347828
+          },
+          {
+            "agent_role": "news",
+            "report_name": "news/NLF",
+            "business_description": "Vertical software for industrial-maintenance scheduling and spare-parts forecasting sold to mid-size process manufacturers. High switching costs once embedded in plant workflows. Not a consumer brand; almost no press coverage.",
+            "recent_developments": [
+              "Just crossed into sustained GAAP profitability with NRR still >120% — expansion inside existing plants, not logo-chasing.",
+              "Two new multi-year contracts with regional chemical and pulp customers; neither is a household name.",
+              "Gross margin still expanding as hosted delivery mix rises; stock-based comp is moderate (~8% of revenue).",
+              "Bear case: TAM looks small, sales cycle is slow, and a larger horizontal ERP vendor could bundle a 'good enough' module.",
+              "Bull case: niche depth + retention economics look like a compounder the market has not re-rated because the story is boring."
+            ],
+            "macro_context": "Industrial capex steady; software multiples compressed vs prior cycle.",
+            "confidence": "HIGH"
+          }
+        ],
+        "positions": "No existing position in NLF. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+        "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The company, alias, events, and absolute dollar figures were invented for this test; there is no real company, original figure set, or rescaling factor to recover. Ratios, growth rates, margins, and valuation multiples are internally consistent. Evaluate strictly on the supplied facts and do not attempt to identify a real company.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+        "freeze_date": null,
+        "sources": [],
+        "trader_call": {
+          "debate_outcome": {},
+          "tier": "T2",
+          "mode": "long_hold",
+          "ticker": "NLF"
+        }
+      },
+      "agent_pipeline": {
+        "classifier_data_sourcing": {
+          "stage": 1,
+          "agent_role": "calibration_classifier_sourcing",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 863,
+          "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_winner\", \"freeze_date\": null, \"classification_rationale\": \"This is a reconstruction run. The category, grading and freeze_date are copied exactly from frozen_taxonomy: synthetic, synthetic_winner, null. I did not reconsider the taxonomy. The subject is a fictional company: a winner-shaped control in an obscure industrial-software niche, not a real one. Because no real company or period exists, there is nothing real to cite. The source manifest is empty, there is no freeze date to check sources against, and any URL, filing or market figure I attached would be made up. That would break the rules against inventing citations and certifying receipts that don't exist. So I made no fetches or searches and am returning an empty sourced_facts list. All facts about this case's business, numbers and story should come from the synthetic packet itself, not from outside sources. Confidence is LOW only because no outside data exists. The taxonomy itself is certain because it is frozen. The domain-refresh agent has nothing to look into, since this fictional control has no missing real-world facts. Note for the audit agent: if the downstream packet cites real-world URLs for this case, treat them as contamination.\", \"sourced_facts\": [], \"confidence\": \"LOW\"}",
+          "output": {
+            "category": "synthetic",
+            "grading": "synthetic_winner",
+            "freeze_date": null,
+            "classification_rationale": "This is a reconstruction run. The category, grading and freeze_date are copied exactly from frozen_taxonomy: synthetic, synthetic_winner, null. I did not reconsider the taxonomy. The subject is a fictional company: a winner-shaped control in an obscure industrial-software niche, not a real one. Because no real company or period exists, there is nothing real to cite. The source manifest is empty, there is no freeze date to check sources against, and any URL, filing or market figure I attached would be made up. That would break the rules against inventing citations and certifying receipts that don't exist. So I made no fetches or searches and am returning an empty sourced_facts list. All facts about this case's business, numbers and story should come from the synthetic packet itself, not from outside sources. Confidence is LOW only because no outside data exists. The taxonomy itself is certain because it is frozen. The domain-refresh agent has nothing to look into, since this fictional control has no missing real-world facts. Note for the audit agent: if the downstream packet cites real-world URLs for this case, treat them as contamination.",
+            "sourced_facts": [],
+            "confidence": "LOW"
+          },
+          "case_id": "nlf_synthetic_v3",
+          "classifier_input_sha256": "013e7a80120516060d1c9dbb5be7ca7b6632d11ae14ac391a1eadcde9f57a157",
+          "verification": {
+            "ok": true,
+            "mismatches": []
+          }
+        },
+        "sanitizer": {
+          "stage": 2,
+          "agent_role": "calibration_sanitizer",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 1988,
+          "response_raw": "{\"safe_to_run\": true, \"checks\": [{\"check\": \"alias\", \"verdict\": \"pass\", \"evidence\": \"The payload uses the alias 'NLF' throughout. The fundamentals report includes a full name, 'Nexus Lattice Fabric (alias NLF)'. Because synthetic=true, this is an invented label with no real-world company behind it, so it reveals no identity. The forbidden_terms list is empty, so nothing on the denylist can appear. The business description (vertical software for industrial-maintenance scheduling, unnamed regional chemical and pulp customers) is generic and points to no real company.\"}, {\"check\": \"absolute_figure_rescaling\", \"verdict\": \"not_applicable\", \"evidence\": \"synthetic=true, rescale_factor=null, and raw_sources and source_manifest are both empty. There are no real-world original figures to rescale. I checked internal consistency instead and every figure ties out. FY-2 growth: 540/420 = +28.6%. FY-1 growth: 720/540 = +33.3%. Prior-year quarter: 205/1.31 = 156.49. Trailing revenue: 720 - 156.49 + 205 = 768.51. Trailing GAAP net income: 28 - 0 + 14 = 42. Shares: 2800/18.4 = 152.17m. P/E: 2800/42 = 66.67. P/S: 2800/768.51 = 3.643. EV/S: (2800 + 90 - 410)/768.51 = 3.227. Net cash (410 vs 90 debt) matches the 'net cash' note. The FY-2 loss of -12 followed by an FY-1 profit of +28 matches 'first full year of GAAP profit'.\"}, {\"check\": \"relative_dates\", \"verdict\": \"pass\", \"evidence\": \"All periods are relative: FY-3, FY-2, FY-1, Q0, 'current', 'prior year' and 'third straight quarter'. The payload contains no calendar years, dates or quarter labels that tie it to a real date. The constraints include a TEMPORAL MASK telling the Trader not to infer a calendar date.\"}, {\"check\": \"macro_event_genericization\", \"verdict\": \"pass\", \"evidence\": \"The macro context reads 'Industrial capex steady; software multiples compressed vs prior cycle.' This names no specific event, policy action, crisis or period that could anchor a date. The price-action description ('-40% from a prior overshoot, now consolidating') is specific to the stock and also generic.\"}], \"summary\": \"This is a fully synthetic control case, and I found no leaks, so it is safe to run. The alias stays consistent. The full name in the payload is invented, and the forbidden_terms list is empty. Rescaling doesn't apply because there are no real originals. All derived figures check out against each other, including trailing revenue and income, share count, P/E, P/S and EV/S. Every period is relative (FY-3 to Q0). The macro context is generic. The constraints text has a sizing anchor, a temporal mask and a reporting requirement, but nothing that tries to override instructions. I did not try to identify a company or predict an outcome.\", \"confidence\": \"HIGH\", \"leaked_terms\": []}",
+          "output": {
+            "safe_to_run": true,
+            "checks": [
+              {
+                "check": "alias",
+                "verdict": "pass",
+                "evidence": "The payload uses the alias 'NLF' throughout. The fundamentals report includes a full name, 'Nexus Lattice Fabric (alias NLF)'. Because synthetic=true, this is an invented label with no real-world company behind it, so it reveals no identity. The forbidden_terms list is empty, so nothing on the denylist can appear. The business description (vertical software for industrial-maintenance scheduling, unnamed regional chemical and pulp customers) is generic and points to no real company."
+              },
+              {
+                "check": "absolute_figure_rescaling",
+                "verdict": "not_applicable",
+                "evidence": "synthetic=true, rescale_factor=null, and raw_sources and source_manifest are both empty. There are no real-world original figures to rescale. I checked internal consistency instead and every figure ties out. FY-2 growth: 540/420 = +28.6%. FY-1 growth: 720/540 = +33.3%. Prior-year quarter: 205/1.31 = 156.49. Trailing revenue: 720 - 156.49 + 205 = 768.51. Trailing GAAP net income: 28 - 0 + 14 = 42. Shares: 2800/18.4 = 152.17m. P/E: 2800/42 = 66.67. P/S: 2800/768.51 = 3.643. EV/S: (2800 + 90 - 410)/768.51 = 3.227. Net cash (410 vs 90 debt) matches the 'net cash' note. The FY-2 loss of -12 followed by an FY-1 profit of +28 matches 'first full year of GAAP profit'."
+              },
+              {
+                "check": "relative_dates",
+                "verdict": "pass",
+                "evidence": "All periods are relative: FY-3, FY-2, FY-1, Q0, 'current', 'prior year' and 'third straight quarter'. The payload contains no calendar years, dates or quarter labels that tie it to a real date. The constraints include a TEMPORAL MASK telling the Trader not to infer a calendar date."
+              },
+              {
+                "check": "macro_event_genericization",
+                "verdict": "pass",
+                "evidence": "The macro context reads 'Industrial capex steady; software multiples compressed vs prior cycle.' This names no specific event, policy action, crisis or period that could anchor a date. The price-action description ('-40% from a prior overshoot, now consolidating') is specific to the stock and also generic."
+              }
+            ],
+            "leaked_terms": [],
+            "summary": "This is a fully synthetic control case, and I found no leaks, so it is safe to run. The alias stays consistent. The full name in the payload is invented, and the forbidden_terms list is empty. Rescaling doesn't apply because there are no real originals. All derived figures check out against each other, including trailing revenue and income, share count, P/E, P/S and EV/S. Every period is relative (FY-3 to Q0). The macro context is generic. The constraints text has a sizing anchor, a temporal mask and a reporting requirement, but nothing that tries to override instructions. I did not try to identify a company or predict an outcome.",
+            "confidence": "HIGH"
+          },
+          "verification": {
+            "ok": true,
+            "failures": []
+          }
+        },
+        "review": {
+          "stage": 4,
+          "agent_role": "calibration_reviewer",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 3789,
+          "response_raw": "{\"output_clean\": true, \"packet_fidelity\": true, \"workflow_correct\": true, \"reasoning_grounded_score\": 3, \"confidence\": \"HIGH\", \"summary\": \"I found no disqualifying defects in the NLF buy replay. The output is clean: response_raw is exactly one JSON object, and the output audit shows no contamination and no calendar years. It follows the packet and constraints. The size is $15,000, which is 1.5% of the $1,000,000 benchmark anchor. That sits inside the 1-2% per-position budget, is expressed as a real USD amount, and works out to about 815 shares at $18.40. It uses no leverage and no options. The required falsifiers, next validation point and re-rating horizon (2-4 years, with its timing uncertainty stated) are all present. The workflow is sound. Every falsifier has a metric, a source, a baseline, a breach level and a transition. The typed triggers match the falsifier thresholds (NRR <105%, TTM operating FCF <0). The price trigger is labeled as a re-check, not a thesis break. Confidence is MEDIUM, and the missing tax domain file is disclosed instead of filled in. The visible rationale ties back to packet figures: NRR 122%, growth 31%, $410M cash vs $90M debt, P/S 3.64 and EV/S 3.23 (written as 'about three times sales'), gross margins of 71%, 73% and 74.5%, FCF $55M, and stock-based comp at ~8% of revenue (~$58M, so FCF net of stock comp is near breakeven, which checks out). The bear case of a small market plus an ERP vendor bundling a rival module is reflected in the sizing. The score is 3 rather than 4 because of a few small claims the packet doesn't support (listed in warnings).\", \"grounding_evidence\": [\"Size $15,000 = 1.5% of the $1,000,000 benchmark NAV, matching the constraint (1% = $10,000, 2% = $20,000) and the 'Budget ... ~1-2% of portfolio' in positions; 15000/18.4 ≈ 815 shares matches share_price_usd 18.4\", \"'every $100 ... now brings in $122' matches latest_quarter.net_revenue_retention_pct 122 and the note 'NRR >120% for a third straight quarter'\", \"'about three times yearly sales' fits valuation.ev_s_trailing 3.227 / ps_trailing 3.643; '31% growth' matches revenue_growth_yoy_pct 31\", \"'holds more cash than debt' matches balance_sheet cash 410 vs debt 90 with the note 'net cash'\", \"Gross-margin falsifier baseline of 74.5% FY-1, up from 71% (FY-3) and 73% (FY-2), matches annual_income_statement\", \"SBC ~8% of revenue (news/NLF) × FY-1 revenue $720M ≈ $57.6M vs FCF $55M, so 'FCF net of stock compensation is near breakeven' is arithmetically supported\", \"Bear case 'TAM looks small ... ERP vendor could bundle a good enough module' (news/NLF) is restated in the rationale and turned into the small-market falsifier\", \"The rationale's statement that the multiple re-rating is uncertain in timing and that this limits size reflects the news bull case: 'market has not re-rated because the story is boring'\", \"Tax handling discloses that no domain_knowledge tax file was supplied, instead of inventing a rate\"], \"violations\": [], \"warnings\": [\"The FCF falsifier calls FY-1 FCF of +$55M 'the first positive year'. The packet gives FCF only for FY-1, with the note 'first full year of GAAP profit; FCF positive', so 'first positive FCF year' is an unsupported inference. It is baseline context only and doesn't drive any threshold.\", \"Packet top-level `sources` is empty. cited_sources ('fundamentals/NLF', 'news/NLF') match the analyst_reports report_name fields word for word, so this is not a made-up citation, but strictly there is no `<sources>` block to cite against.\", \"The revisit trigger uses metric free_cash_flow_ttm_usd_m, but the packet only gives annual FY-1 FCF, with no TTM FCF or cash-flow statement detail. The falsifier names 'cash-flow statement via fundamentals/NLF' as its source, which the packet only partly contains.\", \"'Estimated ~3 months out' for the next earnings print assumes a normal quarterly reporting schedule. The packet does not state the reporting date or cadence.\", \"The order pairs a market order with time_in_force GTC, which is unusual (market orders usually run DAY). This is a minor execution-parameter inconsistency, not a fidelity problem.\", \"The $13 HOLD->ADD price trigger (~29% below $18.40) is a level the packet does not support. It is clearly labeled as a re-check conditioned on NRR and gross margin, so it is not a thesis falsifier, but the price level itself has no basis in the packet.\", \"'High-potential sleeve uses ~1.5 of its ~5 percentage points' could read as if the sleeve is currently empty. The packet does not state current sleeve usage.\"]}",
+          "output": {
+            "output_clean": true,
+            "packet_fidelity": true,
+            "workflow_correct": true,
+            "reasoning_grounded_score": 3,
+            "grounding_evidence": [
+              "Size $15,000 = 1.5% of the $1,000,000 benchmark NAV, matching the constraint (1% = $10,000, 2% = $20,000) and the 'Budget ... ~1-2% of portfolio' in positions; 15000/18.4 ≈ 815 shares matches share_price_usd 18.4",
+              "'every $100 ... now brings in $122' matches latest_quarter.net_revenue_retention_pct 122 and the note 'NRR >120% for a third straight quarter'",
+              "'about three times yearly sales' fits valuation.ev_s_trailing 3.227 / ps_trailing 3.643; '31% growth' matches revenue_growth_yoy_pct 31",
+              "'holds more cash than debt' matches balance_sheet cash 410 vs debt 90 with the note 'net cash'",
+              "Gross-margin falsifier baseline of 74.5% FY-1, up from 71% (FY-3) and 73% (FY-2), matches annual_income_statement",
+              "SBC ~8% of revenue (news/NLF) × FY-1 revenue $720M ≈ $57.6M vs FCF $55M, so 'FCF net of stock compensation is near breakeven' is arithmetically supported",
+              "Bear case 'TAM looks small ... ERP vendor could bundle a good enough module' (news/NLF) is restated in the rationale and turned into the small-market falsifier",
+              "The rationale's statement that the multiple re-rating is uncertain in timing and that this limits size reflects the news bull case: 'market has not re-rated because the story is boring'",
+              "Tax handling discloses that no domain_knowledge tax file was supplied, instead of inventing a rate"
+            ],
+            "violations": [],
+            "warnings": [
+              "The FCF falsifier calls FY-1 FCF of +$55M 'the first positive year'. The packet gives FCF only for FY-1, with the note 'first full year of GAAP profit; FCF positive', so 'first positive FCF year' is an unsupported inference. It is baseline context only and doesn't drive any threshold.",
+              "Packet top-level `sources` is empty. cited_sources ('fundamentals/NLF', 'news/NLF') match the analyst_reports report_name fields word for word, so this is not a made-up citation, but strictly there is no `<sources>` block to cite against.",
+              "The revisit trigger uses metric free_cash_flow_ttm_usd_m, but the packet only gives annual FY-1 FCF, with no TTM FCF or cash-flow statement detail. The falsifier names 'cash-flow statement via fundamentals/NLF' as its source, which the packet only partly contains.",
+              "'Estimated ~3 months out' for the next earnings print assumes a normal quarterly reporting schedule. The packet does not state the reporting date or cadence.",
+              "The order pairs a market order with time_in_force GTC, which is unusual (market orders usually run DAY). This is a minor execution-parameter inconsistency, not a fidelity problem.",
+              "The $13 HOLD->ADD price trigger (~29% below $18.40) is a level the packet does not support. It is clearly labeled as a re-check conditioned on NRR and gross margin, so it is not a thesis falsifier, but the price level itself has no basis in the packet.",
+              "'High-potential sleeve uses ~1.5 of its ~5 percentage points' could read as if the sleeve is currently empty. The packet does not state current sleeve usage."
+            ],
+            "summary": "I found no disqualifying defects in the NLF buy replay. The output is clean: response_raw is exactly one JSON object, and the output audit shows no contamination and no calendar years. It follows the packet and constraints. The size is $15,000, which is 1.5% of the $1,000,000 benchmark anchor. That sits inside the 1-2% per-position budget, is expressed as a real USD amount, and works out to about 815 shares at $18.40. It uses no leverage and no options. The required falsifiers, next validation point and re-rating horizon (2-4 years, with its timing uncertainty stated) are all present. The workflow is sound. Every falsifier has a metric, a source, a baseline, a breach level and a transition. The typed triggers match the falsifier thresholds (NRR <105%, TTM operating FCF <0). The price trigger is labeled as a re-check, not a thesis break. Confidence is MEDIUM, and the missing tax domain file is disclosed instead of filled in. The visible rationale ties back to packet figures: NRR 122%, growth 31%, $410M cash vs $90M debt, P/S 3.64 and EV/S 3.23 (written as 'about three times sales'), gross margins of 71%, 73% and 74.5%, FCF $55M, and stock-based comp at ~8% of revenue (~$58M, so FCF net of stock comp is near breakeven, which checks out). The bear case of a small market plus an ERP vendor bundling a rival module is reflected in the sizing. The score is 3 rather than 4 because of a few small claims the packet doesn't support (listed in warnings).",
+            "confidence": "HIGH"
+          },
+          "verification": {
+            "ok": true,
+            "failures": []
+          }
+        },
+        "grading": {
+          "stage": 5,
+          "agent_role": "calibration_grader",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 550,
+          "response_raw": "{\"in_expected_class\": true, \"score\": 1, \"rationale\": \"The fleet's verdict on case nlf_synthetic_v3 was \\\"buy\\\", and the answer key's only expected class is \\\"buy\\\". The verdict is in class, so it scores 1.0 under the synthetic_winner rule. No partial-credit rule applies. It was a $15,000 starter position, about 1.5% of the portfolio, at MEDIUM confidence.\\n\\nThe replay review passed cleanly: verification ok, no violations, workflow_correct and packet_fidelity both true, and a grounding score of 3. Its seven warnings are minor and outside the scope of class grading, and I have not reopened them.\\n\\nThe answer key's resolution is null, which is expected for a synthetic case with no historical price path. So no acted-on return or benchmark return can be computed, and both are left null. Neither figure is made up. Outcome would not change the class grade anyway.\", \"confidence\": \"HIGH\", \"acted_return_pct\": null, \"benchmark_return_pct\": null}",
+          "output": {
+            "in_expected_class": true,
+            "score": 1.0,
+            "acted_return_pct": null,
+            "benchmark_return_pct": null,
+            "rationale": "The fleet's verdict on case nlf_synthetic_v3 was \"buy\", and the answer key's only expected class is \"buy\". The verdict is in class, so it scores 1.0 under the synthetic_winner rule. No partial-credit rule applies. It was a $15,000 starter position, about 1.5% of the portfolio, at MEDIUM confidence.\n\nThe replay review passed cleanly: verification ok, no violations, workflow_correct and packet_fidelity both true, and a grounding score of 3. Its seven warnings are minor and outside the scope of class grading, and I have not reopened them.\n\nThe answer key's resolution is null, which is expected for a synthetic case with no historical price path. So no acted-on return or benchmark return can be computed, and both are left null. Neither figure is made up. Outcome would not change the class grade anyway.",
+            "confidence": "HIGH"
+          },
+          "verification": {
+            "ok": true,
+            "expected_in_class": true,
+            "expected_acted_return_pct": null,
+            "expected_benchmark_return_pct": null,
+            "mismatches": []
+          }
+        }
+      },
+      "status": "ok",
+      "model": "claude-opus-5-5",
+      "action": "buy",
+      "confidence": "MEDIUM",
+      "size": 15000.0,
+      "size_units": "currency",
+      "rationale_summary": "Buy a starter NLF position, about 1.5% of the portfolio. This is a niche software company that just became reliably profitable and holds more cash than debt. Its existing customers keep spending more each year: every $100 they paid last year now brings in $122. Yet the market prices it at only about three times yearly sales, which is low for 31% growth. The main risk is a small market, plus a big software vendor bundling a 'good enough' rival product. That is why we keep the size modest.",
+      "next_validation_point": "Next quarterly earnings print (Q1 after the just-reported Q0), estimated ~3 months out. Test whether net revenue retention (NRR) stays above 120% for a fourth straight quarter, gross margin holds at or above the FY-1 level of 74.5%, and year-over-year revenue growth stays near the Q0 level of 31%.",
+      "rerating_horizon": "2-4 years. The business is a low-coverage, 'boring' niche, so the market may take several years of compounding results to re-rate it. Fundamental validation (retention, margins, cash flow) arrives quarterly. The multiple re-rating itself is uncertain in timing, which is one reason sizing is held to a starter.",
+      "falsifiers": [
+        "Retention economics break. Metric: net revenue retention (NRR), the ratio of this year's revenue from existing customers to last year's. Source: company quarterly disclosure via fundamentals/NLF. Baseline as-of Q0: 122%, above 120% for three straight quarters. Breach: NRR falls below 110% for two consecutive quarterly prints, OR below 105% in any single quarter (a level showing expansion inside plants has stalled). Transition: BUY->EXIT. Only the single-quarter <105% leg is armed as a typed trigger; the two-quarter <110% leg stays qualitative.",
+        "Pricing power erodes, consistent with ERP bundling or competitive discounting. Metric: annual gross margin. Source: annual income statement via fundamentals/NLF. Baseline as-of FY-1: 74.5%, rising from 71% in FY-3 and 73% in FY-2. Breach: gross margin falls below 71% (back below the FY-3 level) in a full fiscal year, or for two consecutive quarters if quarterly gross margin is disclosed. Transition: BUY->EXIT. Kept qualitative because the annual-vs-two-quarter condition cannot be captured by a single point-check.",
+        "Market ceiling reached (the small-TAM bear case confirmed). Metric: year-over-year revenue growth, with NRR as a companion check. Source: quarterly results via fundamentals/NLF. Baseline as-of Q0: revenue +31% YoY and NRR 122%. Breach: revenue growth below 15% YoY for two consecutive quarters while NRR is simultaneously below 115%. Transition: BUY->EXIT. This is a compound duration condition, so it is qualitative only with no typed trigger.",
+        "Cash generation reverses on an operating basis. Metric: trailing-twelve-month free cash flow, after stripping one-time items such as legal settlements, restructuring charges, or tax one-offs. Source: cash-flow statement via fundamentals/NLF. Baseline as-of FY-1: +$55M, the first positive year. Context: stock-based compensation is about 8% of revenue, so FCF net of stock compensation is already near breakeven and leaves little cushion. Breach: TTM operating free cash flow turns negative (below $0). Transition: BUY->EXIT."
+      ],
+      "cited_sources": [
+        "fundamentals/NLF",
+        "news/NLF"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 4577,
+      "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The company, alias, events, and absolute dollar figures were invented for this test; there is no real company, original figure set, or rescaling factor to recover. Ratios, growth rates, margins, and valuation multiples are internally consistent. Evaluate strictly on the supplied facts and do not attempt to identify a real company.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+      "response_raw": "{\"ticker\":\"NLF\",\"action\":\"buy\",\"recommendation_intent\":\"buy\",\"size_shares_or_currency\":15000,\"size_units\":\"currency\",\"instrument\":\"stock\",\"order_type\":\"market\",\"limit_price\":null,\"stop_price\":null,\"time_in_force\":\"GTC\",\"rationale_summary\":\"Buy a starter NLF position, about 1.5% of the portfolio. This is a niche software company that just became reliably profitable and holds more cash than debt. Its existing customers keep spending more each year: every $100 they paid last year now brings in $122. Yet the market prices it at only about three times yearly sales, which is low for 31% growth. The main risk is a small market, plus a big software vendor bundling a 'good enough' rival product. That is why we keep the size modest.\",\"expected_impact\":{\"concentration_delta\":\"NLF goes 0% → ~1.5% of portfolio (~$15,000 of $1,000,000 benchmark NAV, ~815 shares at $18.40); high-potential sleeve uses ~1.5 of its ~5 percentage points\",\"cash_delta\":\"-$15,000\",\"tax_estimate\":\"No tax event at purchase; future gains taxable on sale (rate not assessed here — no domain_knowledge tax file supplied in this packet)\"},\"confidence\":\"MEDIUM\",\"next_validation_point\":\"Next quarterly earnings print (Q1 after the just-reported Q0), estimated ~3 months out. Test whether net revenue retention (NRR) stays above 120% for a fourth straight quarter, gross margin holds at or above the FY-1 level of 74.5%, and year-over-year revenue growth stays near the Q0 level of 31%.\",\"rerating_horizon\":\"2-4 years. The business is a low-coverage, 'boring' niche, so the market may take several years of compounding results to re-rate it. Fundamental validation (retention, margins, cash flow) arrives quarterly. The multiple re-rating itself is uncertain in timing, which is one reason sizing is held to a starter.\",\"cited_sources\":[\"fundamentals/NLF\",\"news/NLF\"],\"falsifiers\":[\"Retention economics break. Metric: net revenue retention (NRR), the ratio of this year's revenue from existing customers to last year's. Source: company quarterly disclosure via fundamentals/NLF. Baseline as-of Q0: 122%, above 120% for three straight quarters. Breach: NRR falls below 110% for two consecutive quarterly prints, OR below 105% in any single quarter (a level showing expansion inside plants has stalled). Transition: BUY->EXIT. Only the single-quarter <105% leg is armed as a typed trigger; the two-quarter <110% leg stays qualitative.\",\"Pricing power erodes, consistent with ERP bundling or competitive discounting. Metric: annual gross margin. Source: annual income statement via fundamentals/NLF. Baseline as-of FY-1: 74.5%, rising from 71% in FY-3 and 73% in FY-2. Breach: gross margin falls below 71% (back below the FY-3 level) in a full fiscal year, or for two consecutive quarters if quarterly gross margin is disclosed. Transition: BUY->EXIT. Kept qualitative because the annual-vs-two-quarter condition cannot be captured by a single point-check.\",\"Market ceiling reached (the small-TAM bear case confirmed). Metric: year-over-year revenue growth, with NRR as a companion check. Source: quarterly results via fundamentals/NLF. Baseline as-of Q0: revenue +31% YoY and NRR 122%. Breach: revenue growth below 15% YoY for two consecutive quarters while NRR is simultaneously below 115%. Transition: BUY->EXIT. This is a compound duration condition, so it is qualitative only with no typed trigger.\",\"Cash generation reverses on an operating basis. Metric: trailing-twelve-month free cash flow, after stripping one-time items such as legal settlements, restructuring charges, or tax one-offs. Source: cash-flow statement via fundamentals/NLF. Baseline as-of FY-1: +$55M, the first positive year. Context: stock-based compensation is about 8% of revenue, so FCF net of stock compensation is already near breakeven and leaves little cushion. Breach: TTM operating free cash flow turns negative (below $0). Transition: BUY->EXIT.\"],\"revisit_triggers\":[{\"kind\":\"metric_condition\",\"metric\":\"net_revenue_retention_pct\",\"op\":\"<\",\"value\":105,\"label\":\"NRR below 105% in a single quarter (baseline 122% as-of Q0) — retention/expansion thesis broken\",\"decision_transition\":\"BUY->EXIT\"},{\"kind\":\"metric_condition\",\"metric\":\"free_cash_flow_ttm_usd_m\",\"op\":\"<\",\"value\":0,\"label\":\"TTM operating FCF negative (baseline +$55M FY-1); confirm one-time items are excluded before acting\",\"decision_transition\":\"BUY->EXIT\"},{\"kind\":\"price_below\",\"price\":13.0,\"label\":\"Re-check thesis / consider adding on weakness at $13 if NRR stays above 120% and gross margin above 74% — a price drop is not a thesis break\",\"decision_transition\":\"HOLD->ADD\"}]}",
+      "output_full": {
+        "ticker": "NLF",
+        "action": "buy",
+        "recommendation_intent": "buy",
+        "size_shares_or_currency": 15000.0,
+        "size_units": "currency",
+        "instrument": "stock",
+        "order_type": "market",
+        "limit_price": null,
+        "stop_price": null,
+        "time_in_force": "GTC",
+        "rationale_summary": "Buy a starter NLF position, about 1.5% of the portfolio. This is a niche software company that just became reliably profitable and holds more cash than debt. Its existing customers keep spending more each year: every $100 they paid last year now brings in $122. Yet the market prices it at only about three times yearly sales, which is low for 31% growth. The main risk is a small market, plus a big software vendor bundling a 'good enough' rival product. That is why we keep the size modest.",
+        "expected_impact": {
+          "concentration_delta": "NLF goes 0% → ~1.5% of portfolio (~$15,000 of $1,000,000 benchmark NAV, ~815 shares at $18.40); high-potential sleeve uses ~1.5 of its ~5 percentage points",
+          "cash_delta": "-$15,000",
+          "tax_estimate": "No tax event at purchase; future gains taxable on sale (rate not assessed here — no domain_knowledge tax file supplied in this packet)"
+        },
+        "confidence": "MEDIUM",
+        "next_validation_point": "Next quarterly earnings print (Q1 after the just-reported Q0), estimated ~3 months out. Test whether net revenue retention (NRR) stays above 120% for a fourth straight quarter, gross margin holds at or above the FY-1 level of 74.5%, and year-over-year revenue growth stays near the Q0 level of 31%.",
+        "rerating_horizon": "2-4 years. The business is a low-coverage, 'boring' niche, so the market may take several years of compounding results to re-rate it. Fundamental validation (retention, margins, cash flow) arrives quarterly. The multiple re-rating itself is uncertain in timing, which is one reason sizing is held to a starter.",
+        "cited_sources": [
+          "fundamentals/NLF",
+          "news/NLF"
+        ],
+        "falsifiers": [
+          "Retention economics break. Metric: net revenue retention (NRR), the ratio of this year's revenue from existing customers to last year's. Source: company quarterly disclosure via fundamentals/NLF. Baseline as-of Q0: 122%, above 120% for three straight quarters. Breach: NRR falls below 110% for two consecutive quarterly prints, OR below 105% in any single quarter (a level showing expansion inside plants has stalled). Transition: BUY->EXIT. Only the single-quarter <105% leg is armed as a typed trigger; the two-quarter <110% leg stays qualitative.",
+          "Pricing power erodes, consistent with ERP bundling or competitive discounting. Metric: annual gross margin. Source: annual income statement via fundamentals/NLF. Baseline as-of FY-1: 74.5%, rising from 71% in FY-3 and 73% in FY-2. Breach: gross margin falls below 71% (back below the FY-3 level) in a full fiscal year, or for two consecutive quarters if quarterly gross margin is disclosed. Transition: BUY->EXIT. Kept qualitative because the annual-vs-two-quarter condition cannot be captured by a single point-check.",
+          "Market ceiling reached (the small-TAM bear case confirmed). Metric: year-over-year revenue growth, with NRR as a companion check. Source: quarterly results via fundamentals/NLF. Baseline as-of Q0: revenue +31% YoY and NRR 122%. Breach: revenue growth below 15% YoY for two consecutive quarters while NRR is simultaneously below 115%. Transition: BUY->EXIT. This is a compound duration condition, so it is qualitative only with no typed trigger.",
+          "Cash generation reverses on an operating basis. Metric: trailing-twelve-month free cash flow, after stripping one-time items such as legal settlements, restructuring charges, or tax one-offs. Source: cash-flow statement via fundamentals/NLF. Baseline as-of FY-1: +$55M, the first positive year. Context: stock-based compensation is about 8% of revenue, so FCF net of stock compensation is already near breakeven and leaves little cushion. Breach: TTM operating free cash flow turns negative (below $0). Transition: BUY->EXIT."
+        ],
+        "revisit_triggers": [
+          {
+            "kind": "metric_condition",
+            "price": null,
+            "metric": "net_revenue_retention_pct",
+            "op": "<",
+            "value": 105.0,
+            "date": null,
+            "label": "NRR below 105% in a single quarter (baseline 122% as-of Q0) — retention/expansion thesis broken",
+            "decision_transition": "BUY->EXIT"
+          },
+          {
+            "kind": "metric_condition",
+            "price": null,
+            "metric": "free_cash_flow_ttm_usd_m",
+            "op": "<",
+            "value": 0.0,
+            "date": null,
+            "label": "TTM operating FCF negative (baseline +$55M FY-1); confirm one-time items are excluded before acting",
+            "decision_transition": "BUY->EXIT"
+          },
+          {
+            "kind": "price_below",
+            "price": 13.0,
+            "metric": null,
+            "op": null,
+            "value": null,
+            "date": null,
+            "label": "Re-check thesis / consider adding on weakness at $13 if NRR stays above 120% and gross margin above 74% — a price drop is not a thesis break",
+            "decision_transition": "HOLD->ADD"
+          }
+        ]
+      },
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "omk_synthetic",
+      "alias": "OMK",
+      "category": "synthetic",
+      "grading": "synthetic_trap",
+      "freeze_date": null,
+      "packet_snapshot": {
+        "case_id": "omk_synthetic",
+        "alias": "OMK",
+        "analyst_reports": [
+          {
+            "agent_role": "fundamentals",
+            "report_name": "fundamentals/OMK",
+            "company": "Orbit Meal Kits (alias OMK)",
+            "as_of": "current",
+            "market_cap_usd_m": 3600,
+            "share_price_usd": 22.7,
+            "balance_sheet": {
+              "cash_and_equivalents_usd_m": 480,
+              "total_debt_usd_m": 620,
+              "note": "cash funds <2 years of current burn if growth spend continues"
+            },
+            "annual_income_statement": [
+              {
+                "fy": "FY-2",
+                "revenue_usd_m": 890,
+                "revenue_growth_pct": 62,
+                "gross_margin_pct": 34,
+                "net_income_usd_m": -210
+              },
+              {
+                "fy": "FY-1",
+                "revenue_usd_m": 1180,
+                "revenue_growth_pct": 32.6,
+                "gross_margin_pct": 31.5,
+                "net_income_usd_m": -340,
+                "free_cash_flow_usd_m": -290,
+                "note": "growth decelerating; GM compressing; losses widening"
+              },
+              {
+                "fy": "FY-0 (just ended)",
+                "revenue_usd_m": 1260,
+                "revenue_growth_pct": 6.8,
+                "gross_margin_pct": 28.2,
+                "net_income_usd_m": -410,
+                "contribution_profit_after_marketing_usd_m": -55,
+                "note": "contribution-negative after marketing; cohort LTV claims contested"
+              }
+            ],
+            "valuation": {
+              "ps_trailing": 2.9,
+              "ev_s_trailing": 3.0,
+              "pe_trailing": null,
+              "price_action": "still +40% YTD on 'consumer platform' rebrand; -65% from listing-era high"
+            },
+            "confidence": "HIGH",
+            "latest_quarter": {
+              "which": "Q0 just reported",
+              "revenue_usd_m": 310,
+              "revenue_growth_yoy_pct": 4.5,
+              "gaap_net_income_usd_m": -115,
+              "gross_margin_pct": 27.5,
+              "contribution_profit_after_marketing_usd_m": -18,
+              "note": "sequential deceleration continues; still contribution-negative after marketing"
+            }
+          },
+          {
+            "agent_role": "news",
+            "report_name": "news/OMK",
+            "business_description": "Direct-to-consumer prepared-meal and grocery-bundle subscription. Rebranded last year from a meal-kit identity to a 'home food platform'. Charismatic CMO-driven growth story. Heavy reliance on paid social.",
+            "recent_developments": [
+              "Revenue growth collapsed from +63% to +7% in two years while marketing intensity stayed high — classic CAC treadmill.",
+              "Gross margin fell ~600 bps as discounting and shipping inflation hit; contribution profit after marketing is now negative.",
+              "Management highlights 'active customer' definitions that exclude lapsed cohorts; a short note questioned the LTV math.",
+              "Bulls: category still large, brand known among urban professionals, path to 'platform' attach (add-on grocery) could re-accelerate.",
+              "Bears: unit economics never cleared contribution after CAC; rebrand does not fix churn; balance sheet funds the story, not a moat."
+            ],
+            "macro_context": "Consumer subscription fatigue; paid-social CAC inflation; growth-stock de-rating still in force.",
+            "confidence": "HIGH"
+          }
+        ],
+        "positions": "No existing position in OMK. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+        "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The company, alias, events, and absolute dollar figures were invented for this test; there is no real company, original figure set, or rescaling factor to recover. Ratios, growth rates, margins, and valuation multiples are internally consistent. Evaluate strictly on the supplied facts and do not attempt to identify a real company.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+        "freeze_date": null,
+        "sources": [],
+        "trader_call": {
+          "debate_outcome": {},
+          "tier": "T2",
+          "mode": "long_hold",
+          "ticker": "OMK"
+        }
+      },
+      "agent_pipeline": {
+        "classifier_data_sourcing": {
+          "stage": 1,
+          "agent_role": "calibration_classifier_sourcing",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 936,
+          "response_raw": "{\"category\": \"synthetic\", \"grading\": \"synthetic_trap\", \"freeze_date\": null, \"classification_rationale\": \"This is a reconstruction burn, so the category (synthetic), grading (synthetic_trap) and freeze_date (null) are copied exactly from frozen_taxonomy and not re-decided. The subject, omk_synthetic, is a fictional control: a made-up meal-kit / direct-to-consumer company shaped as a 'growth theater' trap. Because the company does not exist, no primary source or public filing can describe it, and there is no freeze date to check sources against. The source_manifest is also empty, so there are no source ids I am allowed to cite.\\n\\nI am leaving sourced_facts empty on purpose. Any URL I attached would be either invented or a real company's record passed off as this fictional one, and either would be flagged as a hallucinated citation. The packet's numbers (for example revenue growth, customer acquisition cost, retention, contribution margin, cash burn) should be written by the synthetic-case author as clearly labelled fictional values. They should not be backed by external URLs.\\n\\nConfidence is LOW only because there is no outside data behind this packet. The frozen taxonomy itself is not in doubt. If the benchmark wants real base rates for the sector, such as meal-kit churn and customer acquisition cost from public companies, the domain-refresh agent should collect them as a separate packet with its own source manifest and freeze date.\", \"sourced_facts\": [], \"confidence\": \"LOW\"}",
+          "output": {
+            "category": "synthetic",
+            "grading": "synthetic_trap",
+            "freeze_date": null,
+            "classification_rationale": "This is a reconstruction burn, so the category (synthetic), grading (synthetic_trap) and freeze_date (null) are copied exactly from frozen_taxonomy and not re-decided. The subject, omk_synthetic, is a fictional control: a made-up meal-kit / direct-to-consumer company shaped as a 'growth theater' trap. Because the company does not exist, no primary source or public filing can describe it, and there is no freeze date to check sources against. The source_manifest is also empty, so there are no source ids I am allowed to cite.\n\nI am leaving sourced_facts empty on purpose. Any URL I attached would be either invented or a real company's record passed off as this fictional one, and either would be flagged as a hallucinated citation. The packet's numbers (for example revenue growth, customer acquisition cost, retention, contribution margin, cash burn) should be written by the synthetic-case author as clearly labelled fictional values. They should not be backed by external URLs.\n\nConfidence is LOW only because there is no outside data behind this packet. The frozen taxonomy itself is not in doubt. If the benchmark wants real base rates for the sector, such as meal-kit churn and customer acquisition cost from public companies, the domain-refresh agent should collect them as a separate packet with its own source manifest and freeze date.",
+            "sourced_facts": [],
+            "confidence": "LOW"
+          },
+          "case_id": "omk_synthetic",
+          "classifier_input_sha256": "186de6dbf976068d45d272f5a1b23559089320ba322bfa93552bf0003474f75b",
+          "verification": {
+            "ok": true,
+            "mismatches": []
+          }
+        },
+        "sanitizer": {
+          "stage": 2,
+          "agent_role": "calibration_sanitizer",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 3154,
+          "response_raw": "{\"safe_to_run\": true, \"checks\": [{\"check\": \"alias\", \"verdict\": \"pass\", \"evidence\": \"Both reports use the alias OMK consistently (alias, report_name 'fundamentals/OMK' and 'news/OMK'). The fundamentals report also has a full name, company='Orbit Meal Kits (alias OMK)'. The payload's DATA PROVENANCE NOTE says the company and alias were invented, synthetic=true, and forbidden_terms is empty, so this name does not reveal a real entity. The business description (a direct-to-consumer meal-kit subscription rebranded as a 'home food platform', reliant on paid social) describes a sector type and names no real company, ticker, executive, product or exchange. Optional cleanup: shorten the company field to 'OMK' so the full fictional name doesn't anchor the Trader, but this is not a leak.\"}, {\"check\": \"absolute_figure_rescaling\", \"verdict\": \"not_applicable\", \"evidence\": \"synthetic=true, rescale_factor=null, and raw_sources and source_manifest are empty. The DATA PROVENANCE NOTE says the dollar figures were invented and have no originals, so there is nothing to rescale. I checked internal consistency instead, using only payload fields: FY-1 revenue 1180/890 = +32.6% (stated 32.6) ✓. FY-0 revenue 1260/1180 = +6.8% (stated 6.8) ✓. P/S = 3600/1260 = 2.86 (stated 2.9) ✓. EV = 3600 + 620 debt - 480 cash = 3740, and EV/S = 3740/1260 = 2.97 (stated 3.0) ✓. Gross margin fell from 34.0 to 28.2 = 580 bps, which matches the news report's '~600 bps' ✓. Cash runway 480/290 FCF burn ≈ 1.7 years, which matches '<2 years' ✓. Latest-quarter revenue 310 × 4 = 1240 is in line with FY-0's 1260 at decelerating growth ✓. Latest-quarter losses (-115 net income, -18 contribution) are plausible shares of FY-0 (-410, -55) ✓. One small mismatch that doesn't block the run: the news report says growth fell 'from +63%' while the fundamentals table gives FY-2 growth as 62%. This is a 1-point narrative rounding gap; the table should be treated as authoritative. Share count is not given, so price × shares = market cap ($22.7 vs $3,600M) cannot be checked, but nothing contradicts it.\"}, {\"check\": \"relative_dates\", \"verdict\": \"pass\", \"evidence\": \"All time references are relative: FY-2, FY-1, 'FY-0 (just ended)', 'Q0 just reported', as_of='current', 'Rebranded last year', 'in two years', 'YTD', 'listing-era high'. There are no calendar years, dated filings or absolute date anchors. constraints_rendered includes a TEMPORAL MASK telling the Trader not to infer a calendar date. 'YTD' implies a calendar year but doesn't say which, so it is acceptable.\"}, {\"check\": \"macro_event_genericization\", \"verdict\": \"pass\", \"evidence\": \"macro_context reads 'Consumer subscription fatigue; paid-social CAC inflation; growth-stock de-rating still in force.' These are general conditions. They name no event, policy action, central-bank decision, pandemic, war or index level that would date the scenario. The recent_developments describe company-specific mechanics (CAC treadmill, margin compression, a disputed 'active customer' definition, an unnamed short note) and contain no named macro events.\"}], \"confidence\": \"HIGH\", \"leaked_terms\": [], \"summary\": \"This synthetic payload is safe to run. The alias is used consistently. The only full name, 'Orbit Meal Kits', is invented according to the payload's own provenance note, and forbidden_terms is empty. All time references are relative (FY-2/FY-1/FY-0, Q0, 'last year', YTD) and there are no calendar anchors. The macro context is generic and names no datable events. Absolute-figure rescaling does not apply because the figures are fictional, with no originals or rescale factor. In its place I checked internal consistency, and the figures hold together: the growth rates, P/S and EV/S, the drop in gross margin and the cash runway all match the reported figures. Two optional cleanups: (1) the news report says FY-2 growth was '+63%' while the table says 62%; this rounding gap doesn't matter, and the table should be treated as authoritative. (2) Shortening the company field to just 'OMK' would avoid anchoring the Trader on the fictional full name. Neither blocks the run.\"}",
+          "output": {
+            "safe_to_run": true,
+            "checks": [
+              {
+                "check": "alias",
+                "verdict": "pass",
+                "evidence": "Both reports use the alias OMK consistently (alias, report_name 'fundamentals/OMK' and 'news/OMK'). The fundamentals report also has a full name, company='Orbit Meal Kits (alias OMK)'. The payload's DATA PROVENANCE NOTE says the company and alias were invented, synthetic=true, and forbidden_terms is empty, so this name does not reveal a real entity. The business description (a direct-to-consumer meal-kit subscription rebranded as a 'home food platform', reliant on paid social) describes a sector type and names no real company, ticker, executive, product or exchange. Optional cleanup: shorten the company field to 'OMK' so the full fictional name doesn't anchor the Trader, but this is not a leak."
+              },
+              {
+                "check": "absolute_figure_rescaling",
+                "verdict": "not_applicable",
+                "evidence": "synthetic=true, rescale_factor=null, and raw_sources and source_manifest are empty. The DATA PROVENANCE NOTE says the dollar figures were invented and have no originals, so there is nothing to rescale. I checked internal consistency instead, using only payload fields: FY-1 revenue 1180/890 = +32.6% (stated 32.6) ✓. FY-0 revenue 1260/1180 = +6.8% (stated 6.8) ✓. P/S = 3600/1260 = 2.86 (stated 2.9) ✓. EV = 3600 + 620 debt - 480 cash = 3740, and EV/S = 3740/1260 = 2.97 (stated 3.0) ✓. Gross margin fell from 34.0 to 28.2 = 580 bps, which matches the news report's '~600 bps' ✓. Cash runway 480/290 FCF burn ≈ 1.7 years, which matches '<2 years' ✓. Latest-quarter revenue 310 × 4 = 1240 is in line with FY-0's 1260 at decelerating growth ✓. Latest-quarter losses (-115 net income, -18 contribution) are plausible shares of FY-0 (-410, -55) ✓. One small mismatch that doesn't block the run: the news report says growth fell 'from +63%' while the fundamentals table gives FY-2 growth as 62%. This is a 1-point narrative rounding gap; the table should be treated as authoritative. Share count is not given, so price × shares = market cap ($22.7 vs $3,600M) cannot be checked, but nothing contradicts it."
+              },
+              {
+                "check": "relative_dates",
+                "verdict": "pass",
+                "evidence": "All time references are relative: FY-2, FY-1, 'FY-0 (just ended)', 'Q0 just reported', as_of='current', 'Rebranded last year', 'in two years', 'YTD', 'listing-era high'. There are no calendar years, dated filings or absolute date anchors. constraints_rendered includes a TEMPORAL MASK telling the Trader not to infer a calendar date. 'YTD' implies a calendar year but doesn't say which, so it is acceptable."
+              },
+              {
+                "check": "macro_event_genericization",
+                "verdict": "pass",
+                "evidence": "macro_context reads 'Consumer subscription fatigue; paid-social CAC inflation; growth-stock de-rating still in force.' These are general conditions. They name no event, policy action, central-bank decision, pandemic, war or index level that would date the scenario. The recent_developments describe company-specific mechanics (CAC treadmill, margin compression, a disputed 'active customer' definition, an unnamed short note) and contain no named macro events."
+              }
+            ],
+            "leaked_terms": [],
+            "summary": "This synthetic payload is safe to run. The alias is used consistently. The only full name, 'Orbit Meal Kits', is invented according to the payload's own provenance note, and forbidden_terms is empty. All time references are relative (FY-2/FY-1/FY-0, Q0, 'last year', YTD) and there are no calendar anchors. The macro context is generic and names no datable events. Absolute-figure rescaling does not apply because the figures are fictional, with no originals or rescale factor. In its place I checked internal consistency, and the figures hold together: the growth rates, P/S and EV/S, the drop in gross margin and the cash runway all match the reported figures. Two optional cleanups: (1) the news report says FY-2 growth was '+63%' while the table says 62%; this rounding gap doesn't matter, and the table should be treated as authoritative. (2) Shortening the company field to just 'OMK' would avoid anchoring the Trader on the fictional full name. Neither blocks the run.",
+            "confidence": "HIGH"
+          },
+          "verification": {
+            "ok": true,
+            "failures": []
+          }
+        },
+        "review": {
+          "stage": 4,
+          "agent_role": "calibration_reviewer",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 3273,
+          "response_raw": "{\"output_clean\": true, \"packet_fidelity\": true, \"workflow_correct\": true, \"reasoning_grounded_score\": 3, \"confidence\": \"HIGH\", \"summary\": \"The replay output is clean, faithful to the packet and follows the required workflow. The model recommends HOLD with the intent \\\"do_not_initiate\\\" and a size of 0, which fits a candidate the portfolio does not already own. Every figure checks against the packet: growth fell from 62% to 6.8%, gross margin from 34% to 27.5%, contribution after marketing was -$55M for FY-0 and -$18M for Q0, cash is $480M against $620M of debt (net debt about $140M), FY-1 free cash flow was -$290M, and cash covers under 2 years of burn. The sizing uses the $1,000,000 anchor correctly: 0.5% = $5,000 and 1-2% = $10,000-$20,000. All required elements are present. There are 4 checkable falsifiers, each with a source, baseline and transition. The next validation point is a relative estimate (about 3 months), and the re-rating horizon is an honest 12-24 month band that admits it is hard to estimate. There are no calendar years and the output audit is clean. The response_raw and output_full match. The written rationale is grounded with small gaps. It names '10-Q' filings that the packet never mentions. It states a bear-case view ('never improved') as if it were fact. The 10% attach-revenue threshold is the model's own choice, not a packet figure. There is also some schema filler that has no effect but is semantically odd (a market order, GTC, and a HOLD->ADD label on an unheld name).\", \"grounding_evidence\": [\"Growth 'from 62% to under 7% in two years' matches FY-2 revenue_growth_pct 62 and FY-0 6.8.\", \"Gross margins of 27.5% (Q0), 28.2% (FY-0) and 31.5% (FY-1) match annual_income_statement and latest_quarter.\", \"Contribution after marketing of -$55M (FY-0) and -$18M (Q0) matches the packet.\", \"Cash $480M vs debt $620M gives net debt ~$140M; FY-1 FCF -$290M and the '<2 years' runway match the balance_sheet note.\", \"Q0 revenue $310M, so 10% is about $31M; arithmetic is correct.\", \"Q0 YoY growth baseline of +4.5% matches latest_quarter.revenue_growth_yoy_pct.\", \"Sleeve budget 1-2% = $10,000-$20,000 and starter 0.5% = $5,000 are consistent with the BENCHMARK SIZING ANCHOR.\", \"'Priced like a healthy grower' is supported by P/S 2.9, EV/S 3.0 and the +40% YTD gain on the rebrand.\", \"output_audit: calendar_years_in_output empty, contaminated=false.\", \"The next validation point is stated as relative ('about 3 months out ... no absolute date in the packet'), which respects the TEMPORAL MASK.\", \"The re-rating horizon of 12-24 months explicitly says it is hard to estimate and that this lowers conviction, as the reporting requirement asks.\"], \"violations\": [], \"warnings\": [\"Falsifier 3 gives its source as '10-Q cash-flow statement and balance sheet'. The packet never mentions 10-Q filings, so this provenance detail is embellished. The figures themselves are correct.\", \"The rationale says the unit-economics problem 'never improved as the company grew'. The packet gives contribution-after-marketing only for FY-0 and Q0; 'never cleared contribution after CAC' comes from the news report's bear case and is presented as established fact.\", \"The packet does not show 'no attach revenue disclosed' directly; it is inferred from absence. The 10% attach-revenue threshold is chosen by the model, not taken from the packet.\", \"The FY-0 annual contribution (-$55M) is used as the TTM baseline even though Q0 falls after FY-0, so the true TTM as of Q0 is not given. It is labelled 'FY-0 baseline', which makes this acceptable but approximate.\", \"The revisit trigger and falsifiers use the transition 'HOLD->ADD' for a name with no position; an initiation (do_not_initiate -> BUY starter) would be more precise.\", \"The order fields order_type='market', time_in_force='GTC' and size_units='shares' are filled in on a zero-size, no-trade output. They have no effect but are semantically meaningless.\", \"The cited_sources are the packet report_names ('fundamentals/OMK', 'news/OMK'). The top-level sources array is empty, so these ids can be traced to the packet but not to a formal sources block.\"]}",
+          "output": {
+            "output_clean": true,
+            "packet_fidelity": true,
+            "workflow_correct": true,
+            "reasoning_grounded_score": 3,
+            "grounding_evidence": [
+              "Growth 'from 62% to under 7% in two years' matches FY-2 revenue_growth_pct 62 and FY-0 6.8.",
+              "Gross margins of 27.5% (Q0), 28.2% (FY-0) and 31.5% (FY-1) match annual_income_statement and latest_quarter.",
+              "Contribution after marketing of -$55M (FY-0) and -$18M (Q0) matches the packet.",
+              "Cash $480M vs debt $620M gives net debt ~$140M; FY-1 FCF -$290M and the '<2 years' runway match the balance_sheet note.",
+              "Q0 revenue $310M, so 10% is about $31M; arithmetic is correct.",
+              "Q0 YoY growth baseline of +4.5% matches latest_quarter.revenue_growth_yoy_pct.",
+              "Sleeve budget 1-2% = $10,000-$20,000 and starter 0.5% = $5,000 are consistent with the BENCHMARK SIZING ANCHOR.",
+              "'Priced like a healthy grower' is supported by P/S 2.9, EV/S 3.0 and the +40% YTD gain on the rebrand.",
+              "output_audit: calendar_years_in_output empty, contaminated=false.",
+              "The next validation point is stated as relative ('about 3 months out ... no absolute date in the packet'), which respects the TEMPORAL MASK.",
+              "The re-rating horizon of 12-24 months explicitly says it is hard to estimate and that this lowers conviction, as the reporting requirement asks."
+            ],
+            "violations": [],
+            "warnings": [
+              "Falsifier 3 gives its source as '10-Q cash-flow statement and balance sheet'. The packet never mentions 10-Q filings, so this provenance detail is embellished. The figures themselves are correct.",
+              "The rationale says the unit-economics problem 'never improved as the company grew'. The packet gives contribution-after-marketing only for FY-0 and Q0; 'never cleared contribution after CAC' comes from the news report's bear case and is presented as established fact.",
+              "The packet does not show 'no attach revenue disclosed' directly; it is inferred from absence. The 10% attach-revenue threshold is chosen by the model, not taken from the packet.",
+              "The FY-0 annual contribution (-$55M) is used as the TTM baseline even though Q0 falls after FY-0, so the true TTM as of Q0 is not given. It is labelled 'FY-0 baseline', which makes this acceptable but approximate.",
+              "The revisit trigger and falsifiers use the transition 'HOLD->ADD' for a name with no position; an initiation (do_not_initiate -> BUY starter) would be more precise.",
+              "The order fields order_type='market', time_in_force='GTC' and size_units='shares' are filled in on a zero-size, no-trade output. They have no effect but are semantically meaningless.",
+              "The cited_sources are the packet report_names ('fundamentals/OMK', 'news/OMK'). The top-level sources array is empty, so these ids can be traced to the packet but not to a formal sources block."
+            ],
+            "summary": "The replay output is clean, faithful to the packet and follows the required workflow. The model recommends HOLD with the intent \"do_not_initiate\" and a size of 0, which fits a candidate the portfolio does not already own. Every figure checks against the packet: growth fell from 62% to 6.8%, gross margin from 34% to 27.5%, contribution after marketing was -$55M for FY-0 and -$18M for Q0, cash is $480M against $620M of debt (net debt about $140M), FY-1 free cash flow was -$290M, and cash covers under 2 years of burn. The sizing uses the $1,000,000 anchor correctly: 0.5% = $5,000 and 1-2% = $10,000-$20,000. All required elements are present. There are 4 checkable falsifiers, each with a source, baseline and transition. The next validation point is a relative estimate (about 3 months), and the re-rating horizon is an honest 12-24 month band that admits it is hard to estimate. There are no calendar years and the output audit is clean. The response_raw and output_full match. The written rationale is grounded with small gaps. It names '10-Q' filings that the packet never mentions. It states a bear-case view ('never improved') as if it were fact. The 10% attach-revenue threshold is the model's own choice, not a packet figure. There is also some schema filler that has no effect but is semantically odd (a market order, GTC, and a HOLD->ADD label on an unheld name).",
+            "confidence": "HIGH"
+          },
+          "verification": {
+            "ok": true,
+            "failures": []
+          }
+        },
+        "grading": {
+          "stage": 5,
+          "agent_role": "calibration_grader",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 656,
+          "response_raw": "{\"in_expected_class\": true, \"score\": 1, \"rationale\": \"This verdict is in the expected class and scores 1.0. The fleet's action was \\\"hold\\\" with size 0.0 and no position opened (positioned=false). That matches the answer key's only expected class, [\\\"hold\\\"], for synthetic_trap case omk_synthetic.\\n\\nThe fleet passed on the trap: it declined even a small starter position. So the partial-credit rule for a small trap buy (0.5) does not apply. Under the synthetic_trap rule, a hold in the expected class gets full credit.\\n\\nI can't compute an acted-on return. The answer key's resolution is null and no position was taken, so both acted_return_pct and benchmark_return_pct are left null. Outcome luck would not change the class grade anyway.\\n\\nAs instructed, I did not reopen the review agent's judgment. It found the output clean, faithful to the source data and correctly worked through (reasoning_grounded_score 3, no violations, verification ok). Its 7 warnings don't affect the grade. They include the made-up '10-Q' source label, the bear-case 'never improved' claim stated as fact, the model's own choice of a 10% threshold for add-on revenue, and leftover order fields on a no-trade output.\\n\\nConfidence is HIGH because the class match is decided directly from the answer key and fleet_result.action, with no outside data involved.\", \"confidence\": \"HIGH\"}",
+          "output": {
+            "in_expected_class": true,
+            "score": 1.0,
+            "acted_return_pct": null,
+            "benchmark_return_pct": null,
+            "rationale": "This verdict is in the expected class and scores 1.0. The fleet's action was \"hold\" with size 0.0 and no position opened (positioned=false). That matches the answer key's only expected class, [\"hold\"], for synthetic_trap case omk_synthetic.\n\nThe fleet passed on the trap: it declined even a small starter position. So the partial-credit rule for a small trap buy (0.5) does not apply. Under the synthetic_trap rule, a hold in the expected class gets full credit.\n\nI can't compute an acted-on return. The answer key's resolution is null and no position was taken, so both acted_return_pct and benchmark_return_pct are left null. Outcome luck would not change the class grade anyway.\n\nAs instructed, I did not reopen the review agent's judgment. It found the output clean, faithful to the source data and correctly worked through (reasoning_grounded_score 3, no violations, verification ok). Its 7 warnings don't affect the grade. They include the made-up '10-Q' source label, the bear-case 'never improved' claim stated as fact, the model's own choice of a 10% threshold for add-on revenue, and leftover order fields on a no-trade output.\n\nConfidence is HIGH because the class match is decided directly from the answer key and fleet_result.action, with no outside data involved.",
+            "confidence": "HIGH"
+          },
+          "verification": {
+            "ok": true,
+            "expected_in_class": true,
+            "expected_acted_return_pct": null,
+            "expected_benchmark_return_pct": null,
+            "mismatches": []
+          }
+        }
+      },
+      "status": "ok",
+      "model": "claude-opus-5-5",
+      "action": "hold",
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale_summary": "Pass on OMK. Do not start a position, not even a small starter. The core problem is that once OMK pays for ads to win customers, each sale still loses money. That never improved as the company grew. Sales growth fell from 62% to under 7% in two years. Over the same period the profit kept on each sale also shrank. The 'home food platform' rebrand doesn't fix that, yet the stock is still priced like a healthy grower. Key risk: debt exceeds cash, and cash covers less than two years of losses.",
+      "next_validation_point": "OMK's next quarterly earnings print, estimated about 3 months out (relative; no absolute date in the packet). It tests whether quarterly contribution profit after marketing (Q0: -$18M) and gross margin (Q0: 27.5%) stop deteriorating.",
+      "rerating_horizon": "12-24 months. A genuine turnaround needs at least 4 quarters of positive contribution after marketing to show up in trailing-twelve-month (TTM) figures. That runs into the stated cash runway of under 2 years, which makes the horizon hard to estimate and lowers conviction in any re-rating case.",
+      "falsifiers": [
+        "TTM contribution profit after marketing (source: company quarterly disclosures as summarized in fundamentals/OMK; as-of Q0 just reported, FY-0 baseline -$55M and latest quarter -$18M) turns positive (> $0). Persistence is built in because TTM spans four quarters. Proves unit economics now clear customer-acquisition cost, which is the load-bearing reason for this pass. Transition: HOLD->ADD (re-underwrite for a 0.5% / $5,000 starter).",
+        "Quarterly gross margin (source: company quarterly income statement via fundamentals/OMK; as-of Q0, currently 27.5% vs FY-0 28.2% and FY-1 31.5%) recovers to >= 31.5% for two consecutive quarters, with year-over-year revenue growth not negative (Q0 baseline +4.5%). This would show the discounting and shipping squeeze reversed without buying volume. Qualitative compound condition, so no mechanical trigger. Transition: HOLD->ADD (re-review for a starter).",
+        "Survival cliff removed (source: 10-Q cash-flow statement and balance sheet via fundamentals/OMK; as-of FY-0/Q0, cash $480M vs total debt $620M, so net debt is ~$140M; FY-1 free cash flow -$290M, and cash funds under 2 years of burn). The test is met when TTM free cash flow reaches >= $0 and that is achieved without a new equity raise or added debt, held for two consecutive quarterly reports. Compound condition, so no trigger. Transition: HOLD->ADD (re-review).",
+        "Add-on grocery 'platform attach' shows up in reported numbers (source: company segment/KPI disclosure via news/OMK; as-of Q0, no attach revenue or attach-rate metric is disclosed, so baseline is none reported). The test is met when management discloses attach revenue reaching >= 10% of quarterly revenue (Q0 revenue $310M, so ~$31M) at positive contribution, for two consecutive quarters. Qualitative and contingent on new disclosure, so no trigger. Transition: HOLD->ADD (re-review)."
+      ],
+      "cited_sources": [
+        "fundamentals/OMK",
+        "news/OMK"
+      ],
+      "tokens_in": 2,
+      "tokens_out": 3503,
+      "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this is a FULLY FICTIONAL benchmark control. The company, alias, events, and absolute dollar figures were invented for this test; there is no real company, original figure set, or rescaling factor to recover. Ratios, growth rates, margins, and valuation multiples are internally consistent. Evaluate strictly on the supplied facts and do not attempt to identify a real company.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+      "response_raw": "{\"ticker\":\"OMK\",\"action\":\"hold\",\"recommendation_intent\":\"do_not_initiate\",\"size_shares_or_currency\":0,\"size_units\":\"shares\",\"instrument\":\"stock\",\"order_type\":\"market\",\"limit_price\":null,\"stop_price\":null,\"time_in_force\":\"GTC\",\"rationale_summary\":\"Pass on OMK. Do not start a position, not even a small starter. The core problem is that once OMK pays for ads to win customers, each sale still loses money. That never improved as the company grew. Sales growth fell from 62% to under 7% in two years. Over the same period the profit kept on each sale also shrank. The 'home food platform' rebrand doesn't fix that, yet the stock is still priced like a healthy grower. Key risk: debt exceeds cash, and cash covers less than two years of losses.\",\"expected_impact\":{\"concentration_delta\":\"No change. OMK stays at 0% of the portfolio, and the high-potential sleeve budget (~1-2%, i.e. $10,000-$20,000 on the $1,000,000 benchmark NAV) remains unallocated for a better candidate.\",\"cash_delta\":\"$0 (no trade)\",\"tax_estimate\":\"None. No transaction, so no realized gain or loss.\"},\"confidence\":\"MEDIUM\",\"next_validation_point\":\"OMK's next quarterly earnings print, estimated about 3 months out (relative; no absolute date in the packet). It tests whether quarterly contribution profit after marketing (Q0: -$18M) and gross margin (Q0: 27.5%) stop deteriorating.\",\"rerating_horizon\":\"12-24 months. A genuine turnaround needs at least 4 quarters of positive contribution after marketing to show up in trailing-twelve-month (TTM) figures. That runs into the stated cash runway of under 2 years, which makes the horizon hard to estimate and lowers conviction in any re-rating case.\",\"cited_sources\":[\"fundamentals/OMK\",\"news/OMK\"],\"falsifiers\":[\"TTM contribution profit after marketing (source: company quarterly disclosures as summarized in fundamentals/OMK; as-of Q0 just reported, FY-0 baseline -$55M and latest quarter -$18M) turns positive (> $0). Persistence is built in because TTM spans four quarters. Proves unit economics now clear customer-acquisition cost, which is the load-bearing reason for this pass. Transition: HOLD->ADD (re-underwrite for a 0.5% / $5,000 starter).\",\"Quarterly gross margin (source: company quarterly income statement via fundamentals/OMK; as-of Q0, currently 27.5% vs FY-0 28.2% and FY-1 31.5%) recovers to >= 31.5% for two consecutive quarters, with year-over-year revenue growth not negative (Q0 baseline +4.5%). This would show the discounting and shipping squeeze reversed without buying volume. Qualitative compound condition, so no mechanical trigger. Transition: HOLD->ADD (re-review for a starter).\",\"Survival cliff removed (source: 10-Q cash-flow statement and balance sheet via fundamentals/OMK; as-of FY-0/Q0, cash $480M vs total debt $620M, so net debt is ~$140M; FY-1 free cash flow -$290M, and cash funds under 2 years of burn). The test is met when TTM free cash flow reaches >= $0 and that is achieved without a new equity raise or added debt, held for two consecutive quarterly reports. Compound condition, so no trigger. Transition: HOLD->ADD (re-review).\",\"Add-on grocery 'platform attach' shows up in reported numbers (source: company segment/KPI disclosure via news/OMK; as-of Q0, no attach revenue or attach-rate metric is disclosed, so baseline is none reported). The test is met when management discloses attach revenue reaching >= 10% of quarterly revenue (Q0 revenue $310M, so ~$31M) at positive contribution, for two consecutive quarters. Qualitative and contingent on new disclosure, so no trigger. Transition: HOLD->ADD (re-review).\"],\"revisit_triggers\":[{\"kind\":\"metric_condition\",\"metric\":\"contribution_profit_after_marketing_ttm_usd_m\",\"op\":\">\",\"value\":0,\"label\":\"TTM contribution after marketing turned positive (FY-0 baseline -$55M). Re-underwrite OMK as a possible 0.5% starter.\",\"decision_transition\":\"HOLD->ADD\"}]}",
+      "output_full": {
+        "ticker": "OMK",
+        "action": "hold",
+        "recommendation_intent": "do_not_initiate",
+        "size_shares_or_currency": 0.0,
+        "size_units": "shares",
+        "instrument": "stock",
+        "order_type": "market",
+        "limit_price": null,
+        "stop_price": null,
+        "time_in_force": "GTC",
+        "rationale_summary": "Pass on OMK. Do not start a position, not even a small starter. The core problem is that once OMK pays for ads to win customers, each sale still loses money. That never improved as the company grew. Sales growth fell from 62% to under 7% in two years. Over the same period the profit kept on each sale also shrank. The 'home food platform' rebrand doesn't fix that, yet the stock is still priced like a healthy grower. Key risk: debt exceeds cash, and cash covers less than two years of losses.",
+        "expected_impact": {
+          "concentration_delta": "No change. OMK stays at 0% of the portfolio, and the high-potential sleeve budget (~1-2%, i.e. $10,000-$20,000 on the $1,000,000 benchmark NAV) remains unallocated for a better candidate.",
+          "cash_delta": "$0 (no trade)",
+          "tax_estimate": "None. No transaction, so no realized gain or loss."
+        },
+        "confidence": "MEDIUM",
+        "next_validation_point": "OMK's next quarterly earnings print, estimated about 3 months out (relative; no absolute date in the packet). It tests whether quarterly contribution profit after marketing (Q0: -$18M) and gross margin (Q0: 27.5%) stop deteriorating.",
+        "rerating_horizon": "12-24 months. A genuine turnaround needs at least 4 quarters of positive contribution after marketing to show up in trailing-twelve-month (TTM) figures. That runs into the stated cash runway of under 2 years, which makes the horizon hard to estimate and lowers conviction in any re-rating case.",
+        "cited_sources": [
+          "fundamentals/OMK",
+          "news/OMK"
+        ],
+        "falsifiers": [
+          "TTM contribution profit after marketing (source: company quarterly disclosures as summarized in fundamentals/OMK; as-of Q0 just reported, FY-0 baseline -$55M and latest quarter -$18M) turns positive (> $0). Persistence is built in because TTM spans four quarters. Proves unit economics now clear customer-acquisition cost, which is the load-bearing reason for this pass. Transition: HOLD->ADD (re-underwrite for a 0.5% / $5,000 starter).",
+          "Quarterly gross margin (source: company quarterly income statement via fundamentals/OMK; as-of Q0, currently 27.5% vs FY-0 28.2% and FY-1 31.5%) recovers to >= 31.5% for two consecutive quarters, with year-over-year revenue growth not negative (Q0 baseline +4.5%). This would show the discounting and shipping squeeze reversed without buying volume. Qualitative compound condition, so no mechanical trigger. Transition: HOLD->ADD (re-review for a starter).",
+          "Survival cliff removed (source: 10-Q cash-flow statement and balance sheet via fundamentals/OMK; as-of FY-0/Q0, cash $480M vs total debt $620M, so net debt is ~$140M; FY-1 free cash flow -$290M, and cash funds under 2 years of burn). The test is met when TTM free cash flow reaches >= $0 and that is achieved without a new equity raise or added debt, held for two consecutive quarterly reports. Compound condition, so no trigger. Transition: HOLD->ADD (re-review).",
+          "Add-on grocery 'platform attach' shows up in reported numbers (source: company segment/KPI disclosure via news/OMK; as-of Q0, no attach revenue or attach-rate metric is disclosed, so baseline is none reported). The test is met when management discloses attach revenue reaching >= 10% of quarterly revenue (Q0 revenue $310M, so ~$31M) at positive contribution, for two consecutive quarters. Qualitative and contingent on new disclosure, so no trigger. Transition: HOLD->ADD (re-review)."
+        ],
+        "revisit_triggers": [
+          {
+            "kind": "metric_condition",
+            "price": null,
+            "metric": "contribution_profit_after_marketing_ttm_usd_m",
+            "op": ">",
+            "value": 0.0,
+            "date": null,
+            "label": "TTM contribution after marketing turned positive (FY-0 baseline -$55M). Re-underwrite OMK as a possible 0.5% starter.",
+            "decision_transition": "HOLD->ADD"
+          }
+        ]
+      },
+      "output_audit": {
+        "contamination_hits": [],
+        "suspect_terms": [],
+        "calendar_years_in_output": [],
+        "contaminated": false
+      }
+    },
+    {
+      "case_id": "boot_2017",
+      "alias": "POT",
+      "category": "A",
+      "grading": "entry",
+      "freeze_date": "2017-06-02",
+      "packet_snapshot": {
+        "case_id": "boot_2017",
+        "alias": "POT",
+        "analyst_reports": [
+          {
+            "agent_role": "fundamentals",
+            "report_name": "fundamentals/POT",
+            "company": "Prairie Outfitters (alias POT)",
+            "as_of": "current",
+            "market_cap_usd_m": 357,
+            "share_price_usd": 13.23,
+            "balance_sheet": {
+              "cash_and_equivalents_usd_m": 32,
+              "total_debt_usd_m": 462,
+              "note": "levered specialty retailer; store base ~220 doors across ~30 states"
+            },
+            "annual_income_statement": [
+              {
+                "fy": "FY-2",
+                "revenue_usd_m": 1195
+              },
+              {
+                "fy": "FY-1 (just reported)",
+                "revenue_usd_m": 1323,
+                "revenue_growth_pct": 10.7,
+                "net_income_usd_m": 30,
+                "adjusted_net_income_usd_m": 31,
+                "same_store_sales_pct": 0.3,
+                "note": "adj EPS down ~20% YoY despite sales growth"
+              }
+            ],
+            "latest_quarter": {
+              "which": "Q4 / FY just reported",
+              "revenue_usd_m": 342,
+              "same_store_sales_pct": -0.9,
+              "gaap_eps": 0.21,
+              "adjusted_eps": 0.25,
+              "note": "missed street; soft SSS; guide for next year is flat SSS"
+            },
+            "valuation": {
+              "ps_trailing": 0.27,
+              "ev_s_trailing": 0.59,
+              "pe_trailing": 11.9,
+              "price_action": "sold off ~15% on the print; trades like a melting specialty-retail ice cube"
+            },
+            "confidence": "HIGH"
+          },
+          {
+            "agent_role": "news",
+            "report_name": "news/POT",
+            "business_description": "Specialty retailer of western and work footwear, apparel, and accessories — cowboy boots, denim, flame-resistant workwear — sold through physical stores and e-commerce. Category looks culturally niche. The prevailing market narrative is that store-based specialty retail is structurally impaired: malls dying, large ecommerce platforms winning, specialty chains as value traps.",
+            "recent_developments": [
+              "Just printed a soft year: sales up on new doors and an extra week, but adjusted earnings down and Q4 SSS negative.",
+              "Next-year guide is flat same-store sales — management is not selling a re-acceleration story.",
+              "Bull case (contrarian): a durable niche with pricing power in workwear, rising exclusive-brand mix, and an omnichannel setup that is not mall-fashion inventory risk; optically cheap on sales.",
+              "Bear case (consensus): specialty retail is structurally impaired; commodity-end-market exposure (energy/ag) just hurt them; e-comm share gains by giants will keep compressing the model.",
+              "Stock is being treated as a trap — the question is whether the niche moat + full-price selling discipline is being mispriced."
+            ],
+            "macro_context": "Broad de-rating of store-based specialty retail; soft apparel traffic; energy/ag end-markets uneven.",
+            "confidence": "HIGH"
+          }
+        ],
+        "positions": "No existing position in POT. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+        "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this consult evaluates a candidate supplied by a research service under a MASKED NAME. The ticker and company name are aliases, and all absolute dollar figures (revenue, market cap, cash, share price) have been scaled by an undisclosed constant — but every ratio, growth rate, margin, and valuation multiple is exact and internally consistent. Evaluate strictly on the data provided; do not attempt to identify the real company, and do not treat the masked name as a data-quality defect (the masking is intentional and the figures are audited).\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+        "freeze_date": "2017-06-02",
+        "sources": [
+          {
+            "fact": "FY2017 (ended 2017-04-01): net sales $629.8M (+10.7%); GAAP NI $14.2M / $0.53; adjusted NI $14.9M / $0.55 (-20% vs FY2016 adj); consolidated SSS +0.3%",
+            "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+            "date": "2017-06-01"
+          },
+          {
+            "fact": "Q4 SSS -0.9%; Q4 sales $163M missed street; stock sold off ~15% on the print; management cited low commodities prices in key markets + soft general retail",
+            "url": "https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/",
+            "date": "2017-06-02"
+          },
+          {
+            "fact": "FY2018 guide: flat to slightly positive SSS; Q1 guide roughly break-even EPS and flat SSS — not a re-acceleration print",
+            "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+            "date": "2017-06-01"
+          }
+        ],
+        "trader_call": {
+          "debate_outcome": {},
+          "tier": "T2",
+          "mode": "long_hold",
+          "ticker": "POT"
+        }
+      },
+      "agent_pipeline": {
+        "classifier_data_sourcing": {
+          "stage": 1,
+          "agent_role": "calibration_classifier_sourcing",
+          "model": "claude-opus-5-5",
+          "tokens_in": 8,
+          "tokens_out": 3213,
+          "response_raw": "{\"category\": \"A\", \"grading\": \"entry\", \"freeze_date\": \"2017-06-02\", \"classification_rationale\": \"This is a reconstruction burn, so I copied the frozen_taxonomy exactly: category A, grading entry, freeze date 2017-06-02. I did not re-select the taxonomy. The facts support a hard-foresight winner whose contemporaneous print looks soft. Q4 FY2017 consolidated same-store sales fell 0.9%. Q4 sales of $163.0M missed the $164.7M consensus. The stock dropped about 15% to roughly $6.30 on 2017-06-02. FY2018 guidance was flat to slightly positive SSS with EPS of $0.52–0.57, and Q1 FY2018 guidance was break-even EPS. Adjusted EPS fell from $0.69 to $0.55. Leverage was high: a $192.6M term loan plus $33.3M on the revolver, against $8.0M in cash. Management blamed low commodity prices in key markets and soft general retail. There were also some underlying positives. Q4 gross margin rose 190 bp to 30.3%, core merchandise margin improved 30 bp, physical-store comps improved sequentially, and revenue still grew 10.7% on unit expansion to 219 stores. That fits the soft-print, foresight-required A shape. Every source is dated on or before the freeze date. I used no retrospective articles and no outcome data. One source conflict: OCBJ describes Q4 SSS as 'flat', but the primary 8-K Ex-99.1 says it declined 0.9%, so the primary figure governs. Confidence is HIGH because the key numbers come from the primary SEC filing and were checked directly, with one dated secondary news source covering market reaction and consensus.\", \"confidence\": \"HIGH\", \"sourced_facts\": [{\"fact\": \"FY2017 (ended 2017-04-01): net sales rose 10.7% to $629.8M; consolidated same-store sales +0.3%; GAAP net income $14.2M / $0.53 per diluted share; adjusted net income $14.9M / $0.55 vs prior-year adjusted $18.7M / $0.69 (about -20%). $0.03 of the FY2017 $0.55 adjusted EPS came from the 53rd week.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 FY2017: net sales rose 9.1% to $163.0M; consolidated same-store sales declined 0.9%; GAAP net income $2.6M / $0.10 per diluted share.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 FY2017 gross profit was $49.3M (30.3% of sales) vs $42.4M (28.4%) a year earlier, up 190 bp; core merchandise margin improved 30 bp. FY2017 gross margin was 30.2% vs 30.4%, pressured by store occupancy costs and higher e-commerce mix.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"CEO: 'While we reported slightly negative consolidated same store sales for the quarter, we are pleased that comparable sales in our physical stores improved on a sequential basis.' Store count was 219 stores in 31 states (12 opened, 1 closed in FY2017).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"FY2018 guidance: open 12 new stores; flat to slightly positive consolidated SSS; income from operations $37.8M–$40.0M; net income $14.0M–$15.4M; EPS $0.52–$0.57 on 27.1M diluted shares (midpoint roughly flat vs FY2017 adjusted $0.55). Q1 FY2018 guidance: flat consolidated SSS and break-even EPS. This is not a re-acceleration guide.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Balance sheet at 2017-04-01: cash $8.0M; line of credit $33.3M outstanding; term loan $192.6M ($191.5M long-term + $1.1M current); inventory $189.1M. The company was highly levered relative to about $15M of annual net income.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm\", \"publication_date\": \"2017-06-01\"}, {\"fact\": \"Q4 sales of $163M missed the analyst expectation of $164.7M. The stock fell 15% to $6.30 in Friday-morning trading on 2017-06-02. CEO Jim Conroy cited 'the impact from low commodities prices in some of our key markets coupled with a general softness in the overall retail environment.' This article calls Q4 SSS 'flat'; the primary 8-K figure is -0.9%.\", \"url\": \"https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/\", \"publication_date\": \"2017-06-02\"}]}",
+          "output": {
+            "category": "A",
+            "grading": "entry",
+            "freeze_date": "2017-06-02",
+            "classification_rationale": "This is a reconstruction burn, so I copied the frozen_taxonomy exactly: category A, grading entry, freeze date 2017-06-02. I did not re-select the taxonomy. The facts support a hard-foresight winner whose contemporaneous print looks soft. Q4 FY2017 consolidated same-store sales fell 0.9%. Q4 sales of $163.0M missed the $164.7M consensus. The stock dropped about 15% to roughly $6.30 on 2017-06-02. FY2018 guidance was flat to slightly positive SSS with EPS of $0.52–0.57, and Q1 FY2018 guidance was break-even EPS. Adjusted EPS fell from $0.69 to $0.55. Leverage was high: a $192.6M term loan plus $33.3M on the revolver, against $8.0M in cash. Management blamed low commodity prices in key markets and soft general retail. There were also some underlying positives. Q4 gross margin rose 190 bp to 30.3%, core merchandise margin improved 30 bp, physical-store comps improved sequentially, and revenue still grew 10.7% on unit expansion to 219 stores. That fits the soft-print, foresight-required A shape. Every source is dated on or before the freeze date. I used no retrospective articles and no outcome data. One source conflict: OCBJ describes Q4 SSS as 'flat', but the primary 8-K Ex-99.1 says it declined 0.9%, so the primary figure governs. Confidence is HIGH because the key numbers come from the primary SEC filing and were checked directly, with one dated secondary news source covering market reaction and consensus.",
+            "sourced_facts": [
+              {
+                "fact": "FY2017 (ended 2017-04-01): net sales rose 10.7% to $629.8M; consolidated same-store sales +0.3%; GAAP net income $14.2M / $0.53 per diluted share; adjusted net income $14.9M / $0.55 vs prior-year adjusted $18.7M / $0.69 (about -20%). $0.03 of the FY2017 $0.55 adjusted EPS came from the 53rd week.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+                "publication_date": "2017-06-01"
+              },
+              {
+                "fact": "Q4 FY2017: net sales rose 9.1% to $163.0M; consolidated same-store sales declined 0.9%; GAAP net income $2.6M / $0.10 per diluted share.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+                "publication_date": "2017-06-01"
+              },
+              {
+                "fact": "Q4 FY2017 gross profit was $49.3M (30.3% of sales) vs $42.4M (28.4%) a year earlier, up 190 bp; core merchandise margin improved 30 bp. FY2017 gross margin was 30.2% vs 30.4%, pressured by store occupancy costs and higher e-commerce mix.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+                "publication_date": "2017-06-01"
+              },
+              {
+                "fact": "CEO: 'While we reported slightly negative consolidated same store sales for the quarter, we are pleased that comparable sales in our physical stores improved on a sequential basis.' Store count was 219 stores in 31 states (12 opened, 1 closed in FY2017).",
+                "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+                "publication_date": "2017-06-01"
+              },
+              {
+                "fact": "FY2018 guidance: open 12 new stores; flat to slightly positive consolidated SSS; income from operations $37.8M–$40.0M; net income $14.0M–$15.4M; EPS $0.52–$0.57 on 27.1M diluted shares (midpoint roughly flat vs FY2017 adjusted $0.55). Q1 FY2018 guidance: flat consolidated SSS and break-even EPS. This is not a re-acceleration guide.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+                "publication_date": "2017-06-01"
+              },
+              {
+                "fact": "Balance sheet at 2017-04-01: cash $8.0M; line of credit $33.3M outstanding; term loan $192.6M ($191.5M long-term + $1.1M current); inventory $189.1M. The company was highly levered relative to about $15M of annual net income.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+                "publication_date": "2017-06-01"
+              },
+              {
+                "fact": "Q4 sales of $163M missed the analyst expectation of $164.7M. The stock fell 15% to $6.30 in Friday-morning trading on 2017-06-02. CEO Jim Conroy cited 'the impact from low commodities prices in some of our key markets coupled with a general softness in the overall retail environment.' This article calls Q4 SSS 'flat'; the primary 8-K figure is -0.9%.",
+                "url": "https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/",
+                "publication_date": "2017-06-02"
+              }
+            ],
+            "confidence": "HIGH"
+          },
+          "case_id": "boot_2017",
+          "classifier_input_sha256": "1a192fb17e1ce1e6892ea151b93ec7c0898fe5925dce3d17a1876fff5bcb7b58",
+          "verification": {
+            "ok": true,
+            "mismatches": []
+          }
+        },
+        "sanitizer": {
+          "stage": 2,
+          "agent_role": "calibration_sanitizer",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 4117,
+          "response_raw": "{\"safe_to_run\": false, \"checks\": [{\"check\": \"alias\", \"verdict\": \"fail\", \"evidence\": \"The payload uses the alias 'POT' / 'Prairie Outfitters' everywhere, and no forbidden term appears as a full name. However, the news report's business_description contains 'cowboy boots'. A case-insensitive denylist scan matches the forbidden ticker term 'BOOT' as a substring there. This is a concrete denylist hit inside the text the Trader reads. Three other details add to the risk. (a) The alias word 'Outfitters' shares its main word with the forbidden term 'Country Outfitter'. (b) Unscaled details narrow the field to a few firms: '~220 doors across ~30 states', 'an extra week', flame-resistant workwear, and energy/ag end-market exposure. (c) The alias 'POT' collides with a real-world listed ticker from the same era. That last one is not a leak, but it could pull in the wrong context. Fixes: replace 'cowboy boots' with 'western footwear'. Drop or round the store and state counts. Remove the 53rd-week detail. Use an alias that shares no words with any forbidden term and does not collide with a real ticker.\"}, {\"check\": \"absolute_figure_rescaling\", \"verdict\": \"unverifiable\", \"evidence\": \"rescale_factor=2.1. Checked against source_manifest, these match: FY-1 revenue 629.8×2.1=1322.6→1323. FY-2 revenue (629.8/1.107)×2.1≈1194.7→1195. GAAP NI 14.2×2.1=29.8→30. Adjusted NI 14.9×2.1=31.3→31. Q4 revenue 163×2.1=342.3→342. Unscaled ratios are kept exactly: growth 10.7%, SSS +0.3% and −0.9%, adjusted EPS ~−20%, sell-off ~15%. Internal consistency also holds: P/S 357/1323=0.27, EV/S (357+462−32)/1323≈0.59, and P/E 13.23/(0.53×2.1)≈11.9. These figures are NOT in the manifest, so their scaling cannot be proven independently: share price 13.23, market cap 357, cash 32, debt 462, and Q4 GAAP/adjusted EPS 0.21/0.25. Because part of the absolute-figure set cannot be traced to the manifest, the check is unverifiable rather than pass. Recommend that the domain-refresh agent add the price, share-count, balance-sheet and Q4 EPS source rows to the frozen manifest.\"}, {\"check\": \"relative_dates\", \"verdict\": \"pass\", \"evidence\": \"candidate_payload contains no calendar years or dates. Periods are relative only: 'FY-2', 'FY-1 (just reported)', 'Q4 / FY just reported', 'next-year guide', and as_of='current'. The real fiscal-year label and the publication dates in raw_sources are not carried into the payload. constraints_rendered explicitly tells the reader not to infer a calendar date.\"}, {\"check\": \"macro_event_genericization\", \"verdict\": \"pass\", \"evidence\": \"Macro context is generic: 'broad de-rating of store-based specialty retail; soft apparel traffic; energy/ag end-markets uneven', 'malls dying', and 'large ecommerce platforms winning'. No named macro events, no dated commodity episodes, and no named competitors or platforms. The manifest's 'low commodities prices in key markets' is correctly turned into a generic 'energy/ag' end-market softness.\"}], \"summary\": \"Not safe to run: the payload has a concrete denylist hit. The phrase 'cowboy boots' in the business description matches the forbidden ticker term 'BOOT' in a case-insensitive scan. Other unscaled details also make the company easier to identify: '~220 doors across ~30 states', the extra week, flame-resistant workwear, and energy/ag exposure. The alias word 'Outfitters' also overlaps with a forbidden term. Relative dates and macro genericization both pass. Absolute-figure rescaling is unverifiable. Revenue, net income and Q4 sales match the manifest at the 2.1 factor, and P/S, EV/S and P/E are internally consistent. But share price, market cap, cash, debt and Q4 EPS cannot be traced to the source manifest. Fixes needed before rerunning: (1) change 'cowboy boots' to 'western footwear'; (2) remove or round the store and state counts and the 53rd-week detail; (3) choose an alias that shares no words with any forbidden term and does not collide with a real ticker; (4) have the domain-refresh agent add manifest rows for price, share count, balance sheet and Q4 EPS so rescaling can be proven. Side note, not a protocol failure: the analyst reports are labelled confidence HIGH, but some bull-case claims (e.g., rising exclusive-brand mix) have no supporting row in the manifest. Confidence: MEDIUM. The leak call rests on a case-insensitive substring match on a common English word, and the rescaling proof is incomplete.\", \"leaked_terms\": [\"BOOT\"], \"confidence\": \"MEDIUM\"}",
+          "output": {
+            "safe_to_run": false,
+            "checks": [
+              {
+                "check": "alias",
+                "verdict": "fail",
+                "evidence": "The payload uses the alias 'POT' / 'Prairie Outfitters' everywhere, and no forbidden term appears as a full name. However, the news report's business_description contains 'cowboy boots'. A case-insensitive denylist scan matches the forbidden ticker term 'BOOT' as a substring there. This is a concrete denylist hit inside the text the Trader reads. Three other details add to the risk. (a) The alias word 'Outfitters' shares its main word with the forbidden term 'Country Outfitter'. (b) Unscaled details narrow the field to a few firms: '~220 doors across ~30 states', 'an extra week', flame-resistant workwear, and energy/ag end-market exposure. (c) The alias 'POT' collides with a real-world listed ticker from the same era. That last one is not a leak, but it could pull in the wrong context. Fixes: replace 'cowboy boots' with 'western footwear'. Drop or round the store and state counts. Remove the 53rd-week detail. Use an alias that shares no words with any forbidden term and does not collide with a real ticker."
+              },
+              {
+                "check": "absolute_figure_rescaling",
+                "verdict": "unverifiable",
+                "evidence": "rescale_factor=2.1. Checked against source_manifest, these match: FY-1 revenue 629.8×2.1=1322.6→1323. FY-2 revenue (629.8/1.107)×2.1≈1194.7→1195. GAAP NI 14.2×2.1=29.8→30. Adjusted NI 14.9×2.1=31.3→31. Q4 revenue 163×2.1=342.3→342. Unscaled ratios are kept exactly: growth 10.7%, SSS +0.3% and −0.9%, adjusted EPS ~−20%, sell-off ~15%. Internal consistency also holds: P/S 357/1323=0.27, EV/S (357+462−32)/1323≈0.59, and P/E 13.23/(0.53×2.1)≈11.9. These figures are NOT in the manifest, so their scaling cannot be proven independently: share price 13.23, market cap 357, cash 32, debt 462, and Q4 GAAP/adjusted EPS 0.21/0.25. Because part of the absolute-figure set cannot be traced to the manifest, the check is unverifiable rather than pass. Recommend that the domain-refresh agent add the price, share-count, balance-sheet and Q4 EPS source rows to the frozen manifest."
+              },
+              {
+                "check": "relative_dates",
+                "verdict": "pass",
+                "evidence": "candidate_payload contains no calendar years or dates. Periods are relative only: 'FY-2', 'FY-1 (just reported)', 'Q4 / FY just reported', 'next-year guide', and as_of='current'. The real fiscal-year label and the publication dates in raw_sources are not carried into the payload. constraints_rendered explicitly tells the reader not to infer a calendar date."
+              },
+              {
+                "check": "macro_event_genericization",
+                "verdict": "pass",
+                "evidence": "Macro context is generic: 'broad de-rating of store-based specialty retail; soft apparel traffic; energy/ag end-markets uneven', 'malls dying', and 'large ecommerce platforms winning'. No named macro events, no dated commodity episodes, and no named competitors or platforms. The manifest's 'low commodities prices in key markets' is correctly turned into a generic 'energy/ag' end-market softness."
+              }
+            ],
+            "leaked_terms": [
+              "BOOT"
+            ],
+            "summary": "Not safe to run: the payload has a concrete denylist hit. The phrase 'cowboy boots' in the business description matches the forbidden ticker term 'BOOT' in a case-insensitive scan. Other unscaled details also make the company easier to identify: '~220 doors across ~30 states', the extra week, flame-resistant workwear, and energy/ag exposure. The alias word 'Outfitters' also overlaps with a forbidden term. Relative dates and macro genericization both pass. Absolute-figure rescaling is unverifiable. Revenue, net income and Q4 sales match the manifest at the 2.1 factor, and P/S, EV/S and P/E are internally consistent. But share price, market cap, cash, debt and Q4 EPS cannot be traced to the source manifest. Fixes needed before rerunning: (1) change 'cowboy boots' to 'western footwear'; (2) remove or round the store and state counts and the 53rd-week detail; (3) choose an alias that shares no words with any forbidden term and does not collide with a real ticker; (4) have the domain-refresh agent add manifest rows for price, share count, balance sheet and Q4 EPS so rescaling can be proven. Side note, not a protocol failure: the analyst reports are labelled confidence HIGH, but some bull-case claims (e.g., rising exclusive-brand mix) have no supporting row in the manifest. Confidence: MEDIUM. The leak call rests on a case-insensitive substring match on a common English word, and the rescaling proof is incomplete.",
+            "confidence": "MEDIUM"
+          },
+          "verification": {
+            "ok": false,
+            "failures": [
+              {
+                "check": "check_verdicts",
+                "verdict": "Unacceptable sanitizer check"
+              },
+              {
+                "check": "absolute_figure_rescaling",
+                "verdict": "unverifiable"
+              },
+              {
+                "check": "alias",
+                "verdict": "fail"
+              },
+              {
+                "check": "leaked_terms",
+                "verdict": [
+                  "BOOT"
+                ]
+              },
+              {
+                "check": "safe_to_run",
+                "verdict": false
+              }
+            ]
+          }
+        }
+      },
+      "status": "disqualified_sanitizer"
+    },
+    {
+      "case_id": "ttcf_t2",
+      "alias": "PVF",
+      "category": "C",
+      "grading": "exit",
+      "freeze_date": "2021-08-16",
+      "packet_snapshot": {
+        "case_id": "ttcf_t2",
+        "alias": "PVF",
+        "analyst_reports": [
+          {
+            "agent_role": "fundamentals",
+            "report_name": "fundamentals/PVF",
+            "company": "Provida Foods (alias PVF)",
+            "as_of": "current",
+            "market_cap_usd_m": 5300,
+            "share_price_usd": 64.75,
+            "balance_sheet": {
+              "cash_and_equivalents_usd_m": 519,
+              "total_debt_usd_m": 10,
+              "share_count_note": "share count is ~30% higher than at entry (warrant exercises/exchanges from the listing structure)",
+              "note": "still cash-rich; just spent ~137 cash on two tortilla/food-plant acquisitions to add capacity and a southwestern product line"
+            },
+            "annual_income_statement": [
+              {
+                "fy": "FY-1 (the entry-year)",
+                "revenue_usd_m": 549,
+                "revenue_growth_pct": 75,
+                "gross_margin_pct": 14.6,
+                "note": "final figures came in slightly below the originally reported 15.9% GM after reclassifications"
+              }
+            ],
+            "latest_quarter": {
+              "which": "Q0 = Q2 of the current FY, reported ~4 days ago",
+              "revenue_usd_m": 188,
+              "revenue_growth_yoy_pct": 45.9,
+              "gross_margin_pct": 15.7,
+              "gaap_net_loss_usd_m": -197,
+              "net_loss_note": "includes a one-time NON-CASH ~170 deferred-tax valuation allowance (the company wrote off its own deferred tax assets — an accounting judgment that future taxable income is not probable); ex-item operating loss ~-27",
+              "note": "FIRST revenue miss vs consensus (~188 vs ~200 expected); stock fell ~15% on the print"
+            },
+            "guidance": {
+              "fy_revenue_usd_m": "870-895 maintained (+~59%)",
+              "gross_margin_pct": "CUT to 16-22 from 20-25",
+              "adj_ebitda_usd_m": "CUT to -52 to -63, from +7 to +15 — the year flips from profitable to a meaningful loss",
+              "cited": "freight/logistics cost inflation, outside storage fees, public-company legal/accounting costs, and heavy planned marketing spend for the retail expansion"
+            },
+            "customer_concentration": {
+              "top_2_customers_pct_of_revenue": 71,
+              "split_pct": [
+                39,
+                32
+              ]
+            },
+            "valuation": {
+              "ps_on_fy_guide": 6.0,
+              "pe_trailing": null,
+              "price_action": "stock -14% vs the sleeve's entry, -38% from its all-time high; still up a lot vs the pre-listing price"
+            },
+            "confidence": "HIGH"
+          },
+          {
+            "agent_role": "news",
+            "report_name": "news/PVF",
+            "business_description": "Plant-forward frozen-food brand (see prior coverage): family-founded, vertically integrated, converting warehouse-club private-label volume into a branded mass-retail rollout. The entry thesis was: category tailwind + 75% growth + brand conversion + cheap-ish vs the category leader, with milestones of (a) branded distribution expansion beyond the club channel, (b) gross-margin expansion toward 20%+ as brand mix rises, (c) reduced customer concentration.",
+            "recent_developments": [
+              "Mass-retail door expansion IS happening: the brand landed a nationwide launch at one of the largest mass-market retailers plus ~1,800 stores of the largest grocery chain, and management says branded products will be in over 12,000 retail stores by the end of next quarter.",
+              "But the P&L is moving AWAY from the thesis: gross margin guidance cut hard (freight, storage, input costs), full-year EBITDA flipped from positive to a sizable loss, and management concedes marketing spend to win the new shelf space will run heavy 'for several quarters'.",
+              "Customer concentration has NOT improved yet (top-2 still ~71%), and much of the club volume remains rotational.",
+              "Two capacity acquisitions (cash) diversify into southwestern/tortilla products — some analysts question the strategic focus of buying low-margin co-packing plants during a brand build-out.",
+              "The plant-based theme has cooled sharply: the category's pure-play leader has repeatedly missed estimates and the whole cohort has de-rated."
+            ],
+            "macro_context": "Reopening economy; freight and food-input inflation squeezing every food manufacturer; speculative listing-vehicle cohort broadly deflating.",
+            "confidence": "HIGH"
+          }
+        ],
+        "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $64.75 -> unrealized P&L -14%. Entered three quarters ago. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+        "constraints_rendered": "Long-horizon investor (5+ year intended hold). Goal: maximize long-term wealth and earliest safe financial independence. The portfolio has a 'high-potential' sleeve (up to ~5% of portfolio total, ~1-2% per position) reserved for asymmetric growth candidates; investable cash is available. Volatility tolerance is high. No leverage, no options.\n\nBENCHMARK SIZING ANCHOR: use a fictional total portfolio NAV of $1,000,000. Therefore 0.5% = $5,000, 1% = $10,000, and 2% = $20,000. Any BUY/SELL size expressed as currency must be an actual USD notional, never a percentage encoded in a currency field.\n\nTEMPORAL MASK: calendar year/date may be intentionally omitted. Never use the system current date/year or infer a calendar date. Use relative windows only unless the packet explicitly provides an absolute anchor.\n\nDATA PROVENANCE NOTE: this consult evaluates a candidate supplied by a research service under a MASKED NAME. The ticker and company name are aliases, and all absolute dollar figures (revenue, market cap, cash, share price) have been scaled by an undisclosed constant — but every ratio, growth rate, margin, and valuation multiple is exact and internally consistent. Evaluate strictly on the data provided; do not attempt to identify the real company, and do not treat the masked name as a data-quality defect (the masking is intentional and the figures are audited).\n\nEXIT DISCIPLINE (client directive — the client's scar: a prior high-potential position was held through its trough, then sold purely on price after it doubled, missing the subsequent 10x+): PRICE APPRECIATION ALONE IS NEVER AN EXIT TRIGGER in this sleeve, in either lane. A position doubling triggers a thesis RE-DERIVATION (did a milestone land? has the cap-math ceiling moved?), never an automatic trim. The only sanctioned trims: (a) the position's recorded thesis falsifier fires, or (b) the sleeve breaches its plan cap — then rebalance mechanically back to cap while KEEPING the position. Slot sizing (~0.5-1%, accepted 100% loss) already does the risk work; profit-taking is never needed for safety.\n\nREPORTING REQUIREMENT (fleet standard): inside the **Recommendation:** section, explicitly record: (1) FALSIFIERS — the specific, checkable conditions that would kill this thesis; and (2) THE CLOCK — the NEXT VALIDATION POINT (the dated or estimated upcoming event where the thesis gets tested: an earnings print, a product launch, a contract renewal) and the expected re-rating horizon as an honest band (e.g. '3-6 months', '2-3 years'). A hard-to-estimate horizon is NOT optional to report: if it is genuinely unestimable, say so explicitly — that itself lowers conviction.",
+        "freeze_date": "2021-08-16",
+        "sources": [
+          {
+            "fact": "Q2-2021 results: revenue $50.7M (+45.9%), GM 15.7%, GAAP net loss -$53.2M incl a one-time non-cash $46.0M deferred-tax valuation allowance; first consensus miss; GM guide CUT to 16-22% from the 20-25% guided at Q1 (2021-05-12 PR); adj-EBITDA guide flipped to negative $14-17M from positive $2-4M",
+            "url": "https://www.globenewswire.com/news-release/2021/08/12/2280137/0/en/Tattooed-Chef-Reports-Second-Quarter-2021-Financial-Results.html",
+            "date": "2021-08-12"
+          },
+          {
+            "fact": "National retail distribution wins: nationwide launch at a top mass retailer (Target, six products, PR 2021-03-10) and ~1,800 stores at the largest US grocer (Kroger, 12 SKUs, PR 2021-07-12)",
+            "url": "https://www.globenewswire.com/news-release/2021/07/12/2261160/0/en/Tattooed-Chef-to-Launch-in-Kroger-Stores-Nationwide.html",
+            "date": "2021-07-12"
+          },
+          {
+            "fact": "Cash acquisitions of food/tortilla plants (New Mexico Food Distributors + Karsten Tortilla Factory, ~$37M total real) for capacity + southwestern line; BOTH closed 2021-05-14, completion PR 2021-05-18",
+            "url": "https://www.globenewswire.com/news-release/2021/05/18/2231349/0/en/Tattooed-Chef-Completes-Acquisition-of-New-Mexico-Food-Distributors-Inc-and-Karsten-Tortilla-Factory-LLC-Reclassifies-Certain-Expenses.html",
+            "date": "2021-05-18"
+          },
+          {
+            "fact": "FY2020 final: revenue $148.5M (+75%), GM 14.6% after reclassifications (reclass detailed in the 2021-05-18 PR)",
+            "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm",
+            "date": "2021-03-19"
+          }
+        ],
+        "trader_call": {
+          "debate_outcome": {},
+          "tier": "T2",
+          "mode": "long_hold",
+          "ticker": "PVF"
+        }
+      },
+      "agent_pipeline": {
+        "classifier_data_sourcing": {
+          "stage": 1,
+          "agent_role": "calibration_classifier_sourcing",
+          "model": "claude-opus-5-5",
+          "tokens_in": 8,
+          "tokens_out": 4962,
+          "response_raw": "{\"category\": \"C\", \"grading\": \"exit\", \"freeze_date\": \"2021-08-16\", \"classification_rationale\": \"Reconstruction burn: category C / exit / freeze 2021-08-16 are copied exactly from frozen_taxonomy and not reconsidered. Pre-freeze evidence supporting an exit: the Q2-2021 release on 2021-08-12 (SEC 8-K Ex.99.1, fetched and verified) shows the full-year 2021 thesis guide breaking within one quarter. The FY2021 revenue guide stayed at $235M-$242M (+58% to 63%). But the gross-margin guide was cut to 16%-22%, down from the 20%-25% given in the Q1 release of 2021-05-12 (SEC 8-K Ex.99.1, fetched and verified). The adjusted-EBITDA guide flipped from positive $2M-$4M to negative $14M-$17M. Q2 gross margin was 15.7%, versus 26% in Q1-2021. Q2 adjusted EBITDA was negative $5.9M. GAAP net loss was $53.2M, which includes a one-time non-cash $46.0M deferred-tax valuation allowance. Management cited higher logistics costs, storage fees, legal and accounting fees, and packaging shortages. In short, revenue growth held up but the margin and profitability falsifiers fired. That fits a positioned-holder SELL. LIMITATIONS: (1) All three GlobeNewswire URLs in the manifest returned HTTP 403. I replaced the Q2 release with its SEC EDGAR exhibit copy and could only partially cover the other two. (2) Kroger (~1,800 stores, 12 SKUs, 2021-07-12) is supported only by web-search snippets pointing at the company IR page and trade press. I did not fetch it, so it is not a primary-source receipt. (3) I could not verify the Target nationwide launch (PR 2021-03-10, six products) within budget, so it is left out of sourced_facts. (4) I could not verify the acquisition closing date (2021-05-14), the 2021-05-18 completion PR, the ~$37M cash price, or the expense-reclassification details. The Q1 release I fetched says the Foods of New Mexico deal was still expected to close 'near-term' and gives no price; it also says the Karsten facility was 'currently not in operation'. (5) The FY2020 gross margin of 14.6% (post-reclassification) was not in the 10-K excerpt I fetched. Only the revenue figure ($148.5M, +74.9%) was verified, and the 10-K's filing date (2021-03-19 per the manifest) was not confirmed on the page. (6) I did not verify the 'first consensus miss' claim; no consensus source was fetched. Recommend the domain-refresh agent pull: the 2021-05-18 completion 8-K, the 2021-03-10 Target 8-K/PR, the Kroger PR from ir.tattooedchef.com, a contemporaneous pre-2021-08-16 consensus estimate, and the 10-K gross-profit table. Confidence is MEDIUM: the load-bearing guide-cut facts come from primary sources, but several manifest facts remain unverified.\", \"sourced_facts\": [{\"fact\": \"Q2-2021 (quarter ended 2021-06-30), from the 2021-08-12 release: revenue was $50.7M, up 45.9% from $34.8M a year earlier. Branded revenue was $33.1M, up 62.3% from $20.4M. Gross profit was $8.0M (15.7% gross margin) versus $3.7M (10.8%) a year earlier. Net loss was $53.2M versus net income of $1.3M, and includes a one-time, non-cash $46.0M expense from a valuation allowance on a deferred tax asset. Adjusted EBITDA was negative $5.9M versus positive $2.0M. Source: SEC EDGAR 8-K Ex.99.1 copy of the GlobeNewswire release (the GlobeNewswire URL returned 403). Retrieved 2026-10-23.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1741231/000121390021042159/ea145720ex99-1_tattooedchef.htm\", \"publication_date\": \"2021-08-12\"}, {\"fact\": \"FY2021 outlook as of 2021-08-12: revenue $235M-$242M (+58% to 63%, unchanged), gross margin 16%-22%, adjusted EBITDA negative $14M-$17M. Management cited 'increases in logistic costs, storage fees, legal and accounting fees, and marketplace shortages in packaging products.' Retrieved 2026-10-23.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1741231/000121390021042159/ea145720ex99-1_tattooedchef.htm\", \"publication_date\": \"2021-08-12\"}, {\"fact\": \"Prior guide being cut (Q1-2021 release, 2021-05-12): FY2021 revenue $235M-$242M (+58% to 63%), gross margin 20%-25%, adjusted EBITDA positive $2M-$4M. Q1-2021 revenue was $52.7M (+59% YoY) at a 26% gross margin versus 27.9% in Q1-2020. The release also mentions the Foods of New Mexico acquisition, expected to close 'near-term', and a Karsten facility 'currently not in operation'; no price or closing date is given. Retrieved 2026-10-23.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1741231/000121390021025894/ea140750ex99-1_tattooedchef.htm\", \"publication_date\": \"2021-05-12\"}, {\"fact\": \"FY2020 (10-K): revenue rose to $148.5M, 'representing a year over year growth rate of 74.9%'. Net income was $68.7M. The FY2020 gross margin (14.6% after reclassification, per the manifest) was NOT verified in the fetched excerpt, and the filing date (2021-03-19 per the manifest) was not confirmed on the page. Retrieved 2026-10-23.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm\", \"publication_date\": \"2021-03-19\"}, {\"fact\": \"Kroger distribution win (2021-07-12 PR): the company expected to launch branded products in about 1,800 Kroger stores nationwide, with 12 SKUs (pizzas, entrée bowls, vegetables) available by September. SECONDARY ONLY: this comes from web-search snippets of the company IR page and trade press. The GlobeNewswire original returned 403 and the IR page was not fetched within budget, so this is not a primary-source receipt. Retrieved 2026-10-23.\", \"url\": \"https://ir.tattooedchef.com/news-releases/news-release-details/tattooed-chef-launch-kroger-stores-nationwide\", \"publication_date\": \"2021-07-12\"}], \"confidence\": \"MEDIUM\"}",
+          "output": {
+            "category": "C",
+            "grading": "exit",
+            "freeze_date": "2021-08-16",
+            "classification_rationale": "Reconstruction burn: category C / exit / freeze 2021-08-16 are copied exactly from frozen_taxonomy and not reconsidered. Pre-freeze evidence supporting an exit: the Q2-2021 release on 2021-08-12 (SEC 8-K Ex.99.1, fetched and verified) shows the full-year 2021 thesis guide breaking within one quarter. The FY2021 revenue guide stayed at $235M-$242M (+58% to 63%). But the gross-margin guide was cut to 16%-22%, down from the 20%-25% given in the Q1 release of 2021-05-12 (SEC 8-K Ex.99.1, fetched and verified). The adjusted-EBITDA guide flipped from positive $2M-$4M to negative $14M-$17M. Q2 gross margin was 15.7%, versus 26% in Q1-2021. Q2 adjusted EBITDA was negative $5.9M. GAAP net loss was $53.2M, which includes a one-time non-cash $46.0M deferred-tax valuation allowance. Management cited higher logistics costs, storage fees, legal and accounting fees, and packaging shortages. In short, revenue growth held up but the margin and profitability falsifiers fired. That fits a positioned-holder SELL. LIMITATIONS: (1) All three GlobeNewswire URLs in the manifest returned HTTP 403. I replaced the Q2 release with its SEC EDGAR exhibit copy and could only partially cover the other two. (2) Kroger (~1,800 stores, 12 SKUs, 2021-07-12) is supported only by web-search snippets pointing at the company IR page and trade press. I did not fetch it, so it is not a primary-source receipt. (3) I could not verify the Target nationwide launch (PR 2021-03-10, six products) within budget, so it is left out of sourced_facts. (4) I could not verify the acquisition closing date (2021-05-14), the 2021-05-18 completion PR, the ~$37M cash price, or the expense-reclassification details. The Q1 release I fetched says the Foods of New Mexico deal was still expected to close 'near-term' and gives no price; it also says the Karsten facility was 'currently not in operation'. (5) The FY2020 gross margin of 14.6% (post-reclassification) was not in the 10-K excerpt I fetched. Only the revenue figure ($148.5M, +74.9%) was verified, and the 10-K's filing date (2021-03-19 per the manifest) was not confirmed on the page. (6) I did not verify the 'first consensus miss' claim; no consensus source was fetched. Recommend the domain-refresh agent pull: the 2021-05-18 completion 8-K, the 2021-03-10 Target 8-K/PR, the Kroger PR from ir.tattooedchef.com, a contemporaneous pre-2021-08-16 consensus estimate, and the 10-K gross-profit table. Confidence is MEDIUM: the load-bearing guide-cut facts come from primary sources, but several manifest facts remain unverified.",
+            "sourced_facts": [
+              {
+                "fact": "Q2-2021 (quarter ended 2021-06-30), from the 2021-08-12 release: revenue was $50.7M, up 45.9% from $34.8M a year earlier. Branded revenue was $33.1M, up 62.3% from $20.4M. Gross profit was $8.0M (15.7% gross margin) versus $3.7M (10.8%) a year earlier. Net loss was $53.2M versus net income of $1.3M, and includes a one-time, non-cash $46.0M expense from a valuation allowance on a deferred tax asset. Adjusted EBITDA was negative $5.9M versus positive $2.0M. Source: SEC EDGAR 8-K Ex.99.1 copy of the GlobeNewswire release (the GlobeNewswire URL returned 403). Retrieved 2026-10-23.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021042159/ea145720ex99-1_tattooedchef.htm",
+                "publication_date": "2021-08-12"
+              },
+              {
+                "fact": "FY2021 outlook as of 2021-08-12: revenue $235M-$242M (+58% to 63%, unchanged), gross margin 16%-22%, adjusted EBITDA negative $14M-$17M. Management cited 'increases in logistic costs, storage fees, legal and accounting fees, and marketplace shortages in packaging products.' Retrieved 2026-10-23.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021042159/ea145720ex99-1_tattooedchef.htm",
+                "publication_date": "2021-08-12"
+              },
+              {
+                "fact": "Prior guide being cut (Q1-2021 release, 2021-05-12): FY2021 revenue $235M-$242M (+58% to 63%), gross margin 20%-25%, adjusted EBITDA positive $2M-$4M. Q1-2021 revenue was $52.7M (+59% YoY) at a 26% gross margin versus 27.9% in Q1-2020. The release also mentions the Foods of New Mexico acquisition, expected to close 'near-term', and a Karsten facility 'currently not in operation'; no price or closing date is given. Retrieved 2026-10-23.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021025894/ea140750ex99-1_tattooedchef.htm",
+                "publication_date": "2021-05-12"
+              },
+              {
+                "fact": "FY2020 (10-K): revenue rose to $148.5M, 'representing a year over year growth rate of 74.9%'. Net income was $68.7M. The FY2020 gross margin (14.6% after reclassification, per the manifest) was NOT verified in the fetched excerpt, and the filing date (2021-03-19 per the manifest) was not confirmed on the page. Retrieved 2026-10-23.",
+                "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm",
+                "publication_date": "2021-03-19"
+              },
+              {
+                "fact": "Kroger distribution win (2021-07-12 PR): the company expected to launch branded products in about 1,800 Kroger stores nationwide, with 12 SKUs (pizzas, entrée bowls, vegetables) available by September. SECONDARY ONLY: this comes from web-search snippets of the company IR page and trade press. The GlobeNewswire original returned 403 and the IR page was not fetched within budget, so this is not a primary-source receipt. Retrieved 2026-10-23.",
+                "url": "https://ir.tattooedchef.com/news-releases/news-release-details/tattooed-chef-launch-kroger-stores-nationwide",
+                "publication_date": "2021-07-12"
+              }
+            ],
+            "confidence": "MEDIUM"
+          },
+          "case_id": "ttcf_t2",
+          "classifier_input_sha256": "d53c00c766a9d9c42db7dd64459010ad70980914d3805280103d594b0d550c1d",
+          "verification": {
+            "ok": true,
+            "mismatches": []
+          }
+        },
+        "sanitizer": {
+          "stage": 2,
+          "agent_role": "calibration_sanitizer",
+          "model": "claude-opus-5-5",
+          "tokens_in": 2,
+          "tokens_out": 5737,
+          "response_raw": "{\"safe_to_run\": true, \"checks\": [{\"check\": \"alias\", \"verdict\": \"pass\", \"evidence\": \"I checked the full candidate payload (both analyst reports, constraints_rendered, positions) against all 12 forbidden_terms. None of them appear. The company is called only 'PVF' or the made-up 'Provida Foods (alias PVF)'. Customers and channels are described in generic terms ('warehouse-club', 'one of the largest mass-market retailers', 'largest grocery chain'). The acquired plants are described only as 'two tortilla/food-plant acquisitions' and a 'southwestern product line'. The listing vehicle appears only as 'the listing structure' or 'listing-vehicle cohort'. Remaining risk: some details are true counts that were not rescaled (about 1,800 stores at the grocery chain, more than 12,000 stores targeted, and a 39/32 split between the top two customers). These are not forbidden terms, and the rescaling rule covers only dollar figures. Together, though, they narrow the field. This is a reason to watch closely, not a concrete leak.\"}, {\"check\": \"absolute_figure_rescaling\", \"verdict\": \"unverifiable\", \"evidence\": \"PROVEN against source_manifest at rescale_factor 3.7: quarter revenue 50.7×3.7=187.6 → 188 ✓; GAAP net loss 53.2×3.7=196.8 → -197 ✓; valuation allowance 46.0×3.7=170.2 → ~170 ✓; prior-year revenue 148.5×3.7=549.5 → 549 ✓; adj-EBITDA guide -14 to -17 ×3.7=-51.8 to -62.9 → -52 to -63 ✓; prior adj-EBITDA guide +2 to +4 ×3.7=7.4 to 14.8 → +7 to +15 ✓; acquisitions ~37×3.7=136.9 → ~137 ✓. Ratios are unchanged and match the manifest: growth 75% and 45.9%, GM 14.6% and 15.7%, GM guide 16-22 cut from 20-25. NOT PROVABLE because these figures are missing from the manifest: share price 64.75, entry price 74.95, market cap 5300, cash 519, debt 10, FY revenue guide 870-895, consensus ~200, and the 'originally reported 15.9% GM'. I cannot confirm from the frozen packet that these were scaled. Internal consistency does hold: 64.75/74.95-1 = -13.6% (stated -14%); 5300 / midpoint guide 882.5 = 6.0x (stated P/S 6.0); 870/549-1 = +58.5% (stated ~+59%). Minor labeling issue that is not a leak: the 'ex-item operating loss ~-27' is really net loss minus the allowance, not an operating loss.\"}, {\"check\": \"relative_dates\", \"verdict\": \"pass\", \"evidence\": \"The payload contains no calendar years or absolute dates. It uses only relative labels: 'FY-1 (the entry-year)', 'Q0 = Q2 of the current FY, reported ~4 days ago', 'as_of: current', 'Entered three quarters ago', 'by the end of next quarter', 'for several quarters'. These labels are consistent with each other and with the manifest's publication order. The constraints repeat the TEMPORAL MASK directive. I found no developments dated after the latest manifest item (the quarterly results release), so there is no look-ahead content.\"}, {\"check\": \"macro_event_genericization\", \"verdict\": \"pass\", \"evidence\": \"The macro context is genericized. It says 'Reopening economy', 'freight and food-input inflation', 'speculative listing-vehicle cohort broadly deflating', and refers to the category's 'pure-play leader' without naming the health event, the listing-vehicle mechanism, or the peer company. Remaining risk: 'reopening economy' combined with a deflating listing-vehicle cohort is a strong hint about the era. It is generic wording, not a named event, so this passes, but it should be noted.\"}], \"leaked_terms\": [], \"summary\": \"Safe to run: no concrete leak found. None of the 12 forbidden terms appear anywhere in the payload. The company is masked as PVF / 'Provida Foods'. Dates are relative only, and macro events are described generically. Rescaling at 3.7x is independently proven for the 7 dollar figures the manifest covers. Those include quarter revenue, net loss, valuation allowance, prior-year revenue, both EBITDA guide ranges, and acquisition spend. All ratios match exactly. However, share price, entry price, market cap, cash, debt, the FY revenue guide, and the consensus figure are not in source_manifest. Their scaling therefore cannot be proven from the frozen packet, so the rescaling check is marked unverifiable. They are internally consistent (-14% P&L, 6.0x P/S, ~+59% guide growth all check out). Remaining risks: (1) the unscaled store counts (~1,800 and >12,000) and the 39/32 customer split are identifying when combined; (2) 'reopening economy' combined with a deflating listing-vehicle cohort narrows the era. Neither is a forbidden term or a named event. Recommendation: the domain-refresh agent / packet builder should add price, market cap, cash, debt, revenue-guide and consensus source facts to source_manifest so a re-audit can prove the rescaling. Optionally, round or remove the exact store counts. Confidence is MEDIUM because the rescaling check covers only part of the payload.\", \"confidence\": \"MEDIUM\"}",
+          "output": {
+            "safe_to_run": true,
+            "checks": [
+              {
+                "check": "alias",
+                "verdict": "pass",
+                "evidence": "I checked the full candidate payload (both analyst reports, constraints_rendered, positions) against all 12 forbidden_terms. None of them appear. The company is called only 'PVF' or the made-up 'Provida Foods (alias PVF)'. Customers and channels are described in generic terms ('warehouse-club', 'one of the largest mass-market retailers', 'largest grocery chain'). The acquired plants are described only as 'two tortilla/food-plant acquisitions' and a 'southwestern product line'. The listing vehicle appears only as 'the listing structure' or 'listing-vehicle cohort'. Remaining risk: some details are true counts that were not rescaled (about 1,800 stores at the grocery chain, more than 12,000 stores targeted, and a 39/32 split between the top two customers). These are not forbidden terms, and the rescaling rule covers only dollar figures. Together, though, they narrow the field. This is a reason to watch closely, not a concrete leak."
+              },
+              {
+                "check": "absolute_figure_rescaling",
+                "verdict": "unverifiable",
+                "evidence": "PROVEN against source_manifest at rescale_factor 3.7: quarter revenue 50.7×3.7=187.6 → 188 ✓; GAAP net loss 53.2×3.7=196.8 → -197 ✓; valuation allowance 46.0×3.7=170.2 → ~170 ✓; prior-year revenue 148.5×3.7=549.5 → 549 ✓; adj-EBITDA guide -14 to -17 ×3.7=-51.8 to -62.9 → -52 to -63 ✓; prior adj-EBITDA guide +2 to +4 ×3.7=7.4 to 14.8 → +7 to +15 ✓; acquisitions ~37×3.7=136.9 → ~137 ✓. Ratios are unchanged and match the manifest: growth 75% and 45.9%, GM 14.6% and 15.7%, GM guide 16-22 cut from 20-25. NOT PROVABLE because these figures are missing from the manifest: share price 64.75, entry price 74.95, market cap 5300, cash 519, debt 10, FY revenue guide 870-895, consensus ~200, and the 'originally reported 15.9% GM'. I cannot confirm from the frozen packet that these were scaled. Internal consistency does hold: 64.75/74.95-1 = -13.6% (stated -14%); 5300 / midpoint guide 882.5 = 6.0x (stated P/S 6.0); 870/549-1 = +58.5% (stated ~+59%). Minor labeling issue that is not a leak: the 'ex-item operating loss ~-27' is really net loss minus the allowance, not an operating loss."
+              },
+              {
+                "check": "relative_dates",
+                "verdict": "pass",
+                "evidence": "The payload contains no calendar years or absolute dates. It uses only relative labels: 'FY-1 (the entry-year)', 'Q0 = Q2 of the current FY, reported ~4 days ago', 'as_of: current', 'Entered three quarters ago', 'by the end of next quarter', 'for several quarters'. These labels are consistent with each other and with the manifest's publication order. The constraints repeat the TEMPORAL MASK directive. I found no developments dated after the latest manifest item (the quarterly results release), so there is no look-ahead content."
+              },
+              {
+                "check": "macro_event_genericization",
+                "verdict": "pass",
+                "evidence": "The macro context is genericized. It says 'Reopening economy', 'freight and food-input inflation', 'speculative listing-vehicle cohort broadly deflating', and refers to the category's 'pure-play leader' without naming the health event, the listing-vehicle mechanism, or the peer company. Remaining risk: 'reopening economy' combined with a deflating listing-vehicle cohort is a strong hint about the era. It is generic wording, not a named event, so this passes, but it should be noted."
+              }
+            ],
+            "leaked_terms": [],
+            "summary": "Safe to run: no concrete leak found. None of the 12 forbidden terms appear anywhere in the payload. The company is masked as PVF / 'Provida Foods'. Dates are relative only, and macro events are described generically. Rescaling at 3.7x is independently proven for the 7 dollar figures the manifest covers. Those include quarter revenue, net loss, valuation allowance, prior-year revenue, both EBITDA guide ranges, and acquisition spend. All ratios match exactly. However, share price, entry price, market cap, cash, debt, the FY revenue guide, and the consensus figure are not in source_manifest. Their scaling therefore cannot be proven from the frozen packet, so the rescaling check is marked unverifiable. They are internally consistent (-14% P&L, 6.0x P/S, ~+59% guide growth all check out). Remaining risks: (1) the unscaled store counts (~1,800 and >12,000) and the 39/32 customer split are identifying when combined; (2) 'reopening economy' combined with a deflating listing-vehicle cohort narrows the era. Neither is a forbidden term or a named event. Recommendation: the domain-refresh agent / packet builder should add price, market cap, cash, debt, revenue-guide and consensus source facts to source_manifest so a re-audit can prove the rescaling. Optionally, round or remove the exact store counts. Confidence is MEDIUM because the rescaling check covers only part of the payload.",
+            "confidence": "MEDIUM"
+          },
+          "verification": {
+            "ok": false,
+            "failures": [
+              {
+                "check": "check_verdicts",
+                "verdict": "Unacceptable sanitizer check"
+              },
+              {
+                "check": "absolute_figure_rescaling",
+                "verdict": "unverifiable"
+              }
+            ]
+          }
+        }
+      },
+      "status": "disqualified_sanitizer"
+    }
+  ],
+  "lab_manifest": {
+    "version": 3,
+    "horizons_months": [
+      6,
+      12,
+      24
+    ],
+    "cases": [
+      {
+        "packet": {
+          "case_id": "nlf_synthetic_v3",
+          "alias": "NLF",
+          "category": "synthetic",
+          "grading": "synthetic_winner",
+          "real": "SYNTHETIC winner-shape (no real company) — obscure industrial-software niche",
+          "freeze_date": null,
+          "rescale_factor": null,
+          "synthetic": true,
+          "expected_classes": [
+            "buy"
+          ],
+          "positioned": false,
+          "positions": "No existing position in NLF. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+          "constraints_extra": null,
+          "run_order": 3,
+          "contamination_terms": [],
+          "resolution": null,
+          "sources": [],
+          "analyst_reports": [
+            {
+              "agent_role": "fundamentals",
+              "report_name": "fundamentals/NLF",
+              "company": "Nexus Lattice Fabric (alias NLF)",
+              "as_of": "current",
+              "market_cap_usd_m": 2800,
+              "share_price_usd": 18.4,
+              "balance_sheet": {
+                "cash_and_equivalents_usd_m": 410,
+                "total_debt_usd_m": 90,
+                "note": "net cash; runway not the constraint"
+              },
+              "annual_income_statement": [
+                {
+                  "fy": "FY-3",
+                  "revenue_usd_m": 420,
+                  "revenue_growth_pct": 22,
+                  "gross_margin_pct": 71,
+                  "net_income_usd_m": -35
+                },
+                {
+                  "fy": "FY-2",
+                  "revenue_usd_m": 540,
+                  "revenue_growth_pct": 28.6,
+                  "gross_margin_pct": 73,
+                  "net_income_usd_m": -12
+                },
+                {
+                  "fy": "FY-1",
+                  "revenue_usd_m": 720,
+                  "revenue_growth_pct": 33.3,
+                  "gross_margin_pct": 74.5,
+                  "net_income_usd_m": 28,
+                  "free_cash_flow_usd_m": 55,
+                  "note": "first full year of GAAP profit; FCF positive"
+                }
+              ],
+              "latest_quarter": {
+                "which": "Q0 just reported",
+                "revenue_usd_m": 205,
+                "revenue_growth_yoy_pct": 31,
+                "gaap_net_income_usd_m": 14,
+                "net_revenue_retention_pct": 122,
+                "note": "NRR >120% for a third straight quarter",
+                "prior_year_revenue_usd_m": 156.4885496183206,
+                "prior_year_gaap_net_income_usd_m": 0
+              },
+              "valuation": {
+                "ps_trailing": 3.643407002731562,
+                "ev_s_trailing": 3.227017630990812,
+                "pe_trailing": 66.66666666666667,
+                "price_action": "quiet grind higher off a forgotten ordinary listing; -40% from a prior overshoot, now consolidating"
+              },
+              "confidence": "HIGH",
+              "trailing_income_statement": {
+                "revenue_usd_m": 768.5114503816794,
+                "gaap_net_income_usd_m": 42,
+                "period_basis": "FY-1 minus the year-ago quarter plus Q0"
+              },
+              "shares_outstanding_m": 152.17391304347828
+            },
+            {
+              "agent_role": "news",
+              "report_name": "news/NLF",
+              "business_description": "Vertical software for industrial-maintenance scheduling and spare-parts forecasting sold to mid-size process manufacturers. High switching costs once embedded in plant workflows. Not a consumer brand; almost no press coverage.",
+              "recent_developments": [
+                "Just crossed into sustained GAAP profitability with NRR still >120% — expansion inside existing plants, not logo-chasing.",
+                "Two new multi-year contracts with regional chemical and pulp customers; neither is a household name.",
+                "Gross margin still expanding as hosted delivery mix rises; stock-based comp is moderate (~8% of revenue).",
+                "Bear case: TAM looks small, sales cycle is slow, and a larger horizontal ERP vendor could bundle a 'good enough' module.",
+                "Bull case: niche depth + retention economics look like a compounder the market has not re-rated because the story is boring."
+              ],
+              "macro_context": "Industrial capex steady; software multiples compressed vs prior cycle.",
+              "confidence": "HIGH"
+            }
+          ],
+          "changelog": [
+            {
+              "date": "2026-07-11",
+              "fix": "block-2b FAIL rebuild: removed blank-check/SPAC-class wording per nkla_2020 convention."
+            },
+            {
+              "date": "2026-10-23",
+              "fix": "NEW v3 control, original nlf_synthetic unchanged. Correct inconsistent trailing valuation: explicit year-ago quarter revenue and zero net income give TTM revenue FY-1 - year-ago quarter + Q0, TTM net income $42M, P/E 66.67x. P/S and EV/S recomputed on the same TTM basis; share count reconciles capitalization/price. Expected class, business thesis and control risks unchanged. This is a factual arithmetic correction, not a softened pass criterion."
+            }
+          ],
+          "_file": "nlf_synthetic_v3.json"
+        },
+        "packet_sha256": "9abdb11d918bfd27dbd173364f0c38fcfd50ed1e1346b2113bd9a8091b44e6ca"
+      },
+      {
+        "packet": {
+          "case_id": "omk_synthetic",
+          "alias": "OMK",
+          "category": "synthetic",
+          "grading": "synthetic_trap",
+          "real": "SYNTHETIC trap-shape (no real company) — meal-kit / D2C growth theater",
+          "freeze_date": null,
+          "rescale_factor": null,
+          "synthetic": true,
+          "expected_classes": [
+            "hold"
+          ],
+          "positioned": false,
+          "positions": "No existing position in OMK. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+          "constraints_extra": null,
+          "run_order": 4,
+          "contamination_terms": [],
+          "resolution": null,
+          "sources": [],
+          "analyst_reports": [
+            {
+              "agent_role": "fundamentals",
+              "report_name": "fundamentals/OMK",
+              "company": "Orbit Meal Kits (alias OMK)",
+              "as_of": "current",
+              "market_cap_usd_m": 3600,
+              "share_price_usd": 22.7,
+              "balance_sheet": {
+                "cash_and_equivalents_usd_m": 480,
+                "total_debt_usd_m": 620,
+                "note": "cash funds <2 years of current burn if growth spend continues"
+              },
+              "annual_income_statement": [
+                {
+                  "fy": "FY-2",
+                  "revenue_usd_m": 890,
+                  "revenue_growth_pct": 62,
+                  "gross_margin_pct": 34,
+                  "net_income_usd_m": -210
+                },
+                {
+                  "fy": "FY-1",
+                  "revenue_usd_m": 1180,
+                  "revenue_growth_pct": 32.6,
+                  "gross_margin_pct": 31.5,
+                  "net_income_usd_m": -340,
+                  "free_cash_flow_usd_m": -290,
+                  "note": "growth decelerating; GM compressing; losses widening"
+                },
+                {
+                  "fy": "FY-0 (just ended)",
+                  "revenue_usd_m": 1260,
+                  "revenue_growth_pct": 6.8,
+                  "gross_margin_pct": 28.2,
+                  "net_income_usd_m": -410,
+                  "contribution_profit_after_marketing_usd_m": -55,
+                  "note": "contribution-negative after marketing; cohort LTV claims contested"
+                }
+              ],
+              "valuation": {
+                "ps_trailing": 2.9,
+                "ev_s_trailing": 3.0,
+                "pe_trailing": null,
+                "price_action": "still +40% YTD on 'consumer platform' rebrand; -65% from listing-era high"
+              },
+              "confidence": "HIGH",
+              "latest_quarter": {
+                "which": "Q0 just reported",
+                "revenue_usd_m": 310,
+                "revenue_growth_yoy_pct": 4.5,
+                "gaap_net_income_usd_m": -115,
+                "gross_margin_pct": 27.5,
+                "contribution_profit_after_marketing_usd_m": -18,
+                "note": "sequential deceleration continues; still contribution-negative after marketing"
+              }
+            },
+            {
+              "agent_role": "news",
+              "report_name": "news/OMK",
+              "business_description": "Direct-to-consumer prepared-meal and grocery-bundle subscription. Rebranded last year from a meal-kit identity to a 'home food platform'. Charismatic CMO-driven growth story. Heavy reliance on paid social.",
+              "recent_developments": [
+                "Revenue growth collapsed from +63% to +7% in two years while marketing intensity stayed high — classic CAC treadmill.",
+                "Gross margin fell ~600 bps as discounting and shipping inflation hit; contribution profit after marketing is now negative.",
+                "Management highlights 'active customer' definitions that exclude lapsed cohorts; a short note questioned the LTV math.",
+                "Bulls: category still large, brand known among urban professionals, path to 'platform' attach (add-on grocery) could re-accelerate.",
+                "Bears: unit economics never cleared contribution after CAC; rebrand does not fix churn; balance sheet funds the story, not a moat."
+              ],
+              "macro_context": "Consumer subscription fatigue; paid-social CAC inflation; growth-stock de-rating still in force.",
+              "confidence": "HIGH"
+            }
+          ],
+          "changelog": [
+            {
+              "date": "2026-07-11",
+              "fix": "block-2b FAIL rebuild: added required latest_quarter block (PACKET_GUIDE wire shape)."
+            }
+          ],
+          "_file": "omk_synthetic.json"
+        },
+        "packet_sha256": "1ad5ecf80ca7415116253f954dd965bc64130f1a1cb18013e8fb19e3cd306d15"
+      },
+      {
+        "packet": {
+          "case_id": "boot_2017",
+          "alias": "POT",
+          "category": "A",
+          "grading": "entry",
+          "real": "Boot Barn (BOOT) @ 2017-06-02 ($6.30); obscure western/work retailer during the store-based-retail-decline narrative; ~20x by mid-2024",
+          "freeze_date": "2017-06-02",
+          "rescale_factor": 2.1,
+          "synthetic": false,
+          "expected_classes": [
+            "buy"
+          ],
+          "positioned": false,
+          "positions": "No existing position in POT. Portfolio context: globally diversified equity core (broad index funds), one large concentrated technology position being glided down per plan (unrelated to this candidate), and ample investable cash. Budget for a new high-potential-sleeve position: ~1-2% of portfolio.",
+          "constraints_extra": null,
+          "run_order": 63,
+          "contamination_terms": [
+            "Boot Barn",
+            "BOOT",
+            "Sheplers",
+            "Conroy",
+            "Country Outfitter",
+            "Wood's Boots"
+          ],
+          "resolution": {
+            "price_at_freeze_real": 6.3,
+            "price_at_horizon_real": 123.15,
+            "horizon_label": "7y (2024-06-03)",
+            "benchmark_return_pct": 1855,
+            "note": "Freeze after FY2017 miss selloff (OCBJ contemporaneous ~$6.30); horizon yfinance 2024-06-03 close fetched 2026-07-11."
+          },
+          "sources": [
+            {
+              "fact": "FY2017 (ended 2017-04-01): net sales $629.8M (+10.7%); GAAP NI $14.2M / $0.53; adjusted NI $14.9M / $0.55 (-20% vs FY2016 adj); consolidated SSS +0.3%",
+              "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+              "date": "2017-06-01"
+            },
+            {
+              "fact": "Q4 SSS -0.9%; Q4 sales $163M missed street; stock sold off ~15% on the print; management cited low commodities prices in key markets + soft general retail",
+              "url": "https://www.ocbj.com/retail/apparel-retail/boot-barn-stock-dips-q4-results/",
+              "date": "2017-06-02"
+            },
+            {
+              "fact": "FY2018 guide: flat to slightly positive SSS; Q1 guide roughly break-even EPS and flat SSS — not a re-acceleration print",
+              "url": "https://www.sec.gov/Archives/edgar/data/1610250/000110465917036899/a17-14427_1ex99d1.htm",
+              "date": "2017-06-01"
+            }
+          ],
+          "analyst_reports": [
+            {
+              "agent_role": "fundamentals",
+              "report_name": "fundamentals/POT",
+              "company": "Prairie Outfitters (alias POT)",
+              "as_of": "current",
+              "market_cap_usd_m": 357,
+              "share_price_usd": 13.23,
+              "balance_sheet": {
+                "cash_and_equivalents_usd_m": 32,
+                "total_debt_usd_m": 462,
+                "note": "levered specialty retailer; store base ~220 doors across ~30 states"
+              },
+              "annual_income_statement": [
+                {
+                  "fy": "FY-2",
+                  "revenue_usd_m": 1195
+                },
+                {
+                  "fy": "FY-1 (just reported)",
+                  "revenue_usd_m": 1323,
+                  "revenue_growth_pct": 10.7,
+                  "net_income_usd_m": 30,
+                  "adjusted_net_income_usd_m": 31,
+                  "same_store_sales_pct": 0.3,
+                  "note": "adj EPS down ~20% YoY despite sales growth"
+                }
+              ],
+              "latest_quarter": {
+                "which": "Q4 / FY just reported",
+                "revenue_usd_m": 342,
+                "same_store_sales_pct": -0.9,
+                "gaap_eps": 0.21,
+                "adjusted_eps": 0.25,
+                "note": "missed street; soft SSS; guide for next year is flat SSS"
+              },
+              "valuation": {
+                "ps_trailing": 0.27,
+                "ev_s_trailing": 0.59,
+                "pe_trailing": 11.9,
+                "price_action": "sold off ~15% on the print; trades like a melting specialty-retail ice cube"
+              },
+              "confidence": "HIGH"
+            },
+            {
+              "agent_role": "news",
+              "report_name": "news/POT",
+              "business_description": "Specialty retailer of western and work footwear, apparel, and accessories — cowboy boots, denim, flame-resistant workwear — sold through physical stores and e-commerce. Category looks culturally niche. The prevailing market narrative is that store-based specialty retail is structurally impaired: malls dying, large ecommerce platforms winning, specialty chains as value traps.",
+              "recent_developments": [
+                "Just printed a soft year: sales up on new doors and an extra week, but adjusted earnings down and Q4 SSS negative.",
+                "Next-year guide is flat same-store sales — management is not selling a re-acceleration story.",
+                "Bull case (contrarian): a durable niche with pricing power in workwear, rising exclusive-brand mix, and an omnichannel setup that is not mall-fashion inventory risk; optically cheap on sales.",
+                "Bear case (consensus): specialty retail is structurally impaired; commodity-end-market exposure (energy/ag) just hurt them; e-comm share gains by giants will keep compressing the model.",
+                "Stock is being treated as a trap — the question is whether the niche moat + full-price selling discipline is being mispriced."
+              ],
+              "macro_context": "Broad de-rating of store-based specialty retail; soft apparel traffic; energy/ag end-markets uneven.",
+              "confidence": "HIGH"
+            }
+          ],
+          "changelog": [
+            {
+              "date": "2026-07-11",
+              "fix": "block-2b FAIL rebuild: removed mid-single-digits real-scale leak; genericized Amazon + retail-apocalypse phrasing; P/S EV/S P/E recomputed from packet figures."
+            },
+            {
+              "date": "2026-08-31",
+              "fix": "sanitizer repair: scaled the Q4 per-share dollar fields by the packet's 2.1 factor (0.10/0.12 -> 0.21/0.25) and removed unsupported FY-2 GAAP net income. No thesis, resolution, or expected class changed."
+            }
+          ],
+          "_file": "boot_2017.json"
+        },
+        "packet_sha256": "45f904723995d0cfd0f93907a1cbe41f0b15edc1c72bed7c4972b19d7285537f"
+      },
+      {
+        "packet": {
+          "case_id": "ttcf_t2",
+          "alias": "PVF",
+          "category": "C",
+          "grading": "exit",
+          "real": "TTCF @ 2021-08-16 (~$17.50); Q2-21 miss + guidance cut",
+          "freeze_date": "2021-08-16",
+          "rescale_factor": 3.7,
+          "synthetic": false,
+          "expected_classes": [
+            "sell"
+          ],
+          "positioned": true,
+          "positions": "The high-potential sleeve HOLDS PVF from an earlier entry at $74.95/share (~1% of portfolio at entry, sized as an accepted-total-loss slot per the sleeve mandate). Current price $64.75 -> unrealized P&L -14%. Entered three quarters ago. Portfolio context otherwise unchanged: diversified equity core, ample cash. The question is what to do with the EXISTING position: hold / add / trim / exit.",
+          "constraints_extra": "exit_rule",
+          "run_order": 33,
+          "contamination_terms": [
+            "Tattooed Chef",
+            "TTCF",
+            "Ittella",
+            "Galletti",
+            "Forum Merger",
+            "Costco",
+            "Walmart",
+            "Sam's Club",
+            "Club Foods",
+            "Kroger",
+            "Karsten",
+            "New Mexico Food"
+          ],
+          "resolution": {
+            "price_at_freeze_real": 17.5,
+            "price_at_horizon_real": 0.0,
+            "horizon_label": "terminal (Chapter 11 2023-07; equity ~zero)",
+            "benchmark_return_pct": -100,
+            "note": "ride-to-zero benchmark; real anchors per run_ttcf.py docstring"
+          },
+          "sources": [
+            {
+              "fact": "Q2-2021 results: revenue $50.7M (+45.9%), GM 15.7%, GAAP net loss -$53.2M incl a one-time non-cash $46.0M deferred-tax valuation allowance; first consensus miss; GM guide CUT to 16-22% from the 20-25% guided at Q1 (2021-05-12 PR); adj-EBITDA guide flipped to negative $14-17M from positive $2-4M",
+              "url": "https://www.globenewswire.com/news-release/2021/08/12/2280137/0/en/Tattooed-Chef-Reports-Second-Quarter-2021-Financial-Results.html",
+              "date": "2021-08-12"
+            },
+            {
+              "fact": "National retail distribution wins: nationwide launch at a top mass retailer (Target, six products, PR 2021-03-10) and ~1,800 stores at the largest US grocer (Kroger, 12 SKUs, PR 2021-07-12)",
+              "url": "https://www.globenewswire.com/news-release/2021/07/12/2261160/0/en/Tattooed-Chef-to-Launch-in-Kroger-Stores-Nationwide.html",
+              "date": "2021-07-12"
+            },
+            {
+              "fact": "Cash acquisitions of food/tortilla plants (New Mexico Food Distributors + Karsten Tortilla Factory, ~$37M total real) for capacity + southwestern line; BOTH closed 2021-05-14, completion PR 2021-05-18",
+              "url": "https://www.globenewswire.com/news-release/2021/05/18/2231349/0/en/Tattooed-Chef-Completes-Acquisition-of-New-Mexico-Food-Distributors-Inc-and-Karsten-Tortilla-Factory-LLC-Reclassifies-Certain-Expenses.html",
+              "date": "2021-05-18"
+            },
+            {
+              "fact": "FY2020 final: revenue $148.5M (+75%), GM 14.6% after reclassifications (reclass detailed in the 2021-05-18 PR)",
+              "url": "https://www.sec.gov/Archives/edgar/data/1741231/000121390021016721/f10k2020_tattooedchef.htm",
+              "date": "2021-03-19"
+            }
+          ],
+          "analyst_reports": [
+            {
+              "agent_role": "fundamentals",
+              "report_name": "fundamentals/PVF",
+              "company": "Provida Foods (alias PVF)",
+              "as_of": "current",
+              "market_cap_usd_m": 5300,
+              "share_price_usd": 64.75,
+              "balance_sheet": {
+                "cash_and_equivalents_usd_m": 519,
+                "total_debt_usd_m": 10,
+                "share_count_note": "share count is ~30% higher than at entry (warrant exercises/exchanges from the listing structure)",
+                "note": "still cash-rich; just spent ~137 cash on two tortilla/food-plant acquisitions to add capacity and a southwestern product line"
+              },
+              "annual_income_statement": [
+                {
+                  "fy": "FY-1 (the entry-year)",
+                  "revenue_usd_m": 549,
+                  "revenue_growth_pct": 75,
+                  "gross_margin_pct": 14.6,
+                  "note": "final figures came in slightly below the originally reported 15.9% GM after reclassifications"
+                }
+              ],
+              "latest_quarter": {
+                "which": "Q0 = Q2 of the current FY, reported ~4 days ago",
+                "revenue_usd_m": 188,
+                "revenue_growth_yoy_pct": 45.9,
+                "gross_margin_pct": 15.7,
+                "gaap_net_loss_usd_m": -197,
+                "net_loss_note": "includes a one-time NON-CASH ~170 deferred-tax valuation allowance (the company wrote off its own deferred tax assets — an accounting judgment that future taxable income is not probable); ex-item operating loss ~-27",
+                "note": "FIRST revenue miss vs consensus (~188 vs ~200 expected); stock fell ~15% on the print"
+              },
+              "guidance": {
+                "fy_revenue_usd_m": "870-895 maintained (+~59%)",
+                "gross_margin_pct": "CUT to 16-22 from 20-25",
+                "adj_ebitda_usd_m": "CUT to -52 to -63, from +7 to +15 — the year flips from profitable to a meaningful loss",
+                "cited": "freight/logistics cost inflation, outside storage fees, public-company legal/accounting costs, and heavy planned marketing spend for the retail expansion"
+              },
+              "customer_concentration": {
+                "top_2_customers_pct_of_revenue": 71,
+                "split_pct": [
+                  39,
+                  32
+                ]
+              },
+              "valuation": {
+                "ps_on_fy_guide": 6.0,
+                "pe_trailing": null,
+                "price_action": "stock -14% vs the sleeve's entry, -38% from its all-time high; still up a lot vs the pre-listing price"
+              },
+              "confidence": "HIGH"
+            },
+            {
+              "agent_role": "news",
+              "report_name": "news/PVF",
+              "business_description": "Plant-forward frozen-food brand (see prior coverage): family-founded, vertically integrated, converting warehouse-club private-label volume into a branded mass-retail rollout. The entry thesis was: category tailwind + 75% growth + brand conversion + cheap-ish vs the category leader, with milestones of (a) branded distribution expansion beyond the club channel, (b) gross-margin expansion toward 20%+ as brand mix rises, (c) reduced customer concentration.",
+              "recent_developments": [
+                "Mass-retail door expansion IS happening: the brand landed a nationwide launch at one of the largest mass-market retailers plus ~1,800 stores of the largest grocery chain, and management says branded products will be in over 12,000 retail stores by the end of next quarter.",
+                "But the P&L is moving AWAY from the thesis: gross margin guidance cut hard (freight, storage, input costs), full-year EBITDA flipped from positive to a sizable loss, and management concedes marketing spend to win the new shelf space will run heavy 'for several quarters'.",
+                "Customer concentration has NOT improved yet (top-2 still ~71%), and much of the club volume remains rotational.",
+                "Two capacity acquisitions (cash) diversify into southwestern/tortilla products — some analysts question the strategic focus of buying low-margin co-packing plants during a brand build-out.",
+                "The plant-based theme has cooled sharply: the category's pure-play leader has repeatedly missed estimates and the whole cohort has de-rated."
+              ],
+              "macro_context": "Reopening economy; freight and food-input inflation squeezing every food manufacturer; speculative listing-vehicle cohort broadly deflating.",
+              "confidence": "HIGH"
+            }
+          ],
+          "changelog": [
+            {
+              "date": "2026-07-11",
+              "fix": "temporal audit: Q2-2021 PR date 2021-08-12 CONFIRMED, URL pinned; net loss corrected -$53.3M -> -$53.2M; prior-guidance baselines VERIFIED against the Q1-2021 PR of 2021-05-12 (GM 20-25%, adj-EBITDA +$2-4M) so the cut/flip framing stands with sources."
+            },
+            {
+              "date": "2026-07-11",
+              "fix": "ACQUISITIONS VERIFIED: both New Mexico Food Distributors AND Karsten Tortilla Factory closed 2021-05-14 for ~$37.0M cash total (completion PR 2021-05-18) — well before the 2021-08-16 freeze; packet 'two acquisitions ~$37M' text stands; source date corrected 2021-05-17 -> 2021-05-18 and URL pinned."
+            },
+            {
+              "date": "2026-07-11",
+              "fix": "FACTUAL FIX: distribution wins were NOT 'two largest mass retailers + drug chain' — pre-freeze reality was Target nationwide (PR 2021-03-10) + Kroger ~1,800 stores (PR 2021-07-12); no Walmart deal and no drug-store chain existed before the freeze (Walmart expansion came a year later). Source fact and news bullet rewritten accordingly (12,000-store quarter-end target from the Q2 PR added, so the expansion story is not weakened). FY2020 10-K date 2021-03-19 CONFIRMED (EDGAR), URL pinned. verify flags cleared."
+            }
+          ],
+          "_file": "ttcf_t2.json"
+        },
+        "packet_sha256": "5b6de0e223b41ea74f388b9d9e321833f155fefa90dfa2cd2d5cb2f72b689d72"
+      }
+    ]
+  },
+  "finished": "2026-10-23T10:48:24.370374+00:00"
+}

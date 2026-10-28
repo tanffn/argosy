@@ -1,0 +1,32 @@
+{
+  "protocol": "discovery_screen_grader_v1",
+  "controls_passed": false,
+  "cases": [
+    {
+      "case_id": "nlf_synthetic_v3",
+      "partition": "control",
+      "qualified": true,
+      "status": "reviewed",
+      "screen_go": true,
+      "verdict": "BUY",
+      "expected_class_agreement": true,
+      "research_verdict_not_order": true
+    },
+    {
+      "case_id": "omk_synthetic",
+      "partition": "control",
+      "qualified": false,
+      "status": "reviewed",
+      "screen_go": false,
+      "verdict": null,
+      "expected_class_agreement": false,
+      "research_verdict_not_order": true
+    }
+  ],
+  "status": "incomplete",
+  "unattempted": [
+    "boot_2017_discovery_v2",
+    "gpro_2016_discovery_v2"
+  ],
+  "run_sha256": "8a5993076ece324b324387a3633939138d6d65b05aa163ac5f86cfec49678447"
+}

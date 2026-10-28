@@ -1,0 +1,111 @@
+{
+  "status": "incomplete",
+  "qualification_protocol": "case_bound_v2",
+  "recorded_protocol_version": 3,
+  "controls_passed": true,
+  "historical_interpretation_allowed": true,
+  "cases": [
+    {
+      "case_id": "nlf_synthetic_v3",
+      "synthetic": true,
+      "action": "buy",
+      "qualified": true,
+      "exclusion_reason": null,
+      "matches_expected_class": true,
+      "confidence": "MEDIUM",
+      "size": 15000.0,
+      "size_units": "currency",
+      "rationale": "Buy a starter NLF position, about 1.5% of the portfolio. This is a niche software company that just became reliably profitable and holds more cash than debt. Its existing customers keep spending more each year: every $100 they paid last year now brings in $122. Yet the market prices it at only about three times yearly sales, which is low for 31% growth. The main risk is a small market, plus a big software vendor bundling a 'good enough' rival product. That is why we keep the size modest.",
+      "falsifiers": [
+        "Retention economics break. Metric: net revenue retention (NRR), the ratio of this year's revenue from existing customers to last year's. Source: company quarterly disclosure via fundamentals/NLF. Baseline as-of Q0: 122%, above 120% for three straight quarters. Breach: NRR falls below 110% for two consecutive quarterly prints, OR below 105% in any single quarter (a level showing expansion inside plants has stalled). Transition: BUY->EXIT. Only the single-quarter <105% leg is armed as a typed trigger; the two-quarter <110% leg stays qualitative.",
+        "Pricing power erodes, consistent with ERP bundling or competitive discounting. Metric: annual gross margin. Source: annual income statement via fundamentals/NLF. Baseline as-of FY-1: 74.5%, rising from 71% in FY-3 and 73% in FY-2. Breach: gross margin falls below 71% (back below the FY-3 level) in a full fiscal year, or for two consecutive quarters if quarterly gross margin is disclosed. Transition: BUY->EXIT. Kept qualitative because the annual-vs-two-quarter condition cannot be captured by a single point-check.",
+        "Market ceiling reached (the small-TAM bear case confirmed). Metric: year-over-year revenue growth, with NRR as a companion check. Source: quarterly results via fundamentals/NLF. Baseline as-of Q0: revenue +31% YoY and NRR 122%. Breach: revenue growth below 15% YoY for two consecutive quarters while NRR is simultaneously below 115%. Transition: BUY->EXIT. This is a compound duration condition, so it is qualitative only with no typed trigger.",
+        "Cash generation reverses on an operating basis. Metric: trailing-twelve-month free cash flow, after stripping one-time items such as legal settlements, restructuring charges, or tax one-offs. Source: cash-flow statement via fundamentals/NLF. Baseline as-of FY-1: +$55M, the first positive year. Context: stock-based compensation is about 8% of revenue, so FCF net of stock compensation is already near breakeven and leaves little cushion. Breach: TTM operating free cash flow turns negative (below $0). Transition: BUY->EXIT."
+      ],
+      "next_validation_point": "Next quarterly earnings print (Q1 after the just-reported Q0), estimated ~3 months out. Test whether net revenue retention (NRR) stays above 120% for a fourth straight quarter, gross margin holds at or above the FY-1 level of 74.5%, and year-over-year revenue growth stays near the Q0 level of 31%.",
+      "review_violations": [],
+      "review_warnings": [
+        "The FCF falsifier calls FY-1 FCF of +$55M 'the first positive year'. The packet gives FCF only for FY-1, with the note 'first full year of GAAP profit; FCF positive', so 'first positive FCF year' is an unsupported inference. It is baseline context only and doesn't drive any threshold.",
+        "Packet top-level `sources` is empty. cited_sources ('fundamentals/NLF', 'news/NLF') match the analyst_reports report_name fields word for word, so this is not a made-up citation, but strictly there is no `<sources>` block to cite against.",
+        "The revisit trigger uses metric free_cash_flow_ttm_usd_m, but the packet only gives annual FY-1 FCF, with no TTM FCF or cash-flow statement detail. The falsifier names 'cash-flow statement via fundamentals/NLF' as its source, which the packet only partly contains.",
+        "'Estimated ~3 months out' for the next earnings print assumes a normal quarterly reporting schedule. The packet does not state the reporting date or cadence.",
+        "The order pairs a market order with time_in_force GTC, which is unusual (market orders usually run DAY). This is a minor execution-parameter inconsistency, not a fidelity problem.",
+        "The $13 HOLD->ADD price trigger (~29% below $18.40) is a level the packet does not support. It is clearly labeled as a re-check conditioned on NRR and gross margin, so it is not a thesis falsifier, but the price level itself has no basis in the packet.",
+        "'High-potential sleeve uses ~1.5 of its ~5 percentage points' could read as if the sleeve is currently empty. The packet does not state current sleeve usage."
+      ],
+      "grading_mismatches": []
+    },
+    {
+      "case_id": "omk_synthetic",
+      "synthetic": true,
+      "action": "hold",
+      "qualified": true,
+      "exclusion_reason": null,
+      "matches_expected_class": true,
+      "confidence": "MEDIUM",
+      "size": 0.0,
+      "size_units": "shares",
+      "rationale": "Pass on OMK. Do not start a position, not even a small starter. The core problem is that once OMK pays for ads to win customers, each sale still loses money. That never improved as the company grew. Sales growth fell from 62% to under 7% in two years. Over the same period the profit kept on each sale also shrank. The 'home food platform' rebrand doesn't fix that, yet the stock is still priced like a healthy grower. Key risk: debt exceeds cash, and cash covers less than two years of losses.",
+      "falsifiers": [
+        "TTM contribution profit after marketing (source: company quarterly disclosures as summarized in fundamentals/OMK; as-of Q0 just reported, FY-0 baseline -$55M and latest quarter -$18M) turns positive (> $0). Persistence is built in because TTM spans four quarters. Proves unit economics now clear customer-acquisition cost, which is the load-bearing reason for this pass. Transition: HOLD->ADD (re-underwrite for a 0.5% / $5,000 starter).",
+        "Quarterly gross margin (source: company quarterly income statement via fundamentals/OMK; as-of Q0, currently 27.5% vs FY-0 28.2% and FY-1 31.5%) recovers to >= 31.5% for two consecutive quarters, with year-over-year revenue growth not negative (Q0 baseline +4.5%). This would show the discounting and shipping squeeze reversed without buying volume. Qualitative compound condition, so no mechanical trigger. Transition: HOLD->ADD (re-review for a starter).",
+        "Survival cliff removed (source: 10-Q cash-flow statement and balance sheet via fundamentals/OMK; as-of FY-0/Q0, cash $480M vs total debt $620M, so net debt is ~$140M; FY-1 free cash flow -$290M, and cash funds under 2 years of burn). The test is met when TTM free cash flow reaches >= $0 and that is achieved without a new equity raise or added debt, held for two consecutive quarterly reports. Compound condition, so no trigger. Transition: HOLD->ADD (re-review).",
+        "Add-on grocery 'platform attach' shows up in reported numbers (source: company segment/KPI disclosure via news/OMK; as-of Q0, no attach revenue or attach-rate metric is disclosed, so baseline is none reported). The test is met when management discloses attach revenue reaching >= 10% of quarterly revenue (Q0 revenue $310M, so ~$31M) at positive contribution, for two consecutive quarters. Qualitative and contingent on new disclosure, so no trigger. Transition: HOLD->ADD (re-review)."
+      ],
+      "next_validation_point": "OMK's next quarterly earnings print, estimated about 3 months out (relative; no absolute date in the packet). It tests whether quarterly contribution profit after marketing (Q0: -$18M) and gross margin (Q0: 27.5%) stop deteriorating.",
+      "review_violations": [],
+      "review_warnings": [
+        "Falsifier 3 gives its source as '10-Q cash-flow statement and balance sheet'. The packet never mentions 10-Q filings, so this provenance detail is embellished. The figures themselves are correct.",
+        "The rationale says the unit-economics problem 'never improved as the company grew'. The packet gives contribution-after-marketing only for FY-0 and Q0; 'never cleared contribution after CAC' comes from the news report's bear case and is presented as established fact.",
+        "The packet does not show 'no attach revenue disclosed' directly; it is inferred from absence. The 10% attach-revenue threshold is chosen by the model, not taken from the packet.",
+        "The FY-0 annual contribution (-$55M) is used as the TTM baseline even though Q0 falls after FY-0, so the true TTM as of Q0 is not given. It is labelled 'FY-0 baseline', which makes this acceptable but approximate.",
+        "The revisit trigger and falsifiers use the transition 'HOLD->ADD' for a name with no position; an initiation (do_not_initiate -> BUY starter) would be more precise.",
+        "The order fields order_type='market', time_in_force='GTC' and size_units='shares' are filled in on a zero-size, no-trade output. They have no effect but are semantically meaningless.",
+        "The cited_sources are the packet report_names ('fundamentals/OMK', 'news/OMK'). The top-level sources array is empty, so these ids can be traced to the packet but not to a formal sources block."
+      ],
+      "grading_mismatches": []
+    },
+    {
+      "case_id": "boot_2017",
+      "synthetic": false,
+      "action": null,
+      "qualified": false,
+      "exclusion_reason": "disqualified_sanitizer",
+      "matches_expected_class": false,
+      "confidence": null,
+      "size": null,
+      "size_units": null,
+      "rationale": null,
+      "falsifiers": [],
+      "next_validation_point": null,
+      "review_violations": [],
+      "review_warnings": [],
+      "grading_mismatches": []
+    },
+    {
+      "case_id": "ttcf_t2",
+      "synthetic": false,
+      "action": null,
+      "qualified": false,
+      "exclusion_reason": "disqualified_sanitizer",
+      "matches_expected_class": false,
+      "confidence": null,
+      "size": null,
+      "size_units": null,
+      "rationale": null,
+      "falsifiers": [],
+      "next_validation_point": null,
+      "review_violations": [],
+      "review_warnings": [],
+      "grading_mismatches": []
+    }
+  ],
+  "limitations": [
+    "Production Trader plus independent benchmark agents, not the full live allocation workflow.",
+    "Curated cases test failure modes, not an unbiased sample or proof of investment alpha.",
+    "Masking reduces but cannot eliminate model-memory contamination.",
+    "Market returns are gross diagnostics, not sized trades or after-tax family performance.",
+    "No live recommendations, predictions, approvals, or fills are written by this runner."
+  ],
+  "run_sha256": "20691a4520d9d09be2bd64e24cbd88f860cfcdd613ef25780f83426437846748"
+}

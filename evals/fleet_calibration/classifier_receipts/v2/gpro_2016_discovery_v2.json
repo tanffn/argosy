@@ -1,0 +1,73 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 8,
+  "tokens_out": 3594,
+  "response_raw": "{\"category\": \"B\", \"grading\": \"trap\", \"freeze_date\": \"2016-06-01\", \"classification_rationale\": \"Reconstruction burn: category B / grading trap / freeze 2016-06-01 are copied exactly from frozen_taxonomy and were not re-assessed. Evidence available before the freeze supports a trap reading. GoPro's Q1 2016 results release (SEC Exhibit 99.1, dated 2016-05-05) shows: revenue of $183.536M, down about 49% from $363.1M a year earlier; a GAAP operating loss of $121.435M; a net loss of $107.459M, against $16.8M net income in Q1 2015; operating cash flow of -$33.265M; and capex of $8.219M. Cash plus marketable securities were about $388.7M ($248.717M + $139.951M). Total liabilities were $249.534M. The release also covered a January 2016 workforce reduction, with $6.508M in restructuring costs, and a delay to the Karma drone, which management said would now launch into the holidays. Even so, management kept full-year 2016 revenue guidance at $1.35B–$1.5B. Q1 revenue of $183.5M meant the remaining three quarters had to carry roughly $1.17B–$1.32B. This turnaround story depends on a product that has been delayed, so it looks like a trap. Management's positive points (sell-through about 50% above sell-in, lower channel inventory) are recorded as counter-evidence. They were not left out. LIMITATIONS: (1) The freeze-day close of $10.32 in the manifest could NOT be verified. Yahoo Finance history and stockanalysis.com history only showed recent rows, and a focused search returned no 2016-06-01 daily bar. The price receipt and the market cap derived from it (about $1,419.4M raw = $10.32 × 137.543M diluted weighted shares) are therefore NOT certified and are left out of sourced_facts. The domain-refresh agent should get an archived daily bar for that date from a primary or vendor source. (2) Only the issuer's own release was fetched. No contemporaneous analyst or news coverage was gathered. Confidence MEDIUM: the issuer's primary-source financials were checked to the exact figures in thousands, but the market-price receipt is missing. Retrieval used 4 fetches and 1 search, within the 6-fetch / 2-search budget.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"GoPro Q1 2016 (three months ended 2016-03-31) revenue was $183,536 thousand, versus $363.1M in Q1 2015 (about a 49% year-over-year decline).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Q1 2016 GAAP operating loss was $(121,435) thousand; GAAP gross margin was 32.5%.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Q1 2016 net loss was $(107,459) thousand, versus net income of $16.8M in Q1 2015.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Q1 2016 diluted weighted-average shares were 137,543 thousand.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Q1 2016 net cash used in operating activities was $(33,265) thousand; purchases of property and equipment were $(8,219) thousand.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Balance sheet at 2016-03-31: cash and cash equivalents $248,717 thousand; marketable securities $139,951 thousand; total liabilities $249,534 thousand.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Management kept full-year 2016 revenue guidance: 'We continue to estimate our full year 2016 revenue to be in the range of $1.35 billion to $1.5 billion.' No Q2 2016 guidance was given.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"The Karma drone launch was delayed; CEO Nicholas Woodman said 'the upside is that Karma's launch should now benefit from the holidays.'\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Q1 2016 included $6,508 thousand of restructuring costs from a global workforce reduction in January 2016.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}, {\"fact\": \"Counter-evidence from management: 'Unit sell-thru rates were approximately 50% higher than sell-in which drove global inventory levels down.'\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm\", \"publication_date\": \"2016-05-05\"}]}",
+  "output": {
+    "category": "B",
+    "grading": "trap",
+    "freeze_date": "2016-06-01",
+    "classification_rationale": "Reconstruction burn: category B / grading trap / freeze 2016-06-01 are copied exactly from frozen_taxonomy and were not re-assessed. Evidence available before the freeze supports a trap reading. GoPro's Q1 2016 results release (SEC Exhibit 99.1, dated 2016-05-05) shows: revenue of $183.536M, down about 49% from $363.1M a year earlier; a GAAP operating loss of $121.435M; a net loss of $107.459M, against $16.8M net income in Q1 2015; operating cash flow of -$33.265M; and capex of $8.219M. Cash plus marketable securities were about $388.7M ($248.717M + $139.951M). Total liabilities were $249.534M. The release also covered a January 2016 workforce reduction, with $6.508M in restructuring costs, and a delay to the Karma drone, which management said would now launch into the holidays. Even so, management kept full-year 2016 revenue guidance at $1.35B–$1.5B. Q1 revenue of $183.5M meant the remaining three quarters had to carry roughly $1.17B–$1.32B. This turnaround story depends on a product that has been delayed, so it looks like a trap. Management's positive points (sell-through about 50% above sell-in, lower channel inventory) are recorded as counter-evidence. They were not left out. LIMITATIONS: (1) The freeze-day close of $10.32 in the manifest could NOT be verified. Yahoo Finance history and stockanalysis.com history only showed recent rows, and a focused search returned no 2016-06-01 daily bar. The price receipt and the market cap derived from it (about $1,419.4M raw = $10.32 × 137.543M diluted weighted shares) are therefore NOT certified and are left out of sourced_facts. The domain-refresh agent should get an archived daily bar for that date from a primary or vendor source. (2) Only the issuer's own release was fetched. No contemporaneous analyst or news coverage was gathered. Confidence MEDIUM: the issuer's primary-source financials were checked to the exact figures in thousands, but the market-price receipt is missing. Retrieval used 4 fetches and 1 search, within the 6-fetch / 2-search budget.",
+    "sourced_facts": [
+      {
+        "fact": "GoPro Q1 2016 (three months ended 2016-03-31) revenue was $183,536 thousand, versus $363.1M in Q1 2015 (about a 49% year-over-year decline).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Q1 2016 GAAP operating loss was $(121,435) thousand; GAAP gross margin was 32.5%.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Q1 2016 net loss was $(107,459) thousand, versus net income of $16.8M in Q1 2015.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Q1 2016 diluted weighted-average shares were 137,543 thousand.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Q1 2016 net cash used in operating activities was $(33,265) thousand; purchases of property and equipment were $(8,219) thousand.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Balance sheet at 2016-03-31: cash and cash equivalents $248,717 thousand; marketable securities $139,951 thousand; total liabilities $249,534 thousand.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Management kept full-year 2016 revenue guidance: 'We continue to estimate our full year 2016 revenue to be in the range of $1.35 billion to $1.5 billion.' No Q2 2016 guidance was given.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "The Karma drone launch was delayed; CEO Nicholas Woodman said 'the upside is that Karma's launch should now benefit from the holidays.'",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Q1 2016 included $6,508 thousand of restructuring costs from a global workforce reduction in January 2016.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      },
+      {
+        "fact": "Counter-evidence from management: 'Unit sell-thru rates were approximately 50% higher than sell-in which drove global inventory levels down.'",
+        "url": "https://www.sec.gov/Archives/edgar/data/1500435/000150043516000088/gpro2016-03x31exh991xer.htm",
+        "publication_date": "2016-05-05"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "case_id": "gpro_2016_discovery_v2",
+  "classifier_input_sha256": "12d07261af41b6f91f382b192cee6cb021dedbdf02f83fd45c2cb68f38d89261",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

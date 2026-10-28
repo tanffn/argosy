@@ -1,0 +1,243 @@
+{
+  "case_id": "aehr_2020_discovery_v1",
+  "alias": "LZX",
+  "category": "A",
+  "grading": "entry",
+  "real": "AEHR @ 2020-07-17",
+  "market_symbol": "AEHR",
+  "freeze_date": "2020-07-17",
+  "rescale_factor": 4.3,
+  "synthetic": false,
+  "positioned": false,
+  "positions": "No existing position in LZX. Fictional diversified portfolio; research initiation only.",
+  "constraints_extra": null,
+  "expected_classes": [
+    "buy"
+  ],
+  "contamination_terms": [
+    "AEHR",
+    "Aehr Test Systems",
+    "Gayn Erickson",
+    "FOX-XP",
+    "WaferPak"
+  ],
+  "sources": [
+    {
+      "fact": "Pre-freeze issuer results, balance sheet and outlook; all amounts and derivations below are from these original units.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+      "date": "2020-07-16",
+      "source_to_masked_mapping": [
+        {
+          "masked_field": "analyst_reports[0].share_price_usd",
+          "raw_value": 2.09,
+          "masked_value": 8.987,
+          "transform": "multiply by4.3",
+          "units": "USD per share",
+          "publication_date": "2020-07-17",
+          "source_url": "https://finance.yahoo.com/quote/AEHR/history/",
+          "original_units": "USD per share",
+          "source_locator": "Nominal market close on freeze date",
+          "reporting_period": "2020-07-17"
+        },
+        {
+          "masked_field": "analyst_reports[0].annual_revenue_usd_m",
+          "raw_value": 22.291,
+          "masked_value": 95.8513,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Fiscal year ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].annual_net_income_usd_m",
+          "raw_value": -2.802,
+          "masked_value": -12.0486,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Fiscal year ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_revenue_usd_m",
+          "raw_value": 3.773,
+          "masked_value": 16.2239,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_net_income_usd_m",
+          "raw_value": -2.885,
+          "masked_value": -12.4055,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].cash_usd_m",
+          "raw_value": 5.433,
+          "masked_value": 23.3619,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].short_term_debt_usd_m",
+          "raw_value": 0.653,
+          "masked_value": 2.8079,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].long_term_debt_usd_m",
+          "raw_value": 1.026,
+          "masked_value": 4.4118,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].backlog_usd_m",
+          "raw_value": 2.5,
+          "masked_value": 10.75,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2020-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].next_year_revenue_low_usd_m",
+          "raw_value": 25,
+          "masked_value": 107.5,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].next_year_revenue_high_usd_m",
+          "raw_value": 28,
+          "masked_value": 120.4,
+          "transform": "multiply by4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-16",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-05-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].market_cap_usd_m",
+          "raw_value": 48.19539999999999,
+          "masked_value": 207.24022,
+          "transform": "price*weighted shares*4.3",
+          "units": "USD millions",
+          "publication_date": "2020-07-17",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+          "derivation": {
+            "price": 2.09,
+            "weighted_diluted_shares_m": 23.06
+          },
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Approximate capitalization derived from market close and reported weighted shares",
+          "reporting_period": "2020-07-17"
+        }
+      ],
+      "unscaled_share_quantity_m": 23.06,
+      "share_count_period": "Quarter ended 2020-05-31 weighted-average diluted shares"
+    },
+    {
+      "fact": "Freeze-day nominal close $2.09; provider daily history read without any subsequent return observations.",
+      "url": "https://finance.yahoo.com/quote/AEHR/history/",
+      "date": "2020-07-17",
+      "market_bar_receipt": {
+        "date": "2020-07-17",
+        "close": 2.09,
+        "currency": "USD",
+        "source_type": "retrospective daily bar, not an archived data vintage",
+        "construction_note": "Verified no subsequent split adjustments in provider action metadata; no subsequent prices or returns used.",
+        "frozen_snapshot_boundary": "After close on freeze date; earliest hypothetical entry strictly later"
+      }
+    }
+  ],
+  "resolution": null,
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/LZX",
+      "company": "LZX anonymized issuer",
+      "as_of": "T0 frozen snapshot",
+      "share_count_basis": "Latest reported weighted-average diluted shares, not a verified period-end count",
+      "shares_m": 23.06,
+      "confidence": "MEDIUM",
+      "share_price_usd": 8.987,
+      "annual_revenue_usd_m": 95.8513,
+      "annual_net_income_usd_m": -12.0486,
+      "quarter_revenue_usd_m": 16.2239,
+      "quarter_net_income_usd_m": -12.4055,
+      "cash_usd_m": 23.3619,
+      "short_term_debt_usd_m": 2.8079,
+      "long_term_debt_usd_m": 4.4118,
+      "backlog_usd_m": 10.75,
+      "next_year_revenue_low_usd_m": 107.5,
+      "next_year_revenue_high_usd_m": 120.4,
+      "market_cap_usd_m": 207.24022,
+      "market_cap_basis": "Derived price times diluted weighted shares; approximation, not reported market capitalization"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/LZX",
+      "business_description": "A small semiconductor test-and-reliability equipment supplier selling systems and recurring consumables for optical-interconnect devices and wide-bandgap power semiconductors used in electrification.",
+      "developments": [
+        "Latest quarter sales fell versus the prior-year quarter; customers delayed production ramps. Annual revenue modestly grew and the company remained loss-making.",
+        "Management expects next-year revenue growth12-26% and profitability. Several existing customers and more than a dozen prospects are considering production ramps over the next one-to-two fiscal years.",
+        "Backlog fell to one third of the prior-year level. Customer promises are not orders; working capital, losses and customer concentration may threaten the ramp."
+      ],
+      "as_of": "T0",
+      "confidence": "MEDIUM"
+    }
+  ],
+  "changelog": [
+    {
+      "date": "2026-10-23",
+      "fix": "NEW discovery case version with complete original-to-masked monetary mapping, pre-freeze primary sources and explicit nominal price receipt. Original fixtures/failed runs unchanged. No historical outcome enters analyst inputs."
+    },
+    {
+      "date": "2026-10-23",
+      "fix": "Independent pre-scoring review corrected cited table values (GPRO revenue183.536; SFIX revenue535.589/net loss18.846; AEHR quarter revenue3.773), added units/period provenance and BOOT extra-week comparability, expanded issuer denylist. No expected stage labels or business theses changed."
+    }
+  ]
+}

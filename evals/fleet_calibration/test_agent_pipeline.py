@@ -184,7 +184,7 @@ def test_calibration_agents_follow_production_model_policy() -> None:
         CalibrationReviewAgent(),
         CalibrationGradingAgent(),
     )
-    assert {agent.model for agent in agents} == {"claude-opus-5"}
+    assert {agent.model for agent in agents} == {"claude-opus-5-5"}
 
 
 def test_score_preview_does_not_crash_cp1252_console() -> None:

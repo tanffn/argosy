@@ -1,0 +1,63 @@
+{
+  "stage": 1,
+  "agent_role": "calibration_classifier_sourcing",
+  "model": "claude-opus-5-5",
+  "tokens_in": 6,
+  "tokens_out": 4155,
+  "response_raw": "{\"category\": \"A\", \"grading\": \"entry\", \"freeze_date\": \"2020-07-17\", \"classification_rationale\": \"This is a reconstruction run. Category A, grading 'entry' and freeze date 2020-07-17 are copied exactly from frozen_taxonomy and were not re-selected. I used 4 of the 6 allowed fetches and none of the 2 searches. Every source is dated on or before the freeze date. I did not use any outcome or retrospective 'why it moved' material. FINANCIALS: All figures match the issuer's FY2020 / Q4 press release (SEC Exhibit 99.1, dated 2020-07-16), checked against the thousands-level statement-of-operations table. In USD thousands: FY net sales 22,291; FY net loss attributable to common shareholders (2,802); Q4 net sales 3,773; Q4 net loss (2,885). Q4 weighted-average diluted shares were 23,060 thousand. At 5/31/20: cash 5,433, current portion of long-term debt 653, long-term debt 1,026. Backlog was $2.5M versus $7.5M a year earlier. FY2021 revenue guidance is $25M–$28M. All of these match the manifest's raw_value fields. PRICE: Yahoo Finance daily history, queried for Jul 15–20 2020, shows a Jul 17 2020 close of $2.09 (O 2.04 / H 2.18 / L 1.88, volume 681,700). Adjusted close equals close, which is consistent with no later split adjustments. Limitation: this is a daily bar read today, not an archived data snapshot from 2020. Only the freeze-day bar was used; no later prices or returns were read. The Jul 16 bar (close $2.44) is also on record because it was returned in the same query window. DERIVED: Market cap is about $2.09 × 23.06M = $48.2M, using Q4 weighted diluted shares rather than actual shares outstanding, so it is approximate. This matches the manifest's 48.1954. CAVEATS: (1) The release does not mention a PPP loan. The $1.679M of debt (653 + 1,026) is reported only as long-term debt, so I do not describe it as PPP. (2) My two readings of the release disagreed on how the silicon carbide orders are worded. One reading said 'significant new customer orders for silicon carbide devices'; the other said only 'initial orders from leading semiconductor device supplier for a FOX multi-wafer system', with no dollar amount. The silicon carbide fact below therefore uses the conservative wording. (3) The 48% consumables share of FY2020 revenue came from a single reading of the release; I did not check it against the table. CONFIDENCE: HIGH for the financials (primary SEC source, checked to the thousands-level table). MEDIUM for the price bar (a single secondary source read today, not an archived snapshot), which brings the packet overall to MEDIUM.\", \"confidence\": \"MEDIUM\", \"sourced_facts\": [{\"fact\": \"Aehr Test Systems reported FY2020 (fiscal year ended 2020-05-31) net sales of $22,291 thousand (~$22.3M) and net loss attributable to common shareholders of $(2,802) thousand (~-$2.8M); non-GAAP net loss for the year was ~$27 thousand.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-16\"}, {\"fact\": \"Q4 FY2020 (three months ended 2020-05-31): net sales $3,773 thousand; net loss attributable to common shareholders $(2,885) thousand; non-GAAP net loss ~$720 thousand; weighted-average diluted shares 23,060 thousand (FY weighted diluted shares 22,882 thousand).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-16\"}, {\"fact\": \"Balance sheet at 2020-05-31: cash and cash equivalents $5,433 thousand; current portion of long-term debt $653 thousand; long-term debt $1,026 thousand.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-16\"}, {\"fact\": \"Backlog as of 2020-05-31 was $2.5 million, down from $7.5 million a year earlier.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-16\"}, {\"fact\": \"FY2021 outlook (fiscal year ending 2021-05-31): the Company expects full-year total revenue between $25 million and $28 million, versus FY2020 net sales of $22.3 million.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-16\"}, {\"fact\": \"The release cites new design-win and initial orders for FOX-family wafer-level test and burn-in systems: an initial order from a major silicon photonics customer, an initial order from the world's largest OSAT for FOX-P products, and initial orders from a leading semiconductor device supplier for a FOX multi-wafer system that the release ties to silicon carbide. No dollar amount is disclosed. Consumables (WaferPak contactors and DiePak carriers) were reported as about 48% of FY2020 revenue (single reading, not checked against the table).\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-16\"}, {\"fact\": \"AEHR's nominal close on the freeze date, 2020-07-17, was $2.09 (open 2.04, high 2.18, low 1.88, volume 681,700). Adjusted close equals close, consistent with no later split adjustments. This is a daily bar read today, not an archived data snapshot. No prices after the freeze date were used.\", \"url\": \"https://finance.yahoo.com/quote/AEHR/history/?period1=1594771200&period2=1595203200\", \"publication_date\": \"2020-07-17\"}, {\"fact\": \"Derived approximate market capitalization at the freeze date: $2.09 close × 23.06M Q4 weighted-average diluted shares ≈ $48.2M. This is approximate because it uses weighted shares rather than shares outstanding.\", \"url\": \"https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm\", \"publication_date\": \"2020-07-17\"}]}",
+  "output": {
+    "category": "A",
+    "grading": "entry",
+    "freeze_date": "2020-07-17",
+    "classification_rationale": "This is a reconstruction run. Category A, grading 'entry' and freeze date 2020-07-17 are copied exactly from frozen_taxonomy and were not re-selected. I used 4 of the 6 allowed fetches and none of the 2 searches. Every source is dated on or before the freeze date. I did not use any outcome or retrospective 'why it moved' material. FINANCIALS: All figures match the issuer's FY2020 / Q4 press release (SEC Exhibit 99.1, dated 2020-07-16), checked against the thousands-level statement-of-operations table. In USD thousands: FY net sales 22,291; FY net loss attributable to common shareholders (2,802); Q4 net sales 3,773; Q4 net loss (2,885). Q4 weighted-average diluted shares were 23,060 thousand. At 5/31/20: cash 5,433, current portion of long-term debt 653, long-term debt 1,026. Backlog was $2.5M versus $7.5M a year earlier. FY2021 revenue guidance is $25M–$28M. All of these match the manifest's raw_value fields. PRICE: Yahoo Finance daily history, queried for Jul 15–20 2020, shows a Jul 17 2020 close of $2.09 (O 2.04 / H 2.18 / L 1.88, volume 681,700). Adjusted close equals close, which is consistent with no later split adjustments. Limitation: this is a daily bar read today, not an archived data snapshot from 2020. Only the freeze-day bar was used; no later prices or returns were read. The Jul 16 bar (close $2.44) is also on record because it was returned in the same query window. DERIVED: Market cap is about $2.09 × 23.06M = $48.2M, using Q4 weighted diluted shares rather than actual shares outstanding, so it is approximate. This matches the manifest's 48.1954. CAVEATS: (1) The release does not mention a PPP loan. The $1.679M of debt (653 + 1,026) is reported only as long-term debt, so I do not describe it as PPP. (2) My two readings of the release disagreed on how the silicon carbide orders are worded. One reading said 'significant new customer orders for silicon carbide devices'; the other said only 'initial orders from leading semiconductor device supplier for a FOX multi-wafer system', with no dollar amount. The silicon carbide fact below therefore uses the conservative wording. (3) The 48% consumables share of FY2020 revenue came from a single reading of the release; I did not check it against the table. CONFIDENCE: HIGH for the financials (primary SEC source, checked to the thousands-level table). MEDIUM for the price bar (a single secondary source read today, not an archived snapshot), which brings the packet overall to MEDIUM.",
+    "sourced_facts": [
+      {
+        "fact": "Aehr Test Systems reported FY2020 (fiscal year ended 2020-05-31) net sales of $22,291 thousand (~$22.3M) and net loss attributable to common shareholders of $(2,802) thousand (~-$2.8M); non-GAAP net loss for the year was ~$27 thousand.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-16"
+      },
+      {
+        "fact": "Q4 FY2020 (three months ended 2020-05-31): net sales $3,773 thousand; net loss attributable to common shareholders $(2,885) thousand; non-GAAP net loss ~$720 thousand; weighted-average diluted shares 23,060 thousand (FY weighted diluted shares 22,882 thousand).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-16"
+      },
+      {
+        "fact": "Balance sheet at 2020-05-31: cash and cash equivalents $5,433 thousand; current portion of long-term debt $653 thousand; long-term debt $1,026 thousand.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-16"
+      },
+      {
+        "fact": "Backlog as of 2020-05-31 was $2.5 million, down from $7.5 million a year earlier.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-16"
+      },
+      {
+        "fact": "FY2021 outlook (fiscal year ending 2021-05-31): the Company expects full-year total revenue between $25 million and $28 million, versus FY2020 net sales of $22.3 million.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-16"
+      },
+      {
+        "fact": "The release cites new design-win and initial orders for FOX-family wafer-level test and burn-in systems: an initial order from a major silicon photonics customer, an initial order from the world's largest OSAT for FOX-P products, and initial orders from a leading semiconductor device supplier for a FOX multi-wafer system that the release ties to silicon carbide. No dollar amount is disclosed. Consumables (WaferPak contactors and DiePak carriers) were reported as about 48% of FY2020 revenue (single reading, not checked against the table).",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-16"
+      },
+      {
+        "fact": "AEHR's nominal close on the freeze date, 2020-07-17, was $2.09 (open 2.04, high 2.18, low 1.88, volume 681,700). Adjusted close equals close, consistent with no later split adjustments. This is a daily bar read today, not an archived data snapshot. No prices after the freeze date were used.",
+        "url": "https://finance.yahoo.com/quote/AEHR/history/?period1=1594771200&period2=1595203200",
+        "publication_date": "2020-07-17"
+      },
+      {
+        "fact": "Derived approximate market capitalization at the freeze date: $2.09 close × 23.06M Q4 weighted-average diluted shares ≈ $48.2M. This is approximate because it uses weighted shares rather than shares outstanding.",
+        "url": "https://www.sec.gov/Archives/edgar/data/1040470/000165495420007778/aehr_ex991.htm",
+        "publication_date": "2020-07-17"
+      }
+    ],
+    "confidence": "MEDIUM"
+  },
+  "case_id": "aehr_2020_discovery_v1",
+  "classifier_input_sha256": "23a19da22644f3221762aa732f25c25e600e4da7a85953b7e6e192216d282e59",
+  "verification": {
+    "ok": true,
+    "mismatches": []
+  }
+}

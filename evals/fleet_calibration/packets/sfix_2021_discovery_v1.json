@@ -1,0 +1,268 @@
+{
+  "case_id": "sfix_2021_discovery_v1",
+  "alias": "TQR",
+  "category": "B",
+  "grading": "trap",
+  "real": "SFIX @ 2021-06-08",
+  "market_symbol": "SFIX",
+  "freeze_date": "2021-06-08",
+  "rescale_factor": 2.3,
+  "synthetic": false,
+  "positioned": false,
+  "positions": "No existing position in TQR. Fictional diversified portfolio; research initiation only.",
+  "constraints_extra": null,
+  "expected_classes": [
+    "hold"
+  ],
+  "contamination_terms": [
+    "SFIX",
+    "Stitch Fix",
+    "Katrina Lake",
+    "Elizabeth Spaulding"
+  ],
+  "sources": [
+    {
+      "fact": "Pre-freeze issuer results, balance sheet and outlook; all amounts and derivations below are from these original units.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+      "date": "2021-06-07",
+      "source_to_masked_mapping": [
+        {
+          "masked_field": "analyst_reports[0].share_price_usd",
+          "raw_value": 66.1,
+          "masked_value": 152.03,
+          "transform": "multiply by2.3",
+          "units": "USD per share",
+          "publication_date": "2021-06-08",
+          "source_url": "https://finance.yahoo.com/quote/SFIX/history/",
+          "original_units": "USD per share",
+          "source_locator": "Nominal market close on freeze date",
+          "reporting_period": "2021-06-08"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_revenue_usd_m",
+          "raw_value": 535.589,
+          "masked_value": 1231.8547,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2021-05-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_net_income_usd_m",
+          "raw_value": -18.846,
+          "masked_value": -43.3458,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2021-05-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].quarter_adjusted_ebitda_usd_m",
+          "raw_value": 11.6,
+          "masked_value": 26.68,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2021-05-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].cash_usd_m",
+          "raw_value": 124.737,
+          "masked_value": 286.8951,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2021-05-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].short_term_investments_usd_m",
+          "raw_value": 98.189,
+          "masked_value": 225.8347,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2021-05-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].inventory_usd_m",
+          "raw_value": 215.628,
+          "masked_value": 495.9444,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Quarter/balance sheet ended 2021-05-01"
+        },
+        {
+          "masked_field": "analyst_reports[0].next_quarter_revenue_low_usd_m",
+          "raw_value": 540,
+          "masked_value": 1242.0,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-07-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].next_quarter_revenue_high_usd_m",
+          "raw_value": 550,
+          "masked_value": 1265.0,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-07-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].current_year_revenue_low_usd_m",
+          "raw_value": 2070,
+          "masked_value": 4761.0,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-07-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].current_year_revenue_high_usd_m",
+          "raw_value": 2080,
+          "masked_value": 4784.0,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-07-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].current_year_adjusted_ebitda_low_usd_m",
+          "raw_value": 25,
+          "masked_value": 57.5,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-07-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].current_year_adjusted_ebitda_high_usd_m",
+          "raw_value": 30,
+          "masked_value": 69.0,
+          "transform": "multiply by2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-07",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Issuer condensed statement/outlook row matching the named metric",
+          "reporting_period": "Outlook for fiscal period ending 2021-07-31"
+        },
+        {
+          "masked_field": "analyst_reports[0].market_cap_usd_m",
+          "raw_value": 7052.620141999999,
+          "masked_value": 16221.0263266,
+          "transform": "price*weighted shares*2.3",
+          "units": "USD millions",
+          "publication_date": "2021-06-08",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1576942/000157694221000079/exhibit991-q321.htm",
+          "derivation": {
+            "price": 66.1,
+            "weighted_diluted_shares_m": 106.69622
+          },
+          "original_units": "USD millions (financial statement tables often report USD thousands, divided by1000)",
+          "source_locator": "Approximate capitalization derived from market close and reported weighted shares",
+          "reporting_period": "2021-06-08"
+        }
+      ],
+      "unscaled_share_quantity_m": 106.69622,
+      "share_count_period": "Quarter ended 2021-05-01 weighted-average diluted shares"
+    },
+    {
+      "fact": "Freeze-day nominal close $66.1; provider daily history read without any subsequent return observations.",
+      "url": "https://finance.yahoo.com/quote/SFIX/history/",
+      "date": "2021-06-08",
+      "market_bar_receipt": {
+        "date": "2021-06-08",
+        "close": 66.1,
+        "currency": "USD",
+        "source_type": "retrospective daily bar, not an archived data vintage",
+        "construction_note": "Verified no subsequent split adjustments in provider action metadata; no subsequent prices or returns used.",
+        "frozen_snapshot_boundary": "After close on freeze date; earliest hypothetical entry strictly later"
+      }
+    }
+  ],
+  "resolution": null,
+  "analyst_reports": [
+    {
+      "agent_role": "fundamentals",
+      "report_name": "fundamentals/TQR",
+      "company": "TQR anonymized issuer",
+      "as_of": "T0 frozen snapshot",
+      "share_count_basis": "Latest reported weighted-average diluted shares, not a verified period-end count",
+      "shares_m": 106.69622,
+      "confidence": "MEDIUM",
+      "share_price_usd": 152.03,
+      "quarter_revenue_usd_m": 1231.8547,
+      "quarter_net_income_usd_m": -43.3458,
+      "quarter_adjusted_ebitda_usd_m": 26.68,
+      "cash_usd_m": 286.8951,
+      "short_term_investments_usd_m": 225.8347,
+      "inventory_usd_m": 495.9444,
+      "next_quarter_revenue_low_usd_m": 1242.0,
+      "next_quarter_revenue_high_usd_m": 1265.0,
+      "current_year_revenue_low_usd_m": 4761.0,
+      "current_year_revenue_high_usd_m": 4784.0,
+      "current_year_adjusted_ebitda_low_usd_m": 57.5,
+      "current_year_adjusted_ebitda_high_usd_m": 69.0,
+      "market_cap_usd_m": 16221.0263266,
+      "market_cap_basis": "Derived price times diluted weighted shares; approximation, not reported market capitalization"
+    },
+    {
+      "agent_role": "news",
+      "report_name": "news/TQR",
+      "business_description": "An online personalized clothing and styling service combining customer data, algorithms and human stylists. It is expanding direct shopping and preview services alongside its existing curated-delivery model.",
+      "developments": [
+        "Latest quarter revenue grew44% and active clients grew20% to4.1million, but revenue per active client fell3% year-over-year.",
+        "Management expects next-quarter revenue growth21.8-24.0%. Current-year adjusted EBITDA margin guidance is1.2-1.4%, and the company reports a quarterly GAAP loss.",
+        "New shopping features and a leadership transition could broaden demand. Thin margins, inventory commitments and customer-acquisition economics could also limit the platform thesis."
+      ],
+      "as_of": "T0",
+      "confidence": "MEDIUM"
+    }
+  ],
+  "changelog": [
+    {
+      "date": "2026-10-23",
+      "fix": "NEW discovery case version with complete original-to-masked monetary mapping, pre-freeze primary sources and explicit nominal price receipt. Original fixtures/failed runs unchanged. No historical outcome enters analyst inputs."
+    },
+    {
+      "date": "2026-10-23",
+      "fix": "Independent pre-scoring review corrected cited table values (GPRO revenue183.536; SFIX revenue535.589/net loss18.846; AEHR quarter revenue3.773), added units/period provenance and BOOT extra-week comparability, expanded issuer denylist. No expected stage labels or business theses changed."
+    }
+  ]
+}
