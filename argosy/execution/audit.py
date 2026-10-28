@@ -16,10 +16,13 @@ opened and the row is committed immediately.
 from __future__ import annotations
 
 import json
+import asyncio
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import OperationalError
 
 from argosy.adapters.brokers.types import Fill as FillModel
 from argosy.state import db as db_mod
@@ -66,11 +69,28 @@ async def record_audit_event(
         await session.flush()
         return int(row.id)
 
-    async with db_mod.get_session() as fresh:
-        fresh.add(row)
-        await fresh.commit()
-        await fresh.refresh(row)
-        return int(row.id)
+    for attempt in range(3):
+        try:
+            async with db_mod.get_session() as fresh:
+                # Retry only this owned transaction, never the caller's work.
+                fresh_row = AuditLog(user_id=user_id, event_type=event_type,
+                    entity_type=entity_type, entity_id=row.entity_id,
+                    payload_json=payload_json, created_at=row.created_at)
+                fresh.add(fresh_row)
+                await fresh.flush()
+                row_id = int(fresh_row.id)
+                await fresh.commit()
+            # No post-commit refresh that could fail and duplicate a receipt.
+            return row_id
+        except OperationalError as exc:
+            original = exc.orig
+            code = getattr(original, "sqlite_errorcode", None)
+            if (not isinstance(original, sqlite3.OperationalError)
+                    or code is None or (code & 0xff) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                    or attempt == 2):
+                raise
+            await asyncio.sleep((0.25, 1.0)[attempt])
+    raise AssertionError("unreachable")
 
 
 async def write_paper_fill(

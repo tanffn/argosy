@@ -230,16 +230,16 @@ else:
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
 DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
-    # Fleet-wide Opus 4.8 posture. Per SDD binding preferences ("accuracy over
-    # LLM cost"), every role defaults to the newest Opus tier (4.8). Per-tenant
+    # Fleet-wide Opus 5.5 posture. Per SDD binding preferences ("accuracy over
+    # LLM cost"), every role defaults to the newest Opus tier (5.5). Per-tenant
     # cost-sensitivity overrides remain available via
     # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` (Wave A — see
     # `BaseAgent.__init__` override loader). The prior 4.7 posture and the
     # earlier mixed Opus/Sonnet fleet are preserved in git history if a
     # downgrade is ever needed for a specific role.
-    "intake": "claude-opus-5",
-    "advisor": "claude-opus-5",
-    "intake_extractor": "claude-opus-5",
+    "intake": "claude-opus-5-5",
+    "advisor": "claude-opus-5-5",
+    "intake_extractor": "claude-opus-5-5",
     # plan_critique — Claude Opus 5 (2026-08-18). The critique is the
     # adversarial READER class (re-derives blind against the whole
     # artifact) — per binding preference "accuracy over LLM cost" it
@@ -255,69 +255,69 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # correct behavior for a wrong id, but the id itself was wrong for
     # this subscription. Re-verify claude-fable-5 against the bundled CLI
     # before ever switching back to it.
-    "plan_critique": "claude-opus-5",
-    "plan_distiller": "claude-opus-5",
+    "plan_critique": "claude-opus-5-5",
+    "plan_distiller": "claude-opus-5-5",
     # Phase 2 analyst team:
-    "news": "claude-opus-5",
-    "macro": "claude-opus-5",
-    "concentration": "claude-opus-5",
+    "news": "claude-opus-5-5",
+    "macro": "claude-opus-5-5",
+    "concentration": "claude-opus-5-5",
     # Phase 3 decision team:
-    "bull_researcher": "claude-opus-5",
-    "bear_researcher": "claude-opus-5",
-    "researcher_facilitator": "claude-opus-5",
-    "trader": "claude-opus-5",
-    "risk_officer": "claude-opus-5",
-    "risk_facilitator": "claude-opus-5",
-    "fund_manager": "claude-opus-5",
+    "bull_researcher": "claude-opus-5-5",
+    "bear_researcher": "claude-opus-5-5",
+    "researcher_facilitator": "claude-opus-5-5",
+    "trader": "claude-opus-5-5",
+    "risk_officer": "claude-opus-5-5",
+    "risk_facilitator": "claude-opus-5-5",
+    "fund_manager": "claude-opus-5-5",
     # Phase 7 analysts (SDD §3.1, §3.8):
-    "fundamentals": "claude-opus-5",
-    "technical": "claude-opus-5",
-    "sentiment": "claude-opus-5",
-    "tax": "claude-opus-5",
-    "fx": "claude-opus-5",
+    "fundamentals": "claude-opus-5-5",
+    "technical": "claude-opus-5-5",
+    "sentiment": "claude-opus-5-5",
+    "tax": "claude-opus-5-5",
+    "fx": "claude-opus-5-5",
     # Phase 7 cross-cutting (SDD §3.6):
-    "domain_refresh": "claude-opus-5",
-    "knowledge_notice_reviewer": "claude-opus-5",
-    "audit": "claude-opus-5",
-    "watchlist": "claude-opus-5",
+    "domain_refresh": "claude-opus-5-5",
+    "knowledge_notice_reviewer": "claude-opus-5-5",
+    "audit": "claude-opus-5-5",
+    "watchlist": "claude-opus-5-5",
     # Plan synthesizer (Phase 3 of plan_synthesis_flow).
-    "plan_synthesizer": "claude-opus-5",
+    "plan_synthesizer": "claude-opus-5-5",
     # Objection translator (T4.6).
-    "objection_translator": "claude-opus-5",
+    "objection_translator": "claude-opus-5-5",
     # Advisor welcome-card insight (single-paragraph "today's insight" appended
     # below the static welcome surface on /advisor — see argosy/agents/advisor_insight.py).
-    "advisor_insight": "claude-opus-5",
+    "advisor_insight": "claude-opus-5-5",
     # FM-objection ZigZag (T4.9).
-    "analyst_responder": "claude-opus-5",
-    "fund_manager_dialogue_verdict": "claude-opus-5",
+    "analyst_responder": "claude-opus-5-5",
+    "fund_manager_dialogue_verdict": "claude-opus-5-5",
     # Living-plan negotiation ladder — node owner's verdict on a proposed change.
-    "plan_node_owner": "claude-opus-5",
+    "plan_node_owner": "claude-opus-5-5",
     # Household-budget analyst (synth Phase 1 #10).
-    "household_budget": "claude-opus-5",
+    "household_budget": "claude-opus-5-5",
     # Household-expenses categorizer.
-    "household_categorizer": "claude-opus-5",
+    "household_categorizer": "claude-opus-5-5",
     # Daily-briefer (T4.5).
-    "daily_briefer": "claude-opus-5",
+    "daily_briefer": "claude-opus-5-5",
     # Spec B commit #4 — general state-vs-expectation observer.
     # Opus per binding preference "accuracy over LLM cost"; the observer
     # is doing emergent flag-classification with high downstream
     # consequence (replaces hand-rolled detectors). No Haiku fallback.
-    "state_observer": "claude-opus-5",
+    "state_observer": "claude-opus-5-5",
     # Spec E commit #2 — action_proposer agent (LLM money path).
     # Opus per binding preference "accuracy over LLM cost"; the proposer
     # turns observer flags / snapshot triggers / inferred events into
     # structured action suggestions. NO auto-execution — the agent
     # RECORDS only; user reviews via /proposals. No Haiku fallback.
-    "action_proposer": "claude-opus-5",
+    "action_proposer": "claude-opus-5-5",
     # Per-holding thesis monitor (LLM money path). Opus per binding preference
     # "accuracy over LLM cost"; high bar, RECORDS only (escalations flow through
     # the monitor-flag → action_proposer pipeline). No Haiku fallback.
-    "thesis_monitor": "claude-opus-5",
+    "thesis_monitor": "claude-opus-5-5",
     # Fund/ETF vehicle analyst — one Opus call per collective instrument to settle
     # a fund-specific verdict (domicile, TER, mandate fit, overlap, NVDA
     # look-through). Opus per binding preference "accuracy over LLM cost":
     # estate-domicile and sleeve-fit reasoning is a high-consequence money path.
-    "fund_vehicle_analyst": "claude-opus-5",
+    "fund_vehicle_analyst": "claude-opus-5-5",
     # Long-form Discord alpha-report analyst — replaces the regex
     # extract_alpha_call_from_text for posts > 500 chars / > 5 newlines.
     # Opus per binding preference "accuracy over LLM cost" — the agent
@@ -325,7 +325,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # cautions from multi-page commentary; downstream writes fan out to
     # the predictions ledger (source='discord_alpha_report') and
     # monitor_flags (kind='alpha_report_caution'). No Haiku fallback.
-    "alpha_report_analyst": "claude-opus-5",
+    "alpha_report_analyst": "claude-opus-5-5",
     # Equity-comp analyst (Phase 5 topic owner) — owns the RSU /
     # equity-compensation projection across three scenarios
     # (known_grants_only / conservative_decay / optimistic_flat).
@@ -334,46 +334,46 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # assumption with a year-by-year contractual-vs-discretionary
     # projection. Downstream consequence is large (FI-date sensitivity
     # + cashflow + concentration cap all read from the output).
-    "equity_comp_analyst": "claude-opus-5",
+    "equity_comp_analyst": "claude-opus-5-5",
     # Alternatives sourcer (feat/alternatives-asset-class) — sources the
     # Alternatives sleeve's instruments so they are agent-derived +
     # estate-gated, not hardcoded. Opus per binding preference "accuracy
     # over LLM cost": sourcing estate-safe (non-US-situs) instruments is a
     # high-consequence money path; the picks feed the domicile gate.
-    "alternatives_sourcer": "claude-opus-5",
+    "alternatives_sourcer": "claude-opus-5-5",
     # Alternatives reviewer fleet + sleeve fund-manager (ETP-aware debate over
     # the verified candidates). Opus per "accuracy over LLM cost"; these weigh
     # wrapper/structure, diversification value, liquidity/tax, and the final
     # sleeve size (which may be 0%) — a high-consequence money path.
-    "alt_exposure_structure": "claude-opus-5",
-    "alt_macro_diversification": "claude-opus-5",
-    "alt_risk_liquidity_tax": "claude-opus-5",
-    "alternatives_fund_manager": "claude-opus-5",
+    "alt_exposure_structure": "claude-opus-5-5",
+    "alt_macro_diversification": "claude-opus-5-5",
+    "alt_risk_liquidity_tax": "claude-opus-5-5",
+    "alternatives_fund_manager": "claude-opus-5-5",
     # Deployment author (fleet-authors / determinism-verifies pivot) — the LLM
     # that AUTHORS the AllocationProposal for a deploy request in ONE holistic
     # reasoning pass (the deterministic verifier gates it). Opus per binding
     # preference "accuracy over LLM cost": this is the core money-decision the
     # whole pivot exists to make smart (a plain LLM prompt beat the old
     # deterministic water-fill). One call, not a debate fleet.
-    "deployment_author": "claude-opus-5",
+    "deployment_author": "claude-opus-5-5",
     # Batch portfolio-role classification for every currently-unmapped held
     # instrument.  A wrong sleeve distorts allocation gaps and downstream money
     # decisions, so this remains an Opus judgment role rather than a lookup gate.
-    "instrument_plan_classifier": "claude-opus-5",
+    "instrument_plan_classifier": "claude-opus-5-5",
     # Critique-reconcile closer (2026-07-07) — routes each weekly-critique
     # RED/notable-YELLOW finding to its closer path (prose edit vs
     # requires-re-synthesis vs data refresh vs needs-user vs dispute).
     # Opus 4.8 (closing/authoring class, not the reader class — the reader
     # class runs Opus 5, see plan_critique above).
-    "critique_closer": "claude-opus-5",
+    "critique_closer": "claude-opus-5-5",
     # Historical replay is part of the production decision-quality loop, not a
     # frozen sidecar.  Keep every replay stage on the same accuracy-default
     # model family as the live decision fleet so calibration failures measure
     # Argosy rather than a retired model alias.
-    "calibration_classifier_sourcing": "claude-opus-5",
-    "calibration_sanitizer": "claude-opus-5",
-    "calibration_reviewer": "claude-opus-5",
-    "calibration_grader": "claude-opus-5",
+    "calibration_classifier_sourcing": "claude-opus-5-5",
+    "calibration_sanitizer": "claude-opus-5-5",
+    "calibration_reviewer": "claude-opus-5-5",
+    "calibration_grader": "claude-opus-5-5",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -382,7 +382,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # to Haiku is still possible per-role via agent_settings.yaml for
     # cost-sensitive tenants.
 }
-FALLBACK_MODEL = "claude-opus-5"
+FALLBACK_MODEL = "claude-opus-5-5"
 
 # Per-role adaptive-thinking effort (Opus 4.7 canonical pattern).
 #
@@ -756,9 +756,9 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
     # model: (input_per_mtok, output_per_mtok)
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),
-    "claude-opus-5": (5.00, 25.00),
-    # Opus 5 (plan_critique role, 2026-08-18) — same list price as Opus 4.8
-    # ($5/$25 per MTok; a drop-in-priced upgrade per Anthropic's docs).
+    # https://platform.claude.com/docs/en/models/opus-5-5/overview
+    # Verified 2026-09-25. Keep the prior id for historical/explicit calls.
+    "claude-opus-5-5": (4.00, 20.00),
     "claude-opus-5": (5.00, 25.00),
     # Fable 5 — kept in the price table in case a role is ever switched
     # back to it (see plan_critique's DEFAULT_MODEL_BY_ROLE comment); NOT
@@ -1457,6 +1457,14 @@ class BaseAgent(Generic[T]):
             # W7 — flag (don't strip) source_ids the model invented. The
             # AgentReport carries the list; D4 in fleet self-review reads
             # from it directly instead of regex-scanning response_text.
+            # Keep actual tool receipts with the report so downstream reviewers
+            # can distinguish retrieved primary text from an analyst's claim.
+            raw_call = getattr(call, "raw", None)
+            fetched = raw_call.get("public_document_receipts", []) if isinstance(raw_call, dict) else []
+            if fetched:
+                sources = list(sources or []) + [("public_document:" + r["receipt_id"], json.dumps(r))
+                                                for r in fetched if r.get("receipt_id")]
+                sources_json = json.dumps([{"source_id": sid, "content": content} for sid, content in sources])
             hallucinated = self._detect_hallucinated_sources(output, sources)
             if hallucinated:
                 self._log.warning(
@@ -1858,9 +1866,9 @@ class BaseAgent(Generic[T]):
     ) -> ModelCall:
         """Sync entry that runs the async SDK call on a fresh
         ProactorEventLoop in a worker thread. Windows-only path."""
-        import asyncio
+        from argosy.services.background_loop import new_background_loop
 
-        loop = asyncio.ProactorEventLoop()
+        loop = new_background_loop()
         try:
             return loop.run_until_complete(
                 self._call_via_claude_code_inner(
@@ -2016,13 +2024,15 @@ class BaseAgent(Generic[T]):
             options_kwargs["mcp_servers"] = {}
             options_kwargs["extra_args"] = {"strict-mcp-config": None}
             options_kwargs["permission_mode"] = "dontAsk"
+        public_document_receipts: list[dict] = []
         if _force_toolless:
             options_kwargs["tools"] = []
             options_kwargs["allowed_tools"] = []
             allowed_tools = []
         elif _public_documents:
             from argosy.services.public_document_tool import TOOL_NAME, create_document_server
-            options_kwargs["mcp_servers"] = {"argosy_sources": create_document_server(self.user_id)}
+            options_kwargs["mcp_servers"] = {"argosy_sources": create_document_server(
+                self.user_id, receipts=public_document_receipts)}
             allowed_tools.append(TOOL_NAME)
             options_kwargs["allowed_tools"] = list(allowed_tools)
         _keep_tool_stream_open = _public_documents or bool(getattr(self, "claude_code_keep_tool_stream_open", False))
@@ -2104,7 +2114,7 @@ class BaseAgent(Generic[T]):
         # used as the ModelCall response).
         if image_attachments or pdf_attachments:
             batch_options = {}
-            if _keep_tool_stream_open:
+            if _keep_tool_stream_open or getattr(self, "claude_code_single_message_attachments", False):
                 # The CLI may coalesce queued user messages. A tool callback
                 # stream must use one bounded user message, not wait for one
                 # ResultMessage per binary chunk (those results may not exist).
@@ -2627,7 +2637,8 @@ class BaseAgent(Generic[T]):
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             model=self.model,
-            raw={"backend": "claude_code", "cost_usd_from_sdk": cost_usd_from_sdk},
+            raw={"backend": "claude_code", "cost_usd_from_sdk": cost_usd_from_sdk,
+                 "public_document_receipts": public_document_receipts},
             cache_input_tokens=cache_input_tokens,
             cache_creation_tokens=cache_creation_tokens,
             thinking_tokens=thinking_tokens,
@@ -3230,7 +3241,9 @@ class BaseAgent(Generic[T]):
 
         cost_input = (
             uncached_input         * price_in_per_m
-            + cache_input_tokens    * price_in_per_m * 0.10
+            + cache_input_tokens    * price_in_per_m * (
+                0.05 if self.model == "claude-opus-5-5" else 0.10
+            )
             + cache_creation_tokens * price_in_per_m * 1.25
         )
         cost_output = (tokens_out + thinking_tokens) * price_out_per_m

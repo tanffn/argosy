@@ -276,6 +276,7 @@ async def test_analysis_runs_real_agent_objects_through_baseagent(
     client_with_db, tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sync_session = client_with_db.app.state.session_factory()
+    database_file = str(sync_session.get_bind().url.database)
     try:
         if sync_session.get(User, "ariel") is None:
             sync_session.add(User(id="ariel", plan="free"))
@@ -283,9 +284,15 @@ async def test_analysis_runs_real_agent_objects_through_baseagent(
     finally:
         sync_session.close()
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.services import youtube_intelligence
+    from argosy.services.youtube_intelligence import YouTubeMetadata
+    monkeypatch.setattr(youtube_intelligence, "resolve_youtube_metadata",
+        lambda _: YouTubeMetadata(None, "Test video", "unknown:test", "Test channel", ""))
     from argosy.config import reload_settings
 
-    reload_settings()
+    from pathlib import Path
+    settings = reload_settings()
+    monkeypatch.setattr(settings, "db_file", Path(database_file))
 
     async def fake_fetch(*_: object, **__: object):
         return _transcript(), None
@@ -310,6 +317,14 @@ async def test_analysis_runs_real_agent_objects_through_baseagent(
         return await original_run(**kwargs)
 
     synthesis.run = synthesis_run  # type: ignore[method-assign]
+    staged = []
+    async def stage(payload):
+        staged.append(payload)
+    original_delivery = analysis_mod.deliver_youtube_result
+    def checked_delivery(payload, **kwargs):
+        assert staged and staged[-1]["_youtube_delivery_pending"]
+        return original_delivery(payload, **kwargs)
+    monkeypatch.setattr(analysis_mod, "deliver_youtube_result", checked_delivery)
     result = await analysis_mod.analyze_youtube(
         "G6xFyw49OgA",
         save=True,
@@ -317,9 +332,13 @@ async def test_analysis_runs_real_agent_objects_through_baseagent(
         skeptic_agent=_SkepticStub(user_id="ariel"),
         portfolio_agent=_PortfolioStub(user_id="ariel"),
         synthesis_agent=synthesis,
+        on_completed=stage,
+        review_runner=__import__("tests.evidence_fakes", fromlist=["accept_author"]).accept_author,
     )
 
     assert result.synthesis.decision_status == "existing_thesis_recheck"
+    assert len(staged) == 2 and not staged[-1].get("_youtube_delivery_pending")
+    assert staged[0]["assessed_at"] == staged[1]["assessed_at"]
     assert result.claims.named_tickers == ["NVDA"]
     assert result.claims.market_outlook_claims[0].topic == "sector_or_factor"
     assert result.synthesis.market_outlook[0].portfolio_impact.startswith("Could affect")

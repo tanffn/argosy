@@ -544,3 +544,34 @@ async def test_wake_watchdog_noop_without_gap(
         scheduler.stop()
         await task
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_stretched_normal_timers_share_catchup_gate(engine, monkeypatch):
+    from datetime import timedelta
+    from unittest.mock import AsyncMock
+    now = datetime(2026, 10, 28, 15, 0, tzinfo=timezone.utc)
+    scheduler = Scheduler(user_id="ariel", clock=lambda: now)
+    scheduler._catch_up_if_missed = AsyncMock()
+    scheduler._tick_recorded_since = AsyncMock(return_value=False)
+    active = peak = fired = 0
+    async def fire(loop):
+        nonlocal active, peak, fired
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        fired += 1
+        if fired == 2:
+            scheduler.stop()
+    scheduler._fire_once = fire
+    loops = []
+    for name in ("late_a", "late_b"):
+        schedule = LoopSchedule(cron="0 9 * * *", timezone="UTC")
+        monkeypatch.setattr(LoopSchedule, "next_due_after", lambda self, value: now - timedelta(hours=1))
+        loop = _CountingLoop(schedule=schedule)
+        loop.name = name
+        loops.append(loop)
+    await asyncio.wait_for(asyncio.gather(*(scheduler._run_loop(x) for x in loops)), timeout=3)
+    assert fired == 2
+    assert peak == 1

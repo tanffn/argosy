@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from argosy.services.jobs.summary_status import derive_run_status
 from argosy.state.models import FunnelRun, FunnelStageRow, JobRun, NewsSignal, UserContext
@@ -21,8 +21,10 @@ RECOVERABLE_JOBS = (
     "earnings_calendar_daily", "sec_earnings_daily", "signal_streams_daily",
     "period_directive_daily",  # authors proposals only; never approves or executes
     "verdict_trigger_daily",  # idempotent note-only inbox unlocks; no fleet/trades
+    "verdict_trigger_sweep",  # durable per-verdict claims; failed reviews release for bounded retry
     "youtube_subscriptions",  # durable intake cursors and per-item retry/budget limits
     "job_runs_retention",  # idempotent maintenance, protects live/unfinished receipts
+    "backup",  # atomic snapshots and retention; safe after interrupted audit write
 )
 RETRY_DELAY = timedelta(minutes=30)
 MAX_SLOT_ATTEMPTS = 3  # original attempt plus two recoveries, persisted across restarts
@@ -93,6 +95,28 @@ async def latest_job_runs(session, names=RECOVERABLE_JOBS) -> list[JobRun]:
 
 def failure_guidance(row: JobRun) -> dict:
     """Public operational guidance; never publish raw stderr/prompts/credentials."""
+    from argosy.services.jobs.recovery_policy import structured_failures
+
+    if getattr(row, "job_name", None) == "alpha_capture_daily":
+        from argosy.services.jobs.alpha_capture_daily import desktop_interrupted
+        if desktop_interrupted(row.error_message or "") or any(
+            f.get("code") == "desktop_interrupted" for f in structured_failures(row)
+        ):
+            return {"code": "desktop_interrupted",
+                    "reason": "Alpha Report capture was interrupted by another window or a locked desktop; no new report was imported.",
+                    "action": "No login or portfolio repair is indicated. Argosy will try at the next daily capture; it will not repeatedly reopen Chrome today. An explicit capture retry can run sooner."}
+
+    failures = structured_failures(row)
+    if failures:
+        if any(f.get("code") == "authentication" for f in failures):
+            return {"code": "source_access", "reason": "A data source rejected access (HTTP 401/403).",
+                    "action": "Check that source's credentials or access policy; repeated retries will not repair permission errors."}
+        if all(f.get("retryable") is True for f in failures):
+            return {"code": "upstream_unavailable", "reason": "A data source is temporarily unavailable or rate-limited; this run's coverage is incomplete.",
+                    "action": "Argosy uses bounded automatic retries with provider cooldowns and spaced later attempts. Last successful data stays dated; no missing result is treated as no news."}
+        if any(f.get("code") == "http_permanent" for f in failures):
+            return {"code": "source_request", "reason": "A data source rejected the request or its endpoint is unavailable.",
+                    "action": "Repair the source URL/request. Automatic retries cannot fix a permanent HTTP error."}
     message = f"{row.error_message or ''} {row.output_summary or ''}".lower()
     if getattr(row, "job_name", None) == "period_directive_daily":
         try:
@@ -132,6 +156,12 @@ def failure_guidance(row: JobRun) -> dict:
     if any(s in message for s in ("budget", "costguard", "spend cap", "insufficient credit")):
         return {"code": "budget", "reason": "A spending limit or insufficient credit stopped this job.",
                 "action": "Check the budget and provider balance in settings before retrying."}
+    if "unable to fetch requested captions" in message:
+        reason = "Video captions could not be retrieved; those videos were not analyzed."
+        if "database is locked" in message:
+            reason += " This run also hit database contention."
+        return {"code": "youtube_captions_unavailable", "reason": reason,
+                "action": "Both caption-fetch methods were tried. Failed videos retain their retry dates; YouTube rate limits or sign-in checks may require waiting or supplying a transcript. Other completed research is retained."}
     if any(s in message for s in ("rate_limit", "rate limit", "429")):
         return {"code": "rate_limit", "reason": "The provider rate limit was reached.",
                 "action": "Wait for the provider limit to reset, then check Job history for recovery or retry."}
@@ -157,7 +187,61 @@ def failure_guidance(row: JobRun) -> dict:
             "action": "Open Job history for the recorded error and retry after the cause is resolved."}
 
 
-async def collect_decision_readiness(session, *, user_id: str, now: datetime | None = None) -> dict:
+def job_user_action(row: JobRun) -> dict | None:
+    """A push needs a known human remedy; red health alone is not enough.
+
+    Software defects, provider outages, recovery and optional paperwork stay on
+    the task board. Never infer credential work from a public-source HTTP 403.
+    """
+    try:
+        summary = json.loads(row.output_summary or "{}")
+    except (ValueError, TypeError):
+        summary = {}
+    if (row.job_name == "alpha_capture_daily" and isinstance(summary, dict)
+            and summary.get("status") == "waiting_for_login"):
+        return {"code": "alpha_login", "reason": "Alpha capture is waiting for login.",
+                "action": "Complete login in the open Chrome window, then retry Alpha capture."}
+    if effective_status(row) != "error":
+        return None
+    guidance = failure_guidance(row)
+    if guidance["code"] in {"authentication", "claude_sign_in", "budget", "email_not_configured"}:
+        return guidance
+    return None
+
+
+def long_running_health(views) -> dict[str, dict]:
+    """Use the registry's live health, not completed-run semantics, for services."""
+    return {view.metadata.name: {
+        "status": view.last_run_status or "unknown",
+        "attention_required": view.health != "green",
+        "failure": ({"code": "service_unhealthy",
+                     "reason": view.last_run_error or f"Service is {view.last_run_status or 'unavailable'}.",
+                     "action": "Check the service connection details in Job history."}
+                    if view.health != "green" else None),
+    } for view in views if view.metadata.long_running}
+
+
+def runtime_job_health(views) -> dict[str, dict]:
+    """Separate healthy registered batch work from actionable service failures.
+
+    Keep the exact receipt ID so a status read racing completion cannot mask
+    a newly finished failure. Red/unknown/stale registry views stay actionable.
+    """
+    views = list(views)
+    result = long_running_health(views)
+    for view in views:
+        if (not view.metadata.long_running and view.health == "green"
+                and view.currently_running_run_id is not None):
+            result[view.metadata.name] = {
+                "status": "running", "attention_required": False, "failure": None,
+                "batch_run_id": view.currently_running_run_id,
+            }
+    return result
+
+
+async def collect_decision_readiness(session, *, user_id: str, now: datetime | None = None,
+                                     runtime_health: dict | None = None,
+                                     recovery_schedules: dict | None = None) -> dict:
     now = utc(now or datetime.now(UTC))
     from argosy.config import get_settings
     disabled_jobs = set()
@@ -195,7 +279,7 @@ async def collect_decision_readiness(session, *, user_id: str, now: datetime | N
     # expanding the automatic-retry allowlist or daily freshness requirements.
     extra_failures = sorted(name for name, row in latest.items()
                             if name not in RECOVERABLE_JOBS and effective_status(row, failed_funnel_ids) in {"error", "running", "cancelled"})
-    monitored_names = tuple(dict.fromkeys((*RECOVERABLE_JOBS, *extra_failures,
+    monitored_names = tuple(dict.fromkeys((*RECOVERABLE_JOBS, *extra_failures, *(runtime_health or {}),
                                           *(["annual"] if "annual" in latest else []))))
     successes = {}
     history = (await session.execute(
@@ -238,6 +322,14 @@ async def collect_decision_readiness(session, *, user_id: str, now: datetime | N
                 guidance = {"code": "allocation_research_recovering",
                             "reason": "Trade plan generated; separate allocation research is awaiting automatic recovery. " + guidance["reason"],
                             "action": "Argosy will retry the unfinished research. No trade approval or paperwork is needed for recovery."}
+        live = (runtime_health or {}).get(name)
+        if live is not None and "batch_run_id" in live:
+            if (row is None or state != "running" or row.id != live["batch_run_id"]
+                    or last_ok is None or now - utc(last_ok) > timedelta(hours=48)):
+                live = None
+        if live is not None:
+            state = live["status"]
+            guidance = live["failure"]
         if name in disabled_jobs:
             state = "disabled"
         # Daily jobs allow a weekend/day-boundary buffer, not weeks of stale
@@ -258,21 +350,44 @@ async def collect_decision_readiness(session, *, user_id: str, now: datetime | N
                 evidence_only = False
             if evidence_only and knowledge and knowledge["status"] != "unavailable":
                 state = "knowledge_recovered" if knowledge["status"] == "verified" else "knowledge_incomplete"
+        recovery = None
+        schedule = (recovery_schedules or {}).get(name)
+        if name in RECOVERABLE_JOBS and state == "error" and schedule is not None:
+            from argosy.services.jobs.recovery_policy import recovery_window
+
+            slot = schedule.prev_due_before(now)
+            if slot is not None and utc(row.finished_at or row.started_at) >= slot:
+                attempts = (await session.execute(select(func.count()).select_from(JobRun).where(
+                    JobRun.job_name == name, or_(JobRun.started_at >= slot, JobRun.finished_at >= slot),
+                    JobRun.status != "skipped",
+                ))).scalar_one()
+                recovery = recovery_window(row, attempts)
+                recovery["market_hours_only"] = schedule.market_hours_only
+                if guidance and recovery["eligible"]:
+                    guidance = {**guidance, "action": guidance["action"] +
+                        f" Next retry eligible from {recovery['next_retry_at']} while Argosy is running"
+                        + (" and the market is open." if schedule.market_hours_only else ".")}
+                elif guidance and recovery["transient"]:
+                    guidance = {**guidance, "action": "Automatic retries for this scheduled slot are exhausted. "
+                        "The next scheduled run will try again; persistent outages need source investigation."}
         jobs.append({
             "name": name, "status": state,
             "recorded_status": recorded_status,
-            "attention_required": state not in {"ok", "disabled", "knowledge_recovered", "knowledge_incomplete"},
+            "attention_required": (live["attention_required"] if live is not None and name not in disabled_jobs
+                                   else state not in {"ok", "disabled", "knowledge_recovered", "knowledge_incomplete"}),
             "run_id": row.id if row else None,
+            "recovery": recovery,
             "last_attempt_at": utc(row.started_at).isoformat() if row else None,
             "last_success_at": utc(last_ok).isoformat() if last_ok else None,
-            "failure": guidance if state in {"error", "research_recovery_pending"} else None,
+            "failure": guidance if (live is not None and name not in disabled_jobs) or state in {"error", "research_recovery_pending"} else None,
         })
     pending, oldest = (await session.execute(
         select(func.count(), func.min(NewsSignal.received_at)).where(NewsSignal.analyzed_at.is_(None))
     )).one()
     blocked = any(j["failure"] and j["failure"]["code"] in ("claude_sign_in", "authentication") for j in jobs)
     issues = [j["name"] for j in jobs if j["attention_required"]]
-    status = "blocked" if blocked or urgent_findings else "degraded" if issues or pending else "ready"
+    in_progress = [j["name"] for j in jobs if j["status"] == "running" and not j["attention_required"]]
+    status = "blocked" if blocked or urgent_findings else "degraded" if issues or pending or in_progress else "ready"
     message = (
         "The last recorded jobs hit a Claude/model sign-in or settings failure. If already signed in again, retry failed jobs to verify recovery. Daily analysis is incomplete; current recommendations are not verified."
         if blocked else
@@ -280,6 +395,8 @@ async def collect_decision_readiness(session, *, user_id: str, now: datetime | N
         if urgent_findings else
         "Some analysis or knowledge checks are incomplete or stale. This is not a no-action recommendation."
         if issues or pending else
+        "Scheduled analysis is in progress. No intervention is needed for these running jobs; their new results are not complete yet."
+        if in_progress else
         "Daily analysis jobs are current. This does not certify a trade plan or investment performance."
     )
     return {
@@ -288,5 +405,6 @@ async def collect_decision_readiness(session, *, user_id: str, now: datetime | N
         "knowledge": knowledge,
         "urgent_findings": urgent_findings,
         "oldest_pending_news_at": utc(oldest).isoformat() if oldest else None,
-        "recovery": {"delay_minutes": 30, "max_attempts_per_slot": MAX_SLOT_ATTEMPTS},
+        "recovery": {"delay_minutes": 30, "max_attempts_per_slot": MAX_SLOT_ATTEMPTS,
+                     "confirmed_transport_max_attempts": 6, "later_probe_delay_hours": [2, 4, 8]},
     }

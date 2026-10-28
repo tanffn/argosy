@@ -277,18 +277,35 @@ def _yahoo_news(ticker: str, *, max_items: int) -> str | None:
     yf_symbol = to_yahoo_symbol(ticker)
 
     def _fetch() -> list[Any]:
-        client = _shared_yfinance_adapter()._resolve_client()
-        instrument = client.Ticker(yf_symbol)
-        getter = getattr(instrument, "get_news", None)
-        if callable(getter):
-            try:
-                return list(getter(count=max_items, tab="news") or [])
-            except TypeError:
-                return list(getter() or [])
-        return list(getattr(instrument, "news", None) or [])
+        try:
+            client = _shared_yfinance_adapter()._resolve_client()
+            instrument = client.Ticker(yf_symbol)
+            getter = getattr(instrument, "get_news", None)
+            if callable(getter):
+                try:
+                    items = list(getter(count=max_items, tab="news") or [])
+                except TypeError:
+                    items = list(getter() or [])
+            else:
+                items = list(getattr(instrument, "news", None) or [])
+            if items:
+                return items
+        except Exception as exc:
+            log.info("stock_decision.yahoo_news_json_unavailable", ticker=ticker, error_type=type(exc).__name__)
+        # Yahoo's JSON feed can return empty even while its RSS feed carries
+        # current articles. Reuse the existing RSS transport/parser, preserving
+        # original publication evidence and links rather than treating silence
+        # from one endpoint as absence of company news.
+        from urllib.parse import quote
+        from argosy.services.rss_feed import YAHOO_RSS_TEMPLATE, _default_fetch, _parse_rss
+        from argosy.services.jobs.transport_failure import retry_data_read
+        url = YAHOO_RSS_TEMPLATE.format(ticker=quote(yf_symbol, safe=""))
+        rss = retry_data_read(lambda: _default_fetch(url))
+        return [{"title": item.get("title"), "pubDate": item.get("pubDate"),
+                 "link": item.get("link")} for item in _parse_rss(rss)[:max_items]]
 
     raw = _cached_yfinance_fetch(
-        cache_key=f"company_news:{yf_symbol}",
+        cache_key=f"company_news_with_rss:{yf_symbol}",
         ttl_seconds=60 * 15,
         outcome_name="yfinance_news",
         target=ticker,
@@ -302,11 +319,14 @@ def _yahoo_news(ticker: str, *, max_items: int) -> str | None:
         title = str(content.get("title") or content.get("headline") or "").strip()
         if not title:
             continue
-        published = content.get("pubDate") or item.get("providerPublishTime")
+        published = content.get("pubDate") or item.get("pubDate") or item.get("providerPublishTime")
         if isinstance(published, (int, float)):
             published = datetime.fromtimestamp(published, tz=timezone.utc).date().isoformat()
         suffix = f" [{published}]" if published else ""
-        rendered.append(f"{title}{suffix}")
+        canonical = content.get("canonicalUrl") or {}
+        link = canonical.get("url") if isinstance(canonical, dict) else None
+        link = link or item.get("link")
+        rendered.append(f"{title}{suffix}" + (f" ({link})" if link else ""))
     if not rendered:
         return None
     return "source=yfinance; " + "; ".join(rendered)

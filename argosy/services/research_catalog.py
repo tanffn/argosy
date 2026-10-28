@@ -1,18 +1,25 @@
 """Shared research ledger and idempotent, source-independent routing."""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import re
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from functools import wraps
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from argosy.state.research_models import ResearchSource, ResearchItem, ResearchClaim, ResearchReviewRequest, ResearchEvidenceUse
+from argosy.state.research_models import (
+    ResearchClaim,
+    ResearchEvidenceUse,
+    ResearchItem,
+    ResearchReviewRequest,
+    ResearchSource,
+)
 
-KINDS = {"rss", "sec13d", "sec13f", "youtube", "manual", "existing", "browser_capture"}
+KINDS = {"rss", "sec13d", "sec13f", "youtube", "manual", "existing", "browser_capture", "internal_quality_audit"}
 
 
 def index_existing_events(*, user_id):
@@ -54,11 +61,44 @@ def utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
-@contextmanager
-def research_session(database_url=None):
+def video_retry_states(session, *, user_id, video_id=None):
+    """Retry budget belongs to a video, not its body-hash/source aliases."""
+    from sqlalchemy import func
+    stmt = select(ResearchItem.external_id, func.sum(ResearchItem.attempts),
+                  func.max(ResearchItem.next_attempt_at)).join(ResearchSource).where(
+        ResearchItem.user_id == user_id, ResearchSource.user_id == user_id,
+        ResearchSource.kind == "youtube")
+    if video_id is not None:
+        stmt = stmt.where(ResearchItem.external_id == video_id)
+    return {key: (int(attempts or 0), utc(next_at)) for key, attempts, next_at in
+            session.execute(stmt.group_by(ResearchItem.external_id))}
+
+
+def research_database_url(user_id=None):
     from argosy.config import get_settings
+    from argosy.state.db import _per_tenant_mode
+    from argosy.tenancy.context import current_user_id
+    from argosy.tenancy.database import get_tenant_engine
+    user_id = user_id or current_user_id()
+    if _per_tenant_mode() and user_id:
+        return str(get_tenant_engine(user_id).url).replace("+aiosqlite", "")
+    return str(get_settings().database_url).replace("+aiosqlite", "")
+
+
+def research_user_scope(function):
+    """Bind scheduled/CLI research just as request-scoped research is bound."""
+    @wraps(function)
+    async def scoped(user_id, *args, **kwargs):
+        from argosy.tenancy.context import bind_user_id
+        with bind_user_id(user_id):
+            return await function(user_id, *args, **kwargs)
+    return scoped
+
+
+@contextmanager
+def research_session(database_url=None, *, user_id=None):
     from argosy.state.db import create_sync_engine
-    engine = create_sync_engine(str(database_url or get_settings().database_url).replace("+aiosqlite", ""))
+    engine = create_sync_engine(str(database_url or research_database_url(user_id)).replace("+aiosqlite", ""))
     try:
         with Session(engine, expire_on_commit=False) as session:
             yield session
@@ -70,6 +110,8 @@ def upsert_source(session, *, user_id: str, name: str, kind: str, reference: str
                   enabled: bool = True, cadence_hours: int = 24, priority: int = 50):
     if kind not in KINDS:
         raise ValueError("Unknown research source kind")
+    if kind == "internal_quality_audit" and enabled:
+        raise ValueError("Internal quality receipts must not be polled as external sources")
     if not 1 <= cadence_hours <= 24 * 90 or not 0 <= priority <= 100:
         raise ValueError("Invalid cadence or priority")
     reference = reference.strip()
@@ -118,11 +160,25 @@ def enqueue(session, source, *, external_id: str, title: str, url: str, body: st
 def complete_item(session, item, payload: dict, *, now=None):
     """Keep source claims and fleet judgments distinct; preserve older versions."""
     now = now or datetime.now(UTC)
-    if item.status in {"analyzed", "analyzed_partial"}:
+    previous = json.loads(item.analysis_json or "{}")
+    new_review = (payload.get("evidence_review", {}).get("status") == "approved"
+                  and payload.get("assessment_id")
+                  and payload["assessment_id"] != previous.get("assessment_id"))
+    image_upgrade = (item.status == "analyzed_partial"
+                     and payload.get("evidence_review", {}).get("status") == "approved"
+                     and payload.get("image_evidence", {}).get("status") == "supplied")
+    if item.status in {"analyzed", "analyzed_partial"} and not (new_review or image_upgrade):
         return
     claims = payload.get("claims") or {}
     capture = json.loads(item.analysis_json or "{}").get("capture")
     if capture:
+        image_evidence = payload.get("image_evidence") or {}
+        review = payload.get("evidence_review") or {}
+        if (review.get("status") == "approved" and image_evidence.get("status") == "supplied"
+                and image_evidence.get("count") == capture.get("images")
+                and not review.get("baseline", {}).get("unreadable_image_count", 0)):
+            capture = {**capture, "image_analysis": "reviewed",
+                       "image_sha256": image_evidence["sha256"]}
         payload["capture"] = capture
     document_body = payload.pop("_document_body", None)
     if document_body:
@@ -132,6 +188,22 @@ def complete_item(session, item, payload: dict, *, now=None):
         item.body = json.dumps(claims, sort_keys=True, ensure_ascii=False)
         item.content_hash = digest(item.body)
     synthesis = payload.get("synthesis") or {}
+    assessment_id = payload.get("assessment_id")
+    if assessment_id and payload.get("evidence_review", {}).get("status") == "approved":
+        if assessment_id != previous.get("assessment_id"):
+            for prior_request in session.scalars(select(ResearchReviewRequest).where(
+                    ResearchReviewRequest.item_id == item.id,
+                    ResearchReviewRequest.state.in_(["pending", "ready"]))):
+                prior_request.state = "superseded"
+                prior_request.result_json = json.dumps({"superseded_by_assessment": assessment_id})
+                prior_request.updated_at = now
+        # Keep prior extraction rows and their outcomes, but don't keep feeding
+        # corrected/withdrawn extractions into new analysis or source scoring.
+        for prior in session.scalars(select(ResearchClaim).where(ResearchClaim.item_id == item.id)):
+            prior_payload = json.loads(prior.payload_json or "{}")
+            if prior_payload.get("assessment_id") != assessment_id:
+                prior_payload["superseded_by_assessment"] = assessment_id
+                prior.payload_json = json.dumps(prior_payload, ensure_ascii=False)
     speaker_calls = claims.get("speaker_calls") or []
     # Legacy extractors sometimes put company names in named_tickers. A mixed-case
     # name is not a security identifier; keep its claim without inventing a ticker.
@@ -160,6 +232,8 @@ def complete_item(session, item, payload: dict, *, now=None):
         horizon = int(horizon) if isinstance(horizon, (int, float)) and 0 < horizon <= 3650 else None
         for ticker in sorted(tickers) or [None]:
             claim_id = digest(item.id, statement, ticker, scope)
+            if assessment_id:
+                claim_id = digest(claim_id, assessment_id)
             if session.get(ResearchClaim, claim_id):
                 continue
             due_at = (utc(item.published_at or item.observed_at) + timedelta(days=horizon)) if horizon else None
@@ -184,12 +258,16 @@ def complete_item(session, item, payload: dict, *, now=None):
             session.add(ResearchClaim(
                 id=claim_id, user_id=item.user_id, item_id=item.id, ticker=ticker,
                 scope=scope, statement=statement,
-                payload_json=json.dumps({**claim, "speaker_call": call}, ensure_ascii=False),
+                payload_json=json.dumps({**claim, "speaker_call": call, "assessment_id": assessment_id}, ensure_ascii=False),
                 direction=call.get("direction") or claim.get("direction"), horizon_days=horizon,
                 due_at=due_at,
             ))
+    selection = json.loads(item.analysis_json or "{}").get("daily_selection")
+    if selection:
+        payload = {**payload, "daily_selection": selection}
     item.analysis_json = json.dumps(payload, ensure_ascii=False, default=str)
-    item.status = "analyzed_partial" if capture and capture.get("images") else "analyzed"
+    item.status = ("analyzed_partial" if capture and capture.get("images")
+                   and capture.get("image_analysis") != "reviewed" else "analyzed")
     item.analyzed_at = now
     item.lease_until = None
     item.error = None
@@ -209,7 +287,7 @@ def complete_item(session, item, payload: dict, *, now=None):
                 reasons[ticker] = str(implication.get("implication") or implication.get("next_step"))
     for ticker, reason in reasons.items():
         # Cross-posting identical content does not produce a second review request.
-        key = digest(item.user_id, ticker, item.content_hash)
+        key = digest(item.user_id, ticker, item.content_hash, assessment_id) if assessment_id else digest(item.user_id, ticker, item.content_hash)
         if session.get(ResearchReviewRequest, key) is None:
             session.add(ResearchReviewRequest(id=key, user_id=item.user_id, item_id=item.id,
                                               ticker=ticker, reason=reason[:4000],
@@ -248,21 +326,34 @@ def list_sources(session, user_id: str) -> list[dict]:
     return result
 
 
-def pending_candidates(session, *, user_id, held_tickers, now, limit=5):
+def pending_candidates(session, *, user_id, held_tickers, now, limit=5, already_routed=()):
     from argosy.services.decision_funnel.stage1_routing import RoutedCandidate
-    requests = session.scalars(select(ResearchReviewRequest).where(
+    routed = {ticker.upper() for ticker in already_routed}
+    eligible = select(ResearchReviewRequest).where(
         ResearchReviewRequest.user_id == user_id,
+        # Research-only quality repairs have their own owner and must not also
+        # enter the portfolio/news funnel (or disappear after thirty days).
+        func.coalesce(
+            func.json_extract(ResearchReviewRequest.result_json, "$.lane"), ""
+        ) != "discovery_analysis",
         or_(ResearchReviewRequest.state == "pending", (ResearchReviewRequest.state == "ready") & (ResearchReviewRequest.updated_at < now - timedelta(hours=24))),
         ResearchReviewRequest.created_at <= now,
         ResearchReviewRequest.created_at >= now - timedelta(days=30),
-    ).order_by(ResearchReviewRequest.created_at).limit(100)).all()
+    ).order_by(ResearchReviewRequest.created_at)
+    # Existing candidates have their own evidence lane. An arbitrarily long
+    # backlog of new names must not hide evidence for a holding already routed.
+    requests = session.scalars(eligible.where(ResearchReviewRequest.ticker.in_(routed))).all() if routed else []
+    requests += session.scalars(eligible.where(ResearchReviewRequest.ticker.not_in(routed)).limit(500)).all()
     grouped = {}
+    new_names = set()
     for request in requests:
         item = session.get(ResearchItem, request.item_id)
         if item is None or utc(item.observed_at) > utc(now):
             continue
-        if request.ticker not in grouped and len(grouped) >= limit:
-            continue
+        if request.ticker not in grouped and request.ticker not in routed:
+            if len(new_names) >= limit:
+                continue
+            new_names.add(request.ticker)
         grouped.setdefault(request.ticker, []).append((request, item))
     return [RoutedCandidate(
         subject=ticker, subject_type="holding" if ticker in held_tickers else "research",
@@ -280,7 +371,8 @@ def record_triage(session, candidate, outcome, *, user_id, now):
         if row and row.user_id == user_id:
             row.state = "ready" if outcome.warrants_decision else "triaged"
             row.updated_at = now
-            row.result_json = json.dumps({"warrants_decision": outcome.warrants_decision, "rationale": outcome.rationale})
+            row.result_json = json.dumps({**json.loads(row.result_json or "{}"),
+                "warrants_decision": outcome.warrants_decision, "rationale": outcome.rationale})
 
 
 def record_review_result(session, candidate, result, *, user_id, now):
@@ -289,6 +381,7 @@ def record_review_result(session, candidate, result, *, user_id, now):
         if row and row.user_id == user_id:
             payload = json.loads(row.result_json)
             from sqlalchemy import inspect
+
             from argosy.state.models import DecisionSnapshot
             if inspect(session.connection()).has_table("decision_snapshots"):
                 prior = session.scalar(select(DecisionSnapshot).where(DecisionSnapshot.user_id == user_id,
@@ -299,10 +392,32 @@ def record_review_result(session, candidate, result, *, user_id, now):
                     payload["previous_action"] = previous_action
                     payload["changed_on_review"] = bool(previous_action and result.action and previous_action.lower() != result.action.lower())
             payload.update({"decision_run_id": result.decision_run_id, "proposal_id": result.proposal_id,
-                            "action": result.action, "status": result.status, "reason": result.blocked_reason})
+                            "action": result.action, "status": result.status, "reason": result.blocked_reason,
+                            "blocked_by": getattr(result, "blocked_by", None),
+                            "news_assessment": getattr(result, "news_assessment", None)})
             row.result_json = json.dumps(payload)
-            row.state = "reviewed"
+            # A failed/quorum-blocked execution did not answer the question.
+            # Leave it retryable, rather than reporting completed research.
+            # An independently assessed reuse *does* answer the news question;
+            # it is not a failed execution and must not spin forever either.
+            assessed_reuse = (getattr(result, "blocked_by", None) == "verdict_defended"
+                and (getattr(result, "news_assessment", None) or {}).get("disposition") == "reuse")
+            row.state = "reviewed" if result.status == "approved" or assessed_reuse else "ready"
             row.updated_at = now
+
+
+def automatic_owner_alive(payload):
+    """Local-process identity supplements expiry: slow live workers are not abandoned."""
+    import psutil
+    owner = payload.get("_auto_owner")
+    if not owner:
+        return False
+    try:
+        return psutil.Process(owner["pid"]).create_time() == owner["created_at"]
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, KeyError, TypeError):
+        return True  # Uncertain ownership never authorizes duplicate model work.
 
 
 def index_youtube(payload, *, user_id, database_url=None):
@@ -313,6 +428,19 @@ def index_youtube(payload, *, user_id, database_url=None):
         from sqlalchemy import inspect
         if not inspect(session.connection()).has_table("research_sources"):
             return  # upgrade/backfill handles artifacts created by older installs
+        # An explicit chat request owns its research-ledger finalization. The
+        # underlying video/claim catalog may save first, but this mirror must
+        # not erase the live claim token or finalize a different execution.
+        from sqlalchemy import func, text
+        session.execute(text("BEGIN IMMEDIATE"))
+        manual_owner = session.scalar(select(ResearchItem.id).where(
+            ResearchItem.user_id == user_id,
+            ResearchItem.external_id == str(video.get("video_id")),
+            ResearchItem.status == "processing",
+            or_(func.json_extract(ResearchItem.analysis_json, "$._chat_claim").is_not(None),
+                func.json_extract(ResearchItem.analysis_json, "$._auto_owner").is_not(None))))
+        if manual_owner:
+            return
         from argosy.state.models import YouTubeChannel, YouTubeVideo
         legacy = session.scalar(select(YouTubeVideo).where(YouTubeVideo.user_id == user_id, YouTubeVideo.youtube_video_id == str(video.get("video_id"))))
         channel = session.get(YouTubeChannel, legacy.channel_id) if legacy and legacy.channel_id else None

@@ -36,6 +36,8 @@ def _test_factory(tmp_path):
 
 def test_subscription_is_idempotent_and_exposes_stats(monkeypatch, tmp_path):
     factory = _test_factory(tmp_path)
+    from argosy.state.research_models import ResearchSource
+    ResearchSource.__table__.create(factory.kw["bind"])
     monkeypatch.setattr(service, "_factory", lambda: factory)
     monkeypatch.setattr(
         service,

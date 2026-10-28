@@ -531,7 +531,23 @@ class Scheduler:
                     continue
 
             planned_due = next_due
-            await self._fire_once(loop)
+            # A stretched normal timer is also catch-up work. After resume all
+            # sleeping timers can wake together, bypassing the watchdog's gate.
+            threshold = float(_scheduler_setting("scheduler_wake_gap_threshold_seconds", 180.0))
+            if (self.clock() - next_due).total_seconds() > threshold:
+                async with self._catchup_gate:
+                    if self._stop.is_set() or not loop.enabled:
+                        continue
+                    if loop.name in self._inflight:
+                        continue
+                    handled = await self._tick_recorded_since(loop.name, next_due)
+                    if handled is not False:
+                        continue  # unknown receipt state must not duplicate work
+                    if loop.schedule.market_hours_only and not self._market_open_check():
+                        continue
+                    await self._fire_once(loop)
+            else:
+                await self._fire_once(loop)
 
     async def _catch_up_if_missed(self, loop: CadenceLoop) -> None:
         """Missed-run catch-up: if this loop's most recent scheduled fire

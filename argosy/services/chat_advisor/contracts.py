@@ -66,6 +66,8 @@ class ChatAnswer:
     text: str
     citations: list[Citation] = field(default_factory=list)
     analysis_request_id: str | None = None
+    review_status: str = "unreviewed"
+    review_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -79,3 +81,5 @@ class OutboxEvent:
     supersedes_message_id: str | None = None
     action_id: str | None = None
     expires_at: datetime | None = None
+    # Operational pushes require a concrete human action, not just red health.
+    user_action: str | None = None

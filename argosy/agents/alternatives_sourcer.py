@@ -101,7 +101,7 @@ class AlternativesSourcerAgent(BaseAgent[AlternativesProposal]):
     require_citations = True
 
     def __init__(self, *, user_id: str, model: str | None = None) -> None:
-        super().__init__(user_id=user_id, model=model or "claude-opus-5")
+        super().__init__(user_id=user_id, model=model)
 
     def build_prompt(
         self,

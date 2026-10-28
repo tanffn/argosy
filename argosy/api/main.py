@@ -236,6 +236,12 @@ def create_app() -> FastAPI:
     from argosy.api.routes.notifications import router as notifications_router
     app.include_router(notifications_router, prefix=api_prefix)
 
+    @app.on_event("startup")
+    async def _keep_windows_listener_on_client_reset() -> None:
+        from argosy.windows_accept import install_accept_retry
+        if install_accept_retry():
+            log.info("windows.accept_reset_recovery_installed")
+
     # T2.2 — startup orphan sweep. Mark any decision_runs that are still
     # status='running' from a prior process that was killed mid-flight as
     # 'failed' with a structured note so the audit trail is honest and

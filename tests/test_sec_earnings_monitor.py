@@ -262,6 +262,30 @@ def test_same_day_error_retry_cannot_erase_successful_check(tmp_path) -> None:
     engine.dispose()
 
 
+def test_sec_timeout_persists_failed_coverage_and_typed_recovery_metadata(tmp_path) -> None:
+    import httpx
+
+    engine, factory = _factory(tmp_path)
+
+    def timeout(ticker, *, cutoff):
+        raise httpx.ReadTimeout("SEC read timed out")
+
+    with factory() as session:
+        summary = run_sec_earnings_checks(
+            session, user_id="ariel", tickers=["AMD"],
+            checked_at=datetime(2026, 9, 26, 16, tzinfo=UTC), fetcher=timeout,
+        )
+        session.commit()
+        receipt = session.query(EarningsCoverageReceipt).one()
+        assert receipt.status == "error"
+        assert receipt.error_message == "SEC read timed out"
+        assert summary.failures == 1
+        assert summary.errors[0]["ticker"] == "AMD"
+        assert summary.errors[0]["failure"]["code"] == "timeout"
+        assert summary.errors[0]["failure"]["retryable"] is True
+    engine.dispose()
+
+
 def test_stock_decision_prompt_actually_contains_earnings_evidence() -> None:
     bundle = {
         "earnings_calendar": "source=yfinance; reported_eps=0.8",

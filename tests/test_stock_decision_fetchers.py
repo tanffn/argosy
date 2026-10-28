@@ -198,3 +198,25 @@ def test_sync_cache_round_trip_uses_real_migrated_schema(
     payload = {"headline": "verified cache seam", "market_cap": 123_000_000}
     fetchers_mod._sync_kv_put("stock_decision_test", "AAA", payload, ttl_seconds=60)
     assert fetchers_mod._sync_kv_get("stock_decision_test", "AAA") == payload
+
+
+@pytest.mark.parametrize("json_failure", [False, True])
+def test_yahoo_news_rss_fallback_keeps_provider_dates_and_links(monkeypatch, json_failure):
+    calls = []
+    def news(**kwargs):
+        if json_failure:
+            raise ConnectionError("JSON unavailable")
+        return []
+    instrument = SimpleNamespace(get_news=news)
+    monkeypatch.setattr(fetchers_mod, "_shared_yfinance_adapter", lambda: SimpleNamespace(
+        _resolve_client=lambda: SimpleNamespace(Ticker=lambda symbol: instrument)))
+    monkeypatch.setattr(fetchers_mod, "_cached_yfinance_fetch", lambda **kw: kw["fetch"]())
+    def rss(url):
+        calls.append(url)
+        return b'<rss><channel><item><title>Earnings update</title><link>https://example.com/earnings</link><pubDate>Wed, 28 Oct 2026 11:00:00 GMT</pubDate></item></channel></rss>'
+    monkeypatch.setattr("argosy.services.rss_feed._default_fetch", rss)
+    result = fetchers_mod._yahoo_news("BRK/B", max_items=3)
+    assert "s=BRK-B" in calls[0]
+    assert "Earnings update" in result
+    assert "28 Oct 2026" in result and "https://example.com/earnings" in result
+    assert "source=yfinance" in result

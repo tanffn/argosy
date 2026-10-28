@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
 from argosy.config import get_settings
@@ -60,7 +59,9 @@ def get_tenant_engine(user_id: str) -> AsyncEngine:
         if eng is not None:
             return eng
         url = _tenant_database_url(user_id)
-        eng = create_async_engine(url, echo=False, future=True)
+        from argosy.state.db import create_shared_async_engine, _install_sqlite_pragmas
+        eng = create_shared_async_engine(url)
+        _install_sqlite_pragmas(eng.sync_engine, url)
         _ENGINES[user_id] = eng
         _FACTORIES[user_id] = async_sessionmaker(eng, expire_on_commit=False)
         return eng

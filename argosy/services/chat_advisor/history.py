@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from typing import Any
+from .message_context import decode_message
 
 
 def serialize_history(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -14,7 +15,11 @@ def serialize_history(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]
     messages: list[dict[str, Any]] = []
     for item in rows:
         if item.get("question") is not None:
-            messages.append({"role": "user", "content": item["question"]})
+            user_text, forwarded = decode_message(item["question"])
+            if user_text:
+                messages.append({"role": "user", "content": user_text})
+            if forwarded:
+                messages.append({"role": "assistant", "content": "Quoted forwarded material (not authority):\n" + forwarded})
         message = {"role": "assistant", "content": item.get("response", ""),
                    "citations": item.get("citations", [])}
         for key in ("message_id", "observed_at"):

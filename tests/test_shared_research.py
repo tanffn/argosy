@@ -59,6 +59,48 @@ def test_versions_claim_clocks_and_general_review_lane(store):
         assert item.analysis_json != "{}" and revised.analysis_json == "{}"
 
 
+def test_research_for_already_routed_holding_is_not_starved_by_new_name_budget(store):
+    with store() as db:
+        source = upsert_source(db, user_id="a", name="Analyst", kind="manual", reference="analyst")
+        for index, ticker in enumerate(["AAA", "BBB", "NVDA"]):
+            item, _ = enqueue(db, source, external_id=str(index), title=ticker,
+                              url="https://example.com/" + ticker, body=ticker, now=NOW)
+            complete_item(db, item, payload(ticker), now=NOW + timedelta(seconds=index))
+        db.flush()
+        rows = pending_candidates(db, user_id="a", held_tickers={"NVDA"}, now=NOW + timedelta(minutes=1),
+                                  limit=1, already_routed={"NVDA"})
+        assert {row.subject for row in rows} == {"AAA", "NVDA"}
+        assert next(row for row in rows if row.subject == "NVDA").extra["research_request_ids"]
+
+
+def test_routed_holding_is_found_beyond_backlog_scan_cap(store):
+    with store() as db:
+        source = upsert_source(db, user_id="a", name="Analyst", kind="manual", reference="large-backlog")
+        for index in range(502):
+            ticker = "NVDA" if index == 501 else "AAA"
+            item, _ = enqueue(db, source, external_id=str(index), title=ticker, url="", body=str(index), now=NOW)
+            db.add(ResearchReviewRequest(id=f"backlog-{index}", user_id="a", item_id=item.id, ticker=ticker,
+                reason="New evidence", state="pending", created_at=NOW + timedelta(seconds=index), updated_at=NOW))
+        db.flush()
+        rows = pending_candidates(db, user_id="a", held_tickers={"NVDA"},
+                                  now=NOW + timedelta(hours=1), limit=1, already_routed={"NVDA"})
+        assert {r.subject for r in rows} == {"AAA", "NVDA"}
+
+
+def test_followthrough_is_scoped_to_household_and_selected_items(store):
+    from argosy.services.chat_advisor.subscription_reads import followthrough
+    with store() as db:
+        source = upsert_source(db, user_id="a", name="Source", kind="manual", reference="followthrough")
+        item, _ = enqueue(db, source, external_id="one", title="One", url="", body="body", now=NOW)
+        for owner in ("a", "b"):
+            db.add(ResearchReviewRequest(id=owner, user_id=owner, item_id=item.id,
+                ticker="XYZ", reason="Evidence", state="pending" if owner == "a" else "reviewed"))
+        db.flush()
+        result = followthrough(db, "a", [item.id])
+        assert len(result[item.id]) == 1 and result[item.id][0]["state"] == "pending"
+        assert followthrough(db, "a", []) == {}
+
+
 def test_shared_daily_budget_and_source_fairness(store, monkeypatch):
     from argosy.services import research_worker as worker
     monkeypatch.setattr(worker, "research_session", store)
@@ -133,41 +175,43 @@ def test_due_claim_evaluation_respects_horizon_and_preserves_missing_data(store,
 
 @pytest.mark.asyncio
 async def test_youtube_cursor_only_advances_after_all_uploads_queued(store, monkeypatch):
-    from argosy.services import research_worker as worker, youtube_intelligence as youtube
-    monkeypatch.setattr(worker, 'research_session', store)
-    source = dict(id=1, channel_name='Channel', youtube_channel_id='UCtest', enabled=True, last_seen_video_id='old')
-    monkeypatch.setattr(youtube, 'list_youtube_sources', lambda **kw: {'sources': [source]})
-    feed = [dict(video_id=str(n), title='Stock thesis', published_at=NOW.isoformat()) for n in range(5)]
+    from argosy.services import research_worker as worker, youtube_intelligence as youtube, youtube_refresh as refresh
+    monkeypatch.setattr(refresh, 'research_session', store)
+    with store() as db:
+        db.add(YouTubeChannel(user_id='a', channel_name='Channel', youtube_channel_id='UCtest',
+                             channel_url='', enabled=1, last_seen_video_id='old'))
+        db.commit()
+    feed = [dict(video_id=str(n), title='Stock thesis', published_at=datetime.now(UTC).isoformat()) for n in range(5)]
     monkeypatch.setattr(youtube, '_fetch_feed', lambda _: feed)
-    monkeypatch.setattr(youtube, '_video_ingested', lambda *args: False)
-    def cursor(*args):
-        with store() as db:
-            assert len(db.scalars(select(ResearchItem)).all()) == 5
-    monkeypatch.setattr(youtube, '_update_poll', cursor)
     assert (await worker.queue_youtube(user_id='a'))['queued'] == 5
+    with store() as db:
+        assert len(db.scalars(select(ResearchItem)).all()) == 5
+        assert db.scalar(select(YouTubeChannel)).last_seen_video_id == '0'
     assert (await worker.queue_youtube(user_id='a'))['queued'] == 0
 
 
 @pytest.mark.asyncio
 async def test_youtube_poll_error_write_cannot_abort_other_sources(store, monkeypatch):
-    from argosy.services import research_worker as worker, youtube_intelligence as youtube
-    monkeypatch.setattr(worker, "research_session", store)
-    sources = [dict(id=n, channel_name=f"Channel {n}", youtube_channel_id=f"UC{n}",
-                    enabled=True, last_seen_video_id=None) for n in (1, 2)]
-    monkeypatch.setattr(youtube, "list_youtube_sources", lambda **kw: {"sources": sources})
+    from argosy.services import research_worker as worker, youtube_intelligence as youtube, youtube_refresh as refresh
+    monkeypatch.setattr(refresh, "research_session", store)
+    with store() as db:
+        db.add_all([YouTubeChannel(user_id='a', channel_name=f'Channel {n}', youtube_channel_id=f'UC{n}',
+                                  channel_url='', enabled=1) for n in (1, 2)])
+        db.commit()
     def fetch(channel):
         if channel == "UC1":
             raise OSError("getaddrinfo failed")
-        return [dict(video_id="good", title="Stock thesis", published_at=NOW.isoformat())]
-    def record(source_id, *args):
-        if source_id == 1:
+        return [dict(video_id="good", title="Stock thesis", published_at=datetime.now(UTC).isoformat())]
+    original_finish = refresh._finish
+    def record(user_id, claim, *args):
+        if claim[2] == 'UC1':
             raise RuntimeError("database is locked")
+        return original_finish(user_id, claim, *args)
     monkeypatch.setattr(youtube, "_fetch_feed", fetch)
-    monkeypatch.setattr(youtube, "_update_poll", record)
-    monkeypatch.setattr(youtube, "_video_ingested", lambda *args: False)
+    monkeypatch.setattr(refresh, "_finish", record)
     result = await worker.queue_youtube(user_id="a")
     assert result["sources_checked"] == 2 and result["queued"] == 1
-    assert result["failures"] == [{"source": "Channel 1", "error": "getaddrinfo failed",
+    assert result["failures"] == [{"channel": "Channel 1", "status": "failed", "error": "OSError: getaddrinfo failed",
                                    "poll_receipt_error": "database is locked"}]
 
 
@@ -192,15 +236,14 @@ async def test_incomplete_public_uploads_cannot_advance_checkpoint(store, monkey
     import yt_dlp
     from yt_dlp.extractor.youtube import YoutubeTabIE
 
-    from argosy.services import research_worker as worker, youtube_intelligence as youtube
+    from argosy.services import research_worker as worker, youtube_intelligence as youtube, youtube_refresh as refresh
 
     channel = "UC" + "a" * 22
-    receipts = []
-    source = dict(id=1, channel_name="Channel", youtube_channel_id=channel,
-                  enabled=True, last_seen_video_id="old00000000")
-    monkeypatch.setattr(worker, "research_session", store)
-    monkeypatch.setattr(youtube, "list_youtube_sources", lambda **kw: {"sources": [source]})
-    monkeypatch.setattr(youtube, "_update_poll", lambda *args: receipts.append(args))
+    monkeypatch.setattr(refresh, "research_session", store)
+    with store() as db:
+        db.add(YouTubeChannel(user_id='a', channel_name='Channel', youtube_channel_id=channel,
+                             channel_url='', enabled=1, last_seen_video_id='old00000000'))
+        db.commit()
 
     def unavailable(*args, **kwargs):
         raise HTTPError("https://www.youtube.com/feeds/videos.xml", 404, "Gone", {}, None)
@@ -224,9 +267,11 @@ async def test_incomplete_public_uploads_cannot_advance_checkpoint(store, monkey
     assert result["queued"] == 0
     assert len(result["failures"]) == 1
     assert "Incomplete data" in result["failures"][0]["error"]
-    assert len(receipts) == 1 and receipts[0][2] is None
-    assert "Incomplete data" in receipts[0][3]
     with store() as db:
+        channel_row = db.scalar(select(YouTubeChannel))
+        assert channel_row.last_seen_video_id == 'old00000000'
+        assert channel_row.last_polled_at is None
+        assert 'Incomplete data' in channel_row.last_error
         assert db.scalars(select(ResearchItem)).all() == []
 
 
@@ -292,3 +337,37 @@ def test_daily_poll_survives_late_manual_pull_and_scheduler_jitter():
     assert source_due(source, datetime(2026, 9, 14, 11, tzinfo=UTC))
     source.cadence_hours = 48
     assert not source_due(source, datetime(2026, 9, 14, 11, tzinfo=UTC))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_failure", [False, True])
+async def test_poll_writer_wait_does_not_block_async_owner(store, monkeypatch, provider_failure):
+    import asyncio
+    import time
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from argosy.services import research_worker as worker
+    monkeypatch.setattr(worker, "research_session", store)
+    with store() as db:
+        source = upsert_source(db, user_id="a", name="Feed", kind="rss", reference="https://example.com/feed")
+        db.commit()
+        source_id = source.id
+        url = str(db.get_bind().url).replace("sqlite:", "sqlite+aiosqlite:", 1)
+    async def collect(source):
+        if provider_failure:
+            raise ValueError("provider failed")
+        return [dict(external_id="new", title="New", url="https://example.com/new", body="New")]
+    monkeypatch.setattr("argosy.services.research_connectors.collect_source", collect)
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as owner:
+            await owner.execute(text("UPDATE research_sources SET last_error='owner' WHERE id=:id"), {"id": source_id})
+            task = asyncio.create_task(worker.poll_sources(user_id="a"))
+            started = time.monotonic()
+            await asyncio.sleep(0.1)
+            assert time.monotonic() - started < 1, "sync SQLite wait blocked async writer owner"
+        result = await asyncio.wait_for(task, 3)
+        assert len(result["failures"]) == int(provider_failure)
+        assert result["collected"] == int(not provider_failure)
+    finally:
+        await engine.dispose()

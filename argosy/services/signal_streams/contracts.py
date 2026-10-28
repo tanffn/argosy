@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 
 from pydantic import BaseModel
@@ -491,7 +490,7 @@ class GovContractsStream:
         today: Callable[[], date] = date.today,
         curated_contractors: dict[str, str] | None = None,
         max_page_attempts: int = 3,
-        page_retry_backoff: tuple[float, ...] = (0.25, 0.75),
+        page_retry_backoff: tuple[float, ...] = (1.0, 3.0),
         sleep: Callable[[float], None] = time.sleep,
         user_id: str = "ariel",
     ) -> None:
@@ -518,20 +517,11 @@ class GovContractsStream:
 
     def _fetch_page(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Retry only transient transport failures for one page."""
-        for attempt in range(self.max_page_attempts):
-            try:
-                return self.fetch_json(payload)
-            except HTTPError:
-                raise
-            except (TimeoutError, URLError, ConnectionError):
-                if attempt + 1 >= self.max_page_attempts:
-                    raise
-                if self.page_retry_backoff:
-                    delay = self.page_retry_backoff[
-                        min(attempt, len(self.page_retry_backoff) - 1)
-                    ]
-                    self.sleep(delay)
-        raise RuntimeError("unreachable USAspending page retry state")
+        from argosy.services.jobs.transport_failure import retry_data_read
+
+        return retry_data_read(lambda: self.fetch_json(payload),
+                               attempts=self.max_page_attempts,
+                               backoff=self.page_retry_backoff, sleep=self.sleep)
 
     def _fetch_query(
         self,

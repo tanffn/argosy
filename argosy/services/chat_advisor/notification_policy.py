@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,12 @@ def delivery_events(
     events: list[OutboxEvent], *, now: datetime, timezone: str, overview_time: time,
 ) -> list[OutboxEvent]:
     """One daily snapshot, plus distinct critical alerts; never a catch-up backlog."""
-    alerts = [event for event in events if event.category in {CRITICAL, OPERATIONAL}]
+    alerts = [event for event in events if event.category == CRITICAL or (
+        event.category == OPERATIONAL and isinstance(event.user_action, str)
+        and event.user_action.strip())]
+    alerts = [replace(event, body=f"{event.body}\nNext action: {event.user_action.strip()}")
+              if event.category == OPERATIONAL and event.user_action.strip() not in event.body
+              else event for event in alerts]
     local = now.astimezone(ZoneInfo(timezone))
     if local.time() < overview_time:
         return alerts

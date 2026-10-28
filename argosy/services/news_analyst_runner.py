@@ -179,6 +179,12 @@ def run_news_signal_analysis(
             )
             for r in batch
         ]
+        if commit_batches:
+            # This dedicated session owns its transaction. Release even the
+            # read transaction before a potentially long model call; ORM rows
+            # are reloaded afterwards (commit may expire them).
+            batch_ids = [r.id for r in batch]
+            session.commit()
 
         # Check nesting BEFORE creating the coroutine. Catching RuntimeError
         # around asyncio.run also catches AgentRunError and hides provider
@@ -195,6 +201,10 @@ def run_news_signal_analysis(
         analyses = asyncio.run(
             agent.analyze(analyst_inputs, user_holdings=user_holdings)
         )
+        if commit_batches:
+            batch = list(session.scalars(select(NewsSignal).where(
+                NewsSignal.id.in_(batch_ids), NewsSignal.analyzed_at.is_(None),
+            )))
 
         by_id: dict[int, AnalyzedSignalOut] = {a.signal_id: a for a in analyses}
 
@@ -293,6 +303,10 @@ def _maybe_write_news_signal_predictions(
         # evaluation_method_registry in legacy test envs) ROLLS BACK
         # only that savepoint — the outer transaction's row mutations
         # (materiality/flag/rationale/analyzed_at) survive intact.
+        # begin_nested() unconditionally flushes pending outer changes BEFORE
+        # opening its savepoint. A failure there invalidates the whole Session
+        # and cannot be swallowed as an optional prediction failure.
+        session.flush()
         try:
             with session.begin_nested():
                 write_news_signal_prediction(
@@ -306,6 +320,8 @@ def _maybe_write_news_signal_predictions(
                     raw_text_ref=f"news_signals.id:{row.id}",
                 )
         except Exception:  # noqa: BLE001 — never break analyst on writer failure
+            if not session.is_active:
+                raise
             logger.exception(
                 "news_analyst_runner: write_news_signal_prediction failed for "
                 "signal_id=%s ticker=%s",

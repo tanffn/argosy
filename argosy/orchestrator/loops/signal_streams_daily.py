@@ -251,9 +251,12 @@ class SignalStreamsDailyLoop(CadenceLoop):
                 }
             except Exception as exc:  # noqa: BLE001 - stream isolation
                 session.rollback()
+                from argosy.services.jobs.transport_failure import classify_transport_failure
+
                 summary["streams"][name] = {
                     "status": "error",
                     "error": str(exc)[:300],
+                    "failure": classify_transport_failure(exc).to_dict(),
                 }
                 _log.warning(
                     "signal_streams_daily.stream_failed",

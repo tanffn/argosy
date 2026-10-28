@@ -11,7 +11,6 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.state import db as db_mod
@@ -75,12 +74,13 @@ def persist_agent_report_sync(
     decision_id: str | None = None,
 ) -> int:
     """Commit one standalone report using the configured live database."""
-    async_url = str(db_mod.get_engine().url)
+    if db_mod._per_tenant_mode():
+        from argosy.tenancy.database import get_tenant_engine
+        async_url = str(get_tenant_engine(report.user_id).url)
+    else:
+        async_url = str(db_mod.get_engine().url)
     sync_url = async_url.replace("+aiosqlite", "")
-    engine = sa.create_engine(
-        sync_url,
-        connect_args={"check_same_thread": False},
-    )
+    engine = db_mod.create_sync_engine(sync_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     try:
         with _SYNC_WRITE_LOCK, factory() as session:

@@ -96,6 +96,7 @@ async def test_preopened_analysis_run_is_authoritative_when_policy_omitted(engin
             return report
 
     flow = DecisionFlow(
+        evidence_review_runner=__import__("tests.evidence_fakes", fromlist=["accept_author"]).accept_author,
         user_id="chat-user", trader_factory=lambda user_id, tier: Trader()
     )
     outcome = await flow.run(

@@ -80,26 +80,51 @@ async def _last_successes(registry: Any, store: Any, names: list[str]) -> dict[s
 
 
 async def critical_job_events(registry: Any, store: Any) -> list[OutboxEvent]:
-    """Background job notices belong to status, not an investment chat reply."""
+    """Only known human remedies get a push; the board retains all job states."""
+    from types import SimpleNamespace
+    from argosy.services.decision_readiness import job_user_action, latest_job_runs
+
     views = await current_job_views(registry, store)
-    red = sorted((view for view in views
-                  if str(view.health).lower() == "red"
-                  and bool(getattr(registry.get_job(view.metadata.name), "enabled", True))),
-                 key=lambda view: view.metadata.name)
-    if not red:
+    enabled = [view for view in views if bool(getattr(registry.get_job(view.metadata.name), "enabled", True))]
+    if not enabled:
         return []
-    names = [view.metadata.name for view in red]
+    async with db_mod.get_session(user_id=store.household_user_id) as session:
+        rows = {row.job_name: row for row in await latest_job_runs(session, names=[v.metadata.name for v in enabled])}
+    actionable = []
+    for view in enabled:
+        name = view.metadata.name
+        if not view.metadata.long_running and view.currently_running_run_id is not None:
+            continue  # Recovery is already underway; don't page on its prior failure.
+        row = rows.get(name)
+        if view.metadata.long_running:
+            if view.health != "red":
+                continue
+            row = SimpleNamespace(job_name=name, status="error", output_summary=None,
+                                  error_message=view.last_run_error)
+        action = job_user_action(row) if row is not None else None
+        if action and (view.health == "red" or action["code"] == "alpha_login"):
+            actionable.append((name, action))
+    if not actionable:
+        return []
+    actionable.sort(key=lambda item: item[0])
+    names = [name for name, _ in actionable]
     successes = await _last_successes(registry, store, names)
-    # Successful recovery starts a new episode; repeated failures stay quiet.
-    version = hashlib.sha256(repr([(name, successes.get(name)) for name in names]).encode()).hexdigest()
-    label = ", ".join(name.replace("_", " ") for name in names[:3])
-    if len(names) > 3:
-        label += f", +{len(names) - 3} more"
+    # Repeat attempts do not change the episode; a new remedy or recovery does.
+    version = hashlib.sha256(repr([(name, action["code"], action["action"], successes.get(name))
+                                  for name, action in actionable]).encode()).hexdigest()
+    groups = {}
+    for name, action in actionable:
+        key = (action["code"], action["reason"], action["action"])
+        groups.setdefault(key, []).append(name.replace("_", " "))
+    body = "Argosy needs your action:\n" + "\n".join(
+        f"{index}. {reason} {remedy}\nAffected: {', '.join(affected)}."
+        for index, ((code, reason, remedy), affected) in enumerate(groups.items(), 1))
     return [OutboxEvent(
         semantic_key="system:job-health", material_version=version, category=OPERATIONAL,
-        body=f"Background tasks: {len(names)} need attention — {label}. See the task details on this board. This is separate from chat research.",
+        body=body,
         citations=[Citation("job", name, _now().isoformat()) for name in names],
         bypasses_quiet_hours=False,
+        user_action="; ".join(dict.fromkeys(action["action"] for _, action in actionable)),
     )]
 
 
@@ -110,10 +135,11 @@ async def current_job_views(registry: Any, store: Any) -> list[Any]:
     views = await registry.list()
     if store is None or not any(view.metadata.name == "annual" for view in views):
         return views
-    from argosy.services.decision_readiness import collect_decision_readiness
+    from argosy.services.decision_readiness import collect_decision_readiness, runtime_job_health
 
     async with db_mod.get_session(user_id=store.household_user_id) as session:
-        readiness = await collect_decision_readiness(session, user_id=store.household_user_id)
+        readiness = await collect_decision_readiness(session, user_id=store.household_user_id,
+                                                    runtime_health=runtime_job_health(views))
     annual = next((job for job in readiness["jobs"] if job["name"] == "annual"), {})
     if annual.get("status") not in {"knowledge_recovered", "knowledge_incomplete"}:
         return views
@@ -180,7 +206,7 @@ async def _upsert_page(*, store: Any, gateway: Any, channel_id: str, page: int, 
             await gateway.edit(channel_id, row.sent_message_id, body)
             await store.update_status_board_body(row.id, body=body)
             return
-        message_id = await gateway.send(channel_id, body, nonce=row.nonce)
+        message_id = await gateway.send(channel_id, body, nonce=row.nonce, silent=True)
         await store.mark_status_board_sent(row.id, message_id=message_id, body=body)
         return
     existing = await store.latest_sent_outbox(key)
@@ -191,7 +217,7 @@ async def _upsert_page(*, store: Any, gateway: Any, channel_id: str, page: int, 
     if row.status == "sent" and row.sent_message_id:
         await gateway.edit(channel_id, row.sent_message_id, body)
         return
-    message_id = await gateway.send(channel_id, body, nonce=nonce)
+    message_id = await gateway.send(channel_id, body, nonce=nonce, silent=True)
     await store.mark_outbox_sent(row.id, message_id)
 
 

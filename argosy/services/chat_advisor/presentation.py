@@ -19,6 +19,8 @@ def _detail(value: Any, limit: int = 700) -> str:
 
 def render_analysis_result(request_id: str, state: str, result: Any, error: str | None = None) -> str:
     """Render only persisted fleet facts; never turn a failure into consensus."""
+    if state == "completed" and isinstance(result, Mapping) and result.get("research_task"):
+        return str(result.get("text") or "Research request completed.")
     lines = [] if state == "completed" else [f"Review {state}."]
     outcomes = result.get("outcomes", []) if isinstance(result, Mapping) else []
     for outcome in outcomes:

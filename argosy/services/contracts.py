@@ -103,6 +103,9 @@ class FleetPick:
     thesis_md: str
     verdict: str  # "BUY" | "WATCH" | "PASS"
     cites: tuple[str, ...] = ()
+    decision_run_id: int | None = None
+    report_id: int | None = None
+    completed_at: str | None = None
 
 
 @dataclass(frozen=True)

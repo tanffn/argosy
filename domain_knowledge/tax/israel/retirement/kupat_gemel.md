@@ -4,7 +4,7 @@ profile_fields:
   - spouse_date_of_birth
 topic: israel_kupat_gemel
 jurisdiction: israel
-last_verified: 2026-09-08
+last_verified: 2026-09-30
 next_refresh_due: 2026-12-31
 sources:
   - url: file://Resources/Family Finances Status - 26 May.tsv
@@ -12,21 +12,21 @@ sources:
     tier: 1
     label: "Historical intake reporting December-2025 account balances; not a current statement"
   - url: https://www.gov.il/BlobFolder/guide/2026-filling-out-form-161d/he/Guides_IncomeTax_filling-out-form-161d-2026.pdf
-    retrieved: 2026-09-12
+    retrieved: 2026-09-30
     tier: 1
   - url: https://www.harel-group.co.il/long-term-savings/funding-saving
-    retrieved: 2026-09-12
+    retrieved: 2026-09-30
     tier: 1
     label: "Issuer investment-provident product terms, not regulator tax guidance"
   - url: https://www.harel-group.co.il/long-term-savings/funding/information/190-amendment
-    retrieved: 2026-09-12
+    retrieved: 2026-09-30
     tier: 1
   - url: https://www.malam-payroll.com/wp-content/uploads/2026/01/loachezer2026.pdf
-    retrieved: 2026-09-12
+    retrieved: 2026-09-30
     tier: 2
     note: ITA January 2026 publication mirrored by payroll provider, not a direct regulator retrieval.
   - url: https://www.gov.il/BlobFolder/policy/income-tax-professional-directives-251012/he/251012.pdf
-    retrieved: 1900-01-01
+    retrieved: 2026-09-30
     tier: 1
 ---
 

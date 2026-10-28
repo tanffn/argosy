@@ -32,6 +32,14 @@ async def test_migrated_chat_store_is_idempotent_and_tenant_bound(alembic_engine
         assert (await owner.get_request(first.id)).prompt_text == "Dated news evidence"
         assert second.prompt_text == "Dated news evidence"
         assert await owner.count_active_requests() == 1
+        from argosy.services.chat_advisor.research_actions import ResearchChatTask
+        video = await owner.create_request("video", "2", [], prompt_text=ResearchChatTask(
+            kind="youtube_video", reference="https://youtu.be/bytxhgSZTWI").model_dump_json())
+        assert await owner.transition_request(video.id, expected="queued", status="running")
+        assert not await owner.transition_request(video.id, expected="queued", status="running")
+        await owner.update_request(video.id, status="cancelled")
+        assert not await owner.transition_request(video.id, expected="running", status="completed", result={"text":"wrong"})
+        assert (await owner.get_request(video.id)).state == "cancelled"
 
         other = ChatStore(sessions, "other", binding_id=owner.binding_id)
         assert await other.get_request(first.id) is None

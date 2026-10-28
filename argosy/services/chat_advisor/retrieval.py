@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections import Counter
@@ -74,6 +75,12 @@ def _safe_json(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+def _outcome_status(value: str | None) -> str | None:
+    payload = _safe_json(value, {})
+    status = payload.get("status") if isinstance(payload, dict) else None
+    return status if isinstance(status, str) else None
+
+
 def _iso(value: Any) -> str:
     if value is None:
         return "unknown"
@@ -98,11 +105,14 @@ class RetrievalService:
             "discovery",
             "identity",
             "sources",
+            "subscriptions",
+            "videos",
             "job_health",
             "track_record",
             "cost",
             "reports",
             "documents",
+            "briefings",
         }
     )
 
@@ -214,7 +224,7 @@ class RetrievalService:
                 result = method(
                     db, principal.household_user_id, limit=limit, offset=offset, **clean_filters
                 )
-                if normalized in {"actions", "research"} and clean_filters.get("record_id") and result.data is not None:
+                if normalized in {"actions", "research", "videos"} and clean_filters.get("record_id") and result.data is not None:
                     # Redact before slicing: otherwise a secret split across
                     # pages could lose its identifying prefix on the next page.
                     encoded = OutboundFilter.redact(json.dumps(result.data, ensure_ascii=False, default=str))
@@ -237,7 +247,7 @@ class RetrievalService:
                 ],
             )
 
-    def _read_holdings(self, db: Session, user_id: str, **_: Any) -> ReadResult:
+    def _read_holdings(self, db: Session, user_id: str, *, ticker: str = "", **_: Any) -> ReadResult:
         row = db.scalar(
             select(PortfolioSnapshotRow)
             .where(PortfolioSnapshotRow.user_id == user_id)
@@ -257,6 +267,14 @@ class RetrievalService:
             "totals": _safe_json(row.totals_json, {}),
             "parse_warnings": _safe_json(row.parse_warnings_json, []),
         }
+        if ticker:
+            symbol = ticker.strip().upper()
+            positions = data["positions"]
+            if not isinstance(positions, list) or any(not isinstance(p, dict) for p in positions):
+                return ReadResult("holdings", None, warnings=["Snapshot positions have an unreadable shape; absence cannot be inferred."])
+            data["positions"] = [p for p in positions if str(p.get("ticker") or "").strip().upper() == symbol]
+            data.pop("allocations")
+            data.update(ticker=symbol, coverage="All rows of the latest saved snapshot checked for this exact ticker; not a live broker check or ETF look-through.")
         return ReadResult(
             "holdings", data, [Citation("portfolio_snapshot", str(row.id), _iso(row.imported_at))]
         )
@@ -457,6 +475,8 @@ class RetrievalService:
         self, db: Session, user_id: str, *, limit: int, offset: int, **filters: Any
     ) -> ReadResult:
         rows = self._research_rows(db, user_id, limit, offset, **filters)
+        from .subscription_reads import followthrough
+        reviews = followthrough(db, user_id, [r.id for r in rows])
         matching = self._research_query(user_id, **filters).subquery()
         counts = dict(db.execute(select(matching.c.status, func.count()).group_by(matching.c.status)).all())
         total = sum(counts.values())
@@ -471,6 +491,7 @@ class RetrievalService:
                 "published_at": _iso(r.published_at),
                 "observed_at": _iso(r.observed_at),
                 "status": r.status,
+                "follow_up_reviews": reviews.get(r.id, []),
                 "capture_coverage": (_safe_json(r.analysis_json, {}) or {}).get("capture"),
                 "body": r.body if detail else (r.body or "")[:1500],
                 "analysis": _safe_json(r.analysis_json, None) if detail else None,
@@ -492,6 +513,24 @@ class RetrievalService:
             [Citation("research_item", r.id, _iso(r.observed_at), url=r.url or None) for r in rows],
             warnings,
         )
+
+    def _read_subscriptions(self, db, user_id, **filters):
+        from .subscription_reads import read_subscriptions
+        return read_subscriptions(db, user_id, **filters)
+
+    def _read_briefings(self, db, user_id, *, limit, offset, **filters):
+        from argosy.state.chat_models import NotificationOutbox
+        rows = list(db.scalars(select(NotificationOutbox).where(
+            NotificationOutbox.household_user_id == user_id,
+            NotificationOutbox.category == "overview.daily", NotificationOutbox.status == "sent",
+        ).order_by(NotificationOutbox.created_at.desc()).offset(offset).limit(min(limit, 3))))
+        return ReadResult("briefings", {"prior_delivered_briefings": [
+            {"created_at": row.created_at, "text": row.body} for row in rows],
+            "coverage": "Prior messages are editorial context, never current evidence or action authority."})
+
+    def _read_videos(self, db, user_id, **filters):
+        from .subscription_reads import read_video
+        return read_video(db, user_id, **filters)
 
     def _read_news(self, db: Session, user_id: str, *, limit: int, offset: int,
                    **filters: Any) -> ReadResult:
@@ -527,26 +566,63 @@ class RetrievalService:
     def _read_discovery(self, db: Session, user_id: str, *, limit: int, offset: int,
                         **filters: Any) -> ReadResult:
         from argosy.state.models import ScanState
-        stmt = select(ScanState).where(ScanState.user_id == user_id, ScanState.status == "active")
-        if filters.get("ticker"):
-            stmt = stmt.where(ScanState.ticker == str(filters["ticker"]).upper())
+        ticker = str(filters.get("ticker") or "").strip().upper()
+        stmt = select(ScanState).where(ScanState.user_id == user_id)
+        # The current shortlist is not the research archive. Explicit references
+        # must remain readable after eviction/quarantine, without reviving a pick.
+        stmt = stmt.where(ScanState.ticker == ticker) if ticker else stmt.where(ScanState.status == "active")
         total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = list(db.scalars(stmt.order_by(ScanState.rank.asc(), ScanState.ticker)
                                .offset(offset).limit(limit)))
+        candidates, citations = [], []
+        for r in rows:
+            candidate = {"ticker": r.ticker, "status": r.status,
+                         "quarantine_reason": r.quarantine_reason,
+                         "rank": r.rank, "score": r.last_score,
+                         "screened_at": _iso(r.last_radar_at),
+                         "estimated_at": _iso(r.last_estimated_at),
+                         "reviewed_at": _iso(r.last_fleet_at),
+                         "research": _safe_json(r.fleet_json, None),
+                         "estimate": _safe_json(r.estimator_json, None)}
+            # Append-only reports survive subsequent cache replacement. Keep
+            # their own date/identity: the latest report need not be the cached
+            # estimate or a completed multi-agent assessment.
+            report = db.scalars(select(AgentReport).where(
+                AgentReport.user_id == user_id,
+                AgentReport.decision_id == f"discovery:{r.ticker}",
+                AgentReport.agent_role == "quick_estimator",
+            ).order_by(AgentReport.created_at.desc(), AgentReport.id.desc()).limit(1)).first()
+            if report is not None:
+                candidate["latest_saved_estimator_report"] = {
+                    "record_type": "agent_report", "record_id": str(report.id),
+                    "created_at": _iso(report.created_at),
+                    "response": report.response_text[:MAX_DETAIL_CHARS],
+                    "truncated": len(report.response_text) > MAX_DETAIL_CHARS,
+                    "detail_read": {"topic": "reports", "filters": {"record_id": str(report.id)}},
+                }
+                citations.append(Citation("agent_report", str(report.id), _iso(report.created_at),
+                                          label=f"{r.ticker} dated preliminary screen"))
+            version = hashlib.sha256(json.dumps(candidate, sort_keys=True).encode()).hexdigest()
+            candidates.append(candidate)
+            citations.append(Citation("discovery", r.ticker,
+                                      _iso(r.last_fleet_at or r.last_estimated_at or r.last_radar_at),
+                                      version=version, label=f"{r.ticker} discovery record"))
         return ReadResult("discovery", {
             "checked_at": datetime.now(UTC).isoformat(),
             "coverage": "Saved discovery research, not executable orders or a new fleet assessment.",
-            "candidates": [{"ticker": r.ticker, "rank": r.rank, "score": r.last_score,
-                            "screened_at": _iso(r.last_radar_at), "reviewed_at": _iso(r.last_fleet_at),
-                            "research": _safe_json(r.fleet_json, None),
-                            "estimate": _safe_json(r.estimator_json, None)} for r in rows],
+            "candidates": candidates,
+            "history_read": {"topic": "reports", "filters": {"discovery_ticker": ticker}} if ticker else None,
             "pagination": _pagination(total, len(rows), limit, offset),
-        }, [Citation("discovery", r.ticker, _iso(r.last_fleet_at or r.last_radar_at),
-                     label=f"{r.ticker} discovery review") for r in rows])
+        }, citations, ["Status/rank describes shortlist membership, not an investment verdict. "
+                       "Dropped is not SELL; quarantined records are not eligible picks. Missing research "
+                       "means no full fleet grade in this cache, not that no attempt occurred. "
+                       "Current cache contents may differ from a prior briefing; use dated agent reports "
+                       "for historical claims. Preliminary screens are not verified bull/bear reviews."])
 
     def _read_sources(
-        self, db: Session, user_id: str, *, limit: int, offset: int, **_: Any
+        self, db: Session, user_id: str, *, limit: int, offset: int, kind: str = "", **_: Any
     ) -> ReadResult:
+        kind = str(kind).strip().lower()
         mirrored_youtube = (
             select(YouTubeChannel.id)
             .where(
@@ -558,13 +634,15 @@ class RetrievalService:
         )
         research_rows = db.scalars(
             select(ResearchSource)
-            .where(ResearchSource.user_id == user_id, ~mirrored_youtube)
+            .where(ResearchSource.user_id == user_id, ~mirrored_youtube,
+                   *([ResearchSource.kind == kind] if kind else []))
             .order_by(ResearchSource.kind, func.lower(ResearchSource.name), ResearchSource.id)
             .limit(offset + limit)
         ).all()
         youtube_rows = db.scalars(
             select(YouTubeChannel)
-            .where(YouTubeChannel.user_id == user_id)
+            .where(YouTubeChannel.user_id == user_id,
+                   not kind or kind == "youtube")
             .order_by(func.lower(YouTubeChannel.channel_name), YouTubeChannel.id)
             .limit(offset + limit)
         ).all()
@@ -612,14 +690,16 @@ class RetrievalService:
                 func.count(ResearchSource.id),
                 func.sum(cast(ResearchSource.enabled, Integer)),
             )
-            .where(ResearchSource.user_id == user_id, ~mirrored_youtube)
+            .where(ResearchSource.user_id == user_id, ~mirrored_youtube,
+                   *([ResearchSource.kind == kind] if kind else []))
             .group_by(ResearchSource.kind)
         ).all()
         youtube_count, youtube_enabled = db.execute(
             select(
                 func.count(YouTubeChannel.id),
                 func.sum(cast(YouTubeChannel.enabled, Integer)),
-            ).where(YouTubeChannel.user_id == user_id)
+            ).where(YouTubeChannel.user_id == user_id,
+                    not kind or kind == "youtube")
         ).one()
         by_kind = {str(kind): int(count) for kind, count, _enabled in research_groups}
         by_kind["youtube"] = by_kind.get("youtube", 0) + int(youtube_count or 0)
@@ -654,6 +734,7 @@ class RetrievalService:
     def _read_job_health(
         self, db: Session, user_id: str, *, limit: int, offset: int, **_: Any
     ) -> ReadResult:
+        from argosy.services.decision_readiness import effective_status, failure_guidance, job_user_action
         latest_ids = select(func.max(JobRun.id)).group_by(JobRun.job_name)
         rows = db.scalars(
             select(JobRun)
@@ -667,6 +748,10 @@ class RetrievalService:
                 "id": r.id,
                 "job_name": r.job_name,
                 "status": r.status,
+                "effective_status": effective_status(r),
+                "outcome_status": _outcome_status(r.output_summary),
+                "user_action": job_user_action(r),
+                "failure": failure_guidance(r) if effective_status(r) == "error" else None,
                 "started_at": _iso(r.started_at),
                 "finished_at": _iso(r.finished_at),
                 "duration_ms": r.duration_ms,
@@ -681,6 +766,7 @@ class RetrievalService:
             [Citation("job_run", str(r.id), _iso(r.finished_at or r.started_at)) for r in rows],
             [
                 "These are latest durable job receipts, not proof that the server is currently reachable.",
+                "A job receipt marked ok can still be waiting_for_login or deferred: inspect outcome_status and user_action before declaring capture successful or an alert resolved.",
                 "Operational job metadata is deployment-wide in the legacy shared database; no other household financial records are included.",
             ],
         )
@@ -761,6 +847,9 @@ class RetrievalService:
         role = str(filters.get("role") or "").strip()
         if role:
             stmt = stmt.where(AgentReport.agent_role == role)
+        discovery_ticker = str(filters.get("discovery_ticker") or "").strip().upper()
+        if discovery_ticker:
+            stmt = stmt.where(AgentReport.decision_id == f"discovery:{discovery_ticker}")
         rows = db.scalars(
             stmt.order_by(AgentReport.created_at.desc()).offset(offset).limit(limit)
         ).all()

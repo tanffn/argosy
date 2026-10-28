@@ -33,7 +33,7 @@ if ($BackendListener) {
 # Wait for startup (including orphan cleanup) before the caller can open an
 # operator job. Returning immediately raced cleanup, which marked that new
 # job cancelled even though its separate operator process was still working.
-$ArgosyReadyDeadline = [DateTime]::UtcNow.AddSeconds(40)
+$ArgosyReadyDeadline = [DateTime]::UtcNow.AddSeconds(120)
 $ArgosyBackendReady = $false
 do {
     try {
@@ -44,7 +44,7 @@ do {
     }
     if (-not $ArgosyBackendReady) { Start-Sleep -Milliseconds 500 }
 } while (-not $ArgosyBackendReady -and [DateTime]::UtcNow -lt $ArgosyReadyDeadline)
-if (-not $ArgosyBackendReady) { throw 'Backend did not become HTTP-ready within 40 seconds; do not start operator jobs yet' }
+if (-not $ArgosyBackendReady) { throw 'Backend did not become HTTP-ready within 120 seconds; do not start operator jobs yet' }
 Write-Output 'Backend HTTP-ready; startup cleanup completed.'
 $UiListener = Get-NetTCPConnection -LocalPort 1337 -State Listen -ErrorAction SilentlyContinue
 if (-not $UiListener) {

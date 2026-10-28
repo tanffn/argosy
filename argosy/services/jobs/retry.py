@@ -13,9 +13,9 @@ Transport / timeout errors retried::
     anthropic.APIConnectionError
     anthropic.APITimeoutError
 
-Business-rule errors (IntegrityError, ValidationError, schema mismatch)
-and LLM-content errors (Anthropic BadRequestError / RateLimitError)
-hard-fail without retry — see §1.8 of the spec for the rationale.
+Business-rule errors (IntegrityError, ValidationError, schema mismatch) and
+permanent HTTP failures hard-fail. Transient HTTP 408/429/500/502/503/504
+share transport classification and respect Retry-After (long waits defer).
 
 Imports are guarded: each library is optional and the retryable-tuple
 is built lazily so the registry shell still imports cleanly on a
@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, TypeVar
 
 from argosy.logging import get_logger
+from argosy.services.jobs.transport_failure import classify_transport_failure
 
 _log = get_logger("argosy.jobs.retry")
 
@@ -134,8 +135,9 @@ async def retry_transient(
     jitter_min_s: float = 0.5,
     jitter_max_s: float = 2.0,
     job_name: str | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> T:
-    """Call ``func()`` and retry on transport-layer errors only.
+    """Call an idempotent read and retry transient transport/HTTP failures.
 
     Parameters
     ----------
@@ -151,8 +153,9 @@ async def retry_transient(
         Optional label for the retry log line. The registry passes
         the job's name through so operators can correlate.
 
-    Business-rule + LLM-content exceptions propagate immediately —
-    only the types in ``_TRANSIENT_TYPES`` are retried. ``CancelledError``
+    Business-rule and permanent HTTP exceptions propagate immediately.
+    Typed transient HTTP responses join ``_TRANSIENT_TYPES``; provider delays
+    above the inline budget propagate for durable recovery. ``CancelledError``
     is always re-raised without sleep.
     """
     if attempts < 1:
@@ -165,7 +168,8 @@ async def retry_transient(
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001 — narrow check below
-            if not isinstance(exc, transient_types):
+            failure = classify_transport_failure(exc)
+            if not failure.retryable and (failure.http_status is not None or not isinstance(exc, transient_types)):
                 # Business-rule / LLM-content errors hard-fail; do NOT
                 # retry, do NOT swallow.
                 raise
@@ -181,6 +185,10 @@ async def retry_transient(
                 )
                 raise
             sleep_s = random.uniform(jitter_min_s, jitter_max_s)
+            sleep_s = max(sleep_s, failure.retry_after_seconds or 0)
+            if sleep_s > 30:
+                # Defer long provider cooldowns to the durable job scheduler.
+                raise
             _log.info(
                 "jobs.retry.transient",
                 job=job_name,
@@ -189,7 +197,7 @@ async def retry_transient(
                 exc_type=type(exc).__name__,
                 error=str(exc),
             )
-            await asyncio.sleep(sleep_s)
+            await sleep(sleep_s)
     # Unreachable — loop either returns or raises.
     assert last_exc is not None
     raise last_exc

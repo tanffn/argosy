@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 
 import pytest
 
@@ -49,6 +50,12 @@ class Store:
             row["result"] = result
         return row
 
+    async def transition_request(self, request_id, *, expected, status, result=None, error=None):
+        if self.rows[request_id]["state"] != expected:
+            return False
+        await self.update_request(request_id, status=status, result=result, error=error)
+        return True
+
     async def link_run(self, request_id, run_id):
         if run_id not in self.rows[request_id]["run_ids"]:
             self.rows[request_id]["run_ids"].append(run_id)
@@ -67,6 +74,37 @@ def principal(user="ariel"):
     return Principal(
         household_user_id=user, guild_id="g", channel_id="c", user_id="discord-u"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_shutdown_does_not_masquerade_as_user_cancel(monkeypatch, explicit):
+    from argosy.services.chat_advisor import research_actions
+    store = Store()
+    started = asyncio.Event()
+
+    async def pending(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(research_actions, "execute_research_task", pending)
+    dispatcher = AnalysisDispatcher(store, auto_schedule=False)
+    request = await dispatcher.request_research(
+        principal(), "youtube_video", "https://www.youtube.com/watch?v=abcdefghijk", "cancel-probe")
+    task = asyncio.create_task(dispatcher.worker_entry(request.id))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    if explicit:
+        await dispatcher.cancel(principal(), request.id)
+    else:
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    row = store.rows[request.id]
+    assert row["state"] == ("cancelled" if explicit else "failed")
+    if not explicit:
+        assert "not a user cancellation" in row["error"]
+    else:
+        assert row["error"] is None
 
 
 @pytest.mark.asyncio

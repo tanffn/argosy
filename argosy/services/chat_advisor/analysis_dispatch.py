@@ -129,11 +129,40 @@ class AnalysisDispatcher:
         row = await self._owned_request(principal, request_id)
         if row.state in _TERMINAL:
             return row
+        if not row.instruments:
+            for _attempt in range(3):
+                if row.state in _TERMINAL:
+                    return row
+                changed = await _await(self.store.transition_request(
+                    row.id, expected=row.state, status="cancelled"))
+                if changed:
+                    task = self._tasks.get(row.id)
+                    if task is not None and not task.done():
+                        task.cancel()
+                    return _as_request(await _await(self.store.get_request(row.id)))
+                row = _as_request(await _await(self.store.get_request(row.id)))
+            raise RuntimeError("Request kept changing state; cancellation is not confirmed")
+        # Persist explicit user intent before interrupting the task. A transport
+        # shutdown also cancels tasks, but must not masquerade as user cancellation.
+        updated = await _await(self.store.update_request(row.id, status="cancelled", error=None))
         task = self._tasks.get(row.id)
         if task is not None and not task.done():
             task.cancel()
-        updated = await _await(self.store.update_request(row.id, status="cancelled", error=None))
         return _as_request(updated or {**asdict(row), "state": "cancelled"})
+
+    async def request_research(self, principal, kind, reference, inbound_message_id):
+        from .research_actions import ResearchChatTask, canonical_reference
+        self._assert_principal(principal)
+        if not str(inbound_message_id or "").strip():
+            raise ValueError("inbound_message_id is required for idempotency")
+        task = ResearchChatTask(kind=kind, reference=canonical_reference(kind, reference))
+        existing = await _await(self.store.get_request_by_inbound(str(inbound_message_id)))
+        row = _as_request(existing or await _await(self.store.create_request(
+            inbound_message_id=str(inbound_message_id), channel_id=principal.channel_id,
+            instruments=[], prompt_text=task.model_dump_json())))
+        if self.auto_schedule:
+            await self.schedule(row.id)
+        return row
 
     async def retry(self, principal: Principal, request_id: str) -> AnalysisRequest:
         row = await self._owned_request(principal, request_id)
@@ -249,7 +278,11 @@ class AnalysisDispatcher:
             row = _as_request(await _await(self.store.get_request(request_id)))
             if row.state in _TERMINAL:
                 return
-            await _await(self.store.update_request(row.id, status="running", error=None))
+            if not row.instruments:
+                if not await _await(self.store.transition_request(row.id, expected="queued", status="running")):
+                    return
+            else:
+                await _await(self.store.update_request(row.id, status="running", error=None))
 
             async def sink(**event: Any) -> None:
                 await _await(self.store.append_progress(**event))
@@ -257,6 +290,14 @@ class AnalysisDispatcher:
             outcomes: list[dict[str, Any]] = []
             try:
                 with bind_progress(row.id, sink):
+                    if not row.instruments:
+                        from .research_actions import ResearchChatTask, execute_research_task
+                        result = await execute_research_task(
+                            ResearchChatTask.model_validate_json(row.prompt_text),
+                            user_id=self._household_user_id())
+                        await _await(self.store.transition_request(
+                            row.id, expected="running", status="completed", result=result))
+                        return
                     for ticker in row.instruments:
                         latest = _as_request(await _await(self.store.get_request(row.id)))
                         if latest.state == "cancelled":
@@ -324,12 +365,23 @@ class AnalysisDispatcher:
                 )
             except asyncio.CancelledError:
                 latest = _as_request(await _await(self.store.get_request(row.id)))
-                await self._close_runs(latest.run_ids, "cancelled")
-                await _await(self.store.update_request(row.id, status="cancelled", error=None))
+                if latest.state not in _TERMINAL:
+                    await self._close_runs(latest.run_ids, "failed")
+                    await _await(self.store.transition_request(
+                        row.id, expected=latest.state, status="failed",
+                        error="Background worker interrupted before delivering the result; "
+                              "saved research may still exist. This was not a user cancellation. "
+                              "Retry the request to check saved work before starting a new attempt."))
+                elif latest.state == "cancelled":
+                    await self._close_runs(latest.run_ids, "cancelled")
                 raise
             except Exception as exc:  # retain partial canonical runs/reports
                 latest = _as_request(await _await(self.store.get_request(row.id)))
                 await self._close_runs(latest.run_ids, "failed")
+                if not row.instruments:
+                    await _await(self.store.transition_request(
+                        row.id, expected="running", status="failed", error=str(exc)[:1000]))
+                    return
                 await _await(
                     self.store.update_request(
                         row.id,

@@ -347,6 +347,19 @@ def _already_fired(
     return existing is not None
 
 
+def _held_claim_error(session: Session, user_id: str, subject: str, verdict_id: int) -> str | None:
+    row = session.scalar(select(ActionProposal).where(
+        ActionProposal.user_id == user_id,
+        ActionProposal.dedup_key == _fired_dedup_key(subject, verdict_id),
+        ActionProposal.status == "open",
+    ))
+    if row is not None:
+        payload = json.loads(row.suggested_payload or "{}")
+        if payload.get("state") == "firing":
+            return "review_in_progress_or_interrupted: durable claim requires reconciliation before another review"
+    return None
+
+
 # Completion classification (defect #1): ``run_deep_decision`` NEVER raises — an
 # analyst/flow/quorum failure returns a structured non-completing outcome. Only a
 # genuine settle keeps the fired marker; a non-completing outcome releases the
@@ -355,6 +368,11 @@ _NONCOMPLETING_STATUS = frozenset({"error", "quorum_failed"})
 _NONCOMPLETING_BLOCKED_BY = frozenset(
     {"open_error", "analysts_error", "flow_error"}
 )
+_COMPLETING_BLOCKED_BY = frozenset({
+    "verdict_defended", "us_situs_floor", "trader_hold", "trader_insufficient_data",
+    "risk_team", "plan_critique_red", "fund_manager", "sleeve_fit_invalid",
+    "valuation_rederivation_failed",
+})
 
 
 def _outcome_field(outcome: Any, field_name: str) -> Any:
@@ -370,16 +388,14 @@ def _is_completing(outcome: Any) -> bool:
     or blocked-by-a-real-decision). False for infra failures — status in
     {error, quorum_failed} or a ``blocked`` whose ``blocked_by`` is an infra
     error (open_error / analysts_error / flow_error). An outcome with no
-    recognizable ``status`` (e.g. a test seam returning a plain marker) is
-    treated as completing — the seam ran and returned."""
+    recognizable terminal ``status`` is not proof of a completed review."""
     status = str(_outcome_field(outcome, "status") or "").strip()
     if status in _NONCOMPLETING_STATUS:
         return False
     if status == "blocked":
         blocked_by = str(_outcome_field(outcome, "blocked_by") or "").strip()
-        if blocked_by in _NONCOMPLETING_BLOCKED_BY:
-            return False
-    return True
+        return blocked_by in _COMPLETING_BLOCKED_BY
+    return status in {"approved", "blocked", "reevaluated"}
 
 
 def _claim_marker(
@@ -448,17 +464,9 @@ def _finalize_claim(row: ActionProposal) -> None:
 
 
 def _release_claim(session: Session, row: ActionProposal) -> None:
-    """A non-completing outcome / exception: DELETE the claim so the dedup key is
-    freed and the subject RETRIES next sweep (the lease is released)."""
-    try:
-        session.delete(row)
-        session.flush()
-    except Exception:  # noqa: BLE001 — release is best-effort; expire as fallback
-        try:
-            row.status = "rejected"
-            row.expires_at = row.surfaced_at
-        except Exception:  # noqa: BLE001
-            pass
+    """Release a confirmed failed outcome for retry; uncertain outcomes retain claims."""
+    session.delete(row)
+    session.commit()
 
 
 def _cited_fact_for(ev: TriggerEval, *, subject: str) -> str:
@@ -514,6 +522,7 @@ def _default_decide_fn(
             consult_mode="long_hold",
             funnel_meta=funnel_meta,
             subject_type="holding",
+            execution_policy="analysis_only",
         )
     )
 
@@ -528,7 +537,12 @@ def fire_tripped_triggers(
 ) -> list[FiredEscalation]:
     """Escalate each verdict with >=1 tripped trigger to a full re-verdict.
 
-    Idempotent: a ``verdict_trigger_fired`` marker keyed on the verdict id
+    Owns transaction boundaries on a dedicated sweep session: claims are committed
+    before external review, and finalized/released before the next subject. Do not
+    pass a session containing unrelated writes. A crashed/ambiguous review leaves
+    a visible firing claim, never an automatically replayed financial decision.
+
+    Idempotent: a ``verdict_trigger_fired`` action marker keyed on the verdict id
     guarantees at most one escalation per standing verdict (re-fires only once a
     new verdict supersedes it). Best-effort per subject — one subject's failure
     is captured on its :class:`FiredEscalation` and never aborts the sweep.
@@ -538,6 +552,8 @@ def fire_tripped_triggers(
     ``user_id`` / ``subject`` / ``cited_new_facts`` / ``reason`` keyword args.
     """
     decide = decide_fn or _default_decide_fn
+    if session.new or session.dirty or session.deleted:
+        raise ValueError("Trigger firing requires a dedicated session without pending unrelated writes")
     fired: list[FiredEscalation] = []
     for res in results:
         if not res.has_trip:
@@ -547,7 +563,7 @@ def fire_tripped_triggers(
             f"{res.subject}: {len(res.tripped)} revisit trigger(s) tripped"
         )
 
-        def _skip(error: str | None) -> None:
+        def _skip(error: str | None, *, res=res, triggers=triggers, reason=reason) -> None:
             fired.append(
                 FiredEscalation(
                     subject=res.subject,
@@ -564,9 +580,11 @@ def fire_tripped_triggers(
             if _already_fired(
                 session, user_id=user_id, subject=res.subject, verdict_id=res.verdict_id
             ):
-                _skip(None)
+                _skip(_held_claim_error(session, user_id, res.subject, res.verdict_id))
+                session.rollback()  # end the read transaction before the next review
                 continue
         except Exception as exc:  # noqa: BLE001 — a pre-check hiccup never aborts the sweep
+            session.rollback()
             log.warning(
                 "verdict_trigger.precheck_failed",
                 subject=res.subject, error=str(exc)[:160],
@@ -583,7 +601,11 @@ def fire_tripped_triggers(
                 reason=reason,
                 now=now,
             )
+            # The full review writes through its own DB connections. Never hold
+            # this sweep's SQLite writer lock while invoking it.
+            session.commit()
         except Exception as exc:  # noqa: BLE001 — one subject never sinks the sweep
+            session.rollback()
             log.warning(
                 "verdict_trigger.claim_failed",
                 subject=res.subject, verdict_id=res.verdict_id, error=str(exc)[:200],
@@ -592,7 +614,8 @@ def fire_tripped_triggers(
             continue
         if claim is None:
             # Lost the claim race — another concurrent sweep is handling it.
-            _skip(None)
+            _skip(_held_claim_error(session, user_id, res.subject, res.verdict_id))
+            session.rollback()
             continue
 
         # STEP 2 — FIRE (only the claim winner pays the LLM cost).
@@ -605,31 +628,56 @@ def fire_tripped_triggers(
                 reason=reason,
             )
         except Exception as exc:  # noqa: BLE001 — one subject never sinks the sweep
-            # STEP 3a — RELEASE the lease so this subject retries next sweep.
-            _release_claim(session, claim)
+            # An exception can occur AFTER an external result was committed.
+            # Preserve the durable claim until that ambiguous outcome is reconciled.
+            session.rollback()
             log.warning(
                 "verdict_trigger.fire_failed",
                 user_id=user_id, subject=res.subject,
                 verdict_id=res.verdict_id, error=str(exc)[:200],
             )
-            _skip(str(exc)[:200])
+            _skip(f"review_outcome_uncertain: {str(exc)[:200]}")
             continue
 
         # STEP 3b — RESOLVE by inspecting the outcome (defect #1). A NON-completing
         # outcome (run_deep_decision returns status=error/quorum_failed/… — it
         # never raises) releases the lease; it is NOT a permanent fire.
         if not _is_completing(outcome):
-            _release_claim(session, claim)
             status = str(_outcome_field(outcome, "status") or "?")
+            blocked_by = str(_outcome_field(outcome, "blocked_by") or "")
+            if status not in _NONCOMPLETING_STATUS and not (
+                status == "blocked" and blocked_by in _NONCOMPLETING_BLOCKED_BY
+            ):
+                session.rollback()
+                _skip(f"review_outcome_uncertain: unsupported status={status}, blocked_by={blocked_by}")
+                continue
+            try:
+                _release_claim(session, claim)
+            except Exception as exc:
+                session.rollback()
+                _skip(f"claim_release_failed: {str(exc)[:200]}; review requires reconciliation")
+                continue
             log.info(
                 "verdict_trigger.fire_non_completing",
                 subject=res.subject, verdict_id=res.verdict_id, status=status,
             )
-            _skip(f"non_completing:{status}")
+            error_detail = str(_outcome_field(outcome, "blocked_reason") or
+                         _outcome_field(outcome, "blocked_by") or "review did not complete")
+            _skip(f"non_completing:{status}: {error_detail[:500]}")
             continue
 
         # Completing re-verdict — keep the claim (mark it fired).
-        _finalize_claim(claim)
+        try:
+            payload = json.loads(claim.suggested_payload or "{}")
+            payload["decision_run_id"] = _outcome_field(outcome, "decision_run_id")
+            payload["outcome_status"] = _outcome_field(outcome, "status")
+            claim.suggested_payload = json.dumps(payload, ensure_ascii=False, default=str)
+            _finalize_claim(claim)
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            _skip(f"claim_finalize_failed: {str(exc)[:200]}; review requires reconciliation")
+            continue
         log.info(
             "verdict_trigger.fired",
             user_id=user_id, subject=res.subject, verdict_id=res.verdict_id,
@@ -659,7 +707,8 @@ def sweep_and_fire(
 ) -> dict[str, Any]:
     """Convenience: evaluate then fire, returning a job-friendly summary.
 
-    Deterministic evaluation + best-effort escalation. Callers own the commit.
+    Deterministic evaluation + best-effort escalation. Owns its dedicated
+    session's commits; no transaction spans a full external re-verdict.
     """
     results = evaluate_standing_verdict_triggers(
         session, user_id, now=now, quote_fn=quote_fn, macro_fn=macro_fn

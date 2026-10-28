@@ -96,7 +96,9 @@ DEFAULT_MIN_DOLLAR_VOLUME = 10e6
 # differently. Starts just above the satellite ceiling so the two bands
 # tile without a gap or overlap.
 THEMATIC_CAP_MIN = DEFAULT_CAP_MAX
-THEMATIC_CAP_MAX = 500e9
+# Size is not an investment verdict. Established companies must reach the same
+# research team; their current-price payoff can be rejected there with evidence.
+THEMATIC_CAP_MAX = float("inf")
 THEMATIC_MIN_DOLLAR_VOLUME = 25e6  # large-caps are expected to be more liquid
 
 # OFF by default — Ariel decides policy, we ship the capability. Turn on with:

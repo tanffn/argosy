@@ -26,6 +26,19 @@ def test_recovery_names_match_actual_monitor_registrations():
     assert not {"annual", "process_cooling", "weekly_email_digest", "discord_listener"} & set(RECOVERABLE_JOBS)
 
 
+@pytest.mark.parametrize("summary,message", [
+    (None, "Another window took focus; capture stopped without interacting with it"),
+    ('{"status":"error","failure":{"code":"desktop_interrupted","retryable":false}}', "tick reported failure"),
+])
+def test_alpha_focus_failure_explains_actual_cause(summary, message):
+    from argosy.services.decision_readiness import failure_guidance
+    row = SimpleNamespace(job_name="alpha_capture_daily", output_summary=summary, error_message=message)
+    guidance = failure_guidance(row)
+    assert guidance["code"] == "desktop_interrupted"
+    assert "no new report" in guidance["reason"]
+    assert "not repeatedly reopen" in guidance["action"]
+
+
 async def receipt(name, *, now, status="error", error="model unavailable", summary=None):
     async with db_mod.get_session() as session:
         session.add(JobRun(
@@ -164,7 +177,7 @@ def wire(loop, now):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["news_daily", "earnings_calendar_daily", "sec_earnings_daily", "signal_streams_daily", "period_directive_daily", "verdict_trigger_daily"])
+@pytest.mark.parametrize("name", ["news_daily", "earnings_calendar_daily", "sec_earnings_daily", "signal_streams_daily", "period_directive_daily", "verdict_trigger_daily", "verdict_trigger_sweep"])
 async def test_recovery_uses_real_tick_and_persistent_receipts_after_restart(engine, name):
     now = datetime.now(UTC)
     await receipt(name, now=now-timedelta(minutes=40))
@@ -183,7 +196,7 @@ async def test_recovery_uses_real_tick_and_persistent_receipts_after_restart(eng
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["news_daily", "earnings_calendar_daily", "sec_earnings_daily", "signal_streams_daily", "period_directive_daily"])
+@pytest.mark.parametrize("name", ["news_daily", "earnings_calendar_daily", "sec_earnings_daily", "signal_streams_daily", "period_directive_daily", "verdict_trigger_sweep"])
 async def test_recovery_limits_survive_restart_and_do_not_touch_execution(engine, name):
     now = datetime.now(UTC)
     for i in range(3):
@@ -194,6 +207,125 @@ async def test_recovery_limits_survive_restart_and_do_not_touch_execution(engine
     scheduler, _ = wire(loop, now)
     await scheduler._recover_failed_jobs()
     assert loop.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_typed_transport_gets_late_recovery_after_restart(engine):
+    import json
+    now = datetime.now(UTC)
+    summary = json.dumps({"streams": {"source": {"status": "error", "failure": {
+        "code": "upstream_unavailable", "retryable": True, "http_status": 503}}}})
+    # A daily slot older than the cooldown is still eligible after three failures.
+    loop = AnalysisLoop(now - timedelta(hours=4))
+    loop.name = "signal_streams_daily"
+    for i in range(3):
+        await receipt(loop.name, now=now-timedelta(hours=3, minutes=3-i), summary=summary)
+    scheduler, _ = wire(loop, now - timedelta(hours=2))
+    await scheduler._recover_failed_jobs()
+    assert loop.calls == 0  # too early for fourth attempt
+    restarted, _ = wire(loop, now)
+    await restarted._recover_failed_jobs()
+    assert loop.calls == 1
+    async with db_mod.get_session() as session:
+        rows = list((await session.execute(select(JobRun).order_by(JobRun.id))).scalars())
+    assert rows[-1].status == "ok"
+    assert rows[-1].triggered_by == "recovery"
+
+
+@pytest.mark.asyncio
+async def test_typed_permanent_access_failure_does_not_auto_retry(engine):
+    now = datetime.now(UTC)
+    await receipt("signal_streams_daily", now=now-timedelta(minutes=40),
+                  summary='{"failure":{"code":"authentication","retryable":false}}')
+    loop = AnalysisLoop(now)
+    loop.name = "signal_streams_daily"
+    scheduler, _ = wire(loop, now)
+    await scheduler._recover_failed_jobs()
+    assert loop.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_readiness_shows_actual_durable_transport_retry_window(engine):
+    now = datetime.now(UTC)
+    loop = AnalysisLoop(now - timedelta(hours=4))
+    loop.name = "signal_streams_daily"
+    summary = '{"failure":{"code":"upstream_unavailable","retryable":true,"http_status":503}}'
+    for i in range(3):
+        await receipt(loop.name, now=now-timedelta(hours=1, minutes=3-i), summary=summary)
+    _, registry = wire(loop, now)
+    async with db_mod.get_session() as session:
+        state = await collect_decision_readiness(session, user_id="ariel", now=now,
+                                                recovery_schedules=registry.recovery_schedules())
+    job = next(j for j in state["jobs"] if j["name"] == loop.name)
+    assert job["status"] == "error"  # incomplete coverage is not green
+    assert job["recovery"]["max_attempts"] == 6
+    assert job["recovery"]["attempts"] == 3
+    assert datetime.fromisoformat(job["recovery"]["next_retry_at"]) > now
+    assert "Next retry eligible" in job["failure"]["action"]
+
+
+@pytest.mark.asyncio
+async def test_provider_deadline_survives_new_slot_and_restart(engine):
+    now = datetime.now(UTC)
+    loop = AnalysisLoop(now)  # current slot began two hours ago
+    loop.name = "signal_streams_daily"
+    await receipt(loop.name, now=now-timedelta(hours=3),
+        summary='{"failure":{"code":"upstream_unavailable","retryable":true,"http_status":503,"retry_after_seconds":14400}}')
+    scheduler, _ = wire(loop, now)
+    await scheduler._fire_once(loop)  # new slot must not discard provider deadline
+    assert loop.calls == 0
+    async with db_mod.get_session() as session:
+        row = (await session.execute(select(JobRun).order_by(JobRun.id.desc()).limit(1))).scalar_one()
+        assert row.status == "error"
+        assert "cooldown" in row.error_message
+    restarted, _ = wire(loop, now + timedelta(hours=2))
+    await restarted._recover_failed_jobs()
+    assert loop.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_receipt_cannot_erase_prior_provider_deadline(engine):
+    now = datetime.now(UTC)
+    loop = AnalysisLoop(now)
+    loop.name = "signal_streams_daily"
+    await receipt(loop.name, now=now-timedelta(hours=3),
+        summary='{"failure":{"code":"upstream_unavailable","retryable":true,"http_status":503,"retry_after_seconds":14400}}')
+    await receipt(loop.name, now=now-timedelta(hours=2, minutes=1), status="cancelled",
+                  error="reaped: prior backend process exited")
+    scheduler, _ = wire(loop, now)
+    await scheduler._fire_once(loop)
+    assert loop.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,expected_calls", [("signal_streams_daily", 0), ("synthesis_stall_alert", 1)])
+async def test_audit_failure_cannot_bypass_transport_guard(engine, monkeypatch, name, expected_calls):
+    now = datetime.now(UTC)
+    loop = AnalysisLoop(now)
+    loop.name = name
+    scheduler, registry = wire(loop, now)
+    async def locked(**kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(registry, "_open_job_run", locked)
+    await scheduler._fire_once(loop)
+    assert loop.calls == expected_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_attempts,expected_calls", [(0, 1), (2, 0)])
+async def test_long_job_crossing_cron_slot_retains_recovery_and_attempt_budget(engine, extra_attempts, expected_calls):
+    now = datetime.now(UTC)
+    loop = AnalysisLoop(now)  # slot two hours ago
+    await receipt(loop.name, now=now-timedelta(hours=3))
+    async with db_mod.get_session() as session:
+        row = (await session.execute(select(JobRun))).scalar_one()
+        row.finished_at = now - timedelta(minutes=55)
+        await session.commit()
+    for i in range(extra_attempts):
+        await receipt(loop.name, now=now-timedelta(minutes=50-i))
+    scheduler, _ = wire(loop, now)
+    await scheduler._recover_failed_jobs()
+    assert loop.calls == expected_calls
 
 
 @pytest.mark.asyncio

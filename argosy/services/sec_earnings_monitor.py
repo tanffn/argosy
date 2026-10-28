@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 
 from argosy.adapters.data.sec_13f_adapter import _default_headers
 from argosy.services.news_extractor import extract
+from argosy.services.jobs.transport_failure import classify_transport_failure, retry_data_read
+from argosy.services.jobs.recovery_policy import ProviderCooldownError
 from argosy.state.models import EarningsCoverageReceipt, NewsSignal
 
 _PROVIDER = "sec_edgar"
@@ -70,7 +72,7 @@ class SecEarningsCoverageSummary:
     recent_filings: int
     signals_persisted: int
     signals_duplicate: int
-    errors: tuple[dict[str, str], ...]
+    errors: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {**asdict(self), "errors": list(self.errors)}
@@ -92,25 +94,48 @@ class SecEarningsFetcher:
         self._interval = request_interval_seconds
         self._last_request_at = 0.0
         self._ticker_map: dict[str, str] | None = None
+        self._cooldown_until = 0.0
+        self._access_error: Exception | None = None
 
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
 
+    def _request(self, url: str):
+        """Every SEC read gets bounded recovery, including map and filing text.
+
+        Long provider cooldowns and access rejection stop subsequent tickers
+        from hammering the same source. Parsing is deliberately not retried.
+        """
+        if self._access_error is not None:
+            raise self._access_error
+        remaining = self._cooldown_until - time.monotonic()
+        if remaining > 0:
+            raise ProviderCooldownError(remaining)
+        def read():
+            self._pace()
+            response = self._client.get(url)
+            response.raise_for_status()
+            return response
+        try:
+            return retry_data_read(read)
+        except Exception as exc:
+            failure = classify_transport_failure(exc)
+            if failure.retry_after_seconds:
+                self._cooldown_until = time.monotonic() + failure.retry_after_seconds
+            if failure.code == "authentication":
+                self._access_error = exc
+            raise
+
     def _get_json(self, url: str) -> dict[str, Any]:
-        self._pace()
-        response = self._client.get(url)
-        response.raise_for_status()
+        response = self._request(url)
         value = response.json()
         if not isinstance(value, dict):
             raise ValueError(f"SEC returned non-object JSON for {url}")
         return value
 
     def _get_text(self, url: str) -> str:
-        self._pace()
-        response = self._client.get(url)
-        response.raise_for_status()
-        return response.text
+        return self._request(url).text
 
     def _pace(self) -> None:
         wait = self._interval - (time.monotonic() - self._last_request_at)
@@ -456,7 +481,8 @@ def run_sec_earnings_checks(
     recent_cutoff = now - timedelta(days=max(1, int(lookback_days)))
     evidence_cutoff = now.date() - timedelta(days=max(1, int(evidence_history_days)))
     succeeded = empty = failures = recent = persisted = duplicates = 0
-    errors: list[dict[str, str]] = []
+    errors: list[dict[str, Any]] = []
+    failure_details: dict[str, dict] = {}
     # Download before issuing ANY writes. SQLite has one writer: keeping the
     # receipt transaction open during later network requests starves the job
     # registry, quote cache and all other writers. The caller still owns one
@@ -470,6 +496,7 @@ def run_sec_earnings_checks(
             except Exception as exc:  # noqa: BLE001 - isolate per ticker
                 message = str(exc)[:300]
                 fetched.append((ticker, [], message))
+                failure_details[ticker] = asdict(classify_transport_failure(exc))
     finally:
         if owned_fetcher is not None:
             owned_fetcher.close()
@@ -481,7 +508,10 @@ def run_sec_earnings_checks(
         )
         if error is not None:
             failures += 1
-            errors.append({"ticker": ticker, "error": error})
+            detail = {"ticker": ticker, "error": error}
+            if failure_details[ticker]["code"] != "unclassified":
+                detail["failure"] = failure_details[ticker]
+            errors.append(detail)
             continue
         succeeded += 1
         empty += not events

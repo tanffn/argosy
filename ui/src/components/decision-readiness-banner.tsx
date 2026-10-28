@@ -67,13 +67,15 @@ export function DecisionReadinessBanner() {
   const failed = state?.status === "blocked" || state?.status === "unknown" || state?.jobs?.some((job) => job.status === "error");
   const problems = state?.jobs?.filter((job) => job.status !== "knowledge_incomplete" && (job.attention_required ?? !["ok", "disabled", "knowledge_recovered"].includes(job.status))) ?? [];
   const disabled = state?.jobs?.filter((job) => job.status === "disabled") ?? [];
+  const working = state?.jobs?.filter((job) => job.status === "running" && job.attention_required === false) ?? [];
   const actions = [...new Set(problems.flatMap((job) => job.failure ? [job.failure.action] : []))];
-  const title = !state ? "Checking status" : healthy ? "Analysis up to date" : state.status === "blocked" ? "Action required" : state.status === "unknown" ? "Status unavailable" : "Analysis incomplete";
+  const title = !state ? "Checking status" : healthy ? "Analysis up to date" : state.status === "blocked" ? "Action required" : state.status === "unknown" ? "Status unavailable" : working.length > 0 && problems.length === 0 ? "Analysis in progress" : "Analysis incomplete";
   return (
     <aside aria-label="Argosy operational status" role={failed ? "alert" : "status"} className={`border-b px-6 py-3 text-sm ${healthy ? "border-emerald-500/40 bg-emerald-500/10" : failed ? "border-red-500/40 bg-red-500/10" : "border-amber-500/40 bg-amber-500/10"}`}>
       <div className="mx-auto max-w-6xl">
         <strong>Argosy — {title}.</strong> {state?.message ?? "Verifying recorded job outcomes, not just whether the server is online."}
         {actions.map((action) => <p key={action} className="mt-2 font-medium">{action}</p>)}
+        {working.length > 0 && <p className="mt-1">Working: {working.map((job) => job.name.replaceAll("_", " ")).join(", ")}. No action needed for these jobs.</p>}
         {!!state?.pending_news && <p className="mt-1">{state.pending_news} news items awaiting analysis.</p>}
         {state?.urgent_findings?.map((finding, i) => <div key={`${finding.path}:${i}`} className="mt-2">
           <p className="font-medium">{finding.claim}</p>
@@ -81,7 +83,7 @@ export function DecisionReadinessBanner() {
         </div>)}
         {problems.length > 0 && (
           <details className="mt-2">
-            <summary className="cursor-pointer font-medium">{problems.length} jobs need attention — failures and last successful runs</summary>
+            <summary className="cursor-pointer font-medium">{problems.length} {problems.length === 1 ? "job needs" : "jobs need"} attention — failures and last successful runs</summary>
           <ul className="mt-2 space-y-1">
             {problems.map((job) => (
               <li key={job.name}>

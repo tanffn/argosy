@@ -15,11 +15,9 @@ them.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-
-from sqlalchemy import desc, select
 
 from argosy.agents.plan_critique import PlanCritiqueAgent, PlanCritiqueReport
 from argosy.api.events import publish_event
@@ -27,7 +25,7 @@ from argosy.logging import get_logger
 from argosy.orchestrator.cost_guard import get_cost_guard
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.state import db as db_mod
-from argosy.state.models import PlanCritique, PlanVersion
+from argosy.state.models import PlanCritique, UserContext
 
 _log = get_logger("argosy.loops.weekly_review")
 
@@ -42,6 +40,8 @@ class WeeklyReviewInputs:
     plan_version_id: int | None
     snapshot_label: str
     snapshot_summary: str
+    user_context_yaml: str = ""
+    domain_kb_files: dict[str, str] = field(default_factory=dict)
 
 
 class WeeklyReviewLoop(CadenceLoop):
@@ -91,15 +91,20 @@ class WeeklyReviewLoop(CadenceLoop):
             _log.warning("weekly_review.no_plan", user_id=self.user_id)
             return
 
-        agent = self._critique_factory()
-        report = await agent.run(
-            plan_label=inputs.plan_label,
-            plan_markdown=inputs.plan_markdown,
-            snapshot_label=inputs.snapshot_label,
-            snapshot_summary=inputs.snapshot_summary,
-            user_context_yaml="",
-            domain_kb_files={},
-        )
+        from argosy.services.fleet_reliability import call_reliably_async
+
+        async def review_attempt():
+            agent = self._critique_factory()
+            return await agent.run(
+                plan_label=inputs.plan_label,
+                plan_markdown=inputs.plan_markdown,
+                snapshot_label=inputs.snapshot_label,
+                snapshot_summary=inputs.snapshot_summary,
+                user_context_yaml=inputs.user_context_yaml,
+                domain_kb_files=inputs.domain_kb_files,
+            )
+
+        report = await call_reliably_async(review_attempt, scope=f"weekly_review:{self.user_id}")
         from argosy.services.agent_report_persistence import (
             persist_agent_report_async,
         )
@@ -200,22 +205,27 @@ async def _default_reconcile(**kwargs: Any) -> Any:
 
 
 async def _default_gather_inputs(user_id: str) -> WeeklyReviewInputs:
-    """Pulls the latest plan + last daily-brief summary for the snapshot."""
+    """Review the accepted plan (or original baseline), never a newer draft.
+
+    Snapshot dates, account coverage and parse warnings remain in the evidence;
+    a recently imported snapshot does not imply live prices or complete holdings.
+    """
+    from argosy.state.queries import get_active_baseline, get_current_plan
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+    from argosy.orchestrator.flows.plan_synthesis.inputs import _load_tax_domain_kb_files
+    from argosy.services.knowledge_status import knowledge_advice_context
+
     plan_label = "(no plan imported)"
     plan_markdown = ""
     plan_version_id: int | None = None
-    snapshot_label = "weekly_review:auto"
-    snapshot_summary = ""
+    snapshot_label = "weekly_review:no_saved_snapshot"
+    snapshot_summary = "No saved portfolio snapshot available. Current holdings and prices are unverified."
+    user_context_yaml = ""
 
     async with db_mod.get_session() as session:
-        plan = (
-            await session.execute(
-                select(PlanVersion)
-                .where(PlanVersion.user_id == user_id)
-                .order_by(desc(PlanVersion.imported_at))
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        plan = await session.run_sync(
+            lambda s: get_current_plan(s, user_id) or get_active_baseline(s, user_id)
+        )
         if plan is not None:
             plan_label = plan.version_label or f"plan_version_id={plan.id}"
             # Graph-authored plans carry no raw_markdown — render the
@@ -228,6 +238,30 @@ async def _default_gather_inputs(user_id: str) -> WeeklyReviewInputs:
             )
             plan_version_id = plan.id
 
+        snapshot = await session.run_sync(lambda s: get_latest_snapshot_row(s, user_id))
+        if snapshot is not None:
+            snapshot_label = f"portfolio_snapshot:{snapshot.id}; as_of={snapshot.snapshot_date}; imported_at={snapshot.imported_at}"
+            snapshot_summary = (
+                "Saved portfolio evidence, NOT live quotes. Preserve per-position dates, "
+                "account coverage and parse warnings. *_k amounts are thousands, not dollars.\n"
+                f"{snapshot_label}\n"
+                f"FX USD/NIS={snapshot.fx_usd_nis}; USD/EUR={snapshot.fx_usd_eur}\n"
+                + "\n".join(f"{name}: {getattr(snapshot, name)}" for name in (
+                    "positions_json", "allocations_json", "nvda_sales_json", "real_estate_json",
+                    "pensions_json", "totals_json", "parse_warnings_json",
+                ))
+            )
+        context = await session.get(UserContext, user_id)
+        if context is not None:
+            user_context_yaml = "\n".join(filter(None, (
+                context.identity_yaml, context.goals_yaml, context.constraints_yaml,
+            )))
+
+    domain_kb_files = _load_tax_domain_kb_files(user_id=user_id)
+    domain_kb_files["knowledge_review/current_status"] = await knowledge_advice_context(
+        user_id=user_id, paths=list(domain_kb_files),
+    )
+
     return WeeklyReviewInputs(
         user_id=user_id,
         plan_label=plan_label,
@@ -235,6 +269,8 @@ async def _default_gather_inputs(user_id: str) -> WeeklyReviewInputs:
         plan_version_id=plan_version_id,
         snapshot_label=snapshot_label,
         snapshot_summary=snapshot_summary,
+        user_context_yaml=user_context_yaml,
+        domain_kb_files=domain_kb_files,
     )
 
 

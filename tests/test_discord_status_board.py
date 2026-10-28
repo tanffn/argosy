@@ -185,6 +185,7 @@ async def test_status_board_sends_once_then_edits_stable_private_pages(monkeypat
         timezone="Asia/Jerusalem",
     )
     assert len(gateway.sent) == 1
+    assert gateway.sent[0]["silent"] is True
     body = gateway.sent[0]["text"]
     assert "DISABLED" in body
     assert "Last success: 2026-09-18 11:00 IDT" in body

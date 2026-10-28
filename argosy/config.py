@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     Path fields are absolute, resolved against ARGOSY_HOME.
     """
 
+    # This deployment's knowledge tree includes private household declarations
+    # inside tax notes, not only generic rules. Never share it across tenants.
+    domain_knowledge_owner_user_id: str = "ariel"
+
     model_config = SettingsConfigDict(
         env_prefix="ARGOSY_",
         env_nested_delimiter="__",

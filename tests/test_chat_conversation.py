@@ -65,6 +65,30 @@ class _Dispatcher:
 
 
 @pytest.mark.asyncio
+async def test_latest_upload_refresh_happens_before_answer_reads_with_progress(monkeypatch):
+    events = []
+    class Reader(_Retrieval):
+        def read(self, principal, topic, **filters):
+            events.append('read')
+            return ReadResult(topic, {"completed_videos_total": 2})
+    async def refresh(**kwargs):
+        assert kwargs['channels'] == ['Meet Kevin']
+        events.append('network')
+        await kwargs['progress']('Checking online: Meet Kevin')
+        return [{'channel': 'Meet Kevin', 'status': 'checked_online'}]
+    monkeypatch.setattr('argosy.services.youtube_refresh.refresh_channels', refresh)
+    route = _Agent(RouteDecision(intent=ChatIntent.READ, topic='subscriptions', refresh_sources=['Meet Kevin']))
+    answer = _Agent(GroundedAnswer(text='Two processed; fresh uploads checked.'))
+    service = ConversationService(Reader(), None, lambda _: route, lambda _: answer)
+    stages = []
+    result = await service.answer(Principal('a', 'g', 'c', 'u'), 'Latest Kevin uploads?', 'm', progress=stages.append)
+    assert events == ['read', 'network', 'read']
+    assert any('Processed today: 2' in s for s in stages)
+    assert 'Checking online: Meet Kevin' in stages
+    assert result.text.startswith('Two processed')
+
+
+@pytest.mark.asyncio
 async def test_hostile_history_cannot_dispatch():
     route = _Agent(RouteDecision(intent=ChatIntent.READ, topic="sources"))
     answer = _Agent(GroundedAnswer(text="One configured source."))

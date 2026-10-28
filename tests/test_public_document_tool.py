@@ -91,7 +91,9 @@ async def test_capture_has_no_auth_and_saves_bytes_before_extraction(tmp_path, m
     raw = pdf_bytes(2)
     seen = install_transport(monkeypatch, lambda req: httpx.Response(200,
         stream=Body(raw), headers={"content-type": "application/pdf"}))
-    result = packet(await docs.PublicDocumentReader(tmp_path).read({"url": "https://issuer.example/document.pdf"}))
+    receipts = []
+    result = packet(await docs.PublicDocumentReader(tmp_path, receipts).read({"url": "https://issuer.example/document.pdf"}))
+    assert receipts == [result]  # exact primary evidence flows into downstream reviewer packet
     assert result["status"] == "captured" and result["fact_verification"] == "not_performed"
     assert result["inspected_pdf_pages"] == [1, 2]
     assert (tmp_path / (result["sha256"] + ".source")).read_bytes() == raw

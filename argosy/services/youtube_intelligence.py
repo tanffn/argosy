@@ -122,6 +122,10 @@ def subscribe_youtube_source(reference: str, *, user_id: str = "ariel") -> dict[
             source.channel_url = metadata.channel_url
             source.enabled = 1
             # Re-enabling or idempotently subscribing must not skip unseen uploads.
+        from argosy.services.research_catalog import upsert_source
+        mirror = upsert_source(session, user_id=user_id, name=metadata.channel_name,
+                               kind="youtube", reference=metadata.channel_id, enabled=True)
+        mirror.enabled = True  # Explicit follow also re-enables a prior manual-only source.
         session.commit()
         session.refresh(source)
         return _source_row(session, source)
@@ -140,6 +144,10 @@ def set_youtube_source_enabled(
             raise KeyError(source_id)
         source.enabled = int(enabled)
         source.updated_at = datetime.now(UTC)
+        from argosy.services.research_catalog import upsert_source
+        mirror = upsert_source(session, user_id=user_id, name=source.channel_name,
+                               kind="youtube", reference=source.youtube_channel_id, enabled=enabled)
+        mirror.enabled = enabled
         session.commit()
         return _source_row(session, source)
 

@@ -23,6 +23,51 @@ def _principal(user: str) -> Principal:
     return Principal(user, "g", "c", "u")
 
 
+def test_exact_holdings_selector_checks_all_rows_and_household(tmp_path):
+    import json
+    path = tmp_path / "holdings.db"
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all([User(id="a"), User(id="b")])
+        db.flush()
+        db.add_all([PortfolioSnapshotRow(user_id="a", imported_at=datetime(2026, 9, 30), positions_json=json.dumps(
+            [{"ticker": "AAA", "long_detail": "x" * 40000}, {"ticker": "RKT", "shares": 2}])),
+            PortfolioSnapshotRow(user_id="b", imported_at=datetime(2026, 9, 30), positions_json='[{"ticker":"RKT","shares":99}]')])
+        db.commit()
+    reader = RetrievalService(db_path=path)
+    try:
+        result = reader.read(_principal("a"), "holdings", ticker="rkt")
+        assert result.data["positions"] == [{"ticker": "RKT", "shares": 2}]
+        assert reader.read(_principal("a"), "holdings", ticker="RKTX").data["positions"] == []
+        assert "not a live broker" in result.data["coverage"]
+    finally:
+        reader.engine.dispose()
+        engine.dispose()
+
+
+def test_briefing_context_includes_only_delivered_household_messages(tmp_path):
+    from argosy.state.chat_models import NotificationOutbox
+    path = tmp_path / "briefings.db"
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        for key, owner, state, category in [("mine", "a", "sent", "overview.daily"),
+                ("other", "b", "sent", "overview.daily"), ("draft", "a", "pending", "overview.daily"),
+                ("alert", "a", "sent", "operational")]:
+            db.add(NotificationOutbox(id=key, binding_id=1, household_user_id=owner, semantic_key=key,
+                material_version=key, category=category, body=key, nonce=key, status=state))
+        db.commit()
+    reader = RetrievalService(db_path=path)
+    try:
+        result = reader.read(_principal("a"), "briefings")
+        assert [r["text"] for r in result.data["prior_delivered_briefings"]] == ["mine"]
+        assert "never current evidence" in result.data["coverage"]
+    finally:
+        reader.engine.dispose()
+        engine.dispose()
+
+
 def test_exact_ticker_lookup_never_becomes_unrelated_page(tmp_path):
     path = tmp_path / "verdict-selector.db"
     engine = create_engine(f"sqlite:///{path.as_posix()}")

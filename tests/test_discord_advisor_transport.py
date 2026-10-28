@@ -242,9 +242,15 @@ async def test_worker_restart_retries_pending_thread_delivery_with_citations_and
         assert sent["channel_id"] == "88"
         assert "decision_run:42" not in sent["text"]  # Provenance stays in persisted context.
         assert len(sent["nonce"]) <= 25 and sent["nonce"] != base_nonce
-        async with sessions() as session:
-            persisted = await session.get(ChatTurn, turn.id)
-            assert persisted.status == "completed"
+        # Gateway delivery precedes the durable acknowledgement. Observe the
+        # committed outcome, not the tiny send -> DB-commit race window.
+        async with asyncio.timeout(5):
+            while True:
+                async with sessions() as session:
+                    persisted = await session.get(ChatTurn, turn.id)
+                    if persisted.status == "completed":
+                        break
+                await asyncio.sleep(0.01)
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

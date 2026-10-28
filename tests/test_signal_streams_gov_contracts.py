@@ -2013,6 +2013,7 @@ def test_stream_a_migration_adds_resolution_evidence_and_180d_methods(
         assert [tuple(row) for row in methods] == [
             ("fixed_lookahead_180d", 1),
             ("fixed_lookahead_180d_entry_backfilled", 2),
+            ("fixed_lookahead_180d_entry_backfilled_recovered", 3),
         ]
         connection.execute(
             sa.text(

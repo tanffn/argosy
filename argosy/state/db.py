@@ -20,6 +20,8 @@ from typing import AsyncIterator
 import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -119,7 +121,7 @@ def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
         if settings.db_file.parent and not str(settings.db_file).startswith(":memory:"):
             settings.db_file.parent.mkdir(parents=True, exist_ok=True)
         url = settings.database_url
-    _engine = create_async_engine(url, echo=echo, future=True)
+    _engine = create_shared_async_engine(url, echo=echo)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     # SQLite WAL + busy_timeout + synchronous=NORMAL — critical under
@@ -139,6 +141,21 @@ def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
     _install_sqlite_pragmas(_engine.sync_engine, url)
 
     return _engine
+
+
+def create_shared_async_engine(url: str, *, echo: bool = False) -> AsyncEngine:
+    """No loop-bound connection pool across API and threaded asyncio.run jobs.
+
+    In-memory SQLite keeps its default single connection so test databases
+    survive between sessions. Production file-backed databases never reuse
+    connections between event loops. Sessions themselves remain task-local.
+    https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-multiple-asyncio-event-loops
+    """
+    parsed = make_url(url)
+    memory = parsed.get_backend_name() == "sqlite" and (
+        parsed.database in (None, "", ":memory:") or parsed.query.get("mode") == "memory")
+    options = {} if memory else {"poolclass": NullPool}
+    return create_async_engine(url, echo=echo, future=True, **options)
 
 
 def get_engine() -> AsyncEngine:

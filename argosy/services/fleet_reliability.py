@@ -151,7 +151,18 @@ def is_transient_fleet_error(exc: BaseException) -> bool:
         "not logged in", "unauthorized", "permission denied",
     )):
         return False
-    return bool(_EXIT1_RE.search(text) or "(exit code: 1)" in text)
+    if _EXIT1_RE.search(text) or "(exit code: 1)" in text:
+        return True
+    # BaseAgent preserves the SDK exception as its explicit cause. A timeout
+    # has an empty string, so diagnosis must not depend on rendered prose.
+    seen = {id(exc)}
+    cause = exc.__cause__
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, (FleetCallTimeout, TimeoutError)):
+            return True
+        cause = cause.__cause__
+    return False
 
 
 def _backoff_delay(attempt: int, config: FleetRetryConfig) -> float:

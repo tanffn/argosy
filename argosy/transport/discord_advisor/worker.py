@@ -6,7 +6,9 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 import secrets
+import structlog
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -34,6 +36,14 @@ from .auth import InboundIdentity, authorize
 from .config import DiscordAdvisorConfig
 from .gateway import DiscordAdvisorAccessError, Gateway, InboundMessage
 from .progress import ProgressEditor
+
+
+def _transient_delivery_error(exc: Exception) -> bool:
+    import aiohttp
+    import discord
+
+    return (isinstance(exc, (TimeoutError, ConnectionError, aiohttp.ClientConnectionError))
+            or isinstance(exc, discord.HTTPException) and (exc.status == 429 or 500 <= exc.status < 600))
 
 
 class DiscordAdvisorWorker:
@@ -455,6 +465,23 @@ class DiscordAdvisorWorker:
             self._background_failures.put_nowait(error)
 
     async def _watch_analysis(self, store: ChatStore, request_id: str, channel_id: str) -> None:
+        # Delivery is not ownership of the underlying research. A temporary
+        # Discord failure must not reach run() and cancel every active fleet.
+        delay = 2.0
+        while True:
+            try:
+                await self._watch_analysis_once(store, request_id, channel_id)
+                return
+            except Exception as exc:
+                if not _transient_delivery_error(exc):
+                    raise
+                structlog.get_logger(__name__).warning(
+                    "discord.analysis_delivery_retry", request_id=request_id,
+                    error_type=type(exc).__name__, retry_seconds=delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 60.0)
+
+    async def _watch_analysis_once(self, store: ChatStore, request_id: str, channel_id: str) -> None:
         origin = await store.analysis_origin_turn(request_id)
         if origin is not None:
             await store.adopt_analysis_message(request_id, origin.id)
@@ -496,6 +523,8 @@ class DiscordAdvisorWorker:
             Citation("verdict", str(item["verdict_id"]), str(item.get("as_of") or "unknown"))
             for item in result_rows if isinstance(item, dict) and item.get("verdict_id")
         )
+        if isinstance(result, dict) and result.get("research_task"):
+            citations.extend(Citation(**item) for item in result.get("citations", []))
         await store.record_analysis_final(request_id, channel_id, body, citations)
         ids = await self._send_chunks(channel_id, body, citations, nonce,
                                       existing_ids=[message_id])
@@ -522,6 +551,11 @@ class DiscordAdvisorWorker:
                     f"Proactive notification refresh failed ({type(exc).__name__}). "
                     "Existing notifications were left unchanged; chat remains available."
                 )
+                if "trade_plan_unavailable" in getattr(exc, "issue_codes", []):
+                    self.notification_error = (
+                        "Trade-plan data is incomplete, so action notifications are paused. "
+                        "Open Inbox for the exact missing holdings/prices; chat remains available."
+                    )
             else:
                 self.notification_error = None
             await asyncio.sleep(self._notification_retry_seconds)
@@ -589,7 +623,7 @@ class DiscordAdvisorWorker:
             return event
         saved = await store.latest_unsent_outbox(event.semantic_key)
         if saved is not None:
-            if saved.material_version.startswith(event.material_version + ":"):
+            if saved.material_version.startswith(self._daily_version_prefix(event)):
                 return replace(event, body=saved.body, material_version=saved.material_version,
                                citations=[Citation(**c) for c in json.loads(saved.citations_json or "[]")])
             # A current recommendation changed/expired after drafting. Do not
@@ -597,7 +631,7 @@ class DiscordAdvisorWorker:
             await store.suppress_outbox(saved.id)
         builder = getattr(self.notification_producer, "daily_overview", None)
         if builder is None:
-            return event  # Explicit unavailable placeholder, never fabricated research.
+            return None
         if self.in_quiet_hours():
             return None
         draft_key = (*key, event.semantic_key, event.material_version)
@@ -608,8 +642,28 @@ class DiscordAdvisorWorker:
                     if not old_task.done():
                         old_task.cancel()
                     del self._daily_drafts[old_key]
-            task = asyncio.create_task(asyncio.wait_for(
-                builder(principal, now=datetime.now(UTC)), timeout=240))
+            claim = await store.claim_daily_draft(event.semantic_key, event.material_version)
+            if claim is None:
+                return None
+            if claim["status"] == "draft_ready":
+                answer = ChatAnswer(claim["text"], [Citation(**c) for c in claim["citations"]],
+                                    review_status="accepted")
+                return self._reviewed_daily_event(event, answer)
+
+            async def draft():
+                try:
+                    answer = await asyncio.wait_for(builder(principal, now=datetime.now(UTC)), timeout=240)
+                except asyncio.CancelledError:
+                    await store.finish_daily_draft(claim, error="draft_cancelled")
+                    raise
+                except Exception as exc:
+                    await store.finish_daily_draft(claim, error=type(exc).__name__)
+                    return None
+                if not await store.finish_daily_draft(claim, answer):
+                    return None
+                return answer if answer.review_status == "accepted" else None
+
+            task = asyncio.create_task(draft())
             self._daily_drafts[draft_key] = task
             self._analysis_tasks.add(task)
             task.add_done_callback(self._analysis_tasks.discard)
@@ -619,10 +673,29 @@ class DiscordAdvisorWorker:
         try:
             answer = task.result()
         except Exception:
-            answer = ChatAnswer("Today's research summary is unavailable; I can't verify whether there are worthwhile updates.")
-        body = event.body.split("\n", 1)[0] + "\n" + answer.text
+            answer = None
+        finally:
+            del self._daily_drafts[draft_key]
+        if answer is None:
+            return None  # Durable cooldown retries silently; never publish a failed review.
+        return self._reviewed_daily_event(event, answer)
+
+    @staticmethod
+    def _daily_version_prefix(event):
+        return hashlib.sha256(event.material_version.encode()).hexdigest()[:24] + ":brief-v2:"
+
+    @staticmethod
+    def _reviewed_daily_event(event, answer):
+        # Presentation has one owner. Remove only leading branded date headings,
+        # never numbered findings or dates within evidence.
+        content = answer.text.strip()
+        heading = r"^\s*(?:\*\*|#{1,6}\s*)?Argosy\s*[·—–-]\s*\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{4})?(?:\*\*)?\s*(?:\n|$)"
+        while match := re.match(heading, content):
+            content = content[match.end():].lstrip()
+        body = event.body.split("\n", 1)[0] + "\n" + content
         return replace(event, body=body, citations=answer.citations,
-                       material_version=event.material_version + ":" + hashlib.sha256(body.encode()).hexdigest()[:32])
+                       material_version=DiscordAdvisorWorker._daily_version_prefix(event)
+                       + hashlib.sha256(body.encode()).hexdigest()[:16])
 
     async def pump_notifications(self) -> None:
         """Project canonical Inbox events into the durable outbox, then deliver."""
@@ -647,7 +720,12 @@ class DiscordAdvisorWorker:
             projected = []
             for event in events:
                 if event.category == DAILY:
-                    event = await self._daily_event(event, principal, store, key)
+                    try:
+                        event = await self._daily_event(event, principal, store, key)
+                    except Exception as exc:
+                        structlog.get_logger(__name__).warning(
+                            "discord.daily_projection_failed", error_type=type(exc).__name__)
+                        event = None  # A broken briefing must not hold up risk notifications.
                 if event is not None:
                     projected.append(event)
             events = projected
@@ -675,6 +753,11 @@ class DiscordAdvisorWorker:
                     continue
                 if prior.semantic_key in current_keys or not prior.sent_message_id:
                     continue
+                if prior.category == OPERATIONAL and self.status_registry is not None:
+                    views = await self.status_registry.list()
+                    if any(v.currently_running_run_id is not None and not v.metadata.long_running
+                           for v in views):
+                        continue  # A retry is not proof of recovery.
                 await self.gateway.edit(
                     (binding.status_channel_id or binding.channel_id) if prior.category == OPERATIONAL else binding.channel_id,
                     prior.sent_message_id,
@@ -685,10 +768,25 @@ class DiscordAdvisorWorker:
                     ),
                 )
                 await store.close_sent_outbox(prior.id, status="resolved")
-            for event in events:
+            for index, event in enumerate(events):
                 prior = await store.latest_sent_outbox(event.semantic_key)
                 if event.category == DAILY and prior is not None:
                     continue  # Durable once per local date, including process restarts.
+                if (event.category == OPERATIONAL and prior is not None
+                        and prior.status == "sent" and prior.sent_message_id):
+                    # Same unresolved incident: update its existing message,
+                    # not a fresh push as individual jobs fail/recover.
+                    # A -> B -> A is another update, not reuse of an already
+                    # superseded outbox row. Stable on every unchanged poll.
+                    prefix = event.material_version + ":ops-v2:"
+                    latest = await store.latest_outbox(event.semantic_key)
+                    same = (latest.material_version == event.material_version
+                            or latest.material_version.startswith(prefix))
+                    version = (latest.material_version if same and latest.status in {"sent", "pending"}
+                               else prefix + latest.id)
+                    event = replace(event, supersedes_message_id=prior.sent_message_id,
+                                    material_version=version)
+                    events[index] = event
                 await store.enqueue_outbox(event)
             for row in await store.pending_outbox():
                 if row.category == "status_board":

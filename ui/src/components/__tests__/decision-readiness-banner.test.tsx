@@ -127,7 +127,31 @@ it("keeps disabled integration history visible without counting it as an active 
     ],
   }) }));
   await act(async () => { render(<DecisionReadinessBanner />); });
-  expect(screen.getByText(/1 jobs need attention/)).toBeInTheDocument();
+  expect(screen.getByText(/1 job needs attention/)).toBeInTheDocument();
   expect(screen.getByText(/Disabled by configuration: discord listener/)).toBeInTheDocument();
   expect(screen.getByText(/Email delivery is not configured/)).toBeInTheDocument();
+});
+
+it("shows verified running work as progress, not a job needing attention", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+    status: "degraded", message: "Scheduled analysis is in progress.", jobs: [
+      { name: "discovery_funnel", status: "running", attention_required: false },
+    ],
+  }) }));
+  await act(async () => { render(<DecisionReadinessBanner />); });
+  expect(screen.getByRole("status")).toHaveTextContent("Analysis in progress");
+  expect(screen.getByText(/Working: discovery funnel/)).toBeInTheDocument();
+  expect(screen.queryByText(/jobs need attention/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("does not hide a running job whose backend health still needs attention", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+    status: "degraded", message: "Prior result is stale.", jobs: [
+      { name: "discovery_funnel", status: "running", attention_required: true },
+    ],
+  }) }));
+  await act(async () => { render(<DecisionReadinessBanner />); });
+  expect(screen.getByText(/1 job needs attention/)).toBeInTheDocument();
+  expect(screen.queryByText(/No action needed/)).not.toBeInTheDocument();
 });

@@ -37,6 +37,7 @@ async def _seed_user_proposal(*, status: str = "approved") -> int:
             size_shares_or_currency=5,
             tier="T1",
             account_class="main",
+            account_id="ibkr_main",
             status=status,
             rationale_summary="t",
             expected_impact_json="{}",

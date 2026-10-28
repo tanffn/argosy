@@ -178,7 +178,7 @@ class _MockStateObserverAgent(StateObserverAgent):
 
 def test_state_observer_registered_as_opus() -> None:
     """The agent role MUST default to Opus per binding preference."""
-    assert DEFAULT_MODEL_BY_ROLE.get("state_observer") == "claude-opus-5"
+    assert DEFAULT_MODEL_BY_ROLE.get("state_observer") == "claude-opus-5-5"
 
 
 def test_state_observer_thinking_effort_high() -> None:

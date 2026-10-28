@@ -7,10 +7,10 @@ import json
 import secrets
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import BigInteger, String, case, cast, func, select, update, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,30 @@ _ACTIVE = ("queued", "running", "cancelling")
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _notice_delivered_at(row: NotificationOutbox) -> datetime:
+    """Discord snowflakes timestamp creation of the delivered message, not draft.
+
+    Legacy/non-Discord IDs have no delivery clock; updated_at is a conservative
+    fallback (a later status transition can omit, but not predate, delivery).
+    """
+    value = str(row.sent_message_id or "")
+    if value.isdecimal() and 16 <= len(value) <= 19 and int(value) <= 9223372036854775807:
+        try:
+            return datetime.fromtimestamp(((int(value) >> 22) + 1420070400000) / 1000, UTC)
+        except (ValueError, OverflowError, OSError):
+            pass
+    return row.updated_at.replace(tzinfo=UTC)
+
+
+def _notice_delivery_clock():
+    """SQLite delivery timestamp in Unix milliseconds, for ordering before LIMIT."""
+    value = NotificationOutbox.sent_message_id
+    number = cast(value, BigInteger)
+    valid = (func.length(value).between(16, 19) & (cast(number, String) == value) & (number > 0))
+    return case((valid, number.op(">>")(22) + 1420070400000),
+                else_=(func.julianday(NotificationOutbox.updated_at) - 2440587.5) * 86400000)
 
 
 def _request(row: ChatAnalysisRequest) -> AnalysisRequest:
@@ -402,7 +426,8 @@ class ChatStore:
             row.updated_at = _now()
             await session.commit()
 
-    async def history(self, conversation_key: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    async def history(self, conversation_key: str, *, limit: int = 20,
+                      before_at: datetime | None = None) -> list[dict[str, Any]]:
         async with self._sessions() as session:
             rows = (
                 (
@@ -413,8 +438,9 @@ class ChatStore:
                             ChatTurn.binding_id == self._binding(),
                             ChatTurn.conversation_key == conversation_key,
                             ChatTurn.status == "completed",
+                            *([ChatTurn.updated_at < before_at] if before_at else []),
                         )
-                        .order_by(ChatTurn.created_at.desc())
+                        .order_by(ChatTurn.updated_at.desc())
                         .limit(min(max(limit, 1), 100))
                     )
                 )
@@ -422,12 +448,12 @@ class ChatStore:
                 .all()
             )
             events = [
-                (r.created_at.replace(tzinfo=UTC), {
+                (r.updated_at.replace(tzinfo=UTC), {
                     "question": r.question,
                     "response": r.response,
                     "citations": json.loads(r.citations_json),
                     "message_id": next(iter(json.loads(r.response_message_ids_json or "[]")), None),
-                    "observed_at": r.created_at.replace(tzinfo=UTC).isoformat(),
+                    "observed_at": r.updated_at.replace(tzinfo=UTC).isoformat(),
                 })
                 for r in reversed(rows)
             ]
@@ -446,14 +472,19 @@ class ChatStore:
                 )
                 if conversation_key != binding.channel_id:
                     notice_query = notice_query.where(NotificationOutbox.sent_message_id == conversation_key)
+                clock = _notice_delivery_clock()
+                cutoff = before_at.replace(tzinfo=UTC) if before_at and before_at.tzinfo is None else before_at
+                if cutoff:
+                    notice_query = notice_query.where(clock < cutoff.timestamp() * 1000)
                 notices = (await session.execute(notice_query.order_by(
-                    NotificationOutbox.created_at.desc()).limit(min(max(limit, 1), 100)))).scalars()
-                events.extend((r.created_at.replace(tzinfo=UTC), {
+                    clock.desc(),
+                    NotificationOutbox.created_at.desc()).limit(100))).scalars()
+                events.extend((_notice_delivered_at(r), {
                     "question": None, "response": OutboundFilter.redact(r.body),
                     "citations": json.loads(r.citations_json or "[]"),
                     "message_id": r.sent_message_id,
-                    "observed_at": r.created_at.replace(tzinfo=UTC).isoformat(),
-                }) for r in notices)
+                    "observed_at": _notice_delivered_at(r).isoformat(),
+                }) for r in notices if cutoff is None or _notice_delivered_at(r) < cutoff)
             events.sort(key=lambda item: item[0])
             return [item for _, item in events[-min(max(limit, 1), 100):]]
 
@@ -523,7 +554,8 @@ class ChatStore:
     ) -> AnalysisRequest:
         normalized = sorted({str(i).strip().upper() for i in instruments if str(i).strip()})
         if not normalized:
-            raise ValueError("at least one instrument is required")
+            from .research_actions import ResearchChatTask
+            ResearchChatTask.model_validate_json(prompt_text)
         async with self._sessions() as session:
             q = select(ChatAnalysisRequest).where(
                 ChatAnalysisRequest.binding_id == self._binding(),
@@ -626,6 +658,20 @@ class ChatStore:
             await session.commit()
             await session.refresh(row)
             return _request(row)
+
+    async def transition_request(self, request_id, *, expected, status, result=None, error=None):
+        """Atomic lifecycle transition; completion cannot overwrite cancellation."""
+        values = {"status": status, "error": error, "updated_at": _now()}
+        if result is not None:
+            values["result_json"] = json.dumps(result, default=str)
+        async with self._sessions() as session:
+            changed = await session.execute(update(ChatAnalysisRequest).where(
+                ChatAnalysisRequest.id == request_id,
+                ChatAnalysisRequest.household_user_id == self.household_user_id,
+                ChatAnalysisRequest.binding_id == self._binding(),
+                ChatAnalysisRequest.status == expected).values(**values))
+            await session.commit()
+            return changed.rowcount == 1
 
     async def link_run(self, request_id: str, run_id: int) -> AnalysisRequest:
         row = await self._request_row(request_id)
@@ -881,6 +927,78 @@ class ChatStore:
                 ).scalars()
             )
 
+    async def claim_daily_draft(self, semantic_key: str, fingerprint: str) -> dict | None:
+        """SQLite lease + daily attempt budget; receipts are NEVER delivery rows.
+
+        Preserve each attempt/review across restarts, including failed drafts.
+        A changed fingerprint invalidates a ready draft, not the daily budget.
+        """
+        now = _now()
+        async with self._sessions() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            prior = (await session.execute(select(NotificationOutbox).where(
+                NotificationOutbox.binding_id == self._binding(),
+                NotificationOutbox.household_user_id == self.household_user_id,
+                NotificationOutbox.semantic_key == "draft:" + semantic_key,
+                NotificationOutbox.category == "overview.draft",
+            ).order_by(NotificationOutbox.attempts.desc()).limit(1))).scalar_one_or_none()
+            if prior is not None:
+                if prior.status == "draft_ready":
+                    try:
+                        payload = json.loads(prior.body)
+                        if payload["fingerprint"] == fingerprint and isinstance(payload["text"], str):
+                            [Citation(**citation) for citation in payload["citations"]]
+                            return {"id": prior.id, "status": prior.status, **payload}
+                    except (ValueError, TypeError, KeyError):
+                        pass  # Corrupt receipts cannot authorize delivery or reset the budget.
+                if prior.attempts >= 3 or (prior.retry_after and
+                        prior.retry_after.replace(tzinfo=UTC) > now):
+                    return None
+            row = NotificationOutbox(
+                id=str(uuid.uuid4()), binding_id=self._binding(),
+                household_user_id=self.household_user_id,
+                semantic_key="draft:" + semantic_key, material_version=uuid.uuid4().hex,
+                category="overview.draft", body=json.dumps({"fingerprint": fingerprint}),
+                citations_json="[]", nonce=secrets.token_hex(12), status="draft_working",
+                attempts=(prior.attempts + 1) if prior else 1,
+                retry_after=now + timedelta(minutes=5),
+            )
+            session.add(row)
+            await session.commit()
+            return {"id": row.id, "status": "draft_working", "fingerprint": fingerprint}
+
+    async def finish_daily_draft(self, claim: dict, answer=None, *, error: str | None = None) -> bool:
+        """Only the unexpired owner may finish; failed review is not a message."""
+        now = _now()
+        accepted = answer is not None and answer.review_status == "accepted" and not error
+        payload = {"fingerprint": claim["fingerprint"],
+                   "review_trace": answer.review_trace if answer else []}
+        if accepted:
+            payload.update(text=answer.text, citations=[c.__dict__ for c in answer.citations])
+        def redacted(value):
+            if isinstance(value, str):
+                return OutboundFilter.redact(value)
+            if isinstance(value, list):
+                return [redacted(item) for item in value]
+            if isinstance(value, dict):
+                return {key: redacted(item) for key, item in value.items()}
+            return value
+        async with self._sessions() as session:
+            result = await session.execute(update(NotificationOutbox).where(
+                NotificationOutbox.id == claim["id"],
+                NotificationOutbox.binding_id == self._binding(),
+                NotificationOutbox.household_user_id == self.household_user_id,
+                NotificationOutbox.category == "overview.draft",
+                NotificationOutbox.status == "draft_working",
+                NotificationOutbox.retry_after > now,
+            ).values(status="draft_ready" if accepted else "draft_failed",
+                     body=json.dumps(redacted(payload), default=str),
+                     error=None if accepted else (error or "review_not_accepted"),
+                     retry_after=None if accepted else now + timedelta(minutes=30),
+                     updated_at=now))
+            await session.commit()
+            return bool(result.rowcount)
+
     async def enqueue_outbox(self, event: OutboxEvent) -> NotificationOutbox:
         async with self._sessions() as session:
             q = select(NotificationOutbox).where(
@@ -1039,6 +1157,15 @@ class ChatStore:
                 NotificationOutbox.status.in_(["pending", "failed"]),
             ).order_by(NotificationOutbox.created_at.desc()).limit(1))).scalar_one_or_none()
 
+    async def latest_outbox(self, semantic_key: str) -> NotificationOutbox | None:
+        """Newest revision, including an uncertain delivery or suppressed draft."""
+        async with self._sessions() as session:
+            return (await session.execute(select(NotificationOutbox).where(
+                NotificationOutbox.household_user_id == self.household_user_id,
+                NotificationOutbox.binding_id == self._binding(),
+                NotificationOutbox.semantic_key == semantic_key,
+            ).order_by(NotificationOutbox.created_at.desc()).limit(1))).scalar_one_or_none()
+
     async def latest_sent_outbox(self, semantic_key: str) -> NotificationOutbox | None:
         async with self._sessions() as session:
             return (
@@ -1062,7 +1189,7 @@ class ChatStore:
                 NotificationOutbox.household_user_id == self.household_user_id,
                 NotificationOutbox.binding_id == self._binding(),
                 NotificationOutbox.semantic_key == semantic_key,
-                NotificationOutbox.category == "alert.critical",
+                NotificationOutbox.category.in_(("alert.critical", "status.jobs")),
                 NotificationOutbox.status == "resolved",
             ).order_by(NotificationOutbox.updated_at.desc()).limit(1))).scalar_one_or_none()
 

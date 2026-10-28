@@ -265,6 +265,11 @@ class JobRegistry:
     together in one shot (#3b).
     """
 
+    def recovery_schedules(self) -> dict:
+        """Read-only schedules for enabled cadence jobs; no transport calls."""
+        return {name: registered.job.schedule for name, registered in self._jobs.items()
+                if not registered.metadata.long_running and registered.job.enabled}
+
     def __init__(self, scheduler: "Scheduler | None" = None) -> None:
         self._scheduler: "Scheduler | None" = scheduler
         self._jobs: dict[str, _RegisteredJob] = {}
@@ -549,6 +554,22 @@ class JobRegistry:
                     cadence_seconds=_cadence_seconds(rec.job),
                     stale_at=_scheduled_stale_at(rec.job, view.last_run_at),
                 )
+                if isinstance(rec.job, LongRunningJob):
+                    # A connected transport can still have failed delivery or
+                    # status publishing. Keep these real errors visible on all
+                    # health surfaces; never expose raw credentials in errors.
+                    from argosy.services.chat_advisor.outbound import OutboundFilter
+                    try:
+                        snapshot_fn = getattr(rec.job, "status_snapshot", None)
+                        snapshot = snapshot_fn() if snapshot_fn else {}
+                        errors = [str(snapshot[key]) for key in
+                                  ("error", "notification_error", "status_board_error") if snapshot.get(key)]
+                        view.last_run_error = OutboundFilter.redact("; ".join(errors)) or None
+                        if errors:
+                            view.health = "red"
+                    except Exception:
+                        view.health = "red"
+                        view.last_run_error = "Live service health could not be read."
                 out.append(view)
         return out
 

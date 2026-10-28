@@ -515,3 +515,39 @@ def test_row_to_analyst_input_omits_raw_text(session_factory) -> None:
         assert inp.signal_id == row.id
         assert inp.parsed_tickers == ["NVDA"]
         assert inp.evidence_excerpt == "short benign excerpt"
+
+
+def test_dedicated_batches_release_transaction_during_model(session_factory):
+    class Analyst:
+        async def analyze(self, signals, **kwargs):
+            assert not session.in_transaction()
+            # Independent connection must be able to write while model waits.
+            with session_factory() as other:
+                other.add(_make_news_signal(source_ref="independent", raw_text="x", evidence_excerpt="x"))
+                other.commit()
+            return [AnalyzedSignalOut(signal_id=x.signal_id, materiality="low",
+                                      recommended_flag=None, rationale="test") for x in signals]
+    with session_factory() as session:
+        session.add(_make_news_signal(source_ref="first", raw_text="x", evidence_excerpt="x"))
+        session.commit()
+        result = run_news_signal_analysis(session, agent=Analyst(), user_holdings=[], commit_batches=True)
+        assert result.analyzed == 1
+
+
+def test_outer_flush_lock_is_not_swallowed_as_prediction_failure(session_factory):
+    class Analyst:
+        async def analyze(self, signals, **kwargs):
+            return [AnalyzedSignalOut(signal_id=x.signal_id, materiality="medium",
+                                      recommended_flag=None, rationale="test") for x in signals]
+    with session_factory() as session:
+        session.add(_make_news_signal(source_ref="locked", raw_text="x", evidence_excerpt="x", parsed_tickers=["NVDA"]))
+        session.commit()
+        # A real competing SQLite writer forces the pre-savepoint flush to fail.
+        with session_factory.kw["bind"].connect() as blocker:
+            blocker.exec_driver_sql("BEGIN IMMEDIATE")
+            session.connection().exec_driver_sql("PRAGMA busy_timeout=1")
+            with pytest.raises(sa.exc.OperationalError, match="database is locked"):
+                run_news_signal_analysis(session, agent=Analyst(), user_holdings=[])
+            session.rollback()
+            blocker.rollback()
+        assert session.scalar(sa.select(NewsSignal)).analyzed_at is None

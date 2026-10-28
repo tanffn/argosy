@@ -244,7 +244,7 @@ def test_deploy_reviewer_default_review_retries_exit1(monkeypatch):
             raise AgentRunError(EXIT1_MSG)
 
         class _Report:
-            output = DeploymentReviewOutput(lens="prudence", objections=[])
+            output = DeploymentReviewOutput(lens="prudence", separation_safe=False, objections=[])
 
         return _Report()
 
@@ -259,3 +259,15 @@ def test_deploy_reviewer_default_review_retries_exit1(monkeypatch):
     out = _default_review("prudence", {}, [], user_id="ariel")
     assert out.lens == "prudence"
     assert len(attempts) == 2
+
+
+def test_sdk_wrapped_timeout_uses_explicit_cause_not_empty_message():
+    from argosy.agents.errors import AgentRunError
+    from argosy.services.fleet_reliability import is_transient_fleet_error
+    wrapped = AgentRunError("plan_critique: claude-agent-sdk error: \n[claude.exe stderr was empty]")
+    wrapped.__cause__ = TimeoutError()
+    assert is_transient_fleet_error(wrapped)
+    assert not is_transient_fleet_error(AgentRunError(str(wrapped)))
+    permanent = AgentRunError("authentication_error")
+    permanent.__cause__ = TimeoutError()
+    assert not is_transient_fleet_error(permanent)

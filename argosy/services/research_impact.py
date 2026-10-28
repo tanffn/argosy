@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import re
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, func
 
 from argosy.services.research_catalog import research_session, digest, utc
 from argosy.state.research_models import ResearchItem, ResearchClaim, ResearchEvidenceUse
@@ -92,6 +92,7 @@ def evaluate_due_claims(*, user_id, now=None, price_fetcher=None):
     with research_session() as session:
         rows = session.execute(select(ResearchClaim, ResearchItem).join(ResearchItem).where(
             ResearchClaim.user_id == user_id, ResearchClaim.evaluated_at.is_(None),
+            func.json_extract(ResearchClaim.payload_json, "$.superseded_by_assessment").is_(None),
             ResearchClaim.due_at < now.replace(hour=0, minute=0, second=0, microsecond=0),
         ).order_by(ResearchClaim.due_at).limit(25)).all()
         for claim, item in rows:

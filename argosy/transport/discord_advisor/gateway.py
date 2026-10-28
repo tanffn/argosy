@@ -8,6 +8,20 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .auth import InboundIdentity
+from argosy.services.chat_advisor.message_context import encode_message
+
+
+def message_payload(message):
+    """Discord forwards carry snapshots, not a reply to our recommendation ledger."""
+    reference = getattr(message, "reference", None)
+    kind = getattr(reference, "type", None)
+    forwarded = getattr(kind, "value", kind) == 1
+    snapshots = getattr(message, "message_snapshots", ()) or ()
+    if forwarded:
+        excerpts = [getattr(snapshot, "content", "") for snapshot in snapshots]
+        return encode_message(message.content or "", excerpts or ["Forwarded message has no readable text."]), None
+    reply_id = getattr(reference, "message_id", None)
+    return encode_message(message.content or "", []), str(reply_id) if reply_id else None
 
 
 class DiscordAdvisorAccessError(RuntimeError):
@@ -38,7 +52,7 @@ class Gateway(Protocol):
     async def validate_access(self, bindings) -> None: ...
     async def close(self) -> None: ...
     async def messages(self): ...
-    async def send(self, channel_id: str, text: str, *, nonce: str) -> str: ...
+    async def send(self, channel_id: str, text: str, *, nonce: str, silent: bool = False) -> str: ...
     async def edit(self, channel_id: str, message_id: str, text: str) -> None: ...
     async def fetch_after(
         self, channel_id: str, after_message_id: str | None, limit: int
@@ -96,7 +110,7 @@ class FakeGateway:
                 return
             yield item
 
-    async def send(self, channel_id: str, text: str, *, nonce: str) -> str:
+    async def send(self, channel_id: str, text: str, *, nonce: str, silent: bool = False) -> str:
         if len(nonce) > 25:
             raise ValueError("Discord nonce exceeds 25 characters")
         if len(text) > 2000:
@@ -111,6 +125,8 @@ class FakeGateway:
             "nonce": nonce,
         }
         self.sent.append(row)
+        if silent:
+            row["silent"] = True
         return row["id"]
 
     async def edit(self, channel_id: str, message_id: str, text: str) -> None:
@@ -167,12 +183,12 @@ class DiscordPyGateway:
                 is_bot=bool(message.author.bot),
                 is_webhook=message.webhook_id is not None,
             )
-            reply_to = getattr(getattr(message, "reference", None), "message_id", None)
+            content, reply_to = message_payload(message)
             await self._queue.put(
                 InboundMessage(
                     str(message.id),
                     identity,
-                    message.content or "",
+                    content,
                     reply_to_message_id=str(reply_to) if reply_to else None,
                 )
             )
@@ -345,13 +361,14 @@ class DiscordPyGateway:
                 "Deny @everyone View Channel before reconnecting the advisor.",
             )
 
-    async def send(self, channel_id: str, text: str, *, nonce: str) -> str:
+    async def send(self, channel_id: str, text: str, *, nonce: str, silent: bool = False) -> str:
         import discord
 
         channel = await self._channel(channel_id)
         self._assert_private_delivery_channel(channel)
         message = await channel.send(
-            text, nonce=nonce, allowed_mentions=discord.AllowedMentions.none()
+            text, nonce=nonce, allowed_mentions=discord.AllowedMentions.none(), silent=silent,
+            suppress_embeds=True,
         )
         return str(message.id)
 
@@ -361,7 +378,7 @@ class DiscordPyGateway:
         channel = await self._channel(channel_id)
         self._assert_private_delivery_channel(channel)
         message = await channel.fetch_message(int(message_id))
-        await message.edit(content=text, allowed_mentions=discord.AllowedMentions.none())
+        await message.edit(content=text, allowed_mentions=discord.AllowedMentions.none(), suppress=True)
 
     async def fetch_after(
         self, channel_id: str, after_message_id: str | None, limit: int
@@ -373,7 +390,7 @@ class DiscordPyGateway:
         after = discord.Object(id=int(after_message_id)) if after_message_id else None
         async for message in channel.history(limit=limit, after=after, oldest_first=True):
             parent = getattr(message.channel, "parent", None)
-            reply_to = getattr(getattr(message, "reference", None), "message_id", None)
+            content, reply_to = message_payload(message)
             result.append(
                 InboundMessage(
                     str(message.id),
@@ -387,7 +404,7 @@ class DiscordPyGateway:
                         bool(message.author.bot),
                         message.webhook_id is not None,
                     ),
-                    message.content or "",
+                    content,
                     reply_to_message_id=str(reply_to) if reply_to else None,
                 )
             )

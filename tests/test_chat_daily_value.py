@@ -26,7 +26,7 @@ async def test_daily_uses_news_discovery_holdings_actions_and_independent_review
     reviewer = Agent(review())
     answer = await build_daily_overview(reader, PRINCIPAL, now=datetime.now(UTC),
                                        answerer=author, reviewer=reviewer)
-    assert {call[1] for call in reader.calls} == {"news", "discovery", "actions", "holdings"}
+    assert {call[1] for call in reader.calls} == {"news", "discovery", "subscriptions", "actions", "holdings", "briefings"}
     assert len(reviewer.inputs) == 1 and answer.text.startswith("Nothing worth")
     assert next(call[2] for call in reader.calls if call[1] == "actions")["record_id"] == "current_trade_plan"
     assert "publication, ingestion, and review dates" in author.inputs[0]["question"]
@@ -70,12 +70,8 @@ def test_chat_keeps_internal_provenance_out_of_reply_but_preserves_public_link()
 
 
 @pytest.mark.asyncio
-async def test_quiet_hours_do_not_launch_draft_and_failed_summary_is_not_no_news(monkeypatch):
-    class Store:
-        async def latest_sent_outbox(self, key):
-            return None
-        async def latest_unsent_outbox(self, key):
-            return None
+async def test_quiet_hours_do_not_launch_draft_and_failed_summary_is_not_no_news(monkeypatch, tmp_path):
+    engine, sessions = await _worker_db(tmp_path)
     class Producer:
         calls = 0
         async def daily_overview(self, principal, *, now):
@@ -83,16 +79,24 @@ async def test_quiet_hours_do_not_launch_draft_and_failed_summary_is_not_no_news
             raise RuntimeError("upstream unavailable")
     producer = Producer()
     worker = DiscordAdvisorWorker(_config(), "test", FakeGateway(),
-        session_factory=object(), notification_producer=producer)
+        session_factory=sessions, notification_producer=producer,
+        retrieval_factory=lambda _: object(), conversation_factory=_Conversation,
+        dispatcher_factory=_Dispatcher)
+    await worker.initialize()
+    store = next(iter(worker._stores.values()))
     event = OutboxEvent("overview:2026-09-22", "version", "overview.daily", "**Argosy**\nplaceholder")
     monkeypatch.setattr(worker, "in_quiet_hours", lambda: True)
-    assert await worker._daily_event(event, PRINCIPAL, Store(), ("1", "2", "3")) is None
+    assert await worker._daily_event(event, PRINCIPAL, store, ("1", "2", "3")) is None
     assert producer.calls == 0
     monkeypatch.setattr(worker, "in_quiet_hours", lambda: False)
-    assert await worker._daily_event(event, PRINCIPAL, Store(), ("1", "2", "3")) is None
+    assert await worker._daily_event(event, PRINCIPAL, store, ("1", "2", "3")) is None
     await asyncio.gather(*worker._daily_drafts.values(), return_exceptions=True)
-    result = await worker._daily_event(event, PRINCIPAL, Store(), ("1", "2", "3"))
-    assert "unavailable" in result.body and "Nothing worth" not in result.body
+    result = await worker._daily_event(event, PRINCIPAL, store, ("1", "2", "3"))
+    assert result is None
+    assert await worker._daily_event(event, PRINCIPAL, store, ("1", "2", "3")) is None
+    assert producer.calls == 1
+    assert await store.latest_unsent_outbox(event.semantic_key) is None
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -110,7 +114,7 @@ async def test_slow_daily_draft_never_blocks_alert_and_is_reused_after_send_fail
             self.calls += 1
             await release.wait()
             text = "Updated plan; earlier recommendation withdrawn." if self.version == "2" else "Useful reviewed discovery highlight."
-            return ChatAnswer(text, [Citation("discovery", "XYZ", "today")])
+            return ChatAnswer(text, [Citation("discovery", "XYZ", "today")], review_status="accepted")
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):

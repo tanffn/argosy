@@ -6,18 +6,18 @@ Application-level 'degraded' status never triggers a process restart.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from datetime import UTC, datetime
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import time
+import webbrowser
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
-import webbrowser
 
 import psutil
 
@@ -81,7 +81,21 @@ def listener_is_owned(pid: int, role: str, root: Path, port: int) -> bool:
 
 def active_jobs(root: Path) -> list:
     with sqlite3.connect((root / "db/argosy.db").as_uri() + "?mode=ro", uri=True, timeout=2) as conn:
-        return conn.execute("SELECT id,job_name FROM job_runs WHERE status='running'").fetchall()
+        jobs = conn.execute("SELECT id,job_name FROM job_runs WHERE status='running'").fetchall()
+        # The listener is deliberately long-running. It is not active research;
+        # treating it as such prevents *every* automatic backend recovery.
+        # Protect real conversation work independently before allowing reload.
+        try:
+            chat_busy = bool(conn.execute(
+                "SELECT 1 FROM chat_analysis_requests WHERE status IN ('queued','running','cancelling') LIMIT 1"
+            ).fetchone() or conn.execute(
+                "SELECT 1 FROM chat_turns WHERE status IN ('queued','delivery_pending') LIMIT 1"
+            ).fetchone())
+        except sqlite3.OperationalError:
+            return jobs or [(-1, "chat_status_unavailable")]
+        if chat_busy:
+            return jobs or [(-1, "chat_in_progress")]
+        return [job for job in jobs if job[1] != "discord_advisor"]
 
 
 def stop_owned(process: psutil.Process, role: str, root: Path, port: int) -> None:
@@ -129,6 +143,8 @@ def ensure(role: str, root: Path, port: int, history: dict, *, check_only: bool 
     check = probe(url, role)
     if check["alive"]:
         return {"action": "skipped_healthy", "health": check}
+    if role == "backend" and check.get("identified"):
+        return {"action": "skipped_application_issue", "health": check}
     if check_only:
         return {"action": "not_healthy", "health": check}
     processes = owned_roots(role, root, port)

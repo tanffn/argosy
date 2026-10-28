@@ -42,6 +42,10 @@ def _canonical_values(raw: Any) -> list[str]:
 class NotificationSourceUnavailable(RuntimeError):
     """Canonical Inbox was partial, so alert state must not advance or close."""
 
+    def __init__(self, message: str, *, issue_codes: list[str] | None = None):
+        super().__init__(message)
+        self.issue_codes = issue_codes or []
+
 
 def _canonical_blockers(item: InboxItem) -> list[str]:
     raw = item.body.get("blockers") or item.signals.get("blockers") or []
@@ -178,7 +182,8 @@ class NotificationProducer:
             reasons = sorted({str(row.get("code") or row.get("reason") or "unknown") for row in issues})
             raise NotificationSourceUnavailable(
                 "Canonical Inbox source could not be fully read "
-                f"({', '.join(reasons)}); notification state was not evaluated."
+                f"({', '.join(reasons)}); notification state was not evaluated.",
+                issue_codes=reasons,
             )
         return [_event(item, feed.generated_at) for item in feed.items if _eligible(item, now)]
 

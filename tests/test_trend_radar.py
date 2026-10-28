@@ -155,13 +155,12 @@ def test_thematic_lane_enabled_admits_large_cap_tagged_thematic():
     assert res.shortlist[0].lane == "thematic"
 
 
-def test_thematic_lane_still_respects_its_own_band():
-    # $600bn is above even the thematic ceiling ($500bn) -> still rejected.
+def test_established_business_is_not_rejected_for_a_fixed_cap_ceiling():
     uni = {"HUGE": _sig("HUGE", families={"MOMENTUM_SUSTAINED", "GROWTH"},
                         price=300.0, market_cap=600e9, avg_volume=50_000_000)}
     res = score_and_filter(uni, thematic_lane_enabled=True)
-    assert res.shortlist == ()
-    assert ("HUGE", "failed-liquidity") in res.quarantine
+    assert res.shortlist[0].ticker == 'HUGE'
+    assert res.shortlist[0].lane == 'thematic'
 
 
 def test_satellite_lane_default_tag():

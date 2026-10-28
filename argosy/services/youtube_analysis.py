@@ -51,6 +51,8 @@ class YouTubeFleetResult:
     routed_recommendations: tuple[Any, ...] = ()
     artifact_path: Path | None = None
     json_path: Path | None = None
+    evidence_review: dict | None = None
+    assessed_at: datetime | None = None
 
 
 async def fetch_and_catalog_transcript(
@@ -109,6 +111,8 @@ async def analyze_youtube(
     skeptic_agent: Any | None = None,
     portfolio_agent: Any | None = None,
     synthesis_agent: Any | None = None,
+    on_completed: Any | None = None,
+    review_runner: Any | None = None,
 ) -> YouTubeFleetResult:
     """Fetch one transcript, run three independent readers, then synthesize."""
     from argosy.agents.youtube_analysis import (
@@ -143,7 +147,7 @@ async def analyze_youtube(
     skeptic_reader = skeptic_agent or YouTubeSkepticAgent(user_id=user_id)
     portfolio_reader = portfolio_agent or YouTubePortfolioAgent(user_id=user_id)
 
-    claims_report, skeptic_report, portfolio_report = await asyncio.gather(
+    reader_results = await asyncio.gather(
         claim_reader.run(
             transcript=transcript_text,
             source_id=transcript_source_id,
@@ -161,61 +165,60 @@ async def analyze_youtube(
             portfolio_source_id=portfolio_source_id,
             decision_id=run_id,
         ),
+        return_exceptions=True,
     )
 
     final_reader = synthesis_agent or YouTubeSynthesisAgent(user_id=user_id)
-    synthesis_report = await final_reader.run(
-        transcript_source_id=transcript_source_id,
-        transcript=transcript_text,
-        claims_source_id=f"{run_id}:claims",
-        claims_json=model_json(claims_report.output),
-        skeptic_source_id=f"{run_id}:skeptic",
-        skeptic_json=model_json(skeptic_report.output),
-        portfolio_source_id=f"{run_id}:portfolio",
-        portfolio_json=model_json(portfolio_report.output),
-        portfolio_context_source_id=portfolio_source_id,
-        portfolio_context=portfolio_context,
-        decision_id=run_id,
-    )
-    reports = (claims_report, skeptic_report, portfolio_report, synthesis_report)
+    from argosy.services.evidence_review import reviewed_authoring
+    reports = [r for r in reader_results if not isinstance(r, BaseException)]
     report_ids: list[int] = []
+    save_errors = []
     if save:
         for report in reports:
+            try:
+                report_id = await persist_agent_report_async(report, decision_id=run_id)
+                if report_id is None:
+                    raise RuntimeError("Research reader report was not durably saved")
+                report_ids.append(report_id)
+            except Exception as exc:
+                save_errors.append(exc)
+    if save_errors:
+        raise ExceptionGroup("Reader persistence failed; every completed reader was attempted", save_errors)
+    for result in reader_results:
+        if isinstance(result, BaseException):
+            raise result
+    claims_report, skeptic_report, portfolio_report = reader_results
+    async def persist_review(report):
+        reports.append(report)
+        if save:
             report_id = await persist_agent_report_async(report, decision_id=run_id)
+            if report_id is None:
+                raise RuntimeError("Evidence review report was not durably saved")
             if report_id is not None:
                 report_ids.append(report_id)
+    async def author(feedback):
+        return await final_reader.run(
+            transcript_source_id=transcript_source_id, transcript=transcript_text,
+            claims_source_id=f"{run_id}:claims", claims_json=model_json(claims_report.output),
+            skeptic_source_id=f"{run_id}:skeptic", skeptic_json=model_json(skeptic_report.output),
+            portfolio_source_id=f"{run_id}:portfolio", portfolio_json=model_json(portfolio_report.output),
+            portfolio_context_source_id=portfolio_source_id, portfolio_context=portfolio_context,
+            decision_id=run_id, review_context=feedback)
+    synthesis_report, evidence_review = await (review_runner or reviewed_authoring)(
+        user_id=user_id, sources=[(transcript_source_id, transcript_text),
+                                 (portfolio_source_id, portfolio_context)],
+        context="Research dispositions, not executable orders. Include discovery beyond current holdings.",
+        author=author, persist=persist_review, decision_id=run_id,
+        draft_payload=lambda draft: {
+            "claims": (draft.output.reviewed_claims or claims_report.output).model_dump(mode="json"),
+            "portfolio": (draft.output.reviewed_portfolio or portfolio_report.output).model_dump(mode="json"),
+            "synthesis": draft.output.model_dump(mode="json")})
 
-    claims_output = TranscriptClaimsOutput.model_validate(claims_report.output)
+    claims_output = TranscriptClaimsOutput.model_validate(synthesis_report.output.reviewed_claims or claims_report.output)
     skeptic_output = TranscriptSkepticOutput.model_validate(skeptic_report.output)
-    portfolio_output = TranscriptPortfolioOutput.model_validate(portfolio_report.output)
+    portfolio_output = TranscriptPortfolioOutput.model_validate(synthesis_report.output.reviewed_portfolio or portfolio_report.output)
     synthesis_output = YouTubeFleetSynthesisOutput.model_validate(synthesis_report.output)
     routed_recommendations: tuple[Any, ...] = ()
-    if save and synthesis_output.ticker_recommendations:
-        from sqlalchemy.orm import sessionmaker
-
-        from argosy.services.ingest_recommendation_router import (
-            route_ingest_recommendations,
-        )
-        from argosy.state.db import create_sync_engine
-
-        url = str(get_settings().database_url).replace("+aiosqlite", "")
-        factory = sessionmaker(bind=create_sync_engine(url))
-
-        def _route_recommendations() -> tuple[Any, ...]:
-            with factory() as routing_session:
-                return route_ingest_recommendations(
-                    routing_session,
-                    user_id=user_id,
-                    source_kind="youtube",
-                    source_id=transcript.video_id,
-                    source_url=transcript.url,
-                    recommendations=[
-                        item.model_dump(mode="python")
-                        for item in synthesis_output.ticker_recommendations
-                    ],
-                )
-
-        routed_recommendations = await asyncio.to_thread(_route_recommendations)
     partial = YouTubeFleetResult(
         run_id=run_id,
         transcript=transcript,
@@ -226,6 +229,8 @@ async def analyze_youtube(
         synthesis=synthesis_output,
         agent_report_ids=tuple(report_ids),
         cost_usd=sum(float(report.cost_usd) for report in reports),
+        evidence_review=evidence_review,
+        assessed_at=datetime.now(UTC),
         routed_recommendations=routed_recommendations,
     )
     if not save:
@@ -238,21 +243,38 @@ async def analyze_youtube(
             "json_path": json_path,
         }
     )
-    try:
-        from argosy.services.youtube_intelligence import persist_youtube_analysis
-
-        await asyncio.to_thread(
-            persist_youtube_analysis,
-            result_to_dict(completed),
-            user_id=user_id,
-        )
-    except Exception as exc:  # research result remains valid if indexing fails
-        _log.warning(
-            "youtube.intelligence_persist_failed",
-            video_id=transcript.video_id,
-            error=str(exc)[:300],
-        )
+    if on_completed is not None:
+        # Stage BEFORE any delivery, not after routing. Recovery replays both
+        # notes/clocks and legacy indexing idempotently without another fleet.
+        await on_completed({**result_to_dict(completed), "_youtube_delivery_pending": True})
+    routed = await asyncio.to_thread(deliver_youtube_result, result_to_dict(completed), user_id=user_id)
+    completed = YouTubeFleetResult(**{**completed.__dict__, "routed_recommendations": routed})
+    if on_completed is not None:
+        await on_completed(result_to_dict(completed))
     return completed
+
+
+def deliver_youtube_result(payload, *, user_id):
+    """Replayable delivery of an already-reviewed result, never another model run."""
+    from sqlalchemy.orm import sessionmaker
+    from argosy.services.ingest_recommendation_router import route_ingest_recommendations
+    from argosy.services.youtube_intelligence import persist_youtube_analysis
+    from argosy.state.db import create_sync_engine
+    video = payload["video"]
+    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    engine = create_sync_engine(url)
+    try:
+        with sessionmaker(bind=engine)() as session:
+            routed = route_ingest_recommendations(session, user_id=user_id, source_kind="youtube",
+                source_id=video["video_id"], source_url=video["url"],
+                assessment_id=payload.get("assessment_id") or payload["run_id"],
+                complete_assessment=True,
+                now=datetime.fromisoformat(payload["assessed_at"]) if payload.get("assessed_at") else None,
+                recommendations=payload.get("synthesis", {}).get("ticker_recommendations", []))
+        persist_youtube_analysis(payload, user_id=user_id)
+        return tuple(routed)
+    finally:
+        engine.dispose()
 
 
 async def _ensure_user(user_id: str) -> None:
@@ -416,6 +438,9 @@ def result_to_dict(result: YouTubeFleetResult) -> dict[str, Any]:
         "skeptic": result.skeptic.model_dump(mode="json"),
         "portfolio": result.portfolio.model_dump(mode="json"),
         "synthesis": result.synthesis.model_dump(mode="json"),
+        "evidence_review": result.evidence_review,
+        "assessment_id": result.run_id,
+        "assessed_at": result.assessed_at.isoformat() if result.assessed_at else None,
         "agent_report_ids": list(result.agent_report_ids),
         "cost_usd": result.cost_usd,
         "routed_recommendations": [

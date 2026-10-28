@@ -1,9 +1,10 @@
+import asyncio
 from datetime import UTC, datetime, time
 from types import SimpleNamespace
 
 import pytest
 
-from argosy.services.chat_advisor.contracts import OutboxEvent, Principal
+from argosy.services.chat_advisor.contracts import ChatAnswer, OutboxEvent, Principal
 from argosy.services.chat_advisor.conversation import ChatIntent, ConversationService, RouteDecision
 from argosy.services.chat_advisor.notification_policy import delivery_events
 from argosy.transport.discord_advisor.gateway import FakeGateway
@@ -46,6 +47,9 @@ async def test_daily_persists_dedup_restart_changes_and_next_day(monkeypatch, tm
         def current_events(self, principal):
             return self.events
 
+        async def daily_overview(self, principal, *, now):
+            return ChatAnswer("Nothing worth highlighting today. No new action recommended.", review_status="accepted")
+
     monkeypatch.setattr("argosy.transport.discord_advisor.worker.datetime", Clock)
     producer = Producer()
     gateway = FakeGateway()
@@ -63,8 +67,10 @@ async def test_daily_persists_dedup_restart_changes_and_next_day(monkeypatch, tm
     try:
         first = await worker()
         await first.pump_notifications()
+        await asyncio.gather(*first._daily_drafts.values())
+        await first.pump_notifications()
         assert len(gateway.sent) == 1
-        assert "unavailable" in gateway.sent[0]["text"]
+        assert "No new action" in gateway.sent[0]["text"]
         producer.events.append(OutboxEvent("b", "v2", "inbox.note", "Another change"))
         restarted = await worker()
         await restarted.pump_notifications()
@@ -78,6 +84,8 @@ async def test_daily_persists_dedup_restart_changes_and_next_day(monkeypatch, tm
         assert gateway.sent[-1]["text"] == "🔴 Risk alert"
         # Waking after several missed days emits today's overview only.
         now = datetime(2026, 9, 23, 10, tzinfo=UTC)
+        await restarted.pump_notifications()
+        await asyncio.gather(*restarted._daily_drafts.values())
         await restarted.pump_notifications()
         assert len(gateway.sent) == 3
         assert "23 Sep" in gateway.sent[-1]["text"]
@@ -99,9 +107,15 @@ async def test_social_reply_does_not_become_capability_dump():
 
 
 @pytest.mark.asyncio
-async def test_system_red_ignores_disabled_and_does_not_ping_each_retry():
-    view = SimpleNamespace(metadata=SimpleNamespace(name="youtube_subscriptions"), health="red",
+async def test_system_red_ignores_disabled_and_does_not_ping_each_retry(engine, monkeypatch):
+    view = SimpleNamespace(metadata=SimpleNamespace(name="youtube_subscriptions", long_running=False), health="red", currently_running_run_id=None,
                            last_run_error="Database busy", last_run_at=datetime.now(UTC))
+    row = SimpleNamespace(job_name="youtube_subscriptions", status="error", output_summary=None,
+                          error_message="authentication_error: please log in")
+    async def latest(*args, **kwargs):
+        return [row]
+    monkeypatch.setattr("argosy.services.decision_readiness.latest_job_runs", latest)
+    store = SimpleNamespace(household_user_id="ariel")
     class Registry:
         enabled = True
         success = datetime(2026, 9, 18, tzinfo=UTC)
@@ -116,15 +130,15 @@ async def test_system_red_ignores_disabled_and_does_not_ping_each_retry():
             return {names[0]: self.success}
 
     registry = Registry()
-    first = (await critical_job_events(registry, None))[0]
+    first = (await critical_job_events(registry, store))[0]
     view.last_run_error = "Next retry failed: sensitive SQL and parameters"
-    second = (await critical_job_events(registry, None))[0]
+    second = (await critical_job_events(registry, store))[0]
     assert first.material_version == second.material_version
     assert "SQL" not in second.body
     registry.success = datetime(2026, 9, 19, tzinfo=UTC)
-    assert (await critical_job_events(registry, None))[0].material_version != first.material_version
+    assert (await critical_job_events(registry, store))[0].material_version != first.material_version
     registry.enabled = False
-    assert await critical_job_events(registry, None) == []
+    assert await critical_job_events(registry, store) == []
 
 
 @pytest.mark.asyncio
@@ -135,8 +149,12 @@ async def test_background_failures_go_to_status_channel_and_risk_stays_in_chat(t
     cfg = _config()
     cfg = cfg.model_copy(update={"bindings": (cfg.bindings[0].model_copy(update={"status_channel_id": "4"}),)})
     class Producer:
+        version = "v1"
+        enabled = True
         def current_events(self, principal):
-            return [OutboxEvent("system:job-health", "v1", OPERATIONAL, "Background tasks need attention"),
+            if not self.enabled:
+                return []
+            return [OutboxEvent("system:job-health", self.version, OPERATIONAL, "Background tasks need attention " + self.version, user_action="Sign in to Claude again"),
                     OutboxEvent("risk", "v1", "alert.critical", "Portfolio risk requires action")]
     worker = DiscordAdvisorWorker(cfg, "test", gateway, session_factory=sessions,
         retrieval_factory=lambda _: object(), conversation_factory=_Conversation,
@@ -152,6 +170,95 @@ async def test_background_failures_go_to_status_channel_and_risk_stays_in_chat(t
         before = len(gateway.sent)
         await worker.pump_notifications()
         assert len(gateway.sent) == before
+        producer = worker.notification_producer
+        for version in ("v2", "v1"):
+            producer.version = version
+            await worker.pump_notifications()
+            assert len(gateway.sent) == before
+            assert version in gateway.edits[-1]["text"]
+            edits = len(gateway.edits)
+            await worker.pump_notifications()
+            assert len(gateway.edits) == edits
+        # An edit can reach Discord while its DB acknowledgement fails.
+        store = next(iter(worker._stores.values()))
+        original = store.mark_outbox_sent
+        async def fail_receipt(*args, **kwargs):
+            raise RuntimeError("receipt unavailable")
+        monkeypatch.setattr(store, "mark_outbox_sent", fail_receipt)
+        producer.version = "v2"
+        await worker.pump_notifications()
+        assert "v2" in gateway.edits[-1]["text"]
+        monkeypatch.setattr(store, "mark_outbox_sent", original)
+        producer.version = "v1"
+        await worker.pump_notifications()
+        assert "v1" in gateway.edits[-1]["text"]
+        assert len(gateway.sent) == before
+        # A suppressed quiet-hours revision must be deliverable if it recurs.
+        monkeypatch.setattr(worker, "in_quiet_hours", lambda: True)
+        producer.version = "v2"
+        await worker.pump_notifications()
+        producer.version = "v1"
+        await worker.pump_notifications()
+        monkeypatch.setattr(worker, "in_quiet_hours", lambda: False)
+        producer.version = "v2"
+        await worker.pump_notifications()
+        assert "v2" in gateway.edits[-1]["text"]
+        assert len(gateway.sent) == before
+        # Suppressed while retrying is not a successful recovery boundary.
+        class Registry:
+            async def list(self):
+                return [SimpleNamespace(currently_running_run_id=123,
+                                        metadata=SimpleNamespace(long_running=False))]
+        async def no_ops(*args): return []
+        monkeypatch.setattr("argosy.transport.discord_advisor.status_board.critical_job_events", no_ops)
+        worker.status_registry = Registry()
+        producer.enabled = False
+        await worker.pump_notifications()
+        assert (await store.latest_sent_outbox("system:job-health")) is not None
+        producer.enabled = True
+        await worker.pump_notifications()
+        assert len([m for m in gateway.sent if "Background tasks" in m["text"]]) == 1
+        worker.status_registry = None
+        before = len(gateway.sent)
+        producer.enabled = False
+        await worker.pump_notifications()
+        producer.enabled = True
+        await worker.pump_notifications()
+        assert len(gateway.sent) == before + 2  # Both resolved incidents may notify again.
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("prefix", ["", "**Argosy · 3 Oct**\n", "**Argosy · 03 Oct**\n**Argosy · 3 Oct**\n"])
+def test_delivery_owns_one_heading_without_removing_finding_dates(prefix):
+    event = OutboxEvent("overview:2026-10-03", "v1", "overview.daily", "**Argosy · 03 Oct**\nfallback")
+    answer = ChatAnswer(prefix + "1. Readout dated 2 Oct: still under review.", review_status="accepted")
+    rendered = DiscordAdvisorWorker._reviewed_daily_event(event, answer)
+    assert rendered.body.count("Argosy ·") == 1
+    assert "Readout dated 2 Oct" in rendered.body
+
+
+@pytest.mark.asyncio
+async def test_old_queued_generic_attention_push_is_suppressed_after_policy_change(tmp_path, monkeypatch):
+    from argosy.services.chat_advisor.notification_policy import OPERATIONAL
+    from argosy.state.chat_models import NotificationOutbox
+    engine, sessions = await _worker_db(tmp_path)
+    gateway = FakeGateway()
+    generic = OutboxEvent('system:job-health', 'old', OPERATIONAL, 'Background tasks need attention')
+    class Producer:
+        def current_events(self, principal): return [generic]
+    worker = DiscordAdvisorWorker(_config(), 'test', gateway, session_factory=sessions,
+        retrieval_factory=lambda _: object(), conversation_factory=_Conversation,
+        dispatcher_factory=_Dispatcher, notification_producer=Producer())
+    monkeypatch.setattr(worker, 'in_quiet_hours', lambda: True)
+    try:
+        await worker.initialize()
+        store = next(iter(worker._stores.values()))
+        queued = await store.enqueue_outbox(generic)
+        await worker.pump_notifications()
+        assert not gateway.sent
+        async with sessions() as session:
+            assert (await session.get(NotificationOutbox, queued.id)).status == 'suppressed'
     finally:
         await engine.dispose()
 
@@ -208,7 +315,7 @@ async def test_annual_current_evidence_preserves_real_urgency(tmp_path, monkeypa
     class Registry:
         async def list(self):
             return [view]
-    async def current(session, *, user_id):
+    async def current(session, *, user_id, **kwargs):
         assert user_id == "owner"
         return {"jobs": [{"name": "annual", "status": current_state}],
                 "knowledge": {"verified": 13, "total": 18, "outstanding": 5},

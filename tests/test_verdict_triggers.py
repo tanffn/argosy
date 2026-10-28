@@ -277,8 +277,8 @@ def test_failed_subject_does_not_abort_sweep(session):
 
     def flaky(*, user_id, subject, cited_new_facts, reason):
         if subject == "LLL":
-            raise RuntimeError("simulated fleet failure")
-        return {"ok": subject}
+            return {"status": "error", "blocked_reason": "simulated fleet failure"}
+        return {"status": "approved", "subject": subject}
 
     summary = sweep_and_fire(session, "ariel", now=NOW, decide_fn=flaky)
     session.commit()
@@ -298,8 +298,8 @@ def test_failed_subject_retries_next_sweep(session):
     def once_flaky(*, user_id, subject, cited_new_facts, reason):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("transient")
-        return {"ok": subject}
+            return {"status": "error", "blocked_reason": "transient"}
+        return {"status": "approved", "subject": subject}
 
     sweep_and_fire(session, "ariel", now=NOW, decide_fn=once_flaky)
     session.commit()
@@ -489,3 +489,102 @@ def test_session_construction_failure_is_caught(session):
     result = asyncio.run(loop.tick(now=lambda: NOW))
     assert isinstance(result, dict) and "error" in result
     assert "engine construction failed" in result["error"]
+
+
+def test_each_review_can_write_through_an_independent_connection(session):
+    """Real SQLite regression: both first AND later subjects can write while firing."""
+    from sqlalchemy import text
+    _write(session, "AAA", [{"kind": "dated_event", "date": "2026-01-01"}], 301)
+    _write(session, "BBB", [{"kind": "dated_event", "date": "2026-01-01"}], 302)
+    seen = []
+    def decide(**kwargs):
+        assert not session.in_transaction()
+        with session.get_bind().begin() as other:
+            other.execute(text("PRAGMA busy_timeout=250"))
+            other.execute(text("UPDATE users SET plan=plan WHERE id='ariel'"))
+            markers = other.execute(text("SELECT suggested_payload FROM action_proposals WHERE status='open'"))
+            assert any(json.loads(row[0]).get('state') == 'firing' for row in markers)
+        seen.append(kwargs['subject'])
+        return {"status": "approved"}
+    result = sweep_and_fire(session, "ariel", now=NOW, decide_fn=decide)
+    assert result['errors'] == [] and result['escalated'] == 2
+    assert seen == ['AAA', 'BBB']
+    # An outer caller rollback cannot erase successful completion markers.
+    session.rollback()
+    assert all(json.loads(m.suggested_payload)['state'] == 'fired' for m in _fired_markers(session))
+    assert sweep_and_fire(session, 'ariel', now=NOW, decide_fn=decide)['escalated'] == 0
+
+
+def test_interrupted_claim_is_durable_and_never_silently_completed(session):
+    _write(session, "CRASH", [{"kind": "dated_event", "date": "2026-01-01"}], 303)
+    def crash(**kwargs):
+        raise KeyboardInterrupt('process interrupted after claim')
+    with pytest.raises(KeyboardInterrupt):
+        sweep_and_fire(session, 'ariel', now=NOW, decide_fn=crash)
+    session.rollback()
+    second = _RecordingDecide()
+    result = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=second)
+    assert not second.calls
+    assert 'review_in_progress_or_interrupted' in result['errors'][0]
+    assert result['skipped_already_fired'] == 0
+
+
+@pytest.mark.parametrize('outcome', [None, {}, {'status': 'unknown'},
+                                    {'status': 'blocked'}, {'status': 'blocked', 'blocked_by': 'unknown'},
+                                    {'status': 'unknown', 'blocked_by': 'flow_error'},
+                                    {'blocked_by': 'analysts_error'}])
+def test_unknown_review_output_is_not_success(session, outcome):
+    _write(session, 'UNKNOWN', [{'kind': 'dated_event', 'date': '2026-01-01'}], 304)
+    result = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=lambda **kwargs: outcome)
+    assert 'review_outcome_uncertain' in result['errors'][0]
+    assert json.loads(_fired_markers(session)[0].suggested_payload)['state'] == 'firing'
+    second = _RecordingDecide()
+    again = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=second)
+    assert 'review_in_progress_or_interrupted' in again['errors'][0] and not second.calls
+
+
+def test_failure_carries_root_cause_and_releases_claim_durably(session):
+    _write(session, 'RETRY', [{'kind': 'dated_event', 'date': '2026-01-01'}], 305)
+    result = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=lambda **kwargs:
+        {'status': 'error', 'blocked_reason': 'database is locked'})
+    assert 'database is locked' in result['errors'][0]
+    session.rollback()
+    assert not _fired_markers(session)
+    assert sweep_and_fire(session, 'ariel', now=NOW, decide_fn=_RecordingDecide())['escalated'] == 1
+
+
+def test_exception_after_external_write_preserves_ambiguous_claim(session):
+    from sqlalchemy import text
+    _write(session, 'AMBIGUOUS', [{'kind': 'dated_event', 'date': '2026-01-01'}], 306)
+    def decide(**kwargs):
+        with session.get_bind().begin() as other:
+            other.execute(text("UPDATE users SET plan='pro' WHERE id='ariel'"))
+        raise RuntimeError('cleanup after committed result failed')
+    first = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=decide)
+    assert 'review_outcome_uncertain' in first['errors'][0]
+    assert json.loads(_fired_markers(session)[0].suggested_payload)['state'] == 'firing'
+    second = _RecordingDecide()
+    again = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=second)
+    assert again['errors'] and not second.calls
+
+
+@pytest.mark.parametrize('resolution', ['release', 'finalize'])
+def test_claim_resolution_failure_does_not_abandon_other_subjects(session, monkeypatch, resolution):
+    _write(session, 'AAA', [{'kind': 'dated_event', 'date': '2026-01-01'}], 307)
+    _write(session, 'BBB', [{'kind': 'dated_event', 'date': '2026-01-01'}], 308)
+    target = '_release_claim' if resolution == 'release' else '_finalize_claim'
+    original = getattr(vt, target)
+    def fail_first(*args):
+        row = args[-1]
+        if json.loads(row.suggested_payload)['subject'] == 'AAA':
+            raise RuntimeError('database unavailable during claim resolution')
+        return original(*args)
+    monkeypatch.setattr(vt, target, fail_first)
+    calls = []
+    def decide(**kwargs):
+        calls.append(kwargs['subject'])
+        return {'status': 'error' if resolution == 'release' and kwargs['subject'] == 'AAA' else 'approved'}
+    result = sweep_and_fire(session, 'ariel', now=NOW, decide_fn=decide)
+    assert calls == ['AAA', 'BBB']
+    assert result['escalated'] == 1 and len(result['errors']) == 1
+    assert f'claim_{resolution}_failed' in result['errors'][0]

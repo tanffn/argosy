@@ -203,9 +203,10 @@ async def _publish(*args, on_success=None, **kwargs):
 
 
 class PublicDocumentReader:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, receipts: list | None = None):
         self.root = root
         self.calls = 0
+        self.receipts = receipts
 
     async def read(self, arguments: dict) -> dict:
         # No await between testing and charging: concurrent SDK calls share this budget.
@@ -259,6 +260,8 @@ class PublicDocumentReader:
             receipt.pop("text", None)
             log.warning("public_document.receipt_failed", fetch_id=receipt["fetch_id"], error=str(exc))
             receipt.update(status="unavailable", error="Source receipt could not be saved; diagnostics retained locally")
+        if self.receipts is not None:
+            self.receipts.append(receipt.copy())
         return self._reply(receipt)
 
     @staticmethod
@@ -267,13 +270,13 @@ class PublicDocumentReader:
                 "is_error": receipt["status"] != "captured"}
 
 
-def create_document_server(user_id: str):
+def create_document_server(user_id: str, *, receipts: list | None = None):
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     from argosy.config import get_settings
 
     tenant = hashlib.sha256(user_id.encode()).hexdigest()
-    reader = PublicDocumentReader(get_settings().home / "data" / "research_source_captures" / tenant)
+    reader = PublicDocumentReader(get_settings().home / "data" / "research_source_captures" / tenant, receipts)
     read_tool = tool("read_document",
         "Read an already identified public primary document URL. Extracts PDF/HTML/text with "
         "saved URL/time/hash receipts. At most 3 calls; first20 PDF pages,20k characters. "

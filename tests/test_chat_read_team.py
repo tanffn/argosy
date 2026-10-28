@@ -123,19 +123,62 @@ async def test_wrong_referent_is_repaired_with_exact_record_and_second_draft():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("topic,filters", [("sources", {"provider": "youtube"}), ("reports", {"agent": "analyst"})])
+async def test_all_rejected_reads_reach_reviewer_for_bounded_general_repair(topic, filters):
+    reader = Reader()
+    answerer = Agent(GroundedAnswer(text="Verified records."))
+    repair = ReadRequest(topic=topic, filters={"kind": "youtube"} if topic == "sources" else {"role": "analyst"})
+    reviewer = Agent(review("revise", feedback="Correct unsupported selector", reads=[repair]), review())
+    instance, _ = service(reader, RouteDecision(intent="read", reads=[ReadRequest(topic=topic, filters=filters)]), answerer, reviewer)
+    result = await instance.answer(PRINCIPAL, "List the requested records", "repair")
+    assert result.text == "Verified records."
+    assert len(reader.calls) == len(answerer.inputs) == 1
+    assert len(reviewer.inputs) == 2
+    assert json.loads(reviewer.inputs[0]["receipts"])[0]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_no_evidence_cannot_be_accepted_as_success_and_repair_cannot_expand_authority():
+    reader = Reader()
+    answerer = Agent()
+    reviewer = Agent(review("revise", reads=[ReadRequest(topic="sources", filters={"user_id": "other"})]), review())
+    instance, _ = service(reader, RouteDecision(intent="read", reads=[ReadRequest(topic="sources", filters={"bad": "x"})]), answerer, reviewer)
+    result = await instance.answer(PRINCIPAL, "List subscriptions", "repair")
+    assert not reader.calls and not answerer.inputs
+    assert "can’t verify" in result.text
+
+
+def test_router_and_reviewer_share_executable_read_contract():
+    from argosy.services.chat_advisor.conversation import ConversationRouterAgent
+    from argosy.services.chat_advisor.read_team import read_contract
+    router = ConversationRouterAgent(user_id="owner").build_prompt(text="List sources", user_history="")
+    reviewer = AnswerCoverageAgent(user_id="owner").build_prompt(question="List sources", history="", hints="", payload="", receipts="", draft="", catalog="")
+    assert read_contract() in router[0] and read_contract() in reviewer[0]
+
+
+def test_author_and_reviewer_share_numbered_list_presentation():
+    from argosy.services.chat_advisor.read_team import LIST_PRESENTATION
+    author = GroundedAnswerAgent(user_id="owner").build_prompt(
+        question="List subscriptions", history="", topic="sources", payload="{}", warnings="", catalog="[]")
+    reviewer = AnswerCoverageAgent(user_id="owner").build_prompt(
+        question="List subscriptions", history="", hints="", payload="{}", receipts="[]", draft="", catalog="[]")
+    assert LIST_PRESENTATION in author[0] and LIST_PRESENTATION in reviewer[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failures", [
-    [review("revise"), review("revise")],
-    [RuntimeError("private exception"), RuntimeError("private exception")],
-    [{"verdict": "nonsense"}, {"verdict": "accept"}],
+    [review("revise"), review("revise"), review("revise")],
+    [RuntimeError("private exception"), RuntimeError("private exception"), RuntimeError("private exception")],
+    [{"verdict": "nonsense"}, {"verdict": "accept"}, {"verdict": "nonsense"}],
 ])
 async def test_failed_or_rejected_reviews_never_release_unchecked_draft(failures):
-    answerer = Agent(GroundedAnswer(text="UNCHECKED SECRET CLAIM"), GroundedAnswer(text="UNCHECKED SECOND CLAIM"))
+    answerer = Agent(*(GroundedAnswer(text="UNCHECKED CLAIM") for _ in range(3)))
     reviewer = Agent(*failures)
     instance, _ = service(Reader(), RouteDecision(intent="read", topic="sources"), answerer, reviewer)
     result = await instance.answer(PRINCIPAL, "What is saved?", "m")
     assert "UNCHECKED" not in result.text and "private exception" not in result.text
-    assert "second check" in result.text
-    assert len(reviewer.inputs) == 2 and len(answerer.inputs) <= 2
+    assert result.review_status == "failed"
+    assert len(reviewer.inputs) == 3 and len(answerer.inputs) <= 3
 
 
 @pytest.mark.asyncio
@@ -193,6 +236,14 @@ async def test_selector_authority_and_unsupported_current_only_selectors_reject(
 
 
 @pytest.mark.asyncio
+async def test_rejected_selector_keys_do_not_leak_private_model_text(caplog):
+    executor = ReadExecutor(Reader(), PRINCIPAL)
+    await executor.read(ReadRequest(topic="sources", filters={"token=veryprivatevalue": "x"}))
+    assert "veryprivatevalue" not in caplog.text
+    assert "unsupported_selector_count" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_global_read_cap_includes_failed_attempts_and_continuations():
     reader = Reader(lambda *_: ReadResult("actions", None, warnings=["unavailable"]))
     executor = ReadExecutor(reader, PRINCIPAL)
@@ -206,14 +257,14 @@ async def test_global_read_cap_includes_failed_attempts_and_continuations():
 @pytest.mark.asyncio
 async def test_six_initial_plus_two_repair_reads_is_bounded_real_conversation_path():
     reader = Reader()
-    answerer = Agent(GroundedAnswer(text="First"), GroundedAnswer(text="Second"))
+    answerer = Agent(GroundedAnswer(text="First"), GroundedAnswer(text="Second"), GroundedAnswer(text="Third"))
     reviewer = Agent(review("revise", reads=[typed("6"), typed("7")]),
-                     review("revise", reads=[typed("8"), typed("9")]))
+                     review("revise", reads=[typed("8"), typed("9")]), review("revise"))
     instance, _ = service(reader, RouteDecision(intent="read", reads=[typed(str(i)) for i in range(6)]), answerer, reviewer)
     result = await instance.answer(PRINCIPAL, "Explain all records", "m")
     assert len(reader.calls) == 8
     assert result.text not in ("First", "Second")
-    assert len(answerer.inputs) == len(reviewer.inputs) == 2
+    assert len(answerer.inputs) == len(reviewer.inputs) == 3
 
 
 @pytest.mark.asyncio
@@ -285,16 +336,18 @@ async def test_mixed_analysis_part_is_explicitly_deferred_and_source_cannot_disp
 
 
 @pytest.mark.asyncio
-async def test_zero_successful_reads_skip_answerer_and_reviewer():
+async def test_database_outage_gets_bounded_repair_without_drafting_facts():
     def unavailable(*args):
         raise OSError("database unavailable")
 
     reader = Reader(unavailable)
-    answerer, reviewer = Agent(), Agent()
+    answerer = Agent()
+    reviewer = Agent(review("revise", reads=[typed("76")]), review())
     instance, _ = service(reader, RouteDecision(intent="read", reads=[typed("76")]), answerer, reviewer)
     result = await instance.answer(PRINCIPAL, "Explain the missing item", "m")
     assert "read the requested records" in result.text
-    assert not answerer.inputs and not reviewer.inputs
+    assert not answerer.inputs and len(reviewer.inputs) == 2
+    assert len(reader.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -586,12 +639,24 @@ async def test_repair_continuation_exposes_omitted_tail_without_refetching_sourc
 
 @pytest.mark.asyncio
 async def test_accept_with_extra_reads_is_not_acceptance_of_unchecked_draft():
-    answerer = Agent(GroundedAnswer(text="UNCHECKED first"), GroundedAnswer(text="UNCHECKED second"))
-    reviewer = Agent(review("accept", reads=[typed("76")]), review("accept", reads=[typed("229")]))
+    answerer = Agent(*(GroundedAnswer(text="UNCHECKED") for _ in range(3)))
+    reviewer = Agent(*(review("accept", reads=[typed(str(i))]) for i in range(3)))
     instance, _ = service(Reader(), RouteDecision(intent="read", topic="sources"), answerer, reviewer)
     result = await instance.answer(PRINCIPAL, "What does the evidence show?", "m")
-    assert "UNCHECKED" not in result.text and "second check" in result.text
-    assert len(reviewer.inputs) == 2
+    assert "UNCHECKED" not in result.text and result.review_status == "failed"
+    assert len(reviewer.inputs) == 3
+
+
+@pytest.mark.asyncio
+async def test_second_review_findings_get_one_final_bounded_repair():
+    answerer = Agent(GroundedAnswer(text="First"), GroundedAnswer(text="Second"), GroundedAnswer(text="Grounded final"))
+    reviewer = Agent(review("revise", feedback="Attribute the dated estimate."),
+                     review("revise", feedback="Limit absence to the records checked."), review())
+    instance, _ = service(Reader(), RouteDecision(intent="read", topic="sources"), answerer, reviewer)
+    result = await instance.answer(PRINCIPAL, "Explain item 1", "m")
+    assert result.review_status == "accepted" and result.text == "Grounded final"
+    assert len(reviewer.inputs) == 3
+    assert "Limit absence" in answerer.inputs[2]["review_feedback"]
 
 
 def test_real_readonly_type_only_action_selector_filters_before_counts_and_paging(tmp_path, monkeypatch):

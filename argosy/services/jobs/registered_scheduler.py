@@ -89,14 +89,16 @@ class RegisteredScheduler(Scheduler):
         A shared managed-settings or DNS outage gets at most one recovery attempt
         per cooldown, not one per agent. Normal cron slots remain unchanged.
         """
-        from sqlalchemy import func, select
+        from sqlalchemy import func, or_, select
         from argosy.services.decision_readiness import (
-            MAX_SLOT_ATTEMPTS, RECOVERABLE_JOBS, RETRY_DELAY,
+            RECOVERABLE_JOBS, RETRY_DELAY,
             effective_status, latest_job_runs, legacy_failed_funnels, job_has_managed_settings_failure, utc,
             job_has_network_resolution_failure,
         )
         from argosy.state import db as db_mod
         from argosy.state.models import JobRun
+        from argosy.services.jobs.recovery_policy import recovery_window
+        from datetime import datetime
 
         try:
             await self._registry.recover_completions()
@@ -121,7 +123,7 @@ class RegisteredScheduler(Scheduler):
                 if name in self._inflight or self._stop.is_set():
                     continue
                 due = loop.schedule.prev_due_before(now)
-                if due is None or utc(row.started_at) < due:
+                if due is None or utc(row.finished_at or row.started_at) < due:
                     continue  # boot/wake catch-up or next cron owns missing slots
                 if now - utc(row.finished_at or row.started_at) < RETRY_DELAY:
                     continue
@@ -140,10 +142,14 @@ class RegisteredScheduler(Scheduler):
                         )).scalar_one()
                         attempts = (await session.execute(
                             select(func.count()).select_from(JobRun).where(
-                                JobRun.job_name == name, JobRun.started_at >= due,
+                                JobRun.job_name == name,
+                                or_(JobRun.started_at >= due, JobRun.finished_at >= due),
+                                JobRun.status != "skipped",
                             )
                         )).scalar_one()
-                    if latest.id != row.id or attempts >= MAX_SLOT_ATTEMPTS:
+                    recovery = recovery_window(row, attempts)
+                    if (latest.id != row.id or not recovery["eligible"]
+                            or now < datetime.fromisoformat(recovery["next_retry_at"])):
                         continue
                     await self.fire_once_already_locked(
                         # Recovery MUST acquire its durable attempt receipt.
@@ -292,13 +298,44 @@ class RegisteredScheduler(Scheduler):
             )
             if force:
                 raise
-            await self._run_tick_without_audit(loop)
+            # Only the log-first watchdog may operate without a durable
+            # receipt. Data/analysis jobs must not bypass recovery/cooldown
+            # checks merely because their audit INSERT encountered a lock.
+            if loop.name == "synthesis_stall_alert":
+                await self._run_tick_without_audit(loop)
             return
 
         try:
+            # Provider cooldowns are independent of attempt budgets/cron slots.
+            # Record a typed deferral instead of sending an early request on a
+            # new scheduled slot or an operator retry after a process restart.
+            from sqlalchemy import select
+            from argosy.state import db as db_mod
+            from argosy.state.models import JobRun
+            from argosy.services.jobs.recovery_policy import provider_deadline, ProviderCooldownError
+            from argosy.services.decision_readiness import utc
+
+            async with db_mod.get_session() as session:
+                previous_failures = (await session.execute(select(JobRun).where(
+                    JobRun.job_name == loop.name, JobRun.id < run_id,
+                    JobRun.status == "error",
+                    JobRun.output_summary.contains('"retry_after_seconds"'),
+                ))).scalars().all()
+            # A crash after opening a new receipt may leave a cancelled row
+            # on top. It cannot erase an older, still-active provider deadline.
+            deadlines = [d for row in previous_failures if (d := provider_deadline(row)) is not None]
+            deadline = max(deadlines, default=None)
+            if deadline is not None and utc(self.clock()) < deadline:
+                raise ProviderCooldownError((deadline - utc(self.clock())).total_seconds())
             tick_result = await loop.tick(now=self.clock)
         except Exception as exc:
             _log.exception("cadence.tick_failed", loop=loop.name)
+            from argosy.services.jobs.transport_failure import classify_transport_failure
+
+            failure = classify_transport_failure(exc)
+            error_summary = _safe_output_summary(loop)
+            if failure.code != "unclassified":
+                error_summary = {**(error_summary or {}), "failure": failure.to_dict()}
             # Step 3 (error) — close BEFORE step 4 (ordering invariant).
             # Spec A commit #7: even on the exception path we capture
             # `loop.last_output_summary` so multi-stage jobs (e.g.
@@ -310,7 +347,7 @@ class RegisteredScheduler(Scheduler):
                 run_id,
                 status="error",
                 error_message=str(exc),
-                output_summary=_safe_output_summary(loop),
+                output_summary=error_summary,
             )
             # Step 4 — parent's pointer write happens EVEN IF close
             # failed, so the matrix's "close fails, record_tick ok"

@@ -23,6 +23,9 @@ from argosy.state import db as db_mod
 from argosy.state.models import JobRun
 
 JOBS = {
+    "payslip_ingest": ("argosy.orchestrator.loops.payslip_ingest", "PayslipIngestLoop"),
+    "weekly_review": ("argosy.orchestrator.loops.weekly_review", "WeeklyReviewLoop"),
+    "verdict_trigger_sweep": ("argosy.orchestrator.loops.verdict_trigger_sweep", "VerdictTriggerSweepLoop"),
     "youtube_subscriptions": ("argosy.orchestrator.loops.youtube_subscriptions", "YouTubeSubscriptionsLoop"),
     "job_runs_retention": ("argosy.orchestrator.loops.job_runs_retention", "JobRunsRetentionLoop"),
     "knowledge_recheck": ("argosy.services.jobs.knowledge_recheck", "KnowledgeRecheckJob"),
@@ -39,6 +42,7 @@ JOBS = {
     "earnings_calendar_daily": ("argosy.services.jobs.earnings_calendar_daily", "EarningsCalendarDailyJob"),
     "sec_earnings_daily": ("argosy.services.jobs.sec_earnings_daily", "SecEarningsDailyJob"),
     "signal_streams_daily": ("argosy.orchestrator.loops.signal_streams_daily", "SignalStreamsDailyLoop"),
+    "backup": ("argosy.orchestrator.loops.backup", "BackupLoop"),
 }
 
 
@@ -64,7 +68,7 @@ async def main(name: str, *, retry_failed_research: bool = False, documents=()) 
         kwargs["documents"] = documents
     if retry_failed_research:
         kwargs["retry_failed_research"] = True
-    if name in ("watchlist", "annual"):
+    if name in ("watchlist", "annual", "backup", "weekly_review"):
         config = getattr(load_agent_settings("ariel").cadences, name)
         kwargs = {"schedule": LoopSchedule.from_config(config), "enabled": config.enabled}
     job = factory(**kwargs)

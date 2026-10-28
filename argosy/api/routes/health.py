@@ -36,14 +36,17 @@ async def discord_advisor_status(request: Request, user_id: str = "ariel") -> di
 
 
 @router.get("/health/decisions")
-async def decision_readiness(user_id: str = "ariel") -> dict:
+async def decision_readiness(request: Request, user_id: str = "ariel") -> dict:
     """Decision operations, separate from process/DB liveness. Never calls an LLM."""
-    from argosy.services.decision_readiness import collect_decision_readiness
+    from argosy.services.decision_readiness import collect_decision_readiness, runtime_job_health
     from argosy.state.db import get_session
 
     try:
+        registry = getattr(request.app.state, "job_registry", None)
+        live = runtime_job_health(await registry.list()) if registry is not None else None
         async with get_session() as session:
-            return await collect_decision_readiness(session, user_id=user_id)
+            return await collect_decision_readiness(session, user_id=user_id, runtime_health=live,
+                recovery_schedules=registry.recovery_schedules() if registry is not None else None)
     except Exception:
         from argosy.logging import get_logger
 
