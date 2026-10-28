@@ -578,8 +578,8 @@ class Scheduler:
         the client never asks).
 
         Scope guards:
-          * cron-driven loops only (``prev_due_before`` returns None
-            otherwise) — interval loops re-fire within one interval anyway;
+          * cron slots and overdue persisted interval anchors are eligible;
+            interval loops without a saved tick retain their normal first wait;
           * a loop that has NEVER ticked also catches up (a newly shipped
             daily job's first fire must not depend on the server being up
             at exactly its cron time);

@@ -102,8 +102,8 @@ class LoopSchedule:
         The boot-time missed-run catch-up compares this against
         ``cadence_state.last_tick_at``: a loop whose last tick predates its
         previous scheduled fire missed that fire (the server was down).
-        Cron-driven loops only — interval loops re-fire within one interval
-        of boot anyway, so "catch-up" would just double-fire them. Returns
+        Cron-driven schedules only. The scheduler separately derives interval
+        deadlines from their saved tick anchors across restart. Returns
         ``None`` for non-cron schedules or on a malformed cron string.
         Returned value is a tz-aware UTC datetime (same convention as
         :meth:`next_due_after`).
