@@ -56,15 +56,7 @@ export function TransactionsTable({
     return sortDir === "asc" ? " ▲" : " ▼";
   }
 
-  function SortTh({
-    colKey,
-    children,
-    align = "left",
-  }: {
-    colKey: TxSortKey;
-    children: ReactNode;
-    align?: "left" | "right";
-  }) {
+  function sortHeader(colKey: TxSortKey, children: ReactNode, align: "left" | "right" = "left") {
     const alignCls = align === "right" ? "text-right pl-2" : "text-left pr-2";
     if (!onSortChange) {
       return <th className={`${alignCls} py-2 px-2`}>{children}</th>;
@@ -166,12 +158,12 @@ export function TransactionsTable({
               />
             </th>
           )}
-          <SortTh colKey="date">Date</SortTh>
-          <SortTh colKey="merchant">Merchant</SortTh>
-          <SortTh colKey="category">Category</SortTh>
+          {sortHeader("date", "Date")}
+          {sortHeader("merchant", "Merchant")}
+          {sortHeader("category", "Category")}
           <th className="text-left py-2 px-2">Tags</th>
-          <SortTh colKey="source">Source</SortTh>
-          <SortTh colKey="amount" align="right">Amount</SortTh>
+          {sortHeader("source", "Source")}
+          {sortHeader("amount", "Amount", "right")}
         </tr>
       </thead>
       <tbody>

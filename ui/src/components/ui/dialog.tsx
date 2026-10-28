@@ -49,6 +49,10 @@ function Dialog({ open, onOpenChange, children }: DialogProps) {
 // DialogContent — renders as a modal overlay
 // ---------------------------------------------------------------------------
 
+const subscribeToMount = () => () => {};
+const clientMounted = () => true;
+const serverMounted = () => false;
+
 function DialogContent({
   className,
   children,
@@ -70,10 +74,7 @@ function DialogContent({
   // parent with `transform` (Card hover:-translate-y-px) becomes the
   // containing block and the panel sits mid-page — needing a scroll to
   // find. "Apply labels…" worked because that Dialog mounts outside Card.
-  const [mounted, setMounted] = React.useState(false);
-  React.useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = React.useSyncExternalStore(subscribeToMount, clientMounted, serverMounted);
 
   if (!open || !mounted) return null;
 
