@@ -1195,6 +1195,15 @@ DEEP_DECISION_VERDICT_SOURCE: str = "signal_stream:deep_decision_verdict"
 DISCOVERY_EVALUATION_SOURCE: str = "signal_stream:discovery_evaluation"
 
 
+def discovery_evaluation_identity(fleet, event_at, radar_fingerprint):
+    """One identity shared by direct writes and crash/backfill recovery."""
+    if fleet.get("quality_request_id"):
+        return "quality-review:" + fleet["quality_request_id"]
+    if fleet.get("decision_run_id"):
+        return "discovery-run:" + str(fleet["decision_run_id"])
+    return f"{event_at.isoformat()}|{radar_fingerprint}|{str(fleet.get('verdict') or '').upper()}"
+
+
 def write_discovery_evaluation_predictions(
     session: Session,
     user_id: str,
@@ -1204,13 +1213,16 @@ def write_discovery_evaluation_predictions(
     verdict: str,
     conviction: str,
     event_at: datetime,
-    entry_price: Decimal | float,
+    entry_price: Decimal | float | None,
     estimator_go: bool | None,
     estimator_conviction: str | None,
     estimation: str,
     thesis: str,
     radar_rank: int | None,
     radar_score: float | None,
+    entry_price_policy: str = "provided_observation",
+    mandate_version: str | None = None,
+    research_context: dict | None = None,
 ) -> tuple[Prediction, Prediction, Prediction]:
     """Put the actual discovery-fleet call on 30d/180d/365d clocks.
 
@@ -1223,7 +1235,11 @@ def write_discovery_evaluation_predictions(
     symbol = ticker.strip().upper()
     if not symbol:
         raise ValueError("discovery evaluation requires a ticker")
-    if entry_price is None or float(entry_price) <= 0:
+    if entry_price_policy not in {"provided_observation", "post_decision_bar"}:
+        raise ValueError("unsupported discovery entry-price policy")
+    if entry_price_policy == "post_decision_bar" and entry_price is not None:
+        raise ValueError("post-decision entry must be resolved by the evaluator, not a prior quote")
+    if entry_price_policy == "provided_observation" and (entry_price is None or float(entry_price) <= 0):
         raise ValueError("discovery evaluation requires a positive entry price")
     recommendation = (verdict or "").strip().upper()
     if recommendation not in {"BUY", "WATCH", "PASS"}:
@@ -1238,6 +1254,9 @@ def write_discovery_evaluation_predictions(
         "expectation": thesis,
         "radar_rank": radar_rank,
         "radar_score": radar_score,
+        "entry_price_policy": entry_price_policy,
+        "mandate_version": mandate_version,
+        "research_context": research_context or {},
     }
     rows: list[Prediction] = []
     for horizon in (30, 180, 365):
@@ -1386,6 +1405,7 @@ def write_deep_decision_verdict_prediction(
     stop_price: Decimal | float | None = None,
     revisit_triggers: list[dict[str, Any]] | None = None,
     timeframe_days: int | None = None,
+    recommendation_intent: str = "unknown",
 ) -> Prediction | None:
     """Emit one graded prediction for a settled deep-decision verdict (SEAM 2).
 
@@ -1413,6 +1433,8 @@ def write_deep_decision_verdict_prediction(
     """
     v = (verdict or "").strip().upper()
     direction = _VERDICT_TO_DIRECTION.get(v)
+    if v in {"HOLD", "WAIT"} and recommendation_intent == "do_not_initiate":
+        direction = "long"  # Observe missed upside; never invent a short position.
     if direction is None:
         return None
     ticker = (subject or "").strip().upper()
@@ -1445,6 +1467,8 @@ def write_deep_decision_verdict_prediction(
             "subject": ticker,
             "verdict": v,
             "kind": "deep_decision_verdict",
+            "recommendation_intent": recommendation_intent,
+            "scoring_action": "PASS" if v in {"HOLD", "WAIT"} and recommendation_intent == "do_not_initiate" else v,
         },
         message_id=deep_decision_verdict_message_id(verdict_id=verdict_id),
         ticker=ticker,
@@ -1477,11 +1501,13 @@ def write_deep_decision_verdict_predictions(
     if tactical is None:
         return ()
     verdict_id = kwargs.get("verdict_id")
+    intent = kwargs.get("recommendation_intent", "unknown")
     ref = _verdict_source_ref_for_horizon(
         verdict_id=verdict_id,
         ticker=str(tactical.ticker or ""),
         verdict=str(kwargs.get("verdict") or "").strip().upper(),
         horizon_days=180,
+        recommendation_intent=intent,
     )
     thesis = _insert_prediction(
         session,
@@ -1509,6 +1535,7 @@ def write_deep_decision_verdict_predictions(
             ticker=str(tactical.ticker or ""),
             verdict=str(kwargs.get("verdict") or "").strip().upper(),
             horizon_days=365,
+            recommendation_intent=intent,
         ),
         message_id=(
             f"{deep_decision_verdict_message_id(verdict_id=verdict_id)}|365d"
@@ -1526,7 +1553,8 @@ def write_deep_decision_verdict_predictions(
 
 
 def _verdict_source_ref_for_horizon(
-    *, verdict_id: int | str, ticker: str, verdict: str, horizon_days: int
+    *, verdict_id: int | str, ticker: str, verdict: str, horizon_days: int,
+    recommendation_intent: str = "unknown",
 ) -> dict[str, Any]:
     return {
         "verdict_id": verdict_id,
@@ -1534,6 +1562,8 @@ def _verdict_source_ref_for_horizon(
         "verdict": verdict,
         "kind": "deep_decision_verdict",
         "horizon_days": horizon_days,
+        "recommendation_intent": recommendation_intent,
+        "scoring_action": "PASS" if verdict in {"HOLD", "WAIT"} and recommendation_intent == "do_not_initiate" else verdict,
     }
 
 
@@ -1591,6 +1621,22 @@ def ensure_deep_verdict_prediction_horizons(
         ).scalar_one_or_none()
         entry_price = existing.entry_price if existing is not None else None
         stop_price = existing.stop_price if existing is not None else None
+        recommendation_intent = json.loads(existing.source_ref or "{}").get("recommendation_intent", "unknown") if existing else "unknown"
+        # Existing clocks are immutable. Never assign a different interpretation
+        # only to missing horizons of an already-recorded ambiguous HOLD.
+        if existing is None and row.source_decision_run_id:
+            from argosy.state.models import AgentReport
+            saved = session.scalar(select(AgentReport).where(
+                AgentReport.user_id == row.user_id,
+                AgentReport.decision_id == str(row.source_decision_run_id),
+                AgentReport.agent_role == "trader").order_by(AgentReport.id.desc()).limit(1))
+            if saved:
+                try:
+                    recommendation_intent = json.loads(saved.response_text).get("recommendation_intent", "unknown")
+                except (ValueError, TypeError, AttributeError):
+                    pass
+        if verdict in {"HOLD", "WAIT"} and recommendation_intent not in {"hold_owned", "do_not_initiate"}:
+            recommendation_intent = "unknown"
         write_deep_decision_verdict_predictions(
             session,
             row.user_id,
@@ -1601,6 +1647,7 @@ def ensure_deep_verdict_prediction_horizons(
             entry_price=entry_price,
             stop_price=stop_price,
             revisit_triggers=triggers if isinstance(triggers, list) else [],
+            recommendation_intent=recommendation_intent,
         )
         attempted += 1
     after = session.execute(
@@ -1675,9 +1722,10 @@ def ensure_discovery_evaluation_predictions(
         if verdict not in {"BUY", "WATCH", "PASS"}:
             continue
         fleet_at = _ensure_aware(scan.last_fleet_at)
+        post_decision_entry = fleet.get("entry_price_policy") == "post_decision_bar"
         candidates = radar_by_key.get((scan.user_id, scan.ticker.upper()), [])
         priced = [row for row in candidates if row.entry_price is not None]
-        if not priced:
+        if not priced and not post_decision_entry:
             skipped_no_price += 1
             continue
         nearest = min(
@@ -1685,31 +1733,31 @@ def ensure_discovery_evaluation_predictions(
             key=lambda row: abs(
                 (_ensure_aware(row.event_at) - fleet_at).total_seconds()
             ),
-        )
-        quote_distance = abs(_ensure_aware(nearest.event_at) - fleet_at)
-        if quote_distance > timedelta(days=3):
+        ) if priced else None
+        quote_distance = abs(_ensure_aware(nearest.event_at) - fleet_at) if nearest is not None else None
+        if not post_decision_entry and (quote_distance is None or quote_distance > timedelta(days=3)):
             skipped_no_price += 1
             continue
         expectation = str(fleet.get("thesis_md") or "").strip()
-        if len(expectation) > 2_000:
-            expectation = expectation[:1_997].rstrip() + "..."
         write_discovery_evaluation_predictions(
             session,
             scan.user_id,
-            event_key=(
-                f"{fleet_at.isoformat()}|{scan.radar_fingerprint}|{verdict}"
-            ),
+            event_key=discovery_evaluation_identity(fleet, fleet_at, scan.radar_fingerprint),
             ticker=scan.ticker,
             verdict=verdict,
             conviction=str(fleet.get("conviction") or ""),
             event_at=fleet_at,
-            entry_price=nearest.entry_price,
+            entry_price=None if post_decision_entry else nearest.entry_price,
+            entry_price_policy="post_decision_bar" if post_decision_entry else "provided_observation",
             estimator_go=estimator.get("go"),
             estimator_conviction=estimator.get("conviction"),
             estimation=str(estimator.get("one_line") or ""),
             thesis=expectation,
             radar_rank=scan.rank,
             radar_score=scan.last_score,
+            mandate_version=fleet.get("mandate_version"),
+            research_context={key: fleet[key] for key in ("research_contract", "evidence_contract", "decision_run_id", "report_id")
+                              if fleet.get(key) is not None},
         )
         eligible += 1
 
@@ -1739,6 +1787,7 @@ def emit_verdict_prediction_best_effort(
     revisit_triggers: list[dict[str, Any]] | None = None,
     timeframe_days: int | None = None,
     session_factory: Any = None,
+    recommendation_intent: str = "unknown",
 ) -> Prediction | None:
     """Fire-on-settle bridge wrapper (SEAM 2). Opens its OWN isolated session,
     emits one prediction deduped on ``verdict_id``, commits, swallows ALL
@@ -1775,6 +1824,7 @@ def emit_verdict_prediction_best_effort(
             stop_price=stop_price,
             revisit_triggers=revisit_triggers,
             timeframe_days=timeframe_days,
+            recommendation_intent=recommendation_intent,
         )
         session.commit()
         return rows[0] if rows else None

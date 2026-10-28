@@ -955,18 +955,24 @@ def _compute_backfilled_outcome(
         entry_bar: Bar | None = None
         entry_note = "entry from writer snapshot"
     else:
-        entry_candidates = [
-            b for b in bars if fetch_start <= b.bar_date <= event_date
-        ]
+        try:
+            post_decision = json.loads(prediction.source_ref or "{}").get("entry_price_policy") == "post_decision_bar"
+        except (ValueError, AttributeError):
+            post_decision = False
+        entry_candidates = ([b for b in bars if event_date < b.bar_date <= window_end]
+                            if post_decision else
+                            [b for b in bars if fetch_start <= b.bar_date <= event_date])
         if not entry_candidates:
             return Outcome(
                 kind="unparseable",
                 notes=(
-                    f"no entry bar for {prediction.ticker} at/before "
+                    f"no entry bar for {prediction.ticker} {'after' if post_decision else 'at/before'} "
                     f"{event_date} (lookback {fetch_start})"
                 ),
             )
-        entry_bar = entry_candidates[-1]
+        entry_bar = entry_candidates[0] if post_decision else entry_candidates[-1]
+        if post_decision and entry_bar.bar_date > event_date + timedelta(days=_ENTRY_BACKFILL_LOOKBACK_DAYS):
+            return Outcome(kind="unparseable", notes="no near post-decision entry bar; coverage gap")
         entry = entry_bar.close
         entry_note = (
             f"entry backfilled from close({entry_bar.bar_date.isoformat()})"
@@ -1182,12 +1188,15 @@ def run_reevaluation_batch(
     batch_size: int = 500,
     price_fetcher: PriceFetcher = default_price_fetcher,
     source: str | None = None,
+    commit_each: bool = False,
 ) -> ReevaluationSummary:
     """Entry-backfill re-evaluation over all eligible predictions.
 
     Runs after ordinary scoring in the daily loop and supports operator recovery.
     This batch recovers rows earlier attempts could not score. Caller owns the
     transaction (same contract as :func:`run_evaluator_batch`).
+    The scheduled loop explicitly opts into ``commit_each`` to persist each
+    attempt and release the writer lock before the next external price read.
     """
     summary = ReevaluationSummary()
     if now is None:
@@ -1204,18 +1213,23 @@ def run_reevaluation_batch(
     )
 
     for prediction in candidates:
-        # Persist fair rotation even for failures. Never mutate historical
-        # outcomes merely to schedule retries; the caller commits this state
-        # atomically with the batch. Unattempted and least-recently tried first.
-        state = session.get(PredictionRecoveryState, prediction.id)
-        if state is None:
-            session.add(PredictionRecoveryState(prediction_id=prediction.id, last_attempt_at=now))
-        else:
-            state.last_attempt_at = now
+        if commit_each:
+            session.commit()
+        prediction_id = prediction.id
+        if not commit_each:
+            # Preserve caller-owned SQLite transaction semantics: this write
+            # establishes the outer transaction before the scorer's SAVEPOINT.
+            state = session.get(PredictionRecoveryState, prediction_id)
+            if state is None:
+                session.add(PredictionRecoveryState(prediction_id=prediction_id, last_attempt_at=now))
+            else:
+                state.last_attempt_at = now
+        completed = False
         try:
             outcome = reevaluate_prediction(
                 session, prediction, price_fetcher=price_fetcher
             )
+            completed = True
         except EvaluatorAdapterError as exc:
             summary.adapter_errors += 1
             _log.warning(
@@ -1233,6 +1247,18 @@ def run_reevaluation_batch(
                 error_type=type(exc).__name__,
             )
             continue
+
+        finally:
+            # Persist rotation AFTER external reads, not before the first quote.
+            if commit_each:
+                if not completed:
+                    session.rollback()
+                state = session.get(PredictionRecoveryState, prediction_id)
+                if state is None:
+                    session.add(PredictionRecoveryState(prediction_id=prediction_id, last_attempt_at=now))
+                else:
+                    state.last_attempt_at = now
+                session.commit()
 
         summary.reevaluated += 1
         kind = outcome.outcome_kind
@@ -1271,6 +1297,7 @@ def run_evaluator_batch(
     now: datetime | None = None,
     batch_size: int = 200,
     price_fetcher: PriceFetcher = default_price_fetcher,
+    commit_each: bool = False,
 ) -> EvaluatorSummary:
     """Spec §3.1 — full batch: find due → score each → return summary.
 
@@ -1284,6 +1311,10 @@ def run_evaluator_batch(
     full batch so a mid-batch crash rolls back partial outcome rows
     (the surviving DUE rows will be re-picked on the next tick — the
     idempotency contract makes this safe).
+
+    ``commit_each=True`` is the scheduled-loop opt-in: commits existing pending
+    work before each item and checkpoints each successful outcome. It must not
+    be used inside a caller transaction that requires whole-batch rollback.
 
     Returns :class:`EvaluatorSummary` — converted to the
     ``output_summary`` dict at the loop's tick boundary.
@@ -1302,10 +1333,14 @@ def run_evaluator_batch(
     )
 
     for prediction in due:
+        if commit_each:
+            session.commit()
+        completed = False
         try:
             outcome = evaluate_prediction(
                 session, prediction, price_fetcher=price_fetcher
             )
+            completed = True
         except EvaluatorAdapterError as exc:
             summary.adapter_errors += 1
             _log.warning(
@@ -1326,6 +1361,13 @@ def run_evaluator_batch(
                 error_type=type(exc).__name__,
             )
             continue
+
+        finally:
+            if commit_each:
+                if not completed:
+                    session.rollback()
+                else:
+                    session.commit()
 
         # The cheap-path query in evaluate_prediction may have
         # returned an existing row — we still count it as "skipped"

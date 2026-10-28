@@ -328,6 +328,66 @@ def _adapter(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 3])
+@pytest.mark.parametrize("status", [429, 503, 403])
+async def test_global_source_failure_aborts_collection_and_queued_reads(engine, concurrency, status):
+    from argosy.services.jobs.transport_failure import classify_transport_failure
+
+    failure = _FakeResp(status=status)
+    failure.headers = {"Retry-After": "3600"}
+    http = _Http({
+        "company_tickers.json": _FakeResp(text=_TICKERS_JSON),
+        "form.20260709.idx": _FakeResp(text=_OFFICIAL_FORM_INDEX_2026_07_09),
+        "0001321655-26-000111": failure,
+        "0001321655-26-000112": _FakeResp(text="must not be requested"),
+    })
+    adapter = _adapter(http, max_concurrent_filing_fetches=concurrency)
+    with pytest.raises(sec.SecSourceUnavailable) as caught:
+        await adapter.get_form4_for_date_range(date(2026, 7, 9), date(2026, 7, 9), ttl_seconds=0)
+    assert classify_transport_failure(caught.value).http_status == status
+    assert sum(url.endswith(".txt") for url in http.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_retry_after_blocks_concurrent_source_requests():
+    moment = [100.0]
+    waits = []
+    both_waiting = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    async def sleep(delay):
+        if delay >= 20:
+            waits.append(delay)
+            if len(waits) >= 2:
+                both_waiting.set()
+            await release.wait()
+        moment[0] += delay
+        await asyncio.sleep(0)
+    class Http:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            response = _FakeResp(status=503 if len(calls) == 1 else 200)
+            response.headers = {"Retry-After": "20"}
+            return response
+    adapter = sec.SecForm4Adapter(http_client=Http(), sleep=sleep, clock=lambda: moment[0])
+    first = asyncio.create_task(adapter._request_with_retry("https://www.sec.gov/a"))
+    while not waits:
+        await asyncio.sleep(0)
+    second = asyncio.create_task(adapter._request_with_retry("https://www.sec.gov/b"))
+    try:
+        await asyncio.wait_for(both_waiting.wait(), timeout=2)
+        assert calls == ["https://www.sec.gov/a"]
+        release.set()
+        replies = await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
+        assert all(reply.status_code == 200 for reply in replies)
+    finally:
+        release.set()
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
 def test_parse_daily_form_index_extracts_form4_and_amendments_only() -> None:
     text = _daily_index(
         (

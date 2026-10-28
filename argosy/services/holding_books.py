@@ -881,6 +881,10 @@ def _reprice_position_dict(
     """Live-reprice one snapshot position dict; None on miss / unpriceable."""
     from argosy.services.snapshot_refresh import reprice_quantity
 
+    from argosy.services.israeli_fund_marks import is_israeli_fund, reprice_fund_position
+    if is_israeli_fund(pos):
+        return reprice_fund_position(pos, fx_usd_nis=fx_usd_nis, today=today)
+
     shares = pos.get("shares")
     try:
         sh = float(shares) if shares is not None else 0.0
@@ -994,7 +998,8 @@ def merge_total_book_positions(
         # Cash / unpriceable / shareless rows: cannot live-reprice. Keep the
         # quantity-shaped row but never pretend the mark is fresh.
         from argosy.services.snapshot_refresh import _PRICEABLE_SYMBOL_RE
-        priceable = bool(sym) and bool(_PRICEABLE_SYMBOL_RE.match(sym))
+        from argosy.services.israeli_fund_marks import is_israeli_fund
+        priceable = is_israeli_fund(pos) or (bool(sym) and bool(_PRICEABLE_SYMBOL_RE.match(sym)))
         shares_ok = False
         try:
             shares_ok = float(pos.get("shares") or 0) > 0
@@ -1061,6 +1066,8 @@ def merge_total_book_positions(
                 stripped["mark_stale"] = True
                 refreshed.append(stripped)
             continue
+        if priced.get("mark_stale"):
+            stale.append(f"{sym}@{_norm_location(_location_of(pos)) or 'unknown'}")
         refreshed.append(priced)
     stamped = refreshed
 

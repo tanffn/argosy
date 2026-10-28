@@ -302,7 +302,7 @@ def handle_xls_upload(
     # already committed by _add_part_with_race_recovery, so this is a standalone
     # upload-time write.
     closed_loop_lines = _write_through_resolved_snapshot(
-        db, user_id=user_id, tsv_path=target_path, commit=True,
+        db, user_id=user_id, tsv_path=target_path, commit=True, broker_positions=xls.positions,
     )
     if closed_loop_lines:
         synth_warnings = synth_warnings + closed_loop_lines
@@ -345,6 +345,7 @@ def handle_xls_upload(
 
 def _write_through_resolved_snapshot(
     db: Session, *, user_id: str, tsv_path: Path, commit: bool,
+    broker_positions=None,
 ) -> list[str]:
     """Persist the freshly-synthesized merged TSV into the DB snapshot store so
     GET /snapshot (DB-first) reflects the paired month immediately — instead of
@@ -371,6 +372,9 @@ def _write_through_resolved_snapshot(
         )
 
         snap = parse_portfolio_tsv(tsv_path)
+        if broker_positions is not None:
+            from argosy.services.israeli_fund_marks import enrich_from_broker
+            snap.positions = enrich_from_broker(snap.positions, broker_positions, source=str(tsv_path))
         row = write_through_if_changed(
             db, user_id=user_id, snapshot=snap, commit=commit,
         )
@@ -395,7 +399,8 @@ def _write_through_resolved_snapshot(
             "portfolio_snapshot.pair_write_through_failed",
             extra={"path": str(tsv_path), "error": str(exc)},
         )
-        return []
+        return ["SNAPSHOT_WRITE_THROUGH_FAILED — source file stored, but the portfolio "
+                f"was NOT updated: {type(exc).__name__}: {exc}"]
     if row is None:
         return []
     try:
@@ -535,7 +540,7 @@ def try_resolve_pending_on_osh_arrival(
     # hook runs mid-ingest and the caller (orchestrator/route) owns the commit,
     # so the snapshot row lands atomically with the part resolution.
     closed_loop_lines = _write_through_resolved_snapshot(
-        db, user_id=osh.user_id, tsv_path=target_path, commit=False,
+        db, user_id=osh.user_id, tsv_path=target_path, commit=False, broker_positions=xls.positions,
     )
     if closed_loop_lines:
         synth_warnings = synth_warnings + closed_loop_lines
@@ -1217,7 +1222,7 @@ def _xls_to_tsv_rows(
         # authoritative input — value is derived from the broker's own number.
         usd_value = p.usd_value(fx_usd_nis)
         usd_k = usd_value / 1000.0
-        if currency == "NIS":
+        if currency in ("NIS", "ILS"):
             value_local = usd_value * fx_usd_nis
         else:
             value_local = usd_value
@@ -1228,7 +1233,7 @@ def _xls_to_tsv_rows(
             asset_type,                                      # 3 Type (carried from prior)
             p.name_he or "",                                 # 4 Details
             symbol,                                          # 5 Symbol
-            f"{p.quantity:g}",                               # 6 Shares
+            f"{p.quantity:.15g}",                            # 6 Shares
             f"{p.last_price:g}",                             # 7 Current price
             f"{p.avg_buy_price:g}" if p.avg_buy_price else "",  # 8 Avg price
             f"{value_local:.2f}",                            # 9 Current Value (local)
@@ -1236,6 +1241,8 @@ def _xls_to_tsv_rows(
             f"{p.gain_pct:.4f}" if p.gain_pct is not None else "",  # 11 % Change
             "",                                              # 12 % Yearly (not in XLS)
         ]
+        from argosy.services.israeli_fund_marks import fund_tsv_cells
+        cells = fund_tsv_cells(cells, p, observed_as_of=xls.snapshot_date)
         out.append("\t".join(cells))
     return out
 
@@ -1491,17 +1498,19 @@ def _full_rewrite_from_snapshot(
         usd_k = usd_value / 1000.0
         # Mirror main splice path's currency-aware local-value (codex
         # zigzag (a) impl review #I8: previously hard-coded USD).
-        if currency == "NIS":
+        if currency in ("NIS", "ILS"):
             value_local = usd_value * fx_usd_nis
         else:
             value_local = usd_value
-        rows.append([
+        cells = [
             "", "Leumi", currency, asset_type, p.name_he or "", symbol,
-            f"{p.quantity:g}", f"{p.last_price:g}",
+            f"{p.quantity:.15g}", f"{p.last_price:g}",
             f"{p.avg_buy_price:g}" if p.avg_buy_price else "",
             f"{value_local:.2f}", f"{usd_k:.2f}",
             f"{p.gain_pct:.4f}" if p.gain_pct is not None else "", "",
-        ])
+        ]
+        from argosy.services.israeli_fund_marks import fund_tsv_cells
+        rows.append(fund_tsv_cells(cells, p, observed_as_of=xls.snapshot_date))
     # Real estate -- verbatim from prior_snapshot.
     if prior_snapshot.real_estate:
         rows.append([])
@@ -1542,14 +1551,14 @@ def _full_rewrite_from_snapshot(
 
 def _position_to_cells(p: Any) -> list[str]:
     """Convert a parsed PortfolioPosition back to TSV cells (best effort)."""
-    return [
+    cells = [
         p.review_status or "",
         p.location or "",
         p.currency or "",
         p.asset_type or "",
         p.details or "",
         p.symbol or "",
-        f"{p.shares:g}" if p.shares is not None else "",
+        f"{p.shares:.15g}" if p.shares is not None else "",
         f"{p.current_price:g}" if p.current_price is not None else "",
         f"{p.avg_price:g}" if p.avg_price is not None else "",
         f"{p.current_value_local:.2f}" if p.current_value_local is not None else "",
@@ -1557,6 +1566,14 @@ def _position_to_cells(p: Any) -> list[str]:
         f"{p.pct_change:.4f}" if p.pct_change is not None else "",
         f"{p.pct_yearly:.4f}" if p.pct_yearly is not None else "",
     ]
+    if getattr(p, "quote_market", None) == "TASE_FUND":
+        from argosy.ingest.tsv import position_metadata_cell
+        for idx, field in ((7, "current_price"), (8, "avg_price"),
+                           (9, "current_value_local"), (10, "usd_value_k")):
+            value = getattr(p, field)
+            cells[idx] = f"{value:.15g}" if value is not None else ""
+        cells.append(position_metadata_cell(p))
+    return cells
 
 
 # ---------------------------------------------------------------------------

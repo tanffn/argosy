@@ -17,8 +17,11 @@ explicit.
 
 Rules (fail-safe, never fabricate):
 
-* Cash rows, real-estate lines, pensions, and unpriceable rows (Israeli funds
-  without a feed — non-latin / multi-word symbols) carry their QUANTITIES and
+* Israeli mutual funds with a broker-verified security number use the dated
+  ILS NAV path, not Yahoo symbols. Quote identity, denomination, units and
+  age are checked; the publication date and evidence follow the mark.
+* Cash rows, real-estate lines, pensions, and rows without an identified feed
+  carry their QUANTITIES and
   local values unchanged, but ``usd_value_k`` is RE-DERIVED from
   ``current_value_local`` at the refreshed FX whenever the currency is
   convertible. ``usd_value_k`` is a derived projection, never source data —
@@ -64,8 +67,8 @@ from argosy.state.models import PortfolioSnapshotRow
 _log = get_logger("argosy.services.snapshot_refresh")
 
 # A symbol we can plausibly quote: single latin token (BRK/B, CNDX, O, QQQM).
-# Hebrew fund names, multi-word index names ("STOXX Europe 600"), '-' and ''
-# are unpriceable rows that carry over silently.
+# Names outside this pattern need a separate identified feed (Israeli funds
+# use security_id + quote_market). Never send a display name to Yahoo.
 _PRICEABLE_SYMBOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9./-]{0,9}$")
 
 # Exchange hint in the Details column ("(ISH NASDAQ100 $A) CNDX LN") → try that
@@ -498,6 +501,21 @@ def refresh_portfolio_snapshot(
     prior_as_of = old.snapshot_date
     for p in old.positions:
         label = (p.symbol or "").strip() or (p.details or p.asset_type or "?")[:24]
+        from argosy.services.israeli_fund_marks import is_israeli_fund, reprice_fund_position
+        if is_israeli_fund(p.model_dump()):
+            fund = reprice_fund_position(p.model_dump(), fx_usd_nis=fx_usd_nis, today=today)
+            if fund is not None:
+                new_positions.append(PortfolioPosition(**fund))
+                result.repriced.append(label)
+            else:
+                carried = _carry(p)
+                carried.valued_as_of = p.valued_as_of or prior_as_of
+                carried.observed_as_of = p.observed_as_of or prior_as_of
+                carried.mark_stale = True
+                new_positions.append(carried)
+                result.carried.append(label)
+                result.warnings.append(f"reprice_miss:{label}:israeli-fund-nav")
+            continue
         if _is_carry_only(p):
             carried = _carry(p)
             # Preserve prior mark date — do not launder a stale mark into today.

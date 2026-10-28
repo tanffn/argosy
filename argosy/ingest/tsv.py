@@ -124,6 +124,15 @@ class PortfolioPosition(BaseModel):
     valued_as_of: date | None = None
     carried_forward: bool | None = None
     mark_stale: bool | None = None
+    # Listing identity and quote evidence survive JSON snapshot round-trips.
+    security_id: str | None = None
+    identity_source: str | None = None
+    quote_market: str | None = None
+    broker_price: float | None = None
+    broker_avg_price: float | None = None
+    price_source: str | None = None
+    price_fetched_at: str | None = None
+    price_evidence_sha256: str | None = None
 
 
 class RealEstatePosition(BaseModel):
@@ -425,6 +434,15 @@ def _derive_symbol(details: str, raw_symbol: str) -> str:
     return (raw_symbol or "").strip()
 
 
+def position_metadata_cell(p: PortfolioPosition) -> str:
+    """Optional, versioned 14th TSV column; old 13-column files still work."""
+    import json
+    fields = ("security_id", "identity_source", "quote_market", "broker_price",
+              "broker_avg_price", "price_source", "price_fetched_at", "price_evidence_sha256",
+              "observed_as_of", "valued_as_of", "mark_stale", "carried_forward")
+    return "argosy_v1:" + json.dumps({k: getattr(p, k) for k in fields}, default=str, separators=(",", ":"))
+
+
 def _parse_position_row(row: list[str], *, line_no: int) -> PortfolioPosition | None:
     """Parse one row of the position table. Return None for non-positions."""
     # Defensive: ensure at least the canonical column count.
@@ -442,6 +460,15 @@ def _parse_position_row(row: list[str], *, line_no: int) -> PortfolioPosition | 
 
     # Real-estate "Aborad" row in the May 2026 TSV is intentionally part of
     # the position list; classify it as a position with asset_type=Real estate.
+    metadata = {}
+    if len(cells) > 13 and cells[13].startswith("argosy_v1:"):
+        import json
+        metadata = json.loads(cells[13][len("argosy_v1:"):])
+        allowed = {"security_id", "identity_source", "quote_market", "broker_price",
+                   "broker_avg_price", "price_source", "price_fetched_at", "price_evidence_sha256",
+                   "observed_as_of", "valued_as_of", "mark_stale", "carried_forward"}
+        if not isinstance(metadata, dict) or set(metadata) - allowed:
+            raise ValueError("Invalid Argosy position metadata")
     return PortfolioPosition(
         review_status=cells[COL_REVIEW],
         location=location,
@@ -457,6 +484,7 @@ def _parse_position_row(row: list[str], *, line_no: int) -> PortfolioPosition | 
         pct_change=_normalize_number(cells[COL_PCT_CHANGE]),
         pct_yearly=_normalize_number(cells[COL_PCT_YEAR]),
         raw_line=line_no,
+        **metadata,
     )
 
 

@@ -18,12 +18,14 @@ from argosy.services.current_recommendations import AUTONOMOUS_PROPOSAL_SOURCES
 from argosy.services.predictions.benchmark import (
     BENCHMARK_SYMBOL,
     BENCHMARK_VERSION,
+    SUPPORTED_BENCHMARK_VERSIONS,
+    benchmark_version_for_prediction,
 )
+from argosy.services.predictions.outcomes import authoritative_outcomes
 from argosy.services.predictions.proposal_clocks import (
     PROPOSAL_CLOCK_SOURCE,
     proposals_without_verdict,
 )
-from argosy.services.predictions.outcomes import authoritative_outcomes
 from argosy.services.predictions.writers import (
     DEEP_DECISION_VERDICT_SOURCE,
     DISCOVERY_EVALUATION_SOURCE,
@@ -309,7 +311,10 @@ def build_recommendation_scorecard(
     missing_radar_clocks = sorted(
         eligible_radar_tickers - clocked_radar_tickers
     )
+    research_predictions = list(session.scalars(select(Prediction).where(
+        Prediction.user_id == user_id, Prediction.source == "signal_stream:research_disposition")))
     scored_predictions = [
+            *research_predictions,
             *predictions,
             *surfaced_predictions,
             *radar_predictions,
@@ -325,14 +330,20 @@ def build_recommendation_scorecard(
             select(PredictionBenchmarkOutcome).where(
                 PredictionBenchmarkOutcome.prediction_outcome_id.in_(outcome_ids),
                 PredictionBenchmarkOutcome.benchmark_symbol == BENCHMARK_SYMBOL,
-                PredictionBenchmarkOutcome.benchmark_version == BENCHMARK_VERSION,
+                PredictionBenchmarkOutcome.benchmark_version.in_(SUPPORTED_BENCHMARK_VERSIONS),
             )
         ).scalars().all()
         if outcome_ids
         else []
     )
+    prediction_by_id = {int(row.id): row for row in scored_predictions}
+    desired_benchmark_by_outcome = {
+        int(outcome.id): benchmark_version_for_prediction(prediction_by_id[outcome.prediction_id])
+        for outcome in latest_outcome.values()
+    }
     benchmark_by_outcome_id = {
         int(row.prediction_outcome_id): row for row in benchmark_rows
+        if row.benchmark_version == desired_benchmark_by_outcome.get(int(row.prediction_outcome_id))
     }
 
     lines: list[dict[str, Any]] = []
@@ -362,6 +373,9 @@ def build_recommendation_scorecard(
             else None
         )
         kind = outcome.outcome_kind if outcome is not None else None
+        unknown_hold = verdict.verdict.upper() in {"HOLD", "WAIT"} and ref.get("recommendation_intent") not in {"hold_owned", "do_not_initiate"}
+        if unknown_hold:
+            benchmark = None
         pnl = (
             float(outcome.pnl_pct)
             if outcome is not None and outcome.pnl_pct is not None
@@ -383,7 +397,7 @@ def build_recommendation_scorecard(
                 "disposition": _lifecycle(proposal),
                 "proposal_status": proposal.status if proposal is not None else None,
                 "outcome_kind": kind,
-                "grade": _grade(kind),
+                "grade": "pending" if unknown_hold or ref.get("recommendation_intent") == "do_not_initiate" else _grade(kind),
                 "signed_pnl_pct": pnl * 100.0 if pnl is not None else None,
                 "ticker_move_pct": raw_move,
                 "evaluated_at": (
@@ -616,6 +630,7 @@ def build_recommendation_scorecard(
 
     self_evaluations: list[dict[str, Any]] = []
     self_eval_sources = [
+        *(('research_review', row) for row in research_predictions),
         *(('portfolio_verdict', row) for row in predictions),
         *(('trade_plan', row) for row in surfaced_predictions),
         *(('discovery', row) for row in discovery_predictions),
@@ -625,20 +640,20 @@ def build_recommendation_scorecard(
         ref = _json(prediction.source_ref)
         verdict = None
         recommendation = str(
-            ref.get("verdict") or ref.get("action") or ""
+            ref.get("scoring_action") or ref.get("verdict") or ref.get("action") or ""
         ).upper()
         conviction = ref.get("conviction")
         expectation = str(
             ref.get("expectation") or ref.get("estimation") or ""
         ).strip()
-        disposition = "recommendation_recorded"
+        disposition = "research_only_not_a_trade" if source_label == "research_review" else "recommendation_recorded"
         if source_label == "portfolio_verdict":
             try:
                 verdict = verdict_by_id.get(int(ref.get("verdict_id")))
             except (TypeError, ValueError):
                 verdict = None
             if verdict is not None:
-                recommendation = verdict.verdict.upper()
+                recommendation = str(ref.get("scoring_action") or verdict.verdict).upper()
                 conviction = verdict.conviction
                 expectation = verdict.reasoning_md or expectation
                 proposal = (
@@ -668,6 +683,11 @@ def build_recommendation_scorecard(
             recommendation=recommendation,
             outcome_kind=outcome_kind,
         )
+        unknown_hold = source_label == "portfolio_verdict" and recommendation in {"HOLD", "WAIT"} and ref.get("recommendation_intent") not in {"hold_owned", "do_not_initiate"}
+        if unknown_hold:
+            grade = "pending"
+            benchmark = None
+            disposition = "ownership_intent_not_recorded"
         signed_pnl = (
             float(outcome.pnl_pct) * 100.0
             if outcome is not None and outcome.pnl_pct is not None
@@ -754,7 +774,8 @@ def build_recommendation_scorecard(
                     if benchmark is not None
                     else "pending"
                 ),
-                "report": _self_eval_report(
+                "report": ("Price movement can be observed, but this older HOLD did not record whether "
+                           "the asset was owned. Correctness is unscorable; no win is credited.") if unknown_hold else _self_eval_report(
                     ticker=str(prediction.ticker or ""),
                     recommendation=recommendation or prediction.direction.upper(),
                     due_at=prediction.evaluation_due_at,
@@ -775,7 +796,7 @@ def build_recommendation_scorecard(
     benchmark_evaluations = [
         row
         for row in self_evaluations
-        if row["decision_excess_return_pct"] is not None
+        if row["decision_excess_return_pct"] is not None and row["source"] != "research_review"
     ]
     benchmark_beats = sum(
         row["benchmark_grade"] == "beat" for row in benchmark_evaluations
@@ -810,7 +831,11 @@ def build_recommendation_scorecard(
         if row.decision_run_id is not None
     }
     legacy_without_verdict = len(legacy_proposals)
+    from argosy.services.discovery_followthrough import queue_summary
+    from argosy.services.shadow_portfolio import report as whole_book_report
     return {
+        "whole_portfolio": whole_book_report(session, user_id),
+        "research_followthrough": queue_summary(session, user_id),
         "as_of": datetime.now(UTC).isoformat(),
         "history_scope": "all_saved_recommendations_including_retention_archives",
         "calibration_scope_note": (
@@ -822,9 +847,11 @@ def build_recommendation_scorecard(
         "benchmark": {
             "symbol": BENCHMARK_SYMBOL,
             "version": BENCHMARK_VERSION,
+            "supported_versions": list(SUPPORTED_BENCHMARK_VERSIONS),
             "basis": (
                 "Pre-tax decision alpha versus SPY adjusted EOD: previous close "
-                "before the recommendation through the outcome date."
+                "before legacy recommendations through the outcome date. New post-decision "
+                "discovery entries use SPY on the exact subject entry-bar date; unknown entries stay unscored."
             ),
             "compared": len(benchmark_evaluations),
             "beats": benchmark_beats,
@@ -853,9 +880,9 @@ def build_recommendation_scorecard(
         },
         "shadow_order_sheets": {
             "basis": (
-                "Notional-weighted BUY/ADD lines exactly as authored, whether or "
-                "not filled; pre-tax and before trading costs. SELL/TRIM funding "
-                "legs are reported separately, not treated as invested capital."
+                "Notional-weighted scored BUY/ADD lines, bought or not; excludes "
+                "unscored lines, cash, unchanged holdings and SELL/TRIM funding. "
+                "Before taxes and trading costs. This is not whole-portfolio performance."
             ),
             "evaluated": len(shadow_sheets),
             "beats": sum(row["grade"] == "beat" for row in shadow_sheets),

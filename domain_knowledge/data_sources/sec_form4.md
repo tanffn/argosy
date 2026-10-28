@@ -1,7 +1,7 @@
 ---
 topic: sec_form_4_insider_transactions
 jurisdiction: us
-last_verified: 2026-09-13
+last_verified: 2026-09-30
 next_refresh_due: 2027-05-02
 code_references:
   - argosy/adapters/data/sec_form4_adapter.py
@@ -38,19 +38,16 @@ sources:
     label: "Official 2025 CFR edition, section 240.16a-3(g): filing deadline and deemed execution; check subsequent amendments before current reliance"
   - url: https://www.sec.gov/files/33-11138-fact-sheet.pdf
     tier: 1
-    retrieved: 2026-09-13
+    retrieved: 2026-09-30
     label: "SEC final-rule fact sheet: Form 4/5 checkbox, gifts and compliance dates"
   - url: https://www.sec.gov/files/form4.pdf
-    retrieved: 2026-09-13
+    retrieved: 2026-09-30
     tier: 1
   - url: https://www.sec.gov/edgar/searchedgar/ownershipformcodes.html
-    retrieved: 2026-09-12
-    tier: 1
-  - url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4
-    retrieved: 2026-09-13
+    retrieved: 2026-09-30
     tier: 1
   - url: https://www.investor.gov/introduction-investing/investing-basics/glossary/forms-3-4-and-5
-    retrieved: 2026-09-12
+    retrieved: 2026-09-30
     tier: 1
 ---
 
@@ -76,8 +73,8 @@ Each filing has a `<reportingOwner>` (the insider), an `<issuer>`
 
 ## Transaction codes (most common)
 
-- **P** — open-market or private *purchase*. Highest signal: the
-  insider chose to put their own cash into more stock.
+- **P** — open-market or private *purchase*. A candidate research input,
+  not an established ranking of predictive strength or expected returns.
 - **S** — open-market or private *sale*. Read with care; many sales
   are 10b5-1 plan-driven (scheduled and routine).
 - **A** — *grant/award* (RSU, stock award). Mechanical — not a
@@ -103,11 +100,13 @@ Each filing has a `<reportingOwner>` (the insider), an `<issuer>`
 3. **Check 10b5-1 evidence:** inspect the structured checkbox/adoption date
    and transaction-linked footnotes. The adapter parses `aff10b5One`; a
    document-level indicator does not automatically classify every transaction.
-4. **Mind the role.** A 10%-owner's trade has different implications
-   than an independent director's. Officers (esp. CEO/CFO) carry the
-   most informational weight.
-5. **Two-day filing rule.** Form 4 is much fresher than 13F (which
-   has a 45-day lag). For tactical signal, Form 4 wins.
+4. **Research hypothesis — role matters:** retain officer, director and
+   10%-owner roles as candidate features. This file supplies no calibrated
+   evidence that CEO/CFO trades carry greater predictive weight.
+5. **Filing delay is not investment performance.** Form 4 generally has a
+   two-business-day transaction reporting deadline; 13F has a different,
+   quarterly reporting basis. Shorter reporting delay alone does not prove
+   superior tactical returns.
 
 ## Cluster heuristics
 

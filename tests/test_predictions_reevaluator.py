@@ -86,6 +86,41 @@ def sync_session(tmp_path, monkeypatch) -> "tuple[Session, sessionmaker]":
 
 _INSERT_COUNTER = [0]
 
+
+def test_checkpointed_reevaluation_does_not_lock_database_during_quotes(sync_session):
+    import sqlite3
+    session, factory = sync_session
+    for ticker in ("AAA", "BBB"):
+        prediction = _insert_prediction(session, ticker=ticker, entry_price=None)
+        evaluate_prediction(session, prediction, price_fetcher=lambda *args: [])
+    session.commit()
+    calls = []
+    def fetch(ticker, start, end):
+        with sqlite3.connect(str(session.bind.url.database), timeout=0.1) as other:
+            other.execute("UPDATE users SET plan=plan WHERE id='ariel'")
+        calls.append(ticker)
+        return []
+    result = run_reevaluation_batch(session, now=datetime(2026, 9, 26, tzinfo=timezone.utc),
+                                    price_fetcher=fetch, commit_each=True)
+    assert result.adapter_errors == 0
+    assert sorted(calls) == ["AAA", "BBB"]
+
+
+def test_default_reevaluation_batch_remains_caller_rollback_atomic(sync_session):
+    session, factory = sync_session
+    prediction = _insert_prediction(session, entry_price=None)
+    evaluate_prediction(session, prediction, price_fetcher=lambda *args: [])
+    session.commit()
+    before = session.scalar(sa.select(sa.func.count()).select_from(PredictionOutcome))
+    session.rollback()  # deliberately clean session before SAVEPOINT path
+    result = run_reevaluation_batch(session,
+        now=datetime(2026, 9, 26, tzinfo=timezone.utc), price_fetcher=lambda *args: [])
+    assert result.reevaluated == 1
+    session.rollback()
+    with factory() as independent:
+        assert independent.scalar(sa.select(sa.func.count()).select_from(PredictionOutcome)) == before
+        assert independent.scalar(sa.text("select count(*) from prediction_recovery_state")) == 0
+
 _EVENT_AT = datetime(2026, 5, 1, 10, 0, 0, tzinfo=timezone.utc)
 
 

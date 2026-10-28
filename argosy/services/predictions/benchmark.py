@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger
@@ -34,6 +34,22 @@ _log = get_logger("argosy.services.predictions.benchmark")
 
 BENCHMARK_SYMBOL = "SPY"
 BENCHMARK_VERSION = "spy_adjusted_eod_previous_close_v1"
+POST_DECISION_BENCHMARK_VERSION = "spy_adjusted_eod_matched_post_decision_v1"
+SUPPORTED_BENCHMARK_VERSIONS = (BENCHMARK_VERSION, POST_DECISION_BENCHMARK_VERSION)
+
+
+def benchmark_version_for_prediction(prediction: Prediction) -> str:
+    return (POST_DECISION_BENCHMARK_VERSION
+            if _source_ref(prediction).get("entry_price_policy") == "post_decision_bar"
+            else BENCHMARK_VERSION)
+
+
+def benchmark_version_expression():
+    """Shared SQL contract for writers and allocation-feedback readers."""
+    return case(
+        (func.json_extract(Prediction.source_ref, "$.entry_price_policy") == "post_decision_bar",
+         POST_DECISION_BENCHMARK_VERSION), else_=BENCHMARK_VERSION,
+    )
 _AVOID_RECOMMENDATIONS = frozenset({"SELL", "TRIM", "WATCH", "PASS", "NO-GO", "NO_GO"})
 
 
@@ -65,7 +81,10 @@ def _source_ref(prediction: Prediction) -> dict[str, Any]:
 
 def _comparison_mode(prediction: Prediction) -> str:
     ref = _source_ref(prediction)
-    recommendation = str(ref.get("verdict") or ref.get("action") or "").upper()
+    recommendation = str(ref.get("scoring_action") or ref.get("verdict") or ref.get("action") or "").upper()
+    if ref.get("kind") == "deep_decision_verdict" and str(ref.get("verdict", "")).upper() in {"HOLD", "WAIT"}:
+        if ref.get("recommendation_intent", "unknown") not in {"hold_owned", "do_not_initiate"}:
+            return "unresolved_ownership"
     if prediction.direction == "short" or recommendation in _AVOID_RECOMMENDATIONS:
         return "avoid_vs_benchmark"
     return "own_vs_benchmark"
@@ -137,6 +156,7 @@ def ensure_prediction_benchmark_outcomes(
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
 
+    desired_version = benchmark_version_expression()
     comparison_exists = (
         select(PredictionBenchmarkOutcome.id)
         .where(
@@ -144,7 +164,8 @@ def ensure_prediction_benchmark_outcomes(
             == PredictionOutcome.id
         )
         .where(PredictionBenchmarkOutcome.benchmark_symbol == BENCHMARK_SYMBOL)
-        .where(PredictionBenchmarkOutcome.benchmark_version == BENCHMARK_VERSION)
+        .where(PredictionBenchmarkOutcome.benchmark_version == desired_version)
+        .correlate(PredictionOutcome, Prediction)
         .exists()
     )
     stmt = (
@@ -153,12 +174,18 @@ def ensure_prediction_benchmark_outcomes(
         .where(PredictionOutcome.pnl_pct.is_not(None))
         .where(Prediction.ticker.is_not(None))
         .where(~comparison_exists)
+        .where(or_(
+            func.coalesce(func.json_extract(Prediction.source_ref, "$.kind"), "") != "deep_decision_verdict",
+            func.coalesce(func.json_extract(Prediction.source_ref, "$.verdict"), "").not_in(["HOLD", "WAIT"]),
+            func.coalesce(func.json_extract(Prediction.source_ref, "$.recommendation_intent"), "unknown").in_(["hold_owned", "do_not_initiate"]),
+        ))
         .order_by(PredictionOutcome.evaluated_at.asc(), PredictionOutcome.id.asc())
         .limit(batch_size)
     )
     if user_id is not None:
         stmt = stmt.where(Prediction.user_id == user_id)
-    pending = list(session.execute(stmt).all())
+    pending = [(outcome, prediction) for outcome, prediction in session.execute(stmt)
+               if _comparison_mode(prediction) != "unresolved_ownership"]
     summary = BenchmarkSummary()
     if not pending:
         return summary
@@ -192,6 +219,17 @@ def ensure_prediction_benchmark_outcomes(
         entry_cutoff = prediction.event_at.date()
         exit_cutoff = outcome.exit_trigger_date or prediction.evaluation_due_at.date()
         entry_bar = _latest_bar_before(bars, entry_cutoff)
+        version = benchmark_version_for_prediction(prediction)
+        if version == POST_DECISION_BENCHMARK_VERSION:
+            try:
+                recorded_entry_date = date.fromisoformat(
+                    json.loads(outcome.evidence_json or "{}")["entry_bar"]["date"])
+                if recorded_entry_date <= entry_cutoff:
+                    raise ValueError("post-decision entry precedes decision")
+            except (KeyError, ValueError, TypeError):
+                summary.missing_price_data += 1
+                continue
+            entry_bar = next((bar for bar in bars if bar.bar_date == recorded_entry_date), None)
         exit_bar = _latest_bar_through(bars, exit_cutoff)
         if entry_bar is None or exit_bar is None or exit_bar.bar_date < entry_bar.bar_date:
             summary.missing_price_data += 1
@@ -209,7 +247,7 @@ def ensure_prediction_benchmark_outcomes(
             PredictionBenchmarkOutcome(
                 prediction_outcome_id=int(outcome.id),
                 benchmark_symbol=BENCHMARK_SYMBOL,
-                benchmark_version=BENCHMARK_VERSION,
+                benchmark_version=version,
                 comparison_mode=mode,
                 benchmark_start_date=entry_bar.bar_date,
                 benchmark_end_date=exit_bar.bar_date,
@@ -222,7 +260,11 @@ def ensure_prediction_benchmark_outcomes(
                     {
                         "proxy": "SPY",
                         "price_basis": "adjusted EOD from Yahoo Finance",
-                        "entry_convention": "last close strictly before recommendation date",
+                        "entry_convention": (
+                            "exact subject post-decision entry-bar date"
+                            if version == POST_DECISION_BENCHMARK_VERSION
+                            else "last close strictly before recommendation date"
+                        ),
                         "exit_convention": "last close through subject outcome exit date",
                         "pre_tax": True,
                     },
@@ -239,6 +281,10 @@ def ensure_prediction_benchmark_outcomes(
 __all__ = [
     "BENCHMARK_SYMBOL",
     "BENCHMARK_VERSION",
+    "POST_DECISION_BENCHMARK_VERSION",
+    "SUPPORTED_BENCHMARK_VERSIONS",
+    "benchmark_version_for_prediction",
+    "benchmark_version_expression",
     "BenchmarkSummary",
     "default_benchmark_price_fetcher",
     "ensure_prediction_benchmark_outcomes",

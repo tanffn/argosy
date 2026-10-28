@@ -81,6 +81,10 @@ MIN_REQUEST_INTERVAL_SECONDS = MIN_SEC_REQUEST_INTERVAL_SECONDS
 DEFAULT_MAX_CONCURRENT_FILING_FETCHES = 8
 MAX_CONCURRENT_FILING_FETCHES = 32
 
+
+class SecSourceUnavailable(MissingDataSourceError):
+    """Whole-source outage/access failure: never cache a partial collection."""
+
 # Codes per SEC Form 4 spec — ``transaction_code`` column. Most common:
 #   P = open-market or private purchase
 #   S = open-market or private sale
@@ -331,6 +335,8 @@ class SecForm4Adapter:
                         )
                         try:
                             submission = await self._fetch_text(filing_url)
+                        except SecSourceUnavailable:
+                            raise
                         except MissingDataSourceError as exc:
                             _log.warning(
                                 "sec_form4.filing_skip",
@@ -444,7 +450,9 @@ class SecForm4Adapter:
                         summary = day_summaries.get(filed_at)
                         if summary is not None:
                             summary["parsed"] = int(summary["parsed"]) + 1
-                    except Exception as exc:  # noqa: BLE001 - never abort the day
+                    except SecSourceUnavailable:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - isolate malformed filings
                         _log.warning(
                             "sec_form4.filing_skip",
                             accession=accession,
@@ -576,6 +584,8 @@ class SecForm4Adapter:
                 continue
             try:
                 xml_text = await self._fetch_form4_xml(cik=cik, accession=accession)
+            except SecSourceUnavailable:
+                raise
             except MissingDataSourceError as exc:
                 _log.warning(
                     "sec_form4.filing_skip", accession=accession, reason=str(exc)
@@ -682,13 +692,37 @@ class SecForm4Adapter:
     async def _request_with_retry(
         self, url: str, *, params: dict[str, str] | None = None
     ) -> Any:
-        """One retry with backoff on transient SEC HTTP 429/503."""
-        resp = await self._request(url, params=params)
-        status = getattr(resp, "status_code", 0)
-        if status in {429, 503}:
-            await self._sleep(1.0)
+        """Shared transport retries, preserving SEC pacing on every attempt."""
+        from urllib.error import HTTPError
+        from argosy.services.jobs.retry import retry_transient
+        from argosy.services.jobs.transport_failure import TRANSIENT_HTTP, classify_transport_failure, retry_after_seconds
+
+        async def read():
             resp = await self._request(url, params=params)
-        return resp
+            status = getattr(resp, "status_code", 0)
+            if status in TRANSIENT_HTTP or status in {401, 403}:
+                headers = getattr(resp, "headers", {})
+                error = HTTPError(url, status, "SEC temporarily unavailable", headers, None)
+                after = retry_after_seconds(headers.get("Retry-After"))
+                if after:
+                    # Establish source-wide pacing BEFORE the inline wait;
+                    # sibling workers must not keep sending during that wait.
+                    self._source_backoff = (self._clock() + after, error)
+                raise error
+            return resp
+
+        try:
+            return await retry_transient(read, attempts=2, jitter_min_s=1, jitter_max_s=1,
+                                         sleep=self._sleep, job_name="sec_form4")
+        except Exception as exc:
+            failure = classify_transport_failure(exc)
+            if not failure.retryable and failure.code != "authentication":
+                raise
+            # Stop queued sibling reads as well as this filing. Already-issued
+            # requests may finish; the collection cancels/drains its workers.
+            self._source_backoff = (self._clock() + max(30, failure.retry_after_seconds or 0), exc)
+            label = f"HTTP {failure.http_status}" if failure.http_status else failure.code
+            raise SecSourceUnavailable(f"SEC source unavailable ({label}); collection incomplete") from exc
 
     async def _request(
         self, url: str, *, params: dict[str, str] | None = None
@@ -699,6 +733,9 @@ class SecForm4Adapter:
                 sleep=self._sleep,
                 interval_seconds=self._request_interval_seconds,
             )
+            blocked = getattr(self, "_source_backoff", None)
+            if blocked is not None and self._clock() < blocked[0]:
+                raise SecSourceUnavailable("SEC source cooldown active; collection incomplete") from blocked[1]
             if self._http is None:
                 async with httpx.AsyncClient(
                     timeout=self._timeout, headers=_default_headers()

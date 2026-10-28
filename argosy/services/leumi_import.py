@@ -183,8 +183,8 @@ def build_leumi_positions(
     )
     rows: list = []
     for h in portfolio.holdings:
-        sym = h.symbol or TASE_SYMBOLS.get(h.security_id) or h.name.split()[0]
-        rows.append(PortfolioPosition(
+        sym = h.symbol or TASE_SYMBOLS.get(h.security_id) or h.security_id
+        position = PortfolioPosition(
             currency="USD",
             asset_type="ETF" if (h.symbol or "").upper() in _ETF_SYMBOLS
             or h.symbol is None else "Stock",
@@ -192,7 +192,14 @@ def build_leumi_positions(
             current_price=h.last_price, avg_price=h.avg_cost,
             current_value_local=h.value_usd,
             usd_value_k=h.value_usd / 1000.0, **stamp,
-        ))
+        )
+        if h.symbol is None:
+            from argosy.services.israeli_fund_marks import attach_fund_identity
+            position = PortfolioPosition(**attach_fund_identity(
+                position.model_dump(), security_id=h.security_id,
+                broker_price=h.last_price, broker_avg_price=h.avg_cost,
+            ))
+        rows.append(position)
     for b in balances:
         if b.currency == "NIS":
             usd_k = b.amount / usd_ils / 1000.0

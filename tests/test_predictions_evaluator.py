@@ -109,6 +109,26 @@ def sync_session(tmp_path, monkeypatch) -> "tuple[Session, sessionmaker]":
 _INSERT_COUNTER = [0]
 
 
+def test_checkpointed_evaluator_releases_writer_during_quotes(sync_session):
+    import sqlite3
+    session, factory = sync_session
+    for ticker in ("AAA", "BBB"):
+        _insert_prediction(session, ticker=ticker)
+    session.commit()
+    calls = []
+    def fetch(ticker, start, end):
+        # An independent real connection must be able to write while a price
+        # request is pending, including AFTER the first outcome was inserted.
+        with sqlite3.connect(str(session.bind.url.database), timeout=0.1) as other:
+            other.execute("UPDATE users SET plan=plan WHERE id='ariel'")
+        calls.append(ticker)
+        return []
+    result = run_evaluator_batch(session, now=datetime(2026, 9, 26, tzinfo=timezone.utc),
+                                 price_fetcher=fetch, commit_each=True)
+    assert result.adapter_errors == 0
+    assert sorted(calls) == ["AAA", "BBB"]
+
+
 def _insert_prediction(
     session: Session,
     *,
