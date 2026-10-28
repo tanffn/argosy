@@ -5742,3 +5742,4 @@ for _immutable_model in (
 # Register the independent research ledger with the shared migration metadata.
 from argosy.state import research_models as _research_models  # noqa: E402,F401
 from argosy.state import chat_models as _chat_models  # noqa: E402,F401
+from argosy.state import shadow_models as _shadow_models  # noqa: E402,F401

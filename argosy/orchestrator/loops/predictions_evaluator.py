@@ -18,9 +18,9 @@ Two-stage tick:
    flip ``archived=1`` on evaluated predictions older than the
    retention window.
 
-Both stages share one SQLAlchemy session + one transaction; a crash
-mid-stage rolls back the entire tick so the next-day run sees the
-exact same pre-tick state. The idempotency contracts on both stages
+The scheduled path commits clock repairs and checkpoints each outcome before
+the next external price read. A crash keeps completed work for safe resume,
+without holding SQLite's writer lock across network calls. Idempotency contracts
 (``(prediction_id, evaluation_method)`` UNIQUE for the evaluator;
 ``archived = 0 AND has_outcome`` predicate for retention) make
 re-running safe.
@@ -250,18 +250,23 @@ class PredictionsEvaluatorLoop(CadenceLoop):
             )
 
             alpha_clock_summary = repair_alpha_prediction_horizons(session)
+            from argosy.services.research_accountability import ensure_research_clocks
+            research_clock_summary = ensure_research_clocks(session)
             verdict_clock_summary = ensure_deep_verdict_prediction_horizons(session)
             proposal_clock_summary = ensure_proposal_prediction_horizons(session)
             order_sheet_clock_summary = ensure_surfaced_order_sheet_predictions(session)
             discovery_clock_summary = ensure_discovery_evaluation_predictions(session)
+            session.commit()
             ev_summary: EvaluatorSummary = run_evaluator_batch(
                 session,
+                commit_each=True,
                 now=now_dt,
                 batch_size=self._batch_size,
                 price_fetcher=self._price_fetcher,
             )
             reeval_summary: ReevaluationSummary = run_reevaluation_batch(
                 session,
+                commit_each=True,
                 now=now_dt,
                 price_fetcher=self._price_fetcher,
             )
@@ -296,6 +301,7 @@ class PredictionsEvaluatorLoop(CadenceLoop):
                 "benchmark": benchmark_summary.to_dict(),
             },
             "alpha_clock_repairs": alpha_clock_summary,
+            "research_clocks": research_clock_summary,
             "verdict_clocks": verdict_clock_summary,
             "proposal_clocks": proposal_clock_summary,
             "order_sheet_clocks": order_sheet_clock_summary,
@@ -339,7 +345,23 @@ class PredictionsEvaluatorLoop(CadenceLoop):
             summary = await asyncio.to_thread(
                 self._run_tick_sync, now_dt
             )
+        except Exception as exc:
+            # An unrelated forecast failure must not starve forward portfolio
+            # evidence. Preserve the original failure while the separate shadow
+            # step still gets its own checkpoint. Cancellation is not swallowed.
+            summary = {"stages": {"evaluator": {"status": "error", "error": str(exc)[:1000]}}}
+            raise
         finally:
+            # Separate session/checkpoint: market-data or shadow-ledger failures
+            # cannot roll back completed recommendation outcomes.
+            if summary is not None:
+                from argosy.services.shadow_daily import run_batch
+                try:
+                    summary["whole_portfolio"] = await asyncio.to_thread(
+                        run_batch, self._resolve_session_factory(), now=now_dt)
+                except Exception as exc:
+                    summary["whole_portfolio"] = {"status": "error", "error": str(exc)[:1000]}
+                summary.setdefault("stages", {})["whole_portfolio"] = summary["whole_portfolio"]
             if summary is not None:
                 self.last_output_summary = summary
 

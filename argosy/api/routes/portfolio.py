@@ -10,6 +10,7 @@ requests serve from the DB (idempotent — see
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -3236,6 +3237,8 @@ class DiscoveryDTO(BaseModel):
     sources: list[DiscoverySourceDTO]
     stages: DiscoveryStagesDTO
     candidates: list[DiscoveryCandidateDTO]
+    research_status: dict | None = None
+    opportunity_audit: dict | None = None
 
 
 _DISCOVERY_NOTE = (
@@ -3589,6 +3592,7 @@ def get_discovery(
             for p in picks
         ],
     )
+    audit = _discovery_audit(db, user_id)
     return DiscoveryDTO(
         picks=pick_dtos,
         estimated=[
@@ -3606,6 +3610,8 @@ def get_discovery(
         sources=sources,
         stages=stages,
         candidates=candidates,
+        opportunity_audit=audit,
+        research_status=audit["research_status"],
     )
 
 
@@ -3618,10 +3624,11 @@ async def refresh_discovery(
     """Run the discovery funnel (smart by default; ``force=true`` re-researches
     everything) and return the refreshed highlights."""
     from argosy.services.high_potential_funnel import run_funnel
+    from argosy.services.discovery_followthrough import DailyResearchBudget
 
-    result = await run_funnel(user_id, force=force)
-    sources, stages, candidates = _load_discovery_transparency(user_id)
-    pick_dtos = _attach_pick_provenance(
+    result = await run_funnel(user_id, force=force, research_budget=DailyResearchBudget(user_id))
+    sources, stages, candidates = await asyncio.to_thread(_load_discovery_transparency, user_id)
+    pick_dtos = await asyncio.to_thread(_attach_pick_provenance,
         db,
         user_id,
         [
@@ -3635,6 +3642,7 @@ async def refresh_discovery(
             for p in result.picks
         ],
     )
+    audit = await asyncio.to_thread(_discovery_audit, db, user_id)
     return DiscoveryDTO(
         picks=pick_dtos,
         estimated=[
@@ -3652,7 +3660,33 @@ async def refresh_discovery(
         sources=sources,
         stages=stages,
         candidates=candidates,
+        research_status={
+            "status": "incomplete" if result.research_failures else "completed",
+            "attempted": result.research_attempted,
+            "deferred": result.research_deferred,
+            "failures": result.research_failures,
+        },
+        opportunity_audit=audit,
     )
+
+
+def _discovery_audit(db: Session, user_id: str) -> dict:
+    from argosy.services.discovery_audit import build_discovery_audit
+
+    return build_discovery_audit(db, user_id=user_id)
+
+
+@router.get("/discovery/audit")
+def discovery_audit(
+    user_id: str = Query("ariel"),
+    horizon_days: int = Query(30, ge=30, le=365),
+    db: Session = Depends(get_db),
+) -> dict:
+    from argosy.services.discovery_audit import build_discovery_audit
+
+    if horizon_days not in (30, 180, 365):
+        raise HTTPException(status_code=422, detail="Use 30, 180 or 365 days")
+    return build_discovery_audit(db, user_id=user_id, horizon_days=horizon_days)
 
 
 @router.post("/rebalance-review")

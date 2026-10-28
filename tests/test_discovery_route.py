@@ -129,7 +129,7 @@ def test_get_discovery_reads_cached_state(monkeypatch):
 def test_post_refresh_runs_funnel(monkeypatch):
     import argosy.services.high_potential_funnel as hpf
 
-    async def fake_run(user_id, *, force=False, now=None):
+    async def fake_run(user_id, *, force=False, now=None, research_budget=None):
         return FunnelResult(
             picks=[FleetPick(ticker="NVDA", conviction="HIGH", thesis_md="x",
                              verdict="BUY", cites=())],
@@ -769,17 +769,45 @@ def test_discovery_funnel_loop_tick_runs_funnel(monkeypatch):
 
     called = {}
 
-    async def fake_run(user_id, *, force=False, now=None):
+    async def fake_run(user_id, *, force=False, now=None, research_budget=None, reviewed_tickers=()):
         called["user_id"] = user_id
         called["force"] = force
         return FunnelResult(picks=[FleetPick("PLTR", "HIGH", "t", "BUY", ())],
                             estimated=[], radar=[], last_refreshed_at="t")
     monkeypatch.setattr(dfl, "run_funnel", fake_run)
-    loop = dfl.DiscoveryFunnelLoop(user_id="ariel")
+    loop = dfl.DiscoveryFunnelLoop(user_id="ariel", quality_enabled=False)
     out = asyncio.run(loop.tick())
     assert called["user_id"] == "ariel"
     assert called["force"] is False           # daily refresh is SMART (not force)
     assert out["picks"] == 1
+
+
+def test_failed_research_maps_to_scheduler_failure_not_clean_zero_picks(monkeypatch):
+    import argosy.orchestrator.loops.discovery_funnel_loop as dfl
+    from argosy.services.jobs.summary_status import derive_run_status
+
+    async def fake_run(*args, **kwargs):
+        return FunnelResult(picks=[], estimated=[], radar=[], last_refreshed_at="t",
+                            research_attempted=1,
+                            research_failures=[{"ticker": "XYL", "reason": "No quorum"}])
+
+    monkeypatch.setattr(dfl, "run_funnel", fake_run)
+    result = asyncio.run(dfl.DiscoveryFunnelLoop(user_id="ariel", quality_enabled=False).tick())
+    assert result["research_failures"][0]["ticker"] == "XYL"
+    assert derive_run_status(result)[0] == "error"
+
+
+def test_completed_pass_reviews_are_a_healthy_no_buy_conclusion(monkeypatch):
+    import argosy.orchestrator.loops.discovery_funnel_loop as dfl
+    from argosy.services.jobs.summary_status import derive_run_status
+
+    async def fake_run(*args, **kwargs):
+        return FunnelResult(picks=[FleetPick("XYL", "LOW", "Not attractive", "PASS")],
+                            estimated=[], radar=[], last_refreshed_at="t", research_attempted=1)
+
+    monkeypatch.setattr(dfl, "run_funnel", fake_run)
+    result = asyncio.run(dfl.DiscoveryFunnelLoop(user_id="ariel", quality_enabled=False).tick())
+    assert derive_run_status(result)[0] == "ok"
 
 
 def test_discovery_funnel_loop_retries_transient_failure(monkeypatch):
@@ -787,7 +815,7 @@ def test_discovery_funnel_loop_retries_transient_failure(monkeypatch):
 
     attempts = []
 
-    async def fake_run(user_id, *, force=False, now=None):
+    async def fake_run(user_id, *, force=False, now=None, research_budget=None, reviewed_tickers=()):
         attempts.append((user_id, force))
         if len(attempts) == 1:
             raise RuntimeError("transient database lock")
@@ -800,7 +828,7 @@ def test_discovery_funnel_loop_retries_transient_failure(monkeypatch):
 
     monkeypatch.setattr(dfl, "run_funnel", fake_run)
     monkeypatch.setattr(dfl.asyncio, "sleep", no_sleep)
-    loop = dfl.DiscoveryFunnelLoop(user_id="ariel")
+    loop = dfl.DiscoveryFunnelLoop(user_id="ariel", quality_enabled=False)
 
     out = asyncio.run(loop.tick())
 

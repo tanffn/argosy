@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DiscoveryDTO } from "@/lib/api";
@@ -115,6 +115,33 @@ const DISCOVERY: DiscoveryDTO = {
 };
 
 describe("DiscoveryCard signal calibration", () => {
+  it("shows research failure separately from investment rejection and both audit tails", async () => {
+    const row = { ticker: "XYL", evaluated_decision_at: "2026-08-31", verdict: "PASS",
+      gross_return: .5, outcome_date: "2026-09-30", evaluation_method: "entry_backfilled",
+      rationale: "Original valuation objection", latest_buy_proposal: null };
+    portfolioDiscovery.mockResolvedValueOnce({ ...DISCOVERY,
+      research_status: { status: "incomplete", attempted: 1, deferred: 0,
+        failures: [{ ticker: "XYZ", reason: "No analyst quorum" }] },
+      opportunity_audit: {
+        horizon_days: 30, limitations: "Gross diagnostics, not portfolio returns.",
+        coverage: { unique_names: 3, fleet_reviewed: 2, radar_without_fleet_grade: 1,
+          scored: 2, unscored: 1, skipped_then_rose: 1, skipped_then_fell: 1 },
+        recent_research: [], rows: [{ ...row, ticker: "DROPPED", verdict: null,
+          evaluated_decision_at: null, gross_return: null, outcome_date: null }], missed_upside_examples: [row],
+        avoided_decline_examples: [{ ...row, ticker: "LOSS", gross_return: -.4 }],
+      },
+    });
+    render(<DiscoveryCard />);
+    await waitFor(() => expect(screen.getByText(/This is not a conclusion/)).toBeInTheDocument());
+    expect(screen.getByText(/3 names observed/)).toBeInTheDocument();
+    expect(screen.getByText(/1 subsequently rose, 1 fell/)).toBeInTheDocument();
+    expect(screen.getByText(/Gross diagnostics/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Backfilled entry/)).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText('Find a discovery audit ticker'), { target: { value: 'DROPPED' } });
+    expect(screen.getByText(/DROPPED · No fleet verdict/)).toBeInTheDocument();
+    expect(screen.getByText(/Outcome unavailable/)).toBeInTheDocument();
+  });
+
   it("shows beta sample counts, horizon details, and paused funnel voice", async () => {
     portfolioDiscovery.mockResolvedValueOnce(DISCOVERY);
 

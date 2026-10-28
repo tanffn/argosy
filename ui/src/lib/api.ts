@@ -572,6 +572,42 @@ export interface DiscoveryDTO {
   sources: DiscoverySourceDTO[];
   stages: DiscoveryStagesDTO;
   candidates: DiscoveryCandidateDTO[];
+  research_status?: {
+    status: string;
+    attempted: number;
+    deferred: number | null;
+    failures: { ticker: string; reason: string }[];
+  } | null;
+  opportunity_audit?: {
+    horizon_days: number;
+    limitations: string;
+    coverage: {
+      unique_names: number;
+      dated_names?: number;
+      tracked_without_clock?: number;
+      fleet_reviewed: number;
+      radar_without_fleet_grade: number;
+      scored: number;
+      unscored: number;
+      skipped_then_rose: number;
+      skipped_then_fell: number;
+    };
+    recent_research: { run_id: number; ticker: string; status: string; reason: string | null }[];
+    missed_upside_examples: DiscoveryAuditRow[];
+    avoided_decline_examples: DiscoveryAuditRow[];
+    rows: DiscoveryAuditRow[];
+  } | null;
+}
+
+export interface DiscoveryAuditRow {
+  ticker: string;
+  evaluated_decision_at: string | null;
+  verdict: string | null;
+  gross_return: number | null;
+  outcome_date: string | null;
+  evaluation_method: string | null;
+  rationale: string | null;
+  latest_buy_proposal: { id: number; status: string; created_at: string } | null;
 }
 
 // Speculative-position monitor (S18) — stop-loss / sell signals for the
@@ -2301,7 +2337,57 @@ export interface TradePlanLineDTO {
   } | null;
 }
 
+export interface WholePortfolioMarkDTO {
+  nav_usd: string | null;
+  covered_usd: string;
+  cash_usd: string;
+  return_pct: string | null;
+  after_tax_nav_usd: string | null;
+  missing: string[];
+  stale_marks: Array<{ component: string; as_of: string }>;
+  unknowns: string[];
+  fees_usd: string;
+  taxes_usd: string;
+  turnover_usd: string;
+}
+
+export interface WholePortfolioComparisonDTO {
+  version: string;
+  policy?: Record<string, string>;
+  status: string;
+  cohort_id?: string;
+  snapshot_id?: number;
+  activation_at?: string;
+  baseline_date?: string | null;
+  scheduled_baseline_date?: string;
+  recorded_liquid_usd?: string | null;
+  position_count?: number;
+  cash_accounts?: Array<{ account: string; currency: string; quantity: string | null }>;
+  excluded?: Array<{ name?: string; reason: string }>;
+  warnings?: unknown[];
+  latest?: {
+    date: string;
+    status: string;
+    baseline?: { missing: string[] };
+    books?: Record<"gross" | "net", Record<"unchanged" | "argosy" | "spy", WholePortfolioMarkDTO>>;
+  } | null;
+  applications?: Array<{ date: string; status: string; mode?: string; failures?: string[] }>;
+}
+
 export interface RecommendationScorecardDTO {
+  whole_portfolio?: WholePortfolioComparisonDTO;
+  research_followthrough?: Array<{
+    id: string;
+    ticker: string;
+    state: string;
+    question: string;
+    priority?: number;
+    due_at?: string;
+    error?: string;
+    completed_at?: string;
+    result?: { verdict: string; decision_run_id: number; thesis_md: string };
+    clock_ids?: number[];
+  }>;
   as_of: string;
   benchmark?: {
     symbol: string;
@@ -2348,7 +2434,7 @@ export interface RecommendationScorecardDTO {
     ticker: string;
     recommendation: string;
     conviction: string | null;
-    source: "portfolio_verdict" | "trade_plan" | "discovery" | "legacy_proposal";
+    source: "portfolio_verdict" | "trade_plan" | "discovery" | "legacy_proposal" | "research_review";
     recommended_at: string;
     horizon_days: number;
     evaluation_date: string;
@@ -4586,7 +4672,7 @@ export const api = {
     userId: string = "ariel",
   ): Promise<RecommendationScorecardDTO> =>
     getJSON<RecommendationScorecardDTO>(
-      `/api/decisions/recommendation-scorecard?user_id=${encodeURIComponent(userId)}`,
+      `/api/decisions/recommendation-scorecard?user_id=${encodeURIComponent(userId)}&recent_limit=200`,
     ),
   historicalReplay: (): Promise<HistoricalReplayDTO> =>
     getJSON<HistoricalReplayDTO>("/api/decisions/historical-replay"),

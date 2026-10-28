@@ -21,6 +21,7 @@ import {
   type RecommendationScorecardDTO,
 } from "@/lib/api";
 import { VerdictProvenanceStrip } from "@/components/verdict-provenance";
+import { WholePortfolioComparison } from "./whole-portfolio-comparison";
 
 function convictionTone(c: string): "success" | "secondary" | "outline" {
   if (c === "HIGH") return "success";
@@ -88,11 +89,20 @@ function SourceScorecardDetails({ source }: { source: DiscoverySourceDTO }) {
   );
 }
 
-function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO }) {
+export function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO }) {
+  const [evaluationQuery, setEvaluationQuery] = useState("");
+  const [evaluationStatus, setEvaluationStatus] = useState("all");
+  const [evaluationSource, setEvaluationSource] = useState("all");
+  const [evaluationLimit, setEvaluationLimit] = useState(36);
   const tactical = data.horizons["30d"];
   const thesis = data.horizons["180d"];
   const annual = data.horizons["365d"];
   const selfEvaluations = data.self_evaluations ?? [];
+  const filteredEvaluations = selfEvaluations.filter((row) =>
+    row.ticker.toLowerCase().includes(evaluationQuery.trim().toLowerCase()) &&
+    (evaluationStatus === "all" || row.status === evaluationStatus) &&
+    (evaluationSource === "all" || row.source === evaluationSource),
+  ).sort((a, b) => b.recommended_at.localeCompare(a.recommended_at) || a.horizon_days - b.horizon_days);
   const recent = data.recent.filter((row) => row.horizon_days === 180).slice(0, 8);
   const surfaced = (data.surfaced_order_sheets?.recent ?? [])
     .filter((row) => row.horizon_days === 180)
@@ -100,12 +110,40 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
   const surfacedThesis = data.surfaced_order_sheets?.horizons["180d"];
   const benchmark = data.benchmark;
   const shadow = data.shadow_order_sheets;
+  const followthrough = data.research_followthrough ?? [];
   return (
+    <>
+    {data.whole_portfolio && <WholePortfolioComparison data={data.whole_portfolio} />}
     <details className="rounded border border-border/60 px-3 py-2 text-xs">
       <summary className="cursor-pointer font-medium">
         Automatic self-evaluation vs S&amp;P 500 — recommendations bought or not
       </summary>
       <div className="mt-2 space-y-2 text-muted-foreground">
+        {followthrough.length > 0 && (
+          <details className="rounded border border-border/50 p-2">
+            <summary className="cursor-pointer font-medium text-foreground/80">
+              Automatic research follow-up: {followthrough.filter((row) => row.state !== "reviewed").length} open
+              {" · "}{followthrough.filter((row) => row.state === "reviewed").length} reviewed
+            </summary>
+            <p className="mt-1">Independent quality checks trigger fresh fleet research. These are not trade orders.</p>
+            <ul className="mt-1 space-y-1">
+              {followthrough.map((row) => (
+                <li key={row.id}>
+                  <details>
+                    <summary className="cursor-pointer">
+                      {row.ticker}: {row.result?.verdict ?? row.state}
+                      {row.error ? " — retry scheduled" : ""}
+                      {row.due_at && row.state !== "reviewed" ? ` · due ${new Date(row.due_at).toLocaleDateString()}` : ""}
+                    </summary>
+                    <div className="mt-1 whitespace-pre-wrap">{row.result?.thesis_md ?? row.question}</div>
+                    {row.result && <div>Fleet run {row.result.decision_run_id} · {row.clock_ids?.length ?? 0} outcome checkpoints</div>}
+                    {row.error && <div>{row.error}</div>}
+                  </details>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         {benchmark && (
           <div className="rounded border border-border/50 p-2">
             <div className="font-medium text-foreground/80">
@@ -120,7 +158,7 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
             <div className="text-[10px]">{benchmark.basis}</div>
             {shadow && shadow.evaluated > 0 && (
               <div className="mt-1 border-t border-border/40 pt-1">
-                Authored shadow allocations: {shadow.evaluated} evaluated · {shadow.beats} beat · {shadow.lags} lagged.
+                BUY/ADD-line diagnostics (not whole-portfolio returns): {shadow.evaluated} evaluated · {shadow.beats} beat · {shadow.lags} lagged.
                 {shadow.recent[0]
                   ? ` Latest: $${shadow.recent[0].allocated_usd.toLocaleString()} across ${shadow.recent[0].line_count} buys, ${shadow.recent[0].weighted_excess_return_pct >= 0 ? "+" : ""}${shadow.recent[0].weighted_excess_return_pct.toFixed(1)}pp vs SPY.`
                   : ""}
@@ -145,7 +183,7 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
         </div>
         {(data.coverage.unscorable_evaluations ?? 0) > 0 && (
           <div className="text-warning">
-            {data.coverage.unscorable_evaluations} historical evaluations lack usable price evidence. They are not counted as wins or losses; see the reports below.
+            {data.coverage.unscorable_evaluations} historical evaluations lack usable price or decision-intent evidence. They are not counted as wins or losses; see the reports below.
           </div>
         )}
         {data.coverage.legacy_proposals_without_verdict_link > 0 && (
@@ -177,6 +215,24 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
             <div className="mb-1 font-medium text-foreground/80">
               Automatic self-evaluation
             </div>
+            <div className="mb-2 text-[10px]">
+              Research-only WATCH/PASS rows track missed opportunities, not executed trades.
+              They are excluded from the headline S&amp;P 500 comparison.
+            </div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <input aria-label="Filter evaluations by ticker" placeholder="Find ticker" value={evaluationQuery}
+                onChange={(event) => setEvaluationQuery(event.target.value)} className="rounded border bg-background px-2 py-1" />
+              <select aria-label="Evaluation status" value={evaluationStatus} onChange={(event) => setEvaluationStatus(event.target.value)} className="rounded border bg-background p-1">
+                <option value="all">All statuses</option><option value="pending">Upcoming</option>
+                <option value="evaluated">Results</option><option value="unscorable">Missing evidence</option>
+              </select>
+              <select aria-label="Evaluation source" value={evaluationSource} onChange={(event) => setEvaluationSource(event.target.value)} className="rounded border bg-background p-1">
+                <option value="all">All assessments</option><option value="research_review">Research / passes</option>
+                <option value="portfolio_verdict">Portfolio verdicts</option><option value="trade_plan">Trade plans</option>
+                <option value="discovery">Discovery</option><option value="legacy_proposal">Older proposals</option>
+              </select>
+              <span>{filteredEvaluations.length} matching records in the recent history loaded</span>
+            </div>
             <table className="w-full min-w-[860px] text-left text-[11px]">
               <thead>
                 <tr>
@@ -188,7 +244,7 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
                 </tr>
               </thead>
               <tbody>
-                {selfEvaluations.slice(0, 36).map((row) => (
+                {filteredEvaluations.slice(0, evaluationLimit).map((row) => (
                   <tr key={row.prediction_id} className="align-top border-t border-border/30">
                     <td className="py-1 pr-3">
                       <div className="font-medium text-foreground">
@@ -225,6 +281,9 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
                 ))}
               </tbody>
             </table>
+            {filteredEvaluations.length > evaluationLimit && (
+              <Button size="sm" variant="outline" onClick={() => setEvaluationLimit(evaluationLimit + 36)}>Show more assessments</Button>
+            )}
           </div>
         )}
         {surfacedThesis && (
@@ -288,6 +347,7 @@ function RecommendationScorecard({ data }: { data: RecommendationScorecardDTO })
         )}
       </div>
     </details>
+    </>
   );
 }
 
@@ -518,6 +578,9 @@ export function DiscoveryCard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [auditQuery, setAuditQuery] = useState("");
+  const [auditAll, setAuditAll] = useState(false);
+  const [auditLimit, setAuditLimit] = useState(50);
 
   useEffect(() => {
     api
@@ -534,6 +597,9 @@ export function DiscoveryCard() {
       api.historicalReplay().then(setHistoricalReplay).catch(() => null);
     }
     const refreshRecommendations = () => {
+      // Persisted reads only: keep scheduled research/audit progress visible
+      // without launching another fleet or requiring a manual page reload.
+      api.portfolioDiscovery().then(setData).catch(() => null);
       if (typeof api.recommendationScorecard === "function") {
         api.recommendationScorecard("ariel").then(setRecommendations).catch(() => null);
       }
@@ -576,6 +642,12 @@ export function DiscoveryCard() {
   const otherCandidates = candidates.filter(
     (candidate) => !surfacedTickers.has(candidate.ticker),
   );
+  const opportunityAudit = data?.opportunity_audit;
+  const auditRows = opportunityAudit
+    ? (auditAll || auditQuery.trim()
+        ? opportunityAudit.rows.filter((row) => row.ticker.toLowerCase().includes(auditQuery.trim().toLowerCase()))
+        : [...opportunityAudit.missed_upside_examples, ...opportunityAudit.avoided_decline_examples])
+    : [];
   const flow = data
     ? [
         ["Tracked", data.stages.tracked],
@@ -650,6 +722,45 @@ export function DiscoveryCard() {
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
+        {data?.research_status?.status === "incomplete" && (
+          <div className="rounded border border-warning/40 p-2 text-xs text-warning">
+            Research incomplete — {data.research_status.failures.length} review(s) failed.
+            This is not a conclusion that there is nothing worth buying.
+            {data.research_status.failures.map((failure) => (
+              <div key={failure.ticker}>{failure.ticker}: {failure.reason}</div>
+            ))}
+          </div>
+        )}
+        {data?.opportunity_audit && (
+          <details className="rounded border border-border/60 p-2 text-xs">
+            <summary className="cursor-pointer font-medium">Opportunity audit — what we saw, skipped and missed</summary>
+            <div className="mt-2 space-y-2 text-muted-foreground">
+              <p>{data.opportunity_audit.coverage.dated_names ?? data.opportunity_audit.coverage.unique_names} names observed with dated clocks · {data.opportunity_audit.coverage.fleet_reviewed} fleet-reviewed · {data.opportunity_audit.coverage.radar_without_fleet_grade} without a saved fleet grade.</p>
+              {!!data.opportunity_audit.coverage.tracked_without_clock && <p className="text-warning">{data.opportunity_audit.coverage.tracked_without_clock} additional tracking records lack observation clocks; no historical return is inferred.</p>}
+              <p>First-decision {data.opportunity_audit.horizon_days}-day outcomes: {data.opportunity_audit.coverage.scored} scored · {data.opportunity_audit.coverage.unscored} unknown/pending. Skipped names: {data.opportunity_audit.coverage.skipped_then_rose} subsequently rose, {data.opportunity_audit.coverage.skipped_then_fell} fell.</p>
+              <p>{data.opportunity_audit.limitations}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <input aria-label="Find a discovery audit ticker" placeholder="Find ticker, including dropped names" value={auditQuery} onChange={(event) => { setAuditQuery(event.target.value); setAuditLimit(50); }} className="rounded border border-border bg-background px-2 py-1" />
+                <label><input type="checkbox" checked={auditAll} onChange={(event) => setAuditAll(event.target.checked)} /> Browse all tracked names</label>
+                <span>{Math.min(auditLimit, auditRows.length)} / {auditRows.length} rows</span>
+              </div>
+              {data.opportunity_audit.recent_research.filter((run) => run.status === "blocked").map((run) => (
+                <div key={run.run_id} className="text-warning">{run.ticker}: research failed — {run.reason ?? "No completed investment verdict"}</div>
+              ))}
+              <table className="w-full text-left text-[11px]">
+                <thead><tr><th>First decision</th><th>Outcome</th><th>Why / proposal history</th></tr></thead>
+                <tbody>{auditRows.slice(0, auditLimit).map((row) => (
+                  <tr key={`${row.ticker}-${row.evaluated_decision_at}`} className="border-t border-border/30 align-top">
+                    <td className="py-1 pr-2">{row.ticker} · {row.verdict ?? "No fleet verdict"}<br />{row.evaluated_decision_at ? new Date(row.evaluated_decision_at).toLocaleDateString() : "Unknown decision date"}</td>
+                    <td className="pr-2">{fmtPnl(row.gross_return)}<br />{row.outcome_date ?? "Not scored"}<br />{row.gross_return === null ? "Outcome unavailable" : row.evaluation_method?.includes("backfilled") ? "Backfilled entry" : "Observation entry, not a fill"}</td>
+                    <td><details><summary className="cursor-pointer">Show original rationale</summary>{row.rationale ?? "No saved rationale"}</details>{row.latest_buy_proposal ? `Latest buy proposal: ${plainStatus(row.latest_buy_proposal.status)} (${new Date(row.latest_buy_proposal.created_at).toLocaleDateString()})` : "No saved buy proposal"}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              {auditRows.length > auditLimit && <Button size="sm" variant="outline" onClick={() => setAuditLimit((limit) => limit + 50)}>Show more</Button>}
+            </div>
+          </details>
+        )}
         {recommendations && <RecommendationScorecard data={recommendations} />}
         {historicalReplay && <HistoricalReplay data={historicalReplay} />}
         {newsCoverage && <NewsCoverage data={newsCoverage} />}
