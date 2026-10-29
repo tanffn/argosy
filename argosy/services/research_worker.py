@@ -14,6 +14,10 @@ from argosy.services.research_catalog import complete_item, enqueue, research_se
 from argosy.state.research_models import ResearchItem, ResearchSource
 
 DAILY_FLEET_LIMIT = 3
+# Automatic subscriptions include English and Hebrew sources. YouTube still
+# exposes some Hebrew tracks under the legacy `iw` code. Explicit CLI language
+# requests retain their own priority and are not changed by this worker default.
+AUTOMATIC_TRANSCRIPT_LANGUAGES = ("en", "he", "iw")
 
 
 def reserved_slots(source):
@@ -367,6 +371,7 @@ async def _process_claim(claimed, *, user_id, analyzer):
         if kind == 'youtube':
             from argosy.services.youtube_analysis import analyze_youtube, result_to_dict
             payload = result_to_dict(await analyze_youtube(item.external_id, user_id=user_id,
+                                                         languages=AUTOMATIC_TRANSCRIPT_LANGUAGES,
                                                          save=True, on_completed=stage))
         else:
             payload = await analyzer(item, user_id=user_id)

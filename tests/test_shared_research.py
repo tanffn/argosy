@@ -15,6 +15,35 @@ from argosy.services.research_connectors import parse_feed, holdings_changes, va
 NOW = datetime(2026, 9, 13, 12, tzinfo=UTC)
 
 
+@pytest.mark.asyncio
+async def test_automatic_youtube_claim_accepts_hebrew_captions(store, monkeypatch):
+    from argosy.services import research_worker as worker, youtube_analysis
+
+    with store() as db:
+        source = upsert_source(db, user_id="a", name="Hebrew channel", kind="youtube", reference="channel")
+        item, _ = enqueue(db, source, external_id="6J5RhUK_6hs", title="Hebrew video",
+                          url="https://www.youtube.com/watch?v=6J5RhUK_6hs", body="", now=NOW)
+        db.commit()
+        item_id = item.id
+
+    calls = []
+    async def analyze(reference, **kwargs):
+        calls.append((reference, kwargs))
+        return {"assessment_id": "completed"}
+
+    delivered = []
+    monkeypatch.setattr(worker, "research_session", store)
+    monkeypatch.setattr(youtube_analysis, "analyze_youtube", analyze)
+    monkeypatch.setattr(youtube_analysis, "result_to_dict", lambda result: result)
+    monkeypatch.setattr(worker, "_finish", lambda *args, **kwargs: delivered.append((args, kwargs)))
+
+    assert await worker._process_claim((item_id, "youtube", "owner-token"), user_id="a", analyzer=None) is None
+    assert calls[0][0] == "6J5RhUK_6hs"
+    assert calls[0][1]["languages"] == ("en", "he", "iw")
+    assert calls[0][1]["user_id"] == "a"
+    assert delivered[0][1]["token"] == "owner-token"
+
+
 @pytest.fixture
 def store(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'research.db'}")

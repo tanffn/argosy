@@ -1,5 +1,13 @@
 # Argosy — living handover
 
+**2026-10-29 - Alpha/MichaStocks intake check (15:17 UTC / 17:17 Israel).**
+
+- Alpha source12 last capture is October28 (10 posts/16 images). October29 has not been attempted; daily capture is configured for 18:00 Asia/Jerusalem and was not due at inspection. Do not treat yesterday's receipt as today's coverage.
+- MichaStocks source13 was polled live at 15:13:33UTC. Today's video `Bc80R_WDlWI` (Google falls/Microsoft rises) is queued, not fleet-analyzed. Latest completed Micha video remains October4 `9sHfSjFCdDI`. Earlier automatic analysis requested English only despite Hebrew (`iw`) captions; `_MrKNVQ1br8` also failed while its livestream was unavailable. Archived selection/history rows are not completed reviews.
+- Automatic worker now accepts English/Hebrew/legacy `iw` caption codes; explicit CLI language priorities remain unchanged. Real CLI transcript retrieval succeeded for `6J5RhUK_6hs` (catalog254,199 segments) and today's `Bc80R_WDlWI` (catalog255,252 segments). Shared research21 + transcript/YouTube20 tests pass. This proves transcript retrieval, not fleet completion. Backend reload is pending while `news_daily`140866 runs; do not interrupt it or claim this code is deployed yet. No failures were cleared or old videos forced back into the automatic freshness window.
+- Latest snapshot228 is October28, but native cash custody observations are August22. Recorded cash USD135,148.62 is not verified current spending/investment capacity. Latest directive's funding USD0 must not be presented as zero household cash. NVDA is roughly53% of snapshot value. No trades, approvals or policy changes made.
+- Previous maintenance push was subsequently authorized and verified: `9685bbf3` matched origin/master with zero ahead/behind. The older October28 no-push text below describes its pre-authorization checkpoint. New intake edits require their own repository/deployment verification. A live knowledge job modified `domain_knowledge/brokers/gemelnet.md`; preserve it separately from this caption fix.
+
 **2026-10-28 - Maintenance complete: daily recoveries verified, accumulated work committed, final repository audit below.**
 
 - **Separate operational health from repository hygiene.** Initial API/UI online, scheduler running, 28 green / 2 amber / 11 red. HTTP 200 and October23 deployment receipts are not current daily health. No real trades, approvals, financial-policy changes, disabled-job enablement, cohort recreation or rebasing were performed by maintenance. Previously authorized owner mandate changes in the accumulated tree were preserved.
