@@ -127,10 +127,16 @@ def parse(path: Path) -> ParseResult:
     # and dies on KeyError: 'תאריך'. Observed 2026-08-22 on the EUR account
     # (4 transactions), but nothing about it is currency-specific — the USD
     # account breaks identically in any month with fewer than 9 movements.
-    candidates = [t for t in tables if col_date in [str(c) for c in t.columns]]
+    # The same export may also contain a provisional "today" table. It has
+    # date/debit/credit columns but lacks the posted ledger's extended
+    # description. Require the complete schema before choosing a table, even
+    # when provisional activity has more rows than posted history.
+    posted_columns = {col_date, col_desc, col_extdesc, col_ref,
+                      col_debit, col_credit, col_balance}
+    candidates = [t for t in tables if posted_columns.issubset({str(c) for c in t.columns})]
     if not candidates:
         raise ValueError(
-            f"{path}: no table carries a {col_date!r} column "
+            f"{path}: no table carries the complete posted-ledger columns "
             f"({len(tables)} tables found) — not a Leumi FX movements export"
         )
     tx_table = max(candidates, key=lambda t: t.shape[0])

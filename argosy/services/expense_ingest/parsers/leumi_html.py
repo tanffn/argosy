@@ -31,6 +31,8 @@ import enum
 import re
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 # Unicode formatting marks Leumi interleaves between Hebrew labels and
 # Latin digits — strip before any marker / account regex.
 _LEUMI_BIDI_MARKS_RE = re.compile(r"[‎‏‪-‮]")
@@ -72,15 +74,26 @@ def read_leumi_html(path: Path) -> str:
 
 
 def account_header_region(text: str) -> str:
-    """Slice from the first ``חשבון`` label through ``_HEADER_WINDOW``.
+    """Read visible header fields, excluding scripts and transaction rows.
 
-    Falls back to a leading slice only for tiny fixtures that lack the
-    label (unit-test stubs) — production exports always carry it.
+    Export chrome can place many kilobytes of JavaScript between the report
+    title and account descriptor. Bound visible text rather than HTML bytes;
+    stop at the first date-column label so transaction descriptions cannot
+    supply an account-view marker.
     """
-    idx = text.find("חשבון")
+    soup = BeautifulSoup(text, "html.parser")
+    for node in soup(["script", "style"]):
+        node.decompose()
+    fields = []
+    for field in soup.stripped_strings:
+        if field.strip() == "תאריך":
+            break
+        fields.append(field)
+    visible = " ".join(fields)
+    idx = visible.find("חשבון")
     if idx < 0:
-        return text[:_HEADER_WINDOW]
-    return text[idx : idx + _HEADER_WINDOW]
+        return visible[:_HEADER_WINDOW]
+    return visible[idx : idx + _HEADER_WINDOW]
 
 
 def classify_leumi_account_view(text: str) -> LeumiAccountView:
@@ -104,6 +117,12 @@ def classify_leumi_account_view(text: str) -> LeumiAccountView:
         return LeumiAccountView.CASH_USD
     if has_custody:
         return LeumiAccountView.CUSTODY
+    # New cash exports omit the old פמ"ח descriptor. Their summary explicitly
+    # labels the current-account balance. Require both a USD currency marker
+    # and a numeric balance; neither generic FX chrome nor row descriptions
+    # establish a cash ledger. Custody rejection above keeps precedence.
+    if has_dollar and re.search(r'יתרת\s+עו"ש\s*:\s*-?[\d,]+\.\d{2}', region):
+        return LeumiAccountView.CASH_USD
     if has_fx_chrome:
         # FX chrome without a positive cash/custody name → refuse.
         raise LeumiAmbiguousHeaderError(
