@@ -1,5 +1,9 @@
 # Argosy — living handover
 
+**2026-11-06 - Owner wants larger initial stock tranche; BRK is only a possible later funding idea.**
+
+- Owner asks why only15k and says more can be bought, potentially selling a more solid holding such asBRKlater. Codex economic discussion increases initial budget to **about25000:TSM15000+AVGO10000, about5000cash retained**, within the alreadyconfirmedabout30k designatedinvestmentcash and3-5yearhorizon. This is an owner-preference/staging adjustment, **not new valuation evidence or a newly reviewed fleet size**: prior stock reviewers13291/13292 reviewed17.5k, not this25k. AVGOremainsconditionalonstandingUSestate-exposurepolicy; no waiver, formaltradeapproval or planpromotion. Do not infer any fills from these discussions. KeepBRKfornow; no sale, leverage or presumed futureBRKproceeds fund this allocation. Any later rotation needs an independent after-tax portfolio comparison, not a rule to sell whatever held up. Receipt `runtime/stock-cash-discussion-20261106-sizing-update.json`. Reference delayedNov6quotesTSM372.93at15:58UTC/AVGO296.92at16:00UTC imply40TSM+33AVGOgross24715.56beforefees, not executable limits. Another40%declineon25k costs10k as an illustration, not a worst-case bound. No order, financial-policy change, cohort change or active-work interruption.
+
 **2026-11-06 - Owner corrects cash mandate to crashed individual stocks; asks where we disagree with YouTubers.**
 
 - **Supersedes the preceding CNDX cash recommendation:** owner says CNDX is too solid for this request and cannot be bought today; wants selected crashed stocks, explicitlyAVGO/TSMC/other. Do not argue venue access or recycle the ETF answer. About30kremaining/no more buys/3-5yearhorizon/compactpositions retained. This correction changes advisory scope, not a blanket US-situs waiver, trade authorization or household-policy amendment.
