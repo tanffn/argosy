@@ -1,5 +1,9 @@
 # Argosy — living handover
 
+**2026-11-06 - Owner reports TSM purchase done; exact broker fill details pending.**
+
+- After explicitly confirming today's recommendation was **onlyabout10000USDTSM**, owner says **done**. Record this as **owner-reported TSM purchase atLeumi**, observed16:32UTC/18:32Israel, not a broker-authenticated fill. Exact quantity, executionprice, fee, fillstatus and actualtrade timestamp are not supplied. An optional text question requests quantity/price/fee. **Do not infer26/27/40shares from earlier examples, book exactly10000spent, duplicate the recommendation, or fabricate a transaction/currentholding/cash debit.** No ledger/holdings mutation or shadow-accounting action was made without these fields. Approx20kremaining is a discussion estimate, not newly observed cash. No AVGO purchase or BRKsale confirmed; originalOctober30buys remain already imported. Update through the normal import/reconciliation path when actual fill evidence arrives, preserving the comparison cohort and evidence provenance.
+
 **2026-11-06 - Owner explicitly demands independent judgment; larger funded rotation is not supported.**
 
 - Owner challenges agreeableness and clarifies25k could be small if conviction justifies selling other holdings. **Codex withdraws the preceding25k allocation as its default recommendation.** Increasing17.5kto25kwas preference-driven with no new valuation evidence; it should have been labeled an aggressive sizing option, not a stronger research conclusion. Earlier stock-panel prompt imposed15-20kfirsttranche framing, so its agreement was not evidence of an optimal amount. Do not increase conviction or size merely to match owner enthusiasm; also do not reflexively oppose a purchase to appear independent.
