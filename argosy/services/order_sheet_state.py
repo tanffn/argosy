@@ -125,7 +125,7 @@ def load_portfolio_voices(
         out[symbol] = [
             VoiceVerdict(
                 source="coverage_missing",
-                verdict="HOLD",
+                verdict="WAIT",
                 as_of=now,
                 rationale="No current portfolio review/stance exists.",
                 decision_scope="prior_context",
@@ -148,13 +148,15 @@ def build_no_action_lines(
         voices = voices_by_symbol.get(symbol) or [
             VoiceVerdict(
                 source="coverage_missing",
-                verdict="HOLD",
+                verdict="WAIT",
                 as_of=datetime.now(UTC),
                 rationale="No current portfolio review/stance exists.",
             )
         ]
         verdicts = sorted({v.verdict for v in voices})
-        if verdicts == ["HOLD"]:
+        if any(voice.source == "coverage_missing" for voice in voices):
+            reason = "Waiting for portfolio review coverage before making a decision."
+        elif verdicts == ["HOLD"]:
             reason = "Prior portfolio context supports leaving the position unchanged."
         elif len(verdicts) > 1:
             reason = (

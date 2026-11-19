@@ -114,6 +114,11 @@ def test_missing_stance_is_not_minted_as_a_trusted_hold() -> None:
         observed_at=NOW,
     )
     assert voices["UNKNOWN"][0].source == "coverage_missing"
+    assert voices["UNKNOWN"][0].verdict == "WAIT"
+    line = build_no_action_lines(
+        holdings_usd={"UNKNOWN": 1_000}, acted_symbols=set(), voices_by_symbol=voices,
+    )[0]
+    assert "Waiting for portfolio review coverage" in line.reason
 
 
 def test_saved_review_reaches_sheet_without_portfolio_cache_refresh() -> None:

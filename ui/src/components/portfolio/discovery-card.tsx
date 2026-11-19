@@ -328,7 +328,9 @@ export function RecommendationScorecard({ data }: { data: RecommendationScorecar
         )}
         {data.radar_opportunities && (
           <div>
-            Radar opportunities at 6 months: {data.radar_opportunities.graded_180d}/{data.radar_opportunities.scheduled_180d} graded; {data.radar_opportunities.winners_180d} winners; {data.radar_opportunities.missed_winners_180d} were on radar but not recommended.
+            {data.radar_opportunities.graded_180d === 0
+              ? `Missed radar opportunities at six months are still unmeasured (${data.radar_opportunities.scheduled_180d} outcome checks scheduled).`
+              : `Six-month radar outcomes (${data.radar_opportunities.graded_180d}/${data.radar_opportunities.scheduled_180d} graded). ${data.radar_opportunities.winners_180d} winners, including ${data.radar_opportunities.missed_winners_180d} without a recommendation.`}
           </div>
         )}
         {data.coverage.eligible_radar_names !== undefined && (

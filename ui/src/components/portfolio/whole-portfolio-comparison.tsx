@@ -16,6 +16,7 @@ export function WholePortfolioComparison({ data }: { data: WholePortfolioCompari
   const names = { unchanged: "Keep recorded portfolio", argosy: "Follow Argosy (paper)", spy: "S&P 500 proxy (SPY)" };
   const latest = data.latest;
   const books = latest?.books;
+  const appliedSheets = data.applications?.filter((row) => row.mode === "gross" && row.status === "applied").length;
   return (
     <section className="rounded border border-border/60 p-3 text-xs" aria-label="Whole portfolio comparison">
       <h3 className="font-medium">Did Argosy improve the whole portfolio?</h3>
@@ -31,6 +32,9 @@ export function WholePortfolioComparison({ data }: { data: WholePortfolioCompari
             ? "Baseline awaiting complete price/FX evidence. Missing holdings have not been dropped."
             : `Waiting for the first completed market session after activation${data.scheduled_baseline_date ? ` (${data.scheduled_baseline_date})` : ""}. No gains or losses are claimed yet.`}</p>}
           {data.status === "partial" && <p className="mt-2">Comparison incomplete: some historical marks or recommendations could not be replayed. No whole-portfolio outperformance is claimed.</p>}
+          {books && appliedSheets === 0 && (
+            <p className="mt-2 font-medium">Zero Argosy order sheets applied in the paper comparison through {latest.date}.</p>
+          )}
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-left">
               <thead><tr><th className="py-1 pr-3">Path</th><th className="pr-3">Marked value</th><th className="pr-3">Gross return</th><th>After modeled tax/costs</th></tr></thead>

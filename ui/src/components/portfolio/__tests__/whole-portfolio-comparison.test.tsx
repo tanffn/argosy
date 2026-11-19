@@ -24,4 +24,11 @@ describe("whole-portfolio comparison", () => {
     expect(screen.getByText(/Unpriced baseline components: bank\|ABC/)).toBeTruthy();
     expect(screen.getAllByText("Unknown / pending evidence")).toHaveLength(3);
   });
+  it("shows when valuation exists but no paper orders were applied", () => {
+    render(<WholePortfolioComparison data={{
+      status: "collecting", version: "v1", latest: { date: "2026-11-18", status: "valued", books: { gross: {}, net: {} } },
+      applications: [{ date: "2026-11-18", status: "no_action" }],
+    } as unknown as WholePortfolioComparisonDTO} />);
+    expect(screen.getByText(/Zero Argosy order sheets applied.*2026-11-18/)).toBeTruthy();
+  });
 });
