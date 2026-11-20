@@ -1,5 +1,11 @@
 # Argosy — living handover
 
+**2026-11-20 — Owner prioritizes growth of the entire financial portfolio over two to three years.**
+
+- Use existing positions and potential rotations as the starting point for advice. On the guarded November 20 book, repricing 28 US-listed symbols with Yahoo Finance USD quotes at 15:46 ET gave an estimated $3.189m, including $1.334m direct NVDA (41.8%). Other positions retained their Argosy marks. Custody observations are older, and this estimate excludes physical property and pensions. The frozen October 26–November 18 comparison attributes about 91% of its loss to direct NVDA.
+- Plan 125's 13% direct NVDA ceiling implies a roughly $919k difference at those marks. The eight named high-potential stocks total about $10k in direct positions against a strategic 8% weight (about $255k). Other holdings, including AMD and SOFI, also carry growth risk. The plan assigns the eight names a five-to-ten-year horizon, distinct from the owner's nearer objective. The gap alone supplies no timing evidence.
+- Codex's research candidate for a funded rotation is existing TEM. Its within-sleeve weight implies about $30.6k total compared with $4.3k held. QQQM's 125 recorded shares would gross $31.5k at the checked mark, before tax and fees. A partial switch raises single-company risk and retains Nasdaq exposure through CNDX. Nu Holdings (NU) is a separate two-to-three-year growth candidate outside the named basket. Any NVDA sale still depends on current custody, trustee lot eligibility, employee restrictions and the plan's share cap. These are discussion scenarios.
+
 **2026-11-20 — Meet Kevin video retrieved. SGOV deployment discussed for a two-to-three-year horizon.**
 
 - The canonical YouTube retry saved English auto-captions for `dFOLw_CTRPY` in catalog **308**. YouTube oEmbed identifies Meet Kevin and the title *How to Hedge THE CRASH Before It's Too Late.* Codex reviewed the transcript. There is no `youtube_videos` analysis row for this video. At 04:25–07:32 he favors cash, low leverage and caution with expensive puts. At 23:35–23:55 he says he bought the dip with low starting equity exposure. At 01:14 and 12:52 he promotes his paid service. His own allocation and purchases are self-reported.
