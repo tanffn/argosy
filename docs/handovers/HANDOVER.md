@@ -1,6 +1,11 @@
 # Argosy — living handover
 
-**2026-11-20 — Monday research idea after the Leumi fills.**
+**2026-11-20 — Owner questions Brazil exposure and Friday after-hours execution.**
+
+- Superseding the earlier NU starter suggestion below, Codex favors keeping NU on the watchlist and checking post-election asset quality. About 120m of its 143m September customers and $38.6bn of $47.5bn in deposits were in Brazil. For a growth position with limited direct Brazil exposure, the alternative discussed was up to 300 ONON at $30, or $9,000 from confirmed available USD. On's FY25 total for the Americas outside the US capped Brazil at 6.3% of sales. Q3 sales grew 17.2% and direct-to-consumer sales grew 25%. Brand demand and discounting matter to that thesis. This was research, with no new owner-reported fill.
+- Leumi says eligible customers may enroll in US extended-hours trading. Actual enrollment and available buying power are unknown. At 16:04 ET ONON showed a $29.50 bid and $30.30 ask after a $29.97 regular close. Regular-session execution was preferred given that spread. [Leumi trading FAQ](https://www.leumi.co.il/he/investments) · [On quarterly results](https://investors.on-running.com/news/news-details/2026/On-Reports-Results-for-the-Third-Quarter-and-Nine-Month-Period-Ended-September-30-2026/default.aspx)
+
+**2026-11-20 — Earlier Monday NU research after the Leumi fills.**
 
 - For November 23, Codex favors a starter of up to 1,000 NU shares with an $11.50 regular-session day limit, conditional on available USD and weekend news. Maximum principal of $11,500 leaves $8,065.35 of the two Friday trades' gross cash increase before tax and fees. At roughly 0.36% of the working portfolio estimate, the position would add Latin American consumer-credit and currency exposure alongside the existing SOFI holding. NU is a proposed new position outside plan 125's listed eight. No owner fill has been reported for NU.
 - Nu reported $1.1bn Q3 profit, 32% ROE and rising 90-day delinquencies on interest-earning balances (11.6% to 12.1%). At about $0.80 trailing diluted EPS, the proposed ceiling is roughly 14.4 times earnings. Reassess further purchases against subsequent delinquency and risk-adjusted interest-margin data. [Issuer results](https://nu.com/en/newsroom/company/nu-holdings-ltd-reports-third-quarter-2026-financial-results)
