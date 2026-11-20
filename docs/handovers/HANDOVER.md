@@ -1,5 +1,11 @@
 # Argosy — living handover
 
+**2026-11-20 — Monday research idea after the Leumi fills.**
+
+- For November 23, Codex favors a starter of up to 1,000 NU shares with an $11.50 regular-session day limit, conditional on available USD and weekend news. Maximum principal of $11,500 leaves $8,065.35 of the two Friday trades' gross cash increase before tax and fees. At roughly 0.36% of the working portfolio estimate, the position would add Latin American consumer-credit and currency exposure alongside the existing SOFI holding. NU is a proposed new position outside plan 125's listed eight. No owner fill has been reported for NU.
+- Nu reported $1.1bn Q3 profit, 32% ROE and rising 90-day delinquencies on interest-earning balances (11.6% to 12.1%). At about $0.80 trailing diluted EPS, the proposed ceiling is roughly 14.4 times earnings. Reassess further purchases against subsequent delinquency and risk-adjusted interest-margin data. [Issuer results](https://nu.com/en/newsroom/company/nu-holdings-ltd-reports-third-quarter-2026-financial-results)
+- Five to ten years is the horizon in the stored strategic basket rationale discussed below. The SDD's “Time-aware opportunity mandate and research completeness” section and `MOONSHOT_MANDATE_VERSION` allow shorter-horizon opportunities without a fixed return multiple.
+
 **2026-11-20 — Owner confirmed full Leumi executions in QQQM and TEM.**
 
 - Leumi screenshot catalog **309**, original bytes SHA-256 `4c907263bdff99d2a071113081bdd2ac7ebfedc6ec6c79a754d815554f00887a`, independently checked after archiving. Actual fills were **sell 125 QQQM at $251.07** ($31,383.75 gross) and **buy 220 TEM at $53.72** ($11,818.40 gross). The two trades together raised **$19,565.35 before fees and tax**. Use actual executions for subsequent advice. The earlier 52-share sale and 240-share purchase were suggestions.
