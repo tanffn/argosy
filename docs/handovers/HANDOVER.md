@@ -1,5 +1,10 @@
 # Argosy — living handover
 
+**2026-11-20 — After-close Alpha capture and HouseHack purchase breakdown**
+
+- Registered Alpha capture job 168075 completed at 21:39 UTC. Catalog 310 contains ten visible posts, all unchanged, including the November 20 morning brief and an undated announcement of an intended $125k basket purchase. At posting the order had yet to be placed. The capture contains no subsequent fill for that announcement. Kevin separately reported more personally held LITE shares from previously sold puts in the November 19 recap.
+- The November 17 corporate disclosure says roughly $255k was allocated. Its two filled-order screenshots show 25 distinct purchases totaling $250,106.60. The six largest were AVGO $34,297.63, AMZN $26,213.96, LITE $22,412.26, SNDK $19,783.20, TSLA $17,347.64 and AXON $16,579.57, or 54.6% of the visible purchases. The source does not explain the difference from the approximate allocation. The screenshots are in `runtime/alpha_capture/alpha-aa782b17-1b14-4379-b50a-018511595f87_files/` as `ce948093.png`, `5fc1233c.png` and `1a9e67b8.png` (allocation disclosure).
+
 **2026-11-20 — Owner watchlist saved and two-year growth candidates reviewed**
 
 - The owner requested the SU and DFNS review levels. The normal ingest recommendation router saved open `set_watchlist` receipts **1662** for NYSE SU at or below US$60 and **1663** for London USD DFNS.L at or below US$48 (IE000YYE6WK5). Both require an intact earnings outlook. Verified receipts through the live actions API and both active symbols through the discovery API. Prices are review notes. The daily watchlist job last failed because the Claude login expired. Automatic crossing alerts are unavailable through this route.
