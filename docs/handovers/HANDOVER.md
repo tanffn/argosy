@@ -1,5 +1,10 @@
 # Argosy — living handover
 
+**2026-11-20 — Owner confirmed full Leumi executions in QQQM and TEM.**
+
+- Leumi screenshot catalog **309**, original bytes SHA-256 `4c907263bdff99d2a071113081bdd2ac7ebfedc6ec6c79a754d815554f00887a`, independently checked after archiving. Actual fills were **sell 125 QQQM at $251.07** ($31,383.75 gross) and **buy 220 TEM at $53.72** ($11,818.40 gross). The two trades together raised **$19,565.35 before fees and tax**. Use actual executions for subsequent advice. The earlier 52-share sale and 240-share purchase were suggestions.
+- Against the October 30 Leumi quantities, expected positions are **0 QQQM and 300 TEM** if there were no intervening trades. The latest files in the Leumi source folder were still the October 30 exports. Screenshot-derived values and outstanding broker fields are recorded in `runtime/leumi-owner-fills-20261120.json` for statement reconciliation. The screenshot lacks broker identities, fees and settled cash. Evidence was recorded without applying a formal fill to the custody ledger or changing the paper comparison. Codex suggested holding the cash raised and revisiting a second TEM purchase after the next earnings update.
+
 **2026-11-20 — Owner prioritizes growth of the entire financial portfolio over two to three years.**
 
 - Use existing positions and potential rotations as the starting point for advice. On the guarded November 20 book, repricing 28 US-listed symbols with Yahoo Finance USD quotes at 15:46 ET gave an estimated $3.189m, including $1.334m direct NVDA (41.8%). Other positions retained their Argosy marks. Custody observations are older, and this estimate excludes physical property and pensions. The frozen October 26–November 18 comparison attributes about 91% of its loss to direct NVDA.
