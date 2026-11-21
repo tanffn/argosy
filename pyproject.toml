@@ -45,6 +45,7 @@ dependencies = [
     "youtube-transcript-api>=1.2.3,<2",
     "yt-dlp>=2025.8.22",
     "discord.py>=2.5,<3",
+    "pypdfium2>=5,<6",
 ]
 
 [project.optional-dependencies]
