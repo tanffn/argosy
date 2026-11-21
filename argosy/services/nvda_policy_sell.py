@@ -18,6 +18,7 @@ never double-counted. Precedence when equal: thesis-break > risk-budget > catch-
 Verdicts:
   * ``sell_due``  — a sale is due; ``tranche_nis`` is the recommended sale.
   * ``no_action`` — NVDA within its cap; nothing to sell (an explicit stance).
+  * ``unavailable`` — the available evidence cannot establish a sell or a hold.
 
 Read-only: it NEVER writes a proposal or executes. Reuses the codex-verified
 breach-tranche money-math and the existing thesis-flag loader.
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from math import isfinite
 
 from argosy.logging import get_logger
 from argosy.services.breach_router import compute_breach_tranche
@@ -47,15 +49,16 @@ _TAX_NOTE_ACCEL = (
     "Realizes Israeli CGT on §102 equity lots in one larger sale — the thesis "
     "break outweighs spreading the tax over the glide."
 )
+_RISK_TAX_NOTE = "The risk estimate is before tax. Assess current trustee lots and net proceeds before sizing a trade."
 
 
 @dataclass(frozen=True)
 class NvdaPolicySell:
-    status: str            # "sell_due" | "no_action"
+    status: str            # "sell_due" | "no_action" | "unavailable"
     category: str          # "policy" | "thesis-break" | (risk-budget / catch-up later)
     tranche_nis: float     # the RECOMMENDED sale this period (not always a /n tranche)
-    nvda_current_pct: float
-    nvda_cap_pct: float
+    nvda_current_pct: float | None
+    nvda_cap_pct: float | None
     n_quarters: int
     headline: str
     tax_note: str
@@ -131,14 +134,23 @@ def _resolve_catchup_inputs(session, user_id: str, today: date, tranche_nis: flo
         return 0, 0
 
 
-def _resolve_risk_budget_inputs(session, user_id: str):
-    """(net_worth_nis, nvda_value_nis, perpetuity_base_nis) for the risk-budget
-    check, or ``None`` when unavailable — the same lightweight resolver the breach
-    router uses. Best-effort: missing inputs → ``None`` → no risk-budget sell (never
-    over-sell on missing data)."""
+@dataclass(frozen=True)
+class _PolicyInputs:
+    weight_pct: float | None = None
+    cap_pct: float | None = None
+    risk_budget: tuple[float, float, float] | None = None
+    missing_risk_inputs: tuple[str, ...] = ()
+
+
+def _resolve_policy_inputs(session, user_id: str) -> _PolicyInputs:
+    """Resolve measured concentration and the liquid capital, position and perpetuity floor."""
     try:
         from sqlalchemy import desc, select
 
+        from argosy.services.holding_books import (
+            implied_nvda_weight_frac,
+            tradeable_securities_nis_for_user,
+        )
         from argosy.services.plan_numeric_resolver import resolve_plan_numbers
         from argosy.state.models import PlanVersion
 
@@ -150,24 +162,40 @@ def _resolve_risk_budget_inputs(session, user_id: str):
         ).scalar_one_or_none()
         drun = getattr(pv, "decision_run_id", None) if pv else None
         if drun is None:
-            return None
+            return _PolicyInputs()
         nums = resolve_plan_numbers(session, user_id=user_id, decision_run_id=int(drun))
 
         def _v(key):
             n = nums.get(key)
-            if n is None or getattr(n, "status", None) != "resolved" or not n.value:
+            if n is None or getattr(n, "status", None) != "resolved" or n.value is None:
                 return None
-            return float(n.value)
+            value = float(n.value)
+            return value if isfinite(value) and value >= 0 else None
 
-        nw = _v("portfolio.net_worth_nis")
-        nvda = _v("portfolio.nvda_value_nis")
-        floor = _v("fi.perpetuity_base_nis")
-        if nw is None or nvda is None or floor is None:
-            return None
-        return nw, nvda, floor
-    except Exception:  # noqa: BLE001 — best-effort; absence → no risk-budget sell
-        _log.warning("nvda_sell.risk_budget_inputs_failed", user_id=user_id)
-        return None
+        nw = _v("portfolio.liquid_net_worth_nis")
+        nvda = _v("concentration.nvda_value_nis")
+        floor = _v("retirement.fi_target_nis")
+        weight_record = nums.get("concentration.nvda_current_pct")
+        tradeable_nis = (
+            tradeable_securities_nis_for_user(session, user_id)
+            if getattr(weight_record, "status", None) == "excluded" else None
+        )
+        weight = implied_nvda_weight_frac(nums, tradeable_securities_nis=tradeable_nis)
+        cap = _v("concentration.nvda_cap_pct")
+        return _PolicyInputs(
+            weight_pct=weight * 100 if weight is not None else None,
+            cap_pct=cap * 100 if cap is not None else None,
+            risk_budget=(nw, nvda, floor) if nw and nvda is not None and floor else None,
+            missing_risk_inputs=tuple(
+                label for label, missing in (
+                    ("liquid capital", not nw), ("NVDA position value", nvda is None),
+                    ("retirement floor", not floor),
+                ) if missing
+            ),
+        )
+    except Exception:  # noqa: BLE001 — assessment remains explicitly incomplete
+        _log.warning("nvda_sell.policy_inputs_failed", user_id=user_id)
+        return _PolicyInputs()
 
 
 def _load_nvda_thesis_flags(session, user_id: str, now: datetime) -> list[dict] | None:
@@ -200,7 +228,11 @@ def assess_nvda_policy_sell(
     # still be large enough that a plausible NVDA drawdown breaches the FI floor.
     # Size it first so it can fire even when nothing is over-cap.
     risk_sale = 0.0
-    rb = _resolve_risk_budget_inputs(session, user_id)
+    inputs = _resolve_policy_inputs(session, user_id)
+    rb = inputs.risk_budget
+    # The arithmetic caps the recommendation at the position. Report when
+    # even that sale cannot restore a floor already above current capital.
+    floor_attainable = rb is not None and rb[0] >= rb[2]
     if rb is not None:
         nw, nvda_val, floor = rb
         risk_sale = risk_budget_sale_nis(
@@ -216,29 +248,52 @@ def assess_nvda_policy_sell(
     ) if _funnel_concurs_reduce(session, user_id) else ()
 
     if tranche is None:
-        # Within cap: policy/thesis-break have nothing over-cap to trim. Only a
-        # risk-budget breach can require a sell here.
         if risk_sale <= 0:
+            within_cap = (
+                inputs.weight_pct is not None and inputs.cap_pct is not None
+                and inputs.weight_pct <= inputs.cap_pct
+            )
+            if not within_cap or not floor_attainable:
+                reasons = []
+                if inputs.weight_pct is None:
+                    reasons.append("Current NVDA weight is unavailable.")
+                if inputs.cap_pct is None:
+                    reasons.append("The concentration cap is unavailable.")
+                if inputs.weight_pct is not None and inputs.cap_pct is not None and not within_cap:
+                    reasons.append("NVDA exceeds its cap and a glide tranche could not be sized.")
+                if rb is None:
+                    if inputs.missing_risk_inputs:
+                        reasons.append("The retirement stress test needs " + " and ".join(inputs.missing_risk_inputs) + ".")
+                    else:
+                        reasons.append("The retirement stress test inputs are unavailable.")
+                elif not floor_attainable:
+                    reasons.append("Liquid capital is already below the retirement floor. An NVDA sale alone cannot restore it.")
+                return NvdaPolicySell(
+                    status="unavailable", category="policy", tranche_nis=0.0,
+                    nvda_current_pct=inputs.weight_pct, nvda_cap_pct=inputs.cap_pct, n_quarters=0,
+                    headline="NVDA sell assessment incomplete. " + " ".join(reasons), tax_note="",
+                )
             return NvdaPolicySell(
                 status="no_action", category="policy", tranche_nis=0.0,
-                nvda_current_pct=0.0, nvda_cap_pct=0.0, n_quarters=0,
+                nvda_current_pct=inputs.weight_pct, nvda_cap_pct=inputs.cap_pct, n_quarters=0,
                 headline=(
                     "NVDA is within its concentration cap and a plausible drawdown "
                     "leaves your retirement floor intact — no sell is due this period."
                 ),
                 tax_note="",
             )
-        nw, nvda_val, _floor = rb
-        cur_pct = round(nvda_val / nw * 100.0, 2) if nw > 0 else 0.0
+        risk_headline = (
+            f"A {_RISK_SHOCK*100:.0f}% NVDA drawdown would breach your retirement floor. "
+            f"The risk-budget calculation calls for a gross sale of ~₪{risk_sale:,.0f}."
+        ) if floor_attainable else (
+            f"Liquid capital is already below the retirement floor. The risk-budget calculation "
+            f"reaches the full NVDA position (~₪{risk_sale:,.0f}). Even that gross sale cannot restore the floor."
+        )
         return NvdaPolicySell(
             status="sell_due", category="risk-budget", tranche_nis=round(risk_sale, 2),
-            nvda_current_pct=cur_pct, nvda_cap_pct=0.0, n_quarters=1,
-            headline=(
-                f"NVDA is within its cap, but a {_RISK_SHOCK*100:.0f}% NVDA drawdown "
-                f"would breach your safe-retirement floor — sell ~₪{risk_sale:,.0f} now "
-                "to bring the portfolio back inside the risk budget."
-            ),
-            tax_note=_TAX_NOTE_ACCEL,
+            nvda_current_pct=inputs.weight_pct, nvda_cap_pct=inputs.cap_pct, n_quarters=1,
+            headline=risk_headline,
+            tax_note=_RISK_TAX_NOTE,
             notes=_funnel_note,
         )
 
@@ -280,6 +335,10 @@ def assess_nvda_policy_sell(
     category, recommended = max(candidates, key=lambda c: (c[1], _PRECEDENCE[c[0]]))
 
     notes_list: list[str] = list(_funnel_note)
+    if rb is None:
+        notes_list.append("The independent retirement-floor check is unavailable for this assessment.")
+    elif not floor_attainable:
+        notes_list.append("Liquid capital is below the retirement floor even before the modeled drawdown.")
     if thesis_unverified:
         notes_list.append(
             "NVDA thesis state could not be verified this run — holding the glide "
@@ -301,11 +360,10 @@ def assess_nvda_policy_sell(
         tax_note, n_q = _TAX_NOTE_ACCEL, 1
     elif category == "risk-budget":
         headline = (
-            f"NVDA concentration threatens your safe-retirement floor under a "
-            f"{_RISK_SHOCK*100:.0f}% NVDA drawdown — sell ~₪{recommended:,.0f} now to "
-            f"bring the portfolio back inside the risk budget (ahead of the routine glide)."
+            f"The {_RISK_SHOCK*100:.0f}% NVDA stress test calls for a gross sale of "
+            f"~₪{recommended:,.0f} under the retirement risk budget."
         )
-        tax_note, n_q = _TAX_NOTE_ACCEL, 1
+        tax_note, n_q = _RISK_TAX_NOTE, 1
     elif category == "catch-up":
         headline = (
             f"NVDA deconcentration is BEHIND your glide schedule — catch up with a "

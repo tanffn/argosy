@@ -179,7 +179,7 @@ def test_detect_cash_error_degrades_gracefully(monkeypatch):
     assert d.sell.status == "no_action"
 
 
-def test_assess_sell_error_degrades_to_no_action(monkeypatch):
+def test_assess_sell_error_is_unavailable(monkeypatch):
     def _boom(db, u, t):
         raise RuntimeError("resolver blew up")
 
@@ -188,7 +188,7 @@ def test_assess_sell_error_degrades_to_no_action(monkeypatch):
 
     d = assemble_period_directive(db=object(), user_id="ariel", today=_TODAY)
 
-    assert d.sell.status == "no_action"
+    assert d.sell.status == "unavailable"
 
 
 def test_discovery_stale_days_parses_iso_datetime_string(monkeypatch):
@@ -204,7 +204,7 @@ def test_discovery_stale_days_parses_iso_datetime_string(monkeypatch):
     assert days == 7
 
 
-def test_route_returns_quiet_directive_on_empty_db(client_with_db):
+def test_route_reports_unavailable_assessment_on_empty_db(client_with_db):
     """The endpoint always returns a well-formed directive; an empty DB (no plan /
     snapshot) is the quiet steady state, not an error."""
     r = client_with_db.get("/api/period-directive?user_id=ariel")
@@ -212,5 +212,6 @@ def test_route_returns_quiet_directive_on_empty_db(client_with_db):
     body = r.json()
     assert body["has_actions"] is False
     assert body["buy"]["items"] == []
-    assert body["sell"]["status"] == "no_action"
+    assert body["sell"]["status"] == "unavailable"
+    assert body["sell"]["nvda_current_pct"] is None
     assert "freshness" in body

@@ -243,6 +243,9 @@ export function InboxItemCard({ item, busy, onAction }: Props) {
               )}
               <h3 className="text-base font-medium truncate">{item.title}</h3>
             </div>
+            {typeof item.body.proposal_date === "string" && (
+              <p className="text-xs text-muted-foreground">Proposed <time dateTime={item.body.proposal_date}>{item.body.proposal_date}</time></p>
+            )}
             {item.rank_reason && (
               <p className="text-xs text-muted-foreground mt-0.5">{item.rank_reason}</p>
             )}

@@ -517,6 +517,17 @@ def test_policy_sell_deduped_when_proposal_already_open(db, monkeypatch):
     assert [i for i in feed.items if i.kind == "trade" and "NVDA" in i.title]
 
 
+def test_unavailable_nvda_check_adds_issue_to_current_plan_inbox(db):
+    from argosy.state.models import PlanVersion
+
+    db.add(PlanVersion(user_id="ariel", role="current"))
+    db.commit()
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    assert not feed.quiet
+    assert any(issue["code"] == "nvda_policy_unavailable" for issue in feed.issues)
+    assert not any(item.id == "nvda_policy_sell" for item in feed.items)
+
+
 def test_funnel_shadow_proposal_surfaces_beta_view_first(db):
     """A calibrating (shadow) funnel proposal is EXPOSED beta (nothing hidden) but
     view-first — no blind approve/execute until it's promoted out of beta."""

@@ -54,12 +54,36 @@ def build_nvda_staged_sell_policy(
         user_id=user_id,
         today=observed.date(),
     )
+    if assessment.status == "unavailable":
+        return {
+            "symbol": "NVDA",
+            "status": "blocked",
+            "as_of": observed.isoformat(),
+            "reason": assessment.headline,
+            "failures": [assessment.headline],
+        }
     if assessment.status != "sell_due" or float(assessment.tranche_nis or 0.0) <= 0:
         return {
             "symbol": "NVDA",
             "status": "no_action",
             "as_of": observed.isoformat(),
             "reason": assessment.headline,
+        }
+    if assessment.category != "policy":
+        # A dated glide waypoint and its monthly clips can change both the
+        # size and deadline of a separately triggered exception. Report the
+        # assessment while keeping its unpriced proceeds out of the order sheet.
+        reason = (
+            f"The {assessment.category} assessment requires separate lot-level tax, "
+            "eligibility and timing review before it can fund an order."
+        )
+        return {
+            "symbol": "NVDA", "status": "blocked", "as_of": observed.isoformat(),
+            "category": assessment.category, "assessed_gross_nis": assessment.tranche_nis,
+            "current_weight_pct": assessment.nvda_current_pct,
+            "target_weight_pct": assessment.nvda_cap_pct,
+            "reason": assessment.headline, "failures": [reason],
+            "tax_note": assessment.tax_note, "notes": list(assessment.notes),
         }
 
     pace = pace_fn(session, user_id, as_of=observed.date())
@@ -220,10 +244,10 @@ def build_nvda_staged_sell_policy(
         "execute_no_later_than": execute_deadline.isoformat(),
         "next_review_date": execute_deadline.isoformat(),
         "remaining_glide_quarters": int(assessment.n_quarters),
-        "current_weight_pct": float(assessment.nvda_current_pct),
+        "current_weight_pct": assessment.nvda_current_pct,
         "current_direct_nvda_value_usd": current_nvda_value_usd,
         "current_effective_nvda_value_usd": current_effective_nvda_value_usd,
-        "target_weight_pct": float(assessment.nvda_cap_pct),
+        "target_weight_pct": assessment.nvda_cap_pct,
         "pace_status": str(getattr(pace, "status", "unknown")),
         "tax_year": getattr(pace, "tax_year", None),
         "tax_year_target_shares": int(getattr(pace, "annual_flow", 0) or 0),

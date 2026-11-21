@@ -33,15 +33,15 @@ def test_sell_due_when_nvda_breaches_cap(monkeypatch):
     assert v.tax_note
 
 
-def test_no_action_when_within_cap(monkeypatch):
+def test_missing_cap_and_floor_is_unavailable(monkeypatch):
     monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: None)
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
 
-    assert v.status == "no_action"
+    assert v.status == "unavailable"
     assert v.tranche_nis == 0.0
-    # The no-action memo is explicit (doing nothing at concentration is a stance).
-    assert v.headline
+    assert v.nvda_current_pct is None and v.nvda_cap_pct is None
+    assert "within its" not in v.headline
 
 
 def _tranche():
@@ -103,8 +103,8 @@ def test_risk_budget_drives_when_it_exceeds_the_policy_pace(monkeypatch):
     monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
     # W=10M, NVDA=6M, floor=8M, 40% shock => risk-budget sale = 1M > 500k policy.
     monkeypatch.setattr(
-        nps, "_resolve_risk_budget_inputs",
-        lambda *a, **k: (10_000_000.0, 6_000_000.0, 8_000_000.0),
+        nps, "_resolve_policy_inputs",
+        lambda *a, **k: nps._PolicyInputs(risk_budget=(10_000_000.0, 6_000_000.0, 8_000_000.0)),
     )
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
@@ -123,8 +123,8 @@ def test_thesis_break_beats_risk_budget_when_larger(monkeypatch):
         lambda *a, **k: [{"kind": "thesis_monitor_broken", "severity": "critical"}],
     )
     monkeypatch.setattr(
-        nps, "_resolve_risk_budget_inputs",
-        lambda *a, **k: (10_000_000.0, 6_000_000.0, 8_000_000.0),
+        nps, "_resolve_policy_inputs",
+        lambda *a, **k: nps._PolicyInputs(risk_budget=(10_000_000.0, 6_000_000.0, 8_000_000.0)),
     )
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
@@ -141,8 +141,8 @@ def test_risk_budget_fires_even_when_within_cap(monkeypatch):
     monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
     # W=9M, NVDA=1M (small — within cap), floor=8.8M, 40% shock => risk sale = 500k.
     monkeypatch.setattr(
-        nps, "_resolve_risk_budget_inputs",
-        lambda *a, **k: (9_000_000.0, 1_000_000.0, 8_800_000.0),
+        nps, "_resolve_policy_inputs",
+        lambda *a, **k: nps._PolicyInputs(risk_budget=(9_000_000.0, 1_000_000.0, 8_800_000.0)),
     )
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
@@ -154,11 +154,59 @@ def test_risk_budget_fires_even_when_within_cap(monkeypatch):
 
 def test_within_cap_and_no_risk_breach_is_no_action(monkeypatch):
     monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: None)
-    monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
-    monkeypatch.setattr(nps, "_resolve_risk_budget_inputs", lambda *a, **k: None)
+    inputs = nps._PolicyInputs(10.0, 13.0, (10_000_000.0, 1_000_000.0, 8_000_000.0))
+    monkeypatch.setattr(nps, "_resolve_policy_inputs", lambda *a, **k: inputs)
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
     assert v.status == "no_action"
+    assert (v.nvda_current_pct, v.nvda_cap_pct) == (10.0, 13.0)
+
+
+def test_partial_inputs_cannot_report_hold(monkeypatch):
+    monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a: None)
+    for inputs in (
+        nps._PolicyInputs(None, 13.0, (10_000.0, 100.0, 5_000.0)),
+        nps._PolicyInputs(10.0, 13.0, None),
+    ):
+        monkeypatch.setattr(nps, "_resolve_policy_inputs", lambda *a: inputs)
+        v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
+        assert v.status == "unavailable"
+        assert v.nvda_cap_pct == 13
+        assert v.tranche_nis == 0
+
+
+def test_below_floor_preserves_capped_sizing_without_claiming_restoration(monkeypatch):
+    monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a: None)
+    inputs = nps._PolicyInputs(None, 13.0, (10_000.0, 100.0, 15_000.0))
+    monkeypatch.setattr(nps, "_resolve_policy_inputs", lambda *a: inputs)
+    v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
+    assert (v.status, v.category, v.tranche_nis) == ("sell_due", "risk-budget", 100.0)
+    assert "cannot restore" in v.headline
+    assert v.nvda_current_pct is None
+
+
+def test_policy_reads_canonical_liquid_capital_and_perpetuity(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from argosy.services import plan_numeric_resolver
+
+    values = {
+        "portfolio.net_worth_nis": 5_000_000,
+        "portfolio.liquid_net_worth_nis": 700_000,
+        "concentration.nvda_value_nis": 100_000,
+        "retirement.fi_target_nis": 680_000,
+        "retirement.fi_total_capital_nis": 1_200_000,
+        "concentration.nvda_current_pct": 0.125,
+        "concentration.nvda_cap_pct": 0.13,
+    }
+    resolved = {k: SimpleNamespace(status="resolved", value=v) for k, v in values.items()}
+    monkeypatch.setattr(plan_numeric_resolver, "resolve_plan_numbers", lambda *a, **kw: resolved)
+    db = Mock()
+    db.execute.return_value.scalar_one_or_none.return_value.decision_run_id = 1
+    assert nps._resolve_policy_inputs(db, "ariel") == nps._PolicyInputs(
+        12.5, 13.0, (700_000.0, 100_000.0, 680_000.0),
+    )
 
 
 def test_catchup_drives_when_behind_schedule(monkeypatch):
@@ -166,7 +214,7 @@ def test_catchup_drives_when_behind_schedule(monkeypatch):
     catch-up sale (missed tranches) drives when it exceeds the single policy pace."""
     monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: _tranche())
     monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
-    monkeypatch.setattr(nps, "_resolve_risk_budget_inputs", lambda *a, **k: None)
+    monkeypatch.setattr(nps, "_resolve_policy_inputs", lambda *a, **k: nps._PolicyInputs())
     # 3 waypoints due, 1 executed => 2 missed * 500k = 1M > 500k policy pace.
     monkeypatch.setattr(nps, "_resolve_catchup_inputs", lambda *a, **k: (3, 1))
 
@@ -180,7 +228,7 @@ def test_funnel_concurrence_adds_a_note(monkeypatch):
     surfaces that concurrence (the bridge) — strengthening the case, not competing."""
     monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: _tranche())
     monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
-    monkeypatch.setattr(nps, "_resolve_risk_budget_inputs", lambda *a, **k: None)
+    monkeypatch.setattr(nps, "_resolve_policy_inputs", lambda *a, **k: nps._PolicyInputs())
     monkeypatch.setattr(nps, "_funnel_concurs_reduce", lambda *a, **k: True)
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
@@ -190,13 +238,14 @@ def test_funnel_concurrence_adds_a_note(monkeypatch):
 def test_no_risk_budget_inputs_falls_back_to_policy(monkeypatch):
     monkeypatch.setattr(nps, "compute_breach_tranche", lambda *a, **k: _tranche())
     monkeypatch.setattr(nps, "_load_nvda_thesis_flags", lambda *a, **k: [])
-    monkeypatch.setattr(nps, "_resolve_risk_budget_inputs", lambda *a, **k: None)
+    monkeypatch.setattr(nps, "_resolve_policy_inputs", lambda *a, **k: nps._PolicyInputs())
 
     v = assess_nvda_policy_sell(session=object(), user_id="ariel", today=_TODAY)
 
     assert v.category == "policy"
     assert v.tranche_nis == 500_000.0
-    # A genuine "no flags" read carries no unverified caveat.
+    assert any("retirement-floor check is unavailable" in n for n in v.notes)
+    # A successful thesis read has no thesis warning.
     assert not any("verif" in n.lower() for n in v.notes)
 
 

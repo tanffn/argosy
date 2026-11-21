@@ -940,14 +940,13 @@ export interface PeriodDirectiveDTO {
     items: PeriodDirectiveBuyItem[];
   };
   sell: {
-    /** "sell_due" → a glide tranche is due; "no_action" → within cap. */
-    status: "sell_due" | "no_action";
+    status: "sell_due" | "no_action" | "unavailable";
     /** "policy" today; risk-budget / thesis-break categories arrive in Step 3. */
     category: string;
     headline: string;
     tranche_nis: number;
-    nvda_current_pct: number;
-    nvda_cap_pct: number;
+    nvda_current_pct: number | null;
+    nvda_cap_pct: number | null;
     n_quarters: number;
     tax_note: string;
     notes: string[];

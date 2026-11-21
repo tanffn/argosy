@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { api, type InboxItemDTO } from "@/lib/api";
-import { inboxItemHref } from "@/lib/inbox-presentation";
+import { hasInboxSourceError, inboxItemHref } from "@/lib/inbox-presentation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Markdown } from "@/components/markdown";
 import { useHomeRead } from "./use-home-read";
@@ -15,7 +15,7 @@ export function HomeActions({ userId }: { userId: string }) {
   // Same buckets as Inbox: preserve server order, never rescore decisions here.
   const actions = feed?.items.filter((item) => (item.bucket ?? 99) < 6) ?? [];
   const observations = feed?.items.filter((item) => item.bucket === 6) ?? [];
-  const incomplete = feed?.dropped.some((row) => typeof row === "object" && row !== null && "reason" in row && row.reason === "source_error");
+  const incomplete = feed && hasInboxSourceError(feed);
   return (
     <Card data-slot="home-actions">
       <CardContent className="p-5 space-y-4">
@@ -72,6 +72,7 @@ function ActionRow({ item, number, asOf }: { item: InboxItemDTO; number: number;
       {orderLine && <p className="text-xs text-muted-foreground">Recorded order: {orderLine}</p>}
       {item.why_now && <p className="text-sm text-muted-foreground line-clamp-2">{item.why_now}</p>}
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {typeof item.body.proposal_date === "string" && <span>Proposed <time dateTime={item.body.proposal_date}>{item.body.proposal_date}</time></span>}
         {item.due_at ? <span>Due: {item.due_at}</span> : <span>No deadline recorded</span>}
         {item.expires_at && <span className={expired ? "text-warning" : ""}>{expired ? "Expired — needs reassessment" : "Valid until"}: {item.expires_at}</span>}
       </div>

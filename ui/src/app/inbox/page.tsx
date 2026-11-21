@@ -53,6 +53,7 @@ import {
   type ReasoningTrailItem,
 } from "@/lib/api";
 import { useWSEvents } from "@/lib/ws";
+import { hasInboxSourceError } from "@/lib/inbox-presentation";
 
 const USER_ID = "ariel";
 
@@ -310,6 +311,8 @@ export default function InboxPage() {
     () => items.filter((i) => i.bucket === OBSERVATION_BUCKET),
     [items],
   );
+  const sourceError = feed && hasInboxSourceError(feed);
+  const incomplete = Boolean(sourceError || feed?.issues?.length);
 
   return (
     <main className="max-w-4xl mx-auto p-6 flex flex-col gap-6">
@@ -332,13 +335,14 @@ export default function InboxPage() {
       {feed?.issues?.map((issue, index) => (
         <p key={`${issue.code}:${index}`} role="alert" className="rounded-md border border-warning/40 bg-warning/5 p-3 text-sm text-warning">{issue.message}</p>
       ))}
+      {sourceError && <p role="alert" className="text-sm text-warning">An action source could not be read. The list may be incomplete.</p>}
 
       {/* Trade plan — every open buy/sell under ONE section: the overview
           table (current | after | why), then the detail cards for zoom-in. */}
       {feed && (tradeItems.length > 0 || feed.trade_plan || noActionSheet) && (
         <section id="trade-plan" className="flex flex-col gap-3 scroll-mt-24">
           <div className="flex items-baseline justify-between">
-            <h2 className="text-lg font-semibold tracking-tight">Trade plan</h2>
+            <h2 className="text-lg font-semibold tracking-tight">{feed.trade_plan || noActionSheet ? "Trade plan" : "Individual trade proposals"}</h2>
             <span className="text-sm text-muted-foreground">
               {tradeItems.length} to decide
             </span>
@@ -366,7 +370,7 @@ export default function InboxPage() {
       {/* Needs you now — the one prioritized queue (actionable buckets only). */}
       {feed && (
         <section className="flex flex-col gap-3">
-          {feed.quiet ? (
+          {feed.quiet && !incomplete ? (
             <QuietState liveness={feed.liveness} />
           ) : (
             <>
@@ -392,7 +396,7 @@ export default function InboxPage() {
                 </ul>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Nothing needs a decision right now.
+                  {incomplete ? "Coverage is incomplete. No additional decisions were published." : "No additional decisions are listed."}
                 </p>
               )}
             </>

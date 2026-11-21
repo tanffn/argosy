@@ -143,6 +143,7 @@ def _adapt_trades(db: Session, user_id: str, today: date, *, now: datetime | Non
 
         verb = action.capitalize() if action else "Trade"
         body: dict[str, Any] = {
+            "proposal_date": r.created_at.date().isoformat(),
             "rationale": r.rationale_summary or "",
             "order_line": f"{r.size_shares_or_currency:g} {r.size_units} · {r.order_type}",
             "instrument": r.instrument,
@@ -514,7 +515,9 @@ def _adapt_cash(db: Session, user_id: str, today: date) -> list[InboxItem]:
     ]
 
 
-def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[InboxItem]:
+def _adapt_nvda_policy_sell(
+    db: Session, user_id: str, today: date, *, diagnostics: list[dict[str, str]]
+) -> list[InboxItem]:
     """The glide (policy) sell, surfaced PROACTIVELY and read-only.
 
     Reuses the codex-verified breach-tranche math so the inbox says "trim NVDA
@@ -527,6 +530,13 @@ def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[Inbo
     from argosy.services.breach_router import DECON_TRANCHE_MARKER
     from argosy.services.nvda_policy_sell import assess_nvda_policy_sell
     from argosy.state.models import Proposal as ProposalRow
+    from argosy.state.queries import get_current_plan
+
+    v = assess_nvda_policy_sell(session=db, user_id=user_id, today=today)
+    if v.status == "unavailable" and get_current_plan(db, user_id) is not None:
+        diagnostics.append({"code": "nvda_policy_unavailable", "message": v.headline})
+    if v.status != "sell_due":
+        return []
 
     open_decon = db.execute(
         select(ProposalRow.id)
@@ -542,15 +552,11 @@ def _adapt_nvda_policy_sell(db: Session, user_id: str, today: date) -> list[Inbo
     if open_decon is not None:
         return []
 
-    v = assess_nvda_policy_sell(session=db, user_id=user_id, today=today)
-    if v.status != "sell_due":
-        return []  # speak only when needed — the heartbeat covers "nothing due"
-
     # Exception-protocol sells (thesis-break / risk-budget) are urgent; the routine
     # glide policy sell is a warning.
     _TITLES = {
         "thesis-break": "Reduce NVDA — thesis flagged",
-        "risk-budget": "Reduce NVDA — protects your retirement floor",
+        "risk-budget": "Review the NVDA retirement stress-test sale",
     }
     is_exception = v.category != "policy"
     title = _TITLES.get(v.category, "Trim NVDA this quarter (your glide)")
@@ -645,10 +651,16 @@ def build_inbox(
     today = today or now.date()
     raw: list[InboxItem] = []
     dropped: list[dict[str, Any]] = []
+    issues: list[dict[str, str]] = []
 
     for name, adapter in _ADAPTERS.items():
         try:
-            raw.extend(adapter(db, user_id, today, now=now) if adapter is _adapt_trades else adapter(db, user_id, today))
+            if adapter is _adapt_trades:
+                raw.extend(adapter(db, user_id, today, now=now))
+            elif adapter is _adapt_nvda_policy_sell:
+                raw.extend(adapter(db, user_id, today, diagnostics=issues))
+            else:
+                raw.extend(adapter(db, user_id, today))
         except Exception:  # noqa: BLE001 — isolate a failing source; never blank the feed
             _log.exception("inbox.adapter_failed", extra={"adapter": name, "user_id": user_id})
             dropped.append({"id": f"<adapter:{name}>", "reason": "source_error", "kind": name})
@@ -692,10 +704,10 @@ def build_inbox(
     # Trade-plan overview table (current | after | why) — same isolation
     # rule as the adapters: a failure here never blanks the feed.
     trade_plan = None
-    issues = [
+    issues.extend(
         {"code": "source_error", "message": f"The {item['kind'].replace('_', ' ')} source could not be loaded; the action list may be incomplete."}
         for item in dropped if item.get("reason") == "source_error"
-    ]
+    )
     try:
         from argosy.services.inbox.trade_plan import build_trade_plan
 

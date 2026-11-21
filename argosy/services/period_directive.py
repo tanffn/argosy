@@ -241,14 +241,14 @@ def assemble_period_directive(
             ]
         buy = rows
 
-    # SELL half. Isolated the same way: degrade to no_action rather than 500.
+    # Keep an assessor failure distinct from a verified no-action decision.
     try:
         sell = _assess_sell(db, user_id, today)
     except Exception:  # noqa: BLE001 — never break the directive on the sell assessor
         _log.exception("period_directive.assess_sell_failed", extra={"user_id": user_id})
         sell = NvdaPolicySell(
-            status="no_action", category="policy", tranche_nis=0.0,
-            nvda_current_pct=0.0, nvda_cap_pct=0.0, n_quarters=0,
+            status="unavailable", category="policy", tranche_nis=0.0,
+            nvda_current_pct=None, nvda_cap_pct=None, n_quarters=0,
             headline="Sell check unavailable this period.", tax_note="",
         )
 

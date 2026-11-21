@@ -136,6 +136,15 @@ describe("inbox 'Dismiss' on a beta funnel trade", () => {
     expect(await screen.findByText("No-action review status saved-review")).toBeInTheDocument();
     expect(screen.getByText("0 to decide")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Current-money marks unavailable");
+    expect(screen.queryByText(/all caught up/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Coverage is incomplete/)).toBeInTheDocument();
+  });
+
+  it("shows missing source coverage even when the remaining queue is empty", async () => {
+    getInbox.mockResolvedValue({ ...EMPTY_FEED, quiet: true, dropped: [{ reason: "source_error" }] });
+    render(<InboxPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("An action source could not be read");
+    expect(screen.queryByText(/all caught up/i)).not.toBeInTheDocument();
   });
 
   it("rejects the proposal and drops the card on refresh", async () => {
@@ -144,6 +153,7 @@ describe("inbox 'Dismiss' on a beta funnel trade", () => {
 
     render(<InboxPage />);
     const btn = await screen.findByRole("button", { name: "Dismiss" });
+    expect(screen.getByRole("heading", { name: "Individual trade proposals" })).toBeInTheDocument();
     fireEvent.click(btn);
 
     await waitFor(() => {

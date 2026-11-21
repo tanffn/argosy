@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from argosy.services.after_tax import AfterTaxSale
 from argosy.services.order_sheet import TaxImpact
 from argosy.services.staged_sell_policy import build_nvda_staged_sell_policy
@@ -94,6 +96,35 @@ def test_staged_policy_returns_no_action_instead_of_fabricating_sale() -> None:
     assert policy is not None
     assert policy["status"] == "no_action"
     assert "recommended_current_tranche_usd" not in policy
+
+
+def test_unavailable_assessment_blocks_pricing_and_explains_why() -> None:
+    assessment = SimpleNamespace(status="unavailable", headline="Current NVDA weight unavailable.")
+    policy = build_nvda_staged_sell_policy(
+        object(), user_id="ariel", current_price_usd=200, fx_usd_nis=3,
+        assessment_fn=lambda **kwargs: assessment,
+    )
+    assert policy["status"] == "blocked"
+    assert policy["failures"] == [assessment.headline]
+    assert "recommended_current_tranche_usd" not in policy
+
+
+@pytest.mark.parametrize("category", ["risk-budget", "thesis-break", "catch-up"])
+def test_glide_cannot_override_exception_size_or_timing(category) -> None:
+    assessment = SimpleNamespace(
+        status="sell_due", category=category, tranche_nis=100_000.0, nvda_current_pct=None,
+        nvda_cap_pct=None, headline="Separate sale assessment.", tax_note="Needs lots.", notes=(),
+    )
+    policy = build_nvda_staged_sell_policy(
+        object(), user_id="ariel", current_price_usd=200, fx_usd_nis=3,
+        assessment_fn=lambda **kwargs: assessment,
+    )
+    assert policy["status"] == "blocked"
+    assert policy["category"] == category
+    assert policy["assessed_gross_nis"] == assessment.tranche_nis
+    assert policy["current_weight_pct"] is None
+    assert "recommended_current_tranche_usd" not in policy
+    assert "estimated_net_fundable_usd" not in policy
 
 
 def test_waypoint_tranche_adds_shares_for_after_tax_denominator() -> None:

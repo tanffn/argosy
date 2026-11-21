@@ -74,7 +74,7 @@ export function YourMoveCard({ userId }: { userId: string }) {
     directive?.sell.category === "thesis-break"
       ? "Reduce NVDA — thesis flagged"
       : directive?.sell.category === "risk-budget"
-        ? "Reduce NVDA — protect your retirement floor"
+        ? "Review the NVDA retirement stress test"
         : "Trim NVDA (your glide)";
   const hasActions = directive?.has_actions ?? false;
 
@@ -107,9 +107,14 @@ export function YourMoveCard({ userId }: { userId: string }) {
 
         {!loading && !error && directive && (
           <>
-            {!hasActions && (
+            {directive.sell.status === "unavailable" && (
+              <div role="alert" className="rounded-md border border-warning/40 p-3 text-sm text-warning">
+                {directive.sell.headline}
+              </div>
+            )}
+            {!hasActions && directive.sell.status === "no_action" && (
               <div className="rounded-md border border-border/50 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-900">
-                You&apos;re on track — nothing needs action this period.
+                No trades are listed for this period.
                 <div className="mt-1 text-xs text-emerald-800/80">{directive.sell.headline}</div>
               </div>
             )}
