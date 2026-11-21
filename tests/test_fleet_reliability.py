@@ -26,6 +26,10 @@ from argosy.services.fleet_reliability import (
     call_reliably_sync,
     get_breaker,
     is_transient_fleet_error,
+    remaining_provider_seconds,
+    run_with_provider_deadline,
+    sdk_attempt_timeout,
+    track_primary_timeout,
 )
 
 EXIT1_MSG = (
@@ -186,6 +190,59 @@ def test_sync_open_breaker_short_circuits():
     breaker.record_failure()
     with pytest.raises(FleetCallUnavailable):
         call_reliably_sync(lambda: "x", scope="t", config=_cfg(), breaker=breaker)
+
+
+def test_alternate_cannot_outlive_attempt_or_kill_another_roles_claude():
+    from threading import Event
+
+    release, finished = Event(), Event()
+    budgets, global_kills = [], []
+
+    def attempt():
+        budgets.append(remaining_provider_seconds(600))
+        release.wait(timeout=3)
+        try:
+            with pytest.raises(TimeoutError, match="expired"):
+                remaining_provider_seconds(600)
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(FleetCallTimeout):
+            run_with_provider_deadline(attempt, seconds=0.15, scope="alternate", killer=lambda: global_kills.append(1))
+    finally:
+        release.set()
+    assert finished.wait(timeout=2)
+    assert 0 < budgets[0] < 0.151  # monotonic clock subtraction may round up
+    assert not global_kills
+    assert remaining_provider_seconds(600) == 600
+
+
+def test_finished_provider_timeout_keeps_its_cause():
+    def attempt():
+        raise TimeoutError("upstream response deadline")
+
+    with pytest.raises(TimeoutError, match="upstream response deadline"):
+        run_with_provider_deadline(attempt, seconds=5, scope="completed", killer=lambda: pytest.fail("called killer"))
+
+
+def test_primary_timeout_closes_its_own_sdk_stream():
+    from threading import Event
+
+    closed = Event()
+
+    async def attempt():
+        with track_primary_timeout(lambda: None):
+            try:
+                async with sdk_attempt_timeout(600):
+                    await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+    with pytest.raises((TimeoutError, FleetCallTimeout)):
+        run_with_provider_deadline(lambda: asyncio.run(attempt()), seconds=0.2, scope="sdk",
+                                   killer=lambda: pytest.fail("interrupted another worker"))
+    assert closed.wait(timeout=2)
 
 
 def test_get_breaker_is_scoped_and_cached():

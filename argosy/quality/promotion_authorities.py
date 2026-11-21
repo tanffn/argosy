@@ -24,6 +24,8 @@ from typing import Any
 
 from sqlalchemy import text
 
+from argosy.quality.review_provenance import codex_contributed
+
 CODEX_PHASE = 45
 READER_PHASE = 55
 
@@ -37,8 +39,10 @@ def _latest_phase_assessment(
         return None
     row = session.execute(
         text(
-            "SELECT phase_output_json FROM decision_phases "
-            "WHERE decision_run_id = :r AND kind = :k "
+            "SELECT phase_output_json FROM decision_phases p "
+            "WHERE decision_run_id = :r AND kind = :k AND NOT EXISTS ("
+            "SELECT 1 FROM decision_phases d WHERE d.decision_run_id = :r "
+            "AND d.kind = 'synthesis.phase_3' AND d.seq > p.seq) "
             "ORDER BY seq DESC LIMIT 1"
         ),
         {"r": decision_run_id, "k": f"synthesis.phase_{phase_n}"},
@@ -51,6 +55,8 @@ def _latest_phase_assessment(
         return None
     if isinstance(payload, dict):
         assessment = payload.get("overall_assessment")
+        if assessment in ("APPROVE", "APPROVE_WITH_CONDITIONS") and codex_contributed(decision_run_id):
+            return None
         return str(assessment) if assessment is not None else None
     return None
 

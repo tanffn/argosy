@@ -26,7 +26,6 @@ whole thing is unit-tested with no subprocess and no live model.
 """
 from __future__ import annotations
 
-import concurrent.futures as _cf
 import hashlib
 import json
 from collections.abc import Callable
@@ -43,7 +42,9 @@ from argosy.services.allocation_author.verifier import (
 )
 from argosy.services.fleet_reliability import (
     CircuitBreaker,
+    FleetCallTimeout,
     _kill_claude_children,
+    run_with_provider_deadline,
 )
 
 _log = get_logger("argosy.allocation_author.reliable")
@@ -118,17 +119,12 @@ def _run_author_with_timeout(
     the leaked claude.exe subtree and raise ``AuthorTimeout`` (the SDK's own soft
     timeout is a backstop, not the authority — a hang must not await minutes)."""
     agent = agent_factory()
-    ex = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="deploy-author")
-    fut = ex.submit(_invoke_agent, agent, packet, feedback)
     try:
-        proposal = fut.result(timeout=hard_timeout_s)
-        ex.shutdown(wait=False)
-        return proposal
-    except _cf.TimeoutError as exc:
-        # Kill the subprocess first so the abandoned worker thread unblocks and the
-        # SDK call errors out instead of lingering; then don't wait on it.
-        killer()
-        ex.shutdown(wait=False)
+        return run_with_provider_deadline(
+            lambda: _invoke_agent(agent, packet, feedback),
+            seconds=hard_timeout_s, scope="deploy-author", killer=killer,
+        )
+    except (FleetCallTimeout, TimeoutError) as exc:
         raise AuthorTimeout(
             f"deployment author exceeded {hard_timeout_s:.0f}s hard timeout"
         ) from exc

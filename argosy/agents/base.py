@@ -1460,6 +1460,10 @@ class BaseAgent(Generic[T]):
             # Keep actual tool receipts with the report so downstream reviewers
             # can distinguish retrieved primary text from an analyst's claim.
             raw_call = getattr(call, "raw", None)
+            if isinstance(raw_call, dict) and raw_call.get("backend") == "codex_cli":
+                from argosy.quality.review_provenance import record_codex_plan_author
+
+                record_codex_plan_author(decision_id, self.agent_role, output)
             fetched = raw_call.get("public_document_receipts", []) if isinstance(raw_call, dict) else []
             if fetched:
                 sources = list(sources or []) + [("public_document:" + r["receipt_id"], json.dumps(r))
@@ -1475,13 +1479,7 @@ class BaseAgent(Generic[T]):
                 )
 
             confidence = self._extract_confidence(output)
-            cost = self._estimate_usd(
-                tokens_in=call.tokens_in,
-                tokens_out=call.tokens_out,
-                cache_input_tokens=call.cache_input_tokens,
-                cache_creation_tokens=call.cache_creation_tokens,
-                thinking_tokens=call.thinking_tokens,
-            )
+            cost = self._estimate_call_usd(call)
 
             report = AgentReport(
                 agent_role=self.agent_role,
@@ -1549,6 +1547,7 @@ class BaseAgent(Generic[T]):
                     "run_correlation_id": run_correlation_id,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                     "status": "done",
+                    "model": report.model,
                     "tokens_in": call.tokens_in,
                     "tokens_out": call.tokens_out,
                     "cache_input_tokens": call.cache_input_tokens,
@@ -1560,6 +1559,8 @@ class BaseAgent(Generic[T]):
                     "agent_report_id": persisted_id,
                     "turn_id": turn_id,
                 }
+                if isinstance(raw_call, dict) and raw_call.get("cost_estimate_basis"):
+                    _finished_payload["cost_estimate_basis"] = raw_call["cost_estimate_basis"]
                 publish_event_threadsafe("agent.run.finished", _finished_payload)
             except Exception as exc:  # noqa: BLE001
                 self._log.warning("event publish failed: %s", exc)
@@ -1679,13 +1680,13 @@ class BaseAgent(Generic[T]):
 
     def _build_client(self) -> Any:
         try:
-            from anthropic import Anthropic  # local import; SDK optional at import time
+            from anthropic import AsyncAnthropic  # local import; SDK optional at import time
         except ImportError as exc:  # pragma: no cover
             raise AgentRunError(
                 "anthropic SDK is not installed. Run: uv sync"
             ) from exc
         api_key = self._resolve_api_key()
-        return Anthropic(api_key=api_key)
+        return AsyncAnthropic(api_key=api_key)
 
     async def _call_model(
         self,
@@ -1696,58 +1697,109 @@ class BaseAgent(Generic[T]):
         pdf_attachments: list[Any] | None = None,
         sources: list[tuple[str, str]] | None = None,
     ) -> ModelCall:
-        """Invoke the model. Dispatches on the configured backend.
+        """Call the configured Claude subscription or direct Anthropic API first.
 
-        - `claude_code`: routes through the Claude Agent SDK, which spawns
-          the local `claude.exe` and reuses its authentication. No API
-          key needed. Cost lands on the user's Claude Code subscription.
-        - `api_key`: direct Anthropic API via the `anthropic` SDK; reads
-          the key from the OS keychain or the `ANTHROPIC_API_KEY` env var.
-
-        Wave 5: `image_attachments` is the list of `Attachment` rows with
-        `kind="image"` to attach to the model call as content blocks. The
-        api_key backend supports them natively. The claude_code backend
-        does NOT (the SDK's prompt API is text-only); it raises a clear
-        error when images are present.
-
-        Post-Wave-5: `pdf_attachments` are forwarded as native Anthropic
-        ``document`` content blocks — Claude reads them at full fidelity
-        (layout + tables + scans via OCR).
-
-        Wave A: `sources` is a list of `(source_id, content)` tuples
-        threaded from `build_prompt`. When `self.citations_enabled` is
-        truthy, the api_key backend turns each into an Anthropic document
-        block with citations enabled. The claude_code backend silently
-        ignores `sources` because the SDK's prompt API does not expose
-        document blocks directly.
-
-        Tests override this method directly to return a `ModelCall` stub
-        without exercising either backend.
+        A confirmed provider outage can route one compatible request to the
+        signed-in Codex CLI. The fallback adapter supplies the same cited
+        sources, images, PDF pages and permitted research tools. A request
+        requiring a capability it cannot supply (e.g. native citation spans)
+        fails explicitly. Content, validation and policy errors remain on the
+        original path. The AgentReport records the model that actually replied.
         """
         # Per-instance backend override (money-path reliability wrapper sets this
         # so the deployment author can run on the direct api_key backend — no
         # flaky claude.exe subprocess — independently of the global default).
         backend = getattr(self, "_backend_override", None) or get_settings().anthropic.backend
-        if backend == "claude_code":
-            return await self._call_via_claude_code(
-                system=system,
-                user=user,
-                image_attachments=image_attachments,
-                pdf_attachments=pdf_attachments,
-                sources=sources,
+        primary = {"claude_code": self._call_via_claude_code, "api_key": self._call_via_api_key}.get(backend)
+        if primary is None:
+            raise AgentRunError(
+                f"{self.agent_role}: unknown anthropic backend {backend!r} "
+                "(expected 'claude_code' or 'api_key')"
             )
-        if backend == "api_key":
-            return await self._call_via_api_key(
-                system=system,
-                user=user,
-                image_attachments=image_attachments,
-                pdf_attachments=pdf_attachments,
-                sources=sources,
-            )
-        raise AgentRunError(
-            f"{self.agent_role}: unknown anthropic backend {backend!r} "
-            "(expected 'claude_code' or 'api_key')"
+        inputs = dict(system=system, user=user, image_attachments=image_attachments,
+                      pdf_attachments=pdf_attachments, sources=sources)
+        from argosy.agents.provider_fallback import (
+            clear_primary_outage,
+            note_primary_outage,
+            provider_fallback_enabled,
+            provider_unavailability,
+            recent_primary_outage,
         )
+
+        if not provider_fallback_enabled():
+            return await primary(**inputs)
+        from argosy.agents.codex_evidence import CodexEvidenceUnavailable
+        from argosy.services.fleet_reliability import track_primary_timeout
+
+        key = (self.user_id, backend, self.model)
+        alternate_failure = None
+        if recent := recent_primary_outage(key):
+            try:
+                return await self._codex_after_outage(backend, recent, inputs)
+            except CodexEvidenceUnavailable:
+                # Only skip the primary if this particular request can cross.
+                pass
+            except AgentRunError as exc:
+                # The other subscription may have just failed while the primary
+                # recovered. Probe the primary once without retrying the alternate.
+                if exc.__cause__ is None or not (alternate_failure := provider_unavailability(exc.__cause__)):
+                    raise
+        try:
+            with track_primary_timeout(lambda: note_primary_outage(key, "timeout")):
+                call = await primary(**inputs)
+            if recent:
+                clear_primary_outage(key)
+            return call
+        except Exception as exc:
+            reason = provider_unavailability(exc)
+            if not reason:
+                raise
+            if alternate_failure:
+                raise AgentRunError(
+                    f"Both model providers failed: {backend}={reason}; codex_cli={alternate_failure}"
+                ) from exc
+        try:
+            return await self._codex_after_outage(backend, reason, inputs, remember=True)
+        except CodexEvidenceUnavailable as exc:
+            raise CodexEvidenceUnavailable(
+                f"{backend} unavailable ({reason}). Codex fallback unavailable for this request: {exc}"
+            ) from exc
+
+    async def _codex_after_outage(
+        self, backend: str, reason: str, inputs: dict, *, remember: bool = False,
+    ) -> ModelCall:
+        from argosy.agents.codex_evidence import prepare_codex_evidence
+        from argosy.agents.provider_fallback import (
+            AlternateDeadlineExpired,
+            call_codex,
+            note_primary_outage,
+            provider_unavailability,
+        )
+
+        async with prepare_codex_evidence(self, backend=backend, **inputs) as evidence:
+            if remember:
+                note_primary_outage((self.user_id, backend, self.model), reason)
+            self._log.warning("agent.provider_fallback", agent_role=self.agent_role,
+                              primary=backend, fallback="codex_cli", reason=reason)
+            try:
+                call = await call_codex(
+                    system=evidence.system, user=evidence.user,
+                    schema=self.output_model.model_json_schema() if self.use_structured_output else None,
+                    images=evidence.images, web_search=evidence.web_search, mcp_config=evidence.mcp_config,
+                    timeout_seconds=self.sdk_timeout_seconds,
+                )
+            except AlternateDeadlineExpired as exc:
+                raise AlternateDeadlineExpired(
+                    f"{backend} unavailable ({reason}). Fleet attempt expired before starting the Codex model."
+                ) from exc
+            except Exception as exc:
+                failure = provider_unavailability(exc) or "response_or_transport_failure"
+                raise AgentRunError(
+                    f"Both model providers failed: {backend}={reason}; codex_cli={failure}"
+                ) from exc
+            call.raw.update(fallback_from=backend, fallback_reason=reason,
+                            public_document_receipts=evidence.public_document_receipts())
+            return call
 
     async def _call_via_claude_code(
         self,
@@ -2281,7 +2333,8 @@ class BaseAgent(Generic[T]):
                 # 12-15 min on Opus). DEFAULT_SDK_TIMEOUT_BY_ROLE overrides
                 # the default for those agents. asyncio.TimeoutError is
                 # caught below as another retry trigger.
-                async with asyncio.timeout(self.sdk_timeout_seconds):
+                from argosy.services.fleet_reliability import sdk_attempt_timeout
+                async with sdk_attempt_timeout(self.sdk_timeout_seconds):
                     if _keep_tool_stream_open:
                         from argosy.agents.claude_tool_stream import query_with_tool_permissions
                         messages = query_with_tool_permissions(
@@ -2761,11 +2814,9 @@ class BaseAgent(Generic[T]):
         """
         import asyncio
         import base64
+        from inspect import isawaitable, iscoroutinefunction
         from pathlib import Path
-
-        if self._client is None:
-            self._client = self._build_client()
-        client = self._client
+        from argosy.services.fleet_reliability import remaining_sdk_seconds, sdk_attempt_timeout
 
         # Build the user message content. If no rich attachments and no
         # citation sources, use a plain string (cheaper for prompt cache);
@@ -2810,7 +2861,21 @@ class BaseAgent(Generic[T]):
         else:
             messages_payload = [{"role": "user", "content": user}]
 
-        def _do_call() -> ModelCall:
+        async def _create_message(client, kwargs):
+            create = client.messages.create
+            if iscoroutinefunction(create):
+                return await create(**kwargs)
+            # Some async SDK methods have synchronous decorators. Legacy
+            # injected synchronous clients must also stay off the event loop.
+            if self._client is not None:
+                from anthropic import Anthropic
+                if isinstance(client, Anthropic):
+                    create = client.with_options(timeout=remaining_sdk_seconds(self.sdk_timeout_seconds),
+                                                 max_retries=0).messages.create
+            response = await asyncio.to_thread(create, **kwargs)
+            return await response if isawaitable(response) else response
+
+        async def _do_call(client) -> ModelCall:
             system_blocks = self._build_system_blocks(system)
             call_kwargs: dict[str, Any] = {
                 "model": self.model,
@@ -2858,7 +2923,7 @@ class BaseAgent(Generic[T]):
                     "budget_tokens": self.thinking_budget,
                 }
             try:
-                msg = client.messages.create(**call_kwargs)
+                msg = await _create_message(client, call_kwargs)
             except Exception as exc:
                 if "thinking" in call_kwargs and self._is_thinking_unsupported_error(exc):
                     # Graceful fallback: retry without thinking. Some models
@@ -2872,7 +2937,7 @@ class BaseAgent(Generic[T]):
                     )
                     call_kwargs.pop("thinking", None)
                     try:
-                        msg = client.messages.create(**call_kwargs)
+                        msg = await _create_message(client, call_kwargs)
                     except Exception as exc2:
                         raise AgentRunError(
                             f"{self.agent_role}: Anthropic API error (fallback also failed): {exc2}"
@@ -2942,7 +3007,17 @@ class BaseAgent(Generic[T]):
                 citations_json=citations_json,
             )
 
-        return await asyncio.to_thread(_do_call)
+        # A client created here belongs to this event loop. On cancellation
+        # close its connection before any alternate provider can be called.
+        client = self._client if self._client is not None else self._build_client()
+        try:
+            async with sdk_attempt_timeout(self.sdk_timeout_seconds):
+                return await _do_call(client)
+        finally:
+            if self._client is None and (close := getattr(client, "close", None)):
+                closing = close()
+                if isawaitable(closing):
+                    await closing
 
     # ------------------------------------------------------------------
     # Helpers
@@ -3187,6 +3262,19 @@ class BaseAgent(Generic[T]):
         except ValueError:
             return None
 
+    def _estimate_call_usd(self, call: ModelCall) -> float:
+        tokens_in = call.tokens_in
+        raw = getattr(call, "raw", None)
+        if isinstance(raw, dict) and raw.get("backend") == "codex_cli":
+            # Fleet telemetry uses uncached tokens. Supply the inclusive
+            # total expected by the legacy pricing branch so a small cache
+            # hit cannot be deducted from the role's budget estimate twice.
+            tokens_in += call.cache_input_tokens
+        return self._estimate_usd(
+            tokens_in=tokens_in, tokens_out=call.tokens_out, cache_input_tokens=call.cache_input_tokens,
+            cache_creation_tokens=call.cache_creation_tokens, thinking_tokens=call.thinking_tokens,
+        )
+
     def _estimate_usd(
         self,
         *,
@@ -3259,14 +3347,7 @@ class BaseAgent(Generic[T]):
 
 
 def _llm_backend_available() -> bool:
-    """Return True when at least one LLM backend is reachable.
-
-    Used by live-LLM eval tests (``@pytest.mark.llm_eval``) to skip cleanly
-    when no backend is configured.
-
-    - ``claude_code`` backend: checks whether ``claude.exe`` is on PATH.
-    - ``api_key`` backend: checks whether ``ANTHROPIC_API_KEY`` is set.
-    """
+    """Cheap installation/configuration check for live evals. Login is checked on use."""
     import shutil
 
     try:
@@ -3275,10 +3356,14 @@ def _llm_backend_available() -> bool:
         backend = "claude_code"
 
     if backend == "api_key":
-        return bool(os.environ.get("ANTHROPIC_API_KEY"))
-    if backend == "claude_code":
-        return shutil.which("claude") is not None
-    return False
+        primary = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    elif backend == "claude_code":
+        primary = shutil.which("claude") is not None
+    else:
+        return False
+    from argosy.agents.provider_fallback import codex_executable, provider_fallback_enabled
+
+    return primary or (provider_fallback_enabled() and codex_executable() is not None)
 
 
 __all__ = [

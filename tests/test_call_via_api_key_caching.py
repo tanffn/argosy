@@ -1,5 +1,7 @@
 """_call_via_api_key passes system as content blocks with cache_control."""
 from __future__ import annotations
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,6 +15,46 @@ class _DummyAgent(BaseAgent):
 
     def build_prompt(self, **_):
         return ("", "")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_api_request_closes_before_provider_handoff(monkeypatch):
+    entered, exited = asyncio.Event(), asyncio.Event()
+    closed = []
+
+    async def create(**kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            exited.set()
+
+    async def close():
+        closed.append(exited.is_set())
+
+    agent = _DummyAgent(user_id="ariel")
+    monkeypatch.setattr(agent, "_build_client", lambda: SimpleNamespace(messages=SimpleNamespace(create=create), close=close))
+    task = asyncio.create_task(agent._call_via_api_key(system="role", user="fixture"))
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_injected_sync_client_runs_off_the_loop():
+    from threading import get_ident
+
+    main_thread = get_ident()
+    def create(**kwargs):
+        assert get_ident() != main_thread
+        return _make_mock_msg()
+
+    agent = _DummyAgent(user_id="ariel")
+    agent._client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    result = await agent._call_via_api_key(system="role", user="fixture")
+    assert result.text == "ok"
 
 
 def _make_mock_msg(input_toks=100, output_toks=50, cache_read=0, cache_create=0):

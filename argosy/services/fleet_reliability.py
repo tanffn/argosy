@@ -31,6 +31,8 @@ import asyncio
 import concurrent.futures as _cf
 import re
 import time
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -45,6 +47,103 @@ class FleetCallTimeout(RuntimeError):
 
 class FleetCallUnavailable(RuntimeError):
     """The scope's circuit breaker is open — short-circuited without a call."""
+
+
+@dataclass
+class _ProviderAttempt:
+    deadline: float
+    scoped_cleanup: bool = False
+    primary_timed_out: Callable[[], None] | None = None
+    cancel_sdk_call: Callable[[], None] | None = None
+
+
+_provider_attempt: ContextVar[_ProviderAttempt | None] = ContextVar("provider_attempt", default=None)
+
+
+@contextmanager
+def track_primary_timeout(on_timeout: Callable[[], None]):
+    attempt = _provider_attempt.get()
+    if attempt is None:
+        yield
+        return
+    attempt.scoped_cleanup = True
+    attempt.primary_timed_out = on_timeout
+    try:
+        yield
+    finally:
+        attempt.primary_timed_out = None
+
+
+@asynccontextmanager
+async def sdk_attempt_timeout(seconds: float):
+    """Cancel this SDK stream on its own event loop, including Windows worker loops."""
+    attempt = _provider_attempt.get()
+    if attempt is not None:
+        loop, task = asyncio.get_running_loop(), asyncio.current_task()
+        attempt.scoped_cleanup = True
+        seconds = remaining_sdk_seconds(seconds)
+        attempt.cancel_sdk_call = lambda: loop.call_soon_threadsafe(task.cancel)
+    try:
+        async with asyncio.timeout(seconds):
+            yield
+    finally:
+        if attempt is not None:
+            attempt.cancel_sdk_call = None
+
+
+def remaining_sdk_seconds(seconds: float) -> float:
+    attempt = _provider_attempt.get()
+    if attempt is not None:
+        seconds = min(seconds, attempt.deadline - time.monotonic())
+        if seconds <= 0:
+            raise TimeoutError("Fleet attempt expired before the Claude SDK call")
+    return seconds
+
+
+def remaining_provider_seconds(timeout_seconds: float) -> float:
+    """Give Codex only the remaining time in its owner's hard-limited attempt."""
+    attempt = _provider_attempt.get()
+    if attempt is None:
+        return timeout_seconds
+    remaining = attempt.deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Fleet attempt expired before Codex could start")
+    attempt.scoped_cleanup = True
+    return min(timeout_seconds, remaining)
+
+
+def run_with_provider_deadline(
+    invoke: Callable[[], Any], *, seconds: float, scope: str, killer: Callable[[], None],
+) -> Any:
+    """Keep the primary and its alternate within one worker's timeout."""
+    attempt = _ProviderAttempt(time.monotonic() + seconds)
+    ctx = copy_context()
+    ctx.run(_provider_attempt.set, attempt)
+    pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix=scope)
+    try:
+        future = pool.submit(ctx.run, invoke)
+        try:
+            return future.result(timeout=max(0.0, attempt.deadline - time.monotonic()))
+        except _cf.TimeoutError as exc:
+            # A completed worker can itself raise TimeoutError. That exception
+            # belongs to the transport and requires no process-wide cleanup.
+            if future.done() and future.exception() is exc:
+                raise
+            signal_timeout = attempt.primary_timed_out
+            if signal_timeout:
+                signal_timeout()
+            cancel_call = attempt.cancel_sdk_call
+            if cancel_call:
+                try:
+                    cancel_call()
+                except RuntimeError:
+                    pass  # the SDK worker finished and closed its loop
+            elif not attempt.scoped_cleanup:
+                killer()
+            # The Codex transport owns its individual process tree and deadline.
+            raise FleetCallTimeout(f"{scope}: exceeded {seconds:.0f}s hard timeout") from exc
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 class CircuitBreaker:
@@ -263,20 +362,9 @@ def call_reliably_sync(
     def _one_attempt() -> Any:
         if cfg.hard_timeout_s is None:
             return attempt_factory()
-        ex = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"fleet-{scope}")
-        fut = ex.submit(attempt_factory)
-        try:
-            result = fut.result(timeout=cfg.hard_timeout_s)
-            ex.shutdown(wait=False)
-            return result
-        except _cf.TimeoutError as exc:
-            # Kill the subprocess first so the abandoned worker thread unblocks;
-            # then don't wait on it.
-            killer()
-            ex.shutdown(wait=False)
-            raise FleetCallTimeout(
-                f"{scope}: exceeded {cfg.hard_timeout_s:.0f}s hard timeout"
-            ) from exc
+        return run_with_provider_deadline(
+            attempt_factory, seconds=cfg.hard_timeout_s, scope=f"fleet-{scope}", killer=killer,
+        )
 
     last_exc: BaseException | None = None
     for attempt in range(cfg.retries + 1):

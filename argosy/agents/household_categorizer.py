@@ -97,13 +97,7 @@ class HouseholdCategorizerAgent(BaseAgent):
         data = json.loads(cleaned)
         # The LLM returns {"results": [...]}.  Populate metadata from the call.
         results = [CategorizeResult(**r) for r in data["results"]]
-        cost = self._estimate_usd(
-            tokens_in=call.tokens_in,
-            tokens_out=call.tokens_out,
-            cache_input_tokens=call.cache_input_tokens,
-            cache_creation_tokens=call.cache_creation_tokens,
-            thinking_tokens=call.thinking_tokens,
-        )
+        cost = self._estimate_call_usd(call)
         return CategorizeResponse(
             results=results,
             model=call.model or self.model,

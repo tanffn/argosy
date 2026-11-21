@@ -41,6 +41,9 @@ from argosy.agents.fx_analyst import FXAnalystAgent as FxAnalystAgent
 from argosy.agents.macro_analyst import MacroAnalystAgent
 from argosy.agents.news_analyst import NewsAnalystAgent
 from argosy.agents.plan_critique import PlanCritiqueAgent
+from argosy.quality.review_provenance import (
+    codex_authored, codex_contributed, phase_three_snapshot, plan_reconcile_scope, set_plan_authorship,
+)
 from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
 from argosy.agents.plan_synthesizer_types import (
     PlanSynthesisOutput,
@@ -817,7 +820,9 @@ def run_synthesis(
         # Synthesizer output is the structured PlanSynthesisOutput. Round-
         # trip via JSON; pydantic re-validates on parse.
         import json as _json
-        output = PlanSynthesisOutput.model_validate(_json.loads(resumed_outputs[3]))
+        resumed_draft = _json.loads(resumed_outputs[3])
+        output = PlanSynthesisOutput.model_validate(resumed_draft)
+        output._codex_contributed = resumed_draft.get("_codex_contributed") is True
         log.info(
             "plan_synthesis.phase_skipped_resumed",
             user_id=user_id, decision_run_id=decision_run_id, phase=3,
@@ -1007,7 +1012,7 @@ def run_synthesis(
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=3, started_at=_phase_3_started_at,
-            phase_output=output.model_dump_json(),
+            phase_output=phase_three_snapshot(output, _phase_3_reports, decision_run_id),
             agent_report_rows=_phase_3_reports,
         )
 
@@ -1107,6 +1112,8 @@ def run_synthesis(
         max_pct_of_net_worth=cap.max_pct_of_net_worth,
         max_concurrent_positions=cap.max_concurrent_positions,
     )
+
+    set_plan_authorship(decision_run_id, codex_authored(output))
 
     # Phase 4: risk team plan-level review.
     if 4 in resumed_outputs:
@@ -1376,7 +1383,7 @@ def run_synthesis(
                 _pkg._record_phase_completion(
                     user_id=user_id, decision_run_id=decision_run_id,
                     phase_n=3, started_at=_recon_started,
-                    phase_output=output.model_dump_json(),
+                    phase_output=phase_three_snapshot(output, _recon_reports, decision_run_id),
                     agent_report_rows=_recon_reports,
                 )
                 # The codex-driven re-synth is a FULL regeneration — the
@@ -1421,19 +1428,19 @@ def run_synthesis(
     # every other phase so it appears in agent_reports + the phase
     # tree. When codex was skipped (None) we don't record an empty
     # phase row — that would muddy the audit trail.
-    if codex_row is not None:
+    if codex_row is not None or codex_opinion is not None:
         # Build the phase output, folding in the zigzag reconcile marker
         # (when one fired) so the agent-tree builder can surface it on the
         # codex node. Fail-soft: a merge failure falls back to the bare
         # opinion JSON so the audit trail is never lost.
         _codex_phase_output: str = (
-            codex_opinion.model_dump_json() if codex_opinion else ""
+            codex_row.response_text if codex_opinion is None else codex_opinion.model_dump_json()
         )
         if _reconcile_marker is not None:
             try:
                 import json as _json
                 _payload = (
-                    codex_opinion.model_dump() if codex_opinion else {}
+                    codex_opinion.model_dump() if codex_opinion else _json.loads(codex_row.response_text)
                 )
                 _payload["codex_reconcile"] = _reconcile_marker
                 _codex_phase_output = _json.dumps(_payload)
@@ -1444,9 +1451,10 @@ def run_synthesis(
             phase_n=45,  # 4.5 — half-step between risk and FM
             started_at=datetime.now(timezone.utc),
             phase_output=_codex_phase_output,
-            agent_report_rows=[codex_row],
+            agent_report_rows=[codex_row] if codex_row else [],
         )
 
+    reviewed_numeric_draft = _sha256_text(output.model_dump_json())
     # Phase 5: fund manager integrity check.
     if 5 in resumed_outputs:
         approved = resumed_outputs[5].strip().lower() == "approved"
@@ -1468,7 +1476,9 @@ def run_synthesis(
                 (guidance + "\n\n" + _p5_delta).strip()
                 if _p5_delta else guidance
             ),
-            codex_second_opinion=codex_opinion,
+            codex_second_opinion=codex_opinion or (
+                codex_row.output if codex_row and getattr(codex_row.output, "reviewer", "") != "unavailable" else None
+            ),
         )
         if isinstance(_phase_5_result, tuple) and len(_phase_5_result) == 2:
             approved, _phase_5_reports = _phase_5_result
@@ -2079,17 +2089,18 @@ def run_synthesis(
                         build_base_graph(session, user_id, decision_run_id=_own_drun)
                         if _own_drun is not None else None
                     )
-                    _own = run_owner_routed_reconcile_round(
-                        reader_verdict=_reader_verdict,
-                        bodies={
-                            "long": draft.horizon_long_md or "",
-                            "medium": draft.horizon_medium_md or "",
-                            "short": draft.horizon_short_md or "",
-                        },
-                        graph=_own_graph,
-                        proposer=RealRemediationProposer(user_id=user_id),
-                        resolved=_own_resolved,
-                    )
+                    with plan_reconcile_scope(decision_run_id) as _edit_contributors:
+                        _own = run_owner_routed_reconcile_round(
+                            reader_verdict=_reader_verdict,
+                            bodies={
+                                "long": draft.horizon_long_md or "",
+                                "medium": draft.horizon_medium_md or "",
+                                "short": draft.horizon_short_md or "",
+                            },
+                            graph=_own_graph,
+                            proposer=RealRemediationProposer(user_id=user_id),
+                            resolved=_own_resolved,
+                        )
                     # Persist the surgically-corrected bodies in place so the next
                     # assemble re-reads the reconciled prose (one commit; no graph
                     # write, so there is no partial-state hazard).
@@ -2097,6 +2108,8 @@ def run_synthesis(
                     _sec_qualified = False
                     _n = 0
                     if _own.prose_edits:
+                        if _edit_contributors:
+                            set_plan_authorship(decision_run_id, True)
                         draft.horizon_long_md = _own.bodies["long"]
                         draft.horizon_medium_md = _own.bodies["medium"]
                         draft.horizon_short_md = _own.bodies["short"]
@@ -2221,15 +2234,16 @@ def run_synthesis(
                         except (TypeError, ValueError):
                             pass
 
-                    _delib = _pkg.run_coherence_deliberation_pass(
-                        bodies=_delib_bodies, json_surfaces=_delib_json_surfaces,
-                        findings=_delib_findings, canonical_facts=_delib_canonical,
-                        prime_directive=_COHERENCE_PRIME_DIRECTIVE,
-                        make_panelist=lambda role: CoherencePanelistAgent(user_id=user_id),
-                        facilitator=CoherenceFacilitatorAgent(user_id=user_id),
-                        arbitrator=CoherenceArbitratorAgent(user_id=user_id),
-                        resolver_value_fn=None,
-                    )
+                    with plan_reconcile_scope(decision_run_id) as _edit_contributors:
+                        _delib = _pkg.run_coherence_deliberation_pass(
+                            bodies=_delib_bodies, json_surfaces=_delib_json_surfaces,
+                            findings=_delib_findings, canonical_facts=_delib_canonical,
+                            prime_directive=_COHERENCE_PRIME_DIRECTIVE,
+                            make_panelist=lambda role: CoherencePanelistAgent(user_id=user_id),
+                            facilitator=CoherenceFacilitatorAgent(user_id=user_id),
+                            arbitrator=CoherenceArbitratorAgent(user_id=user_id),
+                            resolver_value_fn=None,
+                        )
                     _pkg._record_phase_completion(
                         user_id=user_id, decision_run_id=decision_run_id,
                         phase_n=56, started_at=_delib_started,
@@ -2249,6 +2263,8 @@ def run_synthesis(
                         )
                         break
                     # Conform succeeded — persist the conformed surfaces.
+                    if _edit_contributors and (_delib.bodies != _delib_bodies or _delib.json_surfaces != _delib_json_surfaces):
+                        set_plan_authorship(decision_run_id, True)
                     draft.horizon_long_md = _delib.bodies.get("long_md", draft.horizon_long_md)
                     draft.horizon_medium_md = _delib.bodies.get("medium_md", draft.horizon_medium_md)
                     draft.horizon_short_md = _delib.bodies.get("short_md", draft.horizon_short_md)
@@ -2308,14 +2324,15 @@ def run_synthesis(
                         resolve_plan_numbers(session, user_id=user_id, decision_run_id=_drun_int)
                         if _drun_int is not None else None
                     )
-                    _surg = surgically_correct_draft(
-                        bodies={
-                            "long": draft.horizon_long_md or "",
-                            "medium": draft.horizon_medium_md or "",
-                            "short": draft.horizon_short_md or "",
-                        },
-                        reader_verdict=_reader_verdict, resolved=_surg_resolved,
-                    )
+                    with plan_reconcile_scope(decision_run_id) as _edit_contributors:
+                        _surg = surgically_correct_draft(
+                            bodies={
+                                "long": draft.horizon_long_md or "",
+                                "medium": draft.horizon_medium_md or "",
+                                "short": draft.horizon_short_md or "",
+                            },
+                            reader_verdict=_reader_verdict, resolved=_surg_resolved,
+                        )
                     _pkg._record_phase_completion(
                         user_id=user_id, decision_run_id=decision_run_id,
                         phase_n=54, started_at=_surg_started,
@@ -2327,6 +2344,8 @@ def run_synthesis(
                         agent_report_rows=[],
                     )
                     if _surg.edits:
+                        if _edit_contributors:
+                            set_plan_authorship(decision_run_id, True)
                         draft.horizon_long_md = _surg.corrected_bodies["long"]
                         draft.horizon_medium_md = _surg.corrected_bodies["medium"]
                         draft.horizon_short_md = _surg.corrected_bodies["short"]
@@ -2384,7 +2403,7 @@ def run_synthesis(
                 _pkg._record_phase_completion(
                     user_id=user_id, decision_run_id=decision_run_id,
                     phase_n=3, started_at=_recon_started,
-                    phase_output=output.model_dump_json(),
+                    phase_output=phase_three_snapshot(output, _recon_reports, decision_run_id),
                     agent_report_rows=_recon_reports,
                 )
                 # Re-render the draft body from the reconciled output and UPDATE
@@ -2454,12 +2473,12 @@ def run_synthesis(
 
     if _reader_row is not None:
         _reader_phase_output = (
-            _reader_verdict.model_dump_json() if _reader_verdict else ""
+            _reader_row.response_text if _reader_verdict is None else _reader_verdict.model_dump_json()
         )
         if _reader_reconcile_marker is not None:
             try:
                 import json as _json
-                _payload = _reader_verdict.model_dump() if _reader_verdict else {}
+                _payload = _reader_verdict.model_dump() if _reader_verdict else _json.loads(_reader_row.response_text)
                 _payload["reader_reconcile"] = _reader_reconcile_marker
                 _reader_phase_output = _json.dumps(_payload)
             except Exception:  # noqa: BLE001 — never lose the reader row
@@ -2594,7 +2613,7 @@ def run_synthesis(
                     _pkg._record_phase_completion(
                         user_id=user_id, decision_run_id=decision_run_id,
                         phase_n=3, started_at=_esc_started,
-                        phase_output=output.model_dump_json(),
+                        phase_output=phase_three_snapshot(output, _esc_reports, decision_run_id),
                         agent_report_rows=_esc_reports,
                     )
                     _esc_bodies = _assemble_draft_bodies(
@@ -2627,6 +2646,7 @@ def run_synthesis(
                         _reader_verdict, _esc_reader_row = _keep_reader(
                             *_assemble_and_read()
                         )
+                        _reader_row = _esc_reader_row
                         if _esc_reader_row is not None:
                             _pkg._record_phase_completion(
                                 user_id=user_id, decision_run_id=decision_run_id,
@@ -2634,7 +2654,7 @@ def run_synthesis(
                                 started_at=datetime.now(timezone.utc),
                                 phase_output=(
                                     _reader_verdict.model_dump_json()
-                                    if _reader_verdict else ""
+                                    if _reader_verdict else _esc_reader_row.response_text
                                 ),
                                 agent_report_rows=[_esc_reader_row],
                             )
@@ -2964,7 +2984,11 @@ def run_synthesis(
         blocks_promotion as _blocks_promotion,
         summarize as _gate_summarize,
     )
-    if _reader_verdict is not None:
+    if _reader_verdict is None and _reader_row is not None:
+        _reader_gate = _GateOutcome.did_not_run(
+            "whole_artifact_reader", getattr(_reader_row.output, "advisory_reason", "No independent verdict"),
+        )
+    elif _reader_verdict is not None:
         if getattr(_reader_verdict, "overall_assessment", "") == "BLOCK":
             _reader_gate = _GateOutcome.blocked(
                 "whole_artifact_reader",
@@ -2999,6 +3023,16 @@ def run_synthesis(
     # OVERRIDE rather than rewriting it to PASS, so the receipt still
     # shows the gate never ran and only the reason is "pytest".
     _codex_gate = codex_gate
+    if _codex_gate.status is _GateStatus.PASS and _sha256_text(output.model_dump_json()) != reviewed_numeric_draft:
+        _codex_gate = _GateOutcome.did_not_run("codex_math", "The final revision requires a fresh numerical review.")
+    # A later reconcile can introduce Codex-authored content after an earlier
+    # independent pass. Both receipts must refer to the final draft.
+    if codex_contributed(decision_run_id):
+        detail = "Codex contributed to this draft. Independent verification is outstanding."
+        if _codex_gate.status is _GateStatus.PASS:
+            _codex_gate = _GateOutcome.did_not_run("codex_math", detail)
+        if _reader_gate.status is _GateStatus.PASS:
+            _reader_gate = _GateOutcome.did_not_run("whole_artifact_reader", detail)
     if (
         _codex_gate.status is not _GateStatus.PASS
         and _os.environ.get("PYTEST_CURRENT_TEST")
@@ -5577,13 +5611,16 @@ def _load_patch_base_output(prior_current) -> PlanSynthesisOutput | None:
             )
         except Exception:  # noqa: BLE001 — provenance is replaced on persist
             inputs = SynthesisInputs()
-        return PlanSynthesisOutput(
+        plan = PlanSynthesisOutput(
             long=HorizonSection.model_validate_json(prior_current.horizon_long_json),
             medium=HorizonSection.model_validate_json(prior_current.horizon_medium_json),
             short=HorizonSection.model_validate_json(prior_current.horizon_short_json),
             inputs=inputs,
             sections=sections,
         )
+        prior_run = getattr(prior_current, "decision_run_id", None)
+        plan._codex_contributed = bool(prior_run and codex_contributed(prior_run))
+        return plan
     except Exception as exc:  # noqa: BLE001 — malformed base → no patch
         log.warning(
             "plan_synthesis.patch_base_load_failed",
@@ -5772,9 +5809,11 @@ def _preserve_unimplicated_sections(
         return model
     merged_sections = [by_key[k] for k in model_order + prior_only_order]
     merged = model.model_copy(update={"sections": merged_sections})
-    return PlanSynthesisOutput.model_validate(
+    validated = PlanSynthesisOutput.model_validate(
         json.loads(merged.model_dump_json())
     )
+    validated._codex_contributed = codex_authored(model) or bool(prior_only_order and codex_authored(prior))
+    return validated
 
 
 def _sha256_text(text: str) -> str:
@@ -6302,6 +6341,7 @@ def _run_phase_3_patch(
         user_id=user_id, decision_run_id=decision_run_id,
         patched_surfaces=len(provenance["patched_surfaces"]),
     )
+    final._codex_contributed = codex_authored(rewritten) or codex_authored(prior_output)
     return final, collected, provenance
 
 
@@ -6459,6 +6499,7 @@ def _rewrite_output_parallel(
         "short": results["short"].short,
         "sections": results["sections"].sections,
     })
+    merged._codex_contributed = codex_authored(output) or any(codex_authored(r) for r in results.values())
     log.info(
         "plan_synthesis.rewriter_parallel_merged",
         user_id=user_id,

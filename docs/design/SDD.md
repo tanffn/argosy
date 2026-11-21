@@ -202,7 +202,7 @@ These are reproduced inline so a fresh agent never needs to look elsewhere. They
 #### Other binding preferences
 
 - **Manual UI smokes skipped by default.** The user defers manual browser smokes; backend tests + live LLM e2e are the verification surface. Don't add manual-smoke gates to plans unless the user explicitly asks.
-- **Live LLM tests must be opt-in.** Mark with `@pytest.mark.llm_eval` and gate via `_llm_backend_available()` so they're skipped without a live backend (`claude.exe` on PATH for `claude_code` mode, or `ANTHROPIC_API_KEY` for `api_key` mode).
+- **Live LLM tests must be opt-in.** Mark with `@pytest.mark.llm_eval` and gate via `_llm_backend_available()`. The preflight checks for a configured primary or an installed, enabled alternate. A successful model turn verifies sign-in.
 - **Local-only operation.** No remote git push is configured. Branches merge fast-forward into `main` locally. If a future agent wants to push, ask first.
 - **Solo developer, single-user system.** Multi-tenant concerns are not in scope. The "single in-flight per user" partial unique index is the level of multi-user safety baked in.
 
@@ -667,6 +667,12 @@ A budget that absorbs one scheduled monthly synthesis plus 1–2 ad-hoc amendmen
 The per-role model resolves through `BaseAgent.__init__`: explicit constructor `model`, then `models.override.all`, then `models.override[role]`, then the code role default, then legacy `models.defaults[role]`, and finally the fallback. Short `opus` aliases resolve to `claude-opus-5-5`. Tenant overrides are wired and honored; historical report model identifiers are not rewritten.
 
 **Current default:** all entries in `DEFAULT_MODEL_BY_ROLE` and the fallback use **Opus 5.5** (`claude-opus-5-5`). Trader T0/T1 retain their explicit Sonnet selection; T2+ use the configured fleet default. Independent Codex reviewers remain independent. Earlier model labels in subsystem examples are not the routing authority.
+
+**Provider continuity.** Fleet roles call the configured Anthropic backend first. On a recognized provider outage, compatible requests can use a signed-in ChatGPT Codex CLI (`gpt-6.2-sol` by default). A short per-user, backend and model cooldown avoids repeated calls to a failed primary. The next eligible request probes the primary after the cooldown. The original role prompt, evidence, output validation, budget checks and outer hard deadline still apply. Reports identify the model that answered. Subscription token cost estimates feed Argosy’s budget accounting. `ARGOSY_CODEX_FALLBACK_MODEL` selects the alternate model and `ARGOSY_PROVIDER_FALLBACK_ENABLED=0` disables automatic failover in both directions.
+
+Codex receives only the research tools permitted for the role. The host records public-document retrieval results, including unsuccessful attempts. Search-only roles have a bounded public-ticker search. Image and PDF evidence must pass the alternate transport’s format, size and page checks. A role that requires native Anthropic citation offsets needs that provider.
+
+The numerical plan review and whole-plan reader call their configured Codex reviewer first. A Claude CLI review can return findings when Codex is unavailable. Only the required independent review can authorize promotion. Argosy records Codex contributions to draft authoring across resumed runs and treats reviews by the same provider as advisory. If both providers fail, the affected run retains an explicit failure for Job history and operational alerts.
 
 Opus 5.5 requires Claude Code **2.1.280+**. The locked `claude-agent-sdk 0.2.159` bundles **2.1.281**. Fleet calls use adaptive thinking; the model does not support disabling thinking. `scripts/check_fleet_model.py` exercises the real BaseAgent transport and checks the provider's model identity rather than model self-report. Runtime upgrades require an idle backend reload; in-flight research must finish first.
 

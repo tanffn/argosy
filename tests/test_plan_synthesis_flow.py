@@ -18,6 +18,19 @@ from sqlalchemy.orm import sessionmaker
 from argosy.state.models import DecisionPhase, PlanVersion, User
 
 
+@pytest.fixture(autouse=True)
+def stub_model_calls(monkeypatch):
+    """This module tests orchestration with canned agent reports."""
+    from argosy.agents.base import BaseAgent
+    from argosy.orchestrator.flows import plan_synthesis
+
+    async def unexpected_call(self, **kwargs):
+        raise AssertionError(f"Unstubbed live model call from {self.agent_role}")
+
+    monkeypatch.setattr(BaseAgent, "_call_model", unexpected_call)
+    monkeypatch.setattr(plan_synthesis, "_run_plan_language_rewriter", lambda *, output, **kw: output)
+
+
 @pytest.fixture
 def session(alembic_engine_at_head):
     SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)

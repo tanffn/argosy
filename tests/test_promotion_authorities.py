@@ -61,6 +61,14 @@ def test_takes_latest_reconcile_round(session):
     assert read_codex_verdict(session, 7) == "APPROVE"
 
 
+def test_replacement_draft_invalidates_previous_authorities(session):
+    _add(session, 7, 6, "synthesis.phase_45", '{"overall_assessment": "APPROVE"}')
+    _add(session, 7, 8, "synthesis.phase_55", '{"overall_assessment": "APPROVE"}')
+    _add(session, 7, 9, "synthesis.phase_3", '{"new": "draft"}')
+    assert read_codex_verdict(session, 7) is None
+    assert read_reader_verdict(session, 7) is None
+
+
 def test_unparseable_or_missing_assessment_is_none(session):
     _add(session, 7, 6, "synthesis.phase_45", "not json")
     _add(session, 7, 10, "synthesis.phase_55", '{"no_assessment_key": 1}')

@@ -58,6 +58,13 @@ _argosy_configure_logging()
 
 
 @pytest.fixture(autouse=True)
+def _guard_live_provider_fallback(request, monkeypatch):
+    """Leave an operator's signed-in alternate idle in ordinary tests."""
+    if request.node.get_closest_marker("llm_eval") is None:
+        monkeypatch.setenv("ARGOSY_PROVIDER_FALLBACK_ENABLED", "0")
+
+
+@pytest.fixture(autouse=True)
 def _guard_alternatives_phase(request, monkeypatch):
     """Never let ``run_synthesis`` fire the REAL alternatives phase in tests.
 

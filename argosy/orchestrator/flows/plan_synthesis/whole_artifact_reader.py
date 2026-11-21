@@ -18,35 +18,17 @@ sections, staleness, and regressions — NOT re-deriving numbers. The codex
 second-opinion gate (``codex_second_opinion.py``) owns the math; this reader
 owns the prose-level integrity of the assembled document.
 
-Design contract — mirrors ``codex_second_opinion.py``:
-  - dispatched via ``engine_codex.run_codex(...)`` from the ``tools/codex-tandem``
-    kit (``_resolve_codex_scripts_dir`` + ``sys.path.insert``), in an executor,
-    ``timeout_s=300``;
-  - strict → lenient → **fail-closed-to-BLOCK** parse (a timeout / unparseable
-    output is a BLOCK, not a soft pass — the S21 lesson);
-  - kill switches (``ARGOSY_CODEX_REVIEW_ENABLED != "1"`` and
-    ``PYTEST_CURRENT_TEST``);
-  - fail-soft dispatch (``(None, None)`` on kit-missing / dispatch error);
-  - one ``agent_reports`` row with ``agent_role="whole_artifact_reader"``.
-
-Simplifications vs ``codex_second_opinion.py`` (intentional, Task 6):
-  - **No idempotency lookup.** The codex helper re-reads an existing
-    ``agent_reports`` row to avoid re-dispatching on resume. This reader omits
-    that: a fresh dispatch each run is safe and the lookup added DB-coupling
-    risk for no load-bearing benefit at this task. Note for a future task if
-    resume-cost becomes a concern.
-  - **Simpler cost telemetry.** Tokens read defensively via ``getattr``; cost
-    is best-effort via the kit's ``estimate_cost_usd`` and falls back to 0.0 on
-    any failure (no ``_COST_CAP`` / explicit-cost-attr layering). The reader's
-    verdict is the load-bearing output, not its dollar figure.
+Every pass reviews the assembled artifact afresh. A Codex provider outage can
+produce a separately attributed Claude advisory report. Neither that advisory
+report nor a Codex review of Codex-authored content can authorize promotion.
+Unparseable output from a completed primary review fails closed. Intentional
+review disablement and the pytest gate continue to skip both providers.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import sys
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -54,6 +36,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import AgentReport
+from argosy.orchestrator.flows.plan_synthesis.review_dispatch import (
+    ReviewUnavailable, dispatch_plan_review,
+)
 from argosy.logging import get_logger
 from argosy.quality.coherence.surface_registry import SUBJECT_REGISTRY
 
@@ -66,31 +51,7 @@ _SUBJECT_TAXONOMY_STR = ", ".join(sorted(SUBJECT_REGISTRY.keys()))
 
 
 # ----------------------------------------------------------------------
-# Hard dispatch ceiling. ``run_codex``'s own ``timeout_s`` does NOT
-# reliably hard-kill a fully-stuck codex subprocess on Windows (it relies
-# on the subprocess/CLI self-terminating); a hung codex left
-# ``await loop.run_in_executor(...)`` blocking synthesis for 6+ HOURS in a
-# live run. ``run_in_executor`` has no cancellation/timeout of its own, so
-# wrap the await in ``asyncio.wait_for`` as a BACKSTOP: ``timeout_s`` (300)
-# + a 60s grace margin so a slow-but-valid reader still completes, but a
-# true hang raises ``asyncio.TimeoutError`` and hits the existing
-# dispatch-failure path (→ (None, None), reader simply doesn't run and
-# synthesis proceeds). The grace margin is identical to the codex
-# second-opinion ceiling (60s) for consistency; 300 + 60 = 360.
-#
-# CAVEAT: ``wait_for`` cancels the AWAIT, but the underlying thread running
-# ``run_codex`` keeps going (you can't kill a thread). Acceptable — the
-# orphaned thread may linger but no longer blocks synthesis. We do NOT try
-# to kill the thread.
-#
-# The codex timeout is env-configurable (ARGOSY_READER_CODEX_TIMEOUT_S, default
-# 540) because a large assembled artifact (~100k chars) legitimately needs more
-# than 5 minutes for the reviewer to read — a too-tight timeout reads as a
-# dispatch failure (the fail-closed synthetic BLOCK) even though nothing is hung.
-# The old 300s default fail-closed real-but-slow reads in EVERY ~100k-artifact
-# run (drun 117 logged three 0-token synthetic BLOCKs before the real APPROVE),
-# so 540 is the default. Clamped to run_codex's own 600s subprocess ceiling; the
-# hard backstop adds the same 60s grace margin (540 + 60 = 600).
+# The outer deadline bounds and reaps the tandem worker and its descendants.
 _DEFAULT_READER_CODEX_TIMEOUT_S = 540
 
 
@@ -496,11 +457,9 @@ async def run_whole_artifact_review(
 ) -> tuple[WholeArtifactVerdict | None, AgentReport | None]:
     """Dispatch the whole-artifact adversarial reader. Fail-soft.
 
-    Returns ``(parsed_verdict, agent_report_row)``. Both ``None`` when:
-      * ``ARGOSY_CODEX_REVIEW_ENABLED`` is anything other than ``"1"``,
-      * running under pytest (``PYTEST_CURRENT_TEST`` set),
-      * the codex-tandem kit isn't importable (fresh checkout), or
-      * the dispatch raises / times out.
+    Returns ``(independent_verdict, report)``. Intentional skips yield no
+    report. Advisory and dual-provider failure receipts can accompany an
+    absent independent verdict.
 
     On a successful dispatch with unparseable output, a synthetic BLOCK
     ``WholeArtifactVerdict`` (one BLOCKER finding) is returned so the caller
@@ -574,24 +533,6 @@ async def run_whole_artifact_review(
         )
         return _leak_verdict, _leak_row
 
-    # ------------------------------------------------------------------
-    # Resolve the kit. The codex-tandem scripts dir is only added to
-    # ``sys.path`` here — no top-level import of ``engine_codex`` so the
-    # rest of argosy doesn't require the kit to be present.
-    # ------------------------------------------------------------------
-    scripts_dir = _resolve_codex_scripts_dir()
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    try:
-        from engine_codex import run_codex  # type: ignore[import-not-found]
-    except ImportError as exc:
-        log.warning(
-            "whole_artifact_reader.kit_unavailable",
-            scripts_dir=str(scripts_dir),
-            error=str(exc),
-        )
-        return None, None
-
     prompt = _build_prompt(
         assembled_artifact=assembled_artifact,
         external_context=external_context,
@@ -600,116 +541,32 @@ async def run_whole_artifact_review(
         canonical_anchor=canonical_anchor,
     )
 
-    # ------------------------------------------------------------------
-    # Dispatch. ``run_codex`` is sync (subprocess); push it into the
-    # default executor so we don't block the orchestrator's asyncio loop.
-    # ``node_dir`` is a fresh tmpdir so codex's ``result.md`` write doesn't
-    # collide with concurrent runs.
-    # ------------------------------------------------------------------
     from argosy.config import get_settings
 
-    settings = get_settings()
     node_dir = (
-        settings.home / "logs" / "synthesis" / "whole_artifact_reader"
+        get_settings().home / "logs" / "synthesis" / "whole_artifact_reader"
         / f"run_{decision_run_id}_{uuid.uuid4().hex[:8]}"
     )
-
     try:
-        loop = asyncio.get_running_loop()
-        # Wrap the executor await in ``asyncio.wait_for`` so a hung codex
-        # subprocess (which run_codex's own timeout_s does not reliably
-        # kill — see _hard_ceiling_s) can't block synthesis indefinitely.
-        # A timeout raises asyncio.TimeoutError, caught by the except below
-        # and handled exactly like any other dispatch failure: (None, None),
-        # so the reader simply doesn't run and synthesis proceeds.
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: run_codex(
-                    node_dir=node_dir,
-                    prompt=prompt,
-                    agent_name=f"whole_artifact_reader_run_{decision_run_id}",
-                    role="whole_artifact_reader",
-                    timeout_s=_reader_codex_timeout_s(),
-                ),
-            ),
-            timeout=_hard_ceiling_s(),
+        response = await dispatch_plan_review(
+            scripts_dir=_resolve_codex_scripts_dir(), node_dir=node_dir, role="whole_artifact_reader",
+            prompt=prompt, decision_run_id=decision_run_id, user_id=user_id,
+            timeout_s=_reader_codex_timeout_s(), ceiling_s=_hard_ceiling_s(),
         )
-    except asyncio.TimeoutError:
-        # Hard ceiling tripped — a stuck codex subprocess. The orphaned
-        # executor thread may linger but no longer blocks synthesis. This is
-        # a DISPATCH failure (the reader never produced output), so it takes
-        # the fail-soft (None, None) path — NOT the parse fail-closed-to-BLOCK
-        # path (that one fires only when codex DID return empty/garbage text).
-        log.warning(
-            "whole_artifact_reader.dispatch_failed",
-            decision_run_id=decision_run_id,
-            error=f"hard ceiling exceeded ({_hard_ceiling_s()}s) — codex hung",
-            timed_out=True,
-        )
-        return None, None
-    except Exception as exc:  # noqa: BLE001 — fail-soft on any dispatch error
-        log.warning(
-            "whole_artifact_reader.dispatch_failed",
-            decision_run_id=decision_run_id,
-            error=str(exc),
-        )
-        return None, None
+    except ReviewUnavailable as exc:
+        log.warning("whole_artifact_reader.dispatch_failed", decision_run_id=decision_run_id, error=str(exc))
+        row = exc.failed_report(role="whole_artifact_reader", user_id=user_id, decision_run_id=decision_run_id)
+        return None, row
 
-    log.info(
-        "whole_artifact_reader.dispatched",
-        decision_run_id=decision_run_id,
-        exit_code=getattr(result, "exit_code", None),
-        tokens=getattr(result, "tokens", 0),
-        wall_s=getattr(result, "wall_s", 0.0),
+    parsed = _parse_verdict(response.text)
+    row = response.report(
+        parsed=parsed, role="whole_artifact_reader", user_id=user_id,
+        decision_run_id=decision_run_id, prompt=prompt,
     )
-
-    verdict_text = getattr(result, "verdict_text", "") or ""
-    parsed = _parse_verdict(verdict_text)
-
-    # ------------------------------------------------------------------
-    # Cost + token telemetry (simplified — see module docstring). The kit's
-    # ``CodexResult`` exposes a flat ``tokens`` total and no cost; park the
-    # total under tokens_out, best-effort cost via the kit's estimator,
-    # fall through to 0.0 on any failure.
-    # ------------------------------------------------------------------
-    total_tokens = int(getattr(result, "tokens", 0) or 0)
-    try:
-        from engine_stats import estimate_cost_usd  # type: ignore[import-not-found]
-        cost_usd = float(estimate_cost_usd(model="codex-gpt-5-5", tokens=total_tokens))
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "whole_artifact_reader.cost_estimate_failed",
-            decision_run_id=decision_run_id,
-            tokens=total_tokens,
-            error=str(exc),
-        )
-        cost_usd = 0.0
-
-    # ------------------------------------------------------------------
-    # Build an AgentReport row so the existing phase-recorder / forensic
-    # trail path can persist this alongside Argosy's native agent rows.
-    # ``output`` carries the parsed verdict for the replay UI; ``response_text``
-    # carries the parsed JSON for re-parse off the DB row.
-    # ------------------------------------------------------------------
-    row = AgentReport(
-        agent_role="whole_artifact_reader",
-        user_id=user_id,
-        # Dispatched via run_codex with no ``--model``, so the real model is the
-        # codex CLI default (gpt-5.5). Label it accurately, not "gpt-5-codex".
-        model="gpt-5.5",
-        response_text=parsed.model_dump_json(indent=2),
-        tokens_in=0,
-        tokens_out=total_tokens,
-        cost_usd=cost_usd,
-        prompt_hash="",
-        confidence=None,
-        output=parsed,
-        decision_id=decision_audit_token,
-        run_correlation_id=str(uuid.uuid4()),
-        system_prompt="",  # single user message
-        user_prompt=prompt,
-    )
+    if response.advisory_reason:
+        log.warning("whole_artifact_reader.advisory_only", decision_run_id=decision_run_id,
+                    reviewer=response.provider, reason=response.advisory_reason)
+        return None, row
 
     return parsed, row
 

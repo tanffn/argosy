@@ -6,6 +6,7 @@ The registry is currently single-user, like its underlying job_runs table.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, or_, select
@@ -128,13 +129,22 @@ def failure_guidance(row: JobRun) -> dict:
             return {"code": "source_request", "reason": "A data source rejected the request or its endpoint is unavailable.",
                     "action": "Repair the source URL/request. Automatic retries cannot fix a permanent HTTP error."}
     message = f"{row.error_message or ''} {row.output_summary or ''}".lower()
-    if getattr(row, "job_name", None) == "period_directive_daily":
+    is_period_directive = getattr(row, "job_name", None) == "period_directive_daily"
+    if is_period_directive:
         try:
             summary = json.loads(row.output_summary or "{}")
             # Inspect failures, not investment prose mentioning a financing budget.
             message = f"{row.error_message or ''} {json.dumps(summary.get('research', {}).get('failures', []))} {json.dumps(summary.get('artifact_failures', []))}".lower()
         except (ValueError, TypeError, AttributeError):
             pass
+    if "both model providers failed:" in message:
+        diagnostics = message.split("both model providers failed:", 1)[1][:140]
+        if re.search(r"\b(?:claude_code|api_key|codex_cli)=authentication\b", diagnostics):
+            return {"code": "authentication", "reason": "Neither Claude nor Codex completed this job. A provider reported an authentication failure.",
+                    "action": "Check the sign-in for the provider flagged in Job history, then retry the affected job to verify recovery."}
+        return {"code": "model_providers_unavailable", "reason": "Neither Claude nor Codex completed this job.",
+                "action": "Check both provider results in Job history. Retry the affected analysis after a provider recovers."}
+    if is_period_directive:
         # Blocking provider causes outrank transient causes in mixed failures.
         if _model_authentication_failed(message):
             return {"code": "authentication", "reason": "Model authentication failed.",

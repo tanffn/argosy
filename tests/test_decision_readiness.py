@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -516,6 +517,19 @@ async def test_other_job_failures_surface_until_success_without_expanding_retrie
 def test_failure_guidance(error, code):
     from argosy.services.decision_readiness import failure_guidance
     assert failure_guidance(SimpleNamespace(error_message=error, output_summary=None))["code"] == code
+
+
+@pytest.mark.parametrize("job", ["holdings_review", "period_directive_daily"])
+@pytest.mark.parametrize("reason,expected", [("authentication", "authentication"), ("timeout", "model_providers_unavailable")])
+def test_failed_provider_pair_reports_both_backends(job, reason, expected):
+    from argosy.services.decision_readiness import failure_guidance
+
+    error = f"Both model providers failed: claude_code={reason}; codex_cli=rate_limit"
+    row = SimpleNamespace(job_name=job, error_message=None if job == "period_directive_daily" else error,
+                          output_summary=json.dumps({"research": {"failures": [error]}}))
+    guidance = failure_guidance(row)
+    assert guidance["code"] == expected
+    assert "Claude" in guidance["reason"] and "Codex" in guidance["reason"]
 
 
 @pytest.mark.parametrize("error,code", [

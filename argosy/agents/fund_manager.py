@@ -340,7 +340,13 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             )
         # Codex ZigZag second opinion — pointer in system, full JSON in
         # user prompt. Same anti-empty-output pattern as user_directive.
-        if codex_second_opinion is not None:
+        advisory_reason = getattr(codex_second_opinion, "advisory_reason", "")
+        if advisory_reason:
+            system += (
+                "\nAn advisory review accompanies the draft. Consider its findings on their merits. "
+                "The independent verification gate is still outstanding.\n"
+            )
+        elif codex_second_opinion is not None:
             system = system + (
                 "\nCODEX SECOND OPINION PRESENT: a CODEX SECOND OPINION block "
                 "appears in the user message below, produced by an INDEPENDENT "
@@ -380,7 +386,12 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             lines.append("\n")
             prior_resolved_section = "\n".join(lines) + "\n"
         codex_section = ""
-        if codex_second_opinion is not None:
+        if advisory_reason:
+            codex_section = (
+                "=== ADVISORY PLAN REVIEW ===\n"
+                f"{codex_second_opinion.model_dump_json(indent=2)}\n\n"
+            )
+        elif codex_second_opinion is not None:
             try:
                 codex_section = (
                     "=== CODEX SECOND OPINION (independent gpt-5 reviewer) ===\n"

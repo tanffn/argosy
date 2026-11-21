@@ -725,6 +725,12 @@ def _extract_reconcile_marker(
     )
 
 
+def _review_excerpt(excerpt: str, advisory_reason: str | None, unavailable: bool) -> str:
+    if unavailable:
+        return advisory_reason or "Review unavailable"
+    return f"Advisory review. {excerpt}" if advisory_reason else excerpt
+
+
 def _build_codex_node(
     r: AgentReport | None,
     codex_phase: "DecisionPhase | None" = None,
@@ -802,6 +808,10 @@ def _build_codex_node(
     # Happy path — parsed verdict. Derive the confidence band from the
     # overall_assessment, build a one-line excerpt that surfaces the
     # finding count + agreement-with-risk + novel-concerns count.
+    unavailable = parsed.get("reviewer") == "unavailable"
+    advisory_reason = parsed.get("advisory_reason")
+    if advisory_reason:
+        parsed = parsed.get("advisory_review") or {}
     overall = str(parsed.get("overall_assessment") or "")
     confidence = _CODEX_ASSESSMENT_TO_CONFIDENCE.get(overall)
     findings_raw = parsed.get("findings") or []
@@ -871,16 +881,16 @@ def _build_codex_node(
     return AgentNode(
         agent_role="codex_second_opinion",
         agent_report_id=r.id,
-        status="ok",
-        confidence=confidence,
+        status="degraded" if advisory_reason else "ok",
+        confidence=None if advisory_reason else confidence,
         model=r.model,
         tokens_in=r.tokens_in,
         tokens_out=r.tokens_out,
         cost_usd=float(r.cost_usd) if r.cost_usd is not None else None,
         side=None,
         perspective=None,
-        response_excerpt=excerpt,
-        failure_reason=None,
+        response_excerpt=_review_excerpt(excerpt, advisory_reason, unavailable),
+        failure_reason=advisory_reason,
         children=[],
         adapters=[],
         codex_findings=findings,
@@ -971,6 +981,10 @@ def _build_reader_node(
             thinking_tokens=_safe_thinking_tokens(r),
         )
 
+    unavailable = parsed.get("reviewer") == "unavailable"
+    advisory_reason = parsed.get("advisory_reason")
+    if advisory_reason:
+        parsed = parsed.get("advisory_review") or {}
     overall = str(parsed.get("overall_assessment") or "")
     confidence = _READER_ASSESSMENT_TO_CONFIDENCE.get(overall)
     findings_raw = parsed.get("findings") or []
@@ -1005,16 +1019,16 @@ def _build_reader_node(
     return AgentNode(
         agent_role="whole_artifact_reader",
         agent_report_id=r.id,
-        status="ok",
-        confidence=confidence,
+        status="degraded" if advisory_reason else "ok",
+        confidence=None if advisory_reason else confidence,
         model=r.model,
         tokens_in=r.tokens_in,
         tokens_out=r.tokens_out,
         cost_usd=float(r.cost_usd) if r.cost_usd is not None else None,
         side=None,
         perspective=None,
-        response_excerpt=excerpt,
-        failure_reason=None,
+        response_excerpt=_review_excerpt(excerpt, advisory_reason, unavailable),
+        failure_reason=advisory_reason,
         children=[],
         adapters=[],
         coherence_findings=findings,

@@ -98,6 +98,17 @@ def _valid_codex_json() -> str:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def tandem_stub_in_test_process(monkeypatch):
+    """Exercise the stubbed kit under the same deadline without a live worker."""
+    from argosy.orchestrator.flows.plan_synthesis import review_dispatch, tandem_review_worker
+
+    async def run_stub(*, ceiling_s, **kwargs):
+        return await asyncio.wait_for(asyncio.to_thread(tandem_review_worker.run, **kwargs), ceiling_s)
+
+    monkeypatch.setattr(review_dispatch, "_run_tandem", run_stub)
+
+
 def test_codex_skipped_under_pytest(monkeypatch):
     """When PYTEST_CURRENT_TEST is set (which it always is here),
     ``run_codex_second_opinion`` short-circuits to (None, None).
@@ -234,6 +245,7 @@ def test_codex_fails_soft_when_unreachable(monkeypatch, tmp_path):
     """
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_PROVIDER_FALLBACK_ENABLED", "0")
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
     # Force settings reload so the home path is the tmp_path.
     from argosy.config import reload_settings
@@ -292,6 +304,7 @@ def test_codex_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
 
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_PROVIDER_FALLBACK_ENABLED", "0")
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
     from argosy.config import reload_settings
     reload_settings()
@@ -343,7 +356,7 @@ def test_codex_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
     # Fail-CLOSED (gate): a hung dispatch is DID_NOT_RUN, NOT a pass.
     assert gate.status == GateStatus.DID_NOT_RUN
     assert gate.gate == "codex_math"
-    assert "hard ceiling" in gate.detail
+    assert "timeout" in gate.detail
     # The await returns promptly (well under the 5s stub sleep) — the
     # ceiling tripped rather than the orchestrator blocking on the stuck thread.
     assert elapsed < 2.0, f"await blocked for {elapsed:.2f}s — ceiling did not trip"
@@ -369,6 +382,7 @@ def test_kit_unavailable_yields_did_not_run_not_pass(monkeypatch, tmp_path):
 
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_PROVIDER_FALLBACK_ENABLED", "0")
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
     from argosy.config import reload_settings
     reload_settings()
@@ -522,7 +536,7 @@ def test_codex_full_path_with_valid_output(monkeypatch, tmp_path):
 
     assert row is not None
     assert row.agent_role == "codex_second_opinion"
-    assert row.model == "gpt-5.5"
+    assert row.model == "codex-cli-default"
     assert row.tokens_out == 4200
     assert row.decision_id == "plan-synth-5"
     # response_text holds the parsed-and-reserialized JSON — guards the
@@ -897,7 +911,7 @@ def test_idempotency_lookup_works_inside_running_loop(monkeypatch):
         # We are inside a running loop here — the old code would raise
         # RuntimeError; the fix awaits the read directly.
         return await cso._load_existing_codex_opinion(
-            decision_audit_token="plan-synth-102", user_id="ariel",
+            decision_audit_token="plan-synth-102", user_id="ariel", prompt="evidence",
         )
 
     parsed = asyncio.run(_run())
@@ -929,7 +943,7 @@ def test_idempotency_lookup_returns_none_on_no_row(monkeypatch):
 
     async def _run():
         return await cso._load_existing_codex_opinion(
-            decision_audit_token="plan-synth-999", user_id="ariel",
+            decision_audit_token="plan-synth-999", user_id="ariel", prompt="evidence",
         )
 
     assert asyncio.run(_run()) is None

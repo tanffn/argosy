@@ -22,6 +22,17 @@ from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
 )
 
 
+@pytest.fixture(autouse=True)
+def tandem_stub_in_test_process(monkeypatch):
+    """Exercise the stubbed kit under the same deadline without a live worker."""
+    from argosy.orchestrator.flows.plan_synthesis import review_dispatch, tandem_review_worker
+
+    async def run_stub(*, ceiling_s, **kwargs):
+        return await asyncio.wait_for(asyncio.to_thread(tandem_review_worker.run, **kwargs), ceiling_s)
+
+    monkeypatch.setattr(review_dispatch, "_run_tandem", run_stub)
+
+
 def test_reader_codex_timeout_default_and_env_override(monkeypatch):
     monkeypatch.delenv("ARGOSY_READER_CODEX_TIMEOUT_S", raising=False)
     # Default bumped to 540 (2026-06-21) — a large assembled artifact (~100k
@@ -62,6 +73,7 @@ def test_reader_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
     """
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_PROVIDER_FALLBACK_ENABLED", "0")
     monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
     from argosy.config import reload_settings
     reload_settings()

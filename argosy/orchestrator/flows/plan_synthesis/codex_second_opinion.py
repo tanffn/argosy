@@ -29,11 +29,10 @@ The verdict is persisted as one ``agent_reports`` row with
 sequence diagram and the audit trail. A ``decision_phases`` row of
 ``kind='synthesis.phase_4_5'`` back-links the agent_report.
 
-**Fail-soft:**
-ANY codex error (kit missing, subprocess fail, timeout, parse error)
-returns ``(None, None)`` and synthesis proceeds. The FM tolerates
-``codex_second_opinion=None`` gracefully (no codex section in the
-prompt).
+**Availability and independence:**
+A provider outage can produce a Claude advisory review. An advisory report
+preserves its author and findings, while the independent gate records DID_NOT_RUN.
+Malformed output from a completed primary review still blocks the gate.
 
 **Kill switches:**
   - ``ARGOSY_CODEX_REVIEW_ENABLED != "1"`` → skipped silently.
@@ -49,10 +48,8 @@ re-dispatching codex. This makes the resume path safe.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import sys
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -66,28 +63,18 @@ from argosy.agents._review_criteria import (
     CriterionVerdict,
     render_criteria_block,
 )
+from argosy.orchestrator.flows.plan_synthesis.review_dispatch import (
+    ReviewUnavailable, dispatch_plan_review,
+)
 from argosy.logging import get_logger
+from argosy.quality.review_provenance import codex_contributed
 from argosy.quality.verification import GateOutcome, GateStatus  # noqa: F401
 
 log = get_logger(__name__)
 
 
 # ----------------------------------------------------------------------
-# Hard dispatch ceiling. ``run_codex``'s own ``timeout_s`` does NOT
-# reliably hard-kill a fully-stuck codex subprocess on Windows (it relies
-# on the subprocess/CLI self-terminating). In a live run the call hung for
-# 6+ HOURS — ``await loop.run_in_executor(...)`` never returned, blocking
-# the entire synthesis. ``run_in_executor`` provides no cancellation/timeout
-# of its own, so we wrap the await in ``asyncio.wait_for`` as a BACKSTOP:
-# ``timeout_s`` (480) + a 60s grace margin so a slow-but-valid codex still
-# completes, but a true hang raises ``asyncio.TimeoutError`` at the call
-# site and is handled by the existing fail-soft path (→ (None, None)).
-#
-# CAVEAT: ``wait_for`` cancels the AWAIT, but the underlying thread running
-# ``run_codex`` keeps going (you can't kill a thread). That's acceptable —
-# the orphaned thread will eventually finish or die with the process; what
-# matters is the orchestrator STOPS WAITING and proceeds. We do NOT try to
-# kill the thread.
+# The tandem worker is reaped with its descendants before an alternate starts.
 _HARD_CEILING_S = 540  # 480s run_codex timeout_s + 60s grace
 
 
@@ -572,7 +559,7 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
 
 
 async def _load_existing_codex_opinion(
-    *, decision_audit_token: str, user_id: str,
+    *, decision_audit_token: str, user_id: str, prompt: str,
 ) -> CodexSecondOpinion | None:
     """Return a previously-persisted codex opinion for this decision_id.
 
@@ -599,6 +586,7 @@ async def _load_existing_codex_opinion(
                 .where(AgentReportORM.user_id == user_id)
                 .where(AgentReportORM.decision_id == decision_audit_token)
                 .where(AgentReportORM.agent_role == "codex_second_opinion")
+                .where(AgentReportORM.user_prompt == prompt)
                 .order_by(AgentReportORM.id.desc())
                 .limit(1)
             )
@@ -614,7 +602,10 @@ async def _load_existing_codex_opinion(
     if not text:
         return None
     try:
-        return CodexSecondOpinion.model_validate_json(text)
+        payload = json.loads(text)
+        if isinstance(payload, dict) and "advisory_review" in payload:
+            return None
+        return CodexSecondOpinion.model_validate(payload)
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "codex_second_opinion.idempotency_parse_failed",
@@ -661,11 +652,9 @@ async def run_codex_second_opinion(
     * ``DID_NOT_RUN`` — codex could not run (env var disabled, kit missing, timeout,
                         exception). The ``detail`` names the specific cause.
 
-    ``opinion`` and ``row`` are ``None`` when the gate ``DID_NOT_RUN`` due to a
-    dispatch failure (env var, kit missing, timeout, exception). The gate status
-    must drive promotion decisions — callers MUST call ``blocks_promotion([gate])``
-    and refuse promotion when the result is non-empty. ``DID_NOT_RUN`` is NOT a
-    pass; a plan whose independent math check never ran is unverified.
+    A missing independent opinion can still carry an advisory or failed-dispatch
+    report for the fund manager, operator, and replay. A successful Claude review
+    cannot discharge the required independent Codex check.
 
     Idempotency: when an existing ``codex_second_opinion`` agent_report
     row exists for ``decision_run_id``, its persisted verdict is
@@ -703,10 +692,20 @@ async def run_codex_second_opinion(
     # ------------------------------------------------------------------
     # Idempotency — if a row already exists, return it without dispatch.
     # ------------------------------------------------------------------
-    existing = await _load_existing_codex_opinion(
-        decision_audit_token=decision_audit_token, user_id=user_id,
+    prompt = _build_prompt(
+        synth_draft_json=synth_draft_json,
+        analyst_reports_text=analyst_reports_text,
+        debate_outcomes_text=debate_outcomes_text,
+        risk_verdict_text=risk_verdict_text,
+        user_directive=user_directive,
+        derived_numbers_block=derived_numbers_block,
+        raw_holdings_block=raw_holdings_block,
     )
-    if existing is not None:
+
+    existing = await _load_existing_codex_opinion(
+        decision_audit_token=decision_audit_token, user_id=user_id, prompt=prompt,
+    )
+    if existing is not None and not codex_contributed(decision_run_id):
         log.info(
             "codex_second_opinion.idempotent_skip",
             decision_run_id=decision_run_id,
@@ -729,217 +728,32 @@ async def run_codex_second_opinion(
             )
         return existing, None, _existing_gate
 
-    # ------------------------------------------------------------------
-    # Resolve the kit. The codex-tandem scripts dir is on
-    # ``sys.path`` only after we add it here — no top-level import of
-    # ``engine_codex`` so the rest of argosy doesn't pay the cost or
-    # require the kit to be present.
-    # ------------------------------------------------------------------
-    scripts_dir = _resolve_codex_scripts_dir()
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    try:
-        from engine_codex import run_codex  # type: ignore[import-not-found]
-    except ImportError as exc:
-        log.warning(
-            "codex_second_opinion.kit_unavailable",
-            scripts_dir=str(scripts_dir),
-            error=str(exc),
-        )
-        return None, None, GateOutcome.did_not_run(
-            "codex_math",
-            detail=f"codex-tandem kit not importable from {scripts_dir}: {exc}",
-        )
-
-    prompt = _build_prompt(
-        synth_draft_json=synth_draft_json,
-        analyst_reports_text=analyst_reports_text,
-        debate_outcomes_text=debate_outcomes_text,
-        risk_verdict_text=risk_verdict_text,
-        user_directive=user_directive,
-        derived_numbers_block=derived_numbers_block,
-        raw_holdings_block=raw_holdings_block,
-    )
-
-    # ------------------------------------------------------------------
-    # Dispatch. ``run_codex`` is sync (subprocess); push it into the
-    # default executor so we don't block the orchestrator's asyncio
-    # loop. ``node_dir`` is a fresh tmpdir under the project so codex's
-    # ``result.md`` write doesn't collide with concurrent runs.
-    # ------------------------------------------------------------------
     from argosy.config import get_settings
 
-    settings = get_settings()
     node_dir = (
-        settings.home / "logs" / "synthesis" / "codex_zigzag"
+        get_settings().home / "logs" / "synthesis" / "codex_zigzag"
         / f"run_{decision_run_id}_{uuid.uuid4().hex[:8]}"
     )
-
     try:
-        loop = asyncio.get_running_loop()
-        # Wrap the executor await in ``asyncio.wait_for`` so a hung codex
-        # subprocess (which run_codex's own timeout_s does not reliably
-        # kill — see _HARD_CEILING_S) can't block synthesis indefinitely.
-        # A timeout raises asyncio.TimeoutError, caught by the except below.
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: run_codex(
-                    node_dir=node_dir,
-                    prompt=prompt,
-                    agent_name=f"codex_second_opinion_run_{decision_run_id}",
-                    role="codex_second_opinion",
-                    # 480s headroom: a first review observed at 233s, and the
-                    # post-reconcile re-review can approach/exceed 300s under
-                    # self-load — a 300s cap fail-closed a slow-but-valid
-                    # review. True hangs still time out (just later).
-                    timeout_s=480,
-                ),
-            ),
-            timeout=_HARD_CEILING_S,
+        response = await dispatch_plan_review(
+            scripts_dir=_resolve_codex_scripts_dir(), node_dir=node_dir, role="codex_second_opinion",
+            prompt=prompt, decision_run_id=decision_run_id, user_id=user_id,
+            timeout_s=480, ceiling_s=_HARD_CEILING_S,
         )
-    except asyncio.TimeoutError:
-        # Hard ceiling tripped — a stuck codex subprocess. The orphaned
-        # executor thread may linger but no longer blocks synthesis. The gate
-        # reports DID_NOT_RUN so callers know the math check never completed.
-        _timeout_detail = (
-            f"codex hard ceiling exceeded ({_HARD_CEILING_S}s) — dispatch hung"
-        )
-        log.warning(
-            "codex_second_opinion.dispatch_failed",
-            decision_run_id=decision_run_id,
-            error=_timeout_detail,
-            timed_out=True,
-        )
-        return None, None, GateOutcome.did_not_run("codex_math", detail=_timeout_detail)
-    except Exception as exc:  # noqa: BLE001 — synthesis continues; gate is DID_NOT_RUN
-        _exc_detail = f"codex dispatch raised: {exc}"
-        log.warning(
-            "codex_second_opinion.dispatch_failed",
-            decision_run_id=decision_run_id,
-            error=_exc_detail,
-        )
-        return None, None, GateOutcome.did_not_run("codex_math", detail=_exc_detail)
+    except ReviewUnavailable as exc:
+        log.warning("codex_second_opinion.dispatch_failed", decision_run_id=decision_run_id, error=str(exc))
+        row = exc.failed_report(role="codex_second_opinion", user_id=user_id, decision_run_id=decision_run_id)
+        return None, row, GateOutcome.did_not_run("codex_math", detail=str(exc))
 
-    log.info(
-        "codex_second_opinion.dispatched",
-        decision_run_id=decision_run_id,
-        exit_code=getattr(result, "exit_code", None),
-        tokens=getattr(result, "tokens", 0),
-        wall_s=getattr(result, "wall_s", 0.0),
+    parsed = _parse_codex_verdict(response.text)
+    row = response.report(
+        parsed=parsed, role="codex_second_opinion", user_id=user_id,
+        decision_run_id=decision_run_id, prompt=prompt,
     )
-
-    verdict_text = getattr(result, "verdict_text", "") or ""
-    parsed = _parse_codex_verdict(verdict_text)
-
-    # ------------------------------------------------------------------
-    # Cost + token telemetry.
-    #
-    # The real ``CodexResult`` dataclass (engine_codex.CodexResult)
-    # exposes a single flat ``tokens: int`` (total -- no in/out split)
-    # and NO ``cost`` field. The kit computes cost externally via
-    # ``engine_stats.estimate_cost_usd(model, tokens)`` against a
-    # ``models.toml`` price table. Until this fix, we hardcoded
-    # ``cost_usd=0.0`` on the AgentReport row, which is why run #31's
-    # codex row shows $0 despite ~53k tokens of real GPT-5 spend.
-    #
-    # Defensive layering -- highest fidelity first:
-    #   1. If the result object carries explicit ``cost`` /
-    #      ``tokens_in`` / ``tokens_out`` attributes (e.g. a future
-    #      kit version, or a test stub), honour them.
-    #   2. Otherwise call ``estimate_cost_usd("codex-gpt-5-5", tokens)``
-    #      using the kit's own price table -- best available estimate
-    #      given that codex only emits a total token count to stderr.
-    #   3. On ANY failure (kit module gone, models.toml missing, weird
-    #      values), log a warning and fall through to cost=0.0 +
-    #      tokens=0 rather than crashing.
-    #
-    # A defensive upper bound ($10) guards against a runaway estimate
-    # surfacing a misleading dollar in the UI -- a single codex review
-    # has never come close to $1 in practice; anything above $10 is
-    # almost certainly a price-table glitch.
-    # ------------------------------------------------------------------
-    _COST_CAP_USD = 10.0
-    total_tokens = int(getattr(result, "tokens", 0) or 0)
-    tokens_in = int(getattr(result, "tokens_in", 0) or 0)
-    tokens_out_attr = getattr(result, "tokens_out", None)
-    if tokens_out_attr is None:
-        # No explicit split available -- mirror the legacy convention of
-        # parking the total under tokens_out (the kit never exposes input
-        # tokens separately).
-        tokens_out = total_tokens
-    else:
-        tokens_out = int(tokens_out_attr or 0)
-
-    explicit_cost = getattr(result, "cost", None)
-    if explicit_cost is not None:
-        try:
-            cost_usd = float(explicit_cost)
-        except (TypeError, ValueError) as exc:
-            log.warning(
-                "codex_second_opinion.cost_attr_unparseable",
-                decision_run_id=decision_run_id,
-                raw=repr(explicit_cost),
-                error=str(exc),
-            )
-            cost_usd = 0.0
-    else:
-        # Fall back to the kit's own cost estimator. The scripts_dir is
-        # already on sys.path from the run_codex import above.
-        try:
-            from engine_stats import estimate_cost_usd  # type: ignore[import-not-found]
-            cost_usd = float(
-                estimate_cost_usd(model="codex-gpt-5-5", tokens=total_tokens)
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "codex_second_opinion.cost_estimate_failed",
-                decision_run_id=decision_run_id,
-                tokens=total_tokens,
-                error=str(exc),
-            )
-            cost_usd = 0.0
-
-    if cost_usd < 0 or cost_usd > _COST_CAP_USD:
-        log.warning(
-            "codex_second_opinion.cost_out_of_range",
-            decision_run_id=decision_run_id,
-            raw_cost_usd=cost_usd,
-            cap_usd=_COST_CAP_USD,
-        )
-        cost_usd = 0.0 if cost_usd < 0 else _COST_CAP_USD
-
-    # ------------------------------------------------------------------
-    # Build an AgentReport dataclass so the existing phase-recorder /
-    # JSONL forensic-trail path can persist this row alongside Argosy's
-    # native agent rows. ``output`` carries the parsed verdict so the
-    # downstream replay UI can render it; ``response_text`` carries the
-    # raw codex output for manual review.
-    # ------------------------------------------------------------------
-    row = AgentReport(
-        agent_role="codex_second_opinion",
-        user_id=user_id,
-        # ``run_codex`` passes no ``--model``, so the dispatched model is the
-        # codex CLI's configured default (``~/.codex/config.toml`` → gpt-5.5,
-        # with an auto-migration table that rolls older slugs forward to the
-        # newest reasoning tier). Label it accurately rather than the stale
-        # "gpt-5-codex" string, which mis-reported the model in the replay UI.
-        model="gpt-5.5",
-        # Persist BOTH the raw verdict (for manual review) and the parsed
-        # JSON so the FM's prompt builder can re-parse identically off
-        # the DB row.
-        response_text=parsed.model_dump_json(indent=2),
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cost_usd=cost_usd,
-        prompt_hash="",
-        confidence=None,
-        output=parsed,
-        decision_id=decision_audit_token,
-        run_correlation_id=str(uuid.uuid4()),
-        system_prompt="",  # codex prompt is a single user message
-        user_prompt=prompt,
-    )
+    if response.advisory_reason:
+        log.warning("codex_second_opinion.advisory_only", decision_run_id=decision_run_id,
+                    reviewer=response.provider, reason=response.advisory_reason)
+        return None, row, GateOutcome.did_not_run("codex_math", detail=response.advisory_reason)
 
     # Derive the GateOutcome from the parsed assessment so callers can call
     # blocks_promotion([gate]) to refuse promotion on any BLOCK or DID_NOT_RUN.
