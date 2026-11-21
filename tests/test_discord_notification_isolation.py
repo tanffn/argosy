@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from argosy.services.chat_advisor.connection_status import connection_status
-from argosy.services.chat_advisor.contracts import ChatAnswer
+from argosy.services.chat_advisor.contracts import ChatAnswer, OutboxEvent
+from argosy.services.chat_advisor.notification_policy import CRITICAL, OPERATIONAL
+from argosy.services.chat_advisor.notifications import NotificationSourceUnavailable
 from argosy.state.models import Base, User
 from argosy.transport.discord_advisor.auth import InboundIdentity
 from argosy.transport.discord_advisor.config import DiscordAdvisorConfig, DiscordBindingConfig
@@ -115,6 +118,73 @@ async def test_notification_failure_does_not_stop_chat_and_clears_after_retry(tm
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_job_alert_delivery_and_recovery_continue_during_inbox_outage(tmp_path, monkeypatch):
+    engine, sessions = await _database(tmp_path)
+    config = _config()
+    binding = config.bindings[0].model_copy(update={"status_channel_id": "4"})
+    gateway = FakeGateway()
+    registry = SimpleNamespace(list=AsyncMock(return_value=[]))
+    alert = OutboxEvent("system:job-health", "v1", OPERATIONAL, "Analyst login expired",
+                        user_action="Sign in again")
+    jobs = AsyncMock(return_value=[alert])
+    monkeypatch.setattr("argosy.transport.discord_advisor.status_board.critical_job_events", jobs)
+    unavailable = NotificationSourceUnavailable("Partial Inbox", issue_codes=["trade_plan_unavailable"])
+
+    class Producer:
+        def current_events(self, principal):
+            raise unavailable
+
+    worker = DiscordAdvisorWorker(
+        config.model_copy(update={"bindings": (binding,)}), "token", gateway, session_factory=sessions,
+        notification_producer=Producer(), status_registry=registry, retrieval_factory=lambda _: object(),
+        conversation_factory=_Conversation, dispatcher_factory=_Dispatcher,
+    )
+    try:
+        await worker.initialize()
+        store = next(iter(worker._stores.values()))
+        pending = await store.enqueue_outbox(OutboxEvent("pending-risk", "v1", CRITICAL, "Pending risk"))
+        sent = await store.enqueue_outbox(OutboxEvent("sent-risk", "v1", CRITICAL, "Earlier risk"))
+        await store.mark_outbox_sent(sent.id, "prior-message")
+        monkeypatch.setattr(worker, "in_quiet_hours", lambda: True)
+        with pytest.raises(NotificationSourceUnavailable):
+            await worker.pump_notifications()
+        assert not gateway.sent
+        assert (await store.latest_outbox(alert.semantic_key)).status == "pending"
+
+        monkeypatch.setattr(worker, "in_quiet_hours", lambda: False)
+        for _ in range(2):
+            with pytest.raises(NotificationSourceUnavailable):
+                await worker.pump_notifications()
+        assert len(gateway.sent) == 1 and gateway.sent[0]["channel_id"] == "4"
+        assert "Sign in again" in gateway.sent[0]["text"]
+        jobs.return_value = []
+        with pytest.raises(NotificationSourceUnavailable):
+            await worker.pump_notifications()
+        assert (await store.latest_outbox(alert.semantic_key)).status == "resolved"
+        assert (await store.latest_outbox(pending.semantic_key)).status == "pending"
+        assert (await store.latest_outbox(sent.semantic_key)).status == "sent"
+        assert len(gateway.edits) == 1 and gateway.edits[0]["channel_id"] == "4"
+
+        # Unknown scheduler health must likewise preserve its incident while
+        # a freshly observed portfolio alert can still reach the owner.
+        jobs.side_effect = RuntimeError("scheduler read failed")
+        queued_ops = await store.enqueue_outbox(
+            OutboxEvent("system:job-health", "v2", OPERATIONAL, "Queued operational alert")
+        )
+        monkeypatch.setattr(worker.notification_producer, "current_events", lambda _: [
+            OutboxEvent("pending-risk", "v1", CRITICAL, "Pending risk"),
+            OutboxEvent("sent-risk", "v1", CRITICAL, "Earlier risk"),
+        ])
+        with pytest.raises(RuntimeError, match="scheduler read failed"):
+            await worker.pump_notifications()
+        assert gateway.sent[-1]["channel_id"] == "2"
+        assert (await store.latest_outbox(pending.semantic_key)).status == "sent"
+        assert (await store.latest_outbox(queued_ops.semantic_key)).status == "pending"
+    finally:
         await engine.dispose()
 
 

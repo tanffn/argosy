@@ -1,5 +1,10 @@
 # Argosy — living handover
 
+**2026-11-21 — Morning failure alert and retirement sensitivity**
+
+- During November 13–21, red jobs appeared on the private Discord status board, but no new operational alert was queued. The worker fetched the financial Inbox before job health, so an unavailable trade plan prevented an independent login alert. The readiness classifier also missed Claude's explicit expired OAuth session wording. Corrected both paths. Pending alerts for an unavailable source retain their state. Existing quiet hours and delivery preferences apply. Fake-gateway regressions cover delivery, deduplication and recovery during a partial outage.
+- Live period advice still called for a gross NVDA stress reduction of ₪3.586m and listed no buys. The Inbox had no validated order sheet. Independent subscription-backed Sol arithmetic confirmed that gross sizing at zero tax. The household simulation answers a different question. Excluding the physical property and holding annual real spending at ₪270k, contributions and the three-year concentration reduction fixed, 1,500 typical-regime paths through age 95 gave 87.9% survival for retirement at 49 and 90.6% at 50 with 5% real returns. At 3% real returns the results were 64.3% at 49 and 67.4% at 50, first clearing 90% at age 60. These are sensitivity runs conditional on those inputs.
+
 **2026-11-21 — Monday, November 23 review and the missing whole-portfolio decision**
 
 - At 06:04 UTC the scheduler was running with 23 green, 16 red and two amber jobs. All 69 trade-proposal runs since November 13 were blocked. NVDA and SOFI trade reviews each had zero of four analysts. The optional daily brief endpoint returned null. Decision readiness reported 572 pending news items. Claude was signed out. The signed-in ChatGPT Business account completed an independent, read-only GPT-6.2 Sol comparison using public earnings releases. It favored further valuation work on Amazon because AWS operating profit increased $6.4bn while Amazon's trailing free cash flow was negative. This was an independent opinion. Argosy's scheduled primary analyst roles still use Claude.

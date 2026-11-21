@@ -49,6 +49,23 @@ def test_public_source_access_denial_does_not_invent_a_login_task():
     assert job_user_action(row) is None
 
 
+@pytest.mark.parametrize("name", ["holdings_review", "period_directive_daily"])
+def test_expired_claude_cli_session_requests_sign_in(name):
+    failure = "Claude CLI result success; turns=1; Failed to authenticate: OAuth session expired and could not be refreshed"
+    row = SimpleNamespace(
+        job_name=name, status="error",
+        error_message=failure if name == "holdings_review" else "incomplete research",
+        output_summary=json.dumps({"research": {"failures": [failure]}}),
+    )
+    assert job_user_action(row)["code"] == "authentication"
+
+
+def test_unrelated_expired_provider_session_does_not_request_claude_login():
+    row = SimpleNamespace(job_name="news_daily", status="error", output_summary="",
+                          error_message="News service failed to authenticate: OAuth session expired")
+    assert job_user_action(row) is None
+
+
 def test_explicit_capture_login_is_a_human_action_but_normal_work_is_not():
     row = SimpleNamespace(job_name='alpha_capture_daily', status='ok', error_message=None,
                           output_summary='{"status":"waiting_for_login"}')

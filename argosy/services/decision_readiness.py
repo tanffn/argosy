@@ -93,6 +93,16 @@ async def latest_job_runs(session, names=RECOVERABLE_JOBS) -> list[JobRun]:
     return list((await session.execute(select(JobRun).where(JobRun.id.in_(latest)))).scalars())
 
 
+def _model_authentication_failed(message: str) -> bool:
+    if ("failed to authenticate: oauth session expired" in message
+            and ("claude cli result" in message or "claude-agent-sdk error" in message)):
+        return True
+    return any(marker in message for marker in (
+        "authentication_error", "oauth token", "not logged in", "please log in",
+        "please run /login", "invalid api key",
+    ))
+
+
 def failure_guidance(row: JobRun) -> dict:
     """Public operational guidance; never publish raw stderr/prompts/credentials."""
     from argosy.services.jobs.recovery_policy import structured_failures
@@ -126,7 +136,7 @@ def failure_guidance(row: JobRun) -> dict:
         except (ValueError, TypeError, AttributeError):
             pass
         # Blocking provider causes outrank transient causes in mixed failures.
-        if any(s in message for s in ("authentication_error", "oauth token", "not logged in", "please log in", "please run /login", "invalid api key")):
+        if _model_authentication_failed(message):
             return {"code": "authentication", "reason": "Model authentication failed.",
                     "action": "Sign in to Claude again if using CLI, or check the configured API credential; then retry the failed job."}
         if managed_settings_failure(message):
@@ -150,7 +160,7 @@ def failure_guidance(row: JobRun) -> dict:
     if managed_settings_failure(message):
         return {"code": "claude_sign_in", "reason": "Claude could not load required managed settings.",
                 "action": "Sign in to Claude again, then retry the failed job from Job history. If it still fails, check organization settings or network access."}
-    if any(s in message for s in ("authentication_error", "oauth token", "not logged in", "please log in", "please run /login", "invalid api key")):
+    if _model_authentication_failed(message):
         return {"code": "authentication", "reason": "Model authentication failed.",
                 "action": "Sign in to Claude again if using CLI, or check the configured API credential; then retry the failed job."}
     if any(s in message for s in ("budget", "costguard", "spend cap", "insufficient credit")):

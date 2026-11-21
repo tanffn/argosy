@@ -549,12 +549,12 @@ class DiscordAdvisorWorker:
                 # the status board down with this optional delivery surface.
                 self.notification_error = (
                     f"Proactive notification refresh failed ({type(exc).__name__}). "
-                    "Existing notifications were left unchanged; chat remains available."
+                    "Alerts from the affected source are paused. Chat remains available."
                 )
                 if "trade_plan_unavailable" in getattr(exc, "issue_codes", []):
                     self.notification_error = (
-                        "Trade-plan data is incomplete, so action notifications are paused. "
-                        "Open Inbox for the exact missing holdings/prices; chat remains available."
+                        "Trade-plan data is incomplete, so portfolio alerts are paused. "
+                        "Open Inbox for the outstanding issue. Chat remains available."
                     )
             else:
                 self.notification_error = None
@@ -701,6 +701,7 @@ class DiscordAdvisorWorker:
         """Project canonical Inbox events into the durable outbox, then deliver."""
         if self.notification_producer is None:
             return
+        source_error = None
         for binding in self.config.bindings:
             key = (binding.guild_id, binding.channel_id, binding.user_id)
             principal = authorize(
@@ -708,17 +709,39 @@ class DiscordAdvisorWorker:
             )
             assert principal is not None
             store = self._stores[key]
-            events = await asyncio.to_thread(self.notification_producer.current_events, principal)
+            inbox_available = True
+            try:
+                events = await asyncio.to_thread(self.notification_producer.current_events, principal)
+            except DiscordAdvisorAccessError:
+                raise
+            except Exception as exc:
+                events = []
+                inbox_available = False
+                source_error = exc
+            jobs_available = inbox_available
             if self.status_registry is not None:
                 from .status_board import critical_job_events
 
-                events.extend(await critical_job_events(self.status_registry, store))
+                try:
+                    events.extend(await critical_job_events(self.status_registry, store))
+                    jobs_available = True
+                except DiscordAdvisorAccessError:
+                    raise
+                except Exception as exc:
+                    jobs_available = False
+                    source_error = source_error or exc
+
+            # All categories except scheduler incidents are sourced from the Inbox.
+            category_coverage = {OPERATIONAL: jobs_available}
+
             events = delivery_events(
                 events, now=datetime.now(UTC), timezone=self.config.timezone,
                 overview_time=self.config.daily_overview_time,
             )
             projected = []
             for event in events:
+                if not category_coverage.get(event.category, inbox_available):
+                    continue
                 if event.category == DAILY:
                     try:
                         event = await self._daily_event(event, principal, store, key)
@@ -739,7 +762,7 @@ class DiscordAdvisorWorker:
                         events[index] = replace(event, material_version=version)
             current_keys = {event.semantic_key for event in events}
             for prior in await store.active_sent_outbox():
-                if prior.category in {"status_board", DAILY}:
+                if prior.category in {"status_board", DAILY} or not category_coverage.get(prior.category, inbox_available):
                     continue
                 if prior.semantic_key == "system:critical-jobs":
                     # Retire the old mixed-channel policy, not the underlying errors.
@@ -789,7 +812,7 @@ class DiscordAdvisorWorker:
                     events[index] = event
                 await store.enqueue_outbox(event)
             for row in await store.pending_outbox():
-                if row.category == "status_board":
+                if row.category == "status_board" or not category_coverage.get(row.category, inbox_available):
                     continue
                 event = next((e for e in events if e.semantic_key == row.semantic_key
                               and e.material_version == row.material_version), None)
@@ -832,6 +855,10 @@ class DiscordAdvisorWorker:
                         f"{type(exc).__name__}: {str(exc)[:500]}",
                         datetime.now(UTC) + timedelta(minutes=5),
                     )
+        if source_error is not None:
+            # Keep the degraded source visible in worker health after delivery
+            # from the independently observed source and other bindings.
+            raise source_error
 
 
 __all__ = ["DiscordAdvisorWorker"]
