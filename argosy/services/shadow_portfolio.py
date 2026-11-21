@@ -11,6 +11,7 @@ from sqlalchemy import func, inspect, select, text
 from sqlalchemy.dialects.sqlite import insert
 
 from argosy.services.shadow_accounting import VERSION, aware, currency, money, position_key, replay
+from argosy.services.israeli_fund_marks import is_tase_foreign_etf
 from argosy.state.models import ActionProposal, Lot, PortfolioSnapshotRow
 from argosy.state.shadow_models import ShadowEvent
 
@@ -81,8 +82,16 @@ def activate(session, *, user_id, now=None):
             continue
         instrument = "TASE:" + str(item["security_id"]) if item.get("quote_market") == "TASE_FUND" else symbol
         provider = None
+        recorded_price = item.get("current_price")
         if instrument.startswith("TASE:"):
             provider = instrument
+        elif is_tase_foreign_etf(item):
+            # Live book marks provide the listing's close. Shadow replay also
+            # needs dated corporate actions and execution coverage. An older
+            # Leumi row may contain agorot in a USD reporting column.
+            ccy = "ILS"
+            recorded_price = None
+            warnings.append({"component": instrument, "reason": "TASE foreign ETF action and execution history unavailable"})
         elif listing := re.search(r"\b(LN|SW|GY|NA|IM)$", str(item.get("details") or "").strip().upper()):
             provider = symbol + {"LN": ".L", "SW": ".SW", "GY": ".DE", "NA": ".AS", "IM": ".MI"}[listing[1]]
         else:
@@ -97,7 +106,7 @@ def activate(session, *, user_id, now=None):
             instrument = provider + "@" + ccy
         identities[instrument] = {"instrument": instrument, "symbol": symbol, "provider": provider,
             "currency": ccy, "identity_evidence": item.get("identity_source") or item.get("details"),
-            "recorded_mark_date": item.get("valued_as_of"), "recorded_price": item.get("current_price"),
+            "recorded_mark_date": item.get("valued_as_of"), "recorded_price": recorded_price,
             "recorded_price_source": item.get("price_source"), "recorded_price_hash": item.get("price_evidence_sha256")}
         key = position_key(account, instrument)
         if key in positions:

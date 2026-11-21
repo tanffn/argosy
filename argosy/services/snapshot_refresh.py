@@ -514,7 +514,8 @@ def refresh_portfolio_snapshot(
                 carried.mark_stale = True
                 new_positions.append(carried)
                 result.carried.append(label)
-                result.warnings.append(f"reprice_miss:{label}:israeli-fund-nav")
+                kind = "nav" if p.quote_market == "TASE_FUND" else "exchange-close"
+                result.warnings.append(f"reprice_miss:{label}:israeli-fund-{kind}")
             continue
         if _is_carry_only(p):
             carried = _carry(p)

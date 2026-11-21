@@ -1,10 +1,4 @@
-"""Dated Israeli mutual-fund NAVs, keyed by security number (not index name).
-
-TheMarker's public fund page embeds the same dated quote it displays in
-__NEXT_DATA__. Only ILS mutual funds are supported: foreign-currency funds,
-ETFs, missing identities/dates, and old marks fail closed. NAVs are published
-in agorot; the returned price is shekels per unit. This is not an order quote.
-"""
+"""Dated ILS mutual-fund NAVs and exchange closes for verified TASE listings."""
 from __future__ import annotations
 
 import hashlib
@@ -39,6 +33,42 @@ MAX_NAV_AGE_DAYS = 14
 _lock = threading.Lock()
 _cache: dict[str, tuple[float, FundQuote | str]] = {}
 
+# Source: TASE foreign-fund registration 2019-16-077392. The London
+# listing of this share class has a different trading currency and close.
+TASE_FOREIGN_ETFS = {"1159169": ("IE00BKM4GZ66", "ISHARES CORE MSCI EM IMI UCITS ETF")}
+
+
+def _exchange_close(security_id: str, today: date | None) -> FundQuote:
+    isin, name = TASE_FOREIGN_ETFS[security_id]
+    exchange_id = security_id.zfill(8)
+    url = f"https://market.tase.co.il/en/market_data/security/{exchange_id}/historical_data"
+    headers = {"Origin": "https://market.tase.co.il", "Referer": url}
+    with httpx.Client(headers=headers, timeout=8) as client:
+        identity = client.get("https://api.tase.co.il/api/company/securitydata",
+                              params={"securityId": security_id, "lang": "1"})
+        identity.raise_for_status()
+        listing = identity.json()
+        if (listing.get("Id") != exchange_id or listing.get("ISIN") != isin
+                or listing.get("IsForeignETF") is not True or listing.get("LongName") != name):
+            raise ValueError("Foreign ETF exchange identity mismatch")
+        history = client.post("https://api.tase.co.il/api/security/historyeod", json={
+            "pType": 1, "TotalRec": 1, "pageNum": 1, "oId": exchange_id, "lang": "1",
+        })
+        history.raise_for_status()
+    # This table's unadjusted CloseRate is explicitly denominated in 0.01 ILS.
+    # Never substitute an intraday LastRate, a NAV or an adjusted close.
+    rows = history.json()["Items"]
+    row = next((item for item in rows if item.get("IfTraded") is True), None)
+    if row is None or row.get("IsOfferingPrice") is not False:
+        raise ValueError("Missing traded exchange close")
+    price = float(row["CloseRate"]) / 100
+    as_of = datetime.strptime(row["TradeDate"], "%d/%m/%Y").date()
+    now = datetime.now(UTC)
+    if not math.isfinite(price) or price <= 0 or not 0 <= ((today or now.date()) - as_of).days <= MAX_NAV_AGE_DAYS:
+        raise ValueError(f"Ineligible exchange close: {as_of}")
+    evidence = hashlib.sha256(identity.content + b"\n" + history.content).hexdigest()
+    return FundQuote(security_id, name, price, as_of, now, url, evidence)
+
 
 def parse_fund_quote(html: str, security_id: str, *, today: date | None = None) -> FundQuote:
     if not re.fullmatch(r"5[0-9]{6}", security_id):
@@ -72,9 +102,20 @@ def parse_fund_quote(html: str, security_id: str, *, today: date | None = None) 
 
 
 def get_fund_quote(security_id: str, *, today: date | None = None) -> FundQuote:
-    """Bounded retries + single-flight cache; failures are throttled too."""
+    """Mutual-fund NAV only. Shadow NAV carry depends on this contract."""
     if not re.fullmatch(r"5[0-9]{6}", security_id):
         raise ValueError("Expected an Israeli mutual-fund security number")
+    return _get_quote(security_id, today)
+
+
+def get_foreign_etf_close(security_id: str, *, today: date | None = None) -> FundQuote:
+    if security_id not in TASE_FOREIGN_ETFS:
+        raise ValueError("Unsupported TASE foreign ETF")
+    return _get_quote(security_id, today)
+
+
+def _get_quote(security_id: str, today: date | None) -> FundQuote:
+    """Bounded retries + single-flight cache; failures are throttled too."""
     with _lock:
         cached = _cache.get(security_id)
         if cached and cached[0] > time.monotonic():
@@ -89,7 +130,10 @@ def get_fund_quote(security_id: str, *, today: date | None = None) -> FundQuote:
                                      timeout=12, follow_redirects=False)
                 response.raise_for_status()
                 return response.text
-            quote = parse_fund_quote(retry_data_read(fetch), security_id, today=today)
+            if security_id in TASE_FOREIGN_ETFS:
+                quote = retry_data_read(lambda: _exchange_close(security_id, today), attempts=2)
+            else:
+                quote = parse_fund_quote(retry_data_read(fetch), security_id, today=today)
         except Exception as exc:
             delay = max(300, classify_transport_failure(exc).retry_after_seconds or 0)
             _cache[security_id] = (time.monotonic() + delay, str(exc))

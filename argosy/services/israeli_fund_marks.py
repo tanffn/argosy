@@ -6,15 +6,32 @@ import re
 from datetime import date
 from typing import Any
 
+from argosy.adapters.data.israeli_funds import TASE_FOREIGN_ETFS
 from argosy.logging import get_logger
 
 _log = get_logger(__name__)
 
 
+def _fund_market(security_id: str) -> str | None:
+    if re.fullmatch(r"5[0-9]{6}", security_id):
+        return "TASE_FUND"
+    if security_id in TASE_FOREIGN_ETFS:
+        return "TASE_FOREIGN_ETF"
+    return None
+
+
+def is_tase_foreign_etf(pos: dict[str, Any]) -> bool:
+    if pos.get("quote_market") == "TASE_FOREIGN_ETF":
+        return str(pos.get("security_id") or "") in TASE_FOREIGN_ETFS
+    listing = TASE_FOREIGN_ETFS.get(str(pos.get("symbol") or ""))
+    return bool(listing and not pos.get("security_id") and not pos.get("quote_market")
+                and str(pos.get("location") or "").strip().lower() == "leumi"
+                and str(pos.get("details") or "").strip().upper() == listing[1])
+
+
 def is_israeli_fund(pos: dict[str, Any]) -> bool:
-    return pos.get("quote_market") == "TASE_FUND" and bool(
-        re.fullmatch(r"5[0-9]{6}", str(pos.get("security_id") or ""))
-    )
+    return (pos.get("quote_market") == "TASE_FUND" and
+            _fund_market(str(pos.get("security_id") or "")) == "TASE_FUND") or is_tase_foreign_etf(pos)
 
 
 def attach_fund_identity(pos: dict[str, Any], *, security_id: str,
@@ -25,9 +42,10 @@ def attach_fund_identity(pos: dict[str, Any], *, security_id: str,
     denomination is verified by the quote provider, use the USD value/quantity
     for the reporting mark; never multiply units by raw agorot as dollars.
     """
-    if not re.fullmatch(r"5[0-9]{6}", security_id):
+    market = _fund_market(security_id)
+    if market is None:
         return dict(pos)
-    out = dict(pos, security_id=security_id, quote_market="TASE_FUND",
+    out = dict(pos, security_id=security_id, quote_market=market,
                broker_price=broker_price, broker_avg_price=broker_avg_price,
                price_source="broker_reporting_value")
     shares = float(pos.get("shares") or 0)
@@ -39,20 +57,27 @@ def attach_fund_identity(pos: dict[str, Any], *, security_id: str,
 
 def reprice_fund_position(pos: dict[str, Any], *, fx_usd_nis: float | None,
                           today: date, quote_fn=None) -> dict | None:
-    from argosy.adapters.data.israeli_funds import MAX_NAV_AGE_DAYS, get_fund_quote
+    from argosy.adapters.data.israeli_funds import MAX_NAV_AGE_DAYS, get_foreign_etf_close, get_fund_quote
     if not is_israeli_fund(pos):
         return None
     try:
+        if not pos.get("security_id"):
+            # The Leumi export used native agorot prices with a USD reporting
+            # value. Keep the raw broker observations before converting this row.
+            pos = attach_fund_identity(pos, security_id=str(pos["symbol"]),
+                                       broker_price=pos.get("current_price"),
+                                       broker_avg_price=pos.get("avg_price"))
         shares = float(pos.get("shares") or 0)
         fx = float(fx_usd_nis or 0)
         if not all(math.isfinite(x) and x > 0 for x in (shares, fx)):
             return None
-        q = (quote_fn or get_fund_quote)(pos["security_id"], today=today)
+        provider = get_foreign_etf_close if pos["quote_market"] == "TASE_FOREIGN_ETF" else get_fund_quote
+        q = (quote_fn or provider)(pos["security_id"], today=today)
         if q.security_id != pos["security_id"] or not 0 <= (today - q.as_of).days <= MAX_NAV_AGE_DAYS:
             return None
         if str(pos.get("price_source") or "").startswith("https://") and pos.get("valued_as_of"):
             if q.as_of < date.fromisoformat(str(pos["valued_as_of"])[:10]):
-                return None  # Do not replace a newer verified NAV with an older one.
+                return None  # Do not replace a newer verified mark with an older one.
         price = q.price_ils
         if not math.isfinite(price) or price <= 0:
             return None
@@ -87,11 +112,12 @@ def enrich_from_broker(positions, broker_positions, *, source: str) -> list:
     from argosy.ingest.tsv import PortfolioPosition
     result = []
     for p in positions:
-        if not (p.location or "").lower().startswith("leumi") or is_israeli_fund(p.model_dump()):
+        if not (p.location or "").lower().startswith("leumi") or (p.quote_market and is_israeli_fund(p.model_dump())):
             result.append(p)
             continue
         matches = [h for h in broker_positions
-                   if re.fullmatch(r"5[0-9]{6}", str(h.security_id))
+                   if _fund_market(str(h.security_id))
+                   and (str(h.security_id) not in TASE_FOREIGN_ETFS or str(p.symbol) == str(h.security_id))
                    and " ".join((getattr(h, "name", None) or getattr(h, "name_he", "")).split())
                    == " ".join((p.details or "").split())]
         if len(matches) != 1:
@@ -112,7 +138,7 @@ def fund_tsv_cells(cells: list[str], broker, *, observed_as_of: date | None) -> 
     """Extend the legacy 13-column format without losing fund identity/units."""
     from argosy.ingest.tsv import _parse_position_row
     from argosy.services.portfolio_ingest.xls_osh_pair import _position_to_cells
-    if not re.fullmatch(r"5[0-9]{6}", str(broker.security_id)):
+    if not _fund_market(str(broker.security_id)):
         return cells
     p = _parse_position_row(cells, line_no=0)
     if p is None:

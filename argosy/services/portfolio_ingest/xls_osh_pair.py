@@ -1566,7 +1566,7 @@ def _position_to_cells(p: Any) -> list[str]:
         f"{p.pct_change:.4f}" if p.pct_change is not None else "",
         f"{p.pct_yearly:.4f}" if p.pct_yearly is not None else "",
     ]
-    if getattr(p, "quote_market", None) == "TASE_FUND":
+    if getattr(p, "quote_market", None) in ("TASE_FUND", "TASE_FOREIGN_ETF"):
         from argosy.ingest.tsv import position_metadata_cell
         for idx, field in ((7, "current_price"), (8, "avg_price"),
                            (9, "current_value_local"), (10, "usd_value_k")):

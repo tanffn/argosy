@@ -29,6 +29,66 @@ def test_parser_identity_units_and_date():
     assert len(q.sha256) == 64
 
 
+def test_tase_foreign_listing_uses_dated_traded_close_and_preserves_book_identity(monkeypatch):
+    import httpx
+    from argosy.adapters.data import israeli_funds as adapter
+    from argosy.ingest.tsv import _parse_position_row
+    from argosy.services.holding_books import merge_total_book_positions
+    from argosy.services.israeli_fund_marks import is_israeli_fund
+    from argosy.services.portfolio_ingest.xls_osh_pair import _position_to_cells
+
+    name = "ISHARES CORE MSCI EM IMI UCITS ETF"
+    identity = dict(Id="01159169", ISIN="IE00BKM4GZ66", LongName=name, IsForeignETF=True, LastRate=999)
+    eod = dict(TradeDate="20/11/2026", CloseRate=15250, AdjustmentRate=9000,
+               IsOfferingPrice=False, IfTraded=True)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.method == "GET":
+            assert request.url.params["securityId"] == "1159169"
+            return httpx.Response(200, json=identity)
+        assert json.loads(request.content)["oId"] == "01159169"
+        return httpx.Response(200, json={"Items": [eod]})
+
+    original_client = httpx.Client
+    monkeypatch.setattr(adapter, "_cache", {})
+    monkeypatch.setattr(httpx, "Client", lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw))
+    today = date(2026, 11, 21)
+    custody_date = date(2026, 10, 30)
+    legacy = PortfolioPosition(location="Leumi", symbol="1159169", details=name,
+                               currency="USD", asset_type="ETF", shares=360, current_price=15720,
+                               avg_price=16830.83, current_value_local=18150.1, usd_value_k=18.1501,
+                               observed_as_of=custody_date, valued_as_of=custody_date)
+    assert not is_israeli_fund(dict(legacy.model_dump(), symbol="EIMI"))
+    assert not is_israeli_fund(dict(legacy.model_dump(), details="Other"))
+    assert not is_israeli_fund(dict(legacy.model_dump(), location="London"))
+    assert not is_israeli_fund(dict(legacy.model_dump(), security_id="999"))
+    failures = []
+    london = legacy.model_copy(update={"symbol": "EIMI", "valued_as_of": today})
+    positions = merge_total_book_positions([legacy, london], today=today, fx_usd_nis=3.3,
+                                          reprice_failures=failures)
+    assert not failures and [pos["symbol"] for pos in positions] == ["1159169", "EIMI"]
+    p = PortfolioPosition(**positions[0])
+    assert p.current_value_local == 54900 and p.usd_value_k == pytest.approx(54.9 / 3.3)
+    assert p.current_price == 152.5 and p.avg_price == pytest.approx(168.3083)
+    assert p.broker_price == 15720 and p.currency == "ILS" and p.shares == 360
+    assert p.valued_as_of == date(2026, 11, 20) and p.observed_as_of == custody_date
+    assert p.quote_market == "TASE_FOREIGN_ETF" and p.security_id == "1159169"
+    assert len(p.price_evidence_sha256) == 64 and len(calls) == 2
+    reread = _parse_position_row(_position_to_cells(p), line_no=1)
+    assert reread.security_id == p.security_id and reread.broker_price == p.broker_price
+    assert reread.price_source == p.price_source and reread.current_price == p.current_price
+    assert adapter.get_foreign_etf_close("1159169", today=today).as_of == p.valued_as_of and len(calls) == 2
+    with pytest.raises(ValueError, match="mutual-fund"):
+        adapter.get_fund_quote("1159169", today=today)
+    with pytest.raises(ValueError, match="Ineligible"):
+        adapter._exchange_close("1159169", date(2026, 12, 5))
+    identity["ISIN"] = "OTHER"
+    with pytest.raises(ValueError, match="identity"):
+        adapter._exchange_close("1159169", today)
+
+
 @pytest.mark.parametrize("kwargs", [dict(sid="5139951"), dict(kind="stock"),
     dict(price=0), dict(price=float("nan")), dict(currency="דולר"), dict(day=1), dict(day=27)])
 def test_parser_rejects_bad_marks(kwargs):

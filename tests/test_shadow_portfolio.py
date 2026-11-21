@@ -278,6 +278,28 @@ def test_unknown_native_cash_currency_never_becomes_usd(store):
         assert mark(new_book(seed), {"fx": {"USD": "1"}}, "2026-01-02")["nav_usd"] is None
 
 
+@pytest.mark.parametrize("fields", [
+    {"currency": "USD", "current_price": 15720},
+    {"currency": "ILS", "current_price": 152.5, "quote_market": "TASE_FOREIGN_ETF", "security_id": "1159169"},
+])
+def test_tase_foreign_etf_close_cannot_seed_nav_carry_or_bare_numeric_listing(store, fields):
+    with store() as db:
+        rows = [
+            dict(symbol="1159169", details="ISHARES CORE MSCI EM IMI UCITS ETF",
+                 location="Leumi", shares=360, usd_value_k=18.15, **fields),
+            dict(symbol="EIMI", details="EIMI LN", currency="USD", location="Leumi", shares=8, usd_value_k=.4),
+        ]
+        db.add(PortfolioSnapshotRow(user_id="b", imported_at=ACTIVATED, positions_json=json.dumps(rows)))
+        db.flush()
+        seed = ledger.activate(db, user_id="b", now=ACTIVATED)
+        tase = seed["identities"]["1159169"]
+        assert tase["provider"] is None and tase["recorded_price"] is None and tase["currency"] == "ILS"
+        assert "TASE:1159169" not in seed["identities"]
+        assert seed["identities"]["EIMI.L@USD"]["provider"] == "EIMI.L"
+        from argosy.services.shadow_market import fetch_listing
+        assert fetch_listing(tase, ACTIVATED.date(), PUBLISHED)[0] == {}
+
+
 def test_new_listing_identities_do_not_collapse_by_ticker(store):
     with store() as db:
         db.add(PortfolioSnapshotRow(user_id="b", imported_at=ACTIVATED, positions_json='[]'))

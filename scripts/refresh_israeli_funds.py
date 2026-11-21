@@ -47,10 +47,11 @@ def main():
                 continue
             priced = reprice_fund_position(p.model_dump(), fx_usd_nis=snap.fx_usd_nis, today=date.today())
             if priced is None:
-                raise ValueError(f"No eligible live NAV for {p.security_id}; nothing written")
+                raise ValueError(f"No eligible fund mark for {p.security_id or p.symbol}; nothing written")
             positions[i] = PortfolioPosition(**priced)
-            changed.append(p.security_id)
-            print(f'{p.security_id} | {p.symbol} | NAV {priced["current_price"]:.4f} ILS '
+            changed.append(priced["security_id"])
+            kind = "close" if priced["quote_market"] == "TASE_FOREIGN_ETF" else "NAV"
+            print(f'{priced["security_id"]} | {p.symbol} | {kind} {priced["current_price"]:.4f} ILS '
                   f'| dated {priced["valued_as_of"]} | quantity {p.shares:g} '
                   f'| {"AGING" if priced["mark_stale"] else "FRESH"} | {priced["price_source"]}')
         if not changed:
@@ -58,7 +59,8 @@ def main():
         assert [p.shares for p in positions] == [p.shares for p in snap.positions]
         snap.positions = positions
         snap.allocations = _recompute_allocations(positions, snap.allocations)
-        snap.source_path = f"israeli-fund-nav:identity-from-snapshot-{prior_id}"
+        mark_type = "marks" if any(p.quote_market == "TASE_FOREIGN_ETF" for p in positions) else "nav"
+        snap.source_path = f"israeli-fund-{mark_type}:identity-from-snapshot-{prior_id}"
         # Do not promote the observation date of unrelated broker holdings.
         if args.apply:
             stored = persist_snapshot(session, user_id=args.user_id, snapshot=snap,
