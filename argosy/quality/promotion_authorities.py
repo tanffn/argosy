@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from argosy.quality.review_provenance import codex_contributed
+from argosy.quality.review_provenance import codex_authored_sleeve, codex_contributed
 
 CODEX_PHASE = 45
 READER_PHASE = 55
@@ -66,9 +66,12 @@ def read_codex_verdict(session: Any, decision_run_id: int) -> str | None:
     return _latest_phase_assessment(session, decision_run_id, CODEX_PHASE)
 
 
-def read_reader_verdict(session: Any, decision_run_id: int) -> str | None:
+def read_reader_verdict(session: Any, decision_run_id: int, *, allocation_json: str | None = None) -> str | None:
     """Whole-artifact reader / coherence deliberation ``overall_assessment``."""
-    return _latest_phase_assessment(session, decision_run_id, READER_PHASE)
+    assessment = _latest_phase_assessment(session, decision_run_id, READER_PHASE)
+    if assessment in ("APPROVE", "APPROVE_WITH_CONDITIONS") and codex_authored_sleeve(allocation_json):
+        return None
+    return assessment
 
 
 __all__ = ["read_codex_verdict", "read_reader_verdict", "CODEX_PHASE", "READER_PHASE"]

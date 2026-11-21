@@ -454,6 +454,7 @@ async def run_whole_artifact_review(
     user_id: str,
     settled_rulings: list[dict] | None = None,
     canonical_anchor: str | None = None,
+    includes_codex_sleeve: bool = False,
 ) -> tuple[WholeArtifactVerdict | None, AgentReport | None]:
     """Dispatch the whole-artifact adversarial reader. Fail-soft.
 
@@ -558,6 +559,8 @@ async def run_whole_artifact_review(
         row = exc.failed_report(role="whole_artifact_reader", user_id=user_id, decision_run_id=decision_run_id)
         return None, row
 
+    if response.provider == "codex" and includes_codex_sleeve:
+        response.advisory_reason = "Codex contributed to the alternatives sleeve and cannot independently verify the assembled plan."
     parsed = _parse_verdict(response.text)
     row = response.report(
         parsed=parsed, role="whole_artifact_reader", user_id=user_id,

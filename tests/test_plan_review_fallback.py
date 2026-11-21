@@ -29,7 +29,7 @@ def enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(math, "_load_existing_codex_opinion", AsyncMock(return_value=None))
 
 
-def invoke(which):
+def invoke(which, *, includes_codex_sleeve=False):
     os.environ.pop("PYTEST_CURRENT_TEST", None)
     common = dict(decision_run_id=8765, user_id="test")
     if which == "math":
@@ -39,6 +39,7 @@ def invoke(which):
         ))
     return asyncio.run(reader.run_whole_artifact_review(
         **common, assembled_artifact="A synthetic document.", external_context="", prior_plan_text="",
+        includes_codex_sleeve=includes_codex_sleeve,
     ))
 
 
@@ -125,6 +126,17 @@ def test_bad_primary_output_stays_blocked_without_fallback(enabled, monkeypatch)
     _, _, gate = invoke("math")
     assert gate.status is GateStatus.BLOCK
     alternate.assert_not_called()
+
+
+def test_codex_sleeve_makes_final_read_advisory_only(enabled, monkeypatch):
+    monkeypatch.setattr(review_dispatch, "_run_tandem", AsyncMock(return_value=SimpleNamespace(
+        exit_code=0, verdict_text='{"overall_assessment":"APPROVE","findings":[]}',
+    )))
+    _, _, numeric = invoke("math")
+    assert numeric.status is GateStatus.PASS
+    verdict, row = invoke("reader", includes_codex_sleeve=True)
+    assert verdict is None and row.output.reviewer == "codex"
+    assert "alternatives sleeve" in row.output.advisory_reason
 
 
 def test_resume_reuses_only_independent_review_of_identical_evidence(monkeypatch):

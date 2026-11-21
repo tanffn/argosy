@@ -3968,7 +3968,9 @@ def post_draft_accept(
             "codex": read_codex_verdict(db, pv.decision_run_id),
             "deterministic_gate": _det_clear,
             "fund_manager": "approved" if _fm_clear else "rejected",
-            "whole_artifact_reader": read_reader_verdict(db, pv.decision_run_id),
+            "whole_artifact_reader": read_reader_verdict(
+                db, pv.decision_run_id, allocation_json=pv.target_allocation_json,
+            ),
             "rederivation": "APPROVE" if _rederiv_clear else "BLOCK",
         }
 

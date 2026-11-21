@@ -19,9 +19,10 @@ import math
 from datetime import date
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from argosy.logging import get_logger
+from argosy.quality.review_provenance import codex_authored
 
 if TYPE_CHECKING:  # pragma: no cover
     from sqlalchemy.orm import Session
@@ -77,6 +78,7 @@ class AllocationClassDoc(BaseModel):
     agreement: str = ""
     rationale: str = ""
     dissent: str = ""
+    codex_contributed: bool = Field(default=False, exclude_if=lambda used: not used)
     # Dry-powder earmark on the cash class (v76+). Absent on other classes.
     # Deployment tooling subtracts this from deployable cash (Item D).
     discovery_reserve: dict | None = None
@@ -427,6 +429,7 @@ def build_target_allocation_doc(
             agreement=c.agreement,
             rationale=c.rationale,
             dissent=c.dissent,
+            codex_contributed=(c.sigma_class == "alternatives" and codex_authored(alternatives_sleeve)),
         )
         for c in alloc.classes
     ]

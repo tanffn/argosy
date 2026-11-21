@@ -69,6 +69,14 @@ def test_replacement_draft_invalidates_previous_authorities(session):
     assert read_reader_verdict(session, 7) is None
 
 
+def test_attachment_affects_only_final_reader_authority(session):
+    _add(session, 7, 6, "synthesis.phase_45", '{"overall_assessment": "APPROVE"}')
+    _add(session, 7, 8, "synthesis.phase_55", '{"overall_assessment": "APPROVE"}')
+    doc = '{"classes": [{"sigma_class": "alternatives", "codex_contributed": true}]}'
+    assert read_reader_verdict(session, 7, allocation_json=doc) is None
+    assert read_codex_verdict(session, 7) == "APPROVE"
+
+
 def test_unparseable_or_missing_assessment_is_none(session):
     _add(session, 7, 6, "synthesis.phase_45", "not json")
     _add(session, 7, 10, "synthesis.phase_55", '{"no_assessment_key": 1}')

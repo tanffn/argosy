@@ -42,7 +42,8 @@ from argosy.agents.macro_analyst import MacroAnalystAgent
 from argosy.agents.news_analyst import NewsAnalystAgent
 from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.quality.review_provenance import (
-    codex_authored, codex_contributed, phase_three_snapshot, plan_reconcile_scope, set_plan_authorship,
+    codex_authored, codex_authored_sleeve, codex_contributed, phase_three_snapshot,
+    plan_reconcile_scope, set_plan_authorship,
 )
 from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
 from argosy.agents.plan_synthesizer_types import (
@@ -1969,6 +1970,7 @@ def run_synthesis(
                 user_id=user_id,
                 settled_rulings=settled_rulings,
                 canonical_anchor=(_canonical_anchor or None),
+                includes_codex_sleeve=codex_authored_sleeve(draft.target_allocation_json),
             )
         )
 
@@ -3033,6 +3035,10 @@ def run_synthesis(
             _codex_gate = _GateOutcome.did_not_run("codex_math", detail)
         if _reader_gate.status is _GateStatus.PASS:
             _reader_gate = _GateOutcome.did_not_run("whole_artifact_reader", detail)
+    if _reader_gate.status is _GateStatus.PASS and codex_authored_sleeve(draft.target_allocation_json):
+        _reader_gate = _GateOutcome.did_not_run(
+            "whole_artifact_reader", "Codex contributed to the assembled alternatives sleeve.",
+        )
     if (
         _codex_gate.status is not _GateStatus.PASS
         and _os.environ.get("PYTEST_CURRENT_TEST")

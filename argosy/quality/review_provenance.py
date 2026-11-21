@@ -14,6 +14,10 @@ _AUTHOR_ROLES = frozenset({
     "owner_remediation", "coherence_arbitrator", "coherence_facilitator",
     "coherence_panelist", "plan_coherence_closer",
 })
+_ALTERNATIVES_ROLES = frozenset({
+    "alternatives_sourcer", "alt_exposure_structure", "alt_macro_diversification",
+    "alt_risk_liquidity_tax", "alternatives_fund_manager",
+})
 
 
 @contextmanager
@@ -32,6 +36,11 @@ def _marker(decision_run_id: int) -> Path:
 
 
 def record_codex_plan_author(decision_id: object, agent_role: str, output) -> None:
+    if agent_role in _ALTERNATIVES_ROLES:
+        # Sleeve agents run before the verified decision is attached. Keep
+        # their physical authorship on the candidate, never on the whole run.
+        output._codex_contributed = True
+        return
     if agent_role not in _AUTHOR_ROLES:
         return
     scope = _reconcile_run.get()
@@ -54,6 +63,21 @@ def set_plan_authorship(decision_run_id: int, has_codex_author: bool) -> None:
 
 def codex_authored(output) -> bool:
     return getattr(output, "_codex_contributed", False) is True
+
+
+def codex_authored_sleeve(allocation_json: str | None) -> bool:
+    """Only an alternatives class actually present in the canonical draft counts."""
+    if not allocation_json:
+        return False
+    try:
+        doc = json.loads(allocation_json)
+    except (TypeError, ValueError):
+        return False
+    classes = doc.get("classes") if isinstance(doc, dict) else None
+    return isinstance(classes, list) and any(
+        isinstance(row, dict) and row.get("sigma_class") == "alternatives"
+        and row.get("codex_contributed") is True for row in classes
+    )
 
 
 def phase_three_snapshot(output, reports, decision_run_id: int) -> str:

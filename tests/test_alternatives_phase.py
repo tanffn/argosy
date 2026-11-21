@@ -7,9 +7,15 @@ insufficient_data, FM 0% -> 0% sleeve, FM picks an unknown symbol -> 0%.
 """
 from __future__ import annotations
 
+from datetime import date
+
+import pytest
+
 import argosy.orchestrator.flows.plan_synthesis.alternatives_phase as phase
 from argosy.agents.alternatives_reviewers import AltFundManagerVerdict, AltReviewReport, AltSelection
 from argosy.agents.alternatives_sourcer import AlternativesProposal, AssetProposal
+from argosy.quality.review_provenance import codex_authored_sleeve, record_codex_plan_author
+from argosy.services.target_allocation_doc import build_target_allocation_doc, _strip_stale_alternatives
 
 
 def _asset(symbol, domicile, isin, weight, asset_class="precious_metals"):
@@ -31,6 +37,40 @@ def _reviews(n=3):
         AltReviewReport(stance="support", sleeve_pct_view=3.0, key_points_md="ok")
         for _ in range(n)
     ]
+
+
+@pytest.mark.parametrize("source,decision,expected", [
+    ("alternatives_sourcer", "approve", True),
+    ("alt_macro_diversification", "approve", True),
+    ("alternatives_fund_manager", "approve", True),
+    ("claude", "approve", False),
+    ("alternatives_fund_manager", "0_percent", False),
+    ("alternatives_sourcer", "unknown_selection", False),
+    ("alt_macro_diversification", "failed_quorum", False),
+])
+def test_canonical_sleeve_tracks_only_adopted_contributions(monkeypatch, source, decision, expected):
+    proposal = _proposal([_asset("SGLD", "IE", "IE00B579F325", 100.0)])
+    reviews = _reviews(1 if decision == "failed_quorum" else 3)
+    verdict = AltFundManagerVerdict(
+        decision="0_percent" if decision == "0_percent" else "approve",
+        target_pct=0 if decision == "0_percent" else 3,
+        selected=[AltSelection(symbol="unknown" if decision == "unknown_selection" else "SGLD",
+                               weight_within_sleeve_pct=100)],
+        rationale_md="fixture",
+    )
+    contributors = {"alternatives_sourcer": proposal, "alt_macro_diversification": reviews[0],
+                    "alternatives_fund_manager": verdict}
+    if source in contributors:
+        record_codex_plan_author(None, source, contributors[source])
+    _patch(monkeypatch, proposal=proposal, reviews=reviews, verdict=verdict)
+    sleeve = phase.run_alternatives_phase(user_id="test", macro_context={})
+    doc = build_target_allocation_doc(
+        today=date(2026, 11, 21), today_composition={"Cash": 100.0}, alternatives_sleeve=sleeve,
+    )
+    assert codex_authored_sleeve(doc.model_dump_json()) is expected
+    # The allocation resolver removes a stale sleeve on carry-forward.
+    _strip_stale_alternatives(doc)
+    assert not codex_authored_sleeve(doc.model_dump_json())
 
 
 def _patch(monkeypatch, *, proposal, reviews=None, verdict=None, reviewer_spy=None):

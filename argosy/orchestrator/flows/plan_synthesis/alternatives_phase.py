@@ -21,6 +21,7 @@ from argosy.agents.alternatives_reviewers import (
 )
 from argosy.agents.alternatives_sourcer import AlternativesProposal, AlternativesSourcerAgent
 from argosy.logging import get_logger
+from argosy.quality.review_provenance import codex_authored
 from argosy.services.alternatives_sourcing import verify_and_gate_proposal
 from argosy.services.alternatives_types import AlternativesSleeveDecision
 from argosy.services.retirement.sigma_calibration import compute_alternatives_sigma
@@ -80,7 +81,9 @@ def _run_fund_manager(user_id: str, verified: list, reviews: list, macro_context
     return report.output
 
 
-def _assemble_decision(verdict, verified: list, violations: list[str]) -> AlternativesSleeveDecision:
+def _assemble_decision(
+    verdict, verified: list, violations: list[str], *, inputs_from_codex: bool = False,
+) -> AlternativesSleeveDecision:
     """Build the final decision from the FM verdict + the VERIFIED candidates.
 
     The FM selects by symbol; we bind each selection to its verified candidate
@@ -114,11 +117,13 @@ def _assemble_decision(verdict, verified: list, violations: list[str]) -> Altern
                       f"{_SLEEVE_HARD_CAP_PCT}% (sleeve hard cap)"]
     sleeve_sigma = compute_alternatives_sigma(weighted_classes)
 
-    return AlternativesSleeveDecision(
+    decision = AlternativesSleeveDecision(
         target_pct=target_pct, sleeve_sigma=sleeve_sigma, instruments=instruments,
         decision=verdict.decision, rationale_md=verdict.rationale_md,
         review_summary_md=verdict.review_summary_md, violations=violations,
     )
+    decision._codex_contributed = inputs_from_codex or codex_authored(verdict)
+    return decision
 
 
 def run_alternatives_phase(*, user_id: str, macro_context: dict) -> AlternativesSleeveDecision:
@@ -148,7 +153,10 @@ def run_alternatives_phase(*, user_id: str, macro_context: dict) -> Alternatives
         )
 
     verdict = _self._run_fund_manager(user_id, verified, reviews, macro_context)
-    return _assemble_decision(verdict, verified, violations)
+    return _assemble_decision(
+        verdict, verified, violations,
+        inputs_from_codex=codex_authored(proposal) or any(codex_authored(review) for review in reviews),
+    )
 
 
 __all__ = ["run_alternatives_phase"]
