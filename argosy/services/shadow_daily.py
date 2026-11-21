@@ -15,6 +15,7 @@ from argosy.services.shadow_portfolio import (
     project,
     report,
 )
+from argosy.services.shadow_market import compatible_prior_mark
 from argosy.state.models import ActionProposal, PortfolioSnapshotRow
 from argosy.state.shadow_models import ShadowEvent
 
@@ -22,6 +23,7 @@ from argosy.state.shadow_models import ShadowEvent
 def economic_packet(packet):
     return {"date": packet["date"], "fx": packet["fx"], "actions": packet["actions"],
         "marks": packet["marks"], "fx_evidence": packet.get("fx_evidence", {}),
+        "unpriced_marks": packet.get("unpriced_marks", {}),
         "cutoff_at": packet.get("cutoff_at"), "contract": packet.get("contract"),
         "unresolved_actions": packet.get("unresolved_actions", [])}
 
@@ -79,7 +81,10 @@ def run_user(factory, user_id, *, now=None, collector=None):
             previous = json.loads(prior_row.payload_json) if prior_row else None
             if previous:
                 covered = set(packet.get("action_coverage", []))
-                packet = {**packet, "marks": {**previous["marks"], **packet["marks"]},
+                unpriced = packet.get("unpriced_marks", {})
+                prior_marks = {key: mark for key, mark in previous["marks"].items()
+                               if key not in unpriced or compatible_prior_mark(mark, unpriced[key])}
+                packet = {**packet, "marks": {**prior_marks, **packet["marks"]},
                     "fx": {**previous["fx"], **packet["fx"]},
                     "fx_evidence": {**previous.get("fx_evidence", {}), **packet.get("fx_evidence", {})},
                     "actions": list({row["id"]: row for row in [

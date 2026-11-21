@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from argosy.services.shadow_accounting import money
@@ -23,48 +23,88 @@ def completed_date(now):
     return local.date() if local.time() >= time(16, 30) else local.date() - timedelta(days=1)
 
 
-def normalize_history(frame, *, instrument, quote_currency, source, calendar_name="XNYS"):
+def _observed_number(value):
+    try:
+        return money(value)
+    except (ValueError, InvalidOperation):
+        return None
+
+
+def normalize_history(frame, *, instrument, quote_currency, source, calendar_name="XNYS",
+                      latest_missing_session=None):
     required = {"Close"} if calendar_name == "24/5" else {"Close", "Dividends", "Stock Splits"}
     if not required <= set(frame.columns):
         raise ValueError("Missing explicit price/corporate-action columns; absence is not zero events")
     scale = Decimal("0.01") if quote_currency in ("GBp", "GBX", "ILA") else Decimal(1)
     ccy = {"GBp": "GBP", "GBX": "GBP", "ILA": "ILS"}.get(quote_currency, quote_currency)
-    splits = [(stamp.date(), money(row.get("Stock Splits", 0))) for stamp, row in frame.iterrows()
-              if row.get("Stock Splits", 0)]
     result = {}
-    for stamp, row in frame.iterrows():
+    # Yahoo adjusts every older Close for later splits. An unknown split ratio
+    # invalidates older units, but leaves later observations independent.
+    factor = Decimal(1)
+    for stamp, row in frame.sort_index(ascending=False).iterrows():
         day = stamp.date()
-        factor = Decimal(1)
-        for split_day, ratio in splits:
-            if split_day > day:
-                factor *= ratio
-        close = money(row["Close"]) * factor * scale
-        if close <= 0:
-            raise ValueError("Nonpositive market close")
+        if latest_missing_session is not None and day < latest_missing_session:
+            factor = None
+        observed_close = _observed_number(row["Close"])
+        issues = []
+        price = None
+        if observed_close is None or observed_close <= 0:
+            issues.append("Missing or nonpositive market close")
+        elif factor is None:
+            issues.append("Price units unresolved due to a missing later split ratio")
+        else:
+            price = observed_close * factor * scale
         actions = []
-        split = row.get("Stock Splits", 0)
-        distribution = row.get("Dividends", 0)
+        action_complete = True
+        split = _observed_number(row.get("Stock Splits", 0))
+        if split is None or split < 0:
+            action_complete = False
+            split = None
+            issues.append("Missing or invalid split ratio")
         if split:
             actions.append({"id": f"{instrument}|split|{day}", "instrument": instrument,
-                            "kind": "split", "ratio": str(money(split))})
-        if distribution:
-            actions.append({"id": f"{instrument}|distribution|{day}", "instrument": instrument,
-                "kind": "distribution", "amount": str(money(distribution) * factor * scale),
-                "classification": "unverified_distribution", "pay_date": None})
-        if row.get("Capital Gains", 0):
-            actions.append({"id": f"{instrument}|capital_distribution|{day}", "instrument": instrument,
-                "kind": "distribution", "amount": str(money(row["Capital Gains"]) * factor * scale),
-                "classification": "unverified_capital_distribution", "pay_date": None})
-        result[day.isoformat()] = {"price": str(close), "currency": ccy, "as_of": day.isoformat(),
-            "source": source, "eligible": True, "reported_close": str(row["Close"]),
-            "split_restoration_factor": str(factor), "quote_scale": str(scale), "contract": CONTRACT,
+                            "kind": "split", "ratio": str(split)})
+        for column, kind in (("Dividends", "distribution"), ("Capital Gains", "capital_distribution")):
+            if column not in frame.columns:
+                continue
+            amount = _observed_number(row[column])
+            if amount is None or (amount and factor is None):
+                action_complete = False
+                issues.append(f"Missing or unresolved {column} amount")
+            elif amount:
+                actions.append({"id": f"{instrument}|{kind}|{day}", "instrument": instrument,
+                    "kind": "distribution", "amount": str(amount * factor * scale),
+                    "classification": f"unverified_{kind}", "pay_date": None})
+        record = {"price": str(price) if price is not None else None, "currency": ccy, "as_of": day.isoformat(),
+            "source": source, "eligible": price is not None,
+            "reported_close": str(observed_close) if observed_close is not None else None,
+            "split_restoration_factor": str(factor) if factor is not None else None,
+            "quote_scale": str(scale), "contract": CONTRACT,
             "calendar": calendar_name, "close_at": close_at(day.isoformat(), calendar_name).isoformat()
                 if calendar_name != "24/5" else (datetime.combine(day + timedelta(days=1), time(0), tzinfo=UTC)).isoformat(),
-            "action_history_complete": True,
-            "actions": actions}
+            "action_history_complete": action_complete, "actions": actions}
+        if issues:
+            record["data_issues"] = issues
+        result[day.isoformat()] = record
         for action in actions:
             action["ex_date"] = day.isoformat()
+        if split is None:
+            factor = None
+        elif split and factor is not None:
+            factor *= split
     return result
+
+
+def compatible_prior_mark(mark, observation):
+    """An unavailable close may reuse an independently observed price for the same session and units."""
+    if not mark.get("eligible") or any(mark.get(field) != observation.get(field)
+                                       for field in ("as_of", "currency", "contract")):
+        return False
+    for field in ("quote_scale", "split_restoration_factor"):
+        unit = _observed_number(observation.get(field))
+        if unit is None or unit <= 0 or unit != _observed_number(mark.get(field)):
+            return False
+    return True
 
 
 def fetch_listing(identity, start, now):
@@ -84,16 +124,15 @@ def fetch_listing(identity, start, now):
         if not ccy:
             return {}, "Quote denomination unavailable"
         calendar_name = "24/5" if provider.endswith("=X") else listing_calendar(provider)
-        normalized = normalize_history(frame, instrument=identity["instrument"], quote_currency=ccy,
-            calendar_name=calendar_name, source=f"https://finance.yahoo.com/quote/{provider}/history/")
+        latest_missing_session = None
         if calendar_name != "24/5":
-            # Restoring an old as-traded price needs ALL later splits, not just
-            # complete bars around that old date. An omitted later split date
-            # makes the entire normalization uncertain, even if the old bar exists.
-            expected = {stamp.date().isoformat() for stamp in calendar(calendar_name).sessions_in_range(
-                min(normalized), now.date().isoformat()) if close_at(stamp.date().isoformat(), calendar_name) < now}
-            if not expected <= set(normalized):
-                return normalized, "Incomplete later session history; split-restored price units unresolved"
+            observed = {stamp.date() for stamp in frame.index}
+            expected = {stamp.date() for stamp in calendar(calendar_name).sessions_in_range(
+                min(observed).isoformat(), now.date().isoformat()) if close_at(stamp.date().isoformat(), calendar_name) < now}
+            latest_missing_session = max(expected - observed, default=None)
+        normalized = normalize_history(frame, instrument=identity["instrument"], quote_currency=ccy,
+            calendar_name=calendar_name, source=f"https://finance.yahoo.com/quote/{provider}/history/",
+            latest_missing_session=latest_missing_session)
         return normalized, None
     except Exception as exc:
         return {}, str(exc)[:350]
@@ -161,16 +200,30 @@ def collect(seed, receipts, *, now, max_days=31, existing_days=(), fund_observat
             errors["FX:" + ccy] = failure
         fx_histories[ccy] = values
     sessions = []
+    session_errors = {}
     for day in wanted:
         marks, actions, fx, fx_evidence = {}, [], {"USD": "1"}, {}
         covered, unresolved = [], []
+        day_errors = dict(errors)
+        unpriced_marks = {}
         previous = max([at for at in days if at < day], default=seed["activation_date"])
         for key, (bars, failure) in downloaded.items():
             schedule = calendar(listing_calendar(identities[key].get("provider")))
             expected = {stamp.date().isoformat() for stamp in schedule.sessions_in_range(previous, day)
                         if previous < stamp.date().isoformat() <= day}
-            complete = not failure and expected <= set(bars)
+            complete = not failure and all(
+                bars.get(at, {}).get("action_history_complete") is True for at in expected)
             (covered if complete else unresolved).append(key)
+            for at in sorted(expected):
+                bar = bars.get(at, {})
+                if not bar and not failure:
+                    day_errors[key] = f"{at}: Missing exchange-session bar"
+                    session_errors[key] = day_errors[key]
+                elif bar.get("data_issues"):
+                    day_errors[key] = f"{at}: {', '.join(bar['data_issues'])}"
+                    session_errors[key] = day_errors[key]
+                if complete:
+                    actions.extend(bar["actions"])
             eligible = [at for at in bars if at <= day and (date.fromisoformat(day) - date.fromisoformat(at)).days <= 4]
             quote = bars[max(eligible)] if eligible else None
             if quote:
@@ -178,24 +231,25 @@ def collect(seed, receipts, *, now, max_days=31, existing_days=(), fund_observat
                     provider = identities[key].get("provider")
                     if calendar(listing_calendar(provider)).is_session(day):
                         quote = None  # Missing expected open-session quote is not a holiday.
-            if quote:
+            if quote and quote["eligible"]:
                 marks[key] = {k: v for k, v in quote.items() if k != "actions"}
-                for at, source in bars.items():
-                    if complete and previous < at <= day:
-                        actions.extend(source["actions"])
+            elif quote:
+                unpriced_marks[key] = {field: quote[field] for field in
+                    ("as_of", "currency", "contract", "quote_scale", "split_restoration_factor")}
         for key, values in fund_marks.items():
             eligible = [quote for quote in values if 0 <= (date.fromisoformat(day) - date.fromisoformat(quote["as_of"])).days <= 7]
             if eligible:
                 marks[key] = max(eligible, key=lambda quote: quote["as_of"])
         for ccy, bars in fx_histories.items():
-            eligible = [at for at in bars if at < day and (date.fromisoformat(day) - date.fromisoformat(at)).days <= 4]
+            eligible = [at for at in bars if bars[at]["eligible"] and at < day
+                        and (date.fromisoformat(day) - date.fromisoformat(at)).days <= 4]
             if eligible:
                 evidence = bars[max(eligible)]
                 fx[ccy] = evidence["price"]
                 fx_evidence[ccy] = evidence
-        sessions.append({"date": day, "marks": marks, "actions": actions, "fx": fx,
-                         "fx_evidence": fx_evidence, "contract": CONTRACT, "failures": errors,
+        sessions.append({"date": day, "marks": marks, "unpriced_marks": unpriced_marks, "actions": actions, "fx": fx,
+                         "fx_evidence": fx_evidence, "contract": CONTRACT, "failures": day_errors,
                          "cutoff_at": close_at(day).isoformat(), "action_coverage": covered,
                          "unresolved_actions": unresolved})
     return sessions, {"status": "collected" if sessions else "up_to_date" if days else "market_data_unavailable",
-                      "sessions": len(sessions), "remaining_sessions": len(set(days) - set(existing_days) - set(wanted)), "failures": errors}
+                      "sessions": len(sessions), "remaining_sessions": len(set(days) - set(existing_days) - set(wanted)), "failures": {**errors, **session_errors}}
