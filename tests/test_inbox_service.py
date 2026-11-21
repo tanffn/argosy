@@ -528,6 +528,24 @@ def test_unavailable_nvda_check_adds_issue_to_current_plan_inbox(db):
     assert not any(item.id == "nvda_policy_sell" for item in feed.items)
 
 
+def test_older_glide_approval_keeps_independent_risk_assessment_visible(db, monkeypatch):
+    from dataclasses import replace
+    import argosy.services.nvda_policy_sell as nps
+    from argosy.services.breach_router import DECON_TRANCHE_MARKER
+
+    risk = replace(_policy_sell("sell_due"), category="risk-budget")
+    monkeypatch.setattr(nps, "assess_nvda_policy_sell", lambda **k: risk)
+    prior = _trade(
+        db, ticker="NVDA", action="sell", status="awaiting_human",
+        rationale_summary=f"[{DECON_TRANCHE_MARKER}] Earlier paced sale.",
+    )
+    feed = build_inbox(db, user_id="ariel", today=_TODAY)
+    issue = next(issue for issue in feed.issues if issue["code"] == "nvda_exception_review")
+    assert "500,000 gross" in issue["message"] and "trustee" in issue["message"]
+    assert any(item.id == f"trade:{prior.id}" for item in feed.items)
+    assert not any(item.id == "nvda_policy_sell" for item in feed.items)
+
+
 def test_funnel_shadow_proposal_surfaces_beta_view_first(db):
     """A calibrating (shadow) funnel proposal is EXPOSED beta (nothing hidden) but
     view-first — no blind approve/execute until it's promoted out of beta."""

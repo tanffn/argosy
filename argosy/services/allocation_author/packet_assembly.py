@@ -107,6 +107,13 @@ def assemble_author_packet(
     _recommendation_buy_symbols: list[str] = []
     _decision_calibration: dict[str, Any] = {}
     _staged_sell_policies: dict[str, dict[str, Any]] = {}
+    if float(holdings_usd.get("NVDA") or 0) > 0:
+        # The verifier enforces policies present in this packet. Preserve the
+        # staging requirement when either pricing or the assessment fails.
+        _staged_sell_policies["NVDA"] = {
+            "symbol": "NVDA", "status": "blocked",
+            "failures": ["A priced NVDA tranche assessment is unavailable. Check the current share price, USD/NIS rate and sale policy."],
+        }
     try:
         from sqlalchemy import select
 
@@ -181,8 +188,8 @@ def assemble_author_packet(
         )
     # Join the existing NVDA glide, actual-sale ledger and Section-102 engine.
     # The author receives ONE current tranche boundary, not a bare TRIM verb or
-    # the full over-cap liquidation amount. Missing live price/FX leaves the
-    # staged policy absent, which means the author cannot safely fund a sell.
+    # the full over-cap liquidation amount. Replace the blocked entry only
+    # after the staged policy is available.
     try:
         from argosy.services.staged_sell_policy import (
             build_nvda_staged_sell_policy,

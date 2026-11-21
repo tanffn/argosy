@@ -550,6 +550,15 @@ def _adapt_nvda_policy_sell(
         .limit(1)
     ).first()
     if open_decon is not None:
+        if v.category != "policy":
+            diagnostics.append({
+                "code": "nvda_exception_review",
+                "message": (
+                    f"The current NVDA {v.category} assessment models ~₪{v.tranche_nis:,.0f} gross. "
+                    "The standing glide approval covers its original proposal. Review current trustee "
+                    "lots, tax, eligibility and timing before sizing any new order."
+                ),
+            })
         return []
 
     # Exception-protocol sells (thesis-break / risk-budget) are urgent; the routine
